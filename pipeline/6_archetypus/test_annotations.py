@@ -610,8 +610,8 @@ def test_an_internal_gap_in_every_reading_leaves_the_run_visibly_partial(tmp_pat
 
 
 def test_a_sealed_annotation_is_carried_out_rather_than_replaced_by_not_produced(tmp_path):
-    """The *semantic* annotation layer's not-produced claim (true of the layer
-    `annotation_boundary.py` has never built) must never overwrite a real
+    """The *semantic* annotation layer's not-produced claim (true: no code
+    builds that layer) must never overwrite a real
     *transcription* mark an Archetypus record sealed: both layers travel under
     their own names, so each stays a true statement about the layer it
     describes.

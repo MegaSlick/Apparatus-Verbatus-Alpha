@@ -234,7 +234,7 @@ Both now travel, and neither is taken on trust:
   exits `EXIT_HELD`: the acts are delivered, and the run did not read all of them.
 
 **Two annotation layers, two names, because they are two things.** The *semantic*
-layer is `annotation_boundary.py`'s unbuilt person/date/kinship apparatus; the
+layer is spec 11's person/date/kinship apparatus, which no code produces; the
 *transcription* layer is the Archetypus's own `uncertain`/`illegible` marks. Every row
 used to carry `annotations: []` with `annotation_status: not-produced` — true of the
 first, written over an act whose record had sealed a real mark of the second. The row
@@ -342,23 +342,11 @@ this stage's own tests. So, when selected, every real run's salvage member is pr
 but the manifest says `not-produced-no-sealed-salvage-inventory`, rather than claiming
 a measured zero.
 
-The *semantic* annotation boundary in `annotation_boundary.py` — a different layer
-from the transcription annotations above, and the reason neither of them keeps the
-bare word — is not wired into this
-stage, configuration, or orchestrator, and is built only as the contract a future
-`annotator` chair would occupy — spec 11 gates the build itself on the project
-lead approving the ARCHITECTURE wording that gives the layer its home. It carries the five fields
-spec 11 names (`act_type`, `date` with a normalized form, `person` spans with roles,
-`kinship` edges, flags), whose semantic values are drawn from closed vocabularies fixed
-in that file. Record and producer identifiers remain strings, but no writer maps them
-into established text. Every annotation must anchor to a real span of the established
-text, and one that does not is refused at the schema.
-
-**What that refusal cannot yet do is be *recorded*.** Spec 11 test 7 asks for a
-hallucinated person to be "refused at the schema and recorded"; the recording half
-belongs in the terminal ledger's `refused-with-reason` set, and the ledger has no
-annotation unit type because nothing in this repository produces an annotation to
-account for. The refusal exists and is tested; the accounting for it does not.
+The *semantic* annotation layer — a different layer from the transcription
+annotations above, and the reason neither of them keeps the bare word — has no code
+in this repository. Spec 11 gates its build on the project lead approving the
+ARCHITECTURE wording that gives the layer its home; until then every export states
+`claims.semantic_annotations` as not produced.
 
 ## Boundary checks
 
