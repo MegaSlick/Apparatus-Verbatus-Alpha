@@ -2113,46 +2113,26 @@ def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> N
     )
 
 
-def _padding_config_digest(path: str) -> str:
-    """The Designator padding policy's digest.
-
-    The Designator rechecks it at point of use, so a real run that never sealed
-    it would refuse there.
-    """
+def _config_digest(path: str | Path, label: str) -> str:
     try:
         return digest_bytes(Path(path).read_bytes())
     except OSError as error:
         raise ContractError(
-            f"the Designator padding configuration binding at {path} could not be read"
+            f"the {label} configuration binding at {path} could not be read"
         ) from error
+
+
+def _padding_config_digest(path: str) -> str:
+    return _config_digest(path, "Designator padding")
 
 
 def _geometry_config_digest(path: str) -> str:
-    """The Designator geometry policy's digest.
-
-    The Designator rechecks it at point of use, so a real run that never sealed
-    it would refuse there.
-    """
-    try:
-        return digest_bytes(Path(path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            f"the Designator geometry configuration binding at {path} could not be read"
-        ) from error
+    return _config_digest(path, "Designator geometry")
 
 
 def _grouping_config_digest(path: str) -> str:
-    """The Designator grouping thresholds' digest.
-
-    The Designator rechecks it at point of use, as with geometry. Hashed here and
-    parsed there, because a stage may not import another stage's module.
-    """
-    try:
-        return digest_bytes(Path(path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            f"the Designator grouping configuration binding at {path} could not be read"
-        ) from error
+    """Hashed here and parsed by the Designator, because a stage may not import another's module."""
+    return _config_digest(path, "Designator grouping")
 
 
 def _real_bindings(
@@ -2194,22 +2174,8 @@ def _real_bindings(
     approval.
     """
     validate_witness_adapter_bindings(models)
-    # Bound as on the fixture path, so a changed serving catalogue changes
-    # `config_digest` (principle 6).
-    try:
-        serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            "the serving recipes configuration binding at "
-            f"{serving_recipes_config_path} could not be read"
-        ) from error
-    try:
-        pod_placement_config_digest = digest_bytes(Path(pod_placement_config_path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            "the pod placement configuration binding at "
-            f"{pod_placement_config_path} could not be read"
-        ) from error
+    serving_recipes_config_digest = _config_digest(serving_recipes_config_path, "serving recipes")
+    pod_placement_config_digest = _config_digest(pod_placement_config_path, "pod placement")
     witness_context_declaration_sha256 = validate_witness_context_bindings(
         models,
         witness_context=witness_context,
@@ -2227,34 +2193,15 @@ def _real_bindings(
     corpus_frame_policy, corpus_frame_config_sha256 = load_corpus_frame_policy(
         corpus_frame_config_path
     )
-    # One read feeds both digests (two reads can straddle a rewrite), and an
-    # unreadable file is a named refusal.
-    try:
-        perlector_protocol_config_sha256 = digest_bytes(
-            Path(perlector_protocol_config_path).read_bytes()
-        )
-    except OSError as error:
-        raise ContractError(
-            "the Perlector protocol configuration binding at "
-            f"{perlector_protocol_config_path} could not be read"
-        ) from error
-    # Likewise for the audit policy.
-    try:
-        perlector_audit_config_sha256 = digest_bytes(Path(perlector_audit_config_path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            "the Perlector audit configuration binding at "
-            f"{perlector_audit_config_path} could not be read"
-        ) from error
+    perlector_protocol_config_sha256 = _config_digest(
+        perlector_protocol_config_path, "Perlector protocol"
+    )
+    perlector_audit_config_sha256 = _config_digest(perlector_audit_config_path, "Perlector audit")
     # The shared default that `require_triage_modes` also reads; a second
     # spelling could drift and refuse every triage run as "changed".
-    triage_modes_config_path = Path(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
-    try:
-        triage_modes_config_sha256 = digest_bytes(triage_modes_config_path.read_bytes())
-    except OSError as error:
-        raise ContractError(
-            f"the triage modes configuration binding at {triage_modes_config_path} could not be read"
-        ) from error
+    triage_modes_config_sha256 = _config_digest(
+        Path(DEFAULT_TRIAGE_MODES_CONFIG_PATH), "triage modes"
+    )
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
