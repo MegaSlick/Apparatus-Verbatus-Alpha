@@ -744,8 +744,6 @@ def expand_sources(
                 # never handed a reopenable pathname.
                 detected = None
             if detected != "pdf":
-                # Rasters are read into memory under the size bound; only PDFs
-                # are streamed.
                 if declared_size is not None and declared_size > MAX_SOURCE_BYTES:
                     append_declared_pages(detected)
                     continue
@@ -833,8 +831,7 @@ def expand_sources(
                     "frame may be selected; submit every cluster member in the same shard and retry"
                 )
     # Rows for frames outside this submission are expected: the manifest is
-    # corpus-scoped and a submission is one shard. A submitted frame without a
-    # row is refused above.
+    # corpus-scoped and a submission is one shard.
     return sources
 
 
@@ -996,7 +993,6 @@ def process_sources(
                     # not a page refusal.
                     raise ContractError(str(error)) from error
         finally:
-            # The stream closes after the document, even if that close failed.
             if context_stack is not None:
                 context_stack.close()
 
@@ -1775,7 +1771,6 @@ def real_submission(args, registry) -> int:
     manifest_path = gate.require_approved_storage_location(
         Path(args.submission_manifest), roots, "submission filename ledger"
     )
-    # The halted-run cap, now that the resolved root is approved.
     _refuse_halted_run_root(run_root, args)
     _refuse_inside_submission(run_root, submission_folder, "run root")
     _refuse_inside_submission(manifest_path, submission_folder, "submission filename ledger")
@@ -1889,7 +1884,6 @@ def real_submission(args, registry) -> int:
         triage_rows=triage_rows,
         triage_clusters=triage_clusters,
     )
-    # Real ingress binds the same bounded shard policy before its RunTree exists.
     require_corpus_frame_shard(len(sources), bindings["sealed_config_digests"])
     tree = _create_run(
         args,
@@ -1913,8 +1907,7 @@ def real_submission(args, registry) -> int:
     )
     context = _door_context(tree, None, REAL_SCENARIO, args, registry, bindings)
     context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
-    # Bind the data-handling policy that decided where this material may live,
-    # so a reader can tell which policy admitted the corpus.
+    # So a reader can tell which data-handling policy admitted the corpus.
     context.require_sealed_config("data-handling", data_policy_binding.config_sha256)
     admitted = process_sources(
         context,
