@@ -8,10 +8,10 @@ auto-split or global deskew to straighten both surfaces with, and a bound
 spread's two pages each want their own crop besides.
 
 ``region`` is a half-open rectangle in source-frame pixel coordinates; after
-cutting it, ``crop_box`` is half-open in that part's local pixel coordinates,
-then rotated clockwise about its centre onto an expanded canvas. Pixel
-sampling, fill and encoding belong to Unit 7's sealed apply recipe, not to
-geometry defaults hidden here.
+cutting it, ``crop_box`` is half-open in that part's local pixel coordinates.
+The cropped pixels are then rotated clockwise about the crop's centre onto an
+expanded canvas. Pixel sampling, fill and encoding belong to Unit 7's sealed
+apply recipe, not to geometry defaults hidden here.
 """
 
 from __future__ import annotations

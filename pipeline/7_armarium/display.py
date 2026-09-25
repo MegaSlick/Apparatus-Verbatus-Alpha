@@ -9,10 +9,12 @@ XML, because the near-term readers are a text file and a terminal; literal
 marker glyphs are escaped before rendering so a text already containing them
 still round-trips byte-identical through `strip_display`.
 
-No writer feeds the canonical uncertainty layer (carried since R8) to
-`render_display` yet -- marking spans in a displayed reading would exercise
-the convention spec 11 still reserves -- so every real rendering today carries
-no generated span markers, and `EXPORT_MANIFEST.json` says so via
+The Archetypus record carries a canonical uncertainty layer, but no writer
+feeds it to `render_display` yet -- marking spans in a displayed reading
+would exercise the convention spec 11 still reserves -- so every real
+rendering today carries no generated span markers, and the render -> strip
+round trip is exercised only on hand-built spans from this module's tests.
+`EXPORT_MANIFEST.json` says so via
 `claims.display.renders_canonical_uncertainty`.
 """
 

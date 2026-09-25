@@ -137,9 +137,9 @@ def artifact_finding(finding: dict) -> dict:
     recorded = dict(finding)
     recorded.pop("background", None)
     # Defaulted rather than indexed: a measure that stops emitting the key at
-    # all is a worse contract break than one emitting a string, and it was the
-    # one getting the worse report -- a bare KeyError where the string got a
-    # named refusal. Both arrive here as the same statement now.
+    # all is a worse contract break than one emitting a string, so both cases
+    # arrive here as the same named refusal below rather than one raising a
+    # bare KeyError.
     fraction = recorded.pop("fraction_outside", None)
     if not isinstance(fraction, float):
         raise FatalAccounting(
@@ -162,7 +162,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # maps every sealed page the same way either way -- so nothing else here
     # would catch that gap. Re-parse for the refusal effect alone: a run whose
     # ingress evidence is not a closed fixture-or-real record must still stop
-    # here, as it did before both routes shared one constructor.
+    # here.
     parse_ingress_record(context.run.get("ingress"))
     # The same file the Designator loads and the same digest the run sealed at
     # binding time. Read once for the whole run: the policy is per-page only in

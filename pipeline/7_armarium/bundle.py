@@ -12,11 +12,12 @@ path here by which a second version of an established reading could reach a
 deliverable.
 
 **Publish is all-or-nothing, and an existing destination is refused rather
-than merged into,** by the reserve/stage/rename-into-place pattern adapted
-from `local/export_clean_workspaces.py::_atomic_target` (principle 12): the
-failure it prevents is a destination holding halves of two different
-publications, indistinguishable later from a complete one. `os.replace`
-replaces the window's `rename` as the same atomic operation.
+than merged into.** The reserve/stage/rename-into-place pattern was read at
+`local/export_clean_workspaces.py::_atomic_target` and is reasoned rather
+than carried here (principle 12): the failure it prevents is a destination
+holding halves of two different publications, indistinguishable later from a
+complete one. `os.replace` is used instead of that file's `rename` because it
+is the same atomic operation.
 
     python pipeline/7_armarium/bundle.py --run-root <dir> --run-id <id> --out <dest>
 

@@ -6,12 +6,13 @@ one name at a time (principle 5: one established text, projected identically);
 `_REGION_FIELDS` closes the same way because a region is embedded whole and
 travels into the export whole.
 
-**The three silences must never collapse into each other.** `no_readable_text`
-is a positive finding carrying its own evidence: ink present and unread by a
-human, and ink the machine could not see, are indistinguishable from inside
-the pipeline and both are gaps inside `partial` -- fine on their own, but never
-reported as the first. A blank page is ordinary material either way, so the
-refusals here are about the confusion, never about blankness.
+**Three silences, never collapsed into each other: `no_readable_text`** — a
+positive finding carrying its own evidence; **ink present and unread by a
+human**; and **ink the machine could not see**. The last two are
+indistinguishable from inside the pipeline and both are gaps inside `partial`
+-- fine on their own, but never reported as the first. A blank page is
+ordinary material either way, so the refusals here are about the confusion,
+never about blankness.
 
 **A witness variant is evidence beside a gap, never a substitute inside `text`.**
 
@@ -705,10 +706,9 @@ def accepted_primed_perlectio(
         )
     # Unconditional: `lectio_kind` is already proved to be `primed-with-prior`
     # above, and nothing below it reassigns the name. Guarding these checks on
-    # the value again read as though some other kind reached them, which would
-    # have made the whole prior-draft chain look optional at the one stage that
-    # reads a Perlectio back off disk -- the shape F-O2 had already had to
-    # repair once for the act-attachment view.
+    # the value again would read as though some other kind reached them, which
+    # would make the whole prior-draft chain look optional at the one stage
+    # that reads a Perlectio back off disk.
     prior_draft = claimed_prior_draft
     prior_reference = prior_draft.get("reference") if isinstance(prior_draft, dict) else None
     if not _is_ref_shaped(prior_reference):
@@ -799,7 +799,8 @@ def validate_record_fields(record: dict) -> None:
 
     Refuses any field the record is not defined to carry, and any absence of
     one it is, so a second text-bearing field cannot be reintroduced one name
-    at a time.
+    at a time. The dead shape this guards against is `kind="archetypus"` in
+    CONTRACT.md.
     """
     unexpected = sorted(set(record) - _RECORD_FIELDS)
     missing = sorted(_RECORD_FIELDS - set(record))
@@ -1472,7 +1473,7 @@ def _validate_region_fields(region, label: str) -> None:
     is the field-set closure for that sub-object, the shape that stopped
     `consolidated_literal` at construction (`_crop_references`) and now also
     stops it surviving a reseal past `validate_record`, the function every later
-    stage-local read and `CONTRACT.md` both rely on.
+    stage-local read and CONTRACT.md's `kind="archetypus"` section both rely on.
     """
     if not isinstance(region, dict):
         raise SchemaRefusal(f"{label} is not an object")

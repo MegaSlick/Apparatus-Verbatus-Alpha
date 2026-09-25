@@ -279,9 +279,9 @@ def mark_uncertainty_overlap(span: TextSpan, uncertainty_spans: tuple[TextSpan, 
     learning anything new. It is the only sanctioned way to set
     `Annotation.overlaps_uncertainty`. Called on every anchoring check today, always
     against an empty span sequence -- not because there is nothing to inherit from
-    (since R8 the Archetypus record carries a canonical uncertainty layer) but
-    because no annotation is produced yet, so no caller has an annotation whose
-    overlap could be marked.
+    (the Archetypus record carries a canonical uncertainty layer) but because
+    no annotation is produced yet, so no caller has an annotation whose overlap
+    could be marked.
     """
     return any(
         uncertain.start < span.end and span.start < uncertain.end for uncertain in uncertainty_spans

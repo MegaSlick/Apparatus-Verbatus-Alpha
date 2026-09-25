@@ -15,9 +15,11 @@ Unicode:
 
 * ``ȣ``/``Ȣ`` (U+0223/U+0222, the Algonquian/Iroquoian "8" digraph) fold to
   the ASCII digit ``8`` because that is how this corpus already spells the
-  digraph, so a model emitting the real ligature keys the same as the
+  digraph -- 400 of 400 Oka seed names use the literal ``8``, none the
+  Unicode glyph -- so a model emitting the real ligature keys the same as the
   ``8``-spelled form. The digit itself is never stripped: it is what
-  distinguishes an indigenous name token from an ordinary French one.
+  distinguishes an indigenous name token from an ordinary French one. Nothing
+  may add ``8`` to a strip set.
 * ``œ``/``Œ`` and ``æ``/``Æ`` have no NFD decomposition at all, so an accent
   fold alone would leave them standing; expanding them is what makes
   "sœur"/"soeur" collide as a search expects.
