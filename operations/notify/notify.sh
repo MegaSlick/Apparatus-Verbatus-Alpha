@@ -14,8 +14,6 @@ event=$1
 shift
 message=$*
 
-# No `waiting` field any more. It marked `start` and `milestone` as events whose
-# failure was reported as success, and every event now reports failure honestly.
 case $event in
   start) title="Session started"; priority=2; tag=computer ;;
   milestone) title="Milestone"; priority=3; tag=white_check_mark ;;
@@ -38,18 +36,9 @@ if [ -z "$topic" ] && [ -f "$conf" ] && [ -r "$conf" ]; then
   topic=$(sed -n 's/^NTFY_TOPIC=//p' "$conf" | tail -n 1 | tr -d "\"'")
 fi
 
-# Every event exits non-zero when delivery failed, including `start` and
-# `milestone`. Two reviewers found those two returning 0 after printing NOT
-# DELIVERED, so a caller checking the status was told the phone had it. A milestone
-# is often the only announcement of a long unattended result, which makes it the
-# worst one to lie about.
-#
-# It used to exit 0 for those two deliberately, so that a session could not die
-# because a ping did not land. That reason no longer needs the exit code: the
-# `SessionStart` hook in `.claude/settings.json` declares `"async": true`, so it
-# runs detached and cannot block or fail the session whatever it returns. Keeping a
-# caller non-blocking is the caller's job; misreporting delivery to buy it was
-# paying in the one currency this script exists to protect.
+# Every event exits non-zero on failed delivery: a milestone is often the only
+# announcement of an unattended result. The SessionStart hook runs async, so a
+# failed ping still cannot block a session.
 fail() {
   echo "notify: NOT DELIVERED ($event) — $1" >&2
   exit 1
@@ -66,86 +55,27 @@ if [ "${NTFY_SERVER+x}" = x ]; then
   exit 2
 fi
 
-# One reserved topic value means "a test harness is driving this; do not send."
-#
-# The seam every caller is supposed to use is an injected runner, and on the
-# night this was added three tests were not using it: they drove `pod` with
-# `--notify` against a fake provider, stubbed the launch hook and left the
-# balance hook real, and posted nine identical milestones to his phone. That
-# was invisible for as long as it was, because every earlier gate ran in a
-# worktree with no `private/ntfy.conf` — the script failed "no topic
-# configured" and the missing seam looked like a passing test. The gate that
-# finally ran in the checkout that *does* hold the topic sent them.
-#
-# So the harness stops relying on every caller getting its seam right: the root
-# `conftest.py` exports this value for the whole session and `.githooks/
-# check-all.sh` exports it for its pytest line. A test that reaches this script
-# anyway is reported here, loudly, on stderr, and no post is made.
-#
-# Deliberately *not* a failure. Exiting non-zero would make the guard change
-# what the suites measure — several tests assert on delivered/NOT DELIVERED
-# outcomes — and a guard that rewrites its subject's results is the shape
-# principle 8 refuses. It exits 0 and says what it swallowed, so the
-# behaviour under test is unchanged and the leak is still visible to anyone
-# reading stderr.
-#
-# The value is a literal, not a pattern: a prefix or suffix rule would make a
-# mistyped real topic silently stop notifying the project lead.
-#
-# Exit 0 alone was a second lie in the place built to stop the first one. Every
-# Python bridge over this script (`operations/pod/notify_bridge.py`,
-# `operations/pod/notify_hooks.py`, `operations/operator/notify_bridge.py`) maps
-# exit 0 to `delivered=True`, so the record printed under the sink read "Phone
-# notification: sent." for a notification that never left the machine. The exit
-# code stays 0 -- suites assert on delivered versus NOT DELIVERED outcomes, and a
-# guard must not change what its subject measures -- so the distinction is
-# carried on stdout instead, where nothing else in this script ever writes: one
-# stable line, `NOTIFY_SUPPRESSED <topic>`, which each bridge maps to an explicit
-# suppressed outcome. The human reason still goes to stderr, unchanged.
-#
-# The topic is safe to print here and nowhere else in this script: control only
-# reaches this line when it is exactly the reserved public constant, never the
-# bearer secret.
+# The reserved test-sink topic (exported by conftest.py and check-all.sh) never posts.
+# Exit 0 keeps the suites' delivered/NOT DELIVERED outcomes unchanged; the bridges
+# map exit 0 to delivered, so the stdout line NOTIFY_SUPPRESSED marks it.
+# A literal, not a pattern, so a mistyped real topic never silently stops notifying.
+# Safe to print here and nowhere else in this script: only the public constant gets here.
 if [ "$topic" = "verbatus-test-sink" ]; then
   printf 'NOTIFY_SUPPRESSED %s\n' "$topic"
   echo "notify: test sink — not sent ($event): $message" >&2
   exit 0
 fi
 
-# `start` fires from a hook, not a hand. The desktop app can open several
-# sessions in one launch — each fires the hook, and four pings for one sitting
-# is noise, which is what makes the next one get ignored. One start per quarter
-# hour is a heartbeat. Deliberate events (milestone, decision, done) are never
-# suppressed: a rate limit on those could swallow a real result, and a decision
-# ping nobody hears is a session waiting on a message that was never sent.
+# `start` fires from a hook, once per session the app opens: at most one per 15
+# minutes. Deliberate events are never rate-limited; that could swallow a result.
 stamp="$root/private/.notify-start-stamp"
 suppress_window_s=900
 
-# The stamp is evidence that a ping was delivered, so it is checked like
-# evidence rather than trusted because something exists at the path.
-#
-# `find "$stamp" -mmin -15` asked one question — is there anything here that
-# was touched recently — and four different objects answered yes. A directory
-# left by a crashed run, a FIFO, a symlink aimed at some file the machine
-# rewrites every minute, or a stamp dated in the future (a negative age is
-# still "less than fifteen minutes", and a clock skew or a stray `touch -t`
-# suppresses every start for as long as the date says) each silenced a real
-# notification and printed nothing.
-#
-# So: a regular file, not a symlink, holding the epoch second it was written.
-# Unlike the config above, there is no legitimate reason to symlink a
-# suppression stamp anywhere, and here the file is also WRITTEN — a link would
-# redirect that write outside `private/`. Both reasons point the same way, so
-# this path refuses links where the config accepts them.
-#
-# Every refusal below returns "not fresh", which sends the ping. That is the
-# safe direction: the cost of being wrong is one duplicate notification, and
-# the cost of the other direction is a session start nobody hears about. The
-# stamp records a clock reading and nothing else — the topic never enters it.
-# Two properties are being asserted, and both paths assert both: the path is a
-# plain regular file we own, and its contents are a plausible past clock reading.
-# Each was written out twice, in two spellings, so a hardening applied to the
-# read side and not the write side would have been invisible. One statement each.
+# The stamp is evidence of delivery: trust only a regular file holding a past epoch
+# second. Unlike the config, it is also written, so a symlink would redirect the write
+# out of private/. It records a clock reading only; the topic never enters it.
+# `find -mmin` once accepted directories, FIFOs, symlinks and future dates. Every
+# refusal sends the ping: a duplicate is cheaper than a start nobody hears about.
 stamp_is_plain_file() {
   if [ -L "$stamp" ]; then
     echo "notify: the start stamp is a symlink; not trusting it" >&2
@@ -173,17 +103,12 @@ start_was_delivered_recently() {
     echo "notify: cannot read the clock; not suppressing the start ping" >&2
     return 1
   }
-  # `read` rather than `head`: no subprocess, and the guards above have already
-  # established this is a regular file, so it cannot block the way a FIFO would.
-  # It returns non-zero on a last line with no trailing newline *having already
-  # assigned it*, so the default is set beforehand rather than in an `||` that
-  # would throw away a perfectly good stamp.
+  # Safe from FIFO blocking: a regular file is established above. `read` fails on
+  # a final line without newline after assigning it, so the default goes first.
   stamped=""
   read -r stamped < "$stamp" 2>/dev/null || true
   case $stamped in
     ""|*[!0-9]*)
-      # Includes every stamp written by the older `touch`-based version, which
-      # left the file empty. One extra ping per machine, once.
       echo "notify: the start stamp carries no readable timestamp; not suppressing" >&2
       return 1 ;;
   esac
@@ -196,9 +121,7 @@ start_was_delivered_recently() {
   [ "$stamp_age" -lt "$suppress_window_s" ]
 }
 
-# Write the stamp only where reading it would have been trusted — in the
-# direction that matters more, since a redirected write leaves the topic's
-# neighbourhood entirely. A stamp that cannot be written is reported and never
+# Write only where a read would be trusted. An unwritable stamp is reported, never
 # fatal: the ping already went.
 record_start_delivery() {
   unwritable="notify: could not record its suppression stamp; duplicates may follow"
@@ -208,17 +131,12 @@ record_start_delivery() {
 }
 
 if [ "$event" = start ] && start_was_delivered_recently; then
-  # "delivered", not "attempted": the stamp is written only inside the success
-  # branch below, so a failed post never sets it. Saying "attempted" would leave
-  # a reader unable to tell this suppression from a swallowed failure.
+  # The stamp is written only after a successful post, so this is never a swallowed failure.
   echo "notify: a start ping was already delivered in the last $((suppress_window_s / 60)) minutes — suppressed" >&2
   exit 0
 fi
 
-# F109: prefer this checkout's own frozen interpreter over whatever `python3`
-# PATH happens to resolve to. A pod image, a minimal Linux install, or a Mac
-# whose only `python3` is the Command Line Tools stub can all lack one; the
-# checkout's `.venv` is the one interpreter this build actually depends on.
+# Prefer the checkout's .venv: a PATH `python3` may be missing or a Command Line Tools stub.
 python_bin=python3
 if [ -x "$root/.venv/bin/python" ]; then
   python_bin="$root/.venv/bin/python"
@@ -245,20 +163,12 @@ if code=$(printf '%s' "$payload" | curl -q -sS --max-time 10 \
   -H "Content-Type: application/json" --data-binary @- https://ntfy.sh/ 2>/dev/null) &&
   case $code in 2??) true ;; *) false ;; esac
 then
-  # Stamp only a *delivered* start, so a failed post never suppresses the retry.
-  # Two sessions racing the check can each send one ping; the failure mode of
-  # that race is a duplicate, never a loss.
+  # Two racing sessions may each ping: a duplicate, never a loss.
   if [ "$event" = start ]; then
     record_start_delivery
   fi
-  # This script used to print nothing on success, so a
-  # session reading silence after a stalled earlier command could not tell
-  # "delivered" from "hung" and sent the same ping twice. One line on stderr
-  # closes that: silence is never again evidence of anything. Stdout is
-  # untouched -- the bridges key on the exit code and on `NOTIFY_SUPPRESSED`
-  # there, and this line never reaches that stream. Best-effort under
-  # `set -e`: a closed stderr must not turn an accepted post into a failure
-  # the caller would resend -- the delivery already happened.
+  # Silence must never read as delivered (a stalled session once resent pings).
+  # stderr only: stdout is the bridges'. A closed stderr must not fail a delivered post.
   echo "notify: delivered ($event)" >&2 || true
   exit 0
 fi

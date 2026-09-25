@@ -13,15 +13,9 @@ HOOKS = Path(__file__).resolve().parent
 SCANNER = HOOKS / "check_ingress.py"
 ONE_MIB = 1_048_576
 pytestmark = pytest.mark.full
-# `-m "not full"` is what the everyday gate runs, and a module-level `full`
-# deselected all 45 of these — so the fast gate ran the credential scanner on
-# every commit while never once testing it. Edit the scanner, run the fast gate,
-# see green. The cases carrying `scanner` below are the ones the everyday gate
-# must prove: that each declared shape is still caught, that no shape has lost
-# its sample, that this project's own topic is a secret, that ordinary prose is
-# not, and that it is the staged bytes being read. The rest stay `full` because
-# they exercise git plumbing rather than detection, and an everyday gate nobody
-# waits for is an everyday gate nobody runs.
+# The everyday gate runs `-m "not full or scanner"`: `scanner` marks the detection cases
+# it must prove (every shape caught and sampled, our own topic a secret, prose clean,
+# staged bytes read); the git-plumbing cases stay `full`.
 SCANNER_CORE = pytest.mark.scanner
 
 
@@ -29,9 +23,7 @@ def scanner_module():
     """Import the scanner by path; `.githooks` is not an importable package."""
     spec = importlib.util.spec_from_file_location("check_ingress", SCANNER)
     module = importlib.util.module_from_spec(spec)
-    # Registered before execution: the scanner's dataclasses resolve their
-    # string annotations through sys.modules under `from __future__ import
-    # annotations`, and fail with an unhelpful AttributeError without it.
+    # Registered first: the dataclasses resolve string annotations through sys.modules.
     sys.modules["check_ingress"] = module
     spec.loader.exec_module(module)
     return module
@@ -331,12 +323,7 @@ def test_secret_in_commit_message_is_blocked_locally_and_in_history(repo, tmp_pa
 
 
 def test_an_empty_mode_value_is_refused_with_a_verdict_not_a_traceback(repo):
-    """`--message-file ""` satisfies argparse but is falsy.
-
-    Truthiness dispatch used to drop it through to scan_history(None), which
-    died on a TypeError outside the caught pair — an exit with a traceback
-    instead of a reasoned refusal. Both spellings must land on exit 2.
-    """
+    """`--message-file ""` satisfies argparse but is falsy: exit 2, never a traceback."""
     for flags in (("--message-file", ""), ("--ref-object", "")):
         result = run_scan(repo, *flags)
         assert result.returncode == 2, result.stderr
@@ -345,12 +332,7 @@ def test_an_empty_mode_value_is_refused_with_a_verdict_not_a_traceback(repo):
 
 
 def test_secret_in_an_author_or_committer_identity_is_blocked_in_history(repo):
-    """A review found history mode reading `--format=%B` and nothing else.
-
-    `commit-msg` does scan the author and committer identities, but only in a clone
-    where the hooks were installed. This scan is the one that is supposed to catch
-    what a missing hook let through, so it has to read the whole commit object.
-    """
+    """History reads the whole commit object: it catches what a missing hook let through."""
     secret = runpod_secret()
     write(repo, "safe.txt", "safe\n")
     stage(repo, "safe.txt")
@@ -552,10 +534,7 @@ def test_history_scan_refuses_an_incomplete_clone(repo, tmp_path):
 
 @SCANNER_CORE
 def test_ntfy_topic_is_a_secret_in_both_leak_shapes(repo):
-    # The topic name IS the whole credential — read and forge. The old
-    # repository leaked it as pasted command lines, so both the assignment
-    # form and the URL form are refused. Built discontinuously so this test
-    # file does not itself contain a scannable topic.
+    # Built discontinuously so this file holds no scannable topic.
     topic = "verbatus-" + "a7b9c2d4e6"
     assignment = "NTFY_" + 'TOPIC = "' + topic + '"\n'
     write(repo, "notes.py", assignment)
@@ -570,9 +549,7 @@ def test_ntfy_topic_is_a_secret_in_both_leak_shapes(repo):
 
 @SCANNER_CORE
 def test_ntfy_topic_url_is_refused_regardless_of_host_case_or_topic_length(repo):
-    # The host is matched case-insensitively and a topic of any length is
-    # topic-shaped: a one-character topic is a working credential too. Built
-    # discontinuously so this file holds no scannable topic.
+    # A one-character topic is a working credential too.
     upper_host = "# see https://NTFY" + ".SH/" + "some-rotated-topic" + "\n"
     write(repo, "notes.py", upper_host)
     stage(repo, "notes.py")
@@ -583,15 +560,13 @@ def test_ntfy_topic_url_is_refused_regardless_of_host_case_or_topic_length(repo)
     stage(repo, "notes.py")
     assert run_scan(repo, "--staged").returncode == 1
 
-    # A documentation path name extended by a topic character is a topic, not
-    # documentation: the exemption must end with the topic character set.
+    # The docs exemption ends with the topic character set.
     docs_prefixed = "# see https://ntfy" + ".sh/" + "docs-secret" + "\n"
     write(repo, "notes.py", docs_prefixed)
     stage(repo, "notes.py")
     assert run_scan(repo, "--staged").returncode == 1
 
-    # The assignment form refuses a one-character topic too; the two rules
-    # share the topic-length truth.
+    # The assignment form shares the topic-length rule.
     short_assignment = "NTFY_" + 'TOPIC = "q"\n'
     write(repo, "notes.py", short_assignment)
     stage(repo, "notes.py")
@@ -615,9 +590,7 @@ def test_the_exemption_is_case_sensitive_and_the_host_boundary_is_real(repo):
 
 @SCANNER_CORE
 def test_a_sixty_five_character_run_is_not_a_topic_in_either_shape(repo):
-    # ntfy's topic limit is 64 characters: a longer run cannot be a working
-    # topic, and refusing its first 64 characters would be the over-refusal
-    # that pressures a bypass. The 64-character run stays refused.
+    # Past ntfy's 64-character limit a run is no topic; refusing its prefix would over-refuse.
     run_64 = "x" * 64
     run_65 = "x" * 65
 
@@ -653,8 +626,7 @@ def test_ntfy_docs_and_explicit_angle_bracket_placeholder_stay_committable(repo)
 def test_ntfy_exact_assignment_does_not_exempt_delimited_placeholder_words(repo):
     topic = "verbatus_" + "TEST_" + "topicvalue"
     assignment = "NTFY_" + f'TOPIC = "{topic}"\n'
-    # Even the path containing the two fingerprint-bound historical fixtures
-    # receives no blanket exemption for placeholder-looking topics.
+    # No placeholder-looking topic is exempt, even at this path.
     path = "operations/notify/test_notify.py"
     write(repo, path, assignment)
     stage(repo, path)
@@ -665,10 +637,7 @@ def test_ntfy_exact_assignment_does_not_exempt_delimited_placeholder_words(repo)
 
 @pytest.mark.parametrize("mode", ["--file", "--message-file"])
 def test_a_fifo_at_a_scanned_path_fails_closed_instead_of_hanging(repo, mode):
-    # Opening a FIFO with no writer blocks forever. This scanner runs from
-    # pre-commit and from CI, so a hang is a session or a build that never
-    # finishes and never says why. The subprocess timeout below is the test:
-    # before the fix it expires, which is the defect.
+    # A FIFO with no writer blocks a plain open forever; the subprocess timeout is the test.
     fifo = repo / "pipe"
     os.mkfifo(fifo)
     result = run_scan(repo, mode, str(fifo))
@@ -678,8 +647,7 @@ def test_a_fifo_at_a_scanned_path_fails_closed_instead_of_hanging(repo, mode):
 
 
 def test_a_symlink_to_a_fifo_is_judged_by_the_open_descriptor(repo):
-    # The type must be decided from the descriptor actually opened, not from
-    # the name; that is the same check that closes the swap race (L23).
+    # Judged from the opened descriptor, not the name: that also closes the swap race.
     fifo = repo / "pipe"
     os.mkfifo(fifo)
     link = repo / "link"
@@ -690,19 +658,15 @@ def test_a_symlink_to_a_fifo_is_judged_by_the_open_descriptor(repo):
 
 
 def test_a_character_device_is_refused_even_though_it_reads_cleanly(repo):
-    # /dev/null returns EOF at once, so "the read succeeded" is not evidence
-    # that a regular file was scanned. Fail closed on anything but S_ISREG.
+    # /dev/null reads EOF at once: a successful read is no evidence a regular file was scanned.
     result = run_scan(repo, "--file", "/dev/null")
     assert result.returncode == 2
     assert "not a regular file" in result.stderr
 
 
 def test_worktree_scan_reports_unscannable_entries_instead_of_skipping_them(repo):
-    # principle 2: a partial result is visibly partial. A tracked file
-    # replaced on disk by a FIFO used to fall through every branch of the
-    # worktree walk, and the run still reported passed. Git omits untracked
-    # non-regular files from `ls-files --others`, so a tracked path is the
-    # only way one reaches the scanner at all.
+    # A partial scan must be visibly partial. Git omits untracked non-regular files from
+    # `ls-files --others`, so only a tracked path can bring a FIFO to the scanner.
     write(repo, "payload.txt", "safe\n")
     stage(repo, "payload.txt")
     commit(repo, "add payload")
@@ -714,9 +678,8 @@ def test_worktree_scan_reports_unscannable_entries_instead_of_skipping_them(repo
     assert "fifo" in result.stderr
 
 
-# One realistic sample per declared pattern. Every value is built
-# discontinuously so this test file never contains a scannable credential:
-# the scanner reads its own repository and must pass on this file.
+# One realistic sample per declared pattern, built discontinuously: the scanner reads
+# its own repository and must pass on this file.
 PROVIDER_SAMPLES = (
     ("private-key", "-----BEGIN " + "RSA PRIVATE KEY-----"),
     ("runpod-api-key", "rpa_" + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r"),
@@ -775,9 +738,7 @@ def test_each_declared_credential_shape_is_blocked_by_its_own_rule(repo, rule, s
 
 @SCANNER_CORE
 def test_every_declared_pattern_has_a_regression_sample():
-    # Without this, deleting or corrupting a rule stays green: L39. It is the
-    # compiled pattern that must be covered, not merely the rule name, because
-    # several names carry more than one pattern.
+    # Every compiled pattern needs a sample: several rule names carry more than one.
     module = scanner_module()
     samples = [secret.encode() for _, secret in PROVIDER_SAMPLES]
     uncovered = [
@@ -804,8 +765,6 @@ def test_every_declared_pattern_has_a_regression_sample():
     ],
 )
 def test_vendor_prefixed_credential_names_are_not_defeated_by_the_word_boundary(repo, key):
-    # L20: the generic assignment rule anchored on \b, which a vendor prefix
-    # joined by _ - or . defeats outright -- the commonest real spelling.
     secret = generic_secret()
     write(repo, "settings.txt", f"{key} = " + f'"{secret}"\n')
     stage(repo, "settings.txt")
@@ -826,8 +785,7 @@ def test_vendor_prefixed_credential_names_are_not_defeated_by_the_word_boundary(
 )
 @SCANNER_CORE
 def test_ordinary_prose_and_short_values_are_not_credential_findings(repo, line):
-    # The loosened key grammar must not start refusing ordinary text; an
-    # over-refusing scanner is the mechanism by which the guard gets bypassed.
+    # An over-refusing scanner is how the guard gets bypassed.
     write(repo, "notes.md", line)
     stage(repo, "notes.md")
     result = run_scan(repo, "--staged")
@@ -835,8 +793,6 @@ def test_ordinary_prose_and_short_values_are_not_credential_findings(repo, line)
 
 
 def test_findings_past_the_hundredth_can_be_retrieved(repo):
-    # L25. The report truncated at 100 and printed a remainder count with no
-    # way to see the rest, which is a dead end for whoever has 150 of them.
     secrets = ["rpa_" + f"{index:024d}" for index in range(150)]
     write(repo, "dump.txt", "".join(f"line {index}: {s}\n" for index, s in enumerate(secrets)))
     stage(repo, "dump.txt")
@@ -859,14 +815,8 @@ def test_findings_past_the_hundredth_can_be_retrieved(repo):
 
 
 def test_worktree_does_not_read_a_file_it_will_refuse_on_size_alone(repo, monkeypatch):
-    # L24. The worktree walk read every file whole and consulted the size
-    # limit afterwards, so the one file too big to accept was exactly the file
-    # pulled into memory: a corpus commit crashes the scanner instead of
-    # getting the clean oversize diagnosis it was built to produce. The
-    # threshold is lowered here so the decision is observable without a
-    # multi-gigabyte file; `data is None` is the proof that the bytes were
-    # never read, and entry_size answering at all proves the size came from
-    # the stat rather than from Git.
+    # The ceiling is lowered to make the decision observable: `data is None` proves the
+    # bytes were never read, and entry_size answering proves the size came from stat.
     module = scanner_module()
     monkeypatch.setattr(module, "FIXTURE_MAX_BYTES", 128)
     write(repo, "small.txt", "safe\n")
@@ -882,8 +832,7 @@ def test_worktree_does_not_read_a_file_it_will_refuse_on_size_alone(repo, monkey
 
 
 def test_an_oversize_worktree_file_still_gets_its_oversize_diagnosis(repo):
-    # The saved read must not cost the diagnosis. Sparse, so it costs no real
-    # disk and no real bytes.
+    # Sparse: it costs no real disk.
     with open(repo / "corpus.bin", "wb") as handle:
         handle.truncate(ONE_MIB + 1)
     stage(repo, "corpus.bin")
@@ -893,9 +842,7 @@ def test_an_oversize_worktree_file_still_gets_its_oversize_diagnosis(repo):
 
 
 def test_blob_cache_uses_a_byte_budget_instead_of_the_legacy_64_entry_limit(monkeypatch):
-    # The old 64-entry LRU thrashed on 65 blobs even when their combined
-    # payload was only a few hundred bytes. A second pass over this working
-    # set must be served wholly from the aggregate-byte cache.
+    # 65 tiny blobs thrashed the old 64-entry LRU; a second pass must be served from cache.
     module = scanner_module()
     payloads = {f"{index:040x}": f"{index:08d}".encode("ascii") for index in range(65)}
     reads = []
@@ -950,8 +897,6 @@ def test_blob_cache_evicts_by_bytes_and_never_retains_an_oversize_blob(monkeypat
     assert cache.bytes_used == 7
     assert cache.entry_count == 1
 
-    # The cache stays unchanged while an individually oversize blob is
-    # returned correctly on each request.
     assert module.blob_data("d" * 40) == payloads["d" * 40]
     assert module.blob_data("d" * 40) == payloads["d" * 40]
     assert reads.count("d" * 40) == 2
@@ -961,11 +906,7 @@ def test_blob_cache_evicts_by_bytes_and_never_retains_an_oversize_blob(monkeypat
 
 @SCANNER_CORE
 def test_the_declared_secret_fixture_set_stays_empty():
-    # L40. The source calls empty "the intended resting state" and says an
-    # exemption nobody can audit inside a credential scanner is worse than no
-    # exemption at all. Nothing enforced that, so a triple could be added to a
-    # credential scanner with no test objecting. Adding one now has to break
-    # this test, which is the moment someone has to justify it in a review.
+    # Adding an exemption must break this test, so someone has to justify it in review.
     module = scanner_module()
     assert module.DECLARED_SECRET_FIXTURES == frozenset(), (
         "a credential exemption was added; it must arrive with its reason, and "
@@ -974,8 +915,6 @@ def test_the_declared_secret_fixture_set_stays_empty():
 
 
 def test_worktree_scan_still_ignores_a_deleted_tracked_file(repo):
-    # A tracked path missing from disk is a working-tree deletion, not an
-    # unscannable payload; the fail-closed read must not turn it into one.
     write(repo, "gone.txt", "safe\n")
     stage(repo, "gone.txt")
     commit(repo, "add file")

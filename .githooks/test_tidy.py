@@ -1,18 +1,7 @@
-"""Tests for tidy.py — a report that changes nothing.
+"""Tests for tidy.py, a report that changes nothing.
 
-Each test builds a disposable workbench and points the module at it. What is
-proven: a byte-identical duplicate is reported and left where it is; the retired
-`--file` flag is refused rather than silently accepted; neither HANDOFF.md nor
-NEXT_SESSION_BRIEF.md is reported as redundant however identical it looks, since
-session-end archives both by copying and then overwriting; design/ is not tidy.py's to
-judge; an empty active/ still audits project memory, so the report does not stop
-at the missing handoff; markdown link shapes resolve; an over-full active/ is
-reported against the one-sitting budget; and a standing/ that is absent, or that
-holds no SUSPENSIONS.md, is said out loud rather than read as clean.
-
-Several tests carry a positive control — a second file that *must* appear in the
-report — because an assertion that something is absent is satisfied just as well
-by a run that never looked.
+Several tests carry a positive control, a file that must appear in the report: an
+assertion of absence is satisfied just as well by a run that never looked.
 """
 
 import importlib.util
@@ -38,10 +27,7 @@ def load_tidy(tmp_path):
     mod.ARCHIVE = wb / "archive"
     mod.SCRATCH = wb / "scratch"
     mod.RAW = wb / "raw"
-    # `QUARANTINE` was the one drawer left pointing at the real tree: with
-    # `main()` now called directly by several tests, `QUARANTINE` was read out of this
-    # machine's own `workbench/quarantine`, so a test's result depended on what the
-    # last session happened to stage there.
+    # Every drawer points at the fixture, never at this machine's real tree.
     mod.QUARANTINE = wb / "quarantine"
     mod.MEMORY = tmp_path / "memory"
     for d in (
@@ -58,13 +44,8 @@ def load_tidy(tmp_path):
 
 
 def test_a_large_archived_file_is_never_hashed_for_the_duplicate_check(tmp_path, capsys):
-    """Filed evidence can run to gigabytes; a note never does.
-
-    The duplicate check exists for notes, so anything above `ARCHIVE_DIGEST_MAX_BYTES`
-    is skipped rather than hashed twice a session. The small pair is the positive
-    control: without it, an assertion that the large pair went unreported would also
-    pass if the whole check had stopped working.
-    """
+    """Anything above ARCHIVE_DIGEST_MAX_BYTES is never hashed; the small pair is the
+    positive control."""
     tidy = load_tidy(tmp_path)
     big = b"b" * (tidy.ARCHIVE_DIGEST_MAX_BYTES + 1)
     (tidy.ARCHIVE / "bundle.bin").write_bytes(big)
@@ -94,8 +75,7 @@ def test_duplicate_is_reported_and_nothing_moves(tmp_path, capsys):
 
 
 def test_the_retired_file_flag_is_refused(tmp_path):
-    # A caller that still passes --file believed a move happened. Accepting the
-    # flag and reporting instead would let it go on believing that.
+    # A caller still passing --file believes a move happened; accepting it would agree.
     tidy = load_tidy(tmp_path)
     with pytest.raises(SystemExit) as exit_info:
         tidy.main(["--file"])
@@ -107,13 +87,10 @@ def test_handoff_is_never_reported_as_a_duplicate(tmp_path, capsys):
     (tidy.ARCHIVE / "2026-01-01_x").mkdir()
     (tidy.ARCHIVE / "2026-01-01_x" / "HANDOFF.md").write_text("identical")
     (tidy.ACTIVE / "HANDOFF.md").write_text("identical")
-    # session-end archives the brief in the same copy-then-overwrite step as the
-    # handoff, so an interrupted close leaves it byte-identical to its archive too.
+    # The brief is archived in the same copy-then-overwrite step as the handoff.
     (tidy.ARCHIVE / "2026-01-01_x" / "NEXT_SESSION_BRIEF.md").write_text("identical brief")
     (tidy.ACTIVE / "NEXT_SESSION_BRIEF.md").write_text("identical brief")
-    # A positive control for each exemption: a duplicate beside it that must be
-    # reported, with content of its own so neither is named as the other's match.
-    # Without them this passes against a tidy.py whose duplicate scan does nothing.
+    # Positive controls, each with its own content so neither is named as the other's match.
     (tidy.ARCHIVE / "2026-01-01_x" / "note.md").write_text("also identical")
     (tidy.ACTIVE / "note.md").write_text("also identical")
     (tidy.ARCHIVE / "2026-01-01_x" / "queue.md").write_text("a third duplicate")
@@ -202,8 +179,7 @@ def test_memory_links_survive_markdown_shapes(tmp_path, capsys):
     tidy.main([])
 
     out = capsys.readouterr().out
-    # The positive control: the audit must actually be reporting, or "no missing
-    # file" below would be satisfied by a run that never looked.
+    # Positive control: the memory audit must actually be reporting.
     assert "missing file: vanished.md" in out, "the memory audit did not run"
     assert "missing file: real.md" not in out, "normalised link shapes must resolve"
     assert "missing file: spaced name.md" not in out, "<angle-bracketed> targets may hold spaces"
@@ -222,9 +198,6 @@ def test_an_over_full_active_is_reported_against_the_budget(tmp_path, capsys):
 
 
 def test_standing_ledgers_are_listed_but_never_budgeted_or_filed(tmp_path, capsys):
-    # standing/ holds what outlives sessions. It is reported so it is read, but
-    # it must not trip the attention exit, count against active/'s budget, or be
-    # offered as a filing candidate however byte-identical to archived material.
     tidy = load_tidy(tmp_path)
     (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
     (tidy.ARCHIVE / "twin.md").write_text("same bytes")
@@ -242,11 +215,7 @@ def test_standing_ledgers_are_listed_but_never_budgeted_or_filed(tmp_path, capsy
 
 
 def test_a_missing_standing_drawer_is_reported_loudly(tmp_path, capsys):
-    # CLAUDE.md puts the dated suspensions in workbench/standing/SUSPENSIONS.md and
-    # says they are read at every open and close until resolved. A drawer that is
-    # simply not there used to print nothing at all, which reads exactly like a
-    # drawer with nothing in it — and a safety measure that quietly stayed off is
-    # the failure this project exists to notice.
+    # A missing drawer used to print nothing, which reads like no suspension in force.
     tidy = load_tidy(tmp_path)
     (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
     shutil.rmtree(tidy.STANDING)
@@ -258,9 +227,7 @@ def test_a_missing_standing_drawer_is_reported_loudly(tmp_path, capsys):
 
 
 def test_an_unreadable_suspension_ledger_is_reported_not_passed(tmp_path, capsys):
-    # is_file() is true for a ledger this process cannot open, and a report that
-    # exits clean over an unreadable safety ledger has measured nothing
-    # (principle 8): a stat is not a read.
+    # is_file() is true for a ledger this process cannot open: a stat is not a read.
     tidy = load_tidy(tmp_path)
     (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
     ledger = tidy.STANDING / "SUSPENSIONS.md"

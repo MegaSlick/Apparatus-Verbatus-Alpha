@@ -6,7 +6,6 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) ||
   { echo "check-static: not inside a Git repository" >&2; exit 1; }
 cd "$root"
 
-# Use the project environment's ruff and shellcheck when it exists.
 if [ -x .venv/bin/ruff ]; then
   PATH="$root/.venv/bin:$PATH"
   export PATH
@@ -31,18 +30,9 @@ operations/notify/notify.sh"
 # word split cannot turn one tracked path into several accepted paths.
 # shellcheck disable=SC2086
 shellcheck $scripts
-# `sh -n` parses only its first operand and turns the rest into positional
-# parameters, so passing the whole list checked the first file and silently
-# ignored the rest. Walk them one at a time; `set -e` makes the first syntax
-# error the exit status of this check.
-#
-# Prefer dash where it exists. On macOS `/bin/sh` is bash in POSIX mode, which
-# parses `a=(1 2)`, `function f() {}` and `for ((;;))` without complaint; CI runs
-# dash, which refuses all three. Checking with the local `sh` therefore passed
-# things that fail only when the hook actually runs on another machine. This
-# narrows that gap rather than closing it — `${x^^}` parses cleanly in both, and
-# a bashism that is merely a command word rather than a syntax error, `[[` among
-# them, is invisible to any `-n` parse. shellcheck above is what catches those.
+# `sh -n` parses only its first operand, so walk the list. Prefer dash: macOS /bin/sh
+# is bash in POSIX mode and accepts bashisms CI's dash refuses. shellcheck catches the
+# ones no `-n` parse sees (`[[`, `${x^^}`).
 syntax_shell="sh"
 if command -v dash >/dev/null 2>&1; then
   syntax_shell="dash"
