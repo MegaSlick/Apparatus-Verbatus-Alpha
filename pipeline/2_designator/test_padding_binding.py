@@ -1,17 +1,7 @@
-"""The padding policy is part of the run's sealed configuration, not a loose file.
-
-Capture padding decides how many pixels of page a witness is actually shown
-around each act, so two runs under different padding cut *different crop bytes*.
-Until this build the policy was read from a fixed path and never entered
-`run.json`'s `config_digest`, which meant one run id could be reused across a
-padding change and quietly hold two geometries under one name. The stage's own
-`config/README.md` said so plainly; this file is the check that it no longer can.
-
-The lane-B build of this stage reached the same conclusion about its own
-Designator configuration and sealed it the same way. What is bound here is
-the padding policy and, since the Designator's structure pass gained its own
-reader, the grouping policy — the two files this build's crops and act
-boundaries actually depend on.
+"""The padding and grouping policies are part of the run's sealed
+configuration, not loose files: two runs under different padding cut
+different crop bytes, so a policy change must not be reusable under the same
+run id and config_digest.
 """
 
 import subprocess
@@ -43,12 +33,8 @@ def _bindings(padding_path):
 def _widened(tmp_path: Path) -> Path:
     """The shipped policy with one edge widened, and nothing else touched."""
     shipped = SHIPPED_PADDING.read_text(encoding="utf-8")
-    # Asserted on the text *before* the replacement, which is the only place it can
-    # fail. Checked afterwards it was vacuous: if the shipped config already said
-    # `left_bp = 1000` the replace would be a no-op, the widened value would be
-    # present anyway, and this helper would hand back a file identical to the
-    # shipped one — leaving every test built on it asserting that a policy differs
-    # from itself. The message even named the condition it was not checking.
+    # Asserted before the replacement: otherwise a no-op replace would silently
+    # hand back a file identical to the shipped one.
     assert "left_bp = 500" in shipped, "the shipped padding config no longer declares left_bp = 500"
     text = shipped.replace("left_bp = 500", "left_bp = 1000")
     path = tmp_path / "widened_padding.toml"
@@ -89,14 +75,7 @@ def _invoke(program: str, root: Path, *extra: str) -> subprocess.CompletedProces
 
 
 def test_reusing_a_run_id_under_changed_padding_is_refused_before_a_crop_is_cut(tmp_path):
-    """The whole point: the second geometry never reaches the tree at all.
-
-    A crop cut under widened padding is a different rectangle of the same page.
-    Publishing one into a run sealed under the old policy would leave two
-    geometries in one run with nothing recording that they differ — and the
-    region payload's own `padding` block would not help, because a reader
-    comparing two crops has no reason to suspect the policy moved between them.
-    """
+    """The whole point: the second geometry never reaches the tree at all."""
     root = tmp_path / "runs"
     for program in (
         "pipeline/1_exemplar/door.py",
@@ -120,15 +99,8 @@ def test_reusing_a_run_id_under_changed_padding_is_refused_before_a_crop_is_cut(
 
 
 def test_padding_rewritten_between_the_binding_check_and_its_use_is_refused(tmp_path):
-    """The window between the two reads of one file, closed at the point of use.
-
-    `open_context` reads the padding policy to check this run's binding; the
-    stage reads it a second time to get the values it pads with. A rewrite
-    landing between those two reads passed every check the run had: the binding
-    comparison saw the old bytes and the crops were cut from the new ones, so
-    every act on the page was captured under a policy `run.json` never sealed
-    and the run still exited complete. Reproduced against the real stage before
-    this check existed.
+    """The window between the two reads of one file, closed at the point of use:
+    `open_context` checks the binding, `initial_pass` reads it again to pad with.
     """
     import shutil
 
@@ -176,18 +148,9 @@ SHIPPED_GROUPING = ROOT / "config" / "designator_grouping.toml"
 
 
 def test_grouping_rewritten_between_the_binding_check_and_its_use_is_refused(tmp_path):
-    """The grouping policy's own point of use closes the same TOCTOU window.
-
-    Mirrors `test_padding_rewritten_between_the_binding_check_and_its_use_is_refused`
-    above: `open_context` reads the grouping policy to check this run's binding,
-    and `initial_pass` reads it again, under `context.args.designator_grouping_config`,
-    to get the thresholds it groups with
-    (`pipeline/2_designator/run.py::initial_pass`). A rewrite landing between
-    those two reads would have passed the binding check on the old bytes and
-    grouped every page under thresholds `run.json` never sealed. The file under
-    test is always a `tmp_path` copy of the shipped policy, never the shipped
-    file itself -- rewriting `config/designator_grouping.toml` in place would
-    change `config_digest` on every other run and move the acceptance pins.
+    """Mirrors the padding TOCTOU test above, for the grouping policy. Always a
+    `tmp_path` copy, never the shipped file, since rewriting it in place would
+    move config_digest on every other run.
     """
     import shutil
 

@@ -1,33 +1,20 @@
 """A ready-to-run calibration harness for capture padding — not yet run.
 
 `config/designator_padding.toml`'s four fractions are carried forward from a
-third-party corpus (see that file's `[padding.provenance]`), and nothing in
-this repository has re-derived them against this project's own pages. This
-module is what "re-derive them" means concretely: given a gold set of
-(detected structural rectangle, true content rectangle) pairs on this
-project's own material, compute fresh per-edge padding fractions the same way
-the old pipeline described doing it — a percentile of how far true content
-falls outside the detected box, per edge, expressed as a fraction of the
-detected box's own dimension.
+third-party corpus, not yet re-derived against this project's own pages. Given
+a gold set of (detected structural rectangle, true content rectangle) pairs,
+this module computes fresh per-edge padding fractions: a percentile of how far
+true content falls outside the detected box, per edge, as a fraction of the
+detected box's own dimension for that edge.
 
-**Nothing here invents a number.** `calibrate_padding` refuses an empty sample
-set outright, and `sample_size_caveat` names — rather than silently accepts —
-a sample too small for the requested percentile to be a defensible estimate
-rather than noise dressed as a statistic. CLSI EP28-A3c gives 120 as its own
-minimum for a nonparametric reference interval — but that figure is for
-estimating the 2.5th/97.5th percentiles, which need more samples than a
-percentile nearer the median to hold the same confidence. This module
-estimates p75, not a tail percentile, so treating CLSI's 120 as the
-*preferred* rather than the required floor here is this project's own
-conservative choice, not a number CLSI names for this statistic. 60 is a
-locally chosen provisional floor below that, not a figure either source
-states — see `sample_size_caveat` for what a count below it actually means.
+`calibrate_padding` refuses an empty sample set, and `sample_size_caveat` names
+a sample too small for the percentile to be a defensible estimate rather than
+silently accepting it (see `PREFERRED_SAMPLE_COUNT`/`MINIMUM_DEFENSIBLE_SAMPLES`
+below for where those floors come from).
 
-This harness produces the SAME four fractions the shipped config carries in
-shape (basis points of the detected box's own width/height, asymmetric per
-edge) but never in the config file itself: writing a freshly-calibrated
-`designator_padding.toml` is a decision for whoever holds the gold set this
-project does not yet have, not something this module does on import.
+The output is shaped like the shipped config's `[padding]` and
+`[padding.provenance]` tables but is never written to the config file itself:
+adopting it is a decision for whoever holds the gold set, not this module.
 """
 
 from collections.abc import Mapping
@@ -37,12 +24,11 @@ from geometry import BP_DENOMINATOR, Bounds
 
 from common.contracts.errors import ContractError
 
-# Below this many gold samples, a percentile estimate is named provisional
-# rather than refused outright: a provisional number that says so is safer than
-# none at all. `PREFERRED_SAMPLE_COUNT` is CLSI EP28-A3c's own minimum for a
-# nonparametric reference interval (a stricter statistic than the p75 this
-# module estimates); `MINIMUM_DEFENSIBLE_SAMPLES` is this project's own,
-# smaller, provisional floor below it — see the module docstring.
+# PREFERRED_SAMPLE_COUNT is CLSI EP28-A3c's minimum for a nonparametric
+# reference interval (a stricter statistic than the p75 estimated here);
+# MINIMUM_DEFENSIBLE_SAMPLES is this project's own smaller floor below it.
+# Below the floor, sample_size_caveat names the result provisional rather
+# than refusing it outright.
 MINIMUM_DEFENSIBLE_SAMPLES: Final = 60
 PREFERRED_SAMPLE_COUNT: Final = 120
 
@@ -115,24 +101,17 @@ def _edge_shortfall_bp(detected: Bounds, true_content: Bounds, edge: str) -> int
         raise ContractError(f"edge {edge!r} is not one of {_EDGES}")
     if dimension <= 0:
         raise ContractError(f"a detected rectangle {detected} has no positive area to divide by")
-    # Round-half-up, integer-only -- the same discipline `geometry._pad_amount`
-    # states for every basis-point amount in this stage, and for the same
-    # reason: a float division plus Python's banker's rounding would make the
-    # result depend on float rounding rules rather than being deterministic
-    # integer arithmetic.
+    # Round-half-up, integer-only, matching geometry._pad_amount's discipline
+    # so the result is deterministic rather than float-rounding-dependent.
     return (shortfall_px * BP_DENOMINATOR + dimension // 2) // dimension
 
 
 def _nearest_rank_percentile(values: list[int], percentile: int) -> int:
     """The nearest-rank percentile of a small integer sample.
 
-    Nearest-rank rather than a linear-interpolation percentile: with a sample
-    in the tens rather than the thousands, interpolating between two observed
-    values claims a precision the data does not have, and nearest-rank always
-    returns a value that was actually observed. `ceil` rather than `floor` or
-    round-to-nearest so the 75th percentile of an even split still reports the
-    higher group, matching "how bad must the padding be to cover this
-    fraction of cases" rather than rounding the requirement away.
+    Nearest-rank, not interpolated: a sample in the tens shouldn't claim
+    precision between two observed values. Ranks round up, so an even split's
+    75th percentile reports the higher group rather than rounding it away.
     """
     if not values:
         raise ContractError("cannot take a percentile of zero samples")
@@ -171,11 +150,9 @@ def calibrate_padding(
 ) -> dict[str, Any]:
     """Fresh per-edge padding fractions from real (detected, true) rectangle pairs.
 
-    Returns a payload shaped like `config/designator_padding.toml`'s own
-    `[padding]` plus `[padding.provenance]` tables, ready to be written out by
-    a caller that has decided to adopt it — this function only computes the
-    numbers and states plainly what they rest on; it does not write a file
-    and is not called by any run-path code.
+    Shaped like `config/designator_padding.toml`'s own `[padding]` plus
+    `[padding.provenance]` tables. Computes the numbers only; does not write a
+    file and is not called by any run-path code.
     """
     if not isinstance(samples, list):
         raise ContractError("gold samples must be supplied as a list for deterministic calibration")
@@ -209,9 +186,8 @@ def calibrate_padding(
             "sample_count": len(validated_samples),
             "statistic": f"p{percentile} per-edge shortfall, as a fraction of the detected "
             "box's own dimension for that edge, nearest-rank",
-            # Only the caller holding the gold set knows whether its samples
-            # belong to this project's corpus. Computing rectangles cannot
-            # honestly infer that provenance fact from their coordinates.
+            # Caller-supplied: rectangle coordinates alone can't say whether
+            # a sample belongs to this project's corpus.
             "calibrated_for_this_corpus": calibrated_for_this_corpus,
             "caveat": sample_size_caveat(len(validated_samples)),
         },

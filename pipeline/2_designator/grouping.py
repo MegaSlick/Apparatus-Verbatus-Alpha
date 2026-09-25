@@ -1,55 +1,33 @@
 """Act grouping: crops assemble into acts by geometry and structural cues only.
 
-Principle 1 is the whole shape of this module. The old pipeline's grouping
-file elected a "pivot witness" per act -- a static trust table scored
-candidate witnesses and the highest-scoring one became the act's authoritative
-structure, with everyone else diff-aligned onto it (`resolve_columns`,
-confirmed a principle 1 picker by this project's own audit). Nothing here
-scores, ranks, or weights candidate regions *by quality*, and nothing elects
-among witnesses. Every grouping decision below is a deterministic partition
-or an overlap test over fixed geometry: a component belongs to a column
-because of where it sits, a body run splits because a boundary crosses it, an
-anchor attaches to a group because their y-ranges overlap. Where a single
-group must be picked from several (`find_continuation_candidate`'s trailing
-and leading groups), the pick is the extremal one by position -- bottommost
-or topmost -- never a score. Two callers handed the same set of components
-in different input order get the identical set of groups back -- `test_grouping.py`
-proves this directly, because "the same evidence groups the same way regardless
-of who is asked first" is the property an election shape cannot have.
+Principle 1: nothing here scores, ranks or elects among candidate regions by
+quality. Every decision is a deterministic partition or overlap test over
+fixed geometry -- a component belongs to a column because of where it sits, a
+body run splits because a boundary crosses it, an anchor attaches because
+y-ranges overlap -- and where one group must be picked from several
+(`find_continuation_candidate`), the pick is the extremal one by position,
+never a score. `test_grouping.py` proves the whole pass is input-order
+invariant, which an election could never be.
 
-Two columns only: a narrow left-hand *margin* column, where marginal names,
-numbered markers and the formulaic openings ARCHITECTURE names live, and
-everything else as *body*. A margin component is a candidate **anchor**: its
-top edge marks where a new act's body text is expected to begin. An anchor
-whose own height is unusually large is a **brace** -- the marginal-brace case
-named in the spec (`B. 43 }` / `S. 26 }` joining two register rows) -- and is
-treated as marking *two* act starts, one at its top and one at its own
-vertical midpoint, rather than one act twice as tall. Both resulting acts then
-carry the same brace component as shared evidence; neither absorbs the other,
-and neither is dropped. That is the concrete shape of "a Designator that
-assumes chunks and acts correspond will silently lose the second act of every
-braced pair" turned into code that does not do that.
+Two columns only: a narrow left-hand *margin* column (names, numbered markers,
+formulaic openings) and everything else as *body*. A margin component is a
+candidate **anchor**, whose top edge marks where a new act's body is expected
+to begin. An anchor unusually tall is a **brace** (the `B. 43 }` case joining
+two register rows) and marks *two* act starts -- at its top and at its own
+vertical midpoint -- so both resulting acts carry it as shared evidence rather
+than one act absorbing the other or losing its second half.
 
-Every raw candidate region ends up somewhere: in exactly one body-anchored
-act, in an isolated marginal-note act (a margin anchor with no adjacent body
-group at all), or in no group -- and `conservation.py` is what accounts for
-that last case, not this module. Grouping only assembles what it is given; it
-never decides that something ungrouped may be discarded.
+Every raw candidate region ends up in exactly one body-anchored act, an
+isolated marginal-note act, or no group at all; `conservation.py`, not this
+module, accounts for the ungrouped case.
 
-**A component that spans the page is not connective tissue.** On all fourteen
-measurable real pages in the calibration sample, the primary scan produced one
-connected component whose bounding box was the entire page. The measurements
-do not establish whether those pixels are bezel, writing, or another dark
-population. Handed to the pass below, such a component lands in the body column,
-its y-range is the page's y-range, and `_chain_body` can therefore chain every
-other body component on the page to it. `partition_page_spanning` withholds the
-component from column assignment and chaining. **Withheld is not excluded**:
-its pixels remain in `conservation.reconcile`'s `total_ink_pixel_count`.
-Declared or fallback coverage may claim some or all of them; conservation
-reports any unclaimed remainder as residual and mints that remainder as held
-evidence. The component itself is published by name on the page's conservation
-record. The change removes connective influence while retaining every pixel and
-the measured page-spanning decision.
+**A component spanning the page is not connective tissue.** A page-wide
+connected component (bezel, writing, or another dark population -- the scan
+cannot tell which) would otherwise chain every body component on the page to
+it via `_chain_body`. `partition_page_spanning` withholds such a component
+from column assignment and chaining, but withheld is not excluded: its pixels
+remain in `conservation.reconcile`'s `total_ink_pixel_count`, and any
+unclaimed remainder still surfaces as held residual evidence.
 """
 
 from typing import Any, TypedDict
@@ -66,24 +44,10 @@ class ActGroup(TypedDict):
     rationale: str
 
 
-# No geometric policy in this module carries a default any more. The list is
-# short enough to be complete rather than gestured at: `group_page`'s five
-# thresholds, `find_continuation_candidate`'s two per-page edge reaches, and
-# the fallback grid's band count and overlap at the foot of this file -- nine
-# values, all of them required keyword arguments. `run.py` resolves each one,
-# per page, from a sealed basis-point config and that page's own dimensions
-# (SPEC_C section 2, "Where resolution happens"), and passes the resolved pixel
-# integers in on every call. A caller that forgets one now fails loudly rather
-# than running under a value nobody reviewed for this page --
-# `geometry.load_padding_config`'s own docstring is the precedent: "refused
-# loudly rather than defaulted".
-#
-# There was a ninth: `find_continuation_candidate` used to take a
-# `column_overlap_px` slack with a default of 0, which no caller ever set, no
-# config sealed and no inventory named -- so every real continuation decision
-# ran at 0px under a value nobody had reviewed, while this comment claimed
-# totality above it. It is gone rather than sealed, and the reasoning is at its
-# call site: zero is not a threshold set to zero, it is the absence of one.
+# No geometric policy in this module carries a default: run.py resolves every
+# threshold per page from sealed config and passes the pixel integer in, so a
+# caller that forgets one fails loudly rather than running under an unreviewed
+# value.
 
 
 def _plain_int(value: object) -> bool:
@@ -91,13 +55,8 @@ def _plain_int(value: object) -> bool:
 
 
 def _check_margin(margin_px: int, page_w: int) -> None:
-    """The one margin predicate both `assign_columns` and `group_page` hold.
-
-    A single spelling so the two call sites cannot drift apart: a float
-    margin or one outside the page must be refused the same way regardless
-    of which caller resolved it first, including when `group_page` short-
-    circuits on an empty page and never reaches `assign_columns` at all.
-    """
+    """The one margin predicate both `assign_columns` and `group_page` hold,
+    so the two call sites cannot drift apart."""
     if not _plain_int(margin_px) or not (0 < margin_px < page_w):
         raise ContractError(f"margin {margin_px}px is not between 0 and page width {page_w}")
 
@@ -128,16 +87,8 @@ def _union_bounds(components: list[dict]) -> Bounds:
 
 
 def _check_page_spanning_area_bp(page_spanning_area_bp: int) -> None:
-    """The one bound both `group_page` and `partition_page_spanning` hold.
-
-    A single spelling, for `_check_margin`'s reason: the two callers must refuse
-    the identical set of values regardless of which one is reached first,
-    including when `group_page` short-circuits on an empty page and never
-    reaches the partition at all. Zero and below are refused because at zero
-    every component on every page is page-spanning and the pass would withhold
-    the whole page while returning a perfectly well-formed empty result; past a
-    whole page nothing can reach the bound, so it would read as policy in force
-    while being inert.
+    """The one bound both `group_page` and `partition_page_spanning` hold, so
+    the two callers refuse an identical set of values.
     """
     if not _plain_int(page_spanning_area_bp) or not (0 < page_spanning_area_bp <= BP_DENOMINATOR):
         raise ContractError(
@@ -149,23 +100,9 @@ def _check_page_spanning_area_bp(page_spanning_area_bp: int) -> None:
 def _bbox_area_bp(bounds: Bounds, page_w: int, page_h: int) -> int:
     """A bounding box's area as floor-divided basis points of the page's own area.
 
-    Floor division and integer arithmetic throughout, like every other fraction
-    this stage seals: canonical artifacts carry integers and never floats, and
-    `geometry._pad_amount`'s round-half-up rule is for resolving a fraction to a
-    *pixel length*, which this is not -- there is no length here to round, only
-    a ratio to compare. `BP_DENOMINATOR` rather than a literal 10,000, and
-    imported from `geometry` rather than from `common.background`: this module
-    already depends on `geometry`, the two constants are the same number, and
-    `test_geometry.py` pins them equal.
-
-    **Flooring and the caller's `>=` are two halves of one rule and only make
-    sense together.** A box whose true fraction is 4999.9 basis points floors to
-    4999 and is grouped; a box exactly at 5000 floors to 5000 and is withheld.
-    The rounding therefore only ever moves a box *down*, toward being grouped,
-    which is the direction that keeps evidence in the pass rather than out of
-    it -- and the bound stays inclusive at its own stated value, which is what
-    `test_the_bound_is_inclusive_at_its_own_value_and_exclusive_just_below`
-    measures on both sides.
+    Floor division only ever moves a box's fraction down, toward being
+    grouped rather than withheld by the caller's `>=` -- the direction that
+    keeps evidence in the pass.
     """
     return (bounds["w"] * bounds["h"] * BP_DENOMINATOR) // (page_w * page_h)
 
@@ -175,34 +112,14 @@ def partition_page_spanning(
 ) -> tuple[list[dict], list[dict]]:
     """Split components into (grouped, withheld) by how much of the page each covers.
 
-    A component whose bounding box covers `page_spanning_area_bp` basis points
-    or more of the page's own area is withheld: it is not offered to
-    `assign_columns` and never enters `_chain_body`, so it cannot join two acts
-    through a page-wide y-range. See the module docstring for the measurement
-    behind that.
-
-    **This function removes nothing from the page and decides nothing about
-    ink.** It is handed components that have already been scanned, thresholded
-    and labelled, and it returns both halves; the caller that publishes
-    (`run.py`) records the withheld half on the page's conservation record, and
-    `conservation.reconcile` -- which rescans the page's own pixels rather than
-    reading this module's output -- still counts every withheld pixel in
-    `total_ink_pixel_count`. Declared or fallback coverage may claim those
-    pixels; any unclaimed remainder is residual and becomes held evidence. This
-    is why the word is *withheld*: excluding would decide that a page-spanning
-    mark contains nothing, while this decides only that it cannot join other
-    marks into one group.
-
-    **It is not a picker** (principle 1). It scores nothing, ranks nothing and
-    compares no component against another: each one is measured against a sealed
-    fraction of the page it sits on, independently, so the result is a
-    deterministic partition and is invariant under input order like everything
-    else in this module.
-
-    `page_spanning_area_bp` is a required keyword with no default, like every
-    other geometric policy value here. `run.py` resolves it from the sealed
-    `[grouping.page_area_bp]` block; a caller that forgets it fails loudly
-    rather than running a real page under a fraction nobody reviewed.
+    A component covering `page_spanning_area_bp` basis points or more of the
+    page is withheld: not offered to `assign_columns`, never entering
+    `_chain_body`, so it cannot weld two acts together through a page-wide
+    y-range. Withheld, not excluded: `run.py` records the withheld half on the
+    conservation record, and `conservation.reconcile` still counts every
+    withheld pixel in `total_ink_pixel_count`. Each component is measured only
+    against the sealed fraction, independently -- a deterministic partition,
+    never a comparison between components (principle 1).
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no area to measure against")
@@ -224,15 +141,9 @@ def assign_columns(
 ) -> tuple[list[dict], list[dict]]:
     """Split components into (margin, body) by horizontal position only.
 
-    A component's centre-x decides its column: marginal names and numbered
-    markers are narrow and left-aligned, so a centre inside the margin band
-    puts it there even when its right edge slightly overhangs the boundary.
-    `margin_px` is resolved from the page's own width before this is called,
-    never a fraction computed here -- the margin is a fixed lane the page's
-    layout defines, not a property of what happens to be printed in it. The
-    comparison itself stays integer: `x0 + x1 < 2 * margin_px` decides the
-    same side as `(x0 + x1) / 2 < margin_px` for integer bounds, without ever
-    producing a float (GLOSSARY / canonical-integer rule).
+    A component's centre-x decides its column, so a centre inside the margin
+    band puts it there even when its right edge overhangs the boundary. The
+    comparison `x0 + x1 < 2 * margin_px` avoids a float midpoint.
     """
     if page_w <= 0:
         raise ContractError(f"page width {page_w} is not positive")
@@ -265,16 +176,8 @@ def _boundaries(anchors: list[dict], brace_min_height_px: int) -> list[int]:
 
 
 def _boundary_index(y: int, boundaries: list[int], reach: int) -> int:
-    """How many act-start rows are at or before `y`, allowing `reach` pixels of slack.
-
-    A body component's own top edge can land a few pixels before the anchor
-    that actually seeds its act -- ordinary detection jitter, not evidence of
-    an earlier start -- so a boundary within `reach` pixels of `y` still counts
-    as reached. Requiring equality to the pixel merges the second act into the
-    first and loses its identity entirely, and the anchor-attachment overlap
-    test below already declines to require that of the same geometry: this is
-    the same slack, applied where the partition is decided rather than only
-    where an anchor attaches to a run already decided.
+    """How many act-start rows are at or before `y`, allowing `reach` pixels of
+    slack for ordinary detection jitter in a body component's top edge.
     """
     index = 0
     for boundary in boundaries:
@@ -334,27 +237,17 @@ def group_page(
 ) -> list[ActGroup]:
     """Group one page's raw candidate regions into acts.
 
-    Deterministic and permutation-invariant in its input: every component is
-    sorted by geometry before anything is decided, so the order `components`
-    arrives in never affects the result. That property is what makes this
-    reconciliation rather than election -- an election is exactly a function
-    that *can* depend on presentation order or a score, and this one cannot.
+    Every component is sorted by geometry before anything is decided, so input
+    order never affects the result (reconciliation, not election).
 
-    **Page-spanning components are withheld before anything else happens.** The
-    partition runs here rather than only in `run.py` so that the property is
-    this function's, not a caller's discipline: whoever calls `group_page`, a
-    component covering `page_spanning_area_bp` of the page cannot weld two acts
-    together. `run.py` calls `partition_page_spanning` as well, to publish the
-    withheld half on the record, and the two cannot disagree because the
-    function is pure and idempotent -- re-partitioning an already-partitioned
-    list withholds nothing further.
+    Page-spanning components are withheld before anything else, here rather
+    than only in `run.py`, so no caller can weld two acts together through one:
+    `partition_page_spanning` is pure and idempotent, so `run.py`'s own call to
+    publish the withheld half can never disagree with this one.
 
-    A page on which *every* component is withheld returns no groups at all, and
-    that is the honest answer rather than an accident: `run.py` then reads the
-    page as `fallback-tiles` and cuts the predetermined grid the ruling below
-    requires, so the page is still sent downstream to be read. Without this
-    rule such a page comes back `detected` with one whole-leaf group, and the
-    fallback grid never fires on real pages.
+    A page on which every component is withheld returns no groups at all,
+    which `run.py` reads as `fallback-tiles` rather than one accidental
+    whole-leaf group.
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no area to group within")
@@ -368,13 +261,6 @@ def group_page(
     _check_margin(margin_px, page_w)
     _check_page_spanning_area_bp(page_spanning_area_bp)
 
-    # One short-circuit, after the partition rather than before it, because
-    # both cases have nothing left to assemble into acts: a page with no
-    # components and a page whose every component spans it. `run.py` reads both
-    # as `fallback-tiles` but records which premise led there. Every threshold
-    # above has already
-    # been validated at this point, which is the property `_check_margin`'s own
-    # docstring asks for and the reason those checks are not below here.
     components, _withheld = partition_page_spanning(
         components, page_w, page_h, page_spanning_area_bp=page_spanning_area_bp
     )
@@ -404,12 +290,9 @@ def group_page(
         claimed_anchor_ids.update(id(anchor) for anchor in attached)
         provisional.append((run, attached))
 
-    # A brace is not "more than one anchor attached to this group" -- it is
-    # one anchor shared *across* more than one group. Counting attachments
-    # per anchor, over every group at once, is what tells the two apart: a
-    # single wide anchor overlapping two runs must mark both as brace-linked,
-    # never one of them as merely "single-anchor" because it only checked its
-    # own run's attachment count.
+    # A brace is one anchor shared across more than one group, not "more than
+    # one anchor attached to this group" -- so attachments are counted per
+    # anchor, over every group at once.
     attachment_counts: dict[int, int] = {}
     for _run, attached in provisional:
         for anchor in attached:
@@ -432,8 +315,6 @@ def group_page(
             }
         )
 
-    # An anchor no body run reached at all: a marginal note with no body text
-    # of its own, never dropped -- it becomes its own act, body-empty.
     for anchor in anchors_sorted:
         if id(anchor) not in claimed_anchor_ids:
             groups.append(
@@ -459,42 +340,20 @@ def find_continuation_candidate(
 ) -> dict[str, Any] | None:
     """A page-break continuation candidate, found by geometry alone.
 
-    The trailing group on page A must touch the page's own bottom edge, and
-    the leading group on page B must touch its own top edge, carry no anchor
-    of its own (an anchored group is a new act, not a continuation) and share
-    a column with the trailing group. All four conditions are position tests;
-    none reads a character of text, and none exists to guess whether the
-    *content* actually continues -- that judgement belongs to the Recensor.
-    This function only proposes that the geometry is consistent with one.
+    The trailing group on page A must touch the page's bottom edge, the
+    leading group on page B must touch its top edge, carry no anchor of its
+    own (an anchored group is a new act) and share a column with the trailing
+    group. These are position tests only; whether the content actually
+    continues is the Recensor's judgement, not this function's.
 
     `edge_reach_a_px` and `edge_reach_b_px` are each page's own resolved edge
-    reach -- one value serving both pages silently assumed they shared a
-    height, which a real corpus does not guarantee.
+    reach: one shared value would silently assume the two pages share a height.
 
-    Both reaches are refused by name when they are not non-negative plain
-    integers, exactly as `group_page` refuses its own four. This is the
-    module's stated contract, and it earns its place here more than anywhere
-    else: a float or negative reach changes whether an act is judged to run on
-    across a page break, and the failure that hides behind is an act read on
-    one side of the break and delivered as a whole one.
-
-    **The column-share test takes no slack value, and must not grow one by
-    default.** It used to accept a `column_overlap_px` tolerance defaulting to
-    zero, which no caller ever passed: a geometric policy in force on every
-    page of every real run, sealed in no config and named in no inventory. What
-    it is set to now is not zero-the-threshold but no threshold at all -- two
-    x-ranges share a column when they actually meet. That is the strict end of
-    the test, and unlike an absolute pixel slack it does not quietly mean
-    something different on a 3508px scan than on a 260px fixture, because there
-    is no length in it to scale. A run may under-corroborate rather than
-    over-corroborate, and this check is recorded rather than gating
-    (`run.py::_publish_act_group`), so a miss is a `false` on the act-group
-    record and never a lost continuation. If a real corpus ever shows that
-    consecutive pages need horizontal slack here -- binding skew, a re-mounted
-    scan -- it enters `config/designator_grouping.toml` as a basis point of the
-    page's own width, beside `margin_bp`, and arrives as a required keyword
-    like every other value this module takes. It does not come back as a
-    default.
+    The column-share test takes no slack: two x-ranges share a column only
+    when they actually meet, since this check is recorded rather than gating
+    (`run.py::_publish_act_group`), so a miss under-corroborates rather than
+    losing a continuation outright. Any future slack goes into config in
+    basis points, never as a default here.
     """
     for name, value in (
         ("page A edge reach", edge_reach_a_px),
@@ -513,16 +372,9 @@ def find_continuation_candidate(
         return None
     if leading["anchors"]:
         return None
-    # Tolerance zero: plain interval intersection, no slack. See the docstring
-    # -- this is the absence of a policy value, not one silently set to zero.
-    #
-    # Not `_intervals_overlap(..., 0)`: `_x_range` returns the half-open pixel
-    # span `[x, x+w)`, and `_intervals_overlap`'s `<=`-free comparison treats
-    # equal touching endpoints as overlap -- correct for the *tolerance*
-    # call sites, where a gap exactly equal to the reach is meant to still
-    # attach, but wrong here, where two columns whose edges merely touch
-    # (`[40,100)` beside `[100,160)`) share no pixel and must not corroborate
-    # a continuation. This is the direct non-empty-intersection test instead.
+    # Direct non-empty-intersection test, not `_intervals_overlap(..., 0)`:
+    # that helper treats touching endpoints as overlap, but two columns that
+    # merely touch (`[40,100)` beside `[100,160)`) share no pixel here.
     trailing_x0, trailing_x1 = _x_range(trailing)
     leading_x0, leading_x1 = _x_range(leading)
     if trailing_x0 >= leading_x1 or leading_x0 >= trailing_x1:
@@ -531,30 +383,10 @@ def find_continuation_candidate(
 
 
 # The predetermined fallback crop grid, for a page with no eligible structural
-# group. The ruling: "If the designator sees no text it should
-# default to predetermined crops with a small margin of overlap and send the
-# crops down stream to be read by everything. If all the witnesses and the
-# perlector see no text on any of the crops then it's likely a true blank." And,
-# settling where a page that cannot be thresholded goes: "Everything gets read
-# every time nothing gets pulled out or held."
-#
-# Horizontal bands rather than a checkerboard because a register page is a
-# column of entries: a band spans the full width, so an entry is never split
-# down its middle by the grid itself.
-#
-# The band count and the overlap used to be module defaults here, and were the
-# two this module's own sweep left behind: the sentence above about no defaults
-# was true of the five thresholds it was written for and false of these. They
-# are sealed policy now, like the rest -- `fallback_bands` a bare count and
-# `fallback_overlap_bp` a basis point of the page's own height in
-# `config/designator_grouping.toml`, resolved per page by `run.py::_analyze_page`
-# and passed in. That mattered more here than for a threshold that only orders
-# evidence: these two decide the crop rectangles that actually reach the
-# Attestatores and the Perlector on a page nothing was found on, and an 8px
-# overlap fixed against a 3508px scan is a hairline where the fixture had a
-# margin.
-
-
+# group: every witness reads every crop, so a true blank is decided downstream
+# rather than by this module deciding a page has nothing to send. Horizontal
+# bands, not a checkerboard, since a register page is a column of entries and
+# a band spans the full width.
 def fallback_tiles(
     page_w: int,
     page_h: int,
@@ -564,20 +396,13 @@ def fallback_tiles(
 ) -> list[ActGroup]:
     """Predetermined overlapping crops covering a page that requires fallback.
 
-    Every pixel of the page falls inside at least one band, and adjacent bands
-    overlap by `overlap_px`, so a line of writing sitting exactly on a band
-    boundary is whole inside one of the two rather than cut in half by both.
-
-    `bands` and `overlap_px` are this page's own resolved sealed policy, passed
-    in like every other threshold this module takes: a caller that forgets one
-    fails loudly rather than cutting a real page's crops under a value nobody
-    reviewed for it.
-
-    This is not detection and it does not pretend to be: each group carries a
-    rationale saying it is a fallback tile, so nothing downstream can mistake a
-    grid for something the structure pass found. It elects nothing and ranks
-    nothing -- principle 1 is about choosing among witnesses, and a fixed grid
-    computed from the page's own dimensions chooses nothing at all.
+    Every pixel falls inside at least one band. At an unclipped boundary, the
+    earlier band extends down and the later band extends up by `overlap_px`,
+    so adjacent bands overlap by `2 * overlap_px`. Page-edge clipping can
+    reduce this overlap. A line sitting exactly on a boundary is whole inside
+    one of the two rather than cut in half by both. Each group's rationale records
+    that it is a fallback tile. `_publish_act_group` uses `structure_evidence`
+    to prevent fallback grids from providing continuation corroboration.
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no area to tile")
@@ -586,13 +411,8 @@ def fallback_tiles(
     if not _plain_int(overlap_px) or overlap_px < 0:
         raise ContractError(f"fallback overlap {overlap_px} is not a non-negative integer")
     if bands > page_h:
-        # Not silently clamped: `structure-status` publishes the sealed band
-        # count as the geometry this page executed under (SPEC_C 4.2), and a
-        # quiet `min(bands, page_h)` here would make that record describe a
-        # grid this call never actually cut -- a zero-height band is not a
-        # crop, so the sealed count and the executed count would read as one
-        # number while being two. A page this short under this policy is
-        # refused by name instead.
+        # Not silently clamped: a zero-height band is not a crop, and the
+        # sealed band count must match what this call actually cuts.
         raise ContractError(
             f"a fallback grid of {bands} bands cannot be cut on a {page_h}px-tall page: "
             "at least one band would have zero height"
@@ -600,9 +420,9 @@ def fallback_tiles(
 
     tiles: list[ActGroup] = []
     for index in range(bands):
-        # Integer edges computed from the index so the last band always ends
-        # exactly at the page edge -- a rounded band height would leave a strip
-        # of the page in no crop at all, which is the one thing this must not do.
+        # Computed from the index, not a rounded band height: a rounded
+        # height accumulated over `bands` iterations would leave a strip
+        # covered by no crop, and any act inside it would be lost.
         top = (page_h * index) // bands
         bottom = (page_h * (index + 1)) // bands
         grown_top = max(0, top - overlap_px)

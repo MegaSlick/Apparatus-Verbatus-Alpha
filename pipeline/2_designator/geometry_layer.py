@@ -13,16 +13,9 @@ import tomllib
 from pathlib import Path
 from typing import Any, Callable, Final, TypedDict
 
-# One-receipt Chandra custody lives in common/chandra_custody.py, because both
-# halves are one rule and a stage may not import another stage's uniquely named
-# module. The write half is this stage's -- the live structure pass retains
-# every response under it -- and the read half has no served caller since the
-# Attestatores' capture intake was removed. Both are
-# re-exported here so this module keeps naming them. The signatures did NOT
-# survive the move unchanged -- both now require the page identity, the write
-# returns a `{"response_ref", "custody_ref"}` pair, and the read takes that
-# custody reference -- so a caller written against the pre-move names has to be
-# updated, not merely re-pointed. See common/chandra_custody.py.
+# One-receipt Chandra custody lives in common/chandra_custody.py (a stage may
+# not import another stage's module); re-exported here under this module's
+# own names. See that module for the current signatures.
 from common.chandra_custody import (  # noqa: F401  (re-export)
     RESPONSE_BLOB_PREFIX,
     read_retained_chandra_response,
@@ -49,9 +42,6 @@ _SOURCES: Final = frozenset({"surya", "yolo-obb", "chandra-layout"})
 _TILING_PASS: Final = "surya-tiling-pass"
 _RESPONSE_DETECTION: Final = "response-detection"
 _OBSERVATION_UNITS: Final = frozenset({_TILING_PASS, _RESPONSE_DETECTION})
-# The response-blob prefix is owned by common/chandra_custody.py, which derives
-# it from the run tree's own directory naming — a literal here once failed every
-# real response reference (see that module's comment); one construction, shared.
 
 
 class Bounds(TypedDict):
@@ -138,11 +128,8 @@ def _validate_geometry_policy(value: object) -> dict[str, Any]:
             "YOLO OBB policy must declare obb, aabb-enclose, and a boolean rectify toggle"
         )
     if yolo["rectify"]:
-        # No rectification implementation exists: a sealed policy enabling it
-        # would make `yolo_proposals` publish `mode: "rectify"` records for crops
-        # nothing rectified. The record schema's "rectify" mode stays reserved
-        # (the reserved-then-graduated pattern) for the day an implementation
-        # arrives with its own tests; until then the toggle fails closed.
+        # No rectification implementation exists yet; the toggle fails closed
+        # rather than publishing "rectify" records for crops nothing rectified.
         raise SchemaRefusal("YOLO OBB rectification is not implemented; the toggle fails closed")
     provenance = _closed(
         geometry["provenance"],
@@ -158,17 +145,11 @@ def _validate_geometry_policy(value: object) -> dict[str, Any]:
 
 
 def _polygon_points(value: object, what: str) -> list[dict[str, int]]:
-    """The shape of a page polygon, asked once, independently of any page extent.
+    """The shape of a page polygon (>= 3 distinct points), independent of page extent.
 
-    Raw proposal geometry and occlusion geometry are the same kind of object and
-    were asked different questions about it: proposal geometry had to carry three
-    *distinct* points, while an occlusion polygon only had to carry three points
-    at all, so a fully degenerate occlusion (one pixel repeated) was page geometry
-    to one validator and not to the other. Two predicates answering one question
-    differently is the defect this shared one removes. The page-extent half stays
-    where each caller can actually ask it: `_polygon` has a transform,
-    `validate_occlusion` does not, and the resolver checks the occlusion against
-    the page extent it pins.
+    Shared by raw-proposal and occlusion validation so both require the same
+    minimum shape; the page-extent check stays with each caller that can
+    actually ask it (`_polygon` has a transform, `validate_occlusion` doesn't).
     """
     if not isinstance(value, list) or len(value) < 3:
         raise SchemaRefusal(f"{what} is not a polygon")
@@ -200,8 +181,8 @@ def _score_bp(value: object, what: str) -> int:
 def enclosing_aabb(points: list[dict[str, int]], page_w: int, page_h: int) -> Bounds:
     min_x, max_x = min(point["x"] for point in points), max(point["x"] for point in points)
     min_y, max_y = min(point["y"] for point in points), max(point["y"] for point in points)
-    # Points name covered pixel centres, so the enclosing half-open crop reaches one
-    # pixel beyond the maximum centre, except at the sealed page edge.
+    # Points name covered pixel centres, so the half-open crop reaches one pixel
+    # beyond the maximum centre, except at the page edge.
     far_x, far_y = min(page_w, max_x + 1), min(page_h, max_y + 1)
     bounds: Bounds = {"x": min_x, "y": min_y, "w": far_x - min_x, "h": far_y - min_y}
     if bounds["w"] <= 0 or bounds["h"] <= 0:
@@ -284,10 +265,8 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
             raise SchemaRefusal("raw proposal transform has invalid rational scale")
     if transform["source_space"] != "page-pixels" or transform["target_space"] != "page-pixels":
         raise SchemaRefusal("raw proposal transform does not end in page pixels")
-    # source_space and target_space are forced equal above (both "page-pixels"); a
-    # same-space transform is only coherent at identity scale. A non-identity
-    # scale_x/scale_y here would claim resampling that never happened -- the
-    # geometry stored is already in this page's actual pixel grid.
+    # A same-space transform is only coherent at identity scale; a non-identity
+    # scale here would claim resampling that never happened.
     if (
         transform["scale_x"]["numerator"] != transform["scale_x"]["denominator"]
         or transform["scale_y"]["numerator"] != transform["scale_y"]["denominator"]
@@ -306,14 +285,9 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
     _ref(record["receipt_ref"], "receipts/sha256/", "raw proposal receipt reference")
     _ref(record["response_ref"], RESPONSE_BLOB_PREFIX, "raw proposal response reference")
     _sha(record["adapter_config_sha256"], "raw proposal adapter config")
-    # Observation provenance says WHICH of a source's observations produced this
-    # record, and the unit says what those ordinals count. One field named
-    # `observed_passes` used to carry both meanings: Surya's tiling-pass ordinal
-    # and, for YOLO and Chandra, the detection's index within one response. A
-    # retained record whose provenance means a different thing depending on which
-    # adapter wrote it cannot be read honestly by anything downstream
-    # (principle 6; GLOSSARY's one concept per word), so the record now names
-    # its own unit.
+    # observation_unit names what observed_ordinals count, since Surya's
+    # tiling-pass ordinal and a detection's index within one response are
+    # different things and a reader can't tell them apart otherwise.
     if record["observation_unit"] not in _OBSERVATION_UNITS:
         raise SchemaRefusal("raw proposal does not name what its observation ordinals count")
     if (
@@ -357,10 +331,7 @@ def validate_occlusion(payload: object) -> dict[str, Any]:
         or record["page_ordinal"] < 0
     ):
         raise SchemaRefusal("occlusion lacks page lineage")
-    # Occlusion coordinates cannot be validated without the source page's extent;
-    # this payload records the exact polygon and the resolver checks its page match.
-    # The shape of the polygon is the same question raw proposal geometry asks, so
-    # it is asked with the same predicate rather than a second, laxer copy.
+    # No page extent here to check against; the resolver checks it later.
     _polygon_points(record["polygon"], "occlusion polygon")
     if record["z_relationship"] not in {"unknown", "above-ink", "below-ink"} or record[
         "review_state"
@@ -371,10 +342,10 @@ def validate_occlusion(payload: object) -> dict[str, Any]:
 
 
 def _proposal_id(source: str, page_id: str, geometry: list[dict[str, int]], score_bp: int) -> str:
-    # Identity contains only stable final-record facts. Observation provenance is
-    # accumulated as tilings union, so including its first-seen value made an id
-    # impossible to reproduce from the final record. Score remains
-    # identity-bearing: differently scored observations are distinct raw signals.
+    # Identity excludes observed_ordinals (accumulated as tilings union, so an
+    # id built from a first-seen value wouldn't reproduce from the final
+    # record); score stays identity-bearing since differently scored
+    # observations are distinct raw signals.
     return f"proposal_{digest_of({'source': source, 'page_id': page_id, 'geometry': geometry, 'score_bp': score_bp})[:16]}"
 
 
@@ -433,24 +404,12 @@ def _retain_by_content_identity(union: dict[str, dict[str, Any]], proposal: dict
 def _within_issued_tile(points: list[dict[str, int]], tile: dict[str, int], what: str) -> None:
     """Refuse a detection that names page pixels its own tile never contained.
 
-    ``detect`` is contracted to return polygons in PAGE-absolute page pixels.
-    Nothing else in this module can tell a page-absolute polygon from a
-    tile-local one -- both are well-formed page geometry -- so a live adapter
-    that forgot to add the tile origin would place every proposal in the wrong
-    part of the page, silently, and every crop, coverage record, and traceback to
-    the ink would follow it there (goal 4).
-
-    It is also the precondition the overlapping tiling now depends on: two tiles
-    that both see one detection collapse to one retained proposal only because
-    they report the *same* page coordinates for it. Under tile-local coordinates
-    that union key would differ per tile, and one physical detection would be
-    retained several times over, each time at a wrong place.
-
-    A detector cannot see ink outside the tile it was handed, so geometry outside
-    that tile is refused rather than trusted. The refusal is loud: the page fails
-    visibly rather than entering the record mislocated (principle 2). If a real
-    detector is ever measured to overshoot its tile by a rounding pixel, the
-    tolerance belongs here, measured -- not in a silently widened contract.
+    `detect` must return polygons in page-absolute pixels; nothing else here
+    can tell a page-absolute polygon from a tile-local one, so an adapter that
+    forgot to add the tile origin would silently place a proposal in the wrong
+    part of the page. This is also what lets two tiles' sightings of one
+    detection collapse into one retained proposal: they must report the same
+    page coordinates for the union key to match.
     """
     far_x, far_y = tile["x"] + tile["w"], tile["y"] + tile["h"]
     if any(
@@ -473,23 +432,13 @@ def surya_double_pass(
 ) -> list[dict[str, Any]]:
     """Run exact sealed tiling at zero and half-tile offset, then additive union.
 
-    Tiling covers the full page in BOTH axes -- a page wider than one sealed tile
-    is a real corpus case (parish scans vary in width; nothing in the design
-    caveats tiling to narrow pages), so every column band is tiled, not only the
-    first. The vertical axis carries the second half-tile-offset pass; horizontal
-    tiles overlap by the sealed half-tile amount so an original x=1400 boundary
-    lies inside another complete tile rather than splitting a detection into two
-    unrelated proposals.
-
-    ``detect`` receives one issued tile and MUST return polygons in page-absolute
-    page pixels, each lying inside the tile it was given; `_within_issued_tile`
-    holds it to that, because the union below can recognise two tiles' sightings
-    of one detection as one detection only if both name the same page pixels. A
-    detection too wide to fit any single tile still arrives clipped from each
-    tile that saw part of it, and every clipping is retained as its own raw
-    proposal: the resolver publishes the complete sighting as containing its
-    fragments rather than choosing between them. Nothing here selects among
-    sources.
+    Tiling covers the full page on both axes (a page wider than one tile is a
+    real corpus case); horizontal tiles overlap by the sealed half-tile amount
+    so a boundary lies inside another complete tile rather than splitting a
+    detection. `detect` must return page-absolute polygons inside the tile it
+    was given (`_within_issued_tile`); a detection too wide for one tile
+    arrives clipped from each tile that saw part of it, each clipping retained
+    as its own raw proposal -- nothing here selects among them.
     """
     checked = load_geometry_policy_record(policy)
     tile_h, tile_w = checked["surya"]["tile_height_px"], checked["surya"]["tile_width_px"]
@@ -572,9 +521,8 @@ def yolo_obb(
             "mode": "rectify" if checked["yolo_obb"]["rectify"] else "aabb-enclose",
             "loss_recorded": checked["yolo_obb"]["rectify"],
         }
-        # The sealed crop policy is attached after `_raw` built the record, so the
-        # record leaving this adapter is re-validated whole rather than validated
-        # in the one shape no caller ever receives.
+        # crop_policy is attached after _raw builds the record, so re-validate
+        # the whole thing rather than the intermediate shape no caller sees.
         _retain_by_content_identity(union, validate_raw_proposal(raw))
     return [union[proposal_id] for proposal_id in sorted(union)]
 
@@ -644,8 +592,6 @@ def load_geometry_policy_record(policy: object) -> dict[str, Any]:
         "provenance",
     }:
         raise SchemaRefusal("loaded geometry policy is not a closed record")
-    # Recheck every nested value at the adapter boundary; a caller may not remove
-    # a role/provenance field after loading and still use the remaining limits.
     _sha(policy["config_sha256"], "geometry policy digest")
     _validate_geometry_policy(
         {field: policy[field] for field in ("schema", "surya", "yolo_obb", "provenance")}
@@ -728,9 +674,8 @@ def resolve(
 ) -> dict[str, Any]:
     """Derive the union/hierarchy record directly from source envelopes.
 
-    Sorting fixes output order only.  It never selects or discards a proposal;
-    every source input appears exactly once in ``partition`` and overlap remains an
-    explicit ambiguity relation.
+    Sorting fixes output order only; it never selects or discards a proposal,
+    and overlap remains an explicit ambiguity relation.
     """
     return validate_resolution(
         _derive_resolution(raw_envelopes, occlusion_envelopes), raw_envelopes, occlusion_envelopes
@@ -755,9 +700,8 @@ def validate_resolution(
     checked = _closed(record, fields, "geometry resolution")
     if checked["schema"] != RESOLUTION_SCHEMA:
         raise SchemaRefusal("geometry resolution has unknown schema")
-    # Compute source truth through the public resolver and compare all derived facts.
-    # The private recomputation avoids accepting a restatement merely because its own
-    # predicates agree with each other (R0 freeze-note derived-record pattern).
+    # Recompute independently rather than accept a restatement merely because
+    # its own predicates agree with each other.
     expected = _derive_resolution(raw_envelopes, occlusion_envelopes)
     if checked != expected:
         raise SchemaRefusal(
@@ -769,8 +713,6 @@ def validate_resolution(
 def _derive_resolution(
     raw_envelopes: list[dict[str, Any]], occlusion_envelopes: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    # Same source validation and derivation as resolve, deliberately factored here
-    # so validation recomputes from source rather than trusting resolution fields.
     raws = []
     for item in raw_envelopes:
         envelope = validate_envelope(item)
@@ -792,11 +734,8 @@ def _derive_resolution(
         (payload["page_id"], payload["page_ordinal"]) != page for _envelope, payload in occlusions
     ):
         raise SchemaRefusal("resolver source records do not share one page lineage")
-    # Page lineage (id + ordinal) is not the same fact as page pixel extent: two
-    # raw proposals could in principle share lineage while declaring different
-    # page_width_px/page_height_px. Pin one page extent and refuse a mismatch,
-    # since every AABB and occlusion coordinate below is compared as if they all
-    # shared this one pixel grid.
+    # Page lineage isn't the same fact as pixel extent: pin one extent and
+    # refuse a mismatch, since every coordinate below assumes one shared grid.
     page_w = raws[0][1]["page_transform"]["page_width_px"]
     page_h = raws[0][1]["page_transform"]["page_height_px"]
     if any(
@@ -805,10 +744,7 @@ def _derive_resolution(
         for _envelope, payload in raws
     ):
         raise SchemaRefusal("resolver raw proposals do not share one page pixel extent")
-    # validate_occlusion cannot check its own polygon against the page (it has no
-    # page_transform); this is that deferred extent check. An occlusion outside
-    # the shared page grid is refused rather than silently accepted as if it were
-    # in-bounds geometry that could plausibly touch every proposal on the page.
+    # The deferred extent check validate_occlusion couldn't make on its own.
     for _envelope, occlusion in occlusions:
         if any(
             not (0 <= point["x"] < page_w and 0 <= point["y"] < page_h)
@@ -822,16 +758,9 @@ def _derive_resolution(
     containment, overlaps = [], []
     for index, (_envelope, left) in enumerate(ordered):
         for _other_envelope, right in ordered[index + 1 :]:
-            # Two proposals with the SAME box each "contain" the other, so the
-            # containment test recorded whichever the proposal_id sort happened to
-            # reach first as the outer one. That published a page->act->region
-            # hierarchy the sources never supported, invented by a hash ordering,
-            # and it swallowed the ambiguity: coincident geometry is exactly the
-            # case a reader must be shown, not a parent-child claim. It is
-            # reachable now that identical geometry at two scores is deliberately
-            # retained as two raw signals (the R2 proposal_id repair), and
-            # wherever two sources' boxes coincide. Recorded as an ambiguity;
-            # containment below stays a strict relation.
+            # Equal AABBs each "contain" the other; recording one as outer would
+            # invent a parent-child hierarchy from sort order. Recorded as an
+            # ambiguity instead; containment stays a strict relation.
             if left["aabb"] == right["aabb"]:
                 overlaps.append(
                     {
@@ -852,26 +781,10 @@ def _derive_resolution(
                         "state": "ambiguous-overlap",
                     }
                 )
-    # Disposition basis (recorded here, not just in the audit report, so the
-    # decision travels with the code it governs): ANY occlusion on the page marks
-    # EVERY proposal on that page "review", not only proposals whose AABB
-    # geometrically intersects the occlusion polygon. This is deliberately
-    # over-broad. goal 2 ranks a missed act above a poorly read one; principle 9
-    # treats extra review effort as an acceptable cost, never a reason to read
-    # less carefully; and Architecture requires occlusions are "never silently
-    # read past." A tight geometric filter would let an occlusion the resolver
-    # itself misjudged (e.g. a coarse polygon, or ink actually extending past its
-    # drawn edge) silently clear proposals it should have flagged. The page-wide
-    # flag is intentionally conservative;
-    # a geometric-intersection narrowing is future work if the
-    # review-queue cost is measured and found to matter, never a default.
-    # The same question, asked of the other source. Two occlusion envelopes under
-    # one `occlusion_id` are an identity collision exactly as two raw proposals
-    # are, and left unchecked they are worse than untidy: `occlusion_ids` below
-    # goes into EVERY partition row, so one occlusion counted twice tells a
-    # reviewer that two separate obstructions bear on every proposal on the page.
-    # principle 8 -- the record may only claim what was actually measured.
     occlusion_ids = sorted(payload["occlusion_id"] for _envelope, payload in occlusions)
+    # An id claimed twice would make `occlusion_refs` and `occlusion_ids` fall
+    # out of correspondence, and a reviewer could not tell which occlusion a
+    # partition entry actually names.
     if len(occlusion_ids) != len(set(occlusion_ids)):
         raise SchemaRefusal("resolver received duplicate occlusion identities")
     return {
@@ -895,6 +808,11 @@ def _derive_resolution(
         "partition": [
             {
                 "proposal_id": proposal_id,
+                # Deliberately over-broad: ANY occlusion on the page marks EVERY
+                # proposal "review", not only those whose AABB geometrically
+                # intersects it, since a tight filter could let a misjudged
+                # occlusion silently clear a proposal it should have flagged. A
+                # geometric narrowing is future work, not a default.
                 "disposition": "review" if occlusion_ids else "accepted-coverage",
                 "occlusion_ids": occlusion_ids,
             }

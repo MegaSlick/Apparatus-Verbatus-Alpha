@@ -1,14 +1,8 @@
-"""SPEC_D §1.1, §1.2, §4, §6 (D1 row).
-
-Covers `structure_prompt.py` (the sealed prompt text and its digest, that the
-text is Chandra's own carried bytes rather than a copy of them, and the
-principle 8 no-preference/no-severity/no-confidence check a test can
-actually pin) and the one equality this stage owns for
-`common/structure_answer.py`: its page-pixel conversion against
-`geometry_layer.chandra_layout`'s own arithmetic, over a grid of boxes
-including the 0 and 1000 edges. It lives here rather than in `common/`
-because `geometry_layer` lives in `pipeline/2_designator/` and `common/` may
-not import a stage.
+"""Covers `structure_prompt.py` (sealed prompt text and digest, that the text
+is Chandra's own carried bytes rather than a copy, and the no-preference
+check) and the page-pixel conversion equality between
+`common/structure_answer.py::to_page_bounds` and
+`geometry_layer.chandra_layout`'s own arithmetic.
 """
 
 from __future__ import annotations
@@ -41,8 +35,6 @@ def test_prompt_version_is_the_declared_seal():
 
 
 def test_messages_is_one_user_turn_with_no_system_turn_and_no_image_block():
-    """v3: Chandra's own inference code sends a single `user` message and never
-    a system message, and this chair's occupant is Chandra."""
     result = messages()
     assert isinstance(result, tuple)
     assert [message["role"] for message in result] == ["user"]
@@ -50,16 +42,8 @@ def test_messages_is_one_user_turn_with_no_system_turn_and_no_image_block():
 
 
 def test_the_sent_text_is_the_carried_vendor_prompt_and_not_a_copy_of_it():
-    """Identity against `common/chandra_layout.py`, not equality with a literal.
-
-    A second copy of 2,161 bytes in this file would pass a `==` check on the day
-    it was written and drift the first time either side was edited -- and the
-    drift that matters is the silent one, where the tree still *says* the chair
-    is asked in the vendor's bytes. There is one carried constant, and this is
-    what asserts that this pass sends that one and nothing else. What the bytes
-    are is the carrier's own business: `chandra_layout` refuses to import if
-    they no longer render to the sha256 recorded against the vendor commit.
-    """
+    """Identity against `common/chandra_layout.py`, not equality with a
+    literal copy, which would pass today and silently drift on either edit."""
     (message,) = messages()
     assert message["content"] is layout_grammar.OCR_LAYOUT_PROMPT
 
@@ -69,9 +53,6 @@ def test_prompt_digest_is_stable_across_calls():
 
 
 def test_prompt_digest_is_the_pinned_seal():
-    """The mechanical half of the seal the module docstring promises: changing
-    the prompt text must bump `STRUCTURE_PROMPT_VERSION` and re-pin this digest
-    in the same commit, or this test catches the drift."""
     assert prompt_sha256() == "a37ac6915191183b0ded823e8134cea907b2cf2653b1e715bd3ed3d84d60a054"
 
 
@@ -85,13 +66,8 @@ def test_prompt_digest_changes_if_the_rendered_text_changes(monkeypatch):
 
 
 def test_the_vendor_identity_names_the_pin_the_carried_bytes_are_recorded_against():
-    """What every page's record carries beside the model's own provenance.
-
-    The digest field is the *carried prompt's* digest and not `prompt_sha256()`:
-    the two answer different questions -- "are these the vendor's bytes" and
-    "is this the message this pass sends" -- and a record that conflated them
-    would prove the wrong one.
-    """
+    """The digest field is the carried prompt's own digest, not `prompt_sha256()`:
+    the two answer different questions and must not be conflated."""
     identity = structure_prompt.vendor_identity()
     assert identity == {
         "repository": layout_grammar.VENDOR_REPOSITORY,
@@ -105,33 +81,17 @@ def test_the_vendor_identity_names_the_pin_the_carried_bytes_are_recorded_agains
 
 
 def test_prompt_text_states_no_preference_severity_floor_or_confidence_budget():
-    """Principle 8: an instrument may state no preference, severity floor, or
-    confidence budget. Pinned directly against the rendered text, not the
-    module's own docstring, so a wording change that reintroduced one of these
-    words into what the model actually receives would fail here."""
+    """Pinned against the rendered text itself, not the module's docstring."""
     rendered = "\n".join(message["content"] for message in messages())
     hits = [word for word in FORBIDDEN_WORDS if re.search(word, rendered, re.IGNORECASE)]
     assert not hits, f"the rendered prompt text contains forbidden word(s): {hits}"
 
 
 def test_the_sent_prompt_asks_for_the_grammar_this_pass_reads():
-    """The prompt and the reader agree about the answer they are talking about.
-
-    Three claims, each one a way the pair could silently disagree. The
-    instruction has to *ask* for HTML layout blocks with a `data-bbox` and a
-    `data-label`, because `chandra_layout.parse_layout_html` reads exactly
-    those and nothing else; the coordinate denominator the prompt states has to
-    be the `BBOX_SCALE` the conversion divides by, or every rectangle lands
-    scaled by a number the model was never given; and no line of the retired
-    `verbatus-structure-answer.v1` JSON envelope may survive in it, because a
-    chair asked for JSON and read as HTML answers into a reader that will find
-    no blocks at all.
-
-    The first two are also checked one layer down, at import, by
-    `chandra_layout._seal`. They are restated here because that module seals the
-    bytes against the *vendor* while this pass depends on what they ask *this
-    pipeline's reader* for -- and the day those two purposes part company is the
-    day only one of the two checks fails.
+    """Three ways the prompt and the reader could silently disagree: the
+    instruction must ask for what `chandra_layout.parse_layout_html` reads
+    (`data-bbox`/`data-label`), the stated coordinate denominator must be
+    `BBOX_SCALE`, and no retired JSON-envelope wording may survive.
     """
     rendered = "\n".join(message["content"] for message in messages())
     assert "OCR this image to HTML, arranged as layout blocks." in rendered
@@ -142,13 +102,9 @@ def test_the_sent_prompt_asks_for_the_grammar_this_pass_reads():
 
 
 def test_every_label_the_reader_can_publish_is_a_label_the_prompt_offered():
-    """The vocabulary `structure_pass._label_fields` publishes in clear.
-
-    Its range is closed only if the prompt really offers those words: a label
-    admitted here that the chair was never offered would be this pass reporting
-    a category nobody asked for. The `block` default is the one member that is
-    not offered by the prompt, and it is the vendor parser's own word for a
-    block that declared no label at all -- named apart, rather than folded in.
+    """`structure_pass._label_fields`'s vocabulary is closed only if the
+    prompt really offers those words. `UNLABELLED_BLOCK_LABEL` is the one
+    member not offered by the prompt, named apart deliberately.
     """
     rendered = "\n".join(message["content"] for message in messages())
     for label in layout_grammar.OCR_LAYOUT_LABELS:
@@ -173,13 +129,9 @@ GRID_BOXES = [
     [1, 1, 999, 999],
 ]
 
-# A conversion one pixel wide or tall collapses `chandra_layout`'s four corner
-# points to fewer than three distinct ones, and `_polygon_points`
-# (geometry_layer.py:178-180, reached through `validate_raw_proposal`) refuses
-# that before it ever produces an `aabb` -- so a hairline `to_page_bounds`
-# result is outside the domain where the two functions are comparable at all.
-# Filtered here rather than dropped silently: the count below pins that the
-# filter still leaves the grid worth running, per principle 2.
+# A conversion one pixel wide or tall collapses chandra_layout's four corners
+# to fewer than three distinct points, which validate_raw_proposal refuses
+# before producing an aabb -- outside the domain the two functions share.
 GRID_CASES = [
     (box, page_w, page_h)
     for box in GRID_BOXES
@@ -207,9 +159,6 @@ def test_to_page_bounds_matches_chandra_layout_over_a_grid_of_boxes(box, page_w,
 
 
 def test_to_page_bounds_matches_chandra_layout_for_two_regions_on_one_page():
-    """Not only the single-region case: two distinct rectangles converted
-    together, since the union path is what a real answer with several acts
-    exercises."""
     boxes = [[0, 0, 500, 500], [500, 500, 1000, 1000]]
     proposals = chandra_layout(
         page_id="pg_fixture",
@@ -236,12 +185,11 @@ def test_to_page_bounds_matches_chandra_layout_for_two_regions_on_one_page():
     ],
 )
 def test_a_hairline_conversion_is_bounds_here_and_refused_by_the_layout_path(box, page_w, page_h):
-    """The gap the grid filter above carves out, named rather than left
-    implied: `to_page_bounds` and `geometry.validate_bounds` treat a
-    conversion one pixel wide or tall as ordinary page geometry, while
-    `chandra_layout` refuses the same box as not-a-polygon. The two converters
-    agree everywhere `chandra_layout` actually returns a proposal; this is the
-    boundary of that domain, not a mismatch inside it."""
+    """The boundary the grid filter above carves out: a one-pixel-wide/tall
+    conversion is ordinary page geometry to `to_page_bounds` but refused by
+    `chandra_layout` as not-a-polygon. Not a mismatch, just outside the
+    domain where the two agree.
+    """
     bounds = to_page_bounds(box, page_w, page_h)
     assert bounds["w"] == 1 or bounds["h"] == 1
     geometry.validate_bounds(bounds, page_w, page_h, "structure-chair rectangle")
