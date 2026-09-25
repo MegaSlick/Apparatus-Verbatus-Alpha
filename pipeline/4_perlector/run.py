@@ -2059,49 +2059,10 @@ def _reading_image_inputs(
 
 
 # Closed and checked before publication: a missing field (identity, dissent, regime) is
-# the failure a per-field type check never sees.
-_PERLECTIO_FIELDS: Final = frozenset(
-    {
-        "act_key",
-        "attempt_ordinal",
-        "text",
-        "basis",
-        "dossier",
-        "prompt",
-        "dissent",
-        "truncation",
-        "uncertain_spans",
-        "uncertainty_assessment",
-        "gaps",
-        "provenance",
-        "lectio_kind",
-        "self_revision",
-        "protocol",
-        "audit",
-    }
-)
-
-# The instrument record: no `basis`, since a nuda reading has no witnesses, and its
-# sampling design. Every record kind carries the doubt report, because a doubt reported
-# on an instrument call is a measurement too (principle 2).
-_LECTIO_NUDA_FIELDS: Final = frozenset(
-    {
-        "act_key",
-        "attempt_ordinal",
-        "text",
-        "dossier",
-        "prompt",
-        "sampling",
-        "dissent",
-        "truncation",
-        "uncertain_spans",
-        "uncertainty_assessment",
-        "gaps",
-        "provenance",
-    }
-)
-
-_LECTIO_PRIOR_FIELDS: Final = frozenset(
+# the failure a per-field type check never sees. Every record kind carries the doubt
+# report, because a doubt reported on an instrument call is a measurement too
+# (principle 2).
+_READING_FIELDS: Final = frozenset(
     {
         "act_key",
         "attempt_ordinal",
@@ -2114,30 +2075,25 @@ _LECTIO_PRIOR_FIELDS: Final = frozenset(
         "uncertainty_assessment",
         "gaps",
         "provenance",
-        "protocol",
     }
 )
-
-_PRIMED_WITHOUT_PRIOR_FIELDS: Final = frozenset(
-    {
-        "act_key",
-        "attempt_ordinal",
-        "text",
-        "basis",
-        "dossier",
-        "prompt",
-        "sampling",
-        "dissent",
-        "truncation",
-        "uncertain_spans",
-        "uncertainty_assessment",
-        "gaps",
-        "provenance",
-        "lectio_kind",
-        "protocol",
-        "membership",
-    }
-)
+_PERLECTIO_FIELDS: Final = _READING_FIELDS | {
+    "basis",
+    "lectio_kind",
+    "self_revision",
+    "protocol",
+    "audit",
+}
+# No `basis`: a nuda reading has no witnesses.
+_LECTIO_NUDA_FIELDS: Final = _READING_FIELDS | {"sampling"}
+_LECTIO_PRIOR_FIELDS: Final = _READING_FIELDS | {"protocol"}
+_PRIMED_WITHOUT_PRIOR_FIELDS: Final = _READING_FIELDS | {
+    "basis",
+    "sampling",
+    "lectio_kind",
+    "protocol",
+    "membership",
+}
 
 # Each reason nothing was read has a distinct closed shape; otherwise a future
 # branch could omit its provenance without failing publication.
@@ -2151,18 +2107,22 @@ _NOT_RUN_CAPACITY_FIELDS: Final = _NOT_RUN_ABSENT_FIELDS | {
 }
 
 
+def _require_closed_schema(payload: dict, fields: frozenset, *, what: str) -> None:
+    missing = sorted(fields - set(payload))
+    unexpected = sorted(set(payload) - fields)
+    if missing or unexpected:
+        raise SchemaRefusal(
+            f"a Perlector {what} payload is not its closed schema: missing {missing}, "
+            f"unexpected {unexpected}"
+        )
+
+
 def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
     """Refuse a not-run Perlectio missing part of the record it claims.
 
     Capacity holds validate their autopsia and partition input where they are produced.
     """
-    missing = sorted(fields - set(payload))
-    unexpected = sorted(set(payload) - fields)
-    if missing or unexpected:
-        raise SchemaRefusal(
-            f"a Perlector not-run payload is not its closed schema: missing {missing}, "
-            f"unexpected {unexpected}"
-        )
+    _require_closed_schema(payload, fields, what="not-run")
 
 
 _NO_FAILURE_EVIDENCE: Final = {
@@ -2433,13 +2393,7 @@ def validate_reading_payload(
     Checked when written, so a defect surfaces where it was introduced.
     """
     refuse_capture_preference(payload, what="a Perlector reading")
-    missing = sorted(fields - set(payload))
-    unexpected = sorted(set(payload) - fields)
-    if missing or unexpected:
-        raise SchemaRefusal(
-            f"a Perlector reading payload is not its closed schema: missing {missing}, "
-            f"unexpected {unexpected}"
-        )
+    _require_closed_schema(payload, fields, what="reading")
     if outcome == "read" and (not isinstance(payload["text"], str) or not payload["text"].strip()):
         raise SchemaRefusal("a completed reading cannot establish an empty text")
     # The caller's field set decides the record shape, so a Perlectio carrying `basis:
@@ -2667,12 +2621,10 @@ def validate_reading_payload(
             "contradicted"
         )
     _validate_sealed_doubt(payload, fields=fields)
-    if "audit" not in fields:
-        annotations.validate_annotations(payload, outcome=outcome)
-        return
-    # Re-proof offsets index the frozen semi-final, which may be longer than the final;
-    # the chain check binds them before publication, so no bound is guessed here.
-    audit.validate_perlectio_audit(payload.get("audit"), text_length=None)
+    if "audit" in fields:
+        # Re-proof offsets index the frozen semi-final, which may be longer than the final;
+        # the chain check binds them before publication, so no bound is guessed here.
+        audit.validate_perlectio_audit(payload.get("audit"), text_length=None)
     annotations.validate_annotations(payload, outcome=outcome)
 
 
@@ -3254,6 +3206,9 @@ class _Attempt:
     protocol_sha256: str
     receipt_ref: dict[str, str] | None
 
+    def provenance(self, context) -> dict:
+        return provenance_for(context, self.chair, attempted=True, receipt_ref=self.receipt_ref)
+
 
 def _publication_pass_data(
     attempt: _Attempt, dossier: dict[str, Any], result: dict[str, Any]
@@ -3348,9 +3303,7 @@ def _publish_lectio_nuda(
         "uncertain_spans": nuda_spans,
         "uncertainty_assessment": nuda_assessment,
         "gaps": nuda_gaps,
-        "provenance": provenance_for(
-            context, attempt.chair, attempted=True, receipt_ref=attempt.receipt_ref
-        ),
+        "provenance": attempt.provenance(context),
     }
     fields = with_engine_call(payload, result, _LECTIO_NUDA_FIELDS)
     reading_inputs = _arm_image_inputs(context, attempt, nuda_dossier) + engine_call_inputs(
@@ -3398,9 +3351,7 @@ def _publish_lectio_prior(
         "uncertain_spans": prior_spans,
         "uncertainty_assessment": prior_assessment,
         "gaps": prior_gaps,
-        "provenance": provenance_for(
-            context, attempt.chair, attempted=True, receipt_ref=attempt.receipt_ref
-        ),
+        "provenance": attempt.provenance(context),
         "protocol": _protocol_record(context, attempt.protocol_config),
     }
     fields = with_engine_call(payload, result, _LECTIO_PRIOR_FIELDS)
@@ -3484,9 +3435,7 @@ def _publish_primed_without_prior(
         "uncertain_spans": control_spans,
         "uncertainty_assessment": control_assessment,
         "gaps": control_gaps,
-        "provenance": provenance_for(
-            context, attempt.chair, attempted=True, receipt_ref=attempt.receipt_ref
-        ),
+        "provenance": attempt.provenance(context),
         "lectio_kind": "primed-without-prior",
         "protocol": _protocol_record(context, attempt.protocol_config),
     }
@@ -3569,9 +3518,7 @@ def _established_row(
         outcome=outcome,
         whole_act_gaps=_whole_act_gap(testimonia, testimonium_references),
     )
-    provenance = provenance_for(
-        context, attempt.chair, attempted=True, receipt_ref=attempt.receipt_ref
-    )
+    provenance = attempt.provenance(context)
     payload = {
         "act_key": act["act_key"],
         "attempt_ordinal": attempt.ordinal,
@@ -3827,7 +3774,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             all_proposal_regions=all_proposal_regions,
             reported_unrouted=reported_unrouted,
         )
-
         region_pixels = _region_pixels(bases)
         page_renders = _page_renders_for(context, bases)
         page_pixels = _page_pixels(page_renders)
