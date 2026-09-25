@@ -19,7 +19,7 @@ from operations.corpus.rows import (
     CORPUS_ID,
     ROW_REFUSAL_REASONS,
     SCHEMA,
-    RowRefusal,
+    Refusal,
     build_snapshot,
     validate_row,
     validate_snapshot,
@@ -131,10 +131,12 @@ def test_every_declared_row_refusal_reason_is_exercised_here(exercised_reasons):
 
 
 def test_a_refusal_carries_its_reason_and_refuses_an_undeclared_one():
-    error = RowRefusal("empty-rows: detail")
+    error = Refusal("empty-rows: detail")
     assert (error.reason, str(error)) == ("empty-rows", "empty-rows: detail")
-    with pytest.raises(TypeError, match="declares no reason 'not-a-row-reason'"):
-        RowRefusal("not-a-row-reason: detail")
+    with pytest.raises(
+        TypeError, match="operations.corpus.rows declares no reason 'not-a-row-reason'"
+    ):
+        Refusal("not-a-row-reason: detail")
 
 
 # --- validate_snapshot: shape, schema, and uniqueness ----------------------------

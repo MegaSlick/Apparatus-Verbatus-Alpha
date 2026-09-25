@@ -67,16 +67,16 @@ ROW_REFUSAL_REASONS = frozenset(
 )
 
 
-class RowRefusal(CorpusRefusal):
+class Refusal(CorpusRefusal):
     reasons = ROW_REFUSAL_REASONS
 
 
-_closed = RowRefusal.closed
+_closed = Refusal.closed
 
 
 def _non_empty_str(value: Any, what: str) -> str:
     if not isinstance(value, str) or not value:
-        raise RowRefusal(f"empty-field: {what} must be a non-empty string")
+        raise Refusal(f"empty-field: {what} must be a non-empty string")
     return value
 
 
@@ -84,18 +84,16 @@ def validate_row(row: Any, index: int) -> dict[str, Any]:
     """Refuse a row that is not exactly the closed shape this snapshot carries."""
     row = _closed(row, _ROW_FIELDS, f"row[{index}]")
     if row["split"] not in SPLITS:
-        raise RowRefusal(
+        raise Refusal(
             f"unknown-split: row[{index}] (record_id {row.get('record_id')!r}) "
             f"has split {row['split']!r}, not one of {sorted(SPLITS)}"
         )
     for field in ("source", "record_id", "record_url"):
         _non_empty_str(row[field], f"row[{index}].{field}")
     if not isinstance(row["text"], str) or not row["text"]:
-        raise RowRefusal(
-            f"empty-text: row[{index}] (record_id {row['record_id']!r}) carries no text"
-        )
+        raise Refusal(f"empty-text: row[{index}] (record_id {row['record_id']!r}) carries no text")
     if row["parish"] is not None and not isinstance(row["parish"], str):
-        raise RowRefusal(
+        raise Refusal(
             f"malformed-field: row[{index}].parish must be a string or null, "
             f"got {type(row['parish']).__name__}"
         )
@@ -105,13 +103,13 @@ def validate_row(row: Any, index: int) -> dict[str, Any]:
         # 1548-1806. Booleans are ints in Python and are
         # refused explicitly so a stray flag can never pass as a year.
         if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
-            raise RowRefusal(
+            raise Refusal(
                 f"malformed-field: row[{index}].{field} must be an integer year or "
                 f"null, got {type(value).__name__}"
             )
     expected = digest_bytes(row["text"].encode("utf-8"))
     if row["text_sha256"] != expected:
-        raise RowRefusal(
+        raise Refusal(
             f"text-sha256-mismatch: row[{index}] (record_id {row['record_id']!r}) "
             f"carries {row['text_sha256']!r}, recomputed {expected!r}"
         )
@@ -122,9 +120,9 @@ def validate_snapshot(snapshot: Any) -> dict[str, Any]:
     """Refuse a snapshot that is not exactly `recordgold-rows.v1`, closed and self-consistent."""
     snapshot = _closed(snapshot, _TOP_FIELDS, "row snapshot")
     if snapshot["schema"] != SCHEMA:
-        raise RowRefusal(f"wrong-schema: expected {SCHEMA!r}, got {snapshot['schema']!r}")
+        raise Refusal(f"wrong-schema: expected {SCHEMA!r}, got {snapshot['schema']!r}")
     if snapshot["corpus_id"] != CORPUS_ID:
-        raise RowRefusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {snapshot['corpus_id']!r}")
+        raise Refusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {snapshot['corpus_id']!r}")
 
     source_facts = _closed(snapshot["source_facts"], _SOURCE_FACTS_FIELDS, "source_facts")
     _non_empty_str(source_facts["dataset"], "source_facts.dataset")
@@ -134,27 +132,27 @@ def validate_snapshot(snapshot: Any) -> dict[str, Any]:
     )
     for split in sorted(_PARQUET_SHA256_FIELDS):
         if not is_sha256(parquet_sha256[split]):
-            raise RowRefusal(
+            raise Refusal(
                 f"malformed-field: source_facts.parquet_sha256.{split} must be a "
                 f"lowercase sha256 hex digest, got {parquet_sha256[split]!r}"
             )
 
     rows = snapshot["rows"]
     if not isinstance(rows, list) or not rows:
-        raise RowRefusal("empty-rows: row snapshot must carry at least one row")
+        raise Refusal("empty-rows: row snapshot must carry at least one row")
 
     seen_ids: set[str] = set()
     for index, row in enumerate(rows):
         validate_row(row, index)
         record_id = row["record_id"]
         if record_id in seen_ids:
-            raise RowRefusal(
+            raise Refusal(
                 f"duplicate-record-id: {record_id!r} appears more than once in the snapshot"
             )
         seen_ids.add(record_id)
 
     if not verify_self_hash(snapshot):
-        raise RowRefusal(
+        raise Refusal(
             "self-hash-mismatch: row snapshot self_hash does not verify against its own content"
         )
     return snapshot

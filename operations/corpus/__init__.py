@@ -56,7 +56,7 @@ from common.contracts.errors import ContractError
 class CorpusRefusal(ContractError):
     """Every refusal this package raises, as `"<reason>: <detail>"`.
 
-    Each module raises its own subclass whose `reasons` is that module's closed
+    Each module raises its own `Refusal` subclass whose `reasons` is that module's closed
     `*_REFUSAL_REASONS` vocabulary. `.reason` is the leading name; a caller
     dispatches on it, never on the text. A name outside the vocabulary is a
     programming error, raised as `TypeError` at construction.
@@ -68,7 +68,9 @@ class CorpusRefusal(ContractError):
         super().__init__(message)
         self.reason = message.split(":", 1)[0]
         if self.reason not in self.reasons:
-            raise TypeError(f"{type(self).__name__} declares no reason {self.reason!r}: {message}")
+            raise TypeError(
+                f"{type(self).__module__} declares no reason {self.reason!r}: {message}"
+            )
 
     @classmethod
     def closed(cls, value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:

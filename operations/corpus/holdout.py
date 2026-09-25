@@ -55,7 +55,7 @@ HOLDOUT_REFUSAL_REASONS = frozenset(
 )
 
 
-class HoldoutRefusal(CorpusRefusal):
+class Refusal(CorpusRefusal):
     reasons = HOLDOUT_REFUSAL_REASONS
 
 
@@ -73,7 +73,7 @@ _TOP_FIELDS = frozenset(
 )
 
 
-_closed = HoldoutRefusal.closed
+_closed = Refusal.closed
 
 
 def build_holdout(rows: list[dict[str, Any]], source_row_snapshot_self_hash: str) -> dict[str, Any]:
@@ -110,11 +110,11 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
     """Refuse a ledger that is not exactly `recordgold-holdout.v1`, closed and self-consistent."""
     holdout = _closed(holdout, _TOP_FIELDS, "hold-out ledger")
     if holdout["schema"] != SCHEMA:
-        raise HoldoutRefusal(f"wrong-schema: expected {SCHEMA!r}, got {holdout['schema']!r}")
+        raise Refusal(f"wrong-schema: expected {SCHEMA!r}, got {holdout['schema']!r}")
     if holdout["corpus_id"] != CORPUS_ID:
-        raise HoldoutRefusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {holdout['corpus_id']!r}")
+        raise Refusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {holdout['corpus_id']!r}")
     if not is_sha256(holdout["source_row_snapshot_self_hash"]):
-        raise HoldoutRefusal(
+        raise Refusal(
             "malformed-record: source_row_snapshot_self_hash must be a lowercase sha256 hex digest"
         )
 
@@ -122,20 +122,16 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
     if not isinstance(identifiers, list) or not all(
         isinstance(identifier, str) for identifier in identifiers
     ):
-        raise HoldoutRefusal("malformed-record: held_identifiers must be a list of strings")
+        raise Refusal("malformed-record: held_identifiers must be a list of strings")
     if identifiers != sorted(set(identifiers)):
-        raise HoldoutRefusal(
-            "malformed-record: held_identifiers must be a sorted, deduplicated list"
-        )
+        raise Refusal("malformed-record: held_identifiers must be a sorted, deduplicated list")
 
     entries = holdout["entries"]
     if (
         not isinstance(entries, list)
         or [entry.get("identifier") for entry in entries if isinstance(entry, dict)] != identifiers
     ):
-        raise HoldoutRefusal(
-            "malformed-record: entries must list held_identifiers, in the same order"
-        )
+        raise Refusal("malformed-record: entries must list held_identifiers, in the same order")
 
     seen_record_ids: set[str] = set()
     for entry in entries:
@@ -146,24 +142,24 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
             or not record_ids
             or not all(isinstance(record_id, str) for record_id in record_ids)
         ):
-            raise HoldoutRefusal(
+            raise Refusal(
                 f"malformed-record: entry {entry['identifier']!r} record_ids must be a "
                 "non-empty list of strings"
             )
         if record_ids != sorted(set(record_ids)):
-            raise HoldoutRefusal(
+            raise Refusal(
                 f"malformed-record: entry {entry['identifier']!r} record_ids must be a "
                 "sorted, deduplicated, non-empty list"
             )
         seen_record_ids.update(record_ids)
 
     if holdout["held_record_ids"] != sorted(seen_record_ids):
-        raise HoldoutRefusal(
+        raise Refusal(
             "malformed-record: held_record_ids does not match the union of every entry's record_ids"
         )
 
     if not verify_self_hash(holdout):
-        raise HoldoutRefusal(
+        raise Refusal(
             "self-hash-mismatch: hold-out ledger self_hash does not verify against its own content"
         )
     return holdout
@@ -182,14 +178,12 @@ def refuse_held_out_page(
         return
     other_splits = sorted(set(splits_present) - {HELD_SPLIT})
     if other_splits:
-        raise HoldoutRefusal(
+        raise Refusal(
             f"cross-split-page: identifier {identifier!r} is held for the {HELD_SPLIT!r} "
             f"split but also carries {other_splits} — it cannot be used for calibration "
             "without exposing held-out material"
         )
-    raise HoldoutRefusal(
-        f"holdout-page: identifier {identifier!r} is held for the {HELD_SPLIT!r} split"
-    )
+    raise Refusal(f"holdout-page: identifier {identifier!r} is held for the {HELD_SPLIT!r} split")
 
 
 def load_holdout(path: str | Path) -> dict[str, Any]:
@@ -212,7 +206,7 @@ def main(snapshot_path: str | Path, output_path: str | Path) -> dict[str, Any]:
     """
     snapshot = validate_snapshot(json.loads(Path(snapshot_path).read_bytes()))
     holdout = build_holdout(snapshot["rows"], snapshot["self_hash"])
-    write_new(Path(output_path), canonical_bytes(holdout), HoldoutRefusal)
+    write_new(Path(output_path), canonical_bytes(holdout), Refusal)
     return holdout
 
 

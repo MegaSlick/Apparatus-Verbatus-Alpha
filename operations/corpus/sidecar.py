@@ -45,7 +45,7 @@ SIDECAR_REFUSAL_REASONS = frozenset(
 )
 
 
-class SidecarRefusal(CorpusRefusal):
+class Refusal(CorpusRefusal):
     reasons = SIDECAR_REFUSAL_REASONS
 
 
@@ -93,24 +93,24 @@ _TOP_FIELDS = frozenset(
 )
 
 
-_closed = SidecarRefusal.closed
+_closed = Refusal.closed
 
 
 def _non_empty_str(value: Any, what: str) -> str:
     if not isinstance(value, str) or not value:
-        raise SidecarRefusal(f"malformed-record: {what} must be a non-empty string")
+        raise Refusal(f"malformed-record: {what} must be a non-empty string")
     return value
 
 
 def _non_negative_int(value: Any, what: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise SidecarRefusal(f"malformed-record: {what} must be a non-negative integer")
+        raise Refusal(f"malformed-record: {what} must be a non-negative integer")
     return value
 
 
 def _positive_int(value: Any, what: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise SidecarRefusal(f"malformed-record: {what} must be a positive integer")
+        raise Refusal(f"malformed-record: {what} must be a positive integer")
     return value
 
 
@@ -148,9 +148,9 @@ def validate_sidecar(sidecar: Any) -> dict[str, Any]:
     """Refuse a sidecar that is not exactly `recordgold-page-records.v1`, closed and self-consistent."""
     sidecar = _closed(sidecar, _TOP_FIELDS, "sidecar")
     if sidecar["schema"] != SCHEMA:
-        raise SidecarRefusal(f"wrong-schema: expected {SCHEMA!r}, got {sidecar['schema']!r}")
+        raise Refusal(f"wrong-schema: expected {SCHEMA!r}, got {sidecar['schema']!r}")
     if sidecar["corpus_id"] != CORPUS_ID:
-        raise SidecarRefusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {sidecar['corpus_id']!r}")
+        raise Refusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {sidecar['corpus_id']!r}")
 
     _non_empty_str(sidecar["source"], "source")
     _non_empty_str(sidecar["volume_id"], "volume_id")
@@ -160,7 +160,7 @@ def validate_sidecar(sidecar: Any) -> dict[str, Any]:
     for field in ("identifier", "info_url", "image_url", "size_parameter", "fetched_at_utc"):
         _non_empty_str(iiif[field], f"iiif.{field}")
     if not is_sha256(iiif["response_sha256"]):
-        raise SidecarRefusal(
+        raise Refusal(
             "malformed-record: iiif.response_sha256 must be a lowercase sha256 hex digest"
         )
     _non_negative_int(iiif["bytes"], "iiif.bytes")
@@ -170,7 +170,7 @@ def validate_sidecar(sidecar: Any) -> dict[str, Any]:
 
     page = _closed(sidecar["page"], _PAGE_FIELDS, "page")
     if not is_sha256(page["sha256"]):
-        raise SidecarRefusal("malformed-record: page.sha256 must be a lowercase sha256 hex digest")
+        raise Refusal("malformed-record: page.sha256 must be a lowercase sha256 hex digest")
     page_width = _positive_int(page["width"], "page.width")
     page_height = _positive_int(page["height"], "page.height")
 
@@ -178,16 +178,16 @@ def validate_sidecar(sidecar: Any) -> dict[str, Any]:
     if not isinstance(splits_present, list) or not all(
         isinstance(split, str) for split in splits_present
     ):
-        raise SidecarRefusal("malformed-record: splits_present must be a list of strings")
+        raise Refusal("malformed-record: splits_present must be a list of strings")
     if splits_present != sorted(set(splits_present)):
-        raise SidecarRefusal("malformed-record: splits_present must be a sorted, deduplicated list")
+        raise Refusal("malformed-record: splits_present must be a sorted, deduplicated list")
     for split in splits_present:
         if split not in SPLITS:
-            raise SidecarRefusal(f"unknown-split: sidecar names unknown split {split!r}")
+            raise Refusal(f"unknown-split: sidecar names unknown split {split!r}")
 
     records = sidecar["records"]
     if not isinstance(records, list) or not records:
-        raise SidecarRefusal("malformed-record: sidecar must carry at least one record")
+        raise Refusal("malformed-record: sidecar must carry at least one record")
     seen_record_ids: set[str] = set()
     referenced_splits: set[str] = set()
     for record in records:
@@ -195,50 +195,48 @@ def validate_sidecar(sidecar: Any) -> dict[str, Any]:
         record_id = record["record_id"]
         _non_empty_str(record_id, "record.record_id")
         if record_id in seen_record_ids:
-            raise SidecarRefusal(
+            raise Refusal(
                 f"malformed-record: record_id {record_id!r} appears more than once in the sidecar"
             )
         seen_record_ids.add(record_id)
         if record["split"] not in SPLITS:
-            raise SidecarRefusal(
+            raise Refusal(
                 f"unknown-split: record {record_id!r} names unknown split {record['split']!r}"
             )
         referenced_splits.add(record["split"])
         region = _closed(record["region"], _REGION_FIELDS, f"record {record_id!r} region")
         if region["x"] < 0 or region["y"] < 0 or region["w"] <= 0 or region["h"] <= 0:
-            raise SidecarRefusal(
+            raise Refusal(
                 f"malformed-record: record {record_id!r} region is not a positive rectangle"
             )
         if region["x"] + region["w"] > page_width or region["y"] + region["h"] > page_height:
-            raise SidecarRefusal(
+            raise Refusal(
                 f"region-outside-page: record {record_id!r} region {region} exceeds "
                 f"the page's {page_width}x{page_height} bounds"
             )
         if not isinstance(record["text"], str) or not record["text"]:
-            raise SidecarRefusal(f"malformed-record: record {record_id!r} carries no text")
+            raise Refusal(f"malformed-record: record {record_id!r} carries no text")
         expected_text_sha256 = digest_bytes(record["text"].encode("utf-8"))
         if record["text_sha256"] != expected_text_sha256:
-            raise SidecarRefusal(
+            raise Refusal(
                 f"malformed-record: record {record_id!r} text_sha256 does not match its text"
             )
         if record["parish"] is not None and not isinstance(record["parish"], str):
-            raise SidecarRefusal(
-                f"malformed-record: record {record_id!r} parish must be a string or null"
-            )
+            raise Refusal(f"malformed-record: record {record_id!r} parish must be a string or null")
         for field in ("start_date", "end_date"):
             value = record[field]
             if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
-                raise SidecarRefusal(
+                raise Refusal(
                     f"malformed-record: record {record_id!r} {field} must be an integer year or null"
                 )
 
     if referenced_splits != set(splits_present):
-        raise SidecarRefusal(
+        raise Refusal(
             "malformed-record: splits_present must equal exactly the splits carried by records"
         )
 
     if not verify_self_hash(sidecar):
-        raise SidecarRefusal(
+        raise Refusal(
             "self-hash-mismatch: sidecar self_hash does not verify against its own content"
         )
     return sidecar

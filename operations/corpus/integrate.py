@@ -37,7 +37,7 @@ INTEGRATE_REFUSAL_REASONS = frozenset(
 )
 
 
-class IntegrateRefusal(CorpusRefusal):
+class Refusal(CorpusRefusal):
     reasons = INTEGRATE_REFUSAL_REASONS
 
 
@@ -67,13 +67,13 @@ def fetched_pages_from_log(log: dict[str, Any], cache_root: Path) -> dict[str, F
         response_sha256 = entry["response_sha256"]
         cache_path = cache_module.body_path(cache_root, response_sha256)
         if not cache_path.exists():
-            raise IntegrateRefusal(
+            raise Refusal(
                 f"fetched-page-cache-missing: {identifier!r} names response digest "
                 f"{response_sha256!r} but {cache_path} does not exist"
             )
         actual_digest = digest_bytes(cache_path.read_bytes())
         if actual_digest != response_sha256:
-            raise IntegrateRefusal(
+            raise Refusal(
                 f"fetched-page-cache-digest-mismatch: {identifier!r} cache file {cache_path} "
                 f"digests to {actual_digest!r}, the fetch log declared {response_sha256!r}"
             )

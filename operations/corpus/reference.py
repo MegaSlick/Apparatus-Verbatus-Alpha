@@ -93,7 +93,7 @@ REFERENCE_REFUSAL_REASONS = frozenset(
 )
 
 
-class ReferenceRefusal(CorpusRefusal):
+class Refusal(CorpusRefusal):
     reasons = REFERENCE_REFUSAL_REASONS
 
 
@@ -122,29 +122,27 @@ _TOP_FIELDS = frozenset(
 )
 
 
-_closed = ReferenceRefusal.closed
+_closed = Refusal.closed
 
 
 def _non_empty_str(value: Any, what: str) -> str:
     if not isinstance(value, str) or not value:
-        raise ReferenceRefusal(f"malformed-record: {what} must be a non-empty string")
+        raise Refusal(f"malformed-record: {what} must be a non-empty string")
     return value
 
 
 def _positive_int(value: Any, what: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise ReferenceRefusal(f"malformed-record: {what} must be a positive integer")
+        raise Refusal(f"malformed-record: {what} must be a positive integer")
     return value
 
 
 def _region(value: Any, what: str) -> dict[str, int]:
     region = _closed(value, _REGION_FIELDS, what)
     if any(not isinstance(region[key], int) or isinstance(region[key], bool) for key in region):
-        raise ReferenceRefusal(f"malformed-record: {what} bounds must be plain integers")
+        raise Refusal(f"malformed-record: {what} bounds must be plain integers")
     if region["x"] < 0 or region["y"] < 0 or region["w"] <= 0 or region["h"] <= 0:
-        raise ReferenceRefusal(
-            f"malformed-record: {what} must have non-negative x/y and positive w/h"
-        )
+        raise Refusal(f"malformed-record: {what} must have non-negative x/y and positive w/h")
     return region
 
 
@@ -176,26 +174,26 @@ def build_reference_page(
     """
     page = _closed(page, _PAGE_FIELDS, "page")
     if not is_sha256(page["sha256"]):
-        raise ReferenceRefusal("malformed-record: page.sha256 must be a lowercase sha256 digest")
+        raise Refusal("malformed-record: page.sha256 must be a lowercase sha256 digest")
     width = _positive_int(page["width"], "page.width")
     height = _positive_int(page["height"], "page.height")
     for name, value in (("source", source), ("volume", volume), ("designation", designation)):
         _non_empty_str(value, name)
     if "/" in source:
-        raise ReferenceRefusal(
+        raise Refusal(
             f"unsafe-source-value: source {source!r} is not a safe single path segment "
             "— it must carry no '/' since source and volume are joined into one "
             "physical page identity"
         )
     if split not in SPLITS:
-        raise ReferenceRefusal(f"unknown-split: {split!r} is not one of {sorted(SPLITS)}")
+        raise Refusal(f"unknown-split: {split!r} is not one of {sorted(SPLITS)}")
     if not records:
-        raise ReferenceRefusal("empty-acts: a reference page must carry at least one record")
+        raise Refusal("empty-acts: a reference page must carry at least one record")
 
     try:
         physical_page = physical_page_id(CORPUS_ID, f"{source}/{volume}", designation)
     except IdentityRefusal as error:
-        raise ReferenceRefusal(f"unmintable-physical-act: {error}") from None
+        raise Refusal(f"unmintable-physical-act: {error}") from None
 
     splits_present: set[str] = set()
     seen_record_ids: set[str] = set()
@@ -210,43 +208,43 @@ def build_reference_page(
         )
         record_id = _non_empty_str(entry["record_id"], "record entry record_id")
         if record_id in seen_record_ids:
-            raise ReferenceRefusal(f"duplicate-record-id: {record_id!r} appears twice on this page")
+            raise Refusal(f"duplicate-record-id: {record_id!r} appears twice on this page")
         seen_record_ids.add(record_id)
         entry_split = entry["split"]
         if entry_split not in SPLITS:
-            raise ReferenceRefusal(
+            raise Refusal(
                 f"unknown-split: record {record_id!r} has split {entry_split!r}, "
                 f"not one of {sorted(SPLITS)}"
             )
         splits_present.add(entry_split)
         region = _region(entry["region"], f"record {record_id!r} region")
         if region["x"] + region["w"] > width or region["y"] + region["h"] > height:
-            raise ReferenceRefusal(
+            raise Refusal(
                 f"region-outside-page: record {record_id!r} region {region} exceeds "
                 f"the page's {width}x{height} bounds"
             )
         region_key = (region["x"], region["y"], region["w"], region["h"])
         if region_key in seen_regions:
-            raise ReferenceRefusal(
+            raise Refusal(
                 f"duplicate-region: record {record_id!r} repeats a region already "
                 "claimed by another record on this page"
             )
         seen_regions.add(region_key)
         text = entry["text"]
         if not isinstance(text, str) or not text:
-            raise ReferenceRefusal(f"empty-text: record {record_id!r} carries no text")
+            raise Refusal(f"empty-text: record {record_id!r} carries no text")
         expected_text_sha256 = digest_bytes(text.encode("utf-8"))
         if entry["text_sha256"] != expected_text_sha256:
-            raise ReferenceRefusal(
+            raise Refusal(
                 f"text-sha256-mismatch: record {record_id!r} carries "
                 f"{entry['text_sha256']!r}, recomputed {expected_text_sha256!r}"
             )
         try:
             act_identity = physical_act_id(physical_page, record_id)
         except IdentityRefusal as error:
-            raise ReferenceRefusal(f"unmintable-physical-act: {error}") from None
+            raise Refusal(f"unmintable-physical-act: {error}") from None
         if act_identity in seen_physical_act_ids:
-            raise ReferenceRefusal(
+            raise Refusal(
                 f"duplicate-physical-act-id: record {record_id!r} mints {act_identity!r}, "
                 "already minted by another record_id on this page -- two record_ids that "
                 "fold to the same declared text (NFC/whitespace) are not distinguishable "
@@ -264,7 +262,7 @@ def build_reference_page(
         )
 
     if split not in splits_present:
-        raise ReferenceRefusal(
+        raise Refusal(
             f"split-not-present: this reference page is declared for split {split!r}, "
             f"but its records only carry {sorted(splits_present)}"
         )
@@ -295,22 +293,20 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
     """Refuse a reference page that is not exactly `reference-page-truth.v1`."""
     reference = _closed(reference, _TOP_FIELDS, "reference page")
     if reference["schema"] != SCHEMA:
-        raise ReferenceRefusal(f"wrong-schema: expected {SCHEMA!r}, got {reference['schema']!r}")
+        raise Refusal(f"wrong-schema: expected {SCHEMA!r}, got {reference['schema']!r}")
     if reference["corpus_id"] != CORPUS_ID:
-        raise ReferenceRefusal(
-            f"wrong-corpus: expected {CORPUS_ID!r}, got {reference['corpus_id']!r}"
-        )
+        raise Refusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {reference['corpus_id']!r}")
 
     page = _closed(reference["page"], _PAGE_FIELDS, "page")
     if not is_sha256(page["sha256"]):
-        raise ReferenceRefusal("malformed-record: page.sha256 must be a lowercase sha256 digest")
+        raise Refusal("malformed-record: page.sha256 must be a lowercase sha256 digest")
     width = _positive_int(page["width"], "page.width")
     height = _positive_int(page["height"], "page.height")
 
     for name in ("source", "volume", "designation"):
         _non_empty_str(reference[name], name)
     if "/" in reference["source"]:
-        raise ReferenceRefusal(
+        raise Refusal(
             f"unsafe-source-value: source {reference['source']!r} is not a safe single "
             "path segment — it must carry no '/' since source and volume are joined "
             "into one physical page identity"
@@ -323,35 +319,29 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
             reference["designation"],
         )
     except IdentityRefusal as error:
-        raise ReferenceRefusal(f"unmintable-physical-act: {error}") from None
+        raise Refusal(f"unmintable-physical-act: {error}") from None
 
     if reference["split"] not in SPLITS:
-        raise ReferenceRefusal(
-            f"unknown-split: {reference['split']!r} is not one of {sorted(SPLITS)}"
-        )
+        raise Refusal(f"unknown-split: {reference['split']!r} is not one of {sorted(SPLITS)}")
 
     splits_present = reference["splits_present"]
     if not isinstance(splits_present, list) or not all(
         isinstance(split, str) for split in splits_present
     ):
-        raise ReferenceRefusal("malformed-record: splits_present must be a list of strings")
+        raise Refusal("malformed-record: splits_present must be a list of strings")
     if splits_present != sorted(set(splits_present)):
-        raise ReferenceRefusal(
-            "malformed-record: splits_present must be a sorted, deduplicated list"
-        )
+        raise Refusal("malformed-record: splits_present must be a sorted, deduplicated list")
     for split in splits_present:
         if split not in SPLITS:
-            raise ReferenceRefusal(f"unknown-split: splits_present names {split!r}")
+            raise Refusal(f"unknown-split: splits_present names {split!r}")
     if reference["split"] not in splits_present:
-        raise ReferenceRefusal(
-            f"split-not-present: split {reference['split']!r} is not in splits_present"
-        )
+        raise Refusal(f"split-not-present: split {reference['split']!r} is not in splits_present")
 
     acts = reference["acts"]
     if not isinstance(acts, list) or not acts:
-        raise ReferenceRefusal("empty-acts: a reference page must carry at least one act")
+        raise Refusal("empty-acts: a reference page must carry at least one act")
     if reference["expected_act_count"] != len(acts):
-        raise ReferenceRefusal(
+        raise Refusal(
             f"act-count-mismatch: expected_act_count is {reference['expected_act_count']!r} "
             f"but acts carries {len(acts)}"
         )
@@ -363,21 +353,21 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
         act = _closed(act, _ACT_FIELDS, "reference act")
         record_id = _non_empty_str(act["record_id"], "reference act record_id")
         if record_id in seen_record_ids:
-            raise ReferenceRefusal(f"duplicate-record-id: {record_id!r} appears twice")
+            raise Refusal(f"duplicate-record-id: {record_id!r} appears twice")
         seen_record_ids.add(record_id)
         if not is_well_formed(act["physical_act_id"]) or not act["physical_act_id"].startswith(
             "pac_"
         ):
-            raise ReferenceRefusal(
+            raise Refusal(
                 f"wrong-identity-family: reference act {record_id!r} carries "
                 f"{act['physical_act_id']!r}, which is not a well-formed pac_ identity"
             )
         try:
             expected_physical_act_id = physical_act_id(physical_page, record_id)
         except IdentityRefusal as error:
-            raise ReferenceRefusal(f"unmintable-physical-act: {error}") from None
+            raise Refusal(f"unmintable-physical-act: {error}") from None
         if act["physical_act_id"] != expected_physical_act_id:
-            raise ReferenceRefusal(
+            raise Refusal(
                 f"wrong-identity-family: reference act {record_id!r} carries "
                 f"{act['physical_act_id']!r}, which does not recompute from this page's "
                 f"declared corpus_id/source/volume/designation and record_id (expected "
@@ -385,7 +375,7 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
                 "or record must never verify against this one"
             )
         if expected_physical_act_id in seen_physical_act_ids:
-            raise ReferenceRefusal(
+            raise Refusal(
                 f"duplicate-physical-act-id: record {record_id!r} mints "
                 f"{expected_physical_act_id!r}, already minted by another record_id on "
                 "this page"
@@ -393,17 +383,17 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
         seen_physical_act_ids.add(expected_physical_act_id)
         region = _region(act["region"], f"reference act {record_id!r} region")
         if region["x"] + region["w"] > width or region["y"] + region["h"] > height:
-            raise ReferenceRefusal(
+            raise Refusal(
                 f"region-outside-page: act {record_id!r} region {region} exceeds "
                 f"the page's {width}x{height} bounds"
             )
         region_key = (region["x"], region["y"], region["w"], region["h"])
         if region_key in seen_regions:
-            raise ReferenceRefusal(f"duplicate-region: act {record_id!r} repeats a claimed region")
+            raise Refusal(f"duplicate-region: act {record_id!r} repeats a claimed region")
         seen_regions.add(region_key)
         text = act["text"]
         if not isinstance(text, str) or not text:
-            raise ReferenceRefusal(f"empty-text: reference act {record_id!r} carries no text")
+            raise Refusal(f"empty-text: reference act {record_id!r} carries no text")
         # Non-empty ink that normalises to nothing is not scoreable: the scorer
         # refuses a blank checked reference (`spike_perlector/scoring.py`) with a
         # `MeasurementRefusal` that names neither record nor page and that no
@@ -412,45 +402,45 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
         # file rather than from an admission ledger, so the family's own
         # validator is the boundary that must hold.
         if not character_units(text, GRAPHEMIC_V1):
-            raise ReferenceRefusal(
+            raise Refusal(
                 f"empty-normalized-text: reference act {record_id!r} carries text {text!r}, "
                 f"which normalises to nothing under {GRAPHEMIC_V1.profile_id} and could never "
                 "be scored against"
             )
         expected_text_sha256 = digest_bytes(text.encode("utf-8"))
         if act["text_sha256"] != expected_text_sha256:
-            raise ReferenceRefusal(
+            raise Refusal(
                 f"text-sha256-mismatch: reference act {record_id!r} carries "
                 f"{act['text_sha256']!r}, recomputed {expected_text_sha256!r}"
             )
 
     if reference["completeness"] != COMPLETENESS:
-        raise ReferenceRefusal(
+        raise Refusal(
             f"malformed-record: completeness must be {COMPLETENESS!r}, "
             f"got {reference['completeness']!r}"
         )
     if reference["provenance"] != PROVENANCE:
-        raise ReferenceRefusal(
+        raise Refusal(
             f"malformed-record: provenance must be {PROVENANCE!r}, got {reference['provenance']!r}"
         )
     if reference["independent_readings"] != INDEPENDENT_READINGS:
-        raise ReferenceRefusal(
+        raise Refusal(
             "malformed-record: independent_readings must be "
             f"{INDEPENDENT_READINGS!r}, got {reference['independent_readings']!r}"
         )
     if reference["adjudicated_by"] is not None:
-        raise ReferenceRefusal(
+        raise Refusal(
             "malformed-record: adjudicated_by must be null — a reference page carries "
             "one unnamed expert reading, never an adjudication"
         )
     if reference["provenance_class"] != PROVENANCE_CLASS:
-        raise ReferenceRefusal(
+        raise Refusal(
             f"malformed-record: provenance_class must be {PROVENANCE_CLASS!r}, "
             f"got {reference['provenance_class']!r}"
         )
 
     if not verify_self_hash(reference):
-        raise ReferenceRefusal(
+        raise Refusal(
             "self-hash-mismatch: reference page self_hash does not verify against its own content"
         )
     return reference
