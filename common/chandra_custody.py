@@ -1,43 +1,22 @@
 """One-receipt Chandra custody: the binding a retained response is written under.
 
-**Who calls this today.** The write half runs in the Designator's live
-structure pass (`pipeline/2_designator/structure_pass.py::ask_page`), which
-retains every structure chair response under this binding and publishes the
-resulting `custody_ref` on the page's `structure-answer` record. The read half,
-`read_retained_chandra_response`, has no caller on the served path: it was
-written for the Attestatores' capture intake, and that intake was removed as
-unreachable once Attestator 1 ran its own Chandra pass rather than reading the
-Designator's call. It is kept, and
-exercised by `pipeline/2_designator/test_geometry_layer.py`, because it is the
-half that says what the binding *means*: a response is admissible only paired
-with the receipt it was retained under, and a writer whose record no reader
-could accept is not custody. Whatever eventually reads a retained response back
-— an intake, an audit, a replay — reads it through this function or it is
-reading bytes nothing binds. That the second blob is written and not yet read
-back is recorded as a follow-up, not hidden here.
+A serving receipt carries no reference back to any response, so two
+independently-supplied, individually-valid references are not proof they came
+from the same Chandra call. `retain_chandra_response` writes a small
+content-addressed custody record naming exactly the receipt and response it
+was given; `read_retained_chandra_response` requires that record back and
+refuses a response paired with any other receipt. Both ends validate the
+receipt through the same `_validated_designator_receipt`, so they cannot drift
+on what "the Chandra receipt" means, and the writer cannot seal a binding its
+own reader would refuse.
 
-The rule lives in `common/` rather than in a stage because both halves are one
-rule and a stage may not import another stage's uniquely named module
-(`pipeline/test_stage_import_boundaries.py`); duplicating the check would let
-the two halves drift.
+The read half has no caller on the served path today -- kept because it is the
+half that says what the binding *means*, exercised by
+`pipeline/2_designator/test_geometry_layer.py`.
 
-A serving receipt carries no reference back to any response (`common/chairs/
-receipts.py`'s schema has no such field), so two independently-supplied,
-individually-valid references are not proof they came from the same Chandra
-call. `retain_chandra_response` therefore also writes a small content-addressed
-custody record naming exactly the receipt and response it was given, and
-`read_retained_chandra_response` requires that same record back and refuses a
-response paired with any receipt other than the one recorded here.
-
-**Both ends run the same receipt check, from one function.** The reader refuses a
-receipt issued for any chair but the Designator's; the writer has to refuse the
-same receipt for the same reason, or the write half would happily seal a binding
-no reader could ever accept -- evidence written into the tree that nothing can
-consume, discovered long after the mis-serving that caused it. The
-check therefore lives in `_validated_designator_receipt` and is called by both,
-which also means the two ends cannot drift apart on what "the Chandra receipt"
-is. Its ordering consequence for the eventual wiring is deliberate: the serving
-receipt must be published before its response is retained.
+This lives in `common/` rather than a stage because a stage may not import
+another stage's module (`pipeline/test_stage_import_boundaries.py`), and both
+halves are one rule that duplication would let drift.
 """
 
 from __future__ import annotations
@@ -52,17 +31,12 @@ from common.runtree.store import BLOBS_DIR
 
 CUSTODY_BINDING_SCHEMA = "chandra-custody-binding.v1"
 
-# Derived from the run tree's own directory naming (`writing_directory`) rather
-# than written out as a literal: `tree.put_blob(DESIGNATOR, …)` writes under
-# "2_designator/…", not the bare stage name "designator/…"
-# (`common/contracts/stages.STAGE_DIRECTORIES`), so a hardcoded prefix would
-# fail this module's own check on every real write while a fixture tree that
-# fabricates paths from the bare stage name would not catch it.
+# Derived from writing_directory, not a literal: put_blob writes under
+# "2_designator/…", not the bare stage name "designator/…".
 RESPONSE_BLOB_PREFIX = f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}/"
 _RECEIPT_PREFIX = "receipts/sha256/"
-# Named once, because the writer and the reader must not drift on what a binding
-# is -- and because the write half checks the same shape for a third reason
-# (`_is_custody_binding`).
+# Named once so the writer, reader and `_is_custody_binding` cannot drift on
+# what a binding's shape is.
 _BINDING_FIELDS = frozenset(
     {"schema", "page_id", "page_ordinal", "receipt_sha256", "response_sha256"}
 )
@@ -106,15 +80,10 @@ def retain_chandra_response(
     # Before any bytes are written: a binding sealed under a receipt the reader
     # will refuse is unreadable custody, not custody.
     _validated_designator_receipt(tree, receipt)
-    # Bindings and responses share one content-addressed blob namespace, so a
-    # response that *is* a canonical binding would enter through this door and
-    # come back out of the read door as proof of a pairing nothing recorded --
-    # measured against a real run tree, where a minted binding paired call A's
-    # receipt with call B's response and was accepted. Refusing it here means no
-    # binding this module accepts came from anywhere but its own writer below.
-    # It does not constrain a caller that writes blobs through the tree directly;
-    # that caller is the pipeline itself, and this rule is not a barrier against
-    # the pipeline, only against custody minting itself by accident.
+    # Bindings and responses share one blob namespace, so a response that *is*
+    # a canonical binding could otherwise be read back as proof of a pairing
+    # nothing recorded. Refusing it means no binding this module accepts came
+    # from anywhere but its own writer below.
     if _is_custody_binding(response):
         raise SchemaRefusal("Chandra raw response is itself a custody binding record")
     digest, published = tree.put_blob(DESIGNATOR, response)
@@ -186,11 +155,8 @@ def read_retained_chandra_response(
         raise SchemaRefusal(
             "Chandra custody binding names a different response than the one given here"
         )
-    # Receipt validation is delegated to the run tree, which verifies its schema,
-    # path, and bytes -- that proves the receipt itself is authentic, not that it
-    # is paired with this response. The custody binding checked above is what
-    # proves the pairing; the response bytes are opaque textual custody, never
-    # parsed by this module.
+    # This proves the receipt is authentic; the binding checked above proves
+    # the pairing.
     _validated_designator_receipt(tree, receipt)
     data = _read_custody_bytes(tree, response["relative_path"], "response blob")
     if digest_bytes(data) != response["sha256"]:
@@ -201,12 +167,8 @@ def read_retained_chandra_response(
 def _read_custody_bytes(tree: Any, relative_path: str, what: str) -> bytes:
     """Read one sealed blob, refusing a reference whose file is no longer there.
 
-    A well-formed reference to a blob that has been removed is a custody failure,
-    not a crash: `RunTree.read_run_receipt` already wraps exactly this case for
-    receipts, on the ground that refusing provenance includes provenance that is
-    no longer there. Without this, the same missing-file case reached the caller
-    as a bare `FileNotFoundError` from a stage boundary whose whole purpose is to
-    name what it refused.
+    A well-formed reference to a removed blob is a custody failure, not a
+    crash: refusing provenance includes provenance that is no longer there.
     """
     try:
         return tree.read_bytes(relative_path)
@@ -233,16 +195,11 @@ def _is_custody_binding(data: bytes) -> bool:
 def _validated_designator_receipt(tree: Any, receipt: dict[str, str]) -> dict[str, Any]:
     """Read the receipt through the run tree and require the Designator's chair.
 
-    This custody covers the Chandra call the Designator serves in
-    `designator_structure` and nothing else: a receipt naming any other chair is
-    a different call however honestly it verifies. The Attestatores' own Chandra
-    witness is a separate reading under its own receipt — every witness runs
-    its own full pass and nothing is captured from one call into another —
-    and its responses are not retained through here.
-    `common.stage` is imported inside the function, as the read half already did:
-    it is the whole stage-program harness, and a small custody rule two stages
-    share should not drag that in at import time. There is no import cycle --
-    measured, not assumed.
+    This custody covers only the Chandra call the Designator serves in
+    `designator_structure`; a receipt naming any other chair is a different
+    call however honestly it verifies. `common.stage` is imported inside the
+    function so a small shared custody rule does not drag in the whole
+    stage-program harness at import time.
     """
     from common.stage import DESIGNATOR_CHAIR
 
