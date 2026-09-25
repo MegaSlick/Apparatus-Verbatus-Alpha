@@ -201,10 +201,7 @@ class AdapterCalibration:
                 raise ServingConfigurationError(
                     "image adapter calibration must use the chat-completions endpoint"
                 )
-            image_bytes = _active_chat_image_bytes(
-                normalized_payload, label="image adapter calibration"
-            )
-            if hashlib.sha256(image_bytes).hexdigest() != self.fixture_sha256:
+            if _calibration_image_sha256(normalized_payload) != self.fixture_sha256:
                 raise ServingConfigurationError(
                     "adapter calibration image bytes do not match fixture_sha256"
                 )
@@ -213,12 +210,10 @@ class AdapterCalibration:
         """Return a fresh, revalidated request from the sealed calibration bytes."""
 
         payload = json.loads(self._canonical_payload)
-        if self.requires_image:
-            image_bytes = _active_chat_image_bytes(payload, label="image adapter calibration")
-            if hashlib.sha256(image_bytes).hexdigest() != self.fixture_sha256:
-                raise ServingConfigurationError(
-                    "sealed adapter calibration image bytes no longer match fixture_sha256"
-                )
+        if self.requires_image and _calibration_image_sha256(payload) != self.fixture_sha256:
+            raise ServingConfigurationError(
+                "sealed adapter calibration image bytes no longer match fixture_sha256"
+            )
         return payload
 
     @classmethod
@@ -239,15 +234,7 @@ class AdapterCalibration:
             raise ServingConfigurationError("image calibration prompt must be non-blank")
         if not isinstance(mime_type, str) or not mime_type.startswith("image/"):
             raise ServingConfigurationError("image calibration mime_type must begin with 'image/'")
-        source = Path(fixture)
-        try:
-            data = source.read_bytes()
-        except OSError as error:
-            raise ServingConfigurationError(
-                f"cannot read local adapter calibration fixture {source}: {error}"
-            ) from error
-        if not data:
-            raise ServingConfigurationError("adapter calibration fixture must not be empty")
+        data = _local_fixture_bytes(fixture, "adapter calibration fixture")
         encoded = base64.b64encode(data).decode("ascii")
         return cls(
             kind="chat-completions",
@@ -392,7 +379,9 @@ class ServiceHandle:
         # Validate and send one snapshot, so a mutable Mapping cannot show an
         # image here and serialize without it.
         sealed_payload, _ = seal_json_object(payload, label="golden-page request")
-        fixture_digest = _fixture_sha256(fixture)
+        fixture_digest = hashlib.sha256(
+            _local_fixture_bytes(fixture, "golden-page fixture")
+        ).hexdigest()
         image_digest = hashlib.sha256(
             _active_chat_image_bytes(sealed_payload, label="golden-page request")
         ).hexdigest()
@@ -1026,24 +1015,19 @@ class ServingManager:
             raise AdapterActivityError(
                 f"adapter endpoint does not advertise configured base id {base_profile.served_model_id!r}"
             )
-        base = self._post_probe(
-            endpoint=profile.endpoint,
-            kind=calibration.kind,
-            payload=calibration_payload,
-            model_id=base_profile.served_model_id,
-            seed=profile.seed,
-            deterministic=True,
+        base_digest, adapted_digest = (
+            outputs_sha256(
+                self._post_probe(
+                    endpoint=profile.endpoint,
+                    kind=calibration.kind,
+                    payload=calibration_payload,
+                    model_id=model_id,
+                    seed=profile.seed,
+                    deterministic=True,
+                )
+            )
+            for model_id in (base_profile.served_model_id, profile.served_model_id)
         )
-        adapted = self._post_probe(
-            endpoint=profile.endpoint,
-            kind=calibration.kind,
-            payload=calibration_payload,
-            model_id=profile.served_model_id,
-            seed=profile.seed,
-            deterministic=True,
-        )
-        base_digest = outputs_sha256(base)
-        adapted_digest = outputs_sha256(adapted)
         if base_digest == adapted_digest:
             raise AdapterActivityError(
                 "base and adapter produced identical deterministic calibration output; adapter is unproven"
@@ -1848,19 +1832,20 @@ def _canonical_object_sha256(value: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _fixture_sha256(fixture: str | Path) -> str:
-    """Hash one non-empty local golden-page fixture without transmitting a path."""
-
+def _local_fixture_bytes(fixture: str | Path, label: str) -> bytes:
     source = Path(fixture)
     try:
         data = source.read_bytes()
     except OSError as error:
-        raise ServingConfigurationError(
-            f"cannot read local golden-page fixture {source}: {error}"
-        ) from error
+        raise ServingConfigurationError(f"cannot read local {label} {source}: {error}") from error
     if not data:
-        raise ServingConfigurationError("golden-page fixture must not be empty")
-    return hashlib.sha256(data).hexdigest()
+        raise ServingConfigurationError(f"{label} must not be empty")
+    return data
+
+
+def _calibration_image_sha256(payload: Mapping[str, object]) -> str:
+    image = _active_chat_image_bytes(payload, label="image adapter calibration")
+    return hashlib.sha256(image).hexdigest()
 
 
 def _utc_stamp(value: datetime) -> str:
