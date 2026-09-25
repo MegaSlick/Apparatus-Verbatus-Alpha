@@ -42,15 +42,11 @@ class _TimedOut(Exception):
 # back as "stripped" text. See `markup_text_view`.
 _MAX_ENTITY_CHARACTERS: Final = 40
 
-# Teklia/DAI-CReTDHI-RecordGold-ATR's two uncertainty markers (MIT) --
-# https://huggingface.co/datasets/Teklia/DAI-CReTDHI-RecordGold-ATR. Not
-# `Teklia/RecordGold`: that id names a different, gated dataset (401, no
-# public card). Kept as a private constant here rather than imported from
-# `pipeline/3_attestatores/feeding.py`
-# -- `common/` is the lower layer and `feeding.py` already imports from it, so
-# an import the other way would be circular. `test_alignment.py` asserts this
-# tuple is byte-identical to `feeding._UNCERTAINTY_TOKENS` so the two copies
-# cannot drift silently (principle 8).
+# Teklia/DAI-CReTDHI-RecordGold-ATR's two uncertainty markers (MIT licence).
+# Kept as a private constant rather than imported from
+# `pipeline/3_attestatores/feeding.py`, since `common/` is the lower layer and
+# an import the other way would be circular; `test_alignment.py` pins this
+# tuple byte-identical to `feeding._UNCERTAINTY_TOKENS`.
 _UNCERTAINTY_TOKENS: Final = ("[UNCERTAIN]", "[CROSSED_OUT]")
 
 
@@ -70,43 +66,26 @@ DEADLINE_REASON: Final = "alignment-deadline-exceeded"
 def _matching_blocks(witness_text: str, anchor_text: str) -> list[tuple[int, int, int]]:
     """Return `(witness_start, anchor_start, size)` for every matched run.
 
-    `difflib.SequenceMatcher`'s Ratcliff-Obershelp blocks -- longest common
-    contiguous block first, then the same search recursively to its left and to
-    its right -- with the terminating zero-size block dropped. Blocks are
-    strictly ordered and non-overlapping on both sides, which is the property
-    `pipeline/3_attestatores/run.py` relies on when it clips a page alignment to
-    one act's anchor range: a witness offset can only be attributed to an act
-    whose anchor range surrounds it in the same order.
+    `difflib.SequenceMatcher`'s Ratcliff-Obershelp blocks, longest common
+    contiguous block first then recursively to its left and right, with the
+    terminating zero-size block dropped. Blocks are strictly ordered and
+    non-overlapping on both sides, which is what lets a page alignment be
+    clipped to one act's anchor range.
 
-    `autojunk=False` is deliberate. The heuristic it disables treats any element
-    appearing in more than 1% of the second sequence as junk, and in French
-    register prose that is most of the alphabet, so leaving it on would refuse
-    to match ordinary ink. It is also what makes the matcher slow on degenerate
-    input; the wall-clock backstop below exists because of it.
+    `autojunk=False` is deliberate: its heuristic treats any element in over
+    1% of the sequence as junk, which in French register prose is most of the
+    alphabet. This is also what makes the matcher slow on degenerate input,
+    hence the wall-clock backstop below.
 
-    **RapidFuzz's Indel/LCS opcodes were tried here and refused, on measurement.**
-    They are four orders of magnitude faster
-    -- the slowest input the sealed pair bound admits goes from 283.9 s to
-    0.011 s -- and on identical or near-identical page text they return exactly
-    these blocks. But LCS maximizes matched *characters*, and where that ties, it
-    breaks the tie towards the earliest match. Register acts open with the same
-    formula, so a witness that read only the second of two acts ties: the whole
-    reading against the second act's anchor range (what this returns), or the
-    shared opening against the FIRST act plus the remainder against the second
-    (what LCS returns). Both attach 40 of 40 characters; only one of them says
-    what the witness actually read. The pipeline's own `confirmed-blank`
-    scenario failed on exactly that -- the witness's act-two opening was
-    attributed to act one, twelve characters of the page fell outside every act
-    attachment, and both acts were held instead of the blank being sealed. A
-    coverage-maximizing objective is the wrong objective for attaching a reading
-    to an anchor; "longest verbatim agreement wins" is the right one, and it is
-    the one that is load-bearing here. `common/test_alignment.py` pins that case
-    by name so the swap is not retried blind.
+    RapidFuzz's LCS opcodes were tried and refused: they are far faster but
+    maximize matched characters, which on two acts opening with the same
+    formula can attribute a witness's second-act reading to the first act
+    instead -- a coverage-maximizing objective is the wrong one for attaching a
+    reading to an anchor. "Longest verbatim agreement wins" is the one that is
+    load-bearing here, and `common/test_alignment.py` pins that case by name.
 
-    No normalization of its own: the comparison is over the Python `str`
-    codepoints `markup_text_view` produced, so case, NFC/NFD distinctions and
-    astral characters survive, and the returned offsets index the same
-    normalized text the offset map was built against.
+    No normalization of its own: the comparison is over the codepoints
+    `markup_text_view` produced, so the returned offsets index that same text.
     """
     return [
         (block.a, block.b, block.size)
@@ -156,17 +135,12 @@ def markup_text_view(raw: str) -> dict[str, Any]:
             in_tag = False
         elif not in_tag:
             if char == "&":
-                # Two conditions, and both are load-bearing. The terminator must
-                # be inside `_MAX_ENTITY_CHARACTERS`, and the candidate must
-                # actually decode to something else -- `html.unescape` returns a
-                # non-entity unchanged, so that equality is the test for "this
-                # ampersand began an entity" rather than "a semicolon exists
-                # somewhere ahead". Without them `<p>Jean & Marie</p><p>born
-                # 1688</p><i>note; here</i>` normalized to
-                # `Jean & Marie</p><p>born 1688</p><i>note; here`: raw markup
-                # inside the markup-stripped view, `loss.markup_characters`
-                # under-reporting it, and every intervening tag then read as
-                # witness disagreement by dissent. Found in audit; F-X1.
+                # Both conditions load-bearing: the terminator must be inside
+                # `_MAX_ENTITY_CHARACTERS`, and the candidate must actually
+                # decode to something else (`html.unescape` returns a
+                # non-entity unchanged), or a literal "&" followed eventually
+                # by any semicolon would swallow everything between as if it
+                # were one entity.
                 end = raw.find(";", i + 1, i + _MAX_ENTITY_CHARACTERS)
                 candidate = raw[i : end + 1] if end != -1 else ""
                 decoded = html.unescape(candidate) if candidate else ""
@@ -183,17 +157,13 @@ def markup_text_view(raw: str) -> dict[str, Any]:
         i += 1
     stripped = "".join(plain)
     composed = unicodedata.normalize("NFC", stripped)
-    # NFC can change codepoint count, so indexing the pre-composition offsets
-    # with a post-composition index mis-points every entry after the first
-    # merge (an NFD French line was measured at 7 of 14 offsets wrong). The
+    # NFC can change codepoint count, so indexing pre-composition offsets by a
+    # post-composition index mis-points every entry after the first merge. The
     # map is rebuilt through composition instead: the stripped text splits
-    # into clusters at combining-class-0 starters, NFC composes only within
-    # such a cluster for this corpus's canonical text, and every composed
+    # into clusters at combining-class-0 starters, and every composed
     # character maps to its cluster's first raw offset. Where per-cluster
-    # composition cannot reproduce the composed text (starter-starter
-    # composition, e.g. Hangul jamo), the map records None for every entry
-    # rather than publishing offsets that may lie -- an absent measurement,
-    # never a fabricated one (principle 8).
+    # composition cannot reproduce the composed text (e.g. Hangul jamo), the
+    # map records None throughout rather than publishing offsets that may lie.
     composed_offsets: list[int | None]
     cluster_chars: list[str] = []
     cluster_offsets: list[int | None] = []
@@ -319,44 +289,28 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
     """Align a witness comparison view to an anchor, or explicitly `unaligned`.
 
     The character and pair bounds always apply before the matcher runs. The
-    wall-clock deadline applies only where this call owns the process real-time
-    timer (main thread, POSIX `SIGALRM`, no timer already armed); elsewhere the
-    comparison runs unbounded under the caller's own deadline. **The pair bound
-    does not refuse the pathological case** -- it refuses a comparison whose
-    character-pair product would be even larger, not a slow one at or under the
-    bound, and the two *different* low-entropy responses below measure 283.9 s
-    while sitting exactly at `max_character_pairs`, not over it. No input is
-    clipped: a limit or a fired deadline produces a retained unaligned result
-    with its reason.
+    wall-clock deadline applies only where this call owns the process
+    real-time timer (main thread, POSIX `SIGALRM`, no timer already armed);
+    elsewhere the comparison runs unbounded under the caller's own deadline.
+    The pair bound does not refuse every pathologically slow input -- some
+    low-entropy pairs sitting exactly at `max_character_pairs` are still slow
+    -- which is what the deadline is for. No input is clipped: a limit or a
+    fired deadline produces a retained unaligned result with its reason.
 
-    Every returned record carries `deadline_in_force`: `True` only when this
-    call actually armed the SIGALRM backstop, `False` whenever the comparison
-    ran with no wall-clock bound at all (a worker thread, a timer already held
-    by something else) or never reached the matcher. Without this a caller
-    cannot tell a genuinely bounded alignment from one that ran unbounded and
-    happened to finish -- both return `{"status": "aligned", ...}` -- so a
-    pathological pair on an unbounded caller could stall for minutes with
-    nothing in the retained record to say the timeout this build's config
-    promises never actually applied.
+    `deadline_in_force` is `True` only when this call actually armed the
+    SIGALRM backstop. Without it a caller cannot tell a genuinely bounded
+    alignment from one that ran unbounded and happened to finish, both of
+    which otherwise return the same `{"status": "aligned", ...}`.
 
-    A fired deadline is `DEADLINE_REASON`, and it is a non-verdict: this module
-    made no measurement of coverage, and nothing downstream may read it as one.
-    It is still `unaligned` rather than a partial map, because publishing spans
-    a timed-out comparison never finished would be worse than saying nothing
-    (principle 2 / principle 8).
+    A fired deadline (`DEADLINE_REASON`) is a non-verdict: this module made no
+    measurement of coverage, and it is `unaligned` rather than a partial map,
+    since publishing spans a timed-out comparison never finished would be
+    worse than saying nothing.
 
-    **The deadline is sized from the legitimate ceiling, not the pathological
-    one, and it does not clear the pathological one.** An unaligned page witness
-    is not `comparable`, so it leaves the act's witness floor: a deadline short
-    enough to fire on real work records a slow comparison as coverage that is
-    missing (goal 2). A 7,500-character page whose acts
-    repeat one formula verbatim -- a scribe copying one form -- measures 10.1 s,
-    already past the five seconds this config used to carry, so 25 s is what it
-    now carries. Two *different* low-entropy chair responses at exactly
-    `max_character_pairs` measure 283.9 s and still reach the deadline; no value
-    closes that without costing minutes per (page, chair). Closing it needs the
-    matcher, and `pipeline/3_attestatores/CONTRACT.md` records both the
-    measurements and the design that would.
+    The deadline is sized from the legitimate ceiling, not the pathological
+    one, and does not clear the pathological one: closing that gap needs a
+    different matcher, recorded as a design question in
+    `pipeline/3_attestatores/CONTRACT.md` rather than solved here.
     """
     witness = markup_text_view(witness_raw)
     anchor = markup_text_view(anchor_raw)
@@ -395,18 +349,13 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
                 raise
             alarm_armed = True
         blocks = _matching_blocks(witness_text, anchor_text)
-        # Cancelled inside the `try`, not only in the `finally` -- the same
-        # window `pipeline/4_perlector/dissent.py::_aligned_within_deadline`
-        # already closes for its own SIGALRM, still open here. An alarm firing
-        # after `_matching_blocks` returned but before the `finally` ran raised
-        # `_TimedOut` from inside the `finally`, past the `except` above, so a
-        # *successful* alignment propagated an internal exception out of a
-        # function whose whole contract is to return an `unaligned` record
-        # instead. Cancelling here does not close the window completely: a
-        # firing in the remaining instructions is caught by the `except` and
-        # recorded as the deadline reason, which understates a finished
-        # alignment rather than crashing the stage. That is the safe direction
-        # of the two.
+        # Cancelled inside the `try`, not only `finally`: an alarm firing after
+        # `_matching_blocks` returns but before `finally` runs would otherwise
+        # raise `_TimedOut` past the `except` above, propagating an internal
+        # exception from a function whose contract is to return `unaligned`
+        # instead. A firing in the remaining instructions is still caught and
+        # recorded as the deadline reason -- understating a finished alignment,
+        # the safe direction of the two possible mistakes.
         if alarm_armed:
             signal.alarm(0)
     except _TimedOut:
@@ -444,9 +393,5 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
         "witness": witness,
         "anchor": anchor,
         "spans": spans,
-        # F087: without this, a bounded alignment and one that ran with no
-        # wall-clock backstop at all (a worker thread, a timer already held by
-        # something else) both read as plain `{"status": "aligned", ...}` --
-        # indistinguishable to any later reader or record.
         "deadline_in_force": alarm_armed,
     }
