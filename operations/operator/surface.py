@@ -25,7 +25,7 @@ import tempfile
 import time
 import unicodedata
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -1060,20 +1060,18 @@ class OperatorSurface:
             },
             descriptor_action="fetch-run",
         )
-        if partial:
-            self.present(
-                f"Run {checked_id} is at {destination_root / checked_id}: "
-                f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
-                f"identical, {checked_clause} -- but "
-                f"{', '.join(outcome.unmanifested_stages)} never reached a manifest.json, so "
-                "this run is verified-partial: its artifacts are trusted by envelope alone."
+        self.present(
+            f"Run {checked_id} is at {destination_root / checked_id}: "
+            f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
+            f"identical, {checked_clause}"
+            + (
+                f" -- but {', '.join(outcome.unmanifested_stages)} never reached a "
+                "manifest.json, so this run is verified-partial: its artifacts are trusted by "
+                "envelope alone."
+                if partial
+                else " against the run tree's own digests."
             )
-        else:
-            self.present(
-                f"Run {checked_id} is at {destination_root / checked_id}: "
-                f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
-                f"identical, {checked_clause} against the run tree's own digests."
-            )
+        )
         if outcome.unverified_serving_logs:
             self.present(
                 f"{len(outcome.unverified_serving_logs)} serving log(s) came home as side "
@@ -3746,12 +3744,9 @@ class FetchRunOutcome:
     # verified by envelope only, so the outcome is "verified-partial".
     unmanifested_stages: tuple[str, ...] = ()
     envelope_only_artifacts: tuple[str, ...] = ()
-    # Serving logs: in no manifest, so digested on arrival but never counted as
-    # verified.
+    # In no manifest, so digested on arrival but never counted as verified.
     unverified_serving_logs: tuple[tuple[str, str], ...] = ()
-    # Serving logs that did not come home, and why. A live engine still appends
-    # to them, so a mismatch is refused per log, not for the whole tree
-    # .
+    # A live engine still appends to its log, so a bad one is refused alone.
     refused_serving_logs: tuple[str, ...] = ()
 
 
@@ -3775,14 +3770,8 @@ def _fetch_run_tree(
         if is_publication_temporary(relative, scope):
             excluded.append(relative)
             continue
-        if (
-            not relative
-            or relative.startswith("/")
-            or ".." in relative.split("/")
-            or not any(
-                relative.startswith(item) if item.endswith("/") else relative == item
-                for item in scope
-            )
+        if _escapes_root(relative) or not any(
+            relative.startswith(item) if item.endswith("/") else relative == item for item in scope
         ):
             raise FetchRunRefusal(
                 f"the volume holds {key!r} under the run prefix, and no stage of a run tree "
@@ -3817,7 +3806,8 @@ def _fetch_run_tree(
     try:
         for relative in ordered:
             target = root / relative
-            if _is_serving_log(relative):
+            serving_log = _is_serving_log(relative)
+            if serving_log:
                 # A log is still appended to while fetched, so a mismatch or
                 # oversize log is refused alone; the same guards still run.
                 # `is_symlink` too, so cleanup never deletes a dangling link
@@ -3825,33 +3815,27 @@ def _fetch_run_tree(
                 existed = target.exists() or target.is_symlink()
                 parent_existed = target.parent.exists() or target.parent.is_symlink()
                 try:
-                    log_size, log_reused = _fetch_or_compare(reader, prefix + relative, target)
+                    size, was_reused = _fetch_or_compare(reader, prefix + relative, target)
                 except Exception as error:  # noqa: BLE001 -- recorded per log, never fatal
                     if not existed:
                         target.unlink(missing_ok=True)
                     if not parent_existed:
-                        try:
+                        with suppress(OSError):
                             target.parent.rmdir()
-                        except OSError:
-                            pass
                     refused_logs.append(f"{relative}: {error}")
                     continue
-                if not log_reused:
-                    staged.append(target)
-                total += log_size
-                fetched += not log_reused
-                reused += log_reused
-                # Digested for the receipt; there is nothing to check it against.
-                serving_logs.append((relative, _sha256_of(target)))
-                continue
-            data_size, was_reused = _fetch_or_compare(reader, prefix + relative, target)
+            else:
+                size, was_reused = _fetch_or_compare(reader, prefix + relative, target)
             if not was_reused:
                 staged.append(target)
-            total += data_size
+            total += size
             fetched += not was_reused
             reused += was_reused
             name = PurePosixPath(relative).name
-            if relative == RUN_FILE:
+            if serving_log:
+                # Digested for the receipt; there is nothing to check it against.
+                serving_logs.append((relative, _sha256_of(target)))
+            elif relative == RUN_FILE:
                 tree.read_run()  # self-hash, schema, and run id, or a ContractError
             elif name in _MANIFEST_NAMES:
                 manifest = _fetched_manifest(tree, relative)
@@ -3873,10 +3857,10 @@ def _fetch_run_tree(
                 # A rebuildable index or derived receipt: checked as JSON here,
                 # verified by the tree's readers when next opened.
                 try:
-                    size = target.stat().st_size
-                    if size > MAX_RECORD_READ_BYTES:
+                    record_size = target.stat().st_size
+                    if record_size > MAX_RECORD_READ_BYTES:
                         raise FetchRunRefusal(
-                            f"{relative} is {size} bytes, above the "
+                            f"{relative} is {record_size} bytes, above the "
                             f"{MAX_RECORD_READ_BYTES}-byte limit for a JSON record; it is "
                             "not readable here as one."
                         )
@@ -3884,41 +3868,8 @@ def _fetch_run_tree(
                 except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     # Deep nesting raises RecursionError within any size bound.
                     raise FetchRunRefusal(f"{relative} is not readable JSON: {error}") from error
-        # An artifact without a manifest entry may come from a stage killed
-        # before `finish()`; resolve it against a manifest derived from its
-        # envelope. Only artifacts outside the stored manifests are reported
-        # as envelope-only.
         manifest_recorded = set(expected)
-        manifested_stage_names = {manifest["stage"] for manifest in manifests.values()}
-        unmanifested_stages: set[str] = set()
-        if unresolved:
-            directories_needed = {relative.partition("/artifacts/")[0] for relative in unresolved}
-            for directory in sorted(directories_needed):
-                candidates = sorted(
-                    stage
-                    for stage, stage_directory in WRITING_DIRECTORIES.items()
-                    if stage_directory == directory and stage not in manifested_stage_names
-                )
-                for stage in candidates:
-                    derived = tree.build_manifest(stage, verify_inputs=False)
-                    if not derived["artifacts"]:
-                        continue
-                    unmanifested_stages.add(stage)
-                    for entry in derived["artifacts"]:
-                        expected.setdefault(entry["relative_path"], entry["sha256"])
-            for relative, digest in unresolved.items():
-                recorded = expected.get(relative)
-                if recorded is None:
-                    raise FetchRunRefusal(
-                        f"{relative} arrived from the volume but no stage manifest -- stored "
-                        "or derived from its own envelope -- records it; an artifact nobody "
-                        "inventoried is not evidence."
-                    )
-                if recorded != digest:
-                    raise FetchRunRefusal(
-                        f"{relative} digests to {digest}, not the {recorded} its stage "
-                        "manifest records; the fetched tree does not reconcile with itself."
-                    )
+        unmanifested_stages = _resolve_unmanifested(tree, unresolved, expected, manifests)
         stages: list[str] = []
         for relative, manifest in manifests.items():
             stage = manifest["stage"]
@@ -3933,23 +3884,7 @@ def _fetch_run_tree(
                 )
             stages.append(stage)
     except BaseException:
-        for path in staged:
-            path.unlink(missing_ok=True)
-        # Then their now-empty directories, bottom-up; `rmdir` leaves any
-        # directory still holding an earlier fetch's files.
-        for directory in sorted(
-            {parent for path in staged for parent in path.parents if root in parent.parents},
-            key=lambda item: len(item.parts),
-            reverse=True,
-        ):
-            try:
-                directory.rmdir()
-            except OSError:
-                pass
-        try:
-            root.rmdir()
-        except OSError:
-            pass
+        _remove_staged(staged, root)
         raise
     return FetchRunOutcome(
         fetched,
@@ -3962,6 +3897,77 @@ def _fetch_run_tree(
         tuple(sorted(serving_logs)),
         tuple(sorted(refused_logs)),
     )
+
+
+def _resolve_unmanifested(
+    tree: RunTree,
+    unresolved: dict[str, str],
+    expected: dict[str, str],
+    manifests: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Check artifacts no stored manifest records against their stage's own envelopes.
+
+    A stage killed before `finish()` leaves artifacts but no manifest. Each such
+    stage's manifest is derived from its envelopes and added to `expected`; the
+    stages that needed one are returned. An artifact still unrecorded, or whose
+    digest disagrees, is refused.
+    """
+
+    manifested_stage_names = {manifest["stage"] for manifest in manifests.values()}
+    unmanifested_stages: set[str] = set()
+    if not unresolved:
+        return unmanifested_stages
+    for directory in sorted({relative.partition("/artifacts/")[0] for relative in unresolved}):
+        candidates = sorted(
+            stage
+            for stage, stage_directory in WRITING_DIRECTORIES.items()
+            if stage_directory == directory and stage not in manifested_stage_names
+        )
+        for stage in candidates:
+            derived = tree.build_manifest(stage, verify_inputs=False)
+            if not derived["artifacts"]:
+                continue
+            unmanifested_stages.add(stage)
+            for entry in derived["artifacts"]:
+                expected.setdefault(entry["relative_path"], entry["sha256"])
+    for relative, digest in unresolved.items():
+        recorded = expected.get(relative)
+        if recorded is None:
+            raise FetchRunRefusal(
+                f"{relative} arrived from the volume but no stage manifest -- stored "
+                "or derived from its own envelope -- records it; an artifact nobody "
+                "inventoried is not evidence."
+            )
+        if recorded != digest:
+            raise FetchRunRefusal(
+                f"{relative} digests to {digest}, not the {recorded} its stage "
+                "manifest records; the fetched tree does not reconcile with itself."
+            )
+    return unmanifested_stages
+
+
+def _remove_staged(staged: list[Path], root: Path) -> None:
+    """Delete what one fetch wrote, then every directory that left empty.
+
+    `rmdir` refuses a directory still holding an earlier fetch's files, so
+    only this fetch's own leavings go.
+    """
+
+    for path in staged:
+        path.unlink(missing_ok=True)
+    for directory in sorted(
+        {parent for path in staged for parent in path.parents if root in parent.parents},
+        key=lambda item: len(item.parts),
+        reverse=True,
+    ):
+        with suppress(OSError):
+            directory.rmdir()
+    with suppress(OSError):
+        root.rmdir()
+
+
+def _escapes_root(relative: str) -> bool:
+    return not relative or relative.startswith("/") or ".." in relative.split("/")
 
 
 def _is_serving_log(relative: str) -> bool:
@@ -4031,7 +4037,7 @@ def _fetch_evidence(
         )
         return FetchEvidenceOutcome(0, 0, 0, (), tuple(empty), tuple(refusals))
     for key in ordered:
-        if not key or key.startswith("/") or ".." in key.split("/"):
+        if _escapes_root(key):
             refusals.append(f"{key!r} is not a path this verb will write under {destination}")
             continue
         target = destination / key
