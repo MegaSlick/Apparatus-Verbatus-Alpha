@@ -17,11 +17,11 @@ The page-spanning component the Designator withholds from grouping
 (`pipeline/2_designator/grouping.partition_page_spanning`) held 35 to 87 per
 cent of audited ink on 44 real pages, and counting it flagged every page. It is
 re-derived here from the same bytes at the page's own derived margin (the
-Designator's record carries only whole-page boxes, which mask nothing), not at
-this module's looser contrast: there the writing merges into the component, and
-on 41 of the 44 pages the audit hid 3,367 to 1,480,349 outside-coverage ink
-pixels and reported the pages clean (goal 2). It is taken out of `total_ink_pixels` and `outside_ink_pixels`; `page_ink_pixels`
-and `page_spanning_ink_pixels` keep the whole-page figure on the record.
+Designator's record carries only whole-page boxes, which mask nothing). At this
+module's looser contrast the writing merged into it and hid missed ink on 41 of
+44 real pages; a way to use one contrast for both would be welcome. It is taken
+out of `total_ink_pixels` and `outside_ink_pixels`; `page_ink_pixels` and
+`page_spanning_ink_pixels` keep the whole-page figure on the record.
 
 A page whose background the shared inference refuses raises
 `BackgroundInferenceRefusal` here too; the caller records it rather than
