@@ -431,8 +431,9 @@ def _fixture_native_observations(
     return observations
 
 
-#: Adapters whose fixture rows may declare `raw_response` bytes: fixture bytes may
-#: not be attributed to a model that never produced them.
+#: Adapters whose fixture rows may declare `raw_response` bytes;
+#: `_fixture_raw_response_attempt` refuses any other adapter, since fixture bytes
+#: may not be attributed to a model that never produced them.
 FIXTURE_NATIVE_RESPONSE_ADAPTERS: Final = frozenset({"chandra.v1"})
 
 
@@ -3179,6 +3180,7 @@ def _declared_anchor(
                 f"the Chandra anchor line for act {line['act_key']} on page "
                 f"{page_ordinal} carries no text; a malformed line is not an absent one"
             )
+        # Needle and haystack must be the same normalized view.
         needle = markup_text_view(source)["text"]
         start = normalized_anchor.find(needle, search_from) if needle else -1
         if start < 0:
@@ -3360,6 +3362,7 @@ def _page_witness_entries(
     """
     entries = []
     for contributing_page in contributing_pages:
+        # Never mutate the primary alignment: a continuation page can sort before it.
         page_alignment = (
             alignment
             if contributing_page == act["page_ordinal"]
@@ -5363,10 +5366,7 @@ def next_attempt_ordinal(history: AttemptHistory, act_id: str, chair: str) -> in
             f"a reread named chair {chair!r} on act {act_id!r}, which has no prior attempt for "
             "that chair to follow — a reread is a second attempt, and there is no first"
         )
-    current = latest_attempt(
-        records, f"Testimonium for {(act_id, chair)!r}", operation=f"read:{chair}"
-    )
-    return current["payload"]["attempt_ordinal"] + 1
+    return _current_testimonium(records, act_id, chair)["payload"]["attempt_ordinal"] + 1
 
 
 def reread_pass(
