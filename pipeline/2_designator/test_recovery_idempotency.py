@@ -1,11 +1,8 @@
 """Recovery cuts one crop per fulfilled request, never a second author for one.
 
-The orchestrator's own recovery loop cannot double-invoke the Designator for one
-act (`pending_recoveries` drops an act from the outstanding set the moment its
-latest Recensor review stops being "recovery-requested"), so this drives the
-stage directly the way its own module docstring documents as legitimate operator
-usage -- the same "operator misuse, not orchestrator misuse" path this repair
-closes.
+The orchestrator's own recovery loop cannot double-invoke the Designator for
+one act, so this drives the stage directly instead, the way its own module
+docstring documents as legitimate operator usage.
 """
 
 import subprocess
@@ -346,18 +343,13 @@ def _designator_context(designator, root: Path):
 
 
 def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_path):
-    """A recrop must add coverage rather than manufacture another reading pass.
-
+    """A recrop must add coverage rather than manufacture another reading pass:
     `region_id` binds the act and transform, so a recovery at an already-cut
-    proposal rectangle would carry the same pixels and identity. It cannot recover
-    coverage, and allowing it makes the Perlector receive duplicate evidence.
+    proposal rectangle would carry the same pixels and identity.
 
-    Driven in process rather than by CLI: `--fixture-root` cannot carry a modified
-    fixture through the door, because the door refuses any root but the declared
-    synthetic one (a caller-owned folder is real input), and the run authority binds
-    the fixture into its config digest. Both of those are correct and neither is
-    worth weakening for a test, so the recovery bounds are moved on the loaded
-    fixture object instead, one layer inside the CLI.
+    Driven in process rather than by CLI, since the door refuses any fixture
+    root but the declared synthetic one, so the recovery bounds are moved on
+    the loaded fixture object instead, one layer inside the CLI.
     """
     root = tmp_path / "runs"
     for program in (
@@ -389,11 +381,8 @@ def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_p
     act_id = review["subject_id"]
     request_id = review["payload"]["recovery_request_ref"]["relative_path"].rsplit("/", 1)[-1][:-5]
 
-    # The already-cut proposal region's *final* (padded) bounds, not the
-    # fixture's raw declared act rectangle: `cut_region` expands a proposal
-    # crop by the configured capture padding before cutting it, so the bounds
-    # that would actually collide with an existing region are the padded
-    # ones, not the pre-padding rectangle identity is bound to.
+    # The final (padded) bounds a proposal crop was actually cut to, not the
+    # fixture's pre-padding declared rectangle identity is bound to.
     existing_proposal = next(
         record
         for record in (
@@ -427,11 +416,10 @@ def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_p
 
 
 def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_path):
-    """A recovery crop skips `apply_padding` (it names its own exact final
-    rectangle) and so has no other bounds check before `crop_png` -- which
-    raises a bare `ValueError` `run_stage` does not turn into `EXIT_FATAL`.
-    The recovery path needs its own explicit check to fail the same way every
-    other refusal in this pipeline does."""
+    """A recovery crop skips `apply_padding`, so without its own explicit
+    check an out-of-page rectangle would reach `crop_png`'s bare `ValueError`,
+    which `run_stage` doesn't turn into `EXIT_FATAL` the way other refusals are.
+    """
     root = tmp_path / "runs"
     for program in (
         "pipeline/1_exemplar/door.py",
@@ -560,21 +548,11 @@ def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first
 
 
 def test_a_recrop_strictly_inside_the_existing_crop_refuses_by_name(tmp_path):
-    """A recovery must recover *coverage*, which is a fact about pixels.
-
-    The rectangle driven here is the one `proof/skeleton_fixture.toml` itself
-    declared for act a1 until the audit finding this test carries: 16,16,168,88,
-    against a padded proposal capture rect of 12,15,188,99. `[16,184) x [16,104)`
-    is a strict subset of `[12,200) x [15,114)`, so the recrop uncovers not one
-    pixel -- and yet it passed the transform-identity check above, spent the
-    act's whole `fallback_recrop` budget, and left the export carrying a
-    `witness_covered: false` caveat ("ink a recovery uncovers was never shown to
-    them") over nothing at all. principle 7: "Recovery exists for completeness
-    and coverage."
-
-    The refusal has to be by name rather than by the duplicate-transform message,
-    because the two are different defects: that one is a re-read of identical
-    pixels, this one is a *smaller* crop wearing recovery's name.
+    """A recovery must recover *coverage*, which is a fact about pixels: a
+    recrop rectangle strictly inside the already-cut capture rect uncovers no
+    pixel, so it must be refused by its own name, not the duplicate-transform
+    message -- a re-read of identical pixels is a different defect from a
+    smaller crop wearing recovery's name.
     """
     root = tmp_path / "runs"
     for program in (
@@ -654,8 +632,8 @@ def test_an_empty_cover_set_leaves_the_whole_rectangle_uncovered():
 
 
 def test_uncovered_area_counts_exactly_the_pixels_no_cover_holds():
-    """Against a brute-force pixel set, so the compression is checked rather
-    than restated: an off-by-one in the grid would agree with itself."""
+    """Against a brute-force pixel set, so an off-by-one in the grid doesn't
+    just agree with itself."""
     designator = _load_designator()
     target = {"x": 0, "y": 0, "w": 9, "h": 7}
     covers = [
@@ -680,9 +658,9 @@ def test_uncovered_area_counts_exactly_the_pixels_no_cover_holds():
 
 
 def test_a_single_pixel_outside_every_cover_is_enough_coverage_to_recover():
-    """The guard's threshold is one pixel, not a fraction: goal 2 puts a missed
-    act above a poorly read one, so a recrop that widens by a hair still widens.
-    The covers here leave exactly ONE pixel, so the name is the measurement."""
+    """The guard's threshold is one pixel, not a fraction: a recrop that
+    widens by a hair still widens. The covers here leave exactly ONE pixel.
+    """
     designator = _load_designator()
     target = {"x": 0, "y": 0, "w": 10, "h": 10}
     all_but_corner = [
@@ -732,11 +710,9 @@ def _region_record(page_ordinal: int, page_id: str, bounds: dict) -> dict:
 
 
 def test_coverage_is_scoped_to_the_page_being_recropped():
-    """A continuation region shares the act's identity and none of its geometry.
-
-    Counting one page's rectangle as coverage of another page's would refuse a
-    legitimate recrop -- the dangerous direction, since a refused recovery is a
-    recovery budget spent on nothing.
+    """A continuation region shares the act's identity and none of its
+    geometry: counting one page's rectangle as coverage of another's would
+    refuse a legitimate recrop, spending the recovery budget on nothing.
     """
     designator = _load_designator()
     near = _region_record(1, "page_one", {"x": 0, "y": 0, "w": 10, "h": 10})
@@ -748,9 +724,9 @@ def test_coverage_is_scoped_to_the_page_being_recropped():
 
 
 def test_coverage_requires_the_page_identity_and_not_only_its_ordinal():
-    """An ordinal is a position in one run's corpus; two different pages carry
-    the same one. The sealed page identity is what says these are the same
-    pixels."""
+    """An ordinal is a position in one run's corpus; two different pages
+    carry the same one, so page identity is what says these are the same pixels.
+    """
     designator = _load_designator()
     same_ordinal_other_page = _region_record(1, "page_elsewhere", {"x": 0, "y": 0, "w": 4, "h": 4})
     assert designator._coverage_on_page([same_ordinal_other_page], 1, "page_one") == []
@@ -815,14 +791,9 @@ def _recovery_regions_of(root, act_id):
     ids=("zero-width", "negative-width", "zero-height"),
 )
 def test_a_degenerate_recovery_rectangle_is_refused_as_a_rectangle(tmp_path, bounds):
-    """Ordering, not decoration: the coverage refusal must not answer this one.
-
-    `_uncovered_area` measures a rectangle; handed a degenerate one it returns a
-    meaningless number -- zero for an empty rectangle, and for a negative-width
-    one an area that is not zero at all, which would sail past a guard that only
-    tests for zero. Both are wrong answers to the wrong question. The bounds
-    check runs first so the refusal names what is actually wrong, and this
-    asserts that ordering rather than trusting it.
+    """`_uncovered_area` measures a rectangle; handed a degenerate one it
+    returns a meaningless number (a negative width can give a nonzero area,
+    sailing past a zero-only guard), so the bounds check must run first.
     """
     root = tmp_path / "runs"
     _review_run_to_recensor(root)
@@ -843,14 +814,9 @@ def test_a_degenerate_recovery_rectangle_is_refused_as_a_rectangle(tmp_path, bou
 
 
 def test_a_non_integer_recovery_coordinate_refuses_as_a_contract_error(tmp_path):
-    """A float coordinate must not escape as a bare `TypeError`.
-
-    `run_stage` turns a `ContractError` into `EXIT_FATAL`; anything else exits 1
-    with a traceback, and the orchestrator then halts the corpus on a code that
-    explains nothing -- the same defect class the recovery path already closed
-    once for `crop_png`'s bare `ValueError`. A float reaches `region_id` ->
-    `digest_of` before any bounds check unless the bounds check runs first,
-    and canonicalization refuses floats.
+    """A float coordinate must not escape as a bare `TypeError`: `run_stage`
+    turns a `ContractError` into `EXIT_FATAL`, but anything else exits 1 with
+    a traceback the orchestrator can't explain to the corpus.
     """
     root = tmp_path / "runs"
     _review_run_to_recensor(root)
