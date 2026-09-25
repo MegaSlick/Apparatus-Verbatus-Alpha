@@ -129,13 +129,13 @@ from operations.serving.residency import (  # noqa: E402
     FileResidencyLease,
 )
 
-_CHAIR_TRANSPORT_FAILURE_TYPES: Final = (serving_errors.ChairTransportFailure,)
 _ACT_LOCAL_READING_FAILURES: Final = (
     EngineSignalRefusal,
     ChairResponseRefusal,
     EndpointUnavailable,
     RequestCapacityRefusal,
-) + _CHAIR_TRANSPORT_FAILURE_TYPES
+    serving_errors.ChairTransportFailure,
+)
 
 # The sealed selector cannot hold the digest of an approval that targets its own config
 # digest, so the sampling gate scans the receipt directory. These bounds make a planted
@@ -2123,6 +2123,40 @@ def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
         )
 
 
+_NO_FAILURE_EVIDENCE: Final = {
+    "raw_response_ref": None,
+    "call_record_ref": None,
+    "request_sha256": None,
+    "receipt_ref": None,
+    "served_model_id": None,
+    "response_completion": None,
+}
+
+
+def _failure_facts(phase: str, kind: str, code: str, detail: str, **evidence) -> dict[str, Any]:
+    return {
+        "phase": phase,
+        "kind": kind,
+        "code": code,
+        "detail": detail,
+        **_NO_FAILURE_EVIDENCE,
+        **evidence,
+    }
+
+
+def _copied_ref(reference: Mapping[str, str] | None) -> dict[str, str] | None:
+    return dict(reference) if reference is not None else None
+
+
+def _reported_call_evidence(error: Exception) -> dict[str, Any]:
+    return {
+        "call_record_ref": _copied_ref(getattr(error, "call_record_ref", None)),
+        "request_sha256": getattr(error, "request_sha256", None),
+        "receipt_ref": _copied_ref(getattr(error, "receipt_ref", None)),
+        "served_model_id": getattr(error, "served_model_id", None),
+    }
+
+
 def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
     """Translate only observed engine and transport failures into retained facts.
 
@@ -2132,75 +2166,47 @@ def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
     if isinstance(error, RequestCapacityRefusal):
         if error.capacity is None:
             raise error
-        return {
-            "phase": phase,
-            "kind": "request-capacity",
-            "code": "REQUEST_OVER_CAPACITY",
-            "detail": str(error),
-            "raw_response_ref": None,
-            "call_record_ref": None,
-            "request_sha256": None,
-            "receipt_ref": None,
-            "served_model_id": None,
-            "response_completion": None,
-        }
+        return _failure_facts(phase, "request-capacity", "REQUEST_OVER_CAPACITY", str(error))
     if isinstance(error, EngineSignalRefusal):
-        return {
-            "phase": phase,
-            "kind": "engine-signal",
-            "code": error.code,
-            "detail": error.detail,
-            "raw_response_ref": dict(error.raw_response_ref),
-            "call_record_ref": dict(error.call_record_ref),
-            "request_sha256": error.request_sha256,
-            "receipt_ref": dict(error.receipt_ref),
-            "served_model_id": error.served_model_id,
-            "response_completion": "complete",
-        }
+        return _failure_facts(
+            phase,
+            "engine-signal",
+            error.code,
+            error.detail,
+            raw_response_ref=dict(error.raw_response_ref),
+            call_record_ref=dict(error.call_record_ref),
+            request_sha256=error.request_sha256,
+            receipt_ref=dict(error.receipt_ref),
+            served_model_id=error.served_model_id,
+            response_completion="complete",
+        )
     if isinstance(error, ChairResponseRefusal):
-        raw_response_ref = getattr(error, "raw_response_ref", None)
-        call_record_ref = getattr(error, "call_record_ref", None)
-        receipt_ref = getattr(error, "receipt_ref", None)
-        return {
-            "phase": phase,
-            "kind": "chair-response",
-            "code": error.code,
-            "detail": error.detail,
-            "raw_response_ref": dict(raw_response_ref) if raw_response_ref is not None else None,
-            "call_record_ref": dict(call_record_ref) if call_record_ref is not None else None,
-            "request_sha256": getattr(error, "request_sha256", None),
-            "receipt_ref": dict(receipt_ref) if receipt_ref is not None else None,
-            "served_model_id": getattr(error, "served_model_id", None),
-            "response_completion": "complete",
-        }
-    if _CHAIR_TRANSPORT_FAILURE_TYPES and isinstance(error, _CHAIR_TRANSPORT_FAILURE_TYPES):
-        call_record_ref = getattr(error, "call_record_ref", None)
-        receipt_ref = getattr(error, "receipt_ref", None)
-        return {
-            "phase": phase,
-            "kind": "transport",
-            "code": error.code,
-            "detail": error.detail,
-            "raw_response_ref": None,
-            "call_record_ref": (dict(call_record_ref) if call_record_ref is not None else None),
-            "request_sha256": getattr(error, "request_sha256", None),
-            "receipt_ref": dict(receipt_ref) if receipt_ref is not None else None,
-            "served_model_id": getattr(error, "served_model_id", None),
-            "response_completion": getattr(error, "response_completion", None),
-        }
+        return _failure_facts(
+            phase,
+            "chair-response",
+            error.code,
+            error.detail,
+            raw_response_ref=_copied_ref(getattr(error, "raw_response_ref", None)),
+            response_completion="complete",
+            **_reported_call_evidence(error),
+        )
+    if isinstance(error, serving_errors.ChairTransportFailure):
+        return _failure_facts(
+            phase,
+            "transport",
+            error.code,
+            error.detail,
+            response_completion=getattr(error, "response_completion", None),
+            **_reported_call_evidence(error),
+        )
     if isinstance(error, EndpointUnavailable):
-        return {
-            "phase": phase,
-            "kind": "transport",
-            "code": "endpoint-unavailable",
-            "detail": str(error),
-            "raw_response_ref": None,
-            "call_record_ref": None,
-            "request_sha256": None,
-            "receipt_ref": None,
-            "served_model_id": None,
-            "response_completion": "unknown",
-        }
+        return _failure_facts(
+            phase,
+            "transport",
+            "endpoint-unavailable",
+            str(error),
+            response_completion="unknown",
+        )
     return None
 
 
@@ -2216,18 +2222,7 @@ def _failure_from_engine_call(
     context, engine_call: Mapping[str, Any] | None, *, detail: str
 ) -> dict[str, Any]:
     """Build the response-evidence half of a malformed re-proof failure."""
-    record = {
-        "phase": "audit-reproof",
-        "kind": "reproof-response",
-        "code": "ReproofResponseRefusal",
-        "detail": detail,
-        "raw_response_ref": None,
-        "call_record_ref": None,
-        "request_sha256": None,
-        "receipt_ref": None,
-        "served_model_id": None,
-        "response_completion": None,
-    }
+    record = _failure_facts("audit-reproof", "reproof-response", "ReproofResponseRefusal", detail)
     if engine_call is None:
         return record
     call_ref = dict(engine_call["call_record_ref"])
