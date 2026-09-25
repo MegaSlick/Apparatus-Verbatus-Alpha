@@ -1551,12 +1551,7 @@ def validate_witness_context_bindings(
         raise ContractError(
             f"witness_context {witness_context!r} is not one of {WITNESS_CONTEXT_REGIMES}"
         )
-    if not _is_int(nuda_per_mille) or not (0 <= nuda_per_mille <= MAX_NUDA_PER_MILLE):
-        raise ContractError(
-            f"nuda_per_mille must be an integer in [0, {MAX_NUDA_PER_MILLE}], got {nuda_per_mille!r}"
-        )
-    if not isinstance(nuda_approval_ref, str):
-        raise ContractError("nuda_approval_ref must be a string")
+    _require_sampling_knobs("nuda", nuda_per_mille, MAX_NUDA_PER_MILLE, nuda_approval_ref)
     # A nuda sample needs the project lead's predeclared design, sealed beside
     # the rate so no run can later claim an approval it did not start under.
     if nuda_per_mille and nuda_approval_ref != NUDA_APPROVAL_SUBJECT:
@@ -1565,15 +1560,12 @@ def validate_witness_context_bindings(
             f"sampling design selector {NUDA_APPROVAL_SUBJECT!r} in --nuda-approval-ref; an arbitrary "
             "string is not an approval record"
         )
-    if not _is_int(perlector_instrument_per_mille) or not (
-        0 <= perlector_instrument_per_mille <= MAX_PERLECTOR_INSTRUMENT_PER_MILLE
-    ):
-        raise ContractError(
-            "perlector_instrument_per_mille must be an integer in [0, 1000], got "
-            f"{perlector_instrument_per_mille!r}"
-        )
-    if not isinstance(perlector_instrument_approval_ref, str):
-        raise ContractError("perlector_instrument_approval_ref must be a string")
+    _require_sampling_knobs(
+        "perlector_instrument",
+        perlector_instrument_per_mille,
+        MAX_PERLECTOR_INSTRUMENT_PER_MILLE,
+        perlector_instrument_approval_ref,
+    )
     if (
         perlector_instrument_per_mille
         and perlector_instrument_approval_ref != PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT
@@ -1590,6 +1582,15 @@ def validate_witness_context_bindings(
         shipped_config_root=DEFAULT_WITNESS_CONTEXT_CONFIG_PATH.parent,
     )
     return validation.source_sha256
+
+
+def _require_sampling_knobs(name: str, per_mille: Any, maximum: int, approval_ref: Any) -> None:
+    if not _is_int(per_mille) or not 0 <= per_mille <= maximum:
+        raise ContractError(
+            f"{name}_per_mille must be an integer in [0, {maximum}], got {per_mille!r}"
+        )
+    if not isinstance(approval_ref, str):
+        raise ContractError(f"{name}_approval_ref must be a string")
 
 
 def real_run_policy_digest(
@@ -2232,6 +2233,12 @@ def scenario_for(fixture: dict[str, Any], name: str) -> dict[str, Any]:
     raise ContractError(f"the fixture declares no scenario {name!r}; declared: {declared}")
 
 
+_EXPECTED_ACT_NAMES: Final = ("act_id", "act_key", "page_id")
+_EXPECTED_ACT_FIELDS: Final = frozenset(
+    {*_EXPECTED_ACT_NAMES, "page_ordinal", "has_continuation", "outcome", "evidence"}
+)
+
+
 def expected_acts(context) -> list[dict[str, Any]]:
     """Every act the proposal seal expects, each with a validated Designator outcome.
 
@@ -2261,27 +2268,13 @@ def expected_acts(context) -> list[dict[str, Any]]:
     for act in acts:
         if not isinstance(act, dict):
             raise FatalAccounting("the Designator proposal seal has a non-object expected-act row")
-        required = {
-            "act_id",
-            "act_key",
-            "page_id",
-            "page_ordinal",
-            "has_continuation",
-            "outcome",
-            "evidence",
-        }
-        if set(act) != required:
+        if set(act) != _EXPECTED_ACT_FIELDS:
             raise FatalAccounting(
                 "the Designator proposal seal expected-act row has fields other than its "
                 "closed denominator contract"
             )
         if (
-            not isinstance(act["act_id"], str)
-            or not act["act_id"]
-            or not isinstance(act["act_key"], str)
-            or not act["act_key"]
-            or not isinstance(act["page_id"], str)
-            or not act["page_id"]
+            any(not isinstance(act[name], str) or not act[name] for name in _EXPECTED_ACT_NAMES)
             or not _is_int(act["page_ordinal"])
             or not isinstance(act["has_continuation"], bool)
             or not isinstance(act["evidence"], list)
@@ -2365,11 +2358,7 @@ def _verify_real_act_denominator(
                 f"{payload.get('schema')!r}"
             )
         if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA and attempts_by_page is None:
-            attempts_by_page = {}
-            for attempt in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND):
-                attempt_page_id = attempt.get("subject_id")
-                if isinstance(attempt_page_id, str):
-                    attempts_by_page.setdefault(attempt_page_id, []).append(attempt)
+            attempts_by_page = _structure_attempts_by_page(context)
             sealed_decoding = load_decoding_policy(context.args.decoding_config)
         _verify_structure_attempt_chain(
             context,
@@ -2466,6 +2455,15 @@ def _verify_real_act_denominator(
     _verify_every_conservation_residual_is_accounted(context, observed, holds_by_subject)
 
 
+def _structure_attempts_by_page(context) -> dict[str, list[dict[str, Any]]]:
+    by_page: dict[str, list[dict[str, Any]]] = {}
+    for attempt in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND):
+        page_id = attempt.get("subject_id")
+        if isinstance(page_id, str):
+            by_page.setdefault(page_id, []).append(attempt)
+    return by_page
+
+
 def _verify_structure_attempt_chain(
     context: StageContext,
     payload: Mapping[str, Any],
@@ -2511,13 +2509,8 @@ def _verify_structure_attempt_chain(
             "sealed by its decoding configuration"
         )
     if attempts_by_page is None:
-        stored_attempts = [
-            row
-            for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND)
-            if row.get("subject_id") == page_id
-        ]
-    else:
-        stored_attempts = list(attempts_by_page.get(page_id, []))
+        attempts_by_page = _structure_attempts_by_page(context)
+    stored_attempts = list(attempts_by_page.get(page_id, []))
     if len(stored_attempts) != ordinal:
         raise FatalAccounting(
             f"page {page_id}'s terminal structure answer names {ordinal} attempts but its "
@@ -3639,6 +3632,16 @@ def _prove_page_wide_act_rectangle(
         ) from error
 
 
+def _binds_page_row(payload: Mapping[str, Any], row: Mapping[str, Any], act_key: str) -> bool:
+    """Whether a page-wide record names its seal row's page, ordinal, derived key and a rectangle."""
+    return (
+        isinstance(payload.get("page_bounds"), dict)
+        and payload.get("act_key") == row["act_key"] == act_key
+        and payload.get("page_id") == row["page_id"]
+        and payload.get("page_ordinal") == row["page_ordinal"]
+    )
+
+
 def _verify_page_fallback_act_row(
     context,
     act_id: str,
@@ -3662,14 +3665,7 @@ def _verify_page_fallback_act_row(
     payload = _payload_of(record)
     bounds = payload.get("page_bounds")
     ordinal = row["page_ordinal"]
-    expected_key = fallback_page_act_key(ordinal)
-    if (
-        not isinstance(bounds, dict)
-        or payload.get("act_key") != row["act_key"]
-        or payload.get("act_key") != expected_key
-        or payload.get("page_id") != row["page_id"]
-        or payload.get("page_ordinal") != ordinal
-    ):
+    if not _binds_page_row(payload, row, fallback_page_act_key(ordinal)):
         raise FatalAccounting(
             f"act {act_id}'s page-fallback record does not carry the page id, page ordinal, "
             "derived fallback key, and page rectangle it must bind"
@@ -3719,14 +3715,7 @@ def _verify_page_residual_act_row(
         )
     bounds = payload.get("page_bounds")
     ordinal = row["page_ordinal"]
-    expected_key = page_residual_act_key(ordinal)
-    if (
-        not isinstance(bounds, dict)
-        or payload.get("act_key") != row["act_key"]
-        or payload.get("act_key") != expected_key
-        or payload.get("page_id") != row["page_id"]
-        or payload.get("page_ordinal") != ordinal
-    ):
+    if not _binds_page_row(payload, row, page_residual_act_key(ordinal)):
         raise FatalAccounting(
             f"act {act_id}'s page-residual hold does not carry the page id, page ordinal, "
             "derived page-residual key, and page rectangle it must bind"
