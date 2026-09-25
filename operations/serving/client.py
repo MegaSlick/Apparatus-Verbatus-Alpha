@@ -62,7 +62,7 @@ from .http import (
     parse_openai_reading,
     request_body,
 )
-from .manager import AdapterCalibration, ServiceHandle, ServingManager
+from .manager import AdapterCalibration, ServiceHandle, ServingManager, _immutable_json_value
 
 # Never on the wire: these are the manager's/decoding policy's to set, not an
 # adapter's or a stage's. A caller that names one is refused before anything
@@ -230,7 +230,7 @@ def _sealed_capacity(value: Mapping[str, object]) -> Mapping[str, object]:
             "a request's capacity record must be a mapping of the arithmetic one request was "
             f"admitted on, not {type(detached).__name__}",
         )
-    return _immutable_json(detached)
+    return _immutable_json_value(detached)
 
 
 def _plain_capacity(value: object) -> object:
@@ -251,16 +251,6 @@ def _plain_capacity(value: object) -> object:
         return {key: _plain_capacity(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_plain_capacity(item) for item in value]
-    return value
-
-
-def _immutable_json(value: object) -> object:
-    """Deep-freeze one already-canonical JSON value."""
-
-    if isinstance(value, Mapping):
-        return MappingProxyType({key: _immutable_json(item) for key, item in value.items()})
-    if isinstance(value, (list, tuple)):
-        return tuple(_immutable_json(item) for item in value)
     return value
 
 
@@ -585,8 +575,10 @@ class ChairClient:
             attempt_ordinal=attempt_ordinal,
             parameters=MappingProxyType(declared),
             generation_sent=MappingProxyType(sent),
-            generation_sent_record=cast(Mapping[str, object], _immutable_json(sent_record)),
-            generation_declared_record=cast(Mapping[str, object], _immutable_json(declared_record)),
+            generation_sent_record=cast(Mapping[str, object], _immutable_json_value(sent_record)),
+            generation_declared_record=cast(
+                Mapping[str, object], _immutable_json_value(declared_record)
+            ),
             body=body,
             request_sha256=digest_bytes(body),
         )
