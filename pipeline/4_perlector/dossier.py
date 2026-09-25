@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any, Final
 
 from PIL import Image
-from regime import NAMED, REGIMES, witness_label
 
 from common.chairs.models import ChairIdentity
 from common.chandra_native_retry import named_trace_summary
@@ -31,6 +30,7 @@ from common.contracts.stages import EXEMPLAR, PERLECTOR
 from common.imaging import crop_png, dimensions, encode_grayscale_png_deterministic
 from common.native_witness import REPORTED_BOUNDS_SOURCES
 from common.stage import WITNESS_READING_OUTCOMES
+from common.witness_regime import NAMED, REGIMES, witness_label
 
 # A fixed bound, not configuration: the dossier's job is to hand the reader a
 # genuine layout overview, not a second full-resolution copy of the page. A

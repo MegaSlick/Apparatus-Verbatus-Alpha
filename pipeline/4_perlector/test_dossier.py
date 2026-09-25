@@ -458,7 +458,7 @@ def test_dossier_refuses_an_undeclared_witness_regime_even_without_testimonia(ev
 def test_blinded_pseudonyms_are_stable_and_reversible_without_a_stored_map(evidence):
     """Reversal is recomputing the same deterministic function over the public
     roster in `run.json`, never a second stored copy of it."""
-    from regime import pseudonym_for
+    from common.witness_regime import pseudonym_for
 
     context, act_id, act_key, regions, testimonia = evidence
     blinded = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
@@ -494,7 +494,7 @@ def test_a_blinded_regimes_pseudonym_order_is_not_a_fixed_slot_per_chair(evidenc
     run ids and showing the true chair sequence a reader would see reorders --
     the property `test_..._are_each_sorted_by_displayed_label` above names but,
     being sorted-by-construction either way, can never exhibit."""
-    from regime import pseudonym_for
+    from common.witness_regime import pseudonym_for
 
     context, act_id, act_key, regions, testimonia = evidence
     chairs = [record["payload"]["chair"] for record in testimonia]
