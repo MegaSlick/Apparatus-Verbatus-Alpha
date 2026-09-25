@@ -132,7 +132,8 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     evidence overwrite the first's (principle 4). This binds the outer
     ``--report-path`` and, inside ``--bootstrap-command-json``, every flag
     ``models.NESTED_LAUNCH_BOUND_FLAGS`` names; ``bootstrap_main`` refuses an
-    unbound one only pod-side, after billing has begun.
+    unbound one only pod-side, after billing has begun. The ``--journal`` half
+    matters because every non-``--hold-only`` plan requires a journal.
 
     ``PodCreateRequest`` already refuses a command without exactly one valued
     ``--report-path``; the refusals below keep this helper's contract local and
@@ -336,7 +337,10 @@ def _bind_nested_report_path(bootstrap_command_json: str, launch_token: str) -> 
     nested argv with no such flag is returned unchanged: binding a path never
     asked for would invent one. `models.rebind_nested_flag` reads both
     spellings exactly as the money-path validator does, so an equals-form path
-    cannot slip through unbound and then be refused forever downstream.
+    cannot slip through unbound and then be refused forever downstream. A
+    truncated or duplicated nested flag passes through unbound rather than
+    raising: `models._required_timer_arguments` already refuses both before
+    ``create`` gets here, and another caller should not rely on that by accident.
     """
 
     bound = json.loads(bootstrap_command_json)
@@ -1084,6 +1088,7 @@ class PodRuntime:
             except Exception as error:
                 return _unproven_lease_root(f"lease {path} could not be read: {error}")
             if lease is None:
+                # A listed lease that vanished may still be billing; empty is not clear.
                 return _unproven_lease_root(
                     f"a listed lease vanished before it could be read: {path}"
                 )
@@ -1790,7 +1795,8 @@ class PodRuntime:
             # Nothing here is expected to raise, but a pod is billing by this
             # line and an escaping exception would leave it running unclosed.
             # The pre-create assessment is carried, without its challenge, as
-            # the last one that actually ran.
+            # the last one that actually ran. Nothing built before the close may raise,
+            # or the pod would be left billing.
             unassessed = PaidActionPreview(preview.action, preview.subject, preview.assessment)
             closed = self._close_as(
                 LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
@@ -1809,7 +1815,8 @@ class PodRuntime:
         if assessment.allowed:
             return None, actual_preview
         # No challenge: the create that got here consumed it, and a refusal
-        # report must not carry a phrase that would authorize anything.
+        # report must not carry a phrase that would authorize anything. The state and
+        # preview are built before the close and must never raise: a pod is billing.
         closed = self._close_as(
             _spend_refusal_state(assessment),
             actual_preview,

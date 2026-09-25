@@ -297,6 +297,7 @@ class UrllibRunPodTransport:
         # Proxy discovery stays on, unlike `operations/serving/http.py` (which talks
         # to 127.0.0.1): an operator whose only route out is a proxy must still be
         # able to close a pod, and both roots are HTTPS, so the key stays inside TLS.
+        # A proxy that answers for the API itself fails the certificate check.
         opener, cancel = recording_opener(_RefuseRedirects)
 
         def exchange() -> HttpResponse:
