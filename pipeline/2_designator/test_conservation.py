@@ -12,11 +12,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from _test_support import label_components_reference
 from conservation import reconcile
 from structure import (
     PRIMARY_MARGIN,
     SECONDARY_MARGIN,
-    _label_components_reference,
     ink_pixels,
 )
 
@@ -73,7 +73,7 @@ def paint_pixel(rows: list[bytearray], x: int, y: int, value: int = INK) -> None
 def _legacy_reference(width, height, rows, claimed_bounds, gap_tolerance_px):
     """The old pixel-set algorithm, kept as an independent equivalence oracle.
 
-    Labels through `structure._label_components_reference`, not the current
+    Labels through `_test_support.label_components_reference`, not the current
     row-oriented `structure.label_components` -- otherwise this would compare
     `conservation`'s row runs against the same row-run labeller
     rather than the independent pixel-set definition both answer to.
@@ -88,7 +88,7 @@ def _legacy_reference(width, height, rows, claimed_bounds, gap_tolerance_px):
             for bounds in claimed_bounds
         )
     }
-    components = _label_components_reference(pixels - claimed, gap_tolerance_px=gap_tolerance_px)
+    components = label_components_reference(pixels - claimed, gap_tolerance_px=gap_tolerance_px)
     return {
         "total_ink_pixel_count": len(pixels),
         "claimed_pixel_count": len(claimed),

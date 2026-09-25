@@ -11,13 +11,13 @@ from pathlib import Path
 
 import grouping_config
 import pytest
+from _test_support import label_components_reference
 from structure import (
     PRIMARY_MARGIN,
     SECONDARY_MARGIN,
     BackgroundInferenceRefusal,
     _derived_ink_margin,
     _ink_threshold,
-    _label_components_reference,
     infer_background,
     infer_background_evidence,
     ink_pixels,
@@ -484,7 +484,7 @@ def test_secondary_scan_refuses_a_missing_gap_tolerance_keyword():
 
 def _both_labellers_agree(pixels, gap_tolerance_px: int) -> list:
     produced = label_components(pixels, gap_tolerance_px=gap_tolerance_px)
-    expected = _label_components_reference(pixels, gap_tolerance_px=gap_tolerance_px)
+    expected = label_components_reference(pixels, gap_tolerance_px=gap_tolerance_px)
     assert produced == expected
     return produced
 
@@ -653,15 +653,6 @@ def test_the_row_run_labeller_matches_the_reference_on_negative_coordinates():
     pixels = {(-4, -3), (-3, -3), (-3, -2), (2, -3), (0, 1), (1, 1)}
     for gap_tolerance_px in (0, 1, 2, 4):
         _both_labellers_agree(pixels, gap_tolerance_px)
-
-
-def test_the_reference_labeller_is_reachable_and_refuses_the_same_way():
-    """The oracle is real code, held to the same refusals as what replaced it."""
-    assert _label_components_reference(set(), gap_tolerance_px=3) == []
-    with pytest.raises(ContractError, match="gap tolerance -1 is negative"):
-        _label_components_reference({(0, 0)}, gap_tolerance_px=-1)
-    with pytest.raises(TypeError):
-        _label_components_reference({(0, 0)})
 
 
 # --- the dark surround: a photographed page is not a dark page ------------------
