@@ -1912,7 +1912,7 @@ and has no notion of "claimed" to give — a change worth its own design and
 test pass. Named here rather than fixed quietly or left undiscovered. (Both
 sides of that shared adjacency label runs through one function,
 `common.components.label_component_runs`, and both are checked against the retired
-pixel-set labeller, `structure._label_components_reference`. The defect
+pixel-set labeller, `_test_support.label_components_reference`. The defect
 described above is unchanged by that substitution: it is a property of the
 adjacency rule, not of how the rule is computed.)
 

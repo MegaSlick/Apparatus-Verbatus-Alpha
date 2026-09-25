@@ -122,11 +122,6 @@ than unrepresentable (principle 2). A pending entry also refuses if its
 artifact-keyed snapshot or manifest exists, so replaying an older pending record
 cannot relabel acquired or lost bytes as “not yet fetched.”
 
-`require_store_artifact` preserves the three absence meanings at the consumer
-door: `pending-fetch` means not yet fetched, a `present` entry whose bytes are
-gone refuses as fetched-and-lost, and `surya-ocr-2` is `not-required` because
-only detection is in the roster (with the recorded-bench-need escape hatch).
-
 Every `present` entry also names `required_files`. The digest manifest remains
 the exact allow-list used when a chair cache fills, while `required_files` is
 the non-negotiable subset that must be present and nonempty. It includes the
