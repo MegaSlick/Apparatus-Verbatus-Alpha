@@ -841,7 +841,7 @@ def test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_
         )
         assert exit_code == 0
         return
-    with pytest.raises(ContractError, match="reading deadline"):
+    with pytest.raises(ContractError, match="starting the Perlector"):
         _run_perlector(
             live_run,
             tmp_path,

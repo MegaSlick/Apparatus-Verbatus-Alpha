@@ -88,6 +88,7 @@ from common.perlector_failure import (  # noqa: E402
     PRE_PERLECTIO_ARTIFACTS,
     validate_failed_perlectio,
 )
+from common.request_capacity import RequestCapacityRefusal  # noqa: E402
 from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -133,6 +134,7 @@ _ACT_LOCAL_READING_FAILURES: Final = (
     EngineSignalRefusal,
     ChairResponseRefusal,
     EndpointUnavailable,
+    RequestCapacityRefusal,
 ) + _CHAIR_TRANSPORT_FAILURE_TYPES
 
 # The sealed selector cannot hold the digest of an approval that targets its own config
@@ -2127,6 +2129,19 @@ def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
     Contract and schema errors return `None`: recorded as an engine incident, one would
     let the stage seal over an integrity defect.
     """
+    if isinstance(error, RequestCapacityRefusal):
+        return {
+            "phase": phase,
+            "kind": "request-capacity",
+            "code": "REQUEST_OVER_CAPACITY",
+            "detail": str(error),
+            "raw_response_ref": None,
+            "call_record_ref": None,
+            "request_sha256": None,
+            "receipt_ref": None,
+            "served_model_id": None,
+            "response_completion": None,
+        }
     if isinstance(error, EngineSignalRefusal):
         return {
             "phase": phase,
@@ -3673,6 +3688,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 inputs=capacity_inputs,
                 payload=payload,
             )
+            unread -= 1
             acknowledged += 1
             continue
 
@@ -4035,6 +4051,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             validate_audit_delivery(
                 payload["dossier"], pass_kind="audit-reproof", audit_request=audit_request
             )
+            _refuse_past_deadline(
+                args.reading_deadline, PLANNED_SECONDS_PER_CALL, "the next re-proof call"
+            )
             try:
                 reproof = reader.read(
                     payload["dossier"],
@@ -4140,6 +4159,13 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 if "[[" in final_text or "]]" in final_text:
                     reproof_assessment = annotations.malformed_assessment(
                         "a re-proof replacement carries a doubt mark its JSON answer cannot anchor"
+                    )
+                elif reproof_assessment["state"] != "assessed" and (
+                    payload["gaps"] or payload["uncertain_spans"]
+                ):
+                    reproof_assessment = annotations.malformed_assessment(
+                        "a re-proof replaced text over which Pass B marked doubts; those marks "
+                        "stay in Pass B's retained response and cannot be re-anchored here"
                     )
                 payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
                 payload["uncertain_spans"] = list(reproof_assessment["uncertain_spans"])

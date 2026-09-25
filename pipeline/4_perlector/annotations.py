@@ -331,7 +331,7 @@ def read_doubt_marks(raw: str) -> tuple[str, dict[str, Any]]:
             gap_offsets.append(length)
             continue
         reading, *alternatives = body.split("|")
-        if not reading:
+        if not reading or reading == "?":
             return raw, malformed_assessment(f"the doubt mark {match.group(0)!r} names no reading")
         spans.append(
             {
@@ -361,7 +361,7 @@ def read_doubt_marks(raw: str) -> tuple[str, dict[str, Any]]:
             "witness_evidence": [],
         }
         for offset in gap_offsets
-        if text
+        if text.strip()
     ]
     return text, {
         "state": ASSESSMENT_ASSESSED,

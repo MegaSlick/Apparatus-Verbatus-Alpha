@@ -364,6 +364,8 @@ def test_validate_annotations_requires_a_text_field():
         ("plain ink", "plain ink", "assessed", 0, 0),
         ("[[?]] a [[b]] [[?]]", " a b ", "assessed", 1, 2),
         ("[[?]]", "", "assessed", 0, 0),
+        ("[[?]]\n[[?]]", "\n", "assessed", 0, 0),
+        ("a [[?|b]]", "a [[?|b]]", "malformed", 0, 0),
         ("a [[b", "a [[b", "malformed", 0, 0),
         ("a ]] b", "a ]] b", "malformed", 0, 0),
         ("a [[x [[y]] z]]", "a [[x [[y]] z]]", "malformed", 0, 0),
@@ -375,3 +377,32 @@ def test_doubt_marks_parse_or_leave_the_answer_as_returned(raw, text, state, spa
     assert (published, report["state"]) == (text, state)
     assert (len(report["uncertain_spans"]), len(report["gaps"])) == (spans, gaps)
     assert annotations.validate_assessment(report, published) == report
+
+
+def test_a_request_refused_before_sending_is_a_failure_with_no_response_evidence():
+    from common.contracts.errors import SchemaRefusal as Refusal
+    from common.perlector_failure import validate_failed_payload
+
+    failure = {
+        "phase": "establishing",
+        "kind": "request-capacity",
+        "code": "REQUEST_OVER_CAPACITY",
+        "detail": "over by 73",
+        "raw_response_ref": None,
+        "call_record_ref": None,
+        "request_sha256": None,
+        "receipt_ref": None,
+        "served_model_id": None,
+        "response_completion": None,
+    }
+    payload = {
+        "act_key": "a1",
+        "attempt_ordinal": 1,
+        "reason": "r",
+        "failure": failure,
+        "provenance": {},
+    }
+    validate_failed_payload(payload)
+    failure["request_sha256"] = "0" * 64
+    with pytest.raises(Refusal, match="no response evidence"):
+        validate_failed_payload(payload)

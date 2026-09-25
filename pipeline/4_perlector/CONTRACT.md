@@ -197,10 +197,15 @@ to write `[[?]]` where ink cannot be read and `[[reading]]` or
 `[[reading|other|...]]` where it is unsure; `annotations.read_doubt_marks` turns
 those into zero-width gaps and `low` spans with their alternatives over the clean
 text. The grammar carries no level of doubt, so every marked span is `low`. A
-`[[` or `]]` that is not a closed mark publishes the raw answer unchanged under
-`malformed`. Marks over an answer that is otherwise empty add nothing: the
-`no-readable-text` outcome's whole-act gap already says it. Whether a real reader
-uses the marks is measured on the first live run.
+`[[` or `]]` that is not a closed mark, or a mark whose reading is `?`, publishes the
+raw answer unchanged under `malformed`. Gap marks over an answer that is otherwise
+blank add nothing: the `no-readable-text` outcome's whole-act gap already says it.
+Pass B is fed Pass A's clean text, so `self_revision` offsets index the draft it was
+shown; Pass A's marks stay on its own record. Truncation is measured on the clean
+text. The re-proof answers in JSON and reports no doubts; a replacement carrying a
+mark, or a replacement over text Pass B marked, publishes `malformed`, because the
+marks cannot be re-anchored through the edit. Whether a real reader uses the marks is
+measured on the first live run.
 
 *The assessed tail is not bound to a reader.* Where the state is `assessed`,
 `common/perlector_audit.py::validate_chain` proves the exhausted-cap projection
@@ -886,14 +891,18 @@ pair two engines' answers in one reading, so before any chair starts
 `_acts_left_to_read` refuses the pass if any act holds those artifacts without a
 Perlectio. The interrupted attempt's artifacts stay as its evidence; those pages are read
 in a new run. A per-act failure the pass can name (`_ACT_LOCAL_READING_FAILURES`)
-publishes a failed Perlectio and is not half-read. Pinned by
+publishes a failed Perlectio and is not half-read; that includes a request the
+capacity check refuses before sending (`request-capacity`), which could otherwise
+strand an act whose Pass A fitted and whose Pass B did not. Pinned by
 `test_live_perlector.py::test_a_live_pass_refuses_to_resume_an_act_it_left_half_read`.
 
 **The reading deadline.** `--reading-deadline <UTC ISO time>` makes a live pass refuse to
 start when the chair's `startup_timeout_seconds` plus every call left
-(`calls_per_act` = two passes + the audit round cap + each sampled arm, at
-`PLANNED_SECONDS_PER_CALL`) would run past it, and refuse to begin another act when the
-calls left would. It stops between acts, never inside a call. Pinned by
+(`calls_per_act` = two passes + the audit round cap + one per instrument arm enabled
+for the run, at `PLANNED_SECONDS_PER_CALL`) would run past it. It also refuses to begin
+another act, or another re-proof, when the calls left would. It stops between calls,
+never inside one; the acts it has read stay half-read, so the run ends there with every
+artifact retained (see the resume rule above). Pinned by
 `::test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_starts`.
 
 **One live-resume limit remains, named rather than hidden.** Every re-invocation of a live

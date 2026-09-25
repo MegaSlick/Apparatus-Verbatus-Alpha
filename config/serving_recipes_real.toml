@@ -166,8 +166,9 @@
 # completed inference probe; on expiry the chair is killed and PREFLIGHT goes
 # red.  It should cover weight bytes / volume read rate + torch.compile +
 # profiling and warm-up + margin.  Rows still at 300 are unmeasured placeholders.
-# Two rows are sized from retained vLLM logs: `designator_structure` on
-# `generic-80gb-plus`, and the Perlector on `generic-80gb-plus` (a cold start
+# Two rows depart from it: `designator_structure` on `generic-80gb-plus` (its cold
+# 300 s start timed out while progressing; 600 s completed only with a warm cache),
+# and the Perlector on `generic-80gb-plus`, sized from retained vLLM logs (a cold start
 # measured about 375 s on 2026-09-22/23: weights 95 s off the volume,
 # torch.compile 107 s, profiling 76 s, multimodal warm-up 20 s).  The Perlector
 # keeps torch.compile: its 90-107 s is paid once per start, while eager mode's
