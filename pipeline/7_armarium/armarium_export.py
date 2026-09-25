@@ -2076,16 +2076,10 @@ def _manifest_run_binding(projection: ArmariumProjection) -> dict[str, str]:
     fallback needs no second check.
     """
     if _is_nonempty_str(projection.submission_id):
-        return {
-            "submission_id": projection.submission_id,
-            "scenario": projection.scenario,
-            "config_digest": projection.config_digest,
-        }
-    return {
-        "fixture_id": projection.fixture_id,
-        "scenario": projection.scenario,
-        "config_digest": projection.config_digest,
-    }
+        identity = {"submission_id": projection.submission_id}
+    else:
+        identity = {"fixture_id": projection.fixture_id}
+    return {**identity, "scenario": projection.scenario, "config_digest": projection.config_digest}
 
 
 def _verify_region_page_binding(
@@ -2600,13 +2594,9 @@ def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 else None,
                 "semantic_annotations": [],
                 "semantic_annotation_status": _SEMANTIC_ANNOTATION_NOT_PRODUCED,
-                "witnesses": act.get("witnesses", []),
-                "perlectio_ref": act.get("perlectio_ref"),
-                "recensor_ref": act.get("recensor_ref"),
-                "dissent_ref": act.get("dissent_ref"),
+                **_act_evidence(act),
                 "approval_ref": act.get("approval_ref"),
                 "reason": _export_reason(act),
-                "evidence_refs": act.get("evidence_refs", []),
             }
         )
     return records
@@ -3319,22 +3309,14 @@ def _export_manifest(
         for row in projection.source_manifest
         if isinstance(row, dict) and isinstance(row.get("relative_path"), str)
     }
-    salvage_claim = (
-        {
-            "namespace": "salvage",
-            "status": "accounted",
-            "count": len(projection.salvage_items),
-            "promotion": _SALVAGE_PROMOTION_CLAIM,
-        }
-        if projection.salvage_items is not None
-        else {
-            "namespace": "salvage",
+    if projection.salvage_items is None:
+        salvage_status = {
             "status": "not-produced-no-sealed-salvage-inventory",
             "count": None,
             "reason": _SALVAGE_ABSENCE_REASON,
-            "promotion": _SALVAGE_PROMOTION_CLAIM,
         }
-    )
+    else:
+        salvage_status = {"status": "accounted", "count": len(projection.salvage_items)}
     ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
     edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
     unmeasurable_ink_map_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
@@ -3405,7 +3387,11 @@ def _export_manifest(
                 "exercised_against_real_spans": False,
                 "reason": _DISPLAY_REASON,
             },
-            "salvage": salvage_claim,
+            "salvage": {
+                "namespace": "salvage",
+                **salvage_status,
+                "promotion": _SALVAGE_PROMOTION_CLAIM,
+            },
             "not_measured": _not_measured_claim(projection),
         },
         "aggregate": projection.aggregate,
