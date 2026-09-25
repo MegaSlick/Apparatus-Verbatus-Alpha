@@ -43,41 +43,30 @@ def run_logical_passes(
     control_sampled: bool,
     draft_fed: bool = True,
     publish_prior: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
-    sealed_prior: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Use one atomic presentation for every requested arm of one logical act.
 
     ``publish_prior`` must return the closed prior reference and text before
     the establishing call; without a publisher, only the text is retained.
-
-    ``sealed_prior`` is that same closed reference and text, read back off an
-    immutable Pass A an interrupted attempt at this identity already published.
-    Given one, Pass A is not asked for again: its record exists, it may not be
-    overwritten (principle 4), and a second live answer would differ from the
-    bytes on disk and be refused. The caller decides that this act is a resume;
-    this seam only declines to re-read what it is handed.
     """
     max_images = protocol_config.get("max_images")
     if not isinstance(max_images, int) or isinstance(max_images, bool):
         max_images = None
     output: dict[str, Any] = {}
-    if sealed_prior is not None:
-        prior_draft = sealed_prior
-    else:
-        prior_dossier, _prior_pixels, prior = invoke_one_logical_read(
-            reader,
-            autopsia=autopsia,
-            dossier=_unprimed(dossier),
-            read_bytes=read_bytes,
-            max_images=max_images,
-            pass_kind="lectio-prior",
-        )
-        output["lectio-prior"] = {"dossier": prior_dossier, "result": prior}
-        prior_draft = (
-            publish_prior(prior_dossier, prior)
-            if publish_prior is not None
-            else {"text": prior["text"]}
-        )
+    prior_dossier, _prior_pixels, prior = invoke_one_logical_read(
+        reader,
+        autopsia=autopsia,
+        dossier=_unprimed(dossier),
+        read_bytes=read_bytes,
+        max_images=max_images,
+        pass_kind="lectio-prior",
+    )
+    output["lectio-prior"] = {"dossier": prior_dossier, "result": prior}
+    prior_draft = (
+        publish_prior(prior_dossier, prior)
+        if publish_prior is not None
+        else {"text": prior["text"]}
+    )
     if nuda_sampled:
         nuda_dossier, _nuda_pixels, nuda = invoke_one_logical_read(
             reader,

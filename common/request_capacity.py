@@ -550,7 +550,9 @@ PERLECTOR_TOKENS_PER_WORD: Final = (120, 73)
 # Tokens per character over 168 prompts rendered through `build_prompt` with the
 # pinned tokenizer and chat template (1/3/5 testimonia, 0-1,200 words each, with
 # and without prior draft, reproofs and a second view).  The ratio falls as the
-# dossier grows, so the sealed value is the maximum, 0.4126394, rounded up.
+# dossier grows, so the sealed value is the maximum, 0.4126394, rounded up.  The
+# doubt-mark instruction lowered the maximum to 0.3940 on the same grid, so the
+# sealed value still bounds it.
 PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS: Final = 4127
 # Kept apart from the ratio so measurement and margin stay visible.
 PERLECTOR_BOUND_SAFETY_MARGIN: Final = (105, 100)
@@ -562,12 +564,12 @@ PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS: Final = 32
 # `prompts.py`'s module digest (`builder_sha256`): editing the builder expires
 # the measured ratio.
 PERLECTOR_PROMPT_TEMPLATE_DIGEST: Final = (
-    "ad623c7d0fd379816c471f21bda00cd7dbf1f0ecfabed00ccc2e8f8a29dbf783"
+    "ed90b14c673f8ae228e61e517b364cf8413f7ceac30bc295fa820500a0b5bb3d"
 )
 # The representative dossier's size and bound, for weighing the shipped rows
 # against what is admitted on; a test re-derives the bound from the size.
-PERLECTOR_REPRESENTATIVE_PROMPT_CHARACTERS: Final = 2269
-PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS: Final = 1100
+PERLECTOR_REPRESENTATIVE_PROMPT_CHARACTERS: Final = 2438
+PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS: Final = 1173
 # Reconciled with `config/models-real.toml`: with no fixed prompt to digest, the
 # pinned revision is what expires the Perlector's measurements.
 PERLECTOR_MEASURED_TOKENIZER: Final = (

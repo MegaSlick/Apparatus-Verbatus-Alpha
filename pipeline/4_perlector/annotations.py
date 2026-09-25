@@ -23,6 +23,7 @@ Lectio nuda comparison exist for instead.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Final
 
 from common.contracts.errors import SchemaRefusal
@@ -224,28 +225,10 @@ def validate_annotations(payload: dict[str, Any], *, outcome: str | None = None)
         validate_whole_act_consistency(outcome=outcome, text=text, gaps=gaps)
 
 
-# --- The reader's own doubt report -------------------------------------------
-#
-# `uncertain_spans` and `gaps` above are the two annotation layers over one clean
-# `text`. Until the independent audit of 2026-09-10 (finding F2) nothing could
-# put a reader-reported doubt into them: the live reader returned text and a stop
-# word, and the only spans ever minted were the exhausted-cap projection of Pass
-# C's frozen flags. An empty list therefore said "no doubt was ever asked for",
-# and looked exactly like "assessed, no doubt". The assessment record below is
-# what tells those apart, and it is a fact about the call whose text is
-# published, never a promise about the reading's accuracy.
-#
-#   assessed      the reader reported its doubts over this text: the spans and
-#                 gaps it returned validated against the exact text, and are
-#                 published in the two layers above
-#   not-assessed  the reader has no channel for doubts (the pinned live prompt
-#                 asks for the text alone), so nothing here says the reading is
-#                 confident -- an empty layer under this state is an absence
-#   malformed     the reader returned a doubt report this schema could not
-#                 anchor to the text (an offset past its end, a gap with width,
-#                 an unknown confidence); the problem is retained here and the
-#                 layers stay empty, so a broken report is a visible fault
-#                 rather than an empty confident list (principle 8)
+# The reader's own doubt report. `assessed`: the reader was asked and its spans and
+# gaps anchor to the text. `not-assessed`: the reader had no way to report doubt, so
+# empty layers are an absence, not confidence. `malformed`: a report that could not
+# be anchored, kept as a visible fault with empty layers (principle 8).
 ASSESSMENT_ASSESSED: Final = "assessed"
 ASSESSMENT_NOT_ASSESSED: Final = "not-assessed"
 ASSESSMENT_MALFORMED: Final = "malformed"
@@ -321,3 +304,68 @@ def validate_assessment(assessment: Any, text: str) -> dict[str, Any]:
                 "reports where its own sight failed, not what the witnesses said"
             )
     return assessment
+
+
+_MARK = re.compile(r"\[\[([^\[\]]*)\]\]")
+ILLEGIBLE_MARK: Final = "[[?]]"
+
+
+def read_doubt_marks(raw: str) -> tuple[str, dict[str, Any]]:
+    """Split a marked reading into its text and the doubts the reader marked.
+
+    `[[?]]` is ink the reader could not read, a zero-width gap. `[[reading]]` or
+    `[[reading|other|...]]` is a reading it was unsure of, with any other readings it
+    offered; the grammar has one level of doubt, recorded as `low`. A mark that does
+    not parse leaves the raw text published as returned, with a `malformed` report.
+    """
+    pieces: list[str] = []
+    spans: list[dict[str, Any]] = []
+    gap_offsets: list[int] = []
+    length = cursor = 0
+    for match in _MARK.finditer(raw):
+        pieces.append(raw[cursor : match.start()])
+        length += match.start() - cursor
+        cursor = match.end()
+        body = match.group(1)
+        if body == "?":
+            gap_offsets.append(length)
+            continue
+        reading, *alternatives = body.split("|")
+        if not reading or reading == "?" or "" in alternatives:
+            return raw, malformed_assessment(f"the doubt mark {match.group(0)!r} names no reading")
+        spans.append(
+            {
+                "start": length,
+                "end": length + len(reading),
+                "alternatives": alternatives,
+                "confidence": "low",
+            }
+        )
+        pieces.append(reading)
+        length += len(reading)
+    pieces.append(raw[cursor:])
+    text = "".join(pieces)
+    if "[[" in text or "]]" in text:
+        return raw, malformed_assessment(
+            "the reading holds a [[ or ]] that is not a closed doubt mark"
+        )
+    gaps = [
+        {
+            "position": "leading"
+            if offset == 0
+            else "trailing"
+            if offset == len(text)
+            else "internal",
+            "start": offset,
+            "end": offset,
+            "witness_evidence": [],
+        }
+        for offset in gap_offsets
+        if text.strip()
+    ]
+    return text, {
+        "state": ASSESSMENT_ASSESSED,
+        "uncertain_spans": spans,
+        "gaps": gaps,
+        "problem": None,
+    }

@@ -52,7 +52,9 @@ _FAILURE_FIELDS: Final = frozenset(
         "response_completion",
     }
 )
-_KINDS: Final = frozenset({"engine-signal", "chair-response", "transport", "reproof-response"})
+_KINDS: Final = frozenset(
+    {"engine-signal", "chair-response", "transport", "reproof-response", "request-capacity"}
+)
 _PHASES: Final = frozenset({"establishing", "audit-reproof"})
 _CALL_RECORD_SCHEMAS: Final = CHAIR_CALL_RECORD_SCHEMAS | {CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA}
 
@@ -115,6 +117,8 @@ def validate_failed_payload(payload: Any) -> dict[str, Any]:
         raise SchemaRefusal(
             "a completed engine or chair response failure has no retained response evidence"
         )
+    if failure["kind"] == "request-capacity" and (completion is not None or any(present)):
+        raise SchemaRefusal("a request refused before it was sent carries no response evidence")
     if failure["kind"] == "transport":
         retained_transport = failure["raw_response_ref"] is None and all(
             item is not None for item in evidence[1:]

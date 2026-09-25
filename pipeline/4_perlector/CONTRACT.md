@@ -165,7 +165,7 @@ gaps             -- [{position, start, end, witness_evidence}, ...]: the whole-a
                     zero-width gaps (empty witness_evidence)
 uncertainty_assessment -- {state, problem}: the reader's doubt-report state for
                     the call whose text is published -- `assessed`,
-                    `not-assessed` (no doubt channel; the live reader today) or
+                    `not-assessed` (no doubt channel) or
                     `malformed` (a report the annotation schema could not anchor,
                     retained as its problem; the Recensor holds). An empty
                     `uncertain_spans` under `not-assessed` is an absence, never
@@ -192,12 +192,20 @@ The dossier is therefore not the sole claim that the reader saw its page context
 
 **Two named limits of the doubt report, stated rather than implied.**
 
-*The live prompt has no doubt grammar yet.* The pinned instruction asks the
-engine for the transcribed ink and nothing else, so a live reading is always
-`not-assessed` and the export discloses that per act. Giving the live prompt a
-grammar for reporting doubt -- and measuring what a real reader answers through
-it -- is future work, and is deliberately not done from an offline chamber where
-no real answer can be observed.
+*The live doubt grammar is one level deep.* The pinned instruction asks the reader
+to write `[[?]]` where ink cannot be read and `[[reading]]` or
+`[[reading|other|...]]` where it is unsure; `annotations.read_doubt_marks` turns
+those into zero-width gaps and `low` spans with their alternatives over the clean
+text. The grammar carries no level of doubt, so every marked span is `low`. A
+`[[` or `]]` that is not a closed mark, or a mark whose reading is `?`, publishes the
+raw answer unchanged under `malformed`. Gap marks over an answer that is otherwise
+blank add nothing: the `no-readable-text` outcome's whole-act gap already says it.
+Pass B is fed Pass A's clean text, so `self_revision` offsets index the draft it was
+shown; Pass A's marks stay on its own record. Truncation is measured on the clean
+text. The re-proof answers in JSON and reports no doubts; a replacement carrying a
+mark, or a replacement over text Pass B marked, publishes `malformed`, because the
+marks cannot be re-anchored through the edit. Whether a real reader uses the marks is
+measured on the first live run.
 
 *The assessed tail is not bound to a reader.* Where the state is `assessed`,
 `common/perlector_audit.py::validate_chain` proves the exhausted-cap projection
@@ -206,8 +214,9 @@ remaining offsets anchor to the exact text, but no artifact holds the reader's
 report separately, so nothing proves the tail is what a reader actually said.
 Under every other state both layers are constrained exactly (no span at all, and
 no gap but the whole-act gap the `no-readable-text` outcome owes), because a
-reader with no channel has nothing of its own to publish. Binding the tail needs
-the doubt report sealed as evidence of its own; that is not built.
+reader with no channel has nothing of its own to publish. A live reader's marks
+sit in its retained raw response, so the tail can be re-derived from those bytes;
+no validator re-derives it yet.
 
 **The field set above is closed and checked before publication**
 (`run.py::validate_reading_payload`). Three of the four failures spec 08's
@@ -723,9 +732,8 @@ disk under their own digest and the refusal names them. The same refusal covers 
 that is not a reading at all (`parse_problem`): a Perlectio has no `failed` shape —
 `outcome="failed"` is produced nowhere in `run.py` — and minting one here would invent a
 record kind this section does not own. Whichever arm the refusal lands on, the arms that
-already published stay on disk and the *next* invocation resumes over them rather than
-republishing them — see the live-resume section below; a refusal that stopped the pass is
-no longer a refusal that also strands the run.
+already published stay on disk as that attempt's evidence, and the act cannot be resumed —
+see the live-resume section below.
 
 **A declared reading failure never reaches a live chair's answer.** `declared_failure`
 stands in for a real engine's own report exactly once, before there is one — the
@@ -876,47 +884,26 @@ reuses them (`_next_attempt`'s docstring); a live chair cannot promise that, and
 store refuses the collision. Skipped acts are counted apart from `read`, because this
 invocation did not read them.
 
-**An attempt interrupted part-way through resumes too, arm by arm.** A reading attempt
-publishes up to five artifacts before its Perlectio — `lectio-prior`, `lectio-nuda`,
-`primed-without-prior`, then the audit round's `audit-draft` and `audit-finding` — so an
-abort, an HTTP failure, a timeout, an OOM kill or a SIGKILL anywhere in that window left
-immutable bytes on disk with no Perlectio beside them. The resume rule looked only at the
-Perlectio, so the next invocation read the act again and republished Pass A from a second
-live answer; the store refused it (`IncompatibleReuse`), and because the artifact cannot
-be removed the refusal repeated on every retry. The documented `verbatus run` resume was
-dead for that run, one act in, with every other act still unread — the single most likely
-first-live-run failure in this stage. Now `_sealed_pass_kinds` reads exactly which of
-those artifacts the interrupted attempt got to, and the pass answers for that prefix:
+**Live resume is all-or-nothing per act.** An attempt publishes up to five artifacts
+before its Perlectio (`lectio-prior`, `lectio-nuda`, `primed-without-prior`,
+`audit-draft`, `audit-finding`). Finishing such an act in a second serving session would
+pair two engines' answers in one reading, so before any chair starts
+`_acts_left_to_read` refuses the pass if any act holds those artifacts without a
+Perlectio. The interrupted attempt's artifacts stay as its evidence; those pages are read
+in a new run. A per-act failure the pass can name (`_ACT_LOCAL_READING_FAILURES`)
+publishes a failed Perlectio and is not half-read; that includes a request the
+capacity check refuses before sending (`request-capacity`), which could otherwise
+strand an act whose Pass A fitted and whose Pass B did not. Pinned by
+`test_live_perlector.py::test_a_live_pass_refuses_to_resume_an_act_it_left_half_read`.
 
-- **A sealed arm is reused, never re-asked.** `_sealed_prior_draft` reads the retained
-  Pass A back into the closed `{reference, text}` the establishing call takes, and a
-  sampled `lectio-nuda` or `primed-without-prior` already on disk is not run a second
-  time. The sampling decisions themselves do not move — they are derived from the run's
-  predeclared design, not stored — so a reused arm stays sampled and stays counted; what
-  is dropped is only the reader call whose bytes the immutable record would refuse. The
-  resumed act therefore pays for the arms it has not run and no more, and the record pair
-  that proves it is a Perlectio carrying the *second* engine answer beside a `prior_draft`
-  still holding the *first*. principle 4: evidence is layered, never overwritten.
-- **An attempt interrupted inside its audit round is held, not read again.** `audit-draft`
-  freezes the establishing reading's own text into immutable bytes. A live chair cannot
-  reproduce that text, and the draft cannot be reused either, because the Perlectio it
-  belongs to was never written. That act publishes an explicit `not-run` Perlectio in the
-  same closed `_NOT_RUN_HELD_FIELDS` shape a Designator-held act uses, and it *names* the
-  retained evidence rather than describing it: every artifact the interrupted attempt got
-  to is carried in the record's `inputs` as a digest-checked reference, so the reader the
-  Recensor routes to review reaches those bytes from the hold instead of reconstructing an
-  attempt identity by hand. The rest of the run is read, the stage seals, and the Recensor
-  routes the held act to review. Whether a Perlectio should instead gain a retained
-  `failed` shape is not this section's decision to make.
-
-Both are live-only: a fixture reader reproduces its own bytes, so a fixture resume
-republishes identically and the store reuses. Pinned by
-`test_live_perlector.py::test_a_live_pass_interrupted_after_its_pass_a_resumes_and_reuses_the_sealed_draft`,
-`::test_a_resumed_act_reuses_the_sampled_arms_it_already_published` (which runs its own
-chain at 1000/1000 on both instrument arms, because `live_run` samples neither and a rule
-about sealed arms measures nothing on a tree that never publishes one), and
-`::test_an_act_whose_audit_round_sealed_without_its_perlectio_is_held_not_read_again`. Each
-fails with the exact `IncompatibleReuse` above when the handling it covers is removed.
+**The reading deadline.** `--reading-deadline <UTC ISO time>` makes a live pass refuse to
+start when the chair's `startup_timeout_seconds` plus every call left
+(`calls_per_act` = two passes + the audit round cap + one per instrument arm enabled
+for the run, at `PLANNED_SECONDS_PER_CALL`) would run past it. It also refuses to begin
+another act, or another re-proof, when the calls left would. It stops between calls,
+never inside one; the acts it has read stay half-read, so the run ends there with every
+artifact retained (see the resume rule above). Pinned by
+`::test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_starts`.
 
 **One live-resume limit remains, named rather than hidden.** Every re-invocation of a live
 pass starts and stops the service, so an `--act` recovery loop pays a full model load per
