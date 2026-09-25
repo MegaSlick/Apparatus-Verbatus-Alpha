@@ -83,11 +83,6 @@ def ink_pixels(width: int, height: int, rows: list, *, background: int, margin: 
     return ink
 
 
-# The labeller lives in common/components.py (common/ cannot import a stage);
-# this alias keeps this stage's own call sites and tests unchanged.
-_ink_runs_by_row = ink_runs_by_row
-
-
 def scan_ink_components(
     width: int,
     height: int,

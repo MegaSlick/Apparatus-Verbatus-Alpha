@@ -361,7 +361,7 @@ actually measured against. `background_value` is `null` exactly when
 `ink_measurable` is false and no threshold could be inferred.
 
 **`ink_measurable: false` is a reconciliation that could not happen, published
-rather than skipped.** A page whose background `infer_background` refuses has no
+rather than skipped.** A page whose background `infer_background_evidence` refuses has no
 threshold that separates ink from paper, so there is nothing honest to count:
 the three counts are `null`, `residual_components` is empty, `reason` says why,
 and the record's outcome is `held`. The stage used to substitute the page's own
@@ -1491,7 +1491,7 @@ custody as its own evidence (`structure-answer.raw_response_ref`,
 `custody_ref`) and hands nothing to the witnesses; the Attestatores stage is
 untouched by the live Designator and reads a served seal under its own rows.
 
-**`infer_background`'s majority-paper assumption is checked from both sides,
+**`infer_background_evidence`'s majority-paper assumption is checked from both sides,
 and it also knows a photographed page from a dark one.** The premise is
 that a scanned register page is overwhelmingly paper, so its modal pixel is the
 paper colour. Two shapes break it and both are refusals now. A page where ink is

@@ -16,8 +16,8 @@ text bundle, SQLite/FTS database, JSONL hand-off, review items, and the separate
 salvage tier. Every delivered act carries the Archetypus's own established-text
 status and transcription annotation layer, so an act the pipeline knows is
 damaged is visibly partial in the products and in the run's own verdict. The
-separate *semantic* annotation layer remains only a boundary contract pending
-the project lead's ARCHITECTURE approval.
+separate *semantic* annotation layer has no code; its build waits on the project
+lead's ARCHITECTURE approval, and every export states it as not produced.
 
 Every bundle also carries `claims.not_measured`: this build's five instruments,
 each with what this run actually recorded for it. `DELIVERED` is reachable over
