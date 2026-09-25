@@ -1333,10 +1333,10 @@ def assert_processor_geometry(snapshot: VerifiedSnapshot, profile: ServingProfil
 
     They set every image's prompt-token cost, so a wrong declaration mis-counts
     every request; the check needs the weights, so it runs at every start.
-    A row that does not declare both values (fixtures) is skipped, and so is
-    a snapshot with neither config file present -- that is safe because a
-    snapshot's completeness against the manifest is already checked
-    elsewhere.
+    A row that does not declare both values (fixtures) is skipped. If neither
+    config file is present, this check also returns without cross-checking the
+    declared values. Snapshot completeness is checked separately against the
+    manifest.
     """
 
     declared = {field: getattr(profile, field, None) for field in ("patch_size", "merge_size")}

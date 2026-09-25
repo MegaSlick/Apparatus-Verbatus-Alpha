@@ -567,7 +567,7 @@ def test_the_aggregate_retained_bytes_are_bounded(monkeypatch, submission):
 
 
 def test_the_submit_tool_retains_no_file_content_at_all(submission):
-    """It writes paths, digests and sizes and never looks at what a file holds."""
+    """It streams file content to hash it but retains and decodes none of it."""
     assert submit.RETAIN_NO_BYTES == 0
     sources = inventory.read_submission(submission["folder"], max_bytes=submit.RETAIN_NO_BYTES)
     assert sources and all(source.data is None for source in sources)

@@ -11,8 +11,9 @@ make "this file is under this folder" true at the moment of reading, not of
 listing. `read_submission` proves this once per file, at enumeration time,
 then closes its descriptors; `open_submission_source` repeats the same
 anchored walk to hand back a live descriptor a later reader (digest, format
-sniff, PDFium) can share, and `assert_unchanged` proves that file did not
-move under the reader afterward.
+sniff, PDFium) can share, and `assert_unchanged` proves the held bytes still
+match `expected_sha256`, permitting a verified name replacement but not a
+rewrite.
 
 A source that cannot be read is a failure of the whole inventory, not a
 silently shrunk one: a per-file refusal belongs to the door, which needs
@@ -37,16 +38,18 @@ from typing import BinaryIO, Final, Iterator, NamedTuple
 
 from common.contracts.errors import ContractError
 
-# Streamed to the hash in chunks so an oversized source is refused, with an
-# exact digest still recorded in the manifest, without ever being held whole.
+# Hash sources in chunks. A source beyond the retention limit contributes no
+# retained data, while an aggregate read-limit breach aborts inventory before
+# a manifest is built.
 _CHUNK: Final = 1024 * 1024
 
 # Bounds far above any real submission and far below what exhausts a machine:
 # a bound nobody can reach is still the difference between a named refusal and
 # an unreadable out-of-memory kill. `MAX_SUBMITTED_BYTES` counts only
 # *retained* bytes (always zero for the production submitter and door, which
-# ask for `max_bytes=0`); `MAX_SUBMITTED_READ_BYTES` bounds the aggregate
-# bytes actually streamed through the hasher regardless of what is retained.
+# ask for `max_bytes=0`); `MAX_SUBMITTED_READ_BYTES` rejects a submission after
+# the aggregate bytes streamed through the hasher exceed the limit. Each source
+# is fully read before that check.
 MAX_SUBMITTED_FILES: Final = 100_000
 MAX_SUBMITTED_BYTES: Final = 8 * 1024 * 1024 * 1024
 MAX_SUBMITTED_READ_BYTES: Final = 8 * 1024 * 1024 * 1024

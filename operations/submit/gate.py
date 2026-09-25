@@ -51,12 +51,13 @@ class GateRefusal(ContractError):
 
 
 class DataHandlingPolicyBinding(NamedTuple):
-    """One loaded policy and the digest of the exact bytes it was parsed from.
+    """One loaded policy and the digest of the parsed bytes it came from.
 
-    The policy path is caller-supplied, so the digest records which file
-    actually governed a run. It is of the same read the record was parsed
-    from, since two separate reads could straddle a rewrite. Provenance only:
-    nothing here reinstates a per-run approval requirement.
+    The digest identifies the parsed bytes, not the file or its path: two
+    policy files with identical content hash identically. It is of the same
+    read the record was parsed from, since two separate reads could straddle
+    a rewrite. Provenance only: nothing here reinstates a per-run approval
+    requirement.
     """
 
     policy: dict[str, Any]
