@@ -203,10 +203,10 @@ and it is a bound rather than a measurement -- nothing in this repository has
 yet observed a real pull.
 
 **Exceeding it does not close the pod.**  The signal it waits on is the
-provider's own "this container has started" moment, and no provider is obliged
-to have one (`ContainerLivenessProbe` is optional, and open item 04-6 records
-that every RunPod field name here is documented rather than observed).  An
-unobserved start is therefore not evidence of a failed start: the wait ends,
+provider's own "this container has started" moment, and no provider is
+obliged to have one (`ContainerLivenessProbe` is optional, and every RunPod
+field name here is documented rather than observed).  An unobserved start is
+therefore not evidence of a failed start: the wait ends,
 what it saw is recorded, and the channel bound below -- which reads evidence
 this pod actually wrote -- is what decides whether anything is armed.
 """

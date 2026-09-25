@@ -63,13 +63,13 @@ NOTIFY_SUPPRESSED_MARKER: Final = "NOTIFY_SUPPRESSED"
 """`notify.sh` prints this word, then the reserved topic, on stdout and exits 0
 when the test sink swallowed the notification instead of posting it.
 
-Mapping that exit 0 to `delivered` was the defect this constant closes: under the
-sink the record said "Phone notification: sent." for a notification that never
-left the machine. The exit code stays 0 on purpose -- suites assert on delivered
-versus NOT DELIVERED outcomes and a guard must not change what its subject
-measures -- so the marker is what separates the two, on the one stream this
-script writes nothing else to. The word is matched, not the topic: the topic is
-normally a bearer secret and no bridge carries it."""
+Mapping that exit 0 to `delivered` would report "Phone notification: sent."
+for a notification that never left the machine. The exit code stays 0 on
+purpose -- suites assert on delivered versus NOT DELIVERED outcomes and a
+guard must not change what its subject measures -- so the marker is what
+separates the two, on the one stream this script writes nothing else to. The
+word is matched, not the topic: the topic is normally a bearer secret and no
+bridge carries it."""
 
 
 def _suppression_marker(stdout: str | None) -> str | None:

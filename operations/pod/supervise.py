@@ -1,13 +1,12 @@
 """``python -m operations.pod.supervise`` -- the durable laptop supervisor driver.
 
-This is the tracked runtime for `controllers.LaptopSupervisor` that Stage 04's
-deferral 04-1 named missing: a process that restarts safely across a laptop
-crash, refuses to run twice over the same lease, and treats a provider
-lifecycle state other than ``RUNNING`` as a close condition even while its
-own heartbeat is perfectly fresh (a pod still provisioning or starting is
-waited for only while its launch is arming) -- the fix for 04-4's real harm, an
-``EXITED`` pod billing volume disk at double rate under a supervisor that
-never looked past presence.
+This is the tracked runtime for `controllers.LaptopSupervisor`: a process
+that restarts safely across a laptop crash, refuses to run twice over the
+same lease, and treats a provider lifecycle state other than ``RUNNING`` as
+a close condition even while its own heartbeat is perfectly fresh (a pod
+still provisioning or starting is waited for only while its launch is
+arming) -- guarding against an ``EXITED`` pod billing volume disk at double
+rate under a supervisor that only checked presence.
 
 Restart safety rests on two durable files alongside the lease, under their
 own ``supervisors/`` subdirectory so the flat lease-directory listing other
@@ -1260,9 +1259,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # `SuperviseRefusal` above is the only exception this module expects.
         # Anything else -- a bad `--provider-factory` reference, a malformed
         # spend.toml, an OSError from a durable write, KeyboardInterrupt --
-        # must still leave a durable record: Stage 04.4 line 99 starts this
-        # process detached, which is precisely where a bare traceback on
-        # stderr goes unwatched. Mirrors `cli.py`'s own interrupt handling.
+        # must still leave a durable record: this process starts detached,
+        # which is precisely where a bare traceback on stderr goes unwatched.
+        # Mirrors `cli.py`'s own interrupt handling.
         detail = f"{type(error).__name__}: {error}"
         try:
             _write_final_record(

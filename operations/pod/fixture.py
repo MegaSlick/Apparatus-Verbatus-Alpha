@@ -3,8 +3,8 @@
 `operations/pod/README.md`'s boot plan asks one thing of the first authorized
 boot beyond its measurements: that it leave behind the provider's *actual*
 answers, so the next offline suite can replay them instead of the documented
-shapes every test in this package is built from today (deferral 04-6). This
-module is that recorder. It knows no vendor: it sits between an adapter and
+shapes every test in this package is built from today. This module is that
+recorder. It knows no vendor: it sits between an adapter and
 its HTTP transport, sees the method, the path, the request body, the status
 and the response body, and appends each as one JSON line to the evidence file
 `--record-fixture` names.
