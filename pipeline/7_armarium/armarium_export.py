@@ -256,9 +256,25 @@ class ArmariumBundle:
     manifest: dict[str, Any]
 
 
+def _literal_formats_in(formats: tuple[str, ...] | list[str]) -> list[str]:
+    return sorted(set(formats) & set(_LITERAL_TEXT_FORMATS))
+
+
+def _canonical_text_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
+    literal_formats = _literal_formats_in(formats)
+    return {
+        "authority": "archetypus",
+        "field": CANONICAL_TEXT_FIELD,
+        "hash": "sha256-utf-8",
+        "derived_columns_are_marked": True,
+        # Empty when fewer than two literal formats leave nothing to compare.
+        "identity_verified_across": literal_formats if len(literal_formats) >= 2 else [],
+    }
+
+
 def _uncertainty_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
     """Measure which selected formats carry canonical uncertainty."""
-    carried_by = sorted(set(formats) & set(_LITERAL_TEXT_FORMATS))
+    carried_by = _literal_formats_in(formats)
     return {
         "status": _UNCERTAINTY_AVAILABLE if carried_by else _UNCERTAINTY_NOT_APPLICABLE,
         "offset_unit": "unicode-code-point",
@@ -272,7 +288,7 @@ def _transcription_annotations_claim(formats: tuple[str, ...] | list[str]) -> di
     The layer rides with the text in the literal-text formats, so the claim is
     measured from the selection rather than fixed.
     """
-    carried_by = sorted(set(formats) & set(_LITERAL_TEXT_FORMATS))
+    carried_by = _literal_formats_in(formats)
     return {
         "status": (
             _TRANSCRIPTION_ANNOTATIONS_CARRIED
@@ -374,8 +390,7 @@ def build_armarium_bundle(
     with tempfile.TemporaryDirectory(prefix="armarium-verify-") as directory:
         clean_root = Path(directory)
         manifest_report = verify_export_bundle(data, clean_root)
-        literal_formats = set(_LITERAL_TEXT_FORMATS) & set(formats.formats)
-        if len(literal_formats) >= 2:
+        if len(_literal_formats_in(formats.formats)) >= 2:
             _compare_literal_projections(clean_root, _manifest_formats(manifest_report))
     return ArmariumBundle(data=data, manifest=manifest)
 
@@ -1156,7 +1171,7 @@ def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
     """
     manifest = verify_export_bundle(data, clean_root)
     formats = _manifest_formats(manifest)
-    compared = sorted(set(_LITERAL_TEXT_FORMATS) & set(formats.formats))
+    compared = _literal_formats_in(formats.formats)
     if len(compared) >= 2:
         _compare_literal_projections(clean_root, formats)
         identity = {"status": "verified", "compared_formats": compared}
@@ -3335,16 +3350,7 @@ def _export_manifest(
             if any("logical_membership" in act for act in projection.acts)
             else EXPORT_MANIFEST_SCHEMA
         ),
-        "canonical_text": {
-            "authority": "archetypus",
-            "field": CANONICAL_TEXT_FIELD,
-            "hash": "sha256-utf-8",
-            "derived_columns_are_marked": True,
-            # Empty when fewer than two literal formats leave nothing to compare.
-            "identity_verified_across": sorted(set(_LITERAL_TEXT_FORMATS) & set(formats.formats))
-            if len(set(_LITERAL_TEXT_FORMATS) & set(formats.formats)) >= 2
-            else [],
-        },
+        "canonical_text": _canonical_text_claim(formats.formats),
         "run": _manifest_run_binding(projection),
         "formats": formats.to_record(),
         "claims": {
@@ -3475,6 +3481,16 @@ def _load_sources(root) -> dict[str, Any]:
     return sources
 
 
+def _manifest_claim(manifest: dict[str, Any], name: str) -> Any:
+    claims = manifest.get("claims")
+    return claims.get(name) if isinstance(claims, dict) else None
+
+
+def _manifest_format_names(manifest: dict[str, Any]) -> Any:
+    selected = manifest.get("formats")
+    return selected.get("formats") if isinstance(selected, dict) else None
+
+
 def _manifest_formats(manifest: dict[str, Any]) -> ArmariumFormats:
     """Refuse a self-hashed manifest that names an unrecognized product set."""
     try:
@@ -3561,8 +3577,7 @@ def _verify_exact_product_members(
 
 def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
     """Read the manifest's five-category act denominator without trusting it."""
-    claims = manifest.get("claims")
-    partition = claims.get("act_partition") if isinstance(claims, dict) else None
+    partition = _manifest_claim(manifest, "act_partition")
     if not isinstance(partition, dict):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no act partition claim")
     expected_count = partition.get("expected_count")
@@ -3615,8 +3630,7 @@ def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
 
 def _manifest_act_keys(manifest: dict[str, Any], categories: dict[str, str]) -> dict[str, str]:
     """Read the key-to-category accounting link needed to recompute the aggregate."""
-    claims = manifest.get("claims")
-    partition = claims.get("act_partition") if isinstance(claims, dict) else None
+    partition = _manifest_claim(manifest, "act_partition")
     keys = partition.get("act_keys") if isinstance(partition, dict) else None
     if not isinstance(keys, dict) or set(keys) != set(categories):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no complete act-key partition")
@@ -4278,8 +4292,7 @@ def _verify_salvage_claim(
     records: tuple[dict[str, Any], ...],
     sources: dict[str, list[dict[str, Any]]],
 ) -> None:
-    claims = manifest.get("claims")
-    salvage = claims.get("salvage") if isinstance(claims, dict) else None
+    salvage = _manifest_claim(manifest, "salvage")
     if not isinstance(salvage, dict) or salvage.get("namespace") != "salvage":
         raise SchemaRefusal("EXPORT_MANIFEST.json has no salvage-tier claim")
     status, count = salvage.get("status"), salvage.get("count")
@@ -4576,8 +4589,7 @@ def _verify_pixel_claims(
     manifest: dict[str, Any], formats: ArmariumFormats, sources: dict[str, list[dict[str, Any]]]
 ) -> None:
     """Check that the manifest's clean-machine claim matches its citations."""
-    claims = manifest.get("claims")
-    pixels = claims.get("pixels") if isinstance(claims, dict) else None
+    pixels = _manifest_claim(manifest, "pixels")
     if not isinstance(pixels, dict) or pixels.get("embedded") is not formats.embed_pixels:
         raise SchemaRefusal("the package pixel claim disagrees with its selected format settings")
     expected_claim = _PIXEL_EMBEDDED_CLAIM if formats.embed_pixels else _PIXEL_REFERENCE_CLAIM
@@ -4597,8 +4609,7 @@ def _verify_pixel_claims(
 
 def _verify_display_claim(manifest: dict[str, Any]) -> None:
     """A rendering may be proposed; it may not be presented as settled or as text."""
-    claims = manifest.get("claims")
-    display = claims.get("display") if isinstance(claims, dict) else None
+    display = _manifest_claim(manifest, "display")
     if (
         not isinstance(display, dict)
         or display.get("convention") != DISPLAY_CONVENTION
@@ -4612,8 +4623,7 @@ def _verify_display_claim(manifest: dict[str, Any]) -> None:
 
 
 def _verify_retained_run_claim(manifest: dict[str, Any]) -> None:
-    claims = manifest.get("claims")
-    retained = claims.get("retained_run_references") if isinstance(claims, dict) else None
+    retained = _manifest_claim(manifest, "retained_run_references")
     if retained != {
         "availability": _RUN_ACCESS_REQUIRED,
         "resolution_claim": "artifact and receipt citations require retained-run access",
@@ -4631,19 +4641,10 @@ def _verify_canonical_text_claim(manifest: dict[str, Any]) -> None:
     canonical_text = manifest.get("canonical_text")
     if not isinstance(canonical_text, dict):
         raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
-    selected = manifest.get("formats")
-    selected_formats = selected.get("formats") if isinstance(selected, dict) else None
+    selected_formats = _manifest_format_names(manifest)
     if not isinstance(selected_formats, list):
         raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
-    literal_selected = set(_LITERAL_TEXT_FORMATS) & set(selected_formats)
-    expected_identity = sorted(literal_selected) if len(literal_selected) >= 2 else []
-    if canonical_text != {
-        "authority": "archetypus",
-        "field": CANONICAL_TEXT_FIELD,
-        "hash": "sha256-utf-8",
-        "derived_columns_are_marked": True,
-        "identity_verified_across": expected_identity,
-    }:
+    if canonical_text != _canonical_text_claim(selected_formats):
         raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
 
 
@@ -4653,16 +4654,13 @@ def _verify_annotations_claims(manifest: dict[str, Any]) -> None:
     The semantic claim is a fixed constant because no semantic annotator exists
     yet; the transcription claim is recomputed from the selected formats.
     """
-    claims = manifest.get("claims")
-    semantic = claims.get("semantic_annotations") if isinstance(claims, dict) else None
+    semantic = _manifest_claim(manifest, "semantic_annotations")
     if semantic != {"status": _SEMANTIC_ANNOTATIONS_CLAIM, "text_writable": False}:
         raise SchemaRefusal(
             "the package semantic-annotations claim is not this build's fixed claim"
         )
-    selected = manifest.get("formats")
-    format_rows = selected.get("formats") if isinstance(selected, dict) else None
-    transcription = claims.get("transcription_annotations") if isinstance(claims, dict) else None
-    if transcription != _transcription_annotations_claim(format_rows or []):
+    transcription = _manifest_claim(manifest, "transcription_annotations")
+    if transcription != _transcription_annotations_claim(_manifest_format_names(manifest) or []):
         raise SchemaRefusal(
             "the package transcription-annotations claim is not the measured carriage claim"
         )
@@ -4670,11 +4668,8 @@ def _verify_annotations_claims(manifest: dict[str, Any]) -> None:
 
 def _verify_uncertainty_claim(manifest: dict[str, Any]) -> None:
     """The carriage claim is recomputed from the selected literal-text formats."""
-    claims = manifest.get("claims")
-    selected = manifest.get("formats")
-    format_rows = selected.get("formats") if isinstance(selected, dict) else None
-    uncertainty = claims.get("uncertainty") if isinstance(claims, dict) else None
-    if uncertainty != _uncertainty_claim(format_rows or []):
+    uncertainty = _manifest_claim(manifest, "uncertainty")
+    if uncertainty != _uncertainty_claim(_manifest_format_names(manifest) or []):
         raise SchemaRefusal("the package uncertainty claim is not the canonical carriage claim")
 
 
@@ -4698,9 +4693,8 @@ def _verify_manifest_source_counts(
             )
         ordinals.add(ordinal)
         paths.add(path)
-    claims = manifest.get("claims")
-    page_census = claims.get("page_census") if isinstance(claims, dict) else None
-    submission = claims.get("submission_inventory") if isinstance(claims, dict) else None
+    page_census = _manifest_claim(manifest, "page_census")
+    submission = _manifest_claim(manifest, "submission_inventory")
     if (
         not isinstance(page_census, dict)
         or page_census.get("counted") != len(sources["pages"])
