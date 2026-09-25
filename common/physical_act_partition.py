@@ -21,6 +21,7 @@ from common.contracts.canonical import (
     self_hash,
     self_hash_refusal,
     verify_self_hash,
+    walk_dicts,
 )
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import (
@@ -66,40 +67,18 @@ def _refuse_preference(value: Any) -> None:
 
 
 def _refuse_textual(value: Any) -> None:
-    """Refuse textual evidence anywhere in an untrusted proposal payload.
-
-    Iterative, so a deep payload is a named refusal rather than a
-    `RecursionError`, and a self-containing one is refused rather than looped
-    on. Only containers open on the current path are tracked, so a component
-    shared between siblings is still walked wherever it appears.
-    """
-    pending: list[tuple[str, Any]] = [("value", value)]
-    open_path: set[int] = set()
-    while pending:
-        kind, current = pending.pop()
-        if kind == "exit":
-            open_path.discard(current)
-            continue
-        if isinstance(current, (dict, list, tuple)):
-            marker = id(current)
-            if marker in open_path:
-                raise SchemaRefusal(
-                    "correspondence proposal: a proposal contains itself, so no sweep of "
-                    "it can terminate and textual evidence below the loop could never be "
-                    "found. Rebuild the proposal from values that are not their own "
-                    "ancestors."
-                )
-            open_path.add(marker)
-            pending.append(("exit", marker))
-        if isinstance(current, dict):
-            if set(current) & _TEXTUAL_FIELDS:
-                raise SchemaRefusal(
-                    "correspondence proposal: textual evidence cannot match physical acts"
-                )
-            pending.extend(("value", item) for item in current.values())
-        elif isinstance(current, (list, tuple)):
-            # A tuple serializes exactly like a list through `canonical_bytes`.
-            pending.extend(("value", item) for item in current)
+    """Refuse textual evidence anywhere in an untrusted proposal payload."""
+    cycle = (
+        "correspondence proposal: a proposal contains itself, so no sweep of "
+        "it can terminate and textual evidence below the loop could never be "
+        "found. Rebuild the proposal from values that are not their own "
+        "ancestors."
+    )
+    for record in walk_dicts(value, cycle):
+        if set(record) & _TEXTUAL_FIELDS:
+            raise SchemaRefusal(
+                "correspondence proposal: textual evidence cannot match physical acts"
+            )
 
 
 def _findings(code: str, acts: list[dict[str, Any]]) -> list[dict[str, str]]:

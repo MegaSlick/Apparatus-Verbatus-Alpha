@@ -11,7 +11,13 @@ from __future__ import annotations
 from itertools import combinations
 from typing import Any, Final
 
-from common.contracts.canonical import digest_of, is_sha256, self_hash, verify_self_hash
+from common.contracts.canonical import (
+    digest_of,
+    is_sha256,
+    self_hash,
+    verify_self_hash,
+    walk_dicts,
+)
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import is_well_formed
 from common.corpus_register import _FORBIDDEN_PREFERENCE_FIELDS, refuse_capture_preference
@@ -102,49 +108,26 @@ def _stable_id(value: Any, label: str) -> str:
 
 
 def _refuse_scalar_claim_keys(value: Any) -> None:
-    # Iterative and cycle-aware like its sibling screens (corpus_register,
-    # autopsia, partition): untrusted caller input, so depth is this walk's
-    # own list, never the interpreter stack. Only containers open on the
-    # current path are tracked, so a shared sub-record reachable by more than
-    # one path is still allowed; refusing a genuine cycle instead of looping
-    # forever comes from tracking the open path at all.
-    pending: list[tuple[str, Any]] = [("value", value)]
-    open_path: set[int] = set()
-    while pending:
-        kind, current = pending.pop()
-        if kind == "exit":
-            open_path.discard(current)
-            continue
-        if isinstance(current, (dict, list, tuple)):
-            marker = id(current)
-            if marker in open_path:
+    cycle = (
+        "cross-capture dissent: the record contains itself, so no sweep of it can "
+        "terminate and a forbidden field below the loop could never be found; the "
+        "dissent record is refused"
+    )
+    for record in walk_dicts(value, cycle):
+        for key in record:
+            lowered = str(key).lower()
+            if any(fragment in lowered for fragment in _FORBIDDEN_PREFERENCE_FIELDS):
                 raise SchemaRefusal(
-                    "cross-capture dissent: the record contains itself, so no sweep of it can "
-                    "terminate and a forbidden field below the loop could never be found; the "
-                    "dissent record is refused"
+                    f"cross-capture dissent: forbidden preference field {key!r}; the dissent "
+                    "record is refused because a compound field name cannot designate a "
+                    "capture or observation as the one to use"
                 )
-            open_path.add(marker)
-            pending.append(("exit", marker))
-        if isinstance(current, dict):
-            for key, item in current.items():
-                lowered = str(key).lower()
-                if any(fragment in lowered for fragment in _FORBIDDEN_PREFERENCE_FIELDS):
-                    raise SchemaRefusal(
-                        f"cross-capture dissent: forbidden preference field {key!r}; the dissent "
-                        "record is refused because a compound field name cannot designate a "
-                        "capture or observation as the one to use"
-                    )
-                if any(fragment in lowered for fragment in _FORBIDDEN_CLAIM_FRAGMENTS):
-                    raise SchemaRefusal(
-                        f"cross-capture dissent: forbidden scalar-claim field {key!r}; this record "
-                        "carries structural observations and image anchors, never a score, a rank, "
-                        "or a variance number"
-                    )
-                pending.append(("value", item))
-        elif isinstance(current, (list, tuple)):
-            # A tuple serializes exactly like a list through `canonical_bytes`,
-            # so it must be walked the same way here too.
-            pending.extend(("value", item) for item in current)
+            if any(fragment in lowered for fragment in _FORBIDDEN_CLAIM_FRAGMENTS):
+                raise SchemaRefusal(
+                    f"cross-capture dissent: forbidden scalar-claim field {key!r}; this record "
+                    "carries structural observations and image anchors, never a score, a rank, "
+                    "or a variance number"
+                )
 
 
 def _span_or_gap_ref(value: Any) -> Any:

@@ -36,7 +36,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final, Iterator
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
+from common.contracts.canonical import (
+    canonical_bytes,
+    digest_bytes,
+    digest_of,
+    is_sha256,
+    walk_dicts,
+)
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import (
     act_id as local_act_id,
@@ -588,44 +594,17 @@ def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> N
     """Refuse a nested capture-preference claim, naming the record it was in.
 
     Public because a Testimonium must not express preference either
-    (ARCHITECTURE, principle 1). Iterative, since the value is untrusted input
-    and a deeply nested payload must exhaust the walk's own list, never the
-    interpreter stack; a cycle is refused rather than looped on, since a
-    worklist has no stack to exhaust and would otherwise hang on a
-    self-referential value. Only containers *open on the current path* are
-    tracked, so a value shared between siblings is still walked wherever it
-    appears; what is refused is an ancestor reached again.
+    (ARCHITECTURE, principle 1).
     """
-    pending: list[tuple[str, Any]] = [("value", value)]
-    open_path: set[int] = set()
-    while pending:
-        kind, current = pending.pop()
-        if kind == "exit":
-            open_path.discard(current)
-            continue
-        if isinstance(current, (dict, list, tuple)):
-            marker = id(current)
-            if marker in open_path:
-                raise SchemaRefusal(
-                    f"{what} contains itself, so no sweep of it can terminate and a "
-                    "preference field below the loop could never be found. Rebuild the "
-                    "record from values that are not their own ancestors."
-                )
-            open_path.add(marker)
-            pending.append(("exit", marker))
-        if isinstance(current, dict):
-            forbidden = set(current) & _FORBIDDEN_PREFERENCE_FIELDS
-            if forbidden:
-                raise SchemaRefusal(
-                    f"{what} may not express capture preference: {sorted(forbidden)}"
-                )
-            pending.extend(("value", item) for item in current.values())
-        elif isinstance(current, (list, tuple)):
-            # `canonical_bytes` serializes a tuple exactly like a list, so a
-            # preference field wrapped in one reached a sealed artifact looking
-            # like an ordinary array member unless this walk also descends
-            # into it.
-            pending.extend(("value", item) for item in current)
+    cycle = (
+        f"{what} contains itself, so no sweep of it can terminate and a "
+        "preference field below the loop could never be found. Rebuild the "
+        "record from values that are not their own ancestors."
+    )
+    for record in walk_dicts(value, cycle):
+        forbidden = set(record) & _FORBIDDEN_PREFERENCE_FIELDS
+        if forbidden:
+            raise SchemaRefusal(f"{what} may not express capture preference: {sorted(forbidden)}")
 
 
 def _closed(record: Any, fields: set[str], what: str) -> dict[str, Any]:
