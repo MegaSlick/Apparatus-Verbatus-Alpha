@@ -431,9 +431,8 @@ def _fixture_native_observations(
     return observations
 
 
-#: Adapters whose fixture rows may declare `raw_response` bytes; `resolve_attempt`
-#: refuses them for any other adapter, since fixture bytes may not be attributed to
-#: a model that never produced them.
+#: Adapters whose fixture rows may declare `raw_response` bytes: fixture bytes may
+#: not be attributed to a model that never produced them.
 FIXTURE_NATIVE_RESPONSE_ADAPTERS: Final = frozenset({"chandra.v1"})
 
 
@@ -2183,7 +2182,6 @@ def captured_churro_page_attempt(
             "fixture bytes may not be attributed to a different model boundary"
         )
     adapter = witness_adapters.resolve_runnable_adapter(adapter_name)
-    # The retain wrapper pins the adapter name; it takes no adapter argument.
     capture = adapter.retain(
         context.tree,
         # Churro fixture rows are real vendor-grammar answers, so the view records
@@ -2517,6 +2515,14 @@ def _line_geometry(act_anchor: dict[str, Any]) -> list[dict[str, dict[str, int]]
     ]
 
 
+def _bounds_on_page(regions: list[dict], page_ordinal: int) -> list[dict[str, Any]]:
+    return [
+        region["payload"]["transform"]["bounds"]
+        for region in regions
+        if region["payload"]["transform"]["source_page_ordinal"] == page_ordinal
+    ]
+
+
 def derived_chandra_anchor(
     *,
     page_text: str,
@@ -2546,11 +2552,7 @@ def derived_chandra_anchor(
     for act in page_acts:
         if act["page_ordinal"] != page_ordinal:
             continue
-        act_bounds = [
-            region["payload"]["transform"]["bounds"]
-            for region in regions_by_act[act["act_id"]][0]
-            if region["payload"]["transform"]["source_page_ordinal"] == page_ordinal
-        ]
+        act_bounds = _bounds_on_page(regions_by_act[act["act_id"]][0], page_ordinal)
         starts: list[int] = []
         ends: list[int] = []
         line_geometry: list[dict[str, Any]] = []
@@ -2968,6 +2970,40 @@ def require_live_page_capture(
     return captured
 
 
+def _declared_pages(context, act: dict[str, Any], refusal: str | None) -> list[int]:
+    """An act's pages from its sealed proposal and continuation declaration alone.
+
+    The page denominator when no region verified: the non-reading testimony must
+    still account for every such page.
+    """
+    if refusal is None:
+        raise FatalAccounting(
+            f"act {act['act_id']} has neither verified proposal regions nor a "
+            "recorded crop refusal; its page denominator is unknowable; restore "
+            "the Designator region or refusal evidence"
+        )
+    pages = [act["page_ordinal"]]
+    if act["has_continuation"]:
+        if real_ingress(context):
+            # The far-page region was refused, and a real run has no
+            # declaration to name the far page instead.
+            raise FatalAccounting(
+                f"act {act['act_id']}'s proposal seal claims a continuation and "
+                "real ingress carries no continuation declaration; its far-page "
+                "evidence cannot be addressed. The Designator must publish the "
+                "continuation region that names the far page"
+            )
+        continuation = continuation_for(context.fixture, act["act_key"])
+        if continuation is None:
+            raise FatalAccounting(
+                f"act {act['act_id']} claims a continuation but the sealed fixture "
+                "names none; its far-page evidence cannot be addressed; correct the "
+                "proposal seal or fixture continuation declaration"
+            )
+        pages.append(continuation["page_ordinal"])
+    return sorted(pages)
+
+
 def page_denominator(
     context,
     acts: list[dict[str, Any]],
@@ -2981,49 +3017,21 @@ def page_denominator(
     contributing_pages_by_act: dict[str, list[int]] = {}
     by_page: dict[int, list[dict[str, Any]]] = {}
     for act in acts:
-        if act["outcome"] == "proposed":
-            regions, refusal = regions_by_act[act["act_id"]]
-            if regions:
-                # The proposal's scalar page identifies the primary; the region
-                # transforms supply the complete page denominator.
-                contributing_pages = sorted(
-                    {region["payload"]["transform"]["source_page_ordinal"] for region in regions}
-                )
-            else:
-                # With no verified regions, the sealed proposal and continuation
-                # declaration are the only available page denominator. The
-                # non-reading testimony must still account for every such page.
-                if refusal is None:
-                    raise FatalAccounting(
-                        f"act {act['act_id']} has neither verified proposal regions nor a "
-                        "recorded crop refusal; its page denominator is unknowable; restore "
-                        "the Designator region or refusal evidence"
-                    )
-                contributing_pages = [act["page_ordinal"]]
-                if act["has_continuation"]:
-                    if real_ingress(context):
-                        # The far-page region was refused, and a real run has no
-                        # declaration to name the far page instead.
-                        raise FatalAccounting(
-                            f"act {act['act_id']}'s proposal seal claims a continuation and "
-                            "real ingress carries no continuation declaration; its far-page "
-                            "evidence cannot be addressed. The Designator must publish the "
-                            "continuation region that names the far page"
-                        )
-                    continuation = continuation_for(context.fixture, act["act_key"])
-                    if continuation is None:
-                        raise FatalAccounting(
-                            f"act {act['act_id']} claims a continuation but the sealed fixture "
-                            "names none; its far-page evidence cannot be addressed; correct the "
-                            "proposal seal or fixture continuation declaration"
-                        )
-                    contributing_pages.append(continuation["page_ordinal"])
-                contributing_pages.sort()
-            contributing_pages_by_act[act["act_id"]] = contributing_pages
-            for source_ordinal in contributing_pages:
-                page_acts = by_page.setdefault(source_ordinal, [])
-                if act not in page_acts:
-                    page_acts.append(act)
+        if act["outcome"] != "proposed":
+            continue
+        regions, refusal = regions_by_act[act["act_id"]]
+        # The proposal's scalar page identifies the primary; the region
+        # transforms supply the complete page denominator.
+        contributing_pages = (
+            sorted({region["payload"]["transform"]["source_page_ordinal"] for region in regions})
+            if regions
+            else _declared_pages(context, act, refusal)
+        )
+        contributing_pages_by_act[act["act_id"]] = contributing_pages
+        for source_ordinal in contributing_pages:
+            page_acts = by_page.setdefault(source_ordinal, [])
+            if act not in page_acts:
+                page_acts.append(act)
     return contributing_pages_by_act, by_page
 
 
@@ -3357,11 +3365,7 @@ def _page_witness_entries(
             if contributing_page == act["page_ordinal"]
             else {"status": "unaligned", "reason": "continuation-page-no-act-anchor"}
         )
-        page_bounds = [
-            region["payload"]["transform"]["bounds"]
-            for region in act_regions
-            if region["payload"]["transform"]["source_page_ordinal"] == contributing_page
-        ]
+        page_bounds = _bounds_on_page(act_regions, contributing_page)
         contributing_outcome = page_outcomes.get((contributing_page, chair), act_attempt.outcome)
         attachment_basis = page_attachment_basis(
             reading=contributing_outcome in WITNESS_READING_OUTCOMES,
@@ -5575,7 +5579,6 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
             f"{sorted(OPERATIONS)}. A mistyped reread would otherwise run a whole pass, "
             "ignore the act and chair it was given, and report success"
         )
-    # Opens the fixture or the real context, as the run authority says.
     context = open_stage_context(args, ATTESTATORES, registry_factory=registry_factory)
     real = real_ingress(context)
     # A witness reading is a model decode, so its decoding policy must be sealed.
