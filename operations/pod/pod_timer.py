@@ -548,9 +548,9 @@ def _durable_failure_close(
     write.
 
     Whether the fallback receipt itself reached the volume is carried in the
-    raised error too.  It used to be swallowed, so an operator finding no
-    receipt could not tell a write that failed twice from one that never ran --
-    Principle 2, on the only durable evidence this pod leaves behind.
+    raised error too, rather than swallowed: an operator finding no receipt
+    must be able to tell a write that failed twice from one that never ran --
+    principle 2, on the only durable evidence this pod leaves behind.
 
     The breadcrumb goes out first here too: this path also issues a DELETE from
     inside the container it destroys, so the same "never tried versus destroyed

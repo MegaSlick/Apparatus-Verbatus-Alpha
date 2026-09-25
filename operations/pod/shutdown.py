@@ -233,13 +233,13 @@ class VerifiedShutdown:
         if terminate_failure is not None:
             last_terminate_failure = terminate_failure
         while True:
-            # Consulted *before* the observations, not only after them.  Every
-            # verb below is a synchronous provider call, and the loop used to
-            # reach its deadline check only once all three had returned: a
-            # blocked provider therefore postponed the retry, the failed-close
-            # report and every other piece of cleanup for as long as it liked,
-            # while the pod carried on billing.  Checking here is also what
-            # keeps the budget passed into each verb positive.
+            # Consulted *before* the observations, not only after them: every
+            # verb below is a synchronous provider call, and a deadline check
+            # reached only after all three return would let a blocked
+            # provider postpone the retry, the failed-close report and every
+            # other piece of cleanup for as long as it liked while the pod
+            # carried on billing. Checking here is also what keeps the budget
+            # passed into each verb positive.
             if self.monotonic() >= deadline:
                 return self._failed_shutdown(
                     record,

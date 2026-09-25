@@ -220,11 +220,11 @@ class SpendRefusalCause(StrEnum):
     """Why a spend assessment refused, recorded where the reason is raised.
 
     ``launch._spend_refusal_state`` turns this into the ``LaunchState`` an
-    operator reads, and it used to derive it by matching the text of
-    ``reasons``. Reflowing one of those strings -- fixing a typo, rewrapping a
-    line -- silently reclassified a money-safety refusal as a price-ceiling one,
-    and no test could catch it because the tests assert on the same prose. The
-    wording is for people; this is what the code decides on.
+    operator reads. Deriving that by matching the text of ``reasons`` instead
+    would let reflowing one of those strings -- fixing a typo, rewrapping a
+    line -- silently reclassify a money-safety refusal as a price-ceiling
+    one, undetectably, since the tests assert on the same prose. The wording
+    is for people; this is what the code decides on.
     """
 
     HARD_FLOOR = "hard-floor"
