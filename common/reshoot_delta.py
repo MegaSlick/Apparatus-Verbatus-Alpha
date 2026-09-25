@@ -116,10 +116,7 @@ def _locus_rows(dissent: dict[str, Any], view_ids: list[str]) -> tuple[list, lis
             reasons.add(_FORM_ABSENT)
         recorded = _RECORDED_STATE_CODES.get(locus["comparison_state"])
         if recorded is not None:
-            # The joint reader itself recorded that this locus is unreadable or
-            # not comparable across the views.  Comparing its observed forms
-            # anyway would be the instrument overruling the only party that saw
-            # the ink, so the locus is named rather than compared.
+            # The reader recorded it incomparable; the instrument does not overrule it.
             reasons.add(recorded)
         if reasons:
             uncompared.append({**anchor, "reason_codes": sorted(reasons)})

@@ -16,10 +16,7 @@ from common.contracts.errors import ContractError, SchemaRefusal
 
 WITNESS_SCOPES: Final = frozenset({"page", "act"})
 KNOWN_WITNESS_ADAPTER_NAMES: Final = frozenset({"chandra.v1", "churro.v1", "dai.v1"})
-# Adapter names are configuration keys, not model output.  The current names are
-# short, and a longer spelling cannot resolve exactly; bounding it before
-# whitespace scanning or set hashing keeps a malformed config from multiplying a
-# large string into its refusal message.
+# Bounded before scanning, so a malformed config cannot flood its refusal message.
 MAX_WITNESS_ADAPTER_NAME_LENGTH: Final = 128
 
 
@@ -34,10 +31,7 @@ class AdapterRefusal(SchemaRefusal):
             else:
                 display = repr(name)
         else:
-            # Exact built-in strings are the only string values accepted by the
-            # resolver.  A str subclass may override strip, hash, equality, or
-            # repr; none of those hooks may replace this refusal with its own
-            # exception.
+            # A str subclass may override strip, hash, equality or repr.
             display = f"<{type(name).__name__}>"
         super().__init__(f"witness adapter {display} {happened}. {meaning}. {next_step}")
 
@@ -88,10 +82,7 @@ def validate_witness_adapter_bindings(models: ModelsConfig) -> None:
     """
 
     if not isinstance(models, ModelsConfig):
-        # Structural doubles are deliberately outside this preflight, but a
-        # preflight that skips itself in silence is indistinguishable from one
-        # that ran and found nothing (principle 2). Say so where the unused
-        # registry finding is said.
+        # A silent skip would read as a clean result (principle 2).
         print(
             f"witness adapter registry: preflight skipped for a {type(models).__name__} that is "
             "not a ModelsConfig; no chair's adapter binding was checked",

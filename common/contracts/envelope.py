@@ -51,10 +51,8 @@ _REQUIRED: Final = (
 
 _OPTIONAL: Final = ("approval_ref",)
 
-# Kind names whose producing branch has not yet defined a payload.  The set is
-# empty because every kind reserved for R5b has since graduated; the refusal
-# below is kept, and test-pinned, so the next deferred kind is refused at the
-# envelope boundary rather than by its absence from a run tree.
+# Kinds whose payload is not yet defined; empty now, kept (and test-pinned) so the
+# next deferred kind is refused at the envelope.
 _RESERVED_KINDS: Final = frozenset()
 
 
@@ -79,17 +77,13 @@ def build_envelope(
     that writes an artifact nobody can read has already lost the work, and finding
     out at the consumer means the evidence of what went wrong is a stage away.
     """
-    # Validate before sorting: ``dict.get`` and key comparison are uses of the
-    # references, and malformed producer input belongs at the same named schema
-    # boundary as a malformed record read from disk.
+    # Before sorting, which already uses the references.
     validate_input_refs(inputs)
     envelope: dict[str, Any] = {
         "schema": SCHEMA_LABEL,
         "run_id": run_id,
         "artifact_id": artifact_id,
-        # The artifact id is derived from this exact attempt.  Keeping the
-        # binding beside it is what lets a consumer recompute the id rather than
-        # accepting any well-formed-looking string under a trusted path.
+        # Lets a consumer recompute the artifact id rather than trust its shape.
         "attempt_id": attempt,
         "subject_id": subject_id,
         "stage": stage,
@@ -104,12 +98,7 @@ def build_envelope(
     }
     if approval_ref is not None:
         envelope["approval_ref"] = approval_ref
-    # An artifact id is stable across a stage's payload by design — attempts
-    # append under a derived identity, while the payload remains the evidence of
-    # what happened.  Its own hash closes the otherwise unsealed half: a changed
-    # payload cannot be mistaken for the immutable artifact the consumer was
-    # handed.  Direct input references still establish lineage; this catches an
-    # altered artifact before a stage can reinterpret it.
+    # The id does not cover the payload; the self-hash seals it.
     envelope["self_hash"] = self_hash(envelope)
     validate_envelope(envelope)
     return envelope
@@ -233,12 +222,7 @@ def validate_input_refs(inputs: Any) -> None:
     """Every input reference names a path and the digest of the bytes there."""
     if not isinstance(inputs, list):
         raise SchemaRefusal("inputs is not a list")
-    # Keyed on the path alone, not on (path, digest). Keying on the pair let one
-    # path be listed twice with two different digests — a contradiction, since one
-    # file cannot hold two sets of bytes, and one that splits consumers: whichever
-    # reference a reader checks first decides what it believes. It also let a page
-    # be counted twice in the inputs, which is the double-count this refusal exists
-    # to prevent.
+    # Keyed on the path alone: one file cannot hold two digests, nor count twice.
     seen: dict[str, str] = {}
     portable_spellings: dict[str, str] = {}
     for ref in inputs:

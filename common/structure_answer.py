@@ -78,12 +78,8 @@ from common.imaging import Bounds
 STRUCTURE_ANSWER_SCHEMA: Final = "verbatus-structure-answer.v1"
 QUANTIZATION_RULE: Final = "structure-answer.v1.box1000-floor-low-ceil-far.sealed-page-pixels"
 PAGE_TEXT_RULE: Final = "structure-answer.v1.newline-between-delivered-acts"
-# chandra.py's own ceiling: the byte bound matches the repository's existing
-# RunPod response ceiling, kept here too so every caller across the wire
-# boundary obeys the same finite intake.
+# chandra.py's own ceilings: operational bounds, not claims about the chair.
 MAX_RESPONSE_BYTES: Final = 16 * 1024 * 1024
-# chandra.py's own MAX_LAYOUT_BLOCKS, same reason: a chosen operational
-# ceiling, not a claim about the structure chair's behaviour.
 MAX_ACTS: Final = 10_000
 PARSE_OUTCOMES: Final = frozenset(
     {
@@ -179,25 +175,15 @@ def decode_json_body(raw: Any, *, max_bytes: int) -> tuple[Any, str | None]:
     try:
         return json.loads(raw.decode("utf-8"), object_pairs_hook=unique_json_object), None
     except RecursionError:
-        # The stdlib scanner raises this separately from JSONDecodeError for a
-        # sufficiently deep but otherwise valid value -- one bad response, not
-        # permission to crash the stage that reads it.
         return None, "excessive-json-nesting"
     except DuplicateJsonMember:
-        # Two values for one field is not malformed JSON -- it decodes fine
-        # under the stdlib's own last-wins default. It is an answer this
-        # module does not understand: the same code an unknown key gets.
+        # Valid JSON, but an answer this module does not understand.
         return None, "unverified-response-schema"
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None, "invalid-json"
     except ValueError:
-        # A huge decimal integer literal (thousands of digits) is otherwise
-        # well-formed JSON, so the scanner's `int()` call raises a bare
-        # `ValueError` -- not `json.JSONDecodeError` -- once the literal
-        # exceeds CPython's integer-string-conversion limit (G13, "huge
-        # integer"). `DuplicateJsonMember` is also a `ValueError` but is
-        # caught above this clause, so nothing here shadows it. Uncaught, the
-        # huge-integer case would escape this declared refusal boundary.
+        # A huge integer literal past CPython's int-string limit raises a bare
+        # ValueError (`DuplicateJsonMember` is caught above).
         return None, "invalid-json"
 
 
@@ -285,11 +271,7 @@ def _parse_act(value: Any, ordinal: int, page_w: int, page_h: int) -> ParsedAct 
     if missing:
         return "malformed-act"
     label = value.get("label")
-    # `label` is declared an optional string (SPEC_D §1.2): present-as-string,
-    # or absent. An explicit JSON `null` is neither -- accepting it as a
-    # synonym for absent would be this module quietly normalizing a value the
-    # declared shape does not contain (principle 3), so it refuses like any
-    # other non-string label.
+    # An optional string (SPEC_D §1.2): an explicit null is not "absent".
     if "label" in value and not isinstance(label, str):
         return "malformed-act"
     box = validate_box_1000(value["box_1000"])

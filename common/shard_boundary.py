@@ -17,10 +17,7 @@ from common.contracts.errors import ContractError
 CONTINUATION_HOLD: Final = "cross-shard-continuation-hold"
 SPLIT_RESHOOT_CLUSTER: Final = "split-re-shoot-cluster"
 
-# How many missing ordinals the completeness refusal enumerates by name. A real
-# corpus partition omitting this many pages has bigger problems than a readable
-# error message; a single forged or malformed page_ordinals entry naming an
-# ordinal in the billions must not be able to buy an enumeration this long.
+# A forged ordinal in the billions must not buy an enumeration that long.
 _MAX_REPORTED_MISSING_ORDINALS: Final = 1000
 
 
@@ -65,14 +62,8 @@ def _partition(shards: Iterable[Mapping[str, Any]]) -> tuple[dict[int, str], dic
     if not owner:
         raise ContractError("a corpus boundary needs at least one submitted shard")
     highest = max(owner)
-    # `owner`'s keys are already confirmed unique, positive integers (checked
-    # above). A set of exactly `highest` such integers can equal {1, ..., highest}
-    # only when none of them are missing -- pigeonhole leaves no room for a gap --
-    # so this count check settles the ordinary case without ever materializing
-    # `range(1, highest + 1)`. That range used to be built unconditionally: one
-    # shard entry naming an ordinal in the billions turned a small submitted
-    # partition into a multi-gigabyte allocation before this function ever got to
-    # refuse it.
+    # Unique positive keys, `highest` of them, are exactly 1..highest, so the
+    # range is never built for a forged huge ordinal.
     if len(owner) != highest:
         missing: list[int] = []
         for ordinal in range(1, highest + 1):
