@@ -358,10 +358,10 @@ def test_a_partial_run_never_exits_zero_and_the_report_names_its_state(
     if state == "failed":
         assert "outside its own complete/held/halted/fatal vocabulary" in report["detail"]
     else:
-        # Was `detail is None`. A held or halted report is the one that most
-        # needs a reason, and a null there read as "there is nothing further to
-        # say" while the reason was on a container stderr that dies with the
-        # pod. It now names the transcript the reason is durable in (F094).
+        # A held or halted report is the one that most needs a reason: `None`
+        # here would read as "nothing further to say" while the reason sat on
+        # a container stderr that dies with the pod. Name the transcript the
+        # reason is durable in instead.
         assert str(ws.volume / "pod-run-report-transcript.log") in report["detail"]
     # A run that finished -- held, like complete -- holds to the hard deadline,
     # because `pod_timer` reads an early child exit as `completed-early` and
@@ -803,11 +803,9 @@ def test_refuses_a_bad_run_id(tmp_path: Path, capsys: pytest.CaptureFixture[str]
 def test_a_refusal_report_write_failure_is_named_not_swallowed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``_write_refusal`` used to return ``None`` whether it wrote the report or
-    hit an ``OSError`` -- ``_refuse`` could not tell, so a run that refused
-    *and* failed to leave its durable reason exited exactly like a run that
-    refused cleanly. Principle 2 binds the write failure too: it must be
-    named on stderr, and the refusal exit code stays exactly what it was.
+    """A run that refuses *and* fails to leave its durable reason must keep
+    the refusal exit code while naming the write failure on stderr. Principle
+    2 binds the write failure too.
     """
 
     ws = _prepared(tmp_path)
@@ -1012,7 +1010,7 @@ def test_refuses_a_credential_looking_value_in_either_half(
     assert "looks like a credential" in capsys.readouterr().err
 
 
-# --- the transcript and the liveness tick (F094, F059) ------------------------
+# --- the transcript and the liveness tick ------------------------
 
 
 def test_the_run_report_names_the_transcript_and_the_liveness_record(tmp_path: Path) -> None:
@@ -1079,7 +1077,7 @@ def test_a_liveness_tick_carries_the_child_pid_and_the_moment_it_was_last_seen(
 def test_a_held_or_halted_report_names_where_the_reason_is_instead_of_null_detail(
     tmp_path: Path, orchestrator_exit: int, expected_exit: int
 ) -> None:
-    """`detail: null` on the two outcomes that most need a reason (F094)."""
+    """`detail: null` on the two outcomes that most need a reason."""
 
     ws = _prepared(tmp_path)
     clock = Clock()
@@ -1178,7 +1176,7 @@ def test_the_operator_evidence_prefix_names_the_same_directory_as_preflight() ->
     assert FETCH_EVIDENCE_PREFIX == pod_run.bootstrap_main.PREFLIGHT_DIRECTORY
 
 
-# --- naming the launch's records so they can be fetched (F101, F110) ----------
+# --- naming the launch's records so they can be fetched ----------
 
 
 def test_the_sibling_suffixes_launch_derives_are_the_ones_pod_run_actually_writes() -> None:
@@ -1307,7 +1305,7 @@ def test_launch_run_id_is_none_with_no_bootstrap_command_at_all() -> None:
 
 
 def test_evidence_prefix_derives_bootstrap_mains_own_preflight_directory() -> None:
-    """F110/G11: every real request (boot_a_request.py, boot_b_request.py)
+    """Every real request (boot_a_request.py, boot_b_request.py)
     writes its report paths at the *volume root*, never under `preflight/` --
     only `bootstrap_main.Plan.preflight_root` computes a `preflight/` path,
     from `<mount>/preflight/<bootstrap_main's own --report-path stem>`. A
@@ -1493,9 +1491,9 @@ def _launch_request(token: str, volume_id: str) -> dict:
 def _launch_receipt(path: Path, token: str, *, volume_id: str = "vol-1") -> Path:
     """A launch receipt in the shape `ReceiptStore.write` actually writes one.
 
-    The action's own data sits under `payload`, never at the top level. This
-    fixture said otherwise until 2026-09-15, so the console's derivation could
-    read a key no real receipt carries and the suite stayed green over it;
+    The action's own data sits under `payload`, never at the top level: a
+    fixture that put it at the top level would let the console's derivation
+    read a key no real receipt carries while the suite stayed green over it;
     `test_the_console_derives_those_keys_from_a_real_
     stored_receipt` below builds one through the store itself.
     """

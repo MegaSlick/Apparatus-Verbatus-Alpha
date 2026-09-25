@@ -44,9 +44,7 @@ def test_the_shipped_policy_keeps_filename_links_and_states_settled_whole_run_re
 
 
 def test_the_alpha_shortcuts_ledger_is_a_clause_the_loader_enforces(tmp_path, policy):
-    """It was named in the spec, asserted of the shipped file by the test above, and
-    absent from what `load_policy` actually required — so a policy stripped of it
-    loaded clean and the mismatch was invisible to the suite."""
+    """A policy stripped of this clause must not load clean."""
     stripped = {key: value for key, value in policy.items() if key != "alpha_shortcuts_ledger"}
     path = tmp_path / "no-ledger.json"
     path.write_text(json.dumps(stripped), encoding="utf-8")
@@ -56,9 +54,7 @@ def test_the_alpha_shortcuts_ledger_is_a_clause_the_loader_enforces(tmp_path, po
 
 @pytest.mark.parametrize("value", [True, 1, {"x": 1}, "x", ["a rule"]])
 def test_a_clause_that_states_no_rule_is_refused(tmp_path, policy, value):
-    """`if not record.get(field)` was pure truthiness, so every prose clause but
-    `storage_roots` could be replaced by `true` and the policy still loaded — a
-    policy that says nothing passing as one that does."""
+    """A clause replaced by a bare truthy value must not pass as a stated rule."""
     mutated = dict(policy)
     mutated["logging_rule"] = value
     path = tmp_path / "boolean-clause.json"
@@ -260,16 +256,11 @@ def test_an_intermediate_symlink_below_the_approved_root_is_also_refused(tmp_pat
 def test_an_unapproved_location_is_named_as_unapproved_not_as_a_redirect(tmp_path, policy):
     """A refusal must name the problem the operator actually has.
 
-    The redirect walk stops when it meets an approved root. A location under no
-    approved root therefore walked to the filesystem root and reported the first
-    ordinary platform alias it met -- `/tmp` is a symlink on macOS -- as
-    "crosses a symlink; an approved storage root cannot be entered by redirect".
-    The material was refused either way, so nothing was written anywhere it
-    should not be; the cost was that the operator was sent to hunt for a planted
-    redirect when the true fact was that the folder is not approved at all.
-
-    The alias is built here rather than borrowed from the platform, so the case
-    holds on a runner whose `/tmp` is a real directory.
+    A location under no approved root at all must be refused as unapproved,
+    not misdiagnosed as a planted redirect merely because the walk to the
+    filesystem root passed an ordinary platform alias (e.g. `/tmp` on macOS).
+    The alias is built here rather than borrowed from the platform, so the
+    case holds on a runner whose `/tmp` is a real directory.
     """
     approved = tmp_path / "approved"
     approved.mkdir()

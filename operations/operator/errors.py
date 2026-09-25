@@ -231,8 +231,6 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Every named act and hold reason was recorded, on this screen and in the saved run "
         "record; the run tree keeps every sealed stage and nothing in it was called "
         "complete. If notifications were enabled, a decision alert was also attempted.",
-        # review.py's own next-action rule, not a loop: re-running the same run
-        # name republishes the same sealed hold and reports it again.
         "Read the hold reasons above or with `verbatus status`, and open the run tree "
         "read-only with the `verbatus review` command printed with the run. A hold is "
         "resolved only by a new authorized run over the same sealed source -- running "
@@ -430,19 +428,16 @@ class OperatorError(RuntimeError):
             f"Next step: {self.copy.next_step}",
         ]
         if self.detail is not None:
-            # Not truthiness: a raise site that had a diagnostic slot and
-            # filled it with nothing is a different fact from one that never
-            # had a diagnostic to give, and the line below says which.
+            # Not truthiness: an empty detail must still render as "no
+            # additional detail was recorded", not be dropped like a missing one.
             lines.append(f"Saved detail: {sanitize_detail(self.detail)}")
         return "\n".join(lines)
 
 
-# C0/C1 control bytes, including ESC (0x1B), plus Unicode format characters
-# that reorder or invisibly change a terminal line: text this surface prints can embed
-# a filename, a path or a refusal reason an operator did not choose (a submitted
-# folder, a manifest entry, a page-census reason that travelled up from the run
-# tree), and an ANSI escape sequence in one could clear the screen or spoof a
-# fake confirmation line on the terminal that renders it.
+# C0/C1 control bytes, including ESC, plus Unicode format characters that
+# reorder or invisibly change a terminal line: text this surface prints can
+# embed an operator-uncontrolled filename or reason, and an ANSI escape
+# sequence in one could clear the screen or spoof a confirmation line.
 _CONTROL_CHARACTERS = re.compile(
     r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]"
 )
@@ -451,12 +446,12 @@ _CONTROL_CHARACTERS = re.compile(
 def strip_control_bytes(value: str) -> str:
     """Make one line safe to print, and change nothing else about it.
 
-    Every operator-facing line goes through this, not only an error detail: the
-    argument above is about where the text came from, and a receipt summary, a
-    reconciliation row and a recorded pod id come from the same places a detail
-    does. Deliberately separate from `sanitize_detail`, which additionally
-    rewrites vocabulary, collapses whitespace and truncates — none of which a
-    reconciliation table or a price screen should have done to it.
+    Every operator-facing line goes through this, not only an error detail,
+    since a receipt summary, a reconciliation row and a recorded pod id come
+    from the same untrusted places. Deliberately separate from
+    `sanitize_detail`, which also rewrites vocabulary, collapses whitespace
+    and truncates, none of which a reconciliation table should have done to
+    it.
     """
 
     # A space, not deletion: deletion silently joins two identifiers into one
@@ -467,22 +462,16 @@ def strip_control_bytes(value: str) -> str:
 def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     """Keep implementation wording and tracebacks out of the human message.
 
-    Called in exactly one place: `render`, on the way to a person. A raise site
-    passes its detail through raw, and so does every site that persists a
-    detail into a receipt — a receipt is never rendered, and a person never
-    reads it through this function, so shortening or rewriting its text before
-    it is saved would discard the one copy of the diagnostic that exists
-    anywhere. Calling this anywhere but `render` is a second spelling of one
-    idea, and for a persist site it is worse than redundant: it can throw away
-    evidence principle 2 requires to still be visibly there.
+    Called in exactly one place, `render`, on the way to a person: a receipt
+    is never rendered, so shortening or rewriting a persisted detail would
+    discard the one copy of the diagnostic that exists anywhere.
 
-    `maximum` stays generous rather than terminal-width-sized: a workspace
-    nested inside a synced cloud-drive folder can easily produce a receipt
-    path several hundred characters long, and truncating that away would
-    silently break the "preserve this message and its saved receipt path"
-    instruction most of these error codes give. Where the cut still happens it
-    is named, because a rendered fragment that reads as a whole diagnostic is
-    exactly the partial result principle 2 requires to be visibly partial.
+    `maximum` stays generous rather than terminal-width-sized, since a
+    workspace nested inside a synced cloud-drive folder can produce a
+    receipt path several hundred characters long, and several error codes
+    tell the person to preserve exactly that path. Where a cut still
+    happens it is named, so a truncated fragment is never mistaken for a
+    complete diagnostic.
     """
 
     # Control characters become single spaces; ordinary spaces are preserved.
@@ -494,9 +483,8 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
         return "no additional detail was recorded"
     trace = _TRACEBACK_SHAPE.search(compact)
     if trace is not None:
-        # Keep everything before the structured trace header. In particular,
-        # RECORD_WRITE_FAILED prefixes a receipt path the operator is told to
-        # preserve; suppressing frames must not suppress that usable evidence.
+        # Keep everything before the structured trace header, since a
+        # receipt path the operator is told to preserve may prefix it.
         prefix = compact[: trace.start()].rstrip()
         compact = " ".join(
             part for part in (prefix, "[technical trace omitted from this message]") if part
@@ -526,16 +514,11 @@ _TRACEBACK_SHAPE: Final = re.compile(
 def _translate_close_vocabulary(word: str) -> str:
     """Rewrite old close vocabulary in one prose word, never inside a path.
 
-    A path segment is exactly the substring this rewrite must not touch — a
-    receipt path with "stop" or "shutdown" in one of its directory names is
-    not prose to translate, it is an identifier a person needs intact to find
-    the file again, and this module's own detail contract asks a raise site to
-    "preserve this message and its saved receipt path". A path separator is
-    decisive. Dots, underscores and hyphens touching the vocabulary are also
-    preserved because a bare submitted name such as ``stop-list`` has no
-    separator but is still an identifier the person needs byte-true. A bare
-    name equal to one ordinary prose word is inherently ambiguous at this
-    unstructured boundary.
+    A receipt path with "stop" or "shutdown" in one of its directory names
+    is an identifier a person needs intact, not prose to translate. Dots,
+    underscores and hyphens touching the vocabulary are also preserved,
+    since a bare submitted name such as ``stop-list`` has no path separator
+    but is still an identifier the person needs byte-true.
     """
 
     if "/" in word or "\\" in word:

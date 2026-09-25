@@ -396,10 +396,7 @@ def test_a_submit_budget_alarm_writes_the_source_name_to_its_private_report(
 
 
 def test_resubmitting_changed_content_to_one_path_refuses_rather_than_replacing(submission):
-    """`os.replace` clobbered unconditionally, so a changed folder replaced a valid,
-    self-hashed record of what was previously sealed — no comparison, no warning,
-    nothing on disk retaining what it superseded. "Sealed" then meant only
-    "self-consistent now"."""
+    """A changed folder must never replace a valid, self-hashed sealed record."""
     first = submit.submit(
         submission["folder"],
         submission["manifest_out"],
@@ -455,9 +452,7 @@ def test_a_planted_link_to_different_bytes_is_never_written_through(tmp_path):
 
     When the referent already holds the same bytes, a defect that followed the
     link and wrote would leave it byte-identical and undetectable. Giving the
-    referent different content makes the write visible. This is not hypothetical
-    for this function: `atomic_create` exists because `os.replace` used to
-    clobber unconditionally, and `os.replace` onto a symlink writes through it.
+    referent different content makes the write visible.
     """
     target = tmp_path / "sealed.json"
     referent = tmp_path / "elsewhere.json"
@@ -549,9 +544,7 @@ def test_a_deeply_nested_submission_is_a_named_refusal_and_not_a_recursion_error
 
 
 def test_the_aggregate_file_count_is_bounded_not_only_the_per_file_size(monkeypatch, submission):
-    """`max_bytes` bounded one file and nothing else: no accumulator across files, no
-    count, no per-directory entry cap. A folder of sub-limit files exhausted memory
-    before any named refusal — 150 MB of 1 MiB files held 149 MB of RSS at once."""
+    """A folder of many sub-limit files must still refuse by name, on file count."""
     monkeypatch.setattr(inventory, "MAX_SUBMITTED_FILES", 3)
     many = submission["approved"] / "many"
     many.mkdir()
@@ -574,9 +567,7 @@ def test_the_aggregate_retained_bytes_are_bounded(monkeypatch, submission):
 
 
 def test_the_submit_tool_retains_no_file_content_at_all(submission):
-    """It writes paths, digests and sizes and never looks at what a file holds — so
-    the second hand-kept copy of the door's 64 MiB limit that used to live here is
-    gone rather than merely renamed."""
+    """It streams file content to hash it but retains and decodes none of it."""
     assert submit.RETAIN_NO_BYTES == 0
     sources = inventory.read_submission(submission["folder"], max_bytes=submit.RETAIN_NO_BYTES)
     assert sources and all(source.data is None for source in sources)
@@ -587,11 +578,8 @@ def test_the_submit_tool_retains_no_file_content_at_all(submission):
 
 
 def test_the_manifest_temp_name_is_unpredictable_and_never_reused(submission):
-    """The temp name used to be `.{manifest}.tmp-{pid}` — guessable, so a link could
-    be planted at it, and *reusable*, so a crash or a recycled pid left that exact
-    name behind and wedged every later submission to the same manifest path behind
-    the generic "could not be written". `mkstemp` picks an unpredictable name per
-    attempt, so neither the plant nor the wedge has a name to aim at."""
+    """A pid-derived temp name is guessable and reusable, so a stale one left by a
+    dead run must never wedge or redirect a later submission to the same path."""
     target = submission["approved"] / "sealed.json"
     stale = submission["approved"] / f".{target.name}.tmp-{os.getpid()}"
     stale.write_bytes(b"a temporary file a dead run left behind")

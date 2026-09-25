@@ -1168,7 +1168,7 @@ def test_an_object_that_is_not_a_channel_is_refused_at_construction() -> None:
         ChannelControllerArmer(channel=object(), supervisor_argv=("python",))
 
 
-# -- the container-start wait, separate from the channel bound (F056) -------
+# -- the container-start wait, separate from the channel bound -------
 
 
 def test_without_a_liveness_probe_the_channel_bound_is_the_whole_wait(tmp_path: Path) -> None:

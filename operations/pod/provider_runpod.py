@@ -3,140 +3,63 @@
 Two REST routes live here side by side, behind one seam: `RunPodV2Provider`
 (the default, `live_runpod_provider`) and `RunPodProvider` (v1, kept until the
 first live run under v2 is green, then deleted in its own commit).
-`operations/pod/V2_MIGRATION.md` maps one to the other field by field.
+`operations/pod/V2_MIGRATION.md` maps one to the other field by field and
+records the documentation pages each field and refusal below rests on.
 
-**Route: REST v2 (`https://api.runpod.io/v2`), documentation read online on
-2026-09-24.** Each page, and what it settles for this adapter (`V2_MIGRATION.md`
-records the 2026-09-02 reading of the rest):
+**REST v2** (`https://api.runpod.io/v2`), source pages read online:
+- `api-reference-v2/pods/create-a-pod` (2026-09-02) — `CreatePodRequest`: no
+  `interruptible`, bid or rental-type field.
+- `https://api.runpod.io/v2/openapi.json` (2026-09-02) — confirms no
+  rental-type field anywhere in the schema.
+- `api-reference-v2/pods/list-pods` (2026-09-24) — paginated
+  (`cursor`/`limit`, `nextCursor` null on the last page); pagination is new
+  since the 2026-09-02 reading, so the list is followed to its last page.
+- `api-reference-v2/pods/terminate-a-pod` (2026-09-02) — `204`/`404`/`409`
+  ("Pod belongs to a cluster and cannot be terminated via the pod
+  endpoints.").
+- `api-reference-v2/billing/get-pod-billing-history` (2026-09-02) — records
+  wrapped in `{"records": [...], "metadata": {...}}`.
+- `api-reference-v2/migrate-from-v1` (2026-09-02) — maps no field for
+  `interruptible`.
+- `docs.runpod.io/pods/pricing` (2026-09-02) — only "On-demand" and "Savings
+  plans"; no "spot" or "interruptible".
+- `api-reference/pods/POST/pods` (v1, 2026-09-02) — still documents
+  `interruptible`, so spot pods still exist and no v2 page says what a
+  create without the field produces. **That is why `V2_ON_DEMAND_BASIS` is
+  unset and a v2 create refuses** (`RunPodV2Provider`).
 
-- `docs.runpod.io/api-reference-v2/pods/create-a-pod` — `CreatePodRequest`:
-  `name`, `cloud` ("Defaults to `SECURE` when omitted"), `gpu.{id,count}`,
-  `image`, `args`, `disk`, `env`, `mounts.network[]` (at most one),
-  `templateId`, `startJupyter`, `startSsh`. **No `interruptible`, bid or
-  rental-type field**, and no wording about on-demand or spot anywhere on the
-  page. `201` on success; `400` "malformed or conflicts with request rules" or
-  capacity unavailable, `402` "Insufficient balance", `403`, `413`, `422`
-  validation, `429`. The Pod object: `status` (`PROVISIONING`, `STARTING`,
-  `RUNNING`, `EXITED`, `ERROR`, `TERMINATED`), `cost` ("Current cost in USD per
-  hour (0.0 when EXITED or TERMINATED)"), `createdAt`, `startedAt`, `cloud`,
-  `gpu`, `mounts`, `env`, `args`, `template` — and **no rental-type field**.
-- `https://api.runpod.io/v2/openapi.json` (read as a static document) — none
-  of "interruptible", "spot", "on-demand", "bid", "rental", "reserved" or
-  "savings" refers to pod rental type anywhere ("reserved" occurs once, in a
-  secret-name prefix; "on demand" once, for serverless workers); `Cloud` is
-  only `SECURE` ("Runpod-owned
-  datacenter hardware") or `COMMUNITY`. `args` is "The container's command, as
-  a single raw string", accepting a bare shell string "treated as CMD and split
-  into arguments" or a JSON object `{"entrypoint":[...],"cmd":[...]}`;
-  "Responses always return both representations: `args` exactly as stored,
-  plus the deconstructed `entrypoint` and `cmd`". The Pod schema carries
-  `entrypoint` and `cmd` only as optional properties inherited through
-  `ContainerConfig` → `BaseContainerConfig`: neither is in its `required` list
-  or in any example. `CreatePodRequest` accepts them as top-level arrays too.
-- `docs.runpod.io/api-reference-v2/templates/create-a-template` — no start
-  command field beyond the same `args`; no rental-type field.
-- `docs.runpod.io/api-reference-v2/pods/get-a-pod` — the same Pod object; its
-  example body carries `args` and neither `entrypoint` nor `cmd`.
-- `docs.runpod.io/api-reference-v2/pods/list-pods` — `{"pods": [...],
-  "pagination": {"nextCursor", "hasNextPage"}}`, both pagination fields
-  required, `nextCursor` "Null on the last page"; `cursor` and `limit`
-  (1–1000, default 1000) query parameters. **Pagination is new since the
-  2026-09-02 reading**, so the list is followed to its last page.
-- `docs.runpod.io/api-reference-v2/pods/terminate-a-pod` — `204` "Deleted.
-  Response has no body."; `404`; `409` "Pod belongs to a cluster and cannot be
-  terminated via the pod endpoints."; a network volume is only detached.
-- `docs.runpod.io/api-reference-v2/billing/get-pod-billing-history` —
-  `{"records": [...], "metadata": {...}}`; each record's `startTime`,
-  `endTime`, `podId`, `totalAmount`, `gpuAmount`, `cpuAmount`, `diskAmount`;
-  `metadata.query` described as "Resolved query window and granularity (routes
-  without a filter)." yet marked required and shown, with `podId` "The podId
-  filter applied, if any", in a podId-filtered example; `recordCount`
-  "Number of records returned". `bucketSize` accepts `hour`.
-- `docs.runpod.io/api-reference-v2/catalog/list-gpu-types` — `GET
-  /v2/catalog/gpus` → `{"gpus": [...]}` with `id`, `secure`, and
-  `price.secure` "List price in USD per hour for a **single** GPU".
-- `docs.runpod.io/api-reference-v2/migrate-from-v1` — nested create body, RFC
-  9457 error bodies; it maps no field for `interruptible` or `dockerStartCmd`.
-- `docs.runpod.io/pods/pricing` — the only pricing options are "On-demand"
-  ("Resources are dedicated to your Pod and cannot be displaced by other
-  users") and "Savings plans"; neither "spot" nor "interruptible" appears.
-- `docs.runpod.io/api-reference/pods/POST/pods` (v1, same day) — still
-  documents `interruptible`: "Set to true to create an interruptible or spot
-  Pod", default `false`. So spot pods still exist on the platform, and no page
-  says what a v2 create without the field produces. **That is why
-  `V2_ON_DEMAND_BASIS` is unset and a v2 create refuses** (`RunPodV2Provider`).
-- `docs.runpod.io/pods/templates/environment-variables` (the old
-  `pods/references/environment-variables` URL redirects there) — `RUNPOD_POD_ID`
-  "Unique Pod identifier." and `RUNPOD_API_KEY` "Pod-scoped API key.", with no
-  route named; whether that key is accepted by v2 is a live-run observation.
+`operations/pod/V2_MIGRATION.md` records the full page-by-page reading;
+this list is the terse form kept beside the code it settles.
 
-**Route: REST v1 (`https://rest.runpod.io/v1`), documentation re-checked online
-on 2026-08-09.**
-Spec 04 named this route from the 2026-07-30 track-B research; the four pages
-below were fetched again on the merge date rather than trusted from the spec,
-because a routing decision on a money path should not rest on a month-old note:
+**REST v1** (`https://rest.runpod.io/v1`), read online 2026-08-09 and
+re-checked 2026-09-02: `api-reference/pods/POST/pods` carries `interruptible`
+(default `false`); RunPod retires the route on 2026-11-15
+(`V2_MIGRATION.md`). `GET /pods` and the billing endpoint each return a bare
+JSON array rather than v2's envelope. The `runpod` PyPI package is not used:
+it wraps the deprecating GraphQL API.
 
-- `docs.runpod.io/api-reference/pods/POST/pods` — `PodCreateInput` carries every
-  field this seam needs, `interruptible` among them (default `false`), and the
-  page carries no deprecation, maintenance or beta notice.
-- `docs.runpod.io/api-reference/pods/GET/pods` — a **bare JSON array** of pods.
-- `docs.runpod.io/api-reference/pods/GET/pods/podId` — one pod object, **404**
-  when it does not exist.
-- `docs.runpod.io/api-reference/billing/GET/billing/pods` — a **bare JSON array**
-  of `{amount, time, timeBilledMs, podId, gpuTypeId, diskSpaceBilledGb,
-  endpointId}`, with `podId`, `startTime`, `endTime`, `bucketSize` and `grouping`
-  query parameters.
+**Not the vendor SDK, a plain injected HTTP transport.** Every call goes
+through `HttpTransport`, so the whole adapter is exercised offline against an
+in-memory fake. **No live RunPod call has been made from this module, on
+either route** — every field name here comes from published documentation,
+never an observed response, so exact GPU id strings and post-DELETE timing
+are confirmed at the first authorised live run, not here.
 
-On 2026-08-09 v2's own overview still said it was in beta, which is why v1
-was chosen then; by 2026-09-02 the beta wording was gone and v1 carried its
-retirement date (`V2_MIGRATION.md` §1). The `runpod` PyPI package is not
-used: it wraps the deprecating GraphQL API.
+**Account balance is GraphQL**, not REST: only `myself { clientBalance
+currentSpendPerHr }` publishes it, sent with the key as an `api_key` query
+parameter (GraphQL documents no header form, so every error string and
+fixture record here scrubs the query). Neither field's documentation names a
+currency; `BALANCE_CURRENCY` records a documented reading from the billing
+pages instead, and the first authorised live run checks it against the
+console. GraphQL itself is deprecated, retiring in early 2027 in favour of
+v2 -- a sunset of this observer's own, distinct from the REST v1 route's:
+v2 publishes no balance, so this observer is not retired by that migration.
 
-**Not the vendor SDK, a plain injected HTTP transport.** Every call goes through
-`HttpTransport`, so the whole adapter is exercised offline against an in-memory
-fake. **No live RunPod call has been made from this module, on either
-route.** Every field name above comes from the published documentation, never
-from an observed response, so the exact accepted GPU id strings and the
-provider's real post-DELETE timing are confirmed at the first authorised live
-run, not here.
-
-**Account balance: GraphQL, documentation read online on 2026-09-02.** Neither
-REST route publishes the account balance; only the GraphQL `myself` object
-carries `clientBalance` and `currentSpendPerHr`. The pages that settle what
-`GraphQLBalanceObserver` below sends and expects, each with its check date:
-
-- `docs.runpod.io/sdks/graphql/configurations` (2026-09-02) — endpoint
-  `https://api.runpod.io/graphql`, JSON body `{"query": ...}`, and the key
-  **as the `api_key` query parameter**: "All requests go to
-  `https://api.runpod.io/graphql` with your API key included as a query
-  parameter." No header form is documented for GraphQL, so that is how it is
-  sent, and every error string and fixture record here scrubs the query. The
-  same page now says: "The GraphQL API is deprecated and will be retired in
-  early 2027. For new integrations, use REST API v2." — so this observer
-  has a sunset of its own; `V2_MIGRATION.md` records it.
-- `graphql-spec.runpod.io` (2026-09-02) — `User.clientBalance: Float`,
-  `User.currentSpendPerHr: Float`, `underBalance: Boolean`, `minBalance:
-  Float`, `spendLimit: Int`, `clientLifetimeSpend: Float`. **No description
-  and no currency on any of them.**
-- Currency is therefore observed from documentation, not from a call:
-  `docs.runpod.io/accounts-billing/billing` (2026-09-02) says credits are
-  added by choosing "a dollar amount" and names an "$80 per hour" default
-  spend limit; `docs.runpod.io/api-reference/billing/GET/billing/pods`
-  (2026-09-02) names `amount` as "Charge in USD". Against that,
-  `docs.runpod.io/api-reference/pods/GET/pods/podId` (2026-09-02) describes
-  `costPerHr` as "Cost in Runpod credits per hour". The observation's
-  `source` says "US dollars per the vendor's billing documentation" — a
-  documented reading, never a claim the query itself returned a currency —
-  and the first authorised live run compares the number against the console.
-- `docs.runpod.io/api-reference-v2/billing/get-aggregated-billing-history`
-  and `.../get-pod-billing-history` (2026-09-02) — historical spend only;
-  neither reports a balance, so the v2 migration does not retire this
-  observer.
-
-**Credential:** supplied to `UrllibRunPodTransport` explicitly at construction.
-Nothing here reads a credential from a tracked file (`operations/pod/README.md`).
-The GraphQL sibling transport is derived from the REST one by
-`UrllibRunPodTransport.sibling`, so the provider never handles the key itself.
+**Credential:** supplied to `UrllibRunPodTransport` explicitly at
+construction. Nothing here reads a credential from a tracked file
+(`operations/pod/README.md`). The GraphQL sibling transport is derived from
+the REST one by `UrllibRunPodTransport.sibling`, so the provider never
+handles the key itself.
 """
 
 from __future__ import annotations
@@ -368,14 +291,12 @@ class UrllibRunPodTransport:
         else:
             headers["Authorization"] = f"Bearer {self.capability}"
         request = urllib.request.Request(url, data=encoded, method=method, headers=headers)
-        # `timeout_seconds` bounds the whole call — connect, headers and body
-        # against one monotonic deadline — rather than one blocking receive. At
-        # 36acde636f this transport had no elapsed bound on the body at all: a
-        # loopback responder dribbling a byte at a time answered a 0.15 s budget
-        # after 8.559 s, and one dribbling its headers after 1.273 s. Every
-        # caller of this class is a money-path verb whose controller checks its
-        # own deadline only between calls, so an unbounded call is an unbounded
-        # controller.
+        # `timeout_seconds` bounds the whole call -- connect, headers and body
+        # against one monotonic deadline -- rather than one blocking receive:
+        # a loopback responder dribbling a byte at a time answered a 0.15 s
+        # budget after 8.559 s. Every caller here is a money-path verb whose
+        # controller checks its own deadline only between calls, so an
+        # unbounded call is an unbounded controller.
         deadline = time.monotonic() + self.timeout_seconds
         # Environment proxy discovery is left ON for this opener, deliberately, and this is
         # the opposite decision from `operations/serving/http.py`, which disables
@@ -959,12 +880,11 @@ class RunPodProvider(_RunPodAdapter):
         # separate "still pulling a fifteen-gigabyte image" from "started and
         # silent". `lastStartedAt` is the only field in this body that can --
         # it is null until the pod first runs (the same documented behaviour
-        # `_record` relies on when it falls back to the observation instant) --
-        # and it was previously read only there, where it becomes
-        # `PodRecord.created_at` and is therefore invisible to anything
-        # watching a pod come up. Surfaced here so a waiter can bound and
-        # record the container-start wait separately from whatever it is
-        # really waiting for (`controller_armer.ChannelControllerArmer`).
+        # `_record` relies on when it falls back to the observation instant).
+        # Surfacing it here, not only where it becomes `PodRecord.created_at`,
+        # lets a waiter bound and record the container-start wait separately
+        # from whatever it is really waiting for
+        # (`controller_armer.ChannelControllerArmer`).
         #
         # A malformed value is reported as absent rather than raised: this is a
         # read-only observation, not a gate, and the same reasoning that keeps
@@ -1021,11 +941,9 @@ class RunPodProvider(_RunPodAdapter):
     def capture_cost(self, pod_id: str, started_at: datetime, cutoff_at: datetime) -> CostCapture:
         """The provider's own billed amounts — never an estimate from elapsed time.
 
-        This closes the gap the old pipeline left open, in track B's own words:
-        it estimated cost from log timestamps and "the actual account bill was
-        not captured". Everything returned is bound to the exact pod and the
-        requested window before it can total to a verified close; anything that
-        cannot be bound is `UNAVAILABLE` with its reason, never zero.
+        Everything returned is bound to the exact pod and the requested window
+        before it can total to a verified close; anything that cannot be bound
+        is `UNAVAILABLE` with its reason, never zero.
 
         v1 returns a bare array with no metadata envelope, so this adapter can
         prove *attribution* and *containment* but not bucket contiguity — there
@@ -1167,12 +1085,10 @@ class RunPodProvider(_RunPodAdapter):
             estimate=PodEstimate(
                 hourly,
                 as_decimal(self.volume_price(volume_id), "RunPod volume price"),
-                # F063: the two figures do not share one provenance. The pod
-                # rate above is read from this exact create/adopt response;
-                # the volume rate is still the injected resolver estimate()
-                # uses too -- v1 publishes no live network-volume price/size
-                # endpoint this adapter has found -- so the combined source
-                # string must not claim both were observed from the provider.
+                # The two figures don't share one provenance: the pod rate is
+                # this response's costPerHr, but v1 has no live volume-price
+                # endpoint this adapter has found, so the volume rate is
+                # still the injected estimate.
                 "RunPod observed pod costPerHr; volume rate supplied at launch, not observed "
                 "from the provider",
                 self.now(),
@@ -1241,28 +1157,26 @@ def _runtime_contract(
 
 
 REQUESTED_GPU_COUNT: Final = 1
-"""The one GPU count this build ever requests. Named rather than left as the bare
-literal it was (F064): `operations.pod.preflight.SystemGpuProbe.profile` reads it
-back as `expected_gpu_count` so the on-pod measurement and the request that
-provisioned the pod are checked against each other rather than left independent.
+"""The one GPU count this build ever requests.
+
+`operations.pod.preflight.SystemGpuProbe.profile` reads it back as
+`expected_gpu_count`, checking the on-pod measurement against the request
+that provisioned the pod rather than leaving them independent.
 """
 
 
 def _create_payload(request: PodCreateRequest, route: str = "v1") -> dict[str, object]:
     """The v1 `PodCreateInput` body. `interruptible` is always explicitly false.
 
-    Spec 04: on-demand only — "a spot reclaim mid-run is a silent-loss machine".
+    On-demand only: a spot reclaim mid-run is a silent-loss machine.
     `networkVolumeId` rides here because v1 attaches a volume only at creation
-    and never afterwards.
-
-    `containerDiskInGb` is sent because the bootstrap downloads its serving
-    stack onto the container-local disk twice over (cache, then venv) and the
-    body used to name no size at all, leaving it to the image or account
-    default — a default under which the sync fails with ENOSPC after the whole
-    download has been paid for. The field name is v1's, documented and not yet
-    observed like every other field here; the first live create is what
-    confirms the provider accepts it. `PodCreateRequest.container_disk_gb`
-    carries the number and the derivation.
+    and never afterwards. `containerDiskInGb` is sent because the bootstrap
+    downloads its serving stack onto the container-local disk twice over
+    (cache, then venv); leaving the size to the image or account default risks
+    ENOSPC after the download is already paid for. Documented, not yet
+    observed, like every other field here: the first live create confirms the
+    provider accepts it. `PodCreateRequest.container_disk_gb` carries the
+    number and the derivation.
     """
 
     payload: dict[str, object] = {

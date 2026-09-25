@@ -25,11 +25,10 @@ import tempfile
 from pathlib import Path
 from typing import Mapping
 
-# Re-exported, not re-implemented. The primitive moved down to `common` so that
-# `common/runtree/store.py` could publish artifacts durably without `common`
-# importing the operational layer; every caller that already said
-# `from operations.pod.durable import sync_directory` keeps working, and there
-# is one implementation rather than the two this package used to carry.
+# Re-exported, not re-implemented: the primitive lives in `common` so that
+# `common/runtree/store.py` can publish artifacts durably without `common`
+# importing the operational layer, while every caller that says
+# `from operations.pod.durable import sync_directory` keeps working.
 from common.durability import sync_directory
 
 __all__ = [

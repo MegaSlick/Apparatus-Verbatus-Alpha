@@ -43,17 +43,13 @@ BOOT_A_HARD_LIFETIME_SECONDS = 900
 """The README's "roughly 900": long enough to pull an image and watch one poll
 bound, short enough that a stuck close costs minutes, not hours.
 
-"Pull *and* bound" is what this number was always meant to buy, and until the
-armer separated its two waits the code did not deliver it: the arming bound's
-clock started when ``create`` returned, so the pull was spent out of the poll
-bound rather than beside it, and a pod that pulled for six minutes was
-terminated for a report it was about to write.
-
-The armer now waits for the container first
-(`controller_armer.CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS`) and only then
-runs the channel bound (`CONTROLLER_ARMING_TIMEOUT_SECONDS`), recording both.
-That makes this number's arithmetic real and also makes it tight: the two code
-defaults are 600 + 300, which fill 900 exactly and leave the close nothing.
+"Pull *and* bound" is what this number buys: the armer waits for the
+container first (`controller_armer.CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS`)
+and only then runs the channel bound (`CONTROLLER_ARMING_TIMEOUT_SECONDS`),
+recording both, so a pod that pulls for minutes is not terminated for a report
+it was about to write. That makes this number's arithmetic real and also
+makes it tight: the two code defaults are 600 + 300, which fill 900 exactly
+and leave the close nothing.
 `_render` states the sum against the requested lifetime in the drill text
 rather than leaving a reader to do it, so the choice -- lower both bounds in
 the untracked armer factory, or authorize a longer drill -- is made before the

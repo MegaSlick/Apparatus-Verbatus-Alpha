@@ -1,6 +1,5 @@
 """Tests for the padding calibration harness — proven against synthetic gold
-pairs only, never against invented "real" numbers. See the module docstring:
-this harness is ready to run against a real gold set, and none exists yet.
+pairs only, since no real gold set exists yet.
 """
 
 import pytest
@@ -44,12 +43,8 @@ def test_shortfall_on_the_bottom_and_right_edges():
 
 
 def test_shortfall_bp_is_round_half_up_integer_arithmetic_not_bankers_rounding():
-    # 1px of 32px is exactly 312.5bp -- a tie. `geometry._pad_amount` documents
-    # round-half-up as this project's discipline for every basis-point amount;
-    # Python's own `round()` on a float instead rounds half-to-even (banker's
-    # rounding), which silently drops this tie down to 312 rather than up to
-    # 313. This is also pure integer arithmetic: nothing here should touch a
-    # float, matching `geometry.py`'s own stated rule for basis-point amounts.
+    # 1px of 32px is exactly 312.5bp -- a tie that banker's rounding would
+    # drop to 312 rather than round up to 313.
     detected = {"x": 0, "y": 1, "w": 10, "h": 32}
     true_content = {"x": 0, "y": 0, "w": 10, "h": 32}
     assert _edge_shortfall_bp(detected, true_content, "top") == 313
@@ -198,9 +193,7 @@ def test_calibrate_padding_produces_the_shipped_config_shape():
 
 
 def test_calibrate_padding_result_loads_through_load_padding_config_shape(tmp_path):
-    """The harness's output is drop-in compatible with the shipped config's own
-    reader — proof that adopting a fresh calibration is a file write, not a
-    schema migration."""
+    """Output is drop-in compatible with the shipped config's own reader."""
     import geometry
 
     samples = [
@@ -253,10 +246,7 @@ def test_calibrate_padding_refuses_a_non_boolean_corpus_claim():
 
 
 def test_basis_points_stay_within_denominator_scale_for_a_realistic_shortfall():
-    # A pathological case: true content twice as tall as detected, entirely
-    # below it. The shortfall exceeds 100% and basis points reflect that
-    # honestly rather than clamping -- a real percentile output should look
-    # exactly this alarming when the structural detector is this wrong.
+    # Shortfall exceeds 100% here and basis points reflect that, not clamp it.
     detected = {"x": 0, "y": 0, "w": 10, "h": 10}
     true_content = {"x": 0, "y": 10, "w": 10, "h": 20}
     assert _edge_shortfall_bp(detected, true_content, "bottom") == 2 * BP_DENOMINATOR

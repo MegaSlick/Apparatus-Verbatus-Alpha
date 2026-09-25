@@ -68,12 +68,8 @@ def test_fixture_exercise_leaves_real_cells_visibly_not_run_not_green():
 
 
 def test_a_non_string_cell_refuses_by_name_instead_of_crashing_the_validator():
-    """Both validators take `cell` from a record they have not vouched for yet.
-
-    An unhashable one made `cell not in _MEASURES` raise `TypeError`, so the one
-    boundary whose job is to produce a named refusal produced a traceback
-    instead.
-    """
+    """An unhashable `cell` must refuse by name, not raise `TypeError` from
+    `cell not in _MEASURES`."""
     record = definition("B2")
     record["cell"] = ["B2"]
     with pytest.raises(SchemaRefusal, match="unknown R7b bench cell"):
@@ -86,12 +82,8 @@ def test_a_non_string_cell_refuses_by_name_instead_of_crashing_the_validator():
 
 
 def test_result_cannot_move_its_own_goalposts_or_claim_observations():
-    # Re-keyed *and* resealed, which is the binding's real threat model: a
-    # goalpost swap that leaves a stale self-hash behind is refused by the
-    # self-hash whether the binding is checked or not, so it cannot show this
-    # guard is load-bearing. B2 and B3 share an execution requirement, so their
-    # sealed reasons match too, and this record is well-formed in every respect
-    # except the definition it names.
+    # Re-keyed and resealed, so only the definition-binding check -- not a
+    # stale self-hash -- can catch a result retargeted at another definition.
     resealed = not_run("B2", fixture_verified=True)
     resealed["definition_digest"] = definition("B3")["definition_digest"]
     resealed["self_hash"] = self_hash(resealed)

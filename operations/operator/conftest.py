@@ -1,19 +1,15 @@
 """Whether this host can actually establish the OS boundary these tests measure.
 
-A boundary test that runs where the kernel or the launcher cannot establish the
-boundary reports nothing about this repository. It either fails for a host
-reason (which reads as a defect that is not there) or, worse, passes because the
-guarded child never ran at all — the shape
-`test_the_landlock_boundary_refuses_a_confined_write_to_evidence` had, where a
-`setpriv` that rejected its own option satisfied "the write was refused".
-
-The probe below asks the host tool directly, with a literal minimal argument
-vector rather than through `custody.LandlockConfinement.command`. That is
-deliberate: a defect in the command this repository builds must never be able to
-present itself as an absent host capability and skip the tests that would have
-caught it. Only two recognised host gaps produce a skip — a `setpriv` that
-predates Landlock support, and a kernel that refuses to create a ruleset. Any
-other failure returns no gap, so the tests run and fail loudly.
+A boundary test that runs where the kernel or launcher cannot establish the
+boundary reports nothing about this repository: it either fails for a host
+reason, or worse, passes because the guarded child never ran at all. The
+probe below asks the host tool directly, with a literal minimal argument
+vector, rather than through `custody.LandlockConfinement.command`, so a
+defect in the command this repository builds can never present itself as an
+absent host capability and skip the test that would have caught it. Only
+two recognised host gaps produce a skip: a `setpriv` that predates Landlock
+support, and a kernel that refuses to create a ruleset. Any other failure
+returns no gap, so the tests run and fail loudly.
 """
 
 from __future__ import annotations
@@ -48,12 +44,9 @@ def _linux_landlock_gap() -> str | None:
     if not _SETPRIV.is_file():
         return f"this host has no {_SETPRIV}"
 
-    # An absolute program, never a PATH lookup. `setpriv` reports a failed
-    # `execvp` with the same exit 127 that a refused Landlock ruleset produces,
-    # so a scrubbed or unusual PATH that could not find the program would have
-    # read as "this kernel refused Landlock" and skipped every boundary test on
-    # a host that was perfectly capable of running them. The interpreter running
-    # this suite is the one program guaranteed to be here.
+    # An absolute program, never a PATH lookup: `setpriv` reports a failed
+    # `execvp` with the same exit 127 a refused Landlock ruleset produces, so
+    # a PATH lookup failure would misread as "this kernel refused Landlock".
     program = [str(Path(sys.executable).resolve()), "-I", "-S", "-c", ""]
 
     def _setpriv(*options: str) -> subprocess.CompletedProcess[str]:
@@ -64,11 +57,8 @@ def _linux_landlock_gap() -> str | None:
             check=False,
         )
 
-    # Exit 127 stays ambiguous on its own, so the ambiguity is removed by
-    # measurement rather than by reading the message: run the identical command
-    # without the Landlock request first. If that cannot exec either, nothing
-    # here is a statement about Landlock, and no gap is reported -- the tests
-    # then run and fail loudly, which is this module's default everywhere.
+    # Run the identical command without the Landlock request first: if that
+    # cannot exec either, nothing here is a statement about Landlock.
     if _setpriv().returncode != 0:
         return None
 

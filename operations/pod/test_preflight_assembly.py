@@ -1,10 +1,9 @@
 """What a preflight receipt is allowed to say about the assembly it measured.
 
-`PreflightReport.assembly_proven` used to be the constant `False`, and every
-receipt carried the note "fixture-only result; no real chair or GPU assembly is
-proven".  On the fixture path that is exactly right.  On a rented card it is a
-false record of a paid measurement: the receipt disowns the one measurement the
-pod was rented to make.  Principle 8 binds understatement as much as
+A fixture-only run legitimately carries the note "fixture-only result; no real
+chair or GPU assembly is proven". On a rented card that same note would be a
+false record of a paid measurement: the receipt disowns the one measurement
+the pod was rented to make. Principle 8 binds understatement as much as
 overstatement -- claims are made only about what was actually measured, and
 "nothing was measured" is itself a claim.
 
@@ -219,7 +218,7 @@ def synthetic_profile() -> GpuProfile:
 
 
 def two_identical_cards(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    """Two visible, identical cards -- the case `splitlines()[0]` used to hide."""
+    """Two visible, identical cards."""
 
     if len(argv) == 1:
         return subprocess.CompletedProcess(argv, 0, "CUDA Version: 13.0\n", "")
@@ -245,9 +244,8 @@ def blank_nvidia_smi(argv: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def test_the_probe_measures_every_visible_card_not_only_the_first() -> None:
-    """F064: `nvidia-smi` prints one line per visible GPU; the old code took
-    `splitlines()[0]`, so a two-card machine silently reported a one-card
-    profile. `gpu_count` now carries how many the probe actually saw.
+    """`nvidia-smi` prints one line per visible GPU; `gpu_count` carries how
+    many the probe actually saw, not just the first.
     """
 
     probe = SystemGpuProbe(disk_path="/", runner=two_identical_cards, disk_usage=lambda _p: Disk())
@@ -273,9 +271,7 @@ def test_the_probe_refuses_non_identical_visible_cards() -> None:
 
 
 def test_the_probe_refuses_empty_nvidia_smi_output_by_name() -> None:
-    """Blank stdout used to reach `splitlines()[0]` and raise a bare
-    `IndexError`; it is now a named refusal in `discovery_detail`.
-    """
+    """Blank stdout is a named refusal in `discovery_detail`, not a bare `IndexError`."""
 
     probe = SystemGpuProbe(disk_path="/", runner=blank_nvidia_smi, disk_usage=lambda _p: Disk())
     profile = probe.profile("bfloat16")
@@ -285,8 +281,8 @@ def test_the_probe_refuses_empty_nvidia_smi_output_by_name() -> None:
 
 
 def test_the_probe_checks_the_measured_count_against_the_requested_count() -> None:
-    """Tied to the create request's `gpuCount` (F064's own proposed fix), not
-    left as two numbers that can silently disagree.
+    """Tied to the create request's `gpuCount`, not left as two numbers that
+    can silently disagree.
     """
 
     probe = SystemGpuProbe(disk_path="/", runner=two_identical_cards, disk_usage=lambda _p: Disk())

@@ -137,9 +137,9 @@ def artifact_finding(finding: dict) -> dict:
     recorded = dict(finding)
     recorded.pop("background", None)
     # Defaulted rather than indexed: a measure that stops emitting the key at
-    # all is a worse contract break than one emitting a string, and it was the
-    # one getting the worse report -- a bare KeyError where the string got a
-    # named refusal. Both arrive here as the same statement now.
+    # all is a worse contract break than one emitting a string, so both cases
+    # arrive here as the same named refusal below rather than one raising a
+    # bare KeyError.
     fraction = recorded.pop("fraction_outside", None)
     if not isinstance(fraction, float):
         raise FatalAccounting(
@@ -162,7 +162,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # maps every sealed page the same way either way -- so nothing else here
     # would catch that gap. Re-parse for the refusal effect alone: a run whose
     # ingress evidence is not a closed fixture-or-real record must still stop
-    # here, as it did before both routes shared one constructor.
+    # here.
     parse_ingress_record(context.run.get("ingress"))
     # The same file the Designator loads and the same digest the run sealed at
     # binding time. Read once for the whole run: the policy is per-page only in
@@ -178,15 +178,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     for ordinal, page, page_path in sealed_pages(context):
         image_bytes = measured_page_bytes(context.tree, ordinal, page)
         try:
-            # One decode for all three measures; it used to be one per measure.
-            # `measured_page_bytes` proves these bytes match the digest the
-            # Exemplar sealed; it proves nothing about whether this module's own
-            # independent decoder can read them. An uncaught decoder ValueError
-            # here would escape `run_stage`'s refusal handling as a bare
-            # traceback, with `seal_boundary`/`finish` never reached and earlier
-            # pages already published -- principle 2's silent loss with extra
-            # steps. Named and stopped instead, like every other census failure
-            # this stage refuses.
+            # One decode feeds all three measures below. `measured_page_bytes`
+            # proves these bytes match the digest the Exemplar sealed, not that
+            # this module's own decoder can read them; an uncaught ValueError
+            # here would escape as a bare traceback with earlier pages already
+            # published and no boundary sealed. Named and stopped instead, like
+            # every other census failure this stage refuses.
             width, height, rows = grayscale_rows(image_bytes)
         except ValueError as error:
             raise FatalAccounting(

@@ -1,13 +1,10 @@
-"""Regression coverage for the real HTTP transport, against a real socket.
+"""Coverage for the real HTTP transport, against a real socket.
 
 ``operations/serving/test_manager.py`` exercises every manager behavior
-against ``HttpTransport`` fakes; nothing in this package previously drove
-``UrllibHttpTransport`` itself against an actual listener.  Two real bugs
-lived in that gap: the stdlib opener followed a redirect Location header to
-any host with no same-origin check, and a response body was buffered whole
-into memory with no size bound.  These tests pin both repairs against a real
-local server, plus the loopback-absence classification the sequential lease
-release depends on.
+against ``HttpTransport`` fakes; this drives ``UrllibHttpTransport`` itself
+against an actual listener: no redirect is followed to another host, a
+response body is bounded rather than buffered whole into memory, plus the
+loopback-absence classification the sequential lease release depends on.
 """
 
 from __future__ import annotations
@@ -282,12 +279,10 @@ def test_a_broken_body_is_one_transport_refusal_whatever_the_status_was(
 ) -> None:
     """The status line must not decide which exception class a broken body becomes.
 
-    The 4xx/5xx body used to be read inside a sibling `except urllib.error.HTTPError`
-    clause, where nothing that failed *inside* it could reach the transport clause
-    beside it.  The same truncated body therefore left here as `EndpointUnavailable`
-    at 200 and as a bare `http.client.IncompleteRead` at 503 — and the readiness
-    poll retries the first while the second aborts a start that was one interval
-    from succeeding.
+    The same truncated body must raise `EndpointUnavailable` whether the
+    status is 200 or 503, since a readiness poll retries the former but a
+    different exception class there would abort a start one interval from
+    succeeding.
     """
 
     tail, partial = _BROKEN_BODIES[shape]

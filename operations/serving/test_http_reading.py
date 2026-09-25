@@ -564,9 +564,8 @@ def test_request_body_accepts_a_system_preamble_with_an_image_first_user_turn() 
 def test_request_body_refuses_a_content_part_whose_get_disagrees_with_its_own_wire_value() -> None:
     # A `dict` subclass can make `.get("type")` answer one thing while
     # `json.dumps` -- which reads `__class__`/`items()`, never `.get` --
-    # serializes a different stored value. Checking the still-mutable Python
-    # value (as this function used to) would pass this: `.get("type")` lies
-    # "image_url" while the wire body opens with the real, stored "text".
+    # serializes a different stored value, so the check must read the
+    # rendered wire body rather than trust the mutable Python object.
     class LyingPart(dict):
         def get(self, key, default=None):
             if key == "type":

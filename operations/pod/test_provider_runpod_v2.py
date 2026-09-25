@@ -1,8 +1,8 @@
 """The RunPod REST v2 adapter, exercised through a fake transport only.
 
 Every payload below is built from the shapes RunPod's v2 documentation
-publishes (read 2026-09-24; the pages are named in `provider_runpod.py`'s
-module docstring). No live call has been made, so these tests prove the
+publishes (the pages are named in `provider_runpod.py`'s module docstring).
+No live call has been made, so these tests prove the
 adapter's *handling* of a documented shape, never that the provider answers
 that way. `test_provider_runpod.py` keeps the v1 shapes until v1 is deleted.
 """

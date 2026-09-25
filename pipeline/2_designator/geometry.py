@@ -1,35 +1,23 @@
 """Geometry: padding, coordinate-space conversion, and transform digests.
 
-All bounds a stage program stores are in one space only: full-resolution page
-pixels. A structure-pass model may still want its own downscaled input, and
-that downscaled space is real -- but it is a conversion at the model's edge,
-performed once, recorded, and never itself stored as though it were page
-geometry. The old pipeline's own audit trail names the opposite -- a
-downscaled bounding box used raw against the full-resolution page -- as a
-real, historically observed defect class ("narrow left-margin crops"), and
-names the fix that held: record both axes' scale factors and refuse an
-anisotropic result rather than trust a single ratio silently. `verify_isotropic`
-below is that same discipline, kept as a hard refusal rather than a warning.
+All stored bounds are full-resolution page pixels; a structure-pass model's
+own downscaled space is only a conversion at the model's edge, done once and
+recorded, never stored as page geometry. `to_model_space`/`from_model_space`
+round outward on both axes so a rectangle can only grow across the round trip,
+never clip a signature; `verify_isotropic` hard-refuses a rescale whose two
+axes disagree beyond rounding noise (a squished image used anyway). None of
+the three is called by this walking skeleton today -- they exist,
+property-tested, for the model that will need its own input size.
 
-Nothing in this build calls `to_model_space`, `from_model_space`, or
-`verify_isotropic` -- no run of this walking skeleton rescales anything, so no
-run exercises this check in practice. They exist, property-tested, for the day
-a real structure-pass model needs its own downscaled input; nothing here is an
-armed guard against today's runs.
-
-Two padding roles exist and must never be conflated. *Structural* bounds are
-what grouping decided a region's own rectangle is, and an act's identity is
-bound to them (`common/contracts/identities.py::act_bindings`) -- recropping
-must never move them. *Capture* bounds are what is actually cut and shown to
-a witness: the structural rectangle expanded by configured padding, generous
-on purpose so a signature extending past the body is not clipped. This module
-computes capture bounds from structural bounds; it never mutates the latter.
+Two padding roles must never be conflated: *structural* bounds are a region's
+identity-bound rectangle (never moved by recropping); *capture* bounds are
+that rectangle expanded by configured padding for what a witness actually
+sees. This module derives capture bounds from structural bounds and never
+mutates the latter.
 
 Every fraction here is an integer count of basis points (1/10000), never a
-float: `common/contracts/canonical.py` refuses a float anywhere a payload is
-canonicalized, and a padding fraction is exactly the kind of value that would
-otherwise cross that boundary silently the first time someone read a percent
-sign as a Python float literal.
+float, because `common/contracts/canonical.py` refuses a float anywhere a
+payload is canonicalized.
 """
 
 import tomllib
@@ -45,28 +33,19 @@ DEFAULT_PADDING_CONFIG_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "designator_padding.toml"
 )
 
-# 1 basis point = 1/10000. Chosen over percent-as-integer (1/100) because a
-# percentile-of-shortfall calibration (see `padding_calibration.py`) can land
-# on a fractional percent, and basis points hold that precision as an exact
-# integer rather than rounding it away at the unit's own boundary.
+# 1 basis point = 1/10000, chosen over percent-as-integer (1/100) because a
+# percentile-of-shortfall calibration can land on a fractional percent.
 BP_DENOMINATOR: Final = 10_000
 
-# How far two independently-computed axis scale factors may differ, in basis
-# points of the larger, before a rescale is refused as anisotropic rather than
-# accepted. Zero would refuse any integer-rounding noise at all; this allows
-# exactly the rounding a rational scale over small integer dimensions produces
-# and nothing structural.
+# Basis points of the larger axis scale factor allowed before a rescale is
+# refused as anisotropic; covers integer-rounding noise only, nothing structural.
 _DEFAULT_ANISOTROPY_TOLERANCE_BP: Final = 50
 
 _PADDING_FIELDS: Final = ("top_bp", "bottom_bp", "left_bp", "right_bp")
 
-# Every field a padding config's `[padding.provenance]` table must carry, and
-# the only fields it may carry -- a closed schema, not a convention, because a
-# config that can silently omit provenance is what lets a number carried from
-# somewhere else travel forward as though this project had validated it.
-# `caveat` is free text for a human reader; every other field is read by
-# `load_padding_config` and is expected to answer a specific question rather
-# than restate the caveat in other words.
+# Closed schema for a padding config's [padding.provenance] table: a config
+# that can silently omit provenance lets an unvalidated number pass as this
+# project's own. `caveat` is free text; the rest answer a specific question.
 _PROVENANCE_FIELDS: Final = (
     "source",
     "corpus",
@@ -86,13 +65,7 @@ class Bounds(TypedDict):
 
 
 def _is_plain_int(value: Any) -> bool:
-    """An `int` that is not a `bool`.
-
-    `bool` is an `int` subclass, so an unqualified `isinstance` check reads
-    `True` as the coordinate `1`. A hand-edited `h = true` in a fixture would
-    otherwise cut a one-pixel-tall crop and publish it as an act's evidence
-    without a single refusal anywhere.
-    """
+    """An `int` that is not a `bool` (`bool` is an `int` subclass in Python)."""
     return isinstance(value, int) and not isinstance(value, bool)
 
 
@@ -115,16 +88,10 @@ def _validate_dimensions(width: Any, height: Any, what: str) -> None:
 def load_padding_config(path: str | Path = DEFAULT_PADDING_CONFIG_PATH) -> dict[str, Any]:
     """Read the padding policy, with the digest that binds it to a run.
 
-    Refused loudly rather than defaulted: a padding fraction silently taken as
-    zero would cut a crop nobody configured and no provenance would say so.
-
-    A `[padding.provenance]` table is required, not optional. A padding value
-    with no declared source is refused here rather than shipped with an implied
-    claim nobody checked — "calibrated against gold annotations" is the kind of
-    phrase that reads as validation while naming neither the corpus nor the
-    statistic. `cut_region` copies this block onto every proposal region, so a
-    reviewer sees it on the evidence itself rather than only in a repository
-    file they may never open.
+    Missing or malformed fields are refused loudly rather than defaulted, and a
+    `[padding.provenance]` table is required: `cut_region` copies it onto every
+    proposal region, so a reviewer sees the padding's source on the evidence
+    itself rather than only in a repository file they may never open.
     """
     path = Path(path)
     try:
@@ -166,10 +133,9 @@ def load_padding_config(path: str | Path = DEFAULT_PADDING_CONFIG_PATH) -> dict[
 def _load_padding_provenance(provenance: Any) -> dict[str, Any]:
     """Validate a padding config's declared provenance against its closed schema.
 
-    Every field is required and every field is checked for shape, because a
-    provenance block that is present but says nothing (an empty string, a
-    zero sample count with no caveat explaining why) would satisfy "the table
-    exists" while failing the actual point of requiring one.
+    Every field is required and checked for shape, so a table that is present
+    but says nothing (an empty string, an unexplained zero sample count) still
+    fails validation.
     """
     if not isinstance(provenance, dict):
         raise ContractError(
@@ -211,16 +177,9 @@ def _load_padding_provenance(provenance: Any) -> dict[str, Any]:
 def _pad_amount(dimension: int, bp: int) -> int:
     """Round-half-up pixel amount for a basis-point fraction of one dimension.
 
-    Round-half-up, not banker's rounding or truncation, so the amount actually
-    applied is deterministic and independent of Python's float rounding rules
-    -- this is pure integer arithmetic and never touches a float at all.
-
-    Delegated to `common.background.round_half_up_bp`: the
-    background band this rule also resolves is not this stage's alone --
-    the Ink Map and the Recensor also resolve a page's band through the shared
-    inference, and two copies of a rounding rule are two rules the day one of
-    them is edited. `BP_DENOMINATOR` and `common.background.BASIS_POINTS` are
-    the same 10,000 and `test_geometry.py` pins them equal.
+    Delegates to `common.background.round_half_up_bp`, shared with the Ink Map
+    and the Recensor so the rounding rule isn't duplicated three times;
+    `test_geometry.py` pins `BP_DENOMINATOR` equal to that module's `BASIS_POINTS`.
     """
     return round_half_up_bp(dimension, bp)
 
@@ -230,13 +189,10 @@ def apply_padding(
 ) -> dict[str, Any]:
     """Expand structural `bounds` into capture bounds, clamped to the page.
 
-    Padding is a fraction of the region's OWN width/height, not the page's --
-    a signature below a short entry needs less absolute margin than one below
-    a long one, and a page-fraction pad would either starve the short entry or
-    bloat the long one. Returns both the final bounds and the exact pixel
-    amount actually applied per edge, which is not always the nominal amount:
-    clamping at a page edge shaves it, and a caller that only recorded the
-    configured fraction would describe a crop bigger than the one it cut.
+    Padding is a fraction of the region's OWN width/height, not the page's, so
+    a short entry doesn't get the same absolute margin as a long one. Also
+    returns the exact pixel amount applied per edge, which page-edge clamping
+    can shave below the nominal configured fraction.
     """
     _validate_dimensions(page_w, page_h, "page")
     validate_bounds(bounds, page_w, page_h, "structural bounds")
@@ -277,20 +233,11 @@ def apply_padding(
 def to_model_space(bounds: Bounds, page_w: int, page_h: int, model_w: int, model_h: int) -> dict:
     """Downscale full-res `bounds` to a model's own input geometry, once.
 
-    The two axis scales are kept as exact integer ratios rather than floats,
-    so `from_model_space` inverts against the same arithmetic instead of
-    rounding a second time away from the first -- which is what "the exact
-    image shown to a model is reproducible from the Exemplar plus the recorded
-    transforms" (ARCHITECTURE invariant 3) requires of a transform that
-    includes a rescale.
-
-    **Low edges floor, far edges ceil**, the same one-sided rule
-    `from_model_space` uses coming back, so the model-space rectangle always
-    covers the image of the source rectangle rather than undercutting it. The
-    width is derived as `far - near` rather than scaled on its own: scaling a
-    width independently of its origin floors twice against the same edge, and
-    the two roundings compound into a rectangle that is genuinely short of the
-    ink it was supposed to enclose.
+    Axis scales are kept as exact integer ratios so `from_model_space` inverts
+    against the same arithmetic rather than rounding a second time. Low edges
+    floor and far edges ceil so the model-space rectangle always covers the
+    source rectangle; width is derived as `far - near`, not scaled on its own,
+    so the two roundings don't compound into an undersized box.
     """
     _validate_dimensions(page_w, page_h, "page")
     _validate_dimensions(model_w, model_h, "model-space target")
@@ -312,26 +259,10 @@ def from_model_space(
 ) -> Bounds:
     """Invert `to_model_space` using the exact ratio it recorded, rounding outward.
 
-    Refuses a scale that is not a positive integer ratio pair, and refuses a
-    result that falls outside the page it claims to belong to -- a rescale
-    computed against one page's dimensions and applied to another's is the
-    same class of silent corruption a mismatched digest catches for bytes.
-
-    **Low edges floor, far edges ceil**, so a rectangle that survives a round
-    trip through model space can only ever grow, never shrink. Rounding both
-    edges the same way loses up to a pixel on each far edge, and the direction
-    of that loss is the whole point: a shaved far edge is a clipped signature,
-    and goal 2 puts a missed act above a poorly read one. (The lane-B build of
-    this stage reached the same rule independently in `source_bounds_from_view`
-    and named it the same way: it "cannot round a source pixel out of the
-    emitted crop".)
-
-    A rescale recorded for a page of the wrong dimensions is refused above,
-    against `x_den`/`y_den` directly, before any arithmetic on `model_bounds`
-    runs: `validate_bounds(model_bounds, x_num, y_num, ...)` then guarantees
-    `model_bounds` sits inside the `x_num`x`y_num` space the scale itself
-    declares, so nothing computed from it can land outside the `page_w`x`page_h`
-    page once `x_den == page_w` and `y_den == page_h` are already known to hold.
+    Refuses a scale that isn't a positive integer ratio pair recorded for this
+    exact page, and refuses a result outside the page. Low edges floor and far
+    edges ceil, so a round trip through model space can only grow a rectangle,
+    never shave a far edge into a clipped signature.
     """
     _validate_dimensions(page_w, page_h, "page")
     if not isinstance(scale, dict):
@@ -373,13 +304,10 @@ def verify_isotropic(
 ) -> None:
     """Refuse a rescale whose two axes disagree beyond rounding noise.
 
-    A structure-pass model that is supposed to letterbox (preserve aspect
-    ratio) while resizing should produce equal x and y scale factors; one that
-    silently squished the image instead would not. This is the check the old
-    pipeline's margin-recovery tooling ran and warned was mandatory -- kept
-    here as a hard refusal rather than a value recorded for a human to notice
-    later, because a distorted geometry used anyway is exactly the "narrow
-    left-margin crops" defect class this module exists to close.
+    A model that letterboxes (preserves aspect ratio) while resizing should
+    produce equal x/y scale factors; one that silently squished the image
+    would not, and a distorted geometry used anyway is refused rather than
+    left for a human to notice later.
     """
     if not _is_plain_int(tolerance_bp) or tolerance_bp < 0:
         raise ContractError(
@@ -402,8 +330,7 @@ def verify_isotropic(
         axes[axis] = (numerator, denominator)
     x_num, x_den = axes["x"]
     y_num, y_den = axes["y"]
-    # Compare x_num/x_den to y_num/y_den without division: cross-multiply, then
-    # express the relative difference in basis points of the larger product.
+    # Cross-multiply to compare the two ratios without division.
     left = x_num * y_den
     right = y_num * x_den
     difference = abs(left - right)
@@ -422,9 +349,7 @@ def verify_isotropic(
 def transform_digest(transform: dict[str, Any]) -> str:
     """The stable content digest of one transform, independent of act binding.
 
-    `common/contracts/identities.py::region_id` already binds a region's
-    identity to `(act_id, transform)` as a whole; this is the same digest
-    taken alone, for a provenance field that names "this exact transform" on
-    its own rather than through the region identity that also carries the act.
+    Distinct from `region_id`, which binds `(act_id, transform)` together; this
+    names the transform alone for a provenance field.
     """
     return digest_of(transform)

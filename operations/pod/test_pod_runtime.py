@@ -2307,9 +2307,10 @@ def test_a_spend_gate_lock_another_process_holds_refuses_rather_than_waiting(
 ) -> None:
     """An unbounded wait on the money path is a defect, so the gate gives up by name.
 
-    A holder that never finishes -- a provider call hung inside another process's
-    spend gate -- used to leave this create blocked in ``flock`` forever, printing
-    nothing at all instead of a refusal an operator can act on.
+    A holder that never finishes -- a provider call hung inside another
+    process's spend gate -- must not leave this create blocked in ``flock``
+    forever with nothing printed; it must refuse by name so an operator has
+    something to act on.
     """
 
     clock = Clock()
@@ -2370,13 +2371,11 @@ def test_an_unreadable_lease_refuses_the_paid_gate_instead_of_raising(tmp_path: 
         leases.chmod(0o700)
 
     assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
-    # One arm, and it is the cause. This used to accept `"lease" in detail` as
-    # well, because a long tmp path truncated the phrase away at 160 characters
-    # -- but the word `lease` appears in almost every liability refusal this
-    # gate produces, so that arm passed even when the unreadable-lease cause had
-    # been replaced by an unrelated one. `_reserved_liability` names the cause
-    # before the path now, so the phrase survives truncation and can be asserted
-    # on its own.
+    # One arm, and it is the cause: the word `lease` appears in almost every
+    # liability refusal this gate produces, so asserting on it too would pass
+    # even when the unreadable-lease cause had been replaced by an unrelated
+    # one. `_reserved_liability` names the cause before the path, so the
+    # phrase survives truncation and can be asserted on its own.
     assert "could not be read" in result.detail
     assert not any(verb == "create" for verb, _ in provider.calls)
 
@@ -3496,11 +3495,9 @@ def test_report_path_binding_refuses_a_command_it_cannot_bind(tmp_path: Path) ->
 
 
 def test_report_path_binding_also_binds_a_nested_bootstrap_report_path() -> None:
-    """The regression this unit closes.
-
-    Before this fix, only the outer timer's own ``--report-path`` was bound;
-    a nested bootstrap argv's own ``--report-path`` -- carried as JSON inside
-    ``--bootstrap-command-json`` -- reached the pod unbound, and
+    """A nested bootstrap argv's own ``--report-path`` -- carried as JSON
+    inside ``--bootstrap-command-json`` -- must be bound too, not just the
+    outer timer's, or it reaches the pod unbound and
     ``bootstrap_main.resolve_plan`` refuses a report path missing the sealed
     launch token once ``VERBATUS_LAUNCH_TOKEN`` is in the pod's environment.
     """
@@ -3539,11 +3536,9 @@ def test_report_path_binding_also_binds_a_nested_bootstrap_report_path() -> None
 
 
 def test_report_path_binding_also_binds_a_nested_equals_form_report_path() -> None:
-    """The regression the equals-form audit closes.
-
-    ``_bind_nested_report_path`` used to recognize only the separate-value
-    spelling of ``--report-path``; an equals-form nested flag was returned
-    unbound, and the money-path validator then refused it by name for a
+    """``_bind_nested_report_path`` must recognise the equals-form spelling of
+    ``--report-path`` too, not just the separate-value one: an unbound
+    equals-form flag would be refused by the money-path validator for a
     launch token an operator cannot pre-write (it is minted inside
     ``create``), making that request shape permanently unlaunchable. This
     proves both the bind and the seal succeed for the equals form.
@@ -3580,8 +3575,7 @@ def test_report_path_binding_also_binds_a_nested_equals_form_report_path() -> No
         f"--report-path=/workspace/private/bootstrap-hold-only-report-{token}.json"
     )
 
-    # And the bound request seals successfully -- the shape that used to be
-    # refused for an unwritable launch token now validates.
+    # And the bound request seals successfully.
     clock = Clock()
     sealed = replace(
         request(clock),
@@ -4376,7 +4370,7 @@ def test_pod_timer_requires_bootstrap_and_persists_a_red_bootstrap_close_report(
 def test_a_pre_delete_breadcrumb_says_a_close_was_attempted_from_inside_the_pod(
     tmp_path: Path,
 ) -> None:
-    """F061: a truncated pod-side report reads like a timer that never tried.
+    """A truncated pod-side report reads like a timer that never tried.
 
     Every step of the close runs inside the container the DELETE destroys, so
     the durable artefact is usually the *pre*-close report -- bootstrap
@@ -4849,13 +4843,12 @@ def test_a_duplicated_nested_report_path_is_refused() -> None:
 def test_a_pod_run_shaped_nested_argv_is_accepted() -> None:
     """The Boot B shape: two nested halves, one ``--report-path`` each.
 
-    ``pod_run`` splits its argv at the first literal ``--`` and hands the second
-    half to ``bootstrap_main``; each parser requires its own ``--report-path``,
-    and ``pod_run.resolve_run_plan`` requires the two to be different files. The
-    nested check used to count both halves together, so *every* request that
-    could run the pipeline was refused here -- before any preview, lease or
-    provider call -- and no test composed one, which is why the suite was green
-    over it.
+    ``pod_run`` splits its argv at the first literal ``--`` and hands the
+    second half to ``bootstrap_main``; each parser requires its own
+    ``--report-path``, and ``pod_run.resolve_run_plan`` requires the two to
+    be different files. The nested check must count the two halves
+    separately, or *every* request that could run the pipeline is refused
+    here, before any preview, lease or provider call.
     """
 
     clock = Clock()
@@ -5353,10 +5346,11 @@ def test_a_journal_from_before_the_configuration_step_is_refused_as_an_old_schem
 ) -> None:
     """A journal is not blamed for a change this code made to the step list.
 
-    Inserting ``CONFIGURATION`` before ``UV_ENVIRONMENT`` changed the valid
-    completion prefix. Under the old schema name a perfectly honest v2 journal was rejected
-    as "duplicated, reordered, or skips a step", which reads as tampering. The
-    schema bump makes it what it is: a journal this code no longer understands,
+    A v2 journal's valid completion prefix does not include ``CONFIGURATION``,
+    which now runs before ``UV_ENVIRONMENT``. Reading it under the current
+    schema name would reject a perfectly honest old journal as "duplicated,
+    reordered, or skips a step", which reads as tampering. The schema name
+    makes it what it is instead: a journal this code no longer understands,
     to be preserved and replaced.
     """
 
@@ -6492,7 +6486,7 @@ def test_system_gpu_probe_preserves_a_disk_measurement_error_when_the_gpu_is_fin
 
 
 def test_a_red_report_carries_what_happened_not_only_what_to_do_next() -> None:
-    """Spec 04 asks a red preflight for "what happened, what to do next"."""
+    """A red preflight must say "what happened" as well as "what to do next"."""
 
     report = _preflight(FakeCache(), FakeSmoke()).run(
         GpuProfile(
@@ -6634,14 +6628,14 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
 def test_a_reworded_refusal_reason_cannot_reclassify_a_money_safety_refusal() -> None:
     """The operator-facing state is decided by recorded cause, not by prose.
 
-    `hard_floor_triggered` and `balance_unobservable_triggered` used to match the
-    text of `reasons`, and `_spend_refusal_state` turns them into the state an
-    operator reads. Reflowing any of those strings -- a typo fix, a rewrap --
-    made both properties False and reported a balance-reserve refusal as a price
-    ceiling, sending the operator to inspect a price sheet with nothing wrong in
-    it. No prose assertion could catch that, because the assertions read the same
-    prose. So the reasons are rewritten here to nonsense and the classification
-    must be unchanged.
+    `_spend_refusal_state` turns `hard_floor_triggered` and
+    `balance_unobservable_triggered` into the state an operator reads. If
+    those flags instead matched the text of `reasons`, reflowing any of those
+    strings -- a typo fix, a rewrap -- would make both properties False and
+    report a balance-reserve refusal as a price ceiling, sending the operator
+    to inspect a price sheet with nothing wrong in it, undetected by any
+    prose assertion since the assertions read the same prose. So the reasons
+    are rewritten here to nonsense and the classification must be unchanged.
     """
 
     from .models import PodEstimate
@@ -8165,11 +8159,10 @@ def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
 def test_a_raising_notify_hook_still_prints_the_record_on_a_green_create(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The mutation the suite used to miss: `notify_hooks` promises never to
-
-    raise, but nothing enforced that promise at this call site. A raising
-    hook must not take the post-action record -- naming the pod and lease --
-    down with it (principle 2), and a green create must still exit 0.
+    """`notify_hooks` promises never to raise, but this call site must not
+    trust that promise on its own: a raising hook must not take the
+    post-action record -- naming the pod and lease -- down with it
+    (principle 2), and a green create must still exit 0.
     """
 
     clock = Clock()
@@ -8441,9 +8434,9 @@ class BlockingProvider:
 def test_a_close_whose_provider_hangs_returns_a_named_failure_inside_its_budget() -> None:
     """The controller's deadline must bind the verbs, not only the gaps between them.
 
-    `close` used to reach its deadline check only after a terminate and two
-    absence observations had all returned, so one blocked provider call
-    postponed the retry, the failed-close report and every other piece of
+    A deadline check reached only after a terminate and two absence
+    observations have all returned would let one blocked provider call
+    postpone the retry, the failed-close report and every other piece of
     cleanup indefinitely — while the pod carried on billing. Real clocks here
     deliberately: a fake one cannot observe a bound whose whole subject is
     elapsed time.

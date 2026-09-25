@@ -119,7 +119,7 @@ DEFAULT_DATA_GATE_POLICY_PATH = ROOT / "config" / "data_handling_policy.json"
 # `test_orchestrator_upload_credentials_are_the_transfers_own` reconciles this
 # copy with it. A credential added to one list alone would otherwise leave this
 # route carrying it into a stage that decodes caller-supplied material. Kept
-# even though `stage_environment` no longer loops over it directly (below): the
+# although `stage_environment` does not loop over it directly (below): the
 # reconciliation test still pins this exact set against the transfer's own.
 _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
 # The wall clock a timing receipt is stamped with, and the monotonic one its
@@ -131,16 +131,14 @@ STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v1"
 # Duplicated from `operations.operator.custody.PROVIDER_ENV_PREFIXES` and
 # `operations.pod.models.looks_like_credential_field`'s marker scan, for the
 # identical reason and closed the identical way (reconciled by the same test
-# named above, widened to cover this). `stage_environment` used to pop only
-# the two names above -- the transfer verb's own upload-only S3 keys -- and
-# pass every *other* provider credential (RUNPOD_API_KEY: pod creation, i.e.
-# money; HF_TOKEN; AWS_*; ...) straight into a subprocess that decodes
-# attacker-supplied PDFs, TIFFs, HEICs and PNGs and talks to the serving
-# endpoint. That subprocess is at least as hostile a boundary as the operator's
-# confined console/backup/advance/ScanTailor children, which already run under
-# `operations.operator.custody.credential_free_environment` -- this is that
-# same predicate, held to it by the widened test rather than imported, because
-# this module imports only `common/`.
+# named above, widened to cover this). These names withhold every other
+# provider credential (RUNPOD_API_KEY: pod creation, i.e. money; HF_TOKEN;
+# AWS_*; ...) from a subprocess that decodes attacker-supplied PDFs, TIFFs,
+# HEICs and PNGs and talks to the serving endpoint -- at least as hostile a
+# boundary as `operations.operator.custody.credential_free_environment`
+# already confines the operator's console/backup/advance/ScanTailor children
+# to. This is that same predicate, held to it by the widened test rather than
+# imported, because this module imports only `common/`.
 _PROVIDER_ENV_PREFIXES = ("RUNPOD_", "AWS_", "HF_", "HUGGINGFACE_")
 _CREDENTIAL_NAME_MARKERS = ("key", "secret", "password", "credential", "bearer", "token")
 
@@ -355,12 +353,10 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # environment, so only the upload-only verb can ever see them.
     started = _clock()
     started_at = _stamp()
-    # Bound before the call, not inside it: the `finally` below reads this, and
-    # an interruption that is not an `OSError` -- a `KeyboardInterrupt` while a
-    # stage runs is the ordinary one -- used to leave the name unbound and
-    # replace the interruption with an `UnboundLocalError` from the stopwatch
-    # A stage that could not start is timed with no
-    # exit code, which is the same record the OSError path produced.
+    # Bound before the call, not inside it, so `finally` can read it even when
+    # an interruption that is not an `OSError` (a `KeyboardInterrupt` mid-stage)
+    # leaves it unset. A stage that could not start is then timed with no exit
+    # code, the same record the OSError path produces.
     exit_code: int | None = None
     try:
         completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
@@ -484,13 +480,13 @@ def _record_stage_timing(
         existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
         entries: list = []
         if isinstance(existing, dict):
-            # Whose journal this is, before its entries are carried forward. Two
-            # runs pointed at one path used to keep the first run's entries and
-            # replace the identity above them, so the file then attributed one
-            # run's stage timings to another. A journal
-            # that names a different run, root or schema is left exactly as it
-            # is and the conflict is reported; the stopwatch never edits a
-            # record it cannot account for.
+            # Whose journal this is, checked before its entries are carried
+            # forward: a journal naming a different run, root or schema is left
+            # exactly as it is and the conflict is reported, so two runs
+            # pointed at one path can never attribute one run's stage timings
+            # to the other. This guard only covers a dict journal with a list
+            # `entries`; a non-dict journal is overwritten above and a
+            # non-list `entries` is dropped below.
             identity = (
                 existing.get("schema"),
                 existing.get("run_id"),
@@ -633,9 +629,9 @@ def main() -> int:
     # The roster's other half. `--models-config` selects which chairs exist and
     # this selects the vLLM profile each one is served under; both are sealed
     # into `config_digest`, so a run that forwarded one and not the other would
-    # let the real roster resolve against the fixture-only catalogue. Unit 17
-    # added the flag to `stage_parser` alone, which made the real catalogue
-    # unreachable through the only program that invokes the stages.
+    # let the real roster resolve against the fixture-only catalogue -- the flag
+    # must live here, on the only program that invokes the stages, not on
+    # `stage_parser` alone.
     parser.add_argument(
         "--serving-recipes-config",
         default=str(DEFAULT_SERVING_RECIPES_CONFIG_PATH),
@@ -786,19 +782,16 @@ def main() -> int:
 
     require_coherent_ingress_options(args)
     resolve_caller_paths(args)
-    # Both argv facts the journal rests on, proved here rather than at the
-    # first entry that happens to need them.
-    #
-    # `repository_commit` refuses a short or decorated revision, and it used to
-    # be reached only from `_record_stage_timing` -- so a manual or semi run
-    # that started past the Door, or any run with no journal configured, could
-    # carry a malformed value through every stage it selected and record it
-    # nowhere.
+    # Both argv facts the journal rests on, proved here rather than lazily from
+    # `_record_stage_timing`: otherwise a manual or semi run that started past
+    # the Door, or any run with no journal configured, could carry a malformed
+    # revision through every stage it selected and record it nowhere.
+    # `repository_commit` refuses a short or decorated revision.
     repository_commit(args)
     # And the journal is outside the run tree, as its own help text says. A
     # journal at `<run-root>/<run-id>/timings.json` would add mutable,
     # untracked bytes to an immutable tree once per stage invocation and change
-    # its byte identity; nothing refused it before.
+    # its byte identity.
     journal = getattr(args, "stage_timing_journal", None)
     if journal is not None:
         journal_path = Path(journal).resolve()
@@ -1137,9 +1130,9 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     # policy it dispatches under against the digests the run authority recorded for
     # itself. Without this, the dispatcher bounded the whole recovery loop — the
     # round ceiling and every request it checked — on whatever `config/recovery.toml`
-    # said at this moment, which need not be what the run sealed (audit S3 names
-    # this the third point of use). Checked before the first round, so a swapped
-    # policy stops the loop rather than being discovered by the stage it dispatched.
+    # said at this moment, which need not be what the run sealed. Checked before
+    # the first round, so a swapped policy stops the loop rather than being
+    # discovered by the stage it dispatched.
     require_sealed_config(
         run_sealed_config_digests(run), "recovery", recovery_policy["config_sha256"]
     )

@@ -846,9 +846,9 @@ def test_a_fixture_recorder_that_cannot_be_opened_does_not_stop_the_close(
 
     The provider here *can* record its exchanges, so the earlier refusal path
     is not the one under test: the recorder itself cannot be opened, because
-    the path it was given has a regular file where a directory belongs. That
-    used to raise out of `main` before `_close_command` was ever called --
-    a live pod traded for an evidence file.
+    the path it was given has a regular file where a directory belongs. This
+    must not raise out of `main` before `_close_command` is ever called -- a
+    live pod must not be traded for an evidence file.
     """
 
     drill = live_drill(build_drill)

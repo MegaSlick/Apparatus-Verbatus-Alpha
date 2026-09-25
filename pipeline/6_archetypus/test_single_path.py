@@ -675,12 +675,12 @@ def test_a_region_carrying_an_extra_field_cannot_enter_the_record(tmp_path):
     """The closed field set has to reach inside `regions`, or it answers nothing.
 
     A region is embedded from the reading verbatim, self-hashed into the record,
-    and copied field-for-field into the terminal export. So the record's own
-    top-level closed schema — advertised as the mechanical answer to "is there a
-    second text-bearing field?" — used to say nothing about the one sub-object it
-    embeds whole. `consolidated_literal` is the first name in the old pipeline's
-    dead fallback chain, and it travelled: into the sealed record, past the
-    Armarium, into the delivered export beside the established text.
+    and copied field-for-field into the terminal export. The record's own
+    top-level closed schema is the mechanical answer to "is there a second
+    text-bearing field?", but that answer is worthless if it says nothing
+    about the one sub-object the record embeds whole: a smuggled field there
+    would still travel into the sealed record, past the Armarium, into the
+    delivered export beside the established text.
     """
 
     def smuggle(payload):
@@ -709,12 +709,12 @@ def test_a_region_missing_one_of_its_crop_facts_cannot_enter_the_record(tmp_path
 
 
 def test_a_region_declaring_a_digest_its_crop_does_not_have_cannot_establish(tmp_path):
-    """The one stage that makes the record immutable used to check neither side.
+    """The one stage that makes the record immutable must check both sides too.
 
     The Recensor checks a declared crop digest against the Designator's own
-    region record; the Armarium checks it against the crop bytes at export. In
-    between, this stage sealed whatever the reading declared — so a record could
-    be written, write-once, naming ink it does not point at, and the run could
+    region record; the Armarium checks it against the crop bytes at export.
+    Sealing whatever the reading declares in between would let a record be
+    written, write-once, naming ink it does not point at, and the run could
     then only be abandoned rather than repaired.
     """
 
@@ -775,25 +775,13 @@ def test_one_testimonium_cannot_be_repeated_to_make_the_basis_look_larger(tmp_pa
 
 
 def test_two_groups_naming_one_crop_path_collapse_to_a_single_input():
-    """`3618414` claimed removing this deduplication fails a test. It did not.
-
-    That commit's closing line said "every simplification above was
-    mutation-checked afterwards: deleting the read-back delegation, the
-    readable-span rule, the deduplication, or the witness-roster branch each
-    fails a test." Measured on 2026-08-11 by replacing `_direct_inputs`'s
-    dedup-by-path with a plain concatenation: `pytest pipeline/6_archetypus
-    pipeline/orchestrator` stayed **entirely green**. The claim was false and the
-    guard did not exist.
-
-    What it guards is narrower than first claimed, and the function's own
-    docstring says so: `_crop_references` already refuses two *regions* naming
-    one crop path before this function runs, so the identical-pixels recovery
-    crop aborts the stage either way and the dedup cannot rescue it. What the
-    collapse actually covers is the cross-group case -- a review or Perlectio
-    reference coinciding with a crop path -- which the run tree's layout makes
-    structurally impossible today. The dedup is the cheap defensive form of
-    that layout guarantee, and this test pins the collapse plus the
-    no-distinct-input-dropped half so the defence cannot rot unnoticed.
+    """`_direct_inputs`'s dedup-by-path guards the cross-group case -- a review
+    or Perlectio reference coinciding with a crop path -- which the run tree's
+    layout makes structurally impossible today; `_crop_references` already
+    refuses two *regions* naming one crop path before this function runs. The
+    dedup is the cheap defensive form of that layout guarantee, and this test
+    pins the collapse plus the no-distinct-input-dropped half so the defence
+    cannot rot unnoticed.
     """
     import importlib.util
 

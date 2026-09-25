@@ -1,13 +1,14 @@
 """``python -m operations.pod.supervise`` -- the durable laptop supervisor driver.
 
-This is the tracked runtime for `controllers.LaptopSupervisor` that Stage 04's
-deferral 04-1 named missing: a process that restarts safely across a laptop
-crash, refuses to run twice over the same lease, and treats a provider
-lifecycle state other than ``RUNNING`` as a close condition even while its
-own heartbeat is perfectly fresh (a pod still provisioning or starting is
-waited for only while its launch is arming) -- the fix for 04-4's real harm, an
-``EXITED`` pod billing volume disk at double rate under a supervisor that
-never looked past presence.
+This is the tracked runtime for `controllers.LaptopSupervisor`: a process
+that restarts safely across a laptop crash, refuses to run twice over the
+same lease, and treats a provider lifecycle state other than ``RUNNING`` as
+a close condition even while its own heartbeat is perfectly fresh (a pod
+still provisioning or starting is waited for while its launch is arming and,
+once armed, for up to ``CONTAINER_START_TIMEOUT_SECONDS`` after the arming
+receipt and one further consecutive past-grace tick) -- guarding against an
+``EXITED`` pod billing volume disk at double rate under a supervisor that only
+checked presence.
 
 Restart safety rests on two durable files alongside the lease, under their
 own ``supervisors/`` subdirectory so the flat lease-directory listing other
@@ -469,8 +470,8 @@ def establish_identity(
     lease itself.
 
     ``pid_alive`` is accepted only for source compatibility with existing
-    callers and is not consulted -- it predates the lock and is not the fix
-    for the failure it once caused.
+    callers; the lock above is what decides ownership, and this parameter is
+    not consulted.
     """
 
     del pid_alive
@@ -834,13 +835,12 @@ def close_lease_now(
 ) -> tuple[SuperviseResult, int]:
     """Close one live lease on purpose, through the supervisor's own close path.
 
-    Until this existed a real pod could only be closed by the sealed hard
-    lifetime, by a supervisor tick that happened to observe a non-`RUNNING`
-    provider state, or by the provider's own console: `cli.py` had `create` and
-    `adopt` and nothing else, and the operator surface's `close` is
-    fixture-only. That is a gap on the one path that needs the project lead's
-    permission, and
-    the plan for the first live boots says so.
+    Without this, a real pod can only be closed by the sealed hard lifetime,
+    by a supervisor tick that happens to observe a non-`RUNNING` provider
+    state, or by the provider's own console -- `cli.py` otherwise has
+    `create` and `adopt` and nothing else, and the operator surface's
+    `close` is fixture-only. This is the deliberate close path on the one
+    action that needs the project lead's permission.
 
     Nothing here is a second close implementation. `_close_lease` -- the same
     function `supervise_tick` drives on an `EXITED` pod -- does the work, so
@@ -1098,7 +1098,7 @@ def run_supervisor(
         )
     # This run has now confirmed a durable, active lease exists: from here on
     # a lease that goes missing or unreadable is not "nothing happened" --
-    # the pod it was guarding may still be out there billing (finding 1).
+    # the pod it was guarding may still be out there billing.
     observed_active_lease = True
     # Named `ident`, not `identity`: the obvious `identity.owner_token` spelling
     # is 20 bytes -- long enough to read as a credential-shaped literal to the
@@ -1260,9 +1260,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # `SuperviseRefusal` above is the only exception this module expects.
         # Anything else -- a bad `--provider-factory` reference, a malformed
         # spend.toml, an OSError from a durable write, KeyboardInterrupt --
-        # must still leave a durable record: Stage 04.4 line 99 starts this
-        # process detached, which is precisely where a bare traceback on
-        # stderr goes unwatched. Mirrors `cli.py`'s own interrupt handling.
+        # must still leave a durable record: this process starts detached,
+        # which is precisely where a bare traceback on stderr goes unwatched.
+        # Mirrors `cli.py`'s own interrupt handling.
         detail = f"{type(error).__name__}: {error}"
         try:
             _write_final_record(

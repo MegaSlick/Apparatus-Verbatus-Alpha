@@ -72,7 +72,7 @@ ORCHESTRATOR_CLI = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
 # The sealed noise floor and fraction gate (`[coverage_audit.noise_floor]`), read
-# the way the stages read them: since 2026-09-14 neither is a module constant.
+# the way the stages read them rather than as a module constant.
 _NOISE_FLOOR = load_coverage_audit_config()["coverage_audit"]
 MINIMUM_INK_PIXELS = _NOISE_FLOOR["minimum_ink_pixels"]
 MINIMUM_FRACTION_OUTSIDE_BP = _NOISE_FLOOR["minimum_fraction_outside_bp"]
@@ -102,30 +102,29 @@ def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
             "total_ink_pixels": total,
             "outside_ink_pixels": outside,
             "edge_band_pixels": 64,
-            # The gate the page was measured under, recorded on the row since
-            # 2026-09-06 so this verifier can recompute the hold from the counts
-            # alone on a clean machine. 2,000 is the retired flat constant, kept
-            # as this helper's value because these rows are hand-built shapes
-            # rather than a measurement of any page.
+            # The gate the page was measured under, recorded on the row so this
+            # verifier can recompute the hold from the counts alone on a clean
+            # machine. 2,000 is a fixed value for this hand-built shape, not a
+            # measurement of any real page.
             "substantial_ink_pixels": 2_000,
-            # The noise floor and fraction gate, on the row since 2026-09-14 for
-            # the same reason, at the values the sealed file ships.
+            # The noise floor and fraction gate the row was measured under,
+            # at the values the sealed file ships.
             "minimum_ink_pixels": MINIMUM_INK_PIXELS,
             "minimum_fraction_outside_bp": MINIMUM_FRACTION_OUTSIDE_BP,
         },
     }
 
 
-# The reader's own doubt report, closed into the canonical uncertainty layer on
-# 2026-09-11 (independent audit of 2026-09-10, F2): the span layers alone cannot
-# say whether an empty list is "no doubt" or "no doubt was ever asked for". These
-# projections are hand-built shapes with no reader behind them, so the honest
-# state for every layer below is `not-assessed`, and the block's uncertainty
-# instrument declares itself unproduced over them for that reason.
-# The reader's own doubts, for the layers below that actually carry one. The
-# exhausted-cap projection is the only thing that mints a span without a reader
-# (and it mints spans, never gaps, always with no alternatives), so a layer
-# holding an alternative or a gap is a reader's report and its state says so.
+# The reader's own doubt report, closed into the canonical uncertainty layer
+# because the span layers alone cannot say whether an empty list is "no doubt"
+# or "no doubt was ever asked for". These projections are hand-built shapes
+# with no reader behind them, so the honest state for every layer below is
+# `not-assessed`, and the block's uncertainty instrument declares itself
+# unproduced over them for that reason. The layers below that actually carry a
+# doubt use `_ASSESSED` instead: the exhausted-cap projection is the only
+# thing that mints a span without a reader (and it mints spans, never gaps,
+# always with no alternatives), so a layer holding an alternative or a gap is
+# a reader's report and its state says so.
 _ASSESSED = {"state": "assessed", "problem": None}
 _NOT_ASSESSED = {
     "state": "not-assessed",
@@ -185,9 +184,8 @@ def _test_not_measured_basis(**overrides):
                     "calibrated_for_this_corpus": False,
                     "sample_count": 0,
                 },
-                # The truncation instrument's length floor: the survey's fourth
-                # sealed configuration since 2026-09-14, and the only one that
-                # is not Designator geometry (pre-launch review, F082/F088).
+                # The truncation instrument's length floor: the one sealed
+                # configuration in this survey that is not Designator geometry.
                 {
                     "configuration": "perlector-protocol",
                     "calibrated_for_this_corpus": False,
@@ -418,7 +416,7 @@ def _salvage_item(content: str) -> dict:
 
 
 def test_act_key_sort_key_is_reading_order_past_ten_pages_and_ten_blocks():
-    """F079: `proposal:<page>:<block>` sorts as a string by default, so once a
+    """`proposal:<page>:<block>` sorts as a string by default, so once a
     page passes ten blocks -- or a run passes ten pages -- lexicographic order
     reads block 10 before block 2 and page 10 before page 2. `act_key_sort_key`
     must restore (page, block) order for every key this pattern describes, and
@@ -1216,7 +1214,7 @@ def test_a_unicode_line_separator_in_a_reading_does_not_stop_the_whole_export(
 def test_compare_literal_projections_refuses_an_unhandled_literal_format(tmp_path, monkeypatch):
     """A fourth literal format with no comparison branch built for it here must
     refuse by name, not fall silently out of `projections` and out of the
-    identity check the branch above it exists to run (companion to F090).
+    identity check the branch above it exists to run.
     """
     import armarium_export
 
@@ -1426,8 +1424,8 @@ _PATHOLOGICALLY_NESTED_JSON = b"[" * 10_000 + b"9" * 4301 + b"]" * 10_000
 
 
 def test_a_deeply_nested_acts_jsonl_row_is_refused_by_name_not_a_recursion_error(tmp_path):
-    """G13: every Armarium JSONL reader widened its `except json.JSONDecodeError`
-    to `(UnicodeDecodeError, ValueError, RecursionError)`; this pins the
+    """Every Armarium JSONL reader widens `except json.JSONDecodeError` to
+    `(UnicodeDecodeError, ValueError, RecursionError)`; this pins the
     representative one (`_jsonl_act_records`) against a ~10k-deep row, the
     same failure `common/chandra_layout.py` and `structure_answer.py` guard.
     """
@@ -1442,7 +1440,7 @@ def test_a_huge_integer_in_an_acts_jsonl_row_is_refused_by_name(tmp_path):
 
     CPython's own integer-string-conversion limit (4,300 digits by default)
     turns the scanner's `int()` call into a bare `ValueError` -- not
-    `json.JSONDecodeError` -- once a literal crosses it (G13, "huge integer").
+    `json.JSONDecodeError` -- once a literal crosses it.
     """
     path = tmp_path / "acts.jsonl"
     path.write_bytes(b'{"extra":' + b"9" * 4301 + b"}")
@@ -1451,19 +1449,16 @@ def test_a_huge_integer_in_an_acts_jsonl_row_is_refused_by_name(tmp_path):
 
 
 def test_a_deeply_nested_retained_reference_is_refused_by_name_not_a_recursion_error():
-    """G13 (2026-09-14) widened every JSONL reader's parse-level exception
-    tuple, but `_verify_retained_references` walks the *already-parsed*
-    Python structure with its own separate recursion and was never given the
-    same guard -- so a row shallow enough to parse (e.g. under the ~10k-deep
-    JSON decoder limit pinned above) but with a deeply nested value inside a
-    field this walker actually recurses into (any dict/list/tuple value, not
-    only 'evidence') still reached callers as a bare `RecursionError` instead
-    of a named `SchemaRefusal`. Only one of this function's six call sites
-    (`_export_bundle`'s sources.json check) had its own inline guard; the
-    other five (acts JSONL, acts database, review-items JSONL, salvage-tier
-    JSONL, and act-citation evidence) did not. Testing the shared
-    `_verify_retained_references_bounded` wrapper directly, once, covers all
-    six -- they now all call it instead of the bare recursive function."""
+    """`_verify_retained_references` walks the *already-parsed* Python
+    structure with its own separate recursion, so a row shallow enough to
+    parse (e.g. under the ~10k-deep JSON decoder limit pinned above) but with
+    a deeply nested value inside a field this walker recurses into (any
+    dict/list/tuple value, not only 'evidence') must still be refused by name
+    rather than reaching callers as a bare `RecursionError`. Testing the
+    shared `_verify_retained_references_bounded` wrapper directly, once,
+    covers all six call sites that use it (acts JSONL, acts database,
+    review-items JSONL, salvage-tier JSONL, act-citation evidence, and
+    `_export_bundle`'s sources.json check)."""
     nested: object = "leaf"
     for _ in range(5000):
         nested = {"nested": nested}
@@ -3985,12 +3980,9 @@ def test_a_package_whose_basis_alone_calls_a_damaged_act_whole_is_refused(tmp_pa
 
 
 def test_a_sealed_transcription_annotation_is_never_replaced_by_the_semantic_claim(tmp_path):
-    """Sol-S4's second field failure, at the layer that wrote the replacement.
-
-    Every row used to carry `annotations: []` and `annotation_status:
-    "not-produced"` — a true statement about the unbuilt *semantic* layer, written
-    over an act whose Archetypus record had sealed a real `illegible` mark. Both
-    layers now travel under their own names and both are asserted here.
+    """The unbuilt *semantic* layer's own not-produced claim must never stand in
+    for the *transcription* layer's real marks: both travel under their own
+    names and both are asserted here.
     """
     literal = _projection().acts[0][CANONICAL_TEXT_FIELD]
     mark = {"kind": "illegible", "start": 3, "end": 3, "witness_evidence": []}
@@ -4910,15 +4902,12 @@ def test_the_visibility_survey_is_declared_unproduced_and_measured_when_it_runs(
 def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_asked():
     """Who was asked decides this instrument's status; the sealed cap is reported beside it.
 
-    Until the independent audit of 2026-09-10 (F2) the cap decided it alone: the
-    exhausted-cap projection was the only span the pipeline could mint, so an
-    empty list under any other cap was arithmetic rather than a reading's
-    confidence. The reader's own doubt report is now the measurement, and the
-    cap is one of the two ways a span reaches the layer. So the instrument is
-    produced exactly when every delivered reading was assessed for doubt: none
-    assessed is an instrument that never ran, whatever the cap says, and some
-    assessed is a partial measurement that may not be reported as a whole one
-    (principle 8).
+    The reader's own doubt report is the measurement, not the cap alone: the
+    cap is only one of the two ways a span reaches the layer. `declared-unproduced`
+    needs both zero assessed readings and zero uncertain spans -- an exhausted
+    cap that minted uncertain spans still counts as something measured, even
+    with no assessed reading, and some assessed is a partial measurement that
+    may not be reported as a whole one (principle 8).
     """
     silenced = _entry(_block(_projection()), "perlector-uncertain-spans")
     assert silenced["status"] == "declared-unproduced"
@@ -4959,7 +4948,7 @@ def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_aske
     # The live configuration under a sealed cap of 0: no reader was asked, and
     # the exhausted-cap projection minted real spans onto delivered acts anyway.
     # Something was measured, so the block may not call the instrument
-    # unproduced (principle 8; the independent review of 2026-09-11).
+    # unproduced (principle 8).
     assert (
         _not_measured_status(
             "perlector-uncertain-spans",
@@ -4978,10 +4967,9 @@ def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_aske
 def test_a_delivered_act_whose_doubt_report_was_broken_is_refused_not_counted():
     """`malformed` is a hold, so a delivered one is a broken tree, never a count.
 
-    `acts_not_assessed` used to be everything that was not assessed, by
-    subtraction, so an act whose reader's report could not be anchored would
-    have been counted as one whose reader had no doubt channel -- two different
-    facts under one number.
+    `acts_not_assessed` must not count an act whose reader's report could not
+    be anchored the same way as one whose reader simply had no doubt channel
+    -- two different facts, never folded into one number by subtraction.
     """
     original = _projection()
     broken = {

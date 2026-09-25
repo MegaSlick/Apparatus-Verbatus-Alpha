@@ -9,8 +9,7 @@ named place.
 
 Shared rather than copied into each test module: the door's tests, the decoder's
 tests and the renderer's tests all need the same genuine PNG, and three
-hand-maintained copies of it would drift the way the old door's two admission
-tables did.
+hand-maintained copies of it could drift apart.
 """
 
 import struct
@@ -133,11 +132,10 @@ def jpeg(
 ) -> bytes:
     """A structurally complete JPEG: SOI, DQT, DHT, SOF, SOS, entropy data, EOI.
 
-    The tables are parameters so a test can build a JPEG *missing* one and prove the
-    refusal. They default to present because a JPEG without them is not a file any
-    decoder could read, and this builder is what the suite means by "genuine": it
-    used to emit SOI/SOF/SOS/EOI and three arbitrary bytes, and the validator
-    admitted those 30 bytes as a 5x4 image.
+    The tables are parameters so a test can build a JPEG *missing* one and prove
+    the refusal. They default to present because a JPEG without them is not a
+    file any decoder could read, and this builder is what the suite means by
+    "genuine".
     """
     tables = b""
     if quantization_tables:
@@ -179,10 +177,8 @@ def tiff(
     """A classic single-page TIFF whose stored strip really holds its own image.
 
     One strip covering every row, sized `height * ceil(width * bits / 8)` and
-    actually present in the file. The shipped fixture used to declare 6x5 pixels
-    behind a **one-byte** strip and be admitted as genuine, so "the strip is in the
-    file" was the whole of what the validator could check. `strip_bytes` overrides
-    the size so a test can build the mismatch and prove the refusal.
+    actually present in the file. `strip_bytes` overrides the size so a test can
+    build a strip too small for its declared geometry and prove the refusal.
 
     Entries are emitted in ascending tag order, as TIFF requires, and ImageWidth is
     always first — `tiff_ifd_entry_offset` and `tiff_next_ifd_offset` give a test

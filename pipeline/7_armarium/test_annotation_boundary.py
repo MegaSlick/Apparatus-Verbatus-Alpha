@@ -360,8 +360,10 @@ def test_one_annotation_identity_may_not_be_reported_twice():
 
 def test_uncertainty_inheritance_is_an_overlap_of_ranges_and_nothing_else():
     """Spec 11: annotations "inherit the text's uncertainty spans where they overlap".
-    Nothing in this build calls this: the Archetypus record carries no uncertainty
-    layer for an annotation to inherit from yet."""
+    The Archetypus record carries an uncertainty layer, and
+    `verify_annotations_anchor_to_text` calls this to recompute the overlap
+    rather than trust the annotation's own flag; this test isolates that
+    computation from the anchoring checks around it."""
     uncertain = (TextSpan(10, 20),)
     assert mark_uncertainty_overlap(TextSpan(15, 25), uncertain)
     assert mark_uncertainty_overlap(TextSpan(0, 11), uncertain)

@@ -875,9 +875,8 @@ def ink_map_page_rows(
                 "edge_band_pixels": measure["edge_band_pixels"],
                 "substantial_ink_pixels": measure["substantial_ink_pixels"],
                 # The sealed noise floor and fraction gate the page was judged
-                # under, on the row since 2026-09-14 for the reason
-                # `substantial_ink_pixels` joined it: the export verifier
-                # recomputes the hold from the row alone on a clean machine.
+                # under, on the row so the export verifier recomputes the hold
+                # from the row alone on a clean machine.
                 "minimum_ink_pixels": finding["coverage_policy"]["minimum_ink_pixels"],
                 "minimum_fraction_outside_bp": finding["coverage_policy"][
                     "minimum_fraction_outside_bp"
@@ -898,11 +897,8 @@ def ink_map_page_rows(
 # the CLI attribute the run seals, so a file renamed in `config/` moves here
 # rather than leaving the export quietly reporting one fewer caveat.
 #
-# `perlector-protocol` joined the three Designator files on 2026-09-14, when the
-# truncation instrument's length floor moved out of source into
-# `[truncation]` with a `calibrated_for_this_corpus = false` block of its own
-# (pre-launch review, F082/F088). It decides whether an act is held as
-# truncated, and an uncalibrated instrument that decides a hold is exactly what
+# `perlector-protocol`'s `[truncation]` block decides whether an act is held as
+# truncated, and an uncalibrated instrument deciding a hold is exactly what
 # this survey exists to disclose; a caveat that stayed in `config/` and never
 # reached the bundle would be one the product does not carry.
 _CALIBRATED_CONFIG_ATTRIBUTES: Final = (
@@ -979,8 +975,8 @@ def geometry_calibration_rows(context) -> list[dict]:
     `config/` now. `sample_count` is `None` where the file declares none, which
     is not a zero: `designator_geometry.toml` carries no sample field at all,
     and reporting 0 for it would be a measurement nobody took. The function
-    keeps the name the export instrument has; since 2026-09-14 the list it walks
-    is wider than Designator geometry (see `_CALIBRATED_CONFIG_ATTRIBUTES`).
+    keeps the name the export instrument has; the list it walks is wider than
+    Designator geometry (see `_CALIBRATED_CONFIG_ATTRIBUTES`).
     """
     rows = []
     for name, attribute, table in _CALIBRATED_CONFIG_ATTRIBUTES:
@@ -1085,9 +1081,9 @@ def not_measured_basis(
             raise FatalAccounting(
                 "a Recensor testimony-content measurement is malformed"
             ) from error
-        # `shortfall: None` is the F2 ruling's own record of a page whose
-        # testimony content coverage was not measured -- a continuation page
-        # most often. The shared validator already required this closed record.
+        # `shortfall: None` records a page whose testimony content coverage
+        # was not measured -- a continuation page most often. The shared
+        # validator already required this closed record.
         if content["shortfall"] is None:
             unmeasured_coverage.append(act_key)
             reason = content.get("reason")
@@ -1152,7 +1148,7 @@ def not_measured_basis(
     # The reader's own doubt-report state per delivered act, read off the
     # canonical layer each act already carries: how many readings were actually
     # assessed for doubt, and how many came from a chair with no channel. An
-    # empty span list under `not-assessed` is an absence, not confidence (F2).
+    # empty span list under `not-assessed` is an absence, not confidence.
     #
     # Both numbers are counted, neither is derived by subtraction: a delivered
     # act in any third state would otherwise be counted as one with no doubt
@@ -1328,7 +1324,7 @@ def export_witnesses(context, reading: dict, act_id: str) -> list[dict]:
     # Required, like the witness basis above: an established reading that reaches
     # export without its act-attachment view is one whose page-witness custody was
     # never rechecked here. Guarding the check with `if attachment is not None`
-    # left the export boundary opt-out. Found in audit; F-O2.
+    # left the export boundary opt-out.
     if not isinstance(attachment, dict):
         raise FatalAccounting("an established Perlectio has no act-attachment evidence to retain")
     reference = attachment.get("reference")
@@ -1486,9 +1482,9 @@ def categorize(
         # complete. What the operator was not told is which of two shapes this
         # is: a fixture run whose recovery has simply not been driven yet, which
         # ends here again once it is, or a real submission, where no stage can
-        # cut the recrop and the run has no export at all (F068/F083). Both are
-        # named here rather than left to be derived from a stage a run away, and
-        # neither names a remedy this tree does not implement.
+        # cut the recrop and the run has no export at all. Both are named here
+        # rather than left to be derived from a stage a run away, and neither
+        # names a remedy this tree does not implement.
         raise FatalAccounting(
             f"act {act_id} has an outstanding recovery request; its recrop must be reread "
             "before an Archetypus can exist. On the fixture route the Designator cuts that "
@@ -1602,8 +1598,8 @@ def verify_established_record(
     # neither route passes back through `latest_per_chair`, so a Testimonium
     # appended after the reading was established was structurally invisible at
     # the point where the export decides to say `complete` -- and the sealed
-    # export went on saying it (audit finding 2d). Principle 2 is
-    # unconditional: `complete` is refused unless everything reconciles.
+    # export went on saying it. Principle 2 is unconditional: `complete` is
+    # refused unless everything reconciles.
     require_current_witness_basis(
         act["act_id"],
         reading,

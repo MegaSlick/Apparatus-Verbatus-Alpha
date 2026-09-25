@@ -269,13 +269,11 @@ class RunPlan:
     def transcript_path(self) -> Path:
         """The orchestrator's merged stdout/stderr, beside the run report.
 
-        The run report used to tell a reader to "read its transcript" of a
-        stage that refused or held, and no transcript existed anywhere the
-        volume could be fetched from: the streams were inherited all the way
-        down, so every refusal, traceback and hold reason went to a container
-        log that RunPod destroys with the pod. Because the orchestrator
-        inherits *this* process's streams and each stage inherits the
-        orchestrator's, teeing here captures the whole tree with one pipe.
+        Without it, a refusal, traceback or hold reason for a stage that
+        inherits the orchestrator's streams goes only to a container log that
+        RunPod destroys with the pod, unreachable from the volume the run
+        report points a reader to. Teeing here, once, captures the whole
+        inherited stream tree with one pipe.
 
         Launch-token-named like every other record beside it: `report_path`
         has already been refused unless its own name carries the token
@@ -603,17 +601,15 @@ def require_approved_submission_folder(plan: RunPlan) -> tuple[tuple[str, ...], 
 def _placement_tier(report: BootstrapReport) -> tuple[str, dict[str, object]]:
     """The measured tier, and the exact serving-recipe/placement digests it was measured against.
 
-    ``serving_config_inputs`` used to fall back to ``{}`` for anything that
-    was not already a plain dict -- absent, malformed, or a stray non-dict
-    value all read the same as "no digests", and the run report recorded
-    "complete" with no proof the serving recipe and pod-placement bytes the
-    orchestrator is about to use are the ones ``PREFLIGHT`` actually
-    measured. ``ServingConfigInputs.from_record`` is the same validation
-    ``bootstrap_main`` applies when it seals this value onto the receipt in
-    the first place (``ServingConfigInputs.to_record``); reapplying it here
-    closes the gap between "the receipt carries something under this key"
-    and "the receipt carries a run-sealed configuration projection this run
-    can trust".
+    An absent, malformed or stray non-dict ``serving_config_inputs`` must not
+    read as "no digests": the run report would then record "complete" with no
+    proof the serving recipe and pod-placement bytes the orchestrator is
+    about to use are the ones ``PREFLIGHT`` actually measured.
+    ``ServingConfigInputs.from_record`` is the same validation
+    ``bootstrap_main`` applies when it seals this value onto the receipt
+    (``ServingConfigInputs.to_record``); reapplying it here closes the gap
+    between "the receipt carries something under this key" and "the receipt
+    carries a run-sealed configuration projection this run can trust".
     """
 
     receipt = report.receipts.get("preflight")
@@ -914,14 +910,13 @@ def _run(
 ) -> subprocess.CompletedProcess[bytes]:
     """Run the orchestrator with its output teed to the volume, ticking while it lives.
 
-    Streams used to be inherited all the way down, so a stage's refusal text
-    reached only the container's log and died with the pod; and the run report
-    said `running` from before the orchestrator started until after it
-    returned, so a killed supervisor left a record claiming a run in progress.
-    Both are fixed by the same call: the child's stdout and stderr are merged
-    into one pipe that a reader thread tees into ``transcript``, and the poll
-    loop that waits for the child re-journals a liveness tick through
-    ``liveness`` every ``interval_seconds`` while it is alive.
+    Without this, an inherited stream leaves a stage's refusal text reachable
+    only from the container's log, which dies with the pod, and a killed
+    supervisor leaves the run report claiming a run still in progress. Both
+    are fixed by the same call: the child's stdout and stderr are merged into
+    one pipe that a reader thread tees into ``transcript``, and the poll loop
+    that waits for the child re-journals a liveness tick through ``liveness``
+    every ``interval_seconds`` while it is alive.
 
     ``stderr=STDOUT`` deliberately: two separately bounded files would let a
     reader interleave them wrongly, and the one question the transcript exists
@@ -1131,10 +1126,10 @@ def main(
             "run tree before calling this run anything"
         )
     if failure_detail is None and exit_code in (EXIT_HELD, EXIT_HALTED):
-        # A held or halted report used to carry `detail: null`, which read as
-        # "there is nothing further to say" about the two outcomes that most
-        # need a reason. The reason itself is the stage's own stderr, and that
-        # now has a durable home; this names it rather than restating it badly.
+        # `detail: null` here would read as "nothing further to say" about
+        # the two outcomes that most need a reason. The stage's own stderr is
+        # the reason, and it has a durable home in the transcript; name it
+        # rather than restating it badly.
         failure_detail = (
             f"the orchestrator exited {orchestrator_exit} ({_STATE_FOR_EXIT[exit_code]}); the "
             f"stage's own reason is the last text in {plan.transcript_path}, and the run tree "

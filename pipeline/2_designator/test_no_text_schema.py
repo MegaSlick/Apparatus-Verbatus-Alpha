@@ -90,8 +90,7 @@ def test_a_forbidden_content_key_is_refused_inside_a_list(forbidden_key):
 
 
 def test_geometry_and_rationale_fields_are_not_forbidden():
-    """The mechanism, not the ink: a code-generated rationale describing which
-    grouping rule fired is not a transcription and must not be refused."""
+    """A code-generated rationale is not a transcription and must not be refused."""
     designator = _load_designator()
     payload = {
         "act_key": "a1",
@@ -149,9 +148,8 @@ def test_a_real_act_group_artifact_carries_no_forbidden_field(tmp_path):
 
 
 def test_deleting_the_check_lets_a_forged_text_field_publish_uninspected(tmp_path):
-    """Proves the guard actually guards something: with `_refuse_text_fields`
-    bypassed, an act-group artifact carrying a `text` field publishes cleanly,
-    because nothing else in the envelope/payload schema forbids an extra key."""
+    """Proves the guard guards something: without it, a `text` field publishes
+    cleanly, since nothing else in the schema forbids an extra key."""
     designator = _load_designator()
     from common.contracts.canonical import digest_of
 
@@ -189,8 +187,6 @@ def test_deleting_the_check_lets_a_forged_text_field_publish_uninspected(tmp_pat
         "declared_bounds": {"x": 20, "y": 20, "w": 160, "h": 80},
         "text": "SYNTHETIC ACT ONE alpha beta gamma",
     }
-    # No `_refuse_text_fields` call here at all -- the point of this test is
-    # that nothing else in `context.publish` would have stopped it.
     published = context.publish(
         kind="act-group",
         subject_id="act_0000000000000000",
