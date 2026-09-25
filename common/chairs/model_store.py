@@ -320,7 +320,8 @@ def _fetch_artifact(
             )
         _refuse_staged_symlinks(staging, requirement.artifact)
         licence = _snapshot_licence(staging, requirement)
-        # Again: synthetic licence evidence was written after the first walk.
+        # Again: the synthetic licence write may have introduced a case collision
+        # or a link after the first walk.
         _refuse_staged_symlinks(staging, requirement.artifact)
         carried = _carried_content(requirement, staging)
         payloads = sorted(

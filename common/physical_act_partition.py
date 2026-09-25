@@ -900,6 +900,7 @@ def build_correspondence_proposal(
             plans.append({"findings": _findings("ambiguous-physical-act", acts)})
             continue
         if touched:
+            # Proven single above, not chosen: the unpack raises on two targets.
             (target,) = touched
         else:
             # The caller's `physical_act_id` asserts, it never attaches: trusting it

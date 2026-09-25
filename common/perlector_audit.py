@@ -556,7 +556,8 @@ def validate_truncation_record(
             f"{label} measure counts {measure['characters']} characters but the text it was "
             f"measured over has {len(text)}"
         )
-    # Refused before the derivation, so the refusal names the floor, not the signal.
+    # A record naming floor 1 under a sealed 50 would derive `complete` and clear
+    # the hold; refused before the derivation, so the refusal names the floor.
     if (
         length_floor_characters_per_page is not None
         and measure["length_floor_characters_per_page"] != length_floor_characters_per_page
@@ -1585,7 +1586,9 @@ def _validate_uncertainty_projection(
         for span in finding_payload["uncertain_spans"]
     ]
     # The exhausted-cap projection leads the layer; only an `assessed` reader may
-    # add spans of its own after it.
+    # add spans of its own after it. Any other state must equal the projection
+    # exactly: every list starts with the empty one, so a prefix check would
+    # accept invented spans on an act with no exhausted-cap finding.
     published = payload.get("uncertain_spans")
     # Validated before its state is read, or a contradictory `assessed` record
     # could choose the relaxed prefix rule.

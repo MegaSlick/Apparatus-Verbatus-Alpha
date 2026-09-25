@@ -9,8 +9,7 @@ recovery and holds no run.
 
 The paper value comes from `common.background.infer_background_evidence`
 under the Designator's sealed `[grouping.background]` policy, so the audit and
-the stage it audits threshold against the same paper. (The old histogram mode
-read a photographed page's bezel as paper and counted no ink at all.) The
+the stage it audits threshold against the same paper. The
 contrast stays this module's own: an audit sharing the Designator's margin
 would restate it rather than check it.
 
@@ -18,8 +17,10 @@ The page-spanning component the Designator withholds from grouping
 (`pipeline/2_designator/grouping.partition_page_spanning`) held 35 to 87 per
 cent of audited ink on 44 real pages, and counting it flagged every page. It is
 re-derived here from the same bytes at the page's own derived margin (the
-Designator's record carries only whole-page boxes, which mask nothing) and
-taken out of `total_ink_pixels` and `outside_ink_pixels`; `page_ink_pixels`
+Designator's record carries only whole-page boxes, which mask nothing), not at
+this module's looser contrast: there the writing merges into the component, and
+on 41 of the 44 pages the audit hid 3,367 to 1,480,349 outside-coverage ink
+pixels and reported the pages clean (goal 2). It is taken out of `total_ink_pixels` and `outside_ink_pixels`; `page_ink_pixels`
 and `page_spanning_ink_pixels` keep the whole-page figure on the record.
 
 A page whose background the shared inference refuses raises
