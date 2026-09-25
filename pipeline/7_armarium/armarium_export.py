@@ -2671,6 +2671,20 @@ def _package_lines(path, subject: str) -> list[str]:
         raise SchemaRefusal(f"the {subject} cannot be read") from error
 
 
+def _decode_json(encoded: Any, refusal: str) -> Any:
+    try:
+        return json.loads(encoded)
+    except (TypeError, UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise SchemaRefusal(refusal) from error
+
+
+def _jsonl_rows(path, subject: str, row: str):
+    """Decode every non-blank line of one package JSONL member."""
+    for line in _package_lines(path, subject):
+        if line:
+            yield _decode_json(line, f"{row} is not JSON")
+
+
 def _text_bundle_records(
     root, source_pages: list[dict[str, Any]] | None = None
 ) -> dict[
@@ -2756,10 +2770,7 @@ def _text_bundle_records(
                 # else would catch that.
                 if pending is not None:
                     raise SchemaRefusal("a text-bundle section carries more than one literal")
-                try:
-                    literal = json.loads(lines[index + 1])
-                except (UnicodeDecodeError, ValueError, RecursionError) as error:
-                    raise SchemaRefusal("a text-bundle canonical text is not JSON") from error
+                literal = _decode_json(lines[index + 1], "a text-bundle canonical text is not JSON")
                 if not isinstance(literal, str):
                     raise SchemaRefusal("a text-bundle canonical text is not a string")
                 digest_line = lines[index - 1] if index else ""
@@ -2778,10 +2789,9 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle section carries more than one uncertainty layer"
                     )
-                try:
-                    uncertainty = json.loads(lines[index + 1])
-                except (UnicodeDecodeError, ValueError, RecursionError) as error:
-                    raise SchemaRefusal("a text-bundle uncertainty layer is not JSON") from error
+                uncertainty = _decode_json(
+                    lines[index + 1], "a text-bundle uncertainty layer is not JSON"
+                )
                 try:
                     # The round trip, not just the shape: this is the one format
                     # whose layer arrives as decoded text, where offsets could shift.
@@ -2810,12 +2820,9 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle section carries more than one transcription annotation layer"
                     )
-                try:
-                    pending_annotations = json.loads(lines[index + 1])
-                except (UnicodeDecodeError, ValueError, RecursionError) as error:
-                    raise SchemaRefusal(
-                        "a text-bundle transcription annotation layer is not JSON"
-                    ) from error
+                pending_annotations = _decode_json(
+                    lines[index + 1], "a text-bundle transcription annotation layer is not JSON"
+                )
             elif line == "display:":
                 # Stripping the display must return the canonical text exactly, so
                 # display markup never enters the hashed text.
@@ -2842,10 +2849,7 @@ def _text_bundle_records(
                 convention_line = lines[index - 1] if index else ""
                 if convention_line != f"display_convention: {DISPLAY_CONVENTION}":
                     raise SchemaRefusal("a text-bundle display names no known convention")
-                try:
-                    rendered = json.loads(lines[index + 1])
-                except (UnicodeDecodeError, ValueError, RecursionError) as error:
-                    raise SchemaRefusal("a text-bundle display is not JSON") from error
+                rendered = _decode_json(lines[index + 1], "a text-bundle display is not JSON")
                 try:
                     stripped = strip_display(rendered) if isinstance(rendered, str) else None
                 except ValueError as error:
@@ -3079,10 +3083,7 @@ def _database_literals(path) -> dict[str, tuple]:
             raise SchemaRefusal("the acts database has an untyped literal row")
         if digest != canonical_text_sha256(literal) or act_id in records:
             raise SchemaRefusal("the acts database literal identity or hash is invalid")
-        try:
-            uncertainty = json.loads(uncertainty_json)
-        except (UnicodeDecodeError, ValueError, RecursionError) as error:
-            raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
+        uncertainty = _database_json_layer(uncertainty_json, "uncertainty")
         annotations = _database_json_layer(annotations_json, "transcription annotation")
         _require_damage_record(
             text_status, annotations, uncertainty, literal, subject="acts database row"
@@ -3099,14 +3100,8 @@ def _database_literals(path) -> dict[str, tuple]:
 
 def _jsonl_literals(path) -> dict[str, tuple]:
     records: dict[str, tuple] = {}
-    for line in _package_lines(path, "acts JSONL"):
-        if not line:
-            continue
-        # Independently callable, so it cannot rely on earlier validation.
-        try:
-            record = json.loads(line)
-        except (UnicodeDecodeError, ValueError, RecursionError) as error:
-            raise SchemaRefusal("an acts JSONL row is not JSON") from error
+    # Independently callable, so it cannot rely on earlier validation.
+    for record in _jsonl_rows(path, "acts JSONL", "an acts JSONL row"):
         if not isinstance(record, dict):
             raise SchemaRefusal("an acts JSONL row is not an object")
         literal = record.get(CANONICAL_TEXT_FIELD)
@@ -4041,15 +4036,8 @@ def _jsonl_act_records(
     path: Path, source_graph_regions: list[dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
     """Validate JSONL's one-record-per-act projection and return its categories."""
-    lines = _package_lines(path, "acts JSONL")
     records: dict[str, dict[str, Any]] = {}
-    for line in lines:
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except (UnicodeDecodeError, ValueError, RecursionError) as error:
-            raise SchemaRefusal("an acts JSONL row is not JSON") from error
+    for record in _jsonl_rows(path, "acts JSONL", "an acts JSONL row"):
         if not isinstance(record, dict) or record.get("schema") != ACT_RECORD_SCHEMA:
             raise SchemaRefusal("an acts JSONL row has no recognized schema")
         if set(record) != _ACT_RECORD_FIELDS:
@@ -4115,28 +4103,13 @@ def _jsonl_act_records(
     return records
 
 
-def _database_uncertainty(encoded: Any) -> Any:
-    """Decode the acts database's one uncertainty column, or refuse its bytes."""
-    if encoded is None:
-        return None
-    if not isinstance(encoded, str):
-        raise SchemaRefusal("the acts database has an untyped uncertainty column")
-    try:
-        return json.loads(encoded)
-    except (UnicodeDecodeError, ValueError, RecursionError) as error:
-        raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
-
-
 def _database_json_layer(encoded: Any, subject: str) -> Any:
-    """Decode one further JSON-encoded acts-database layer column, or refuse it."""
+    """Decode one JSON-encoded acts-database layer column, or refuse it."""
     if encoded is None:
         return None
     if not isinstance(encoded, str):
         raise SchemaRefusal(f"the acts database has an untyped {subject} column")
-    try:
-        return json.loads(encoded)
-    except (UnicodeDecodeError, ValueError, RecursionError) as error:
-        raise SchemaRefusal(f"the acts database {subject} layer is not JSON") from error
+    return _decode_json(encoded, f"the acts database {subject} layer is not JSON")
 
 
 def _verify_carried_uncertainty(
@@ -4257,12 +4230,7 @@ def _database_act_records(
             if encoded is None:
                 decoded.append(None)
                 continue
-            try:
-                parsed = json.loads(encoded)
-            except (TypeError, UnicodeDecodeError, ValueError, RecursionError) as error:
-                raise SchemaRefusal(
-                    "the acts database has unreadable provenance evidence"
-                ) from error
+            parsed = _decode_json(encoded, "the acts database has unreadable provenance evidence")
             _verify_retained_references_bounded(parsed)
             decoded.append(parsed)
         evidence_refs = decoded[2].get("evidence_refs") if isinstance(decoded[2], dict) else None
@@ -4272,7 +4240,7 @@ def _database_act_records(
                 decoded[0], decoded[1], source_graph_regions, subject="acts database"
             )
         _verify_carried_uncertainty(
-            _database_uncertainty(uncertainty_json),
+            _database_json_layer(uncertainty_json, "uncertainty"),
             uncertainty_status,
             literal if category == ArmariumCategory.DELIVERED.value else None,
             subject="acts database",
@@ -4280,7 +4248,7 @@ def _database_act_records(
         _verify_carried_damage(
             text_status,
             _database_json_layer(transcription_annotations_json, "transcription annotation"),
-            _database_uncertainty(uncertainty_json),
+            _database_json_layer(uncertainty_json, "uncertainty"),
             literal if category == ArmariumCategory.DELIVERED.value else None,
             subject="acts database",
         )
@@ -4303,15 +4271,8 @@ def _database_act_records(
 
 def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
     """Validate the selected review projection's exact terminal population."""
-    lines = _package_lines(path, "review-items JSONL")
     records: dict[str, dict[str, str]] = {}
-    for line in lines:
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except (UnicodeDecodeError, ValueError, RecursionError) as error:
-            raise SchemaRefusal("a review-items JSONL row is not JSON") from error
+    for record in _jsonl_rows(path, "review-items JSONL", "a review-items JSONL row"):
         if not isinstance(record, dict):
             raise SchemaRefusal("a review-items JSONL row is not an object")
         _verify_retained_references_bounded(record)
@@ -4347,15 +4308,8 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
 
 def _salvage_product_records(path: Path) -> tuple[dict[str, Any], ...]:
     """Read the tier-only JSONL and reapply its no-acts firewall."""
-    lines = _package_lines(path, "salvage-tier JSONL")
     records: list[dict[str, Any]] = []
-    for line in lines:
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except (UnicodeDecodeError, ValueError, RecursionError) as error:
-            raise SchemaRefusal("a salvage-tier JSONL row is not JSON") from error
+    for record in _jsonl_rows(path, "salvage-tier JSONL", "a salvage-tier JSONL row"):
         if not isinstance(record, dict) or record.get("schema") != SALVAGE_RECORD_SCHEMA:
             raise SchemaRefusal("a salvage-tier JSONL row has no recognized schema")
         _verify_retained_references_bounded(record)
