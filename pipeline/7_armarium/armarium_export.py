@@ -1017,39 +1017,7 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     against a recomputation are closed by that comparison.
     """
     _require_exact_fields(manifest, _MANIFEST_FIELDS, subject="EXPORT_MANIFEST.json")
-    raw_run = manifest.get("run")
-    if not isinstance(raw_run, dict):
-        raise SchemaRefusal("the manifest run binding is not an object")
-    has_fixture = "fixture_id" in raw_run
-    has_submission = "submission_id" in raw_run
-    if has_fixture and has_submission:
-        raise SchemaRefusal(
-            "the manifest run binding names both a fixture identifier and a submission "
-            "identifier; a run's export is identified by exactly one, never both"
-        )
-    if not has_fixture and not has_submission:
-        raise SchemaRefusal(
-            "the manifest run binding names neither a fixture identifier nor a submission "
-            "identifier; a run's export must be identified by exactly one"
-        )
-    identity_field = "fixture_id" if has_fixture else "submission_id"
-    run = _require_exact_fields(
-        raw_run,
-        _MANIFEST_RUN_FIELDS_FIXTURE if has_fixture else _MANIFEST_RUN_FIELDS_REAL,
-        subject="the manifest run binding",
-    )
-    if any(
-        not isinstance(run.get(field), str) or not run[field].strip()
-        for field in (identity_field, "scenario")
-    ):
-        subject = "fixture" if has_fixture else "submission"
-        raise SchemaRefusal(
-            f"the manifest run binding has no non-blank {subject} and scenario identities"
-        )
-    if has_submission:
-        # As strict as `_validate_projection`, so a resealed package cannot carry
-        # a hand-typed label where a ledger hash belongs.
-        _require_sha256(run["submission_id"], "the manifest run binding submission identity")
+    _verify_manifest_run_binding(manifest.get("run"))
     claims = _require_exact_fields(
         manifest["claims"], _MANIFEST_CLAIM_FIELDS, subject="the manifest claims block"
     )
@@ -1100,8 +1068,49 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
         )
     if claims["page_census"]["denominator"] != _PAGE_CENSUS_DENOMINATOR:
         raise SchemaRefusal("the manifest page denominator is not this build's fixed claim")
+    _verify_not_measured_block(claims["not_measured"])
+
+
+def _verify_manifest_run_binding(raw_run: object) -> None:
+    """Exactly one of the two closed run-identity shapes, with non-blank values."""
+    if not isinstance(raw_run, dict):
+        raise SchemaRefusal("the manifest run binding is not an object")
+    has_fixture = "fixture_id" in raw_run
+    has_submission = "submission_id" in raw_run
+    if has_fixture and has_submission:
+        raise SchemaRefusal(
+            "the manifest run binding names both a fixture identifier and a submission "
+            "identifier; a run's export is identified by exactly one, never both"
+        )
+    if not has_fixture and not has_submission:
+        raise SchemaRefusal(
+            "the manifest run binding names neither a fixture identifier nor a submission "
+            "identifier; a run's export must be identified by exactly one"
+        )
+    identity_field = "fixture_id" if has_fixture else "submission_id"
+    run = _require_exact_fields(
+        raw_run,
+        _MANIFEST_RUN_FIELDS_FIXTURE if has_fixture else _MANIFEST_RUN_FIELDS_REAL,
+        subject="the manifest run binding",
+    )
+    if any(
+        not isinstance(run.get(field), str) or not run[field].strip()
+        for field in (identity_field, "scenario")
+    ):
+        subject = "fixture" if has_fixture else "submission"
+        raise SchemaRefusal(
+            f"the manifest run binding has no non-blank {subject} and scenario identities"
+        )
+    if has_submission:
+        # As strict as `_validate_projection`, so a resealed package cannot carry
+        # a hand-typed label where a ledger hash belongs.
+        _require_sha256(run["submission_id"], "the manifest run binding submission identity")
+
+
+def _verify_not_measured_block(block: object) -> None:
+    """Every instrument once, in order, each status re-derived from its detail."""
     not_measured = _require_exact_fields(
-        claims["not_measured"], _NOT_MEASURED_FIELDS, subject="the manifest not_measured block"
+        block, _NOT_MEASURED_FIELDS, subject="the manifest not_measured block"
     )
     if not_measured["schema"] != NOT_MEASURED_SCHEMA:
         raise SchemaRefusal("the manifest not_measured block is not this build's schema")
