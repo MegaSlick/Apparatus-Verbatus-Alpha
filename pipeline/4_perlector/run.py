@@ -500,6 +500,31 @@ def _region_reference(region: dict) -> dict[str, str]:
     }
 
 
+def _validate_presented_page(context, payload: dict, presented: dict) -> None:
+    """Bind a witness's presentation and observed geometry to its sealed Exemplar page."""
+    page_id = presented.get("source_page_id")
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    page_size = dimensions(page_bytes)
+    validate_native_witness_geometry(payload, page_size=page_size)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=page["payload"]["ordinal"],
+        page_image_path=page["payload"]["image_path"],
+        page_sha256=page["payload"]["source_sha256"],
+        page_size=page_size,
+        page_bytes=page_bytes,
+    )
+
+
+def _sorted_distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
+    return sorted(_distinct_inputs(references), key=_input_order)
+
+
+def _input_order(reference: dict[str, str]) -> tuple[str, str]:
+    return reference["relative_path"], reference["sha256"]
+
+
 def validate_testimonium_regions(context, record: dict, proposal_regions: list[dict]) -> None:
     """Validate an act Testimonium's native presentation, regions and inputs."""
     payload = record["payload"]
@@ -545,22 +570,10 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
             "Its act association could omit or acquire evidence silently. Restore the sealed "
             "proposal references without substituting a recovery crop"
         )
-    page_id = presented.get("source_page_id")
-    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-    page_size = dimensions(page_bytes)
-    validate_native_witness_geometry(payload, page_size=page_size)
-    validate_presented_page_binding(
-        presented,
-        page_ordinal=page["payload"]["ordinal"],
-        page_image_path=page["payload"]["image_path"],
-        page_sha256=page["payload"]["source_sha256"],
-        page_size=page_size,
-        page_bytes=page_bytes,
-    )
-    input_references = []
-    for region in proposal_regions:
-        input_references.append(context.input_ref(region["payload"]["image_path"]))
+    _validate_presented_page(context, payload, presented)
+    input_references = [
+        context.input_ref(region["payload"]["image_path"]) for region in proposal_regions
+    ]
     input_references.append(context.input_ref(presented["image_path"]))
     native_inference = payload.get("native_inference")
     if native_inference is not None:
@@ -584,12 +597,8 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
                 "attestator_1 chandra.v1 act view"
             )
         for row in validate_chandra_trace(native_inference)["attempts"]:
-            for native_reference in (row["intent_ref"], row["attempt_ref"]):
-                input_references.append(native_reference)
-    expected_inputs = sorted(
-        _distinct_inputs(input_references),
-        key=lambda item: (item["relative_path"], item["sha256"]),
-    )
+            input_references.extend((row["intent_ref"], row["attempt_ref"]))
+    expected_inputs = _sorted_distinct_inputs(input_references)
     # Re-derive the explicit limit for every presentation kind so a kind change
     # cannot understate which bound crops its one page-space image omits.
     if unpresented != unpresented_region_ids(presented, proposal_regions):
@@ -688,22 +697,7 @@ def validate_page_testimonium_record(
                 "record. Its observations would be attributed to the wrong sealed ink. Restore "
                 "the page identity and ordinal of the presentation actually served"
             )
-        page = context.tree.read_artifact(
-            EXEMPLAR,
-            "page",
-            artifact_id(EXEMPLAR, "page", presented["source_page_id"]),
-        )
-        page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-        page_size = dimensions(page_bytes)
-        validate_native_witness_geometry(payload, page_size=page_size)
-        validate_presented_page_binding(
-            presented,
-            page_ordinal=page["payload"]["ordinal"],
-            page_image_path=page["payload"]["image_path"],
-            page_sha256=page["payload"]["source_sha256"],
-            page_size=page_size,
-            page_bytes=page_bytes,
-        )
+        _validate_presented_page(context, payload, presented)
         expected_inputs = [
             {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]}
         ]
@@ -721,10 +715,7 @@ def validate_page_testimonium_record(
         # through both `raw_response_refs` and `native_capture`, and
         # `validate_input_refs` refuses a repeated path, so a doubled expectation could
         # never be met.
-        expected_inputs = sorted(
-            _distinct_inputs(expected_inputs + retained),
-            key=lambda item: (item["relative_path"], item["sha256"]),
-        )
+        expected_inputs = _sorted_distinct_inputs(expected_inputs + retained)
         if record.get("inputs") != expected_inputs:
             raise SchemaRefusal(
                 "a page Testimonium does not bind exactly its presented image"
@@ -950,12 +941,7 @@ def act_attachment_view(
         for chair in configured
         for ordinal in (page_ids if chair in page_chairs else (None,))
     }
-    pairs = [
-        (attachment.get("chair"), attachment.get("page_ordinal"))
-        if isinstance(attachment, dict)
-        else (None, None)
-        for attachment in attachments
-    ]
+    pairs = [(attachment["chair"], attachment["page_ordinal"]) for attachment in attachments]
     if len(pairs) != len(set(pairs)) or set(pairs) != expected_pairs:
         raise FatalAccounting(
             f"act {act_id} attachments do not cover every contributing page/witness pair; "
@@ -968,347 +954,37 @@ def act_attachment_view(
     comparison_views: dict[str, str] = {}
     edge_deltas: dict[str, list[dict[str, Any]]] = {}
     for attachment in attachments:
-        _validate_attachment_shape(attachment)
-        span = attachment["span"]
-        characters = attachment["content_health"].get("characters")
-        if attachment["attached"] and not attachment["page_witness"]:
-            if attachment["attachment_basis"] != "presented-region":
-                raise SchemaRefusal("an act-scoped attachment has no presented-region basis")
-            expected_end = (
-                characters
-                if isinstance(characters, int) and not isinstance(characters, bool)
-                else 0
-            )
-            if span != {"start": 0, "end": expected_end}:
-                raise SchemaRefusal(
-                    "an attached act view does not span its complete delivered reading"
-                )
-        if attachment["comparable"] and not attachment["attached"]:
-            raise SchemaRefusal(
-                "an unattached act view cannot claim comparable text. "
-                "Text cannot count for an act when witness geometry did not attach to it. "
-                "Rebuild both facts from the retained Testimonium."
-            )
-        # Independent of the rule above. Page witnesses reach this too, so each refusal
-        # names its own field rather than calling every row an act view.
-        if not attachment["attached"]:
-            if attachment["attachment_basis"] != "unattached":
-                raise SchemaRefusal(
-                    "an unattached attachment names an attachment basis other than "
-                    "'unattached'; nothing attached it, so nothing decided the basis"
-                )
-            if span is not None:
-                raise SchemaRefusal("an unattached attachment claims an alignment span")
+        chair_testimonium = _current_testimonium_for(
+            attachment, act_id=act_id, current=current, page_chairs=page_chairs
+        )
         chair = attachment["chair"]
-        attachment_page = attachment["page_ordinal"]
-        # A reread appends a new attempt without rewriting the attachment, so a stale
-        # attachment could present a superseded outcome as live. For an act-scoped chair
-        # `attached` must equal the current outcome.
-        chair_testimonium = current.get(chair)
-        if chair_testimonium is None:
-            raise FatalAccounting(
-                f"act {act_id} attachment names chair {chair!r}, which has no current Testimonium"
-            )
-        if not attachment["page_witness"] and attachment["attached"] != (
-            chair_testimonium["outcome"] in WITNESS_READING_OUTCOMES
-        ):
-            raise SchemaRefusal(
-                f"act {act_id} attachment for chair {chair!r} disagrees with that chair's "
-                "current Testimonium outcome"
-            )
-        # Not exempted for page witnesses: a reread appends to the same per-(act, chair)
-        # stream either way. `attached` may differ from a page witness's outcome, but
-        # the health must be the current attempt's.
-        if attachment["content_health"] != chair_testimonium["payload"].get("content_health"):
-            raise SchemaRefusal(
-                f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
-                "longer this chair's current Testimonium"
-            )
-        expected_page_witness = chair in page_chairs
-        if attachment["page_witness"] != expected_page_witness:
-            raise SchemaRefusal(
-                f"act {act_id} attachment changes page-witness scope for chair {chair!r}"
-            )
-        # `dissent.py` trusts the Testimonium's own `page_witness` flag and skips the
-        # comparison for it, so a resealed flag could silence an act-scoped chair's
-        # dissent row. Reconcile this copy against the run's declaration too.
-        if chair_testimonium["payload"].get("page_witness", False) is not expected_page_witness:
-            raise SchemaRefusal(
-                f"act {act_id} Testimonium for chair {chair!r} claims a page-witness scope this "
-                "run did not declare"
-            )
         reference = attachment.get("testimonium_ref")
         if attachment["page_witness"]:
-            if attachment_page not in page_ids:
-                raise SchemaRefusal(
-                    f"act {act_id} page attachment names page {attachment_page!r} outside its "
-                    "regions; it claims evidence the Perlector did not read; restore the "
-                    "attachment's contributing page"
-                )
-            testimonium = context.tree.read_artifact_reference(
-                reference,
-                stage=ATTESTATORES,
-                kind="page-testimonium",
-                subject_id=page_ids[attachment_page],
+            view, deltas = _checked_page_attachment(
+                context,
+                act,
+                attachment,
+                chair_testimonium,
+                reference=reference,
+                page_ids=page_ids,
+                bases=bases,
+                proposal_region_ids=proposal_region_ids,
+                all_proposal_regions=all_proposal_regions,
+                page_testimonia_seen=page_testimonia_seen,
             )
-            page_payload = testimonium.get("payload")
-            validate_page_testimonium_record(context, testimonium, all_proposal_regions)
-            # Collected for the caller's run-wide routing sweep: a page Testimonium
-            # belongs to a (page, chair) pair, not to this act. This is the Perlector's
-            # only digest-checked read of these records.
-            if page_testimonia_seen is not None and isinstance(page_payload, dict):
-                page_testimonia_seen[testimonium["artifact_id"]] = testimonium
-            native_capture = page_payload.get("native_capture")
-            if native_capture is not None:
-                if native_capture["raw_response_ref"] not in testimonium.get("inputs", []):
-                    raise SchemaRefusal(
-                        f"act {act_id} page Testimonium for chair {chair!r} does not bind its "
-                        "retained raw response as a verified input"
-                    )
-                if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
-                    raise SchemaRefusal(
-                        f"act {act_id} page Testimonium for chair {chair!r} attributes its "
-                        "native capture to an adapter other than that chair's configured boundary"
-                    )
-                verify_native_capture_blob(context.tree, native_capture)
-            # Sealed proposal geometry only, as the writer used. A recovery crop
-            # postdates testimony, so it may not enlarge the denominator that attached
-            # it after the fact.
-            page_bases = [
-                basis
-                for basis in bases
-                if basis["source_page_ordinal"] == attachment_page
-                and basis["region_id"] in proposal_region_ids
-            ]
-            # Native page and compatibility act outcomes are independent; legacy
-            # page joins instead derive their outcome from the act attempts.
-            attachment_outcome = (
-                testimonium["outcome"]
-                if native_capture is not None
-                else chair_testimonium["outcome"]
-            )
-            # Re-derived through the producer's shared rule: a page witness attaches on
-            # its own ink over this act's sealed proposal or, only where it reported
-            # none, on an anchor line located in its page text. Both `attached` and the
-            # basis are recomputed, so a resealed record cannot claim either.
-            derived_basis = page_attachment_basis(
-                reading=attachment_outcome in WITNESS_READING_OUTCOMES,
-                geometry_overlaps=any(
-                    reported_geometry_overlaps(
-                        page_payload.get("observed", []), basis["transform"]["bounds"]
-                    )
-                    for basis in page_bases
-                ),
-                alignment=attachment["alignment"],
-            )
-            if attachment["attached"] != (derived_basis != "unattached"):
-                raise SchemaRefusal(
-                    f"act {act_id} page attachment for chair {chair!r} does not derive from "
-                    "that witness's reported geometry, or from an anchor line located in its "
-                    "page text, against the sealed proposal"
-                )
-            edge_deltas.setdefault(chair, []).extend(
-                sealed_proposal_edge_deltas(page_payload, page_bases)
-            )
-            unjoined = (
-                page_payload.get("unjoined_act_attempts")
-                if isinstance(page_payload, dict)
-                else None
-            )
-            if (
-                not isinstance(page_payload, dict)
-                or page_payload.get("chair") != chair
-                or page_payload.get("scope") != "page"
-                or page_payload.get("page_ordinal") != attachment_page
-                or not isinstance(unjoined, list)
-                or any(
-                    not isinstance(row, dict)
-                    or set(row) != {"act_id", "act_key", "outcome", "reason"}
-                    or not isinstance(row["act_id"], str)
-                    or not isinstance(row["act_key"], str)
-                    or not isinstance(row["outcome"], str)
-                    or not isinstance(row["reason"], str)
-                    or not row["reason"].strip()
-                    for row in unjoined
-                )
-            ):
-                raise SchemaRefusal(f"act {act_id} attachment points to the wrong page Testimonium")
-            # One act can disprove `primary` or `continuation` from its sealed
-            # primary page. Only the Recensor's whole-page view can verify `mixed`.
-            role = page_payload.get("page_role")
-            is_act_primary_page = attachment_page == act["page_ordinal"]
-            if (
-                not isinstance(role, str)
-                or role not in {"primary", "continuation", "mixed"}
-                or (
-                    (is_act_primary_page and role == "continuation")
-                    or (not is_act_primary_page and role == "primary")
-                )
-            ):
-                raise SchemaRefusal(
-                    f"act {act_id} page Testimonium for chair {chair!r} carries a page_role "
-                    f"{role!r} its own primary-page fact contradicts; the page relationship "
-                    "is false; rebuild the page Testimonium from the attachment denominator"
-                )
-            # Only the alignment is fixed on a continuation page, not `attached`: a page
-            # witness can honestly report geometry there. What the page lacks is an
-            # anchor, which comes from the act's primary page.
-            if not is_act_primary_page and attachment["alignment"] != {
-                "status": "unaligned",
-                "reason": "continuation-page-no-act-anchor",
-            }:
-                raise SchemaRefusal(
-                    f"act {act_id} continuation-page attachment for chair {chair!r} claims "
-                    "an act anchor; this page carries no act-specific anchor; "
-                    "retain it as continuation-page-no-act-anchor"
-                )
-            current_unjoined = [row for row in unjoined if row["act_id"] == act_id]
-            if len(current_unjoined) > 1:
-                raise SchemaRefusal(
-                    f"act {act_id} appears more than once in a page Testimonium's "
-                    "unjoined-attempt record"
-                )
-            # An omitted act is disclosed with the attempt outcome that explains it, and
-            # a reading outcome may still be omitted (a structured native object cannot
-            # be joined). No row means the act joined.
-            row = current_unjoined[0] if current_unjoined else None
-            disclosed = row["outcome"] in WITNESS_READING_OUTCOMES if row is not None else True
-            # Joining only proves the bytes arrived. A joined response may still be
-            # unaligned (an empty response has no span), but an omitted one can never
-            # attach.
-            if not disclosed and attachment["attached"]:
-                raise SchemaRefusal(
-                    f"act {act_id} attachment disagrees with its page Testimonium's "
-                    "unjoined-attempt record"
-                )
-            alignment = attachment["alignment"]
-            # The exact label: `anchor-line` says the chair counts only because another
-            # chair's anchor located its text, so the label is evidence about
-            # independence.
-            if attachment["attached"] and attachment["attachment_basis"] != derived_basis:
-                raise SchemaRefusal(
-                    f"act {act_id} page attachment for chair {chair!r} names basis "
-                    f"{attachment['attachment_basis']!r}, but its own retained evidence "
-                    f"attached it by {derived_basis!r}"
-                )
-            if (
-                attachment["attached"]
-                and isinstance(alignment, dict)
-                and alignment.get("status") == "aligned"
-            ):
-                if (
-                    not isinstance(alignment, dict)
-                    or set(alignment)
-                    != {
-                        "status",
-                        "anchor_basis",
-                        "anchor_chair",
-                        "anchor_span",
-                        "witness_span",
-                        "anchor_line_match",
-                        "line_geometry",
-                        "loss",
-                        "offset_maps",
-                        "deadline_in_force",
-                    }
-                    or alignment.get("status") != "aligned"
-                    or (
-                        alignment.get("anchor_basis") == "act-anchor"
-                        and not isinstance(alignment.get("anchor_chair"), str)
-                    )
-                    or (
-                        alignment.get("anchor_basis") != "act-anchor"
-                        and alignment.get("anchor_chair") is not None
-                    )
-                    or span != alignment.get("witness_span")
-                    # Whether the alignment's SIGALRM backstop was armed, not only
-                    # whether it finished.
-                    or not isinstance(alignment.get("deadline_in_force"), bool)
-                ):
-                    raise SchemaRefusal("an attached page witness has no computed alignment")
-                page_text = page_payload.get("payload")
-                witness_span = alignment["witness_span"]
-                if not isinstance(page_text, str):
-                    raise SchemaRefusal("an attached page witness has no textual comparison view")
-                # `witness_span` indexes the raw page reading. The slice is stripped of
-                # markup because dissent assumes a markup-free comparison view.
-                comparison_views[chair] = act_comparison_view(page_text, witness_span)
-            elif attachment["attached"] and (
-                not isinstance(alignment, dict)
-                or set(alignment) != {"status", "reason"}
-                or alignment.get("status") != "unaligned"
-                or span is not None
-                or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
-            ):
-                raise SchemaRefusal(
-                    "a geometrically attached page witness has no explicit span limit"
-                )
-            elif (
-                not attachment["attached"]
-                and isinstance(alignment, dict)
-                and alignment.get("status") == "aligned"
-            ):
-                # Text alignment survives independently but cannot authorize a
-                # geometric attachment or comparison view.
-                if span is not None:
-                    raise SchemaRefusal("an unattached page witness claims a comparison span")
-            elif not attachment["attached"] and (
-                not isinstance(alignment, dict)
-                or set(alignment) != {"status", "reason"}
-                or alignment.get("status") != "unaligned"
-                or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
-            ):
-                # The producer emits exactly {status, reason}; without a reason the
-                # operator cannot tell why comparison failed.
-                raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
+            if view is not None:
+                comparison_views[chair] = view
             page_witness_chairs.add(chair)
-            # Geometry alone cannot satisfy the witness floor: this act must also
-            # have an aligned slice of retained page text. Re-derive the boolean
-            # so a resealed attachment cannot claim comparability by assertion.
-            if attachment["comparable"] != (
-                attachment["attached"]
-                and isinstance(alignment, dict)
-                and alignment.get("status") == "aligned"
-            ):
-                raise SchemaRefusal(
-                    f"act {act_id} page attachment for chair {chair!r} claims a comparability "
-                    "its own recorded alignment does not support. The witness floor could count "
-                    "text that was never placed in this act. Rebuild comparability from the "
-                    "referenced page Testimonium and alignment."
-                )
         else:
-            if attachment_page is not None:
-                raise SchemaRefusal("an act-scoped witness carries a page ordinal")
-            if attachment["alignment"] is not None:
-                raise SchemaRefusal("an act-scoped witness carries page alignment evidence")
-            testimonium = context.tree.read_artifact_reference(
-                reference,
-                stage=ATTESTATORES,
-                kind="testimonium",
-                subject_id=act_id,
+            deltas = _checked_act_scoped_attachment(
+                context,
+                act_id,
+                attachment,
+                reference=reference,
+                bases=bases,
+                proposal_region_ids=proposal_region_ids,
             )
-            if testimonium.get("payload", {}).get("chair") != chair:
-                raise SchemaRefusal(
-                    f"act {act_id} attachment points to another chair's Testimonium"
-                )
-            # Act-scoped comparability comes from the referenced Testimonium's
-            # own text; structured reports stay retained but uncountable.
-            if attachment["comparable"] != (
-                attachment["attached"]
-                and isinstance(testimonium.get("payload", {}).get("payload"), str)
-            ):
-                raise SchemaRefusal(
-                    f"act {act_id} attachment for chair {chair!r} claims a comparability its "
-                    "own retained derived testimony does not support. The witness floor could "
-                    "count a structured or absent report as act text. Rebuild comparability "
-                    "from the current referenced Testimonium."
-                )
-            edge_deltas.setdefault(chair, []).extend(
-                sealed_proposal_edge_deltas(
-                    testimonium["payload"],
-                    [basis for basis in bases if basis["region_id"] in proposal_region_ids],
-                )
-            )
+        edge_deltas.setdefault(chair, []).extend(deltas)
     return {
         "reference": context.artifact_ref(ATTESTATORES, "act-attachment", record["artifact_id"]),
         # A blinded dossier may show that page evidence exists, but not the
@@ -1321,6 +997,362 @@ def act_attachment_view(
         "comparison_views": comparison_views,
         "edge_deltas": ordered_edge_deltas(edge_deltas),
     }
+
+
+def _current_testimonium_for(
+    attachment: dict[str, Any], *, act_id: str, current: dict[str, dict], page_chairs: set[str]
+) -> dict:
+    """The chair's current Testimonium, once the attachment's own facts agree with it."""
+    span = attachment["span"]
+    characters = attachment["content_health"].get("characters")
+    if attachment["attached"] and not attachment["page_witness"]:
+        if attachment["attachment_basis"] != "presented-region":
+            raise SchemaRefusal("an act-scoped attachment has no presented-region basis")
+        expected_end = (
+            characters if isinstance(characters, int) and not isinstance(characters, bool) else 0
+        )
+        if span != {"start": 0, "end": expected_end}:
+            raise SchemaRefusal("an attached act view does not span its complete delivered reading")
+    if attachment["comparable"] and not attachment["attached"]:
+        raise SchemaRefusal(
+            "an unattached act view cannot claim comparable text. "
+            "Text cannot count for an act when witness geometry did not attach to it. "
+            "Rebuild both facts from the retained Testimonium."
+        )
+    # Independent of the rule above. Page witnesses reach this too, so each refusal
+    # names its own field rather than calling every row an act view.
+    if not attachment["attached"]:
+        if attachment["attachment_basis"] != "unattached":
+            raise SchemaRefusal(
+                "an unattached attachment names an attachment basis other than "
+                "'unattached'; nothing attached it, so nothing decided the basis"
+            )
+        if span is not None:
+            raise SchemaRefusal("an unattached attachment claims an alignment span")
+    chair = attachment["chair"]
+    # A reread appends a new attempt without rewriting the attachment, so a stale
+    # attachment could present a superseded outcome as live. For an act-scoped chair
+    # `attached` must equal the current outcome.
+    chair_testimonium = current.get(chair)
+    if chair_testimonium is None:
+        raise FatalAccounting(
+            f"act {act_id} attachment names chair {chair!r}, which has no current Testimonium"
+        )
+    if not attachment["page_witness"] and attachment["attached"] != (
+        chair_testimonium["outcome"] in WITNESS_READING_OUTCOMES
+    ):
+        raise SchemaRefusal(
+            f"act {act_id} attachment for chair {chair!r} disagrees with that chair's "
+            "current Testimonium outcome"
+        )
+    # Not exempted for page witnesses: a reread appends to the same per-(act, chair)
+    # stream either way. `attached` may differ from a page witness's outcome, but
+    # the health must be the current attempt's.
+    if attachment["content_health"] != chair_testimonium["payload"].get("content_health"):
+        raise SchemaRefusal(
+            f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
+            "longer this chair's current Testimonium"
+        )
+    expected_page_witness = chair in page_chairs
+    if attachment["page_witness"] != expected_page_witness:
+        raise SchemaRefusal(
+            f"act {act_id} attachment changes page-witness scope for chair {chair!r}"
+        )
+    # `dissent.py` trusts the Testimonium's own `page_witness` flag and skips the
+    # comparison for it, so a resealed flag could silence an act-scoped chair's
+    # dissent row. Reconcile this copy against the run's declaration too.
+    if chair_testimonium["payload"].get("page_witness", False) is not expected_page_witness:
+        raise SchemaRefusal(
+            f"act {act_id} Testimonium for chair {chair!r} claims a page-witness scope this "
+            "run did not declare"
+        )
+    return chair_testimonium
+
+
+def _checked_page_attachment(
+    context,
+    act: dict[str, Any],
+    attachment: dict[str, Any],
+    chair_testimonium: dict,
+    *,
+    reference: Any,
+    page_ids: dict[int, str],
+    bases: list[dict],
+    proposal_region_ids: set[str],
+    all_proposal_regions: list[dict[str, Any]],
+    page_testimonia_seen: dict[str, dict] | None,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Reconcile a page witness's attachment with its page Testimonium.
+
+    Returns the act's comparison view of the page text, if aligned, and the edge deltas.
+    """
+    act_id = act["act_id"]
+    chair = attachment["chair"]
+    attachment_page = attachment["page_ordinal"]
+    span = attachment["span"]
+    view = None
+    if attachment_page not in page_ids:
+        raise SchemaRefusal(
+            f"act {act_id} page attachment names page {attachment_page!r} outside its "
+            "regions; it claims evidence the Perlector did not read; restore the "
+            "attachment's contributing page"
+        )
+    testimonium = context.tree.read_artifact_reference(
+        reference,
+        stage=ATTESTATORES,
+        kind="page-testimonium",
+        subject_id=page_ids[attachment_page],
+    )
+    page_payload = testimonium.get("payload")
+    validate_page_testimonium_record(context, testimonium, all_proposal_regions)
+    # Collected for the caller's run-wide routing sweep: a page Testimonium
+    # belongs to a (page, chair) pair, not to this act. This is the Perlector's
+    # only digest-checked read of these records.
+    if page_testimonia_seen is not None and isinstance(page_payload, dict):
+        page_testimonia_seen[testimonium["artifact_id"]] = testimonium
+    native_capture = page_payload.get("native_capture")
+    if native_capture is not None:
+        if native_capture["raw_response_ref"] not in testimonium.get("inputs", []):
+            raise SchemaRefusal(
+                f"act {act_id} page Testimonium for chair {chair!r} does not bind its "
+                "retained raw response as a verified input"
+            )
+        if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
+            raise SchemaRefusal(
+                f"act {act_id} page Testimonium for chair {chair!r} attributes its "
+                "native capture to an adapter other than that chair's configured boundary"
+            )
+        verify_native_capture_blob(context.tree, native_capture)
+    # Sealed proposal geometry only, as the writer used. A recovery crop
+    # postdates testimony, so it may not enlarge the denominator that attached
+    # it after the fact.
+    page_bases = [
+        basis
+        for basis in bases
+        if basis["source_page_ordinal"] == attachment_page
+        and basis["region_id"] in proposal_region_ids
+    ]
+    # Native page and compatibility act outcomes are independent; legacy
+    # page joins instead derive their outcome from the act attempts.
+    attachment_outcome = (
+        testimonium["outcome"] if native_capture is not None else chair_testimonium["outcome"]
+    )
+    # Re-derived through the producer's shared rule: a page witness attaches on
+    # its own ink over this act's sealed proposal or, only where it reported
+    # none, on an anchor line located in its page text. Both `attached` and the
+    # basis are recomputed, so a resealed record cannot claim either.
+    derived_basis = page_attachment_basis(
+        reading=attachment_outcome in WITNESS_READING_OUTCOMES,
+        geometry_overlaps=any(
+            reported_geometry_overlaps(
+                page_payload.get("observed", []), basis["transform"]["bounds"]
+            )
+            for basis in page_bases
+        ),
+        alignment=attachment["alignment"],
+    )
+    if attachment["attached"] != (derived_basis != "unattached"):
+        raise SchemaRefusal(
+            f"act {act_id} page attachment for chair {chair!r} does not derive from "
+            "that witness's reported geometry, or from an anchor line located in its "
+            "page text, against the sealed proposal"
+        )
+    deltas = sealed_proposal_edge_deltas(page_payload, page_bases)
+    unjoined = page_payload.get("unjoined_act_attempts")
+    if (
+        page_payload.get("chair") != chair
+        or page_payload.get("scope") != "page"
+        or page_payload.get("page_ordinal") != attachment_page
+        or not isinstance(unjoined, list)
+        or any(
+            not isinstance(row, dict)
+            or set(row) != {"act_id", "act_key", "outcome", "reason"}
+            or not isinstance(row["act_id"], str)
+            or not isinstance(row["act_key"], str)
+            or not isinstance(row["outcome"], str)
+            or not isinstance(row["reason"], str)
+            or not row["reason"].strip()
+            for row in unjoined
+        )
+    ):
+        raise SchemaRefusal(f"act {act_id} attachment points to the wrong page Testimonium")
+    # One act can disprove `primary` or `continuation` from its sealed
+    # primary page. Only the Recensor's whole-page view can verify `mixed`.
+    role = page_payload.get("page_role")
+    is_act_primary_page = attachment_page == act["page_ordinal"]
+    if (
+        not isinstance(role, str)
+        or role not in {"primary", "continuation", "mixed"}
+        or (
+            (is_act_primary_page and role == "continuation")
+            or (not is_act_primary_page and role == "primary")
+        )
+    ):
+        raise SchemaRefusal(
+            f"act {act_id} page Testimonium for chair {chair!r} carries a page_role "
+            f"{role!r} its own primary-page fact contradicts; the page relationship "
+            "is false; rebuild the page Testimonium from the attachment denominator"
+        )
+    # Only the alignment is fixed on a continuation page, not `attached`: a page
+    # witness can honestly report geometry there. What the page lacks is an
+    # anchor, which comes from the act's primary page.
+    if not is_act_primary_page and attachment["alignment"] != {
+        "status": "unaligned",
+        "reason": "continuation-page-no-act-anchor",
+    }:
+        raise SchemaRefusal(
+            f"act {act_id} continuation-page attachment for chair {chair!r} claims "
+            "an act anchor; this page carries no act-specific anchor; "
+            "retain it as continuation-page-no-act-anchor"
+        )
+    current_unjoined = [row for row in unjoined if row["act_id"] == act_id]
+    if len(current_unjoined) > 1:
+        raise SchemaRefusal(
+            f"act {act_id} appears more than once in a page Testimonium's unjoined-attempt record"
+        )
+    # An omitted act is disclosed with the attempt outcome that explains it, and
+    # a reading outcome may still be omitted (a structured native object cannot
+    # be joined). No row means the act joined.
+    row = current_unjoined[0] if current_unjoined else None
+    disclosed = row["outcome"] in WITNESS_READING_OUTCOMES if row is not None else True
+    # Joining only proves the bytes arrived. A joined response may still be
+    # unaligned (an empty response has no span), but an omitted one can never
+    # attach.
+    if not disclosed and attachment["attached"]:
+        raise SchemaRefusal(
+            f"act {act_id} attachment disagrees with its page Testimonium's unjoined-attempt record"
+        )
+    alignment = attachment["alignment"]
+    # The exact label: `anchor-line` says the chair counts only because another
+    # chair's anchor located its text, so the label is evidence about
+    # independence.
+    if attachment["attached"] and attachment["attachment_basis"] != derived_basis:
+        raise SchemaRefusal(
+            f"act {act_id} page attachment for chair {chair!r} names basis "
+            f"{attachment['attachment_basis']!r}, but its own retained evidence "
+            f"attached it by {derived_basis!r}"
+        )
+    if (
+        attachment["attached"]
+        and isinstance(alignment, dict)
+        and alignment.get("status") == "aligned"
+    ):
+        if (
+            set(alignment)
+            != {
+                "status",
+                "anchor_basis",
+                "anchor_chair",
+                "anchor_span",
+                "witness_span",
+                "anchor_line_match",
+                "line_geometry",
+                "loss",
+                "offset_maps",
+                "deadline_in_force",
+            }
+            or (
+                alignment.get("anchor_basis") == "act-anchor"
+                and not isinstance(alignment.get("anchor_chair"), str)
+            )
+            or (
+                alignment.get("anchor_basis") != "act-anchor"
+                and alignment.get("anchor_chair") is not None
+            )
+            or span != alignment.get("witness_span")
+            # Whether the alignment's SIGALRM backstop was armed, not only
+            # whether it finished.
+            or not isinstance(alignment.get("deadline_in_force"), bool)
+        ):
+            raise SchemaRefusal("an attached page witness has no computed alignment")
+        page_text = page_payload.get("payload")
+        witness_span = alignment["witness_span"]
+        if not isinstance(page_text, str):
+            raise SchemaRefusal("an attached page witness has no textual comparison view")
+        # `witness_span` indexes the raw page reading. The slice is stripped of
+        # markup because dissent assumes a markup-free comparison view.
+        view = act_comparison_view(page_text, witness_span)
+    elif attachment["attached"] and (
+        not isinstance(alignment, dict)
+        or set(alignment) != {"status", "reason"}
+        or alignment.get("status") != "unaligned"
+        or span is not None
+        or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
+    ):
+        raise SchemaRefusal("a geometrically attached page witness has no explicit span limit")
+    elif (
+        not attachment["attached"]
+        and isinstance(alignment, dict)
+        and alignment.get("status") == "aligned"
+    ):
+        # Text alignment survives independently but cannot authorize a
+        # geometric attachment or comparison view.
+        if span is not None:
+            raise SchemaRefusal("an unattached page witness claims a comparison span")
+    elif not attachment["attached"] and (
+        not isinstance(alignment, dict)
+        or set(alignment) != {"status", "reason"}
+        or alignment.get("status") != "unaligned"
+        or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
+    ):
+        # The producer emits exactly {status, reason}; without a reason the
+        # operator cannot tell why comparison failed.
+        raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
+    # Geometry alone cannot satisfy the witness floor: this act must also
+    # have an aligned slice of retained page text. Re-derive the boolean
+    # so a resealed attachment cannot claim comparability by assertion.
+    if attachment["comparable"] != (
+        attachment["attached"]
+        and isinstance(alignment, dict)
+        and alignment.get("status") == "aligned"
+    ):
+        raise SchemaRefusal(
+            f"act {act_id} page attachment for chair {chair!r} claims a comparability "
+            "its own recorded alignment does not support. The witness floor could count "
+            "text that was never placed in this act. Rebuild comparability from the "
+            "referenced page Testimonium and alignment."
+        )
+    return view, deltas
+
+
+def _checked_act_scoped_attachment(
+    context,
+    act_id: str,
+    attachment: dict[str, Any],
+    *,
+    reference: Any,
+    bases: list[dict],
+    proposal_region_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Reconcile an act-scoped witness's attachment with its Testimonium; return its edge deltas."""
+    chair = attachment["chair"]
+    if attachment["page_ordinal"] is not None:
+        raise SchemaRefusal("an act-scoped witness carries a page ordinal")
+    if attachment["alignment"] is not None:
+        raise SchemaRefusal("an act-scoped witness carries page alignment evidence")
+    testimonium = context.tree.read_artifact_reference(
+        reference,
+        stage=ATTESTATORES,
+        kind="testimonium",
+        subject_id=act_id,
+    )
+    if testimonium.get("payload", {}).get("chair") != chair:
+        raise SchemaRefusal(f"act {act_id} attachment points to another chair's Testimonium")
+    # Act-scoped comparability comes from the referenced Testimonium's
+    # own text; structured reports stay retained but uncountable.
+    if attachment["comparable"] != (
+        attachment["attached"] and isinstance(testimonium.get("payload", {}).get("payload"), str)
+    ):
+        raise SchemaRefusal(
+            f"act {act_id} attachment for chair {chair!r} claims a comparability its "
+            "own retained derived testimony does not support. The witness floor could "
+            "count a structured or absent report as act text. Rebuild comparability "
+            "from the current referenced Testimonium."
+        )
+    return sealed_proposal_edge_deltas(
+        testimonium["payload"],
+        [basis for basis in bases if basis["region_id"] in proposal_region_ids],
+    )
 
 
 def ordered_edge_deltas(
@@ -2025,7 +2057,7 @@ def _reading_image_inputs(
             "a cross-capture partition path conflicts with another direct input digest"
         )
     inputs[partition_ref["relative_path"]] = partition_ref
-    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
+    return sorted(inputs.values(), key=_input_order)
 
 
 # Closed and checked before publication: a missing field (identity, dissent, regime) is
