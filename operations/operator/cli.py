@@ -51,13 +51,10 @@ def _upload_prefix(value: str) -> str:
         raise argparse.ArgumentTypeError(str(error)) from error
 
 
+# What each word reads from the workspace by checkout-relative path. Verbs
+# absent here have a workspace that is legitimately not the checkout (a
+# folder of run trees, a backup drive), so they are never checked against it.
 _CHECKOUT_RESOURCES_BY_VERB: Final[dict[str, tuple[str, ...]]] = {
-    # What each word reads from the workspace by checkout-relative path
-    # (`common/checkout.py` names the three). `status`, `export`, `close`,
-    # `fetch-run`, `review`, `advance`, `backup`, `upload` and `scantailor`
-    # are absent on purpose: their workspace is legitimately not the checkout
-    # -- a folder of run trees, a backup drive -- and refusing them there
-    # would refuse the operator's own data.
     "run": ("pipeline", "config", "proof"),
     "boot": ("config", "proof"),
     "ingest": ("config",),
@@ -71,8 +68,6 @@ def _checkout_resources_read(args: argparse.Namespace) -> tuple[str, ...]:
     """The checkout directories this exact invocation will read from its workspace."""
 
     needed = _CHECKOUT_RESOURCES_BY_VERB.get(args.verb, ())
-    # A reviewed file named on the command line replaces the workspace default
-    # it would otherwise have been read from.
     if args.verb == "launch" and args.spend is not None:
         return ()
     if args.verb == "spend" and args.policy is not None:
@@ -85,13 +80,10 @@ def _checkout_resources_read(args: argparse.Namespace) -> tuple[str, ...]:
 def _require_workspace_checkout(workspace: Path, args: argparse.Namespace) -> None:
     """Refuse, before anything starts, a workspace missing what this word reads.
 
-    `entry.main` checks the directory the code was imported from, which is
-    right for an installed wheel and wrong for the case that actually happens:
-    the `verbatus` script started from a folder that is not the checkout. Every
-    run resolves its stage programs, configuration and proof material from
-    `--workspace`, and that is what is checked here -- for exactly the
-    directories the chosen word reads, so a word whose workspace is not the
-    checkout is never refused for lacking one.
+    Checks `--workspace` itself rather than the code's own import directory,
+    for exactly the resources the chosen word reads, so a word whose
+    workspace is legitimately not the checkout is never refused for lacking
+    one.
     """
 
     needed = _checkout_resources_read(args)
@@ -113,12 +105,8 @@ def _current_directory() -> str:
     """Where this ran, or a stated unavailability -- never a second failure.
 
     `os.getcwd()` raises when the directory this process started in has been
-    deleted or is no longer readable, and it was being called while the
-    original exception was already being handled: the receipt was abandoned,
-    the entry boundary called this same function again on the new failure, and
-    Verbatus printed a raw traceback and saved nothing.
-    A receipt that cannot say where it ran is still the record of what
-    happened.
+    deleted or is no longer readable; a receipt that cannot say where it ran
+    is still the record of what happened.
     """
 
     try:
@@ -132,18 +120,16 @@ def record_unexpected(
 ) -> OperatorError:
     """Turn an unclassified failure into the operator message, with a receipt behind it.
 
-    The catch-all used to keep only `str(error)` -- no receipt, no trace -- so
-    the one failure class with nothing to hand to a later session was the one
-    nobody had prepared for. The receipt carries the exception, a bounded
-    trace, the command and the working directory; the message names the
-    receipt first, because `sanitize_detail` cuts a rendered detail at a
-    traceback header and an exception message can contain one.
+    The receipt carries the exception, a bounded trace, the command and the
+    working directory; the message names the receipt first, since
+    `sanitize_detail` cuts a rendered detail at a traceback header and an
+    exception message can contain one.
     """
 
     described = f"{type(error).__name__}: {error}"
     if state is None:
-        # The failure came before `--state-dir` was resolved; the default
-        # location is where the operator's other records already are.
+        # Before `--state-dir` is resolved, fall back to the default location
+        # where the operator's other records already are.
         try:
             state = _default_state_dir()
         except Exception:  # noqa: BLE001 -- best effort; the message below says so
@@ -153,8 +139,8 @@ def record_unexpected(
             ErrorCode.UNEXPECTED,
             detail=f"No receipt could be saved (no state directory could be resolved). {described}",
         )
-    # Bounded like a child's output: a receipt past `MAX_RECORD_BYTES` cannot
-    # be read back, and an exception message can carry a whole document.
+    # Bounded like a child's output: an exception message can carry a whole
+    # document, past what a receipt can be read back at.
     message = bounded_tail(str(error))
     payload = {
         "summary": (
@@ -212,9 +198,8 @@ def _is_within(path: Path, directory: Path) -> bool:
 
 
 def _account_state_dir(workspace: Path | None = None) -> Path:
-    # Path.home() honours HOME, including an absolute value inside the checkout.
-    # The account database is the independent fallback for either that case or
-    # a relative HOME.
+    # Path.home() honours HOME, which may point inside the checkout or be
+    # relative; the account database below is the independent fallback.
     try:
         environment_home = Path.home()
     except RuntimeError:
@@ -225,12 +210,9 @@ def _account_state_dir(workspace: Path | None = None) -> Path:
         try:
             yield Path(pwd.getpwuid(os.getuid()).pw_dir)
         except KeyError:
-            # No passwd entry for this UID -- a container running as an unmapped
-            # user, for instance. Building the tuple eagerly ran this lookup
-            # before the loop had even looked at the environment home, so every
-            # `verbatus` word ended in the unclassified message even when HOME
-            # was absolute and perfectly usable. A missing fallback is not a
-            # reason to fail a command that never needed it.
+            # No passwd entry for this UID (an unmapped container user, say);
+            # a missing fallback is not a reason to fail a command that never
+            # needed it.
             return
 
     for home in homes():
@@ -278,8 +260,7 @@ _UNREADABLE_RECEIPT = (
     UnicodeDecodeError,
     json.JSONDecodeError,
     # A receipt inside the byte bound can still nest deeply enough for the
-    # decoder to recurse out on 3.12; that is an unreadable receipt, not an
-    # internal failure for the catch-all.
+    # decoder to recurse out on 3.12; that is unreadable, not internal.
     RecursionError,
     KeyError,
     TypeError,
@@ -290,36 +271,18 @@ _UNREADABLE_RECEIPT = (
 def _read_launch_command(
     receipt: Path | None, volume: VolumeSpec | None = None, run_id: str | None = None
 ) -> tuple[list[str], str] | None:
-    """The sealed ``docker_start_cmd`` and volume mount a saved launch receipt
-    names, shared by every deriver that reads launch-bound paths out of it
-    (``_derived_evidence_keys``, ``_derived_evidence_prefixes``) so the read,
-    the shape checks and the cross-volume refusal exist in one place rather
-    than once per deriver with their own chance to disagree.
+    """The sealed ``docker_start_cmd`` and volume mount a saved launch receipt names.
 
-    ``fetch-run`` will not guess at the launch-token-named reports -- guessing
-    means listing a whole volume that also holds the submission's page images --
-    so it asks for them by key or prefix. Nobody should have to retype a
-    32-hex token out of a JSON receipt to supply one; the receipt holds the
-    sealed ``docker_start_cmd`` those paths were bound into.
-
-    Refused loudly rather than skipped in all four failure shapes, because each
-    one would otherwise leave an operator believing the reports came home: a
-    receipt that cannot be read, a receipt that carries no launch request, a
-    receipt for a *different* volume than the one this call is reading, and a
-    receipt whose sealed command started a *different* run than the one being
-    fetched. The volume mismatch is quiet -- the derived paths would be real
-    names of another launch's records, fetched or refused against a volume
-    that never held them; a run-id mismatch on the *same* volume is quieter
-    still, because every derived key and prefix would still resolve to real
-    objects on that volume, just the wrong launch's: a receipt for ``r1``
-    passed to ``fetch-run --run-id r2`` would derive ``r1``'s evidence keys
-    and store them beside the fetched ``r2`` tree, misstating their
-    provenance rather than merely failing to find them.
-
-    Read through the same bounded, no-follow open the reviewed pod request uses:
-    a record this verb did not write is not read whole on trust. Returns
-    ``None`` when no receipt was named, so a caller can fall back to its own
-    default rather than treating "nothing asked" as a shape failure.
+    Shared by every deriver that reads launch-bound paths out of it
+    (``_derived_evidence_keys``, ``_derived_evidence_prefixes``), so the read,
+    shape checks and cross-volume refusal live in one place. Refuses loudly
+    rather than silently on an unreadable receipt, one with no launch
+    request, one for a different volume, or one whose command started a
+    different run: any of these could otherwise store another launch's
+    records under this run's evidence, misstating their provenance rather
+    than merely failing to find them. Read through a bounded, no-follow open,
+    since a record this verb did not write is not read whole on trust.
+    Returns ``None`` when no receipt was named.
     """
 
     if receipt is None:
@@ -332,16 +295,10 @@ def _read_launch_command(
             data = handle.read(MAX_REQUEST_BYTES + 1)
         if len(data) > MAX_REQUEST_BYTES:
             raise ValueError(f"the launch receipt exceeds {MAX_REQUEST_BYTES} bytes")
-        # Through the receipt's own shape, not past it. `ReceiptStore.write`
-        # stores every action under `payload`, and the launch receipt's request
-        # with it, so reading a top-level `request` raised `KeyError` for every
-        # genuine launch receipt and refused the derivation this flag exists
-        # for -- while the suite's hand-built fixture, which had no `payload`
-        # wrapper, passed. Read here rather than
-        # through `ReceiptStore.read` because this path takes a receipt an
-        # operator names, which may sit outside the state root that store
-        # resolves against; the bounded no-follow open above is the reviewed
-        # read for a record this verb did not write.
+        # `ReceiptStore.write` stores every action under `payload`, and the
+        # launch request with it. Read directly rather than through
+        # `ReceiptStore.read`, since this receipt may sit outside the state
+        # root that store resolves against.
         record = json.loads(data.decode("utf-8"))
         if not isinstance(record, dict) or not isinstance(record.get("payload"), dict):
             raise ValueError("the receipt does not carry an operator receipt payload")
@@ -353,14 +310,10 @@ def _read_launch_command(
             raise ValueError("docker_start_cmd is not a list of words")
         if not isinstance(mount, str) or not mount:
             raise ValueError("volume_mount_path is missing")
-        # Decoded here, inside the guard: `launch_run_id` does its own JSON
-        # decode of the nested `--bootstrap-command-json` value, which can
-        # recurse out on the same pathologically-nested input the outer
-        # receipt read above is already guarded against (`_UNREADABLE_RECEIPT`
-        # names `RecursionError` for exactly this). Computed outside this
-        # block, a deeply nested nested command would end the call in an
-        # uncaught traceback instead of the named refusal every other shape
-        # failure here gets.
+        # Decoded inside the guard: `launch_run_id` does its own JSON decode
+        # of the nested `--bootstrap-command-json` value, which can recurse
+        # out on the same pathologically-nested input `_UNREADABLE_RECEIPT`
+        # already guards the outer read against.
         recorded_run_id = launch_run_id(command)
     except _UNREADABLE_RECEIPT as error:
         raise OperatorError(
@@ -381,12 +334,10 @@ def _read_launch_command(
             ),
         )
     if run_id is not None and recorded_run_id != run_id:
-        # `recorded_run_id is None` is not "nothing to compare": a hold-only
-        # launch (or a receipt whose nested command cannot be decoded) still
-        # has its own real, derivable evidence keys and prefixes -- just none
-        # that belong to any run. Asked for while fetching a specific run,
-        # a receipt that cannot prove it belongs to that run is refused the
-        # same as one proven to belong to a different one.
+        # A hold-only launch, or a receipt whose command cannot be decoded,
+        # still has derivable evidence keys, just none belonging to any run;
+        # asked for a specific run, it is refused the same as a proven
+        # mismatch.
         if recorded_run_id is None:
             detail = (
                 f"the launch receipt {receipt} does not prove that run {run_id!r} started; "
@@ -407,8 +358,7 @@ def _read_launch_command(
 def _derived_evidence_keys(
     receipt: Path | None, volume: VolumeSpec | None = None, run_id: str | None = None
 ) -> tuple[str, ...]:
-    """The launch-bound evidence keys a saved launch receipt already names —
-    ``launch.launch_evidence_keys`` is the derivation, over `_read_launch_command`."""
+    """The launch-bound evidence keys a saved launch receipt already names."""
 
     read = _read_launch_command(receipt, volume, run_id)
     if read is None:
@@ -420,13 +370,7 @@ def _derived_evidence_keys(
 def _derived_evidence_prefixes(
     receipt: Path | None, volume: VolumeSpec | None = None, run_id: str | None = None
 ) -> tuple[str, ...]:
-    """The launch-scoped evidence prefixes a saved launch receipt already
-    names — ``launch.launch_evidence_prefixes`` is the derivation, over
-    `_read_launch_command`. F110/G11: without this, ``--launch-receipt``
-    alone derived the exact ``--evidence-key`` values but left
-    ``--evidence-prefix`` at its whole-``preflight/``-tree default, so the
-    manual-retyping failure those flags exist to eliminate was only half
-    closed."""
+    """The launch-scoped evidence prefixes a saved launch receipt already names."""
 
     read = _read_launch_command(receipt, volume, run_id)
     if read is None:
@@ -438,20 +382,16 @@ def _derived_evidence_prefixes(
 def _print(text: str = "") -> None:
     """Print through the same control-byte stripping the operator surface uses.
 
-    Applied one line at a time, not to the whole string at once:
-    `strip_control_bytes` treats a newline as a control byte like any other,
-    and `OperatorError.render()`'s three-part message depends on its own
-    newlines to stay three parts on screen.
+    Applied one line at a time: `strip_control_bytes` treats a newline as a
+    control byte like any other, and multi-line messages depend on theirs.
     """
 
     print("\n".join(strip_control_bytes(line) for line in text.split("\n")))
 
 
-# F004: these three live only on the top-level parser, added before the verb
-# subparsers -- argparse stops accepting parent-parser options once the verb
-# token is consumed, so any of them typed after the verb (the only ordering
-# every subcommand's own flags are shown in) is rejected as unrecognized with
-# nothing in the message pointing at the fix.
+# argparse stops accepting parent-parser options once the verb token is
+# consumed, so any of these typed after the verb is rejected as unrecognized
+# with nothing pointing at the fix; `_annotate_unrecognized` adds that.
 _TOP_LEVEL_ONLY_FLAGS: Final = ("--workspace", "--state-dir", "--notify")
 
 
@@ -463,11 +403,11 @@ class PlainParser(argparse.ArgumentParser):
 
 
 def _annotate_unrecognized(message: str) -> str:
-    """Name the fix for the one unrecognized-arguments cause this is (F004).
+    """Name the fix when argparse's unrecognized-arguments message is our own.
 
-    `message` is argparse's own wording, not this codebase's -- matched by
-    prefix rather than parsed, so a wording this function does not recognize
-    still reaches the operator unmodified instead of being misread.
+    `message` is argparse's own wording, matched by prefix rather than
+    parsed, so an unrecognized wording reaches the operator unmodified
+    instead of being misread.
     """
 
     prefix = "unrecognized arguments: "
@@ -491,24 +431,17 @@ def build_parser() -> PlainParser:
     parser.add_argument(
         "--workspace",
         type=Path,
-        # The current directory, not this module's own parents: under an
-        # installed wheel that spelling is site-packages, where no project
-        # config lives and where receipt writes do not belong. The wrapper cd's
-        # into the checkout before running, so the default is right for both
-        # the double-click route and a terminal opened at the project root.
+        # The current directory, not this module's own parents, which under
+        # an installed wheel would be site-packages; the wrapper cd's into
+        # the checkout before running.
         default=Path.cwd(),
         help="the checked-out Apparatus Verbatus folder (defaults to the current directory)",
     )
     parser.add_argument(
         "--state-dir",
         type=Path,
-        # No computed default here. `main` resolves the durable default against
-        # the *resolved* workspace, and `None` is how it knows the operator did
-        # not name a path. Deciding that from a scan of raw argv could not work:
-        # argparse accepts unambiguous abbreviations, so `--state-di /records`
-        # set this value and the scan missed it -- the named folder was parsed
-        # and then silently overwritten with the default, and `status` afterwards
-        # read a different set of records than the operator had asked for.
+        # No computed default: `main` resolves the durable default against
+        # the resolved workspace, and `None` is how it knows none was named.
         default=None,
         help="where local receipts are kept",
     )
@@ -828,12 +761,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     state: Path | None = None
     try:
-        # Parser construction resolves the environment-derived state root and
-        # belongs inside the same refusal boundary as parsing and execution.
         parser = build_parser()
         if not arguments:
-            # Inside the try, not before it: a Ctrl+C at this prompt has to
-            # reach the same three-part contract as every other failure.
+            # Inside the try, not before it: a Ctrl+C at this prompt still
+            # reaches the same three-part contract as every other failure.
             arguments = _interactive_arguments()
             if not arguments:
                 return 0
@@ -934,8 +865,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "evidence_keys": evidence_keys,
             }
             # Passed only when named or derived, so the surface's own default
-            # (the whole preflight/ tree) stays the default when neither is --
-            # restating it here would just be a second place to keep in sync.
+            # (the whole preflight/ tree) applies when neither is.
             evidence_prefixes = tuple(
                 dict.fromkeys((*(args.evidence_prefix or ()), *derived_prefixes))
             )
@@ -988,7 +918,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             else:
                 _print(instruction(args.project, workspace=workspace))
-        # Parser choices must never become a silent no-op if dispatch drifts.
         else:
             raise OperatorError(
                 ErrorCode.INVALID_COMMAND, detail="the requested word has no action"
@@ -999,7 +928,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         _print(OperatorError(ErrorCode.INTERRUPTED).render())
         return 2
-    # Raw implementation failures must reach the same three-part operator contract.
     except Exception as error:
         _print(record_unexpected(error, arguments, state).render())
         return 2
@@ -1010,18 +938,11 @@ def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
     """Bind one run before any verb acts on it, and name a bad id as a bad id.
 
     `RunTree.__init__` validates the run id and refuses one that resolves
-    outside the run root; both arrive as `ContractError`. Constructed outside
-    a guard, a typed `--run-id My-Run` reached the unclassified handler and
-    told the operator to photograph the message and find a maintainer over one
-    capital letter, and an attempted escape from the approved run root
-    reported itself the same way — a tool that broke rather than a request
-    that was refused.
-
-    The code is `INVALID_COMMAND` rather than a verb-specific refusal because
-    that is what happened: the instruction named no run this tool could bind,
-    nothing was read, and nothing was changed. A tree-unreadable code would
-    send the operator to preserve and investigate register evidence that was
-    never opened.
+    outside the run root, both as `ContractError`, caught here as
+    `INVALID_COMMAND` rather than a verb-specific refusal: the instruction
+    named no run this tool could bind, so nothing was read and nothing
+    changed, unlike a tree-unreadable refusal that would send the operator to
+    preserve and investigate evidence that was never opened.
     """
 
     from common.contracts.errors import ContractError
@@ -1035,17 +956,15 @@ def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
 def _review_in_custody(run_root: Path, run_id: str, workspace: Path, *, raw: bool = False) -> None:
     """Exec the renderer with no credential and a kernel-enforced no-write policy.
 
-    The child returns the projection as JSON and nothing else; that is what keeps
-    a hostile run tree's bytes inert across the boundary. The parent then reads
-    those bytes out in plain language (`review_text.render`), or prints them as
-    they came when `raw` is asked for. Either way the run tree was opened once,
-    read-only, by the parent, and never by the child.
+    The run tree is opened once, read-only, by the parent, and the child
+    receives only the resulting immutable JSON value stream, never a
+    run-tree path or object; a compromised child can deceive its viewer
+    about those bytes but cannot reopen the evidence or reach any
+    pipeline/provider module. The parent reads the child's JSON out in plain
+    language (`review_text.render`), or prints it as-is when `raw` is asked
+    for.
     """
 
-    # Read before crossing the boundary.  The UI child receives only this
-    # immutable value stream, never a run-tree path or a ``RunTree`` object.
-    # It can deceive its viewer about those bytes if compromised, but cannot
-    # reopen the evidence to mutate it or reach any pipeline/provider module.
     from common.runtree.store import RunTree
 
     _bound_run_tree(RunTree, run_root, run_id)
@@ -1060,13 +979,11 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path, *, raw: boo
     if completed.returncode != 0:
         launcher = backend.launcher_failure(completed)
         if launcher is not None:
-            # The confinement launcher never exec'd the console, so this is a
-            # platform-enforcement refusal rather than a claim that the run
-            # tree itself is unreadable.
+            # A platform-enforcement refusal: the launcher never exec'd the
+            # console, so this is not a claim the run tree is unreadable.
             raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
         if completed.returncode == console.PROJECTION_UNREADABLE_EXIT:
-            # The console never opened the run tree, so this must not tell the
-            # operator to preserve and investigate its evidence.
+            # The console never opened the run tree here either.
             raise OperatorError(
                 ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
                 detail=completed.stderr or completed.stdout,
@@ -1080,8 +997,7 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path, *, raw: boo
     try:
         returned = json.loads(completed.stdout)
     except ValueError as error:
-        # The child's own output failed to round-trip; that is a fault of this
-        # tool's pipe, and it must not be reported as a claim about the run tree.
+        # A fault of this tool's pipe, not a claim about the run tree.
         raise OperatorError(
             ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
             detail=(
@@ -1114,10 +1030,9 @@ def _backup_in_custody(
 ) -> None:
     """Copy evidence only in the no-network, credential-free custody child.
 
-    ``surface`` is where the operator's own receipt of the attempt goes: which
-    run root was copied where, with what snapshot, or why it was refused. A
-    backup used to leave only its snapshot on the destination, so `status`
-    could not say a backup had ever happened.
+    ``surface`` records the operator's own receipt of the attempt: which run
+    root was copied where, with what snapshot, or why it was refused; without
+    it, `status` could not say a backup had ever happened.
     """
 
     from .backup import (
@@ -1135,10 +1050,9 @@ def _backup_in_custody(
         "run_root": str(Path(run_root).absolute()),
         "mac_directory": str(Path(mac_directory).absolute()),
     }
-    # The parent must reject overlap before creating the layout; otherwise its
-    # setup can write `objects/` and `snapshots/` inside the sealed source.
-    # Custody grants the child publication rights but deliberately withholds
-    # directory creation, so the checked closed layout must exist first.
+    # The parent rejects overlap before creating the layout, since custody
+    # grants the child publication rights but withholds directory creation:
+    # unchecked, setup could write `objects/`/`snapshots/` inside the source.
     try:
         source, destination = resolve_backup_paths(run_root, run_id, mac_directory)
         prepare_backup_layout(source, destination)
@@ -1147,10 +1061,9 @@ def _backup_in_custody(
     except BackupRefusal as refusal:
         surface.record_backup(state="refused", facts=facts, detail=str(refusal))
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
-    # `--workspace` selects project data for other verbs; it is not authority to
-    # replace this custody worker's code: the surviving python_module_command
-    # pins the import root to the checkout that loaded this module and accepts
-    # no caller-nominated root at all. The same pinned root stays the cwd.
+    # `--workspace` selects project data for other verbs; it is not authority
+    # to replace this custody worker's code, so its root is pinned here
+    # rather than taken from a caller-nominated path.
     worker_root = Path(__file__).resolve().parents[2]
     command = python_module_command("operations.operator.backup_worker")
     request = json.dumps(
@@ -1196,25 +1109,18 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
     from . import triage
 
     try:
-        # Completeness first, before anything durable. `write_mode_declaration`
-        # refuses to rewrite a batch's declared mode once it exists, so an
-        # incomplete `--accept` that wrote the record and *then* refused left the
-        # mode for that batch claimed by a command that did nothing — and an
-        # operator who corrects the invocation to a different `--mode` is then
-        # refused by their own abandoned attempt.
+        # Completeness is checked before anything durable: `write_mode_declaration`
+        # refuses to rewrite a batch's declared mode once it exists, so a
+        # decision that wrote the mode record and then refused would claim
+        # that batch's mode for a command that did nothing further.
         if args.decline is not None and args.queue_state is None:
             raise triage.TriageRefusal(
                 "triage refusal queue-state-required: decline needs --queue-state"
             )
-        # A decline carrying acceptance arguments. The guard below catches the
-        # companions supplied with *no* decision word; this catches them supplied
-        # with the *wrong* one. --draft, --confirmation-out and --preview-sha256
-        # belong to --accept alone, and the decline path ignored all three in
-        # silence while journalling the decline and exiting 0. A decided row is
-        # never rewritten, so the acceptance the operator was plainly assembling
-        # -- they had produced a draft and its preview digest -- became
-        # permanently unreachable for that item, and the console had called it
-        # success.
+        # --draft, --confirmation-out and --preview-sha256 belong to --accept
+        # alone; a decline row is never rewritten, so silently ignoring them
+        # here would decide the item for good and strand an acceptance the
+        # operator was plainly assembling.
         if args.decline is not None and any(
             (args.draft, args.confirmation_out, args.preview_sha256)
         ):
@@ -1223,13 +1129,11 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
                 "--confirmation-out and --preview-sha256 belong to --accept; a decline "
                 "would ignore them and decide this row for good"
             )
-        # The reverse direction. The checks above refuse a decision missing its
-        # companions; without this one, the companions supplied *without* a
-        # decision word printed the queue and exited 0, so an operator who meant
-        # to accept was told the command succeeded while nothing was journalled
-        # -- and the batch's mode was claimed by that non-decision on the way.
-        # `--queue-state` is deliberately absent from this list: reading the
-        # journal alongside the rendered queue is a legitimate display run.
+        # The reverse of the check above: acceptance companions with no
+        # decision word would otherwise print the queue and exit 0 as though
+        # nothing needed deciding. `--queue-state` is absent from this list,
+        # since reading the journal alongside the rendered queue is a
+        # legitimate display run.
         if (
             args.accept is None
             and args.decline is None
@@ -1249,12 +1153,10 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
                     "triage refusal preview-confirmation-required: accept needs the shown preview digest"
                 )
         declaration = triage.declare_mode(args.mode, batch_id=args.batch_id, operator=args.operator)
-        # The queue loads before the declaration is persisted, for the same
-        # reason the flag checks run before both: `load_queue` refuses an
-        # unreadable or non-canonical manifest, evidence or proxy map, and a
-        # mode record written ahead of it claimed the batch for a command that
-        # then refused. `declare_mode` above only builds and validates the
-        # record; nothing durable happens until the batch is known to load.
+        # The queue loads before the declaration is persisted: `load_queue`
+        # refuses an unreadable or non-canonical manifest, evidence or proxy
+        # map, and nothing durable should happen until the batch is known to
+        # load.
         queue = triage.load_queue(
             args.manifest,
             args.evidence,
@@ -1271,8 +1173,6 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
             )
         if args.accept is not None:
             draft = triage.load_confirmation_draft(args.draft)
-            # Acceptance spans two durable files; this transaction API preserves
-            # journal-first ordering and resumes a missing confirmation on replay.
             triage.accept_candidate(
                 args.queue_state,
                 queue,
@@ -1305,9 +1205,9 @@ def _advance_with_confirmation(
 
     tree = _bound_run_tree(RunTree, run_root, run_id)
     try:
-        # Stored boundary facts do not depend on the declared selection. Mode
-        # claims must wait until the selection is validated, or an invalid
-        # range could be presented as evidence before it is refused.
+        # Stored boundary facts are gathered before the declared mode is
+        # validated, so an invalid range is refused before anything is
+        # presented as evidence.
         boundary_states: list[dict[str, object] | None] = []
         for candidate in STAGES:
             try:
@@ -1337,10 +1237,9 @@ def _advance_with_confirmation(
                     f"census {json.dumps(candidate_summary['census'], sort_keys=True)}"
                 )
         held = held_boundaries_for_mode(mode, stage=stage, from_stage=from_stage, to_stage=to_stage)
-        # Named as the operator's own declaration, because that is all it can
-        # be: nothing in the run tree records how the pipeline was invoked, so
-        # the console cannot check this against evidence and must not present
-        # it as though it had.
+        # Named as the operator's own declaration: nothing in the run tree
+        # records how the pipeline was invoked, so this is not checked
+        # against evidence and must not be presented as though it were.
         _print(f"Staged invocation mode, as you declared it: {mode}.")
         _print("The run tree records no invocation mode, so nothing here checks that claim.")
         if mode == "auto":
@@ -1359,16 +1258,11 @@ def _advance_with_confirmation(
         summary = boundary_summary(tree, stage)
         digest = summary["seal_digest"]
     except (ApprovalRefusal, OSError) as error:
-        # `OSError` is carried from pr/08, where this block read the boundary
-        # through `sealed_boundary` and an unreadable manifest or seal artefact
-        # raised straight through. `boundary_summary` converts that one itself
-        # now (`stored_boundary` catches `OSError`), but the reason to keep the
-        # arm is unchanged and still live: this block prints the whole boundary
-        # chain before it returns, and a closed or broken stdout raises `OSError`
-        # out of `_print`. Uncaught, either reached the catch-all and told the
-        # operator to photograph an unexpected error and find a maintainer, when
-        # the answer is that this boundary cannot be advanced.
-        # `advance.trigger_advance` guards its own printing the same way.
+        # `OSError` also covers a closed or broken stdout raised out of
+        # `_print` while this block prints the boundary chain; uncaught,
+        # either would reach the catch-all as an unexpected error rather than
+        # a plain refusal to advance. `advance.trigger_advance` guards its
+        # own printing the same way.
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
     _print("Sealed evidence summary:")
     _print(f"- seal digest: {summary['seal_digest']}")
@@ -1400,13 +1294,9 @@ def _advance_with_confirmation(
     )
     _print(f"Advance record: {reference.relative_path} ({reference.sha256})")
     if surface is not None:
-        # F108: without this, `status` had no arm for `advance` at all -- an
-        # operator's own sequence of launch/run/backup/advance/export could
-        # not be reconstructed from status alone. The approval record above
-        # remains the durable evidence; this only lets status find it again.
-        # Optional because most of this function's own test coverage exercises
-        # the confirmation/boundary-selection logic without an OperatorSurface
-        # at all; the real CLI dispatch always supplies one.
+        # Lets `status` find the approval record above again; `surface` is
+        # optional since most of this function's own tests exercise the
+        # confirmation/boundary-selection logic without one.
         surface.record_advance(
             run_id=run_id,
             run_root=run_root,
@@ -1482,8 +1372,7 @@ def load_request(path: str | Path) -> PodCreateRequest:
             docker_start_cmd=tuple(command),
             hard_deadline=require_utc(deadline, "hard deadline"),
             repository_commit=raw["repository_commit"],
-            # Absent means the reviewed default, not the provider's: a request
-            # file that names no container disk still asks for a stated size.
+            # Absent falls back to the reviewed default, not the provider's.
             container_disk_gb=raw.get("container_disk_gb", DEFAULT_CONTAINER_DISK_GB),
             template=raw.get("template"),
             metadata=metadata,
@@ -1500,14 +1389,10 @@ def load_request(path: str | Path) -> PodCreateRequest:
 def _network_volume(value: str | None, *, verb: str) -> VolumeSpec | None:
     """Read `DATACENTER:VOLUME_ID` without letting a typo become a raw traceback.
 
-    The error code names the verb this parse is for, not only the volume
-    problem: `UPLOAD_VOLUME_UNAVAILABLE`'s registered copy tells the operator
-    to run `verbatus upload` again, which is the right advice for `upload`
-    and `ingest` but sends a `fetch-run` operator -- who asked to read a run
-    tree home, not send one -- toward sending files instead. `fetch-run`
-    reports the same malformed-input refusal as `FETCH_RUN_FAILED`, whose
-    copy names `verbatus fetch-run`, exactly as `OperatorSurface.fetch_run`
-    already does for the volume failures it detects further downstream.
+    The error code names the verb this parse is for: `UPLOAD_VOLUME_UNAVAILABLE`
+    advises re-running `verbatus upload`, which is wrong for a `fetch-run`
+    operator who asked to read a run tree home, not send one, so that verb
+    gets `FETCH_RUN_FAILED` instead.
     """
 
     if value is None:
@@ -1584,9 +1469,8 @@ def _interactive_arguments() -> list[str]:
         output_dir = _ask("Existing empty approved folder for the ready-to-submit records")
         policy = _ask("Reviewed data-handling policy (leave blank for the project default)")
         corpus_id = _ask("Corpus ID")
-        # The prompt names the three legal words. Without them a typo reaches
-        # argparse's `choices`, and the double-click window answers a person's
-        # reasonable guess with "invalid choice" instead of the list they needed.
+        # Names the three legal words, since a typo would otherwise reach
+        # argparse's `choices` and answer with "invalid choice" alone.
         mode = _ask("Triage mode — manual, semi, or auto", default="auto")
         confirmation = _ask(
             "Canonical cluster confirmation file (leave blank when confirming no cluster)"
@@ -1617,17 +1501,10 @@ def _interactive_arguments() -> list[str]:
         manifest = _ask("Producer decision manifest JSON")
         evidence = _ask("Candidate evidence JSON")
         proxy_paths = _ask("Digest-to-proxy-path JSON")
-        # The prompt names the three legal words for the same reason ingest's
-        # does: argparse `choices` answers a guess with "invalid choice".
-        #
-        # No default. This route is display-only for *decisions*, but every
-        # triage invocation still writes the batch's mode declaration, and that
-        # record is durable and is never rewritten. Defaulting to `semi` meant
+        # No default: every triage invocation writes the batch's durable,
+        # never-rewritten mode declaration, so defaulting to `semi` would let
         # someone who chose `triage` merely to look at the queue permanently
-        # claimed that batch's mode with a word they had never chosen, and a
-        # later `--mode manual` for the same batch was refused by their own
-        # glance. The verb route requires `--mode`; asking for it here is the
-        # same requirement in the same words.
+        # claim that batch's mode by accident.
         mode = _ask("Triage mode — manual, semi, or auto")
         batch_id = _ask("Batch ID")
         operator = _ask("Operator name for the mode record")
@@ -1638,15 +1515,11 @@ def _interactive_arguments() -> list[str]:
                 "and mode-record path. One was left blank, so nothing changed."
             )
             return []
-        # Display only, deliberately. This route shows the queue and records no
-        # decision. Acceptance is pinned to `--preview-sha256`, the digest of the
-        # draft the operator was actually shown, and a blind prompt chain cannot
-        # honestly produce that — it would be asking someone to confirm a digest
-        # they have not seen, which is the one thing that confirmation exists to
-        # prevent. Decline is withheld with it rather than offering half a
-        # decision surface where a queue item can be dismissed before its
-        # evidence is on screen. Both are recorded at the command line, where the
-        # digests are visible and checkable.
+        # Display only, deliberately: acceptance is pinned to
+        # `--preview-sha256`, the digest of a draft the operator has actually
+        # seen, which a blind prompt chain cannot honestly produce. Decline
+        # is withheld with it, and both are recorded at the command line
+        # instead, where the digests are visible and checkable.
         return [
             "triage",
             "--manifest",
@@ -1691,28 +1564,17 @@ def _interactive_arguments() -> list[str]:
             )
             return []
         arguments = ["fetch-run", "--run-id", run_id, "--into", into, "--network-volume", volume]
-        # The launch's preflight/ tree comes home on its own; the bootstrap
-        # report, the pod-run report, and the bootstrap journal are named
-        # with the launch token at paths this verb cannot derive on its own
-        # (`fetch_run.add_argument("--evidence-key", ...)` above). The launch
-        # receipt the operator's own machine wrote *does* name them, so this
-        # route asks for the receipt first and derives every key from it;
-        # typing a 32-hex token by hand is the step that gets skipped on a
-        # phone. The per-record prompts stay as the fallback for a run whose
-        # receipt is not to hand.
+        # The launch receipt the operator's machine wrote names every
+        # launch-token-bound report path, so asking for it first derives
+        # every key and skips typing a 32-hex token by hand; the per-record
+        # prompts below are the fallback when the receipt is not to hand.
         receipt = _ask("Saved launch receipt for this run (leave blank to name keys by hand)")
         if receipt:
             arguments.extend(("--launch-receipt", receipt))
         else:
-            # Ten prompts, not six: `launch_evidence_keys` derives four
-            # token-named siblings as exact keys of their own -- the timer's
-            # `-terminating.json` breadcrumb and `pod_run`'s `-liveness.json`,
-            # `-timings.json` and `-transcript.log` -- and this route asked for
-            # none of them, so a run whose receipt was not to hand could bring
-            # home only six of the ten records the receipt route fetches
-            # Each stays "leave blank to skip",
-            # because a key that names a record this launch never wrote comes
-            # back as a per-object refusal in the receipt.
+            # Each stays "leave blank to skip": a key naming a record this
+            # launch never wrote comes back as a per-object refusal, not a
+            # command failure.
             for label in (
                 "Volume key for the bootstrap report (leave blank to skip)",
                 "Volume key for the pod-run report (leave blank to skip)",
@@ -1736,11 +1598,9 @@ def _interactive_arguments() -> list[str]:
                 if evidence_key:
                     arguments.extend(("--evidence-key", evidence_key))
             # A volume is reused across launches, so preflight/ holds every
-            # launch's tree and a later reader cannot say which measured the
-            # chairs for this run. With a receipt named above, --launch-receipt
-            # already derives this run's own preflight stem (the same way it
-            # derives the evidence keys just asked for) -- asked here only in
-            # the no-receipt fallback, where nothing can derive it.
+            # launch's tree with no way to say which measured this run's
+            # chairs; asked here only in this no-receipt fallback, since
+            # --launch-receipt derives the stem on its own otherwise.
             prefix = _ask(
                 "This run's preflight stem, as preflight/<bootstrap report stem> "
                 "(leave blank for every launch's preflight tree)"
@@ -1766,8 +1626,8 @@ def _interactive_arguments() -> list[str]:
             return []
         arguments = [verb, "--run-root", run_root, "--run-id", run_id]
         if verb == "advance":
-            # The double-click route has no `--help`, so every closed-value
-            # prompt must state the spellings its parser accepts.
+            # No `--help` on the double-click route, so every closed-value
+            # prompt states the spellings its parser accepts.
             boundaries = ", ".join(STAGES)
             stage = _ask(f"The sealed stage boundary to pass — one of: {boundaries}")
             reason = _ask("Why this boundary should be advanced")

@@ -55,44 +55,29 @@ _WRITE_RIGHTS: Final = (
     "write-file,remove-dir,remove-file,make-char,make-dir,make-reg,make-sock,"
     "make-fifo,make-block,refer,truncate"
 )
-# Named prefixes are the providers this codebase calls today; they exist so the
-# common case reads as an intentional list, not only a heuristic. They are not
-# the only test applied below: the Perlector chair is contractually swappable
-# to "an unaltered vendor model" (ARCHITECTURE.md), so a future chair's
-# credential need not start with one of these four words, and a scrubber that
-# only knew today's providers would silently stop working the day a new one is
-# wired in. `looks_like_credential_field` is the same name-shape marker scan
-# `operations/pod/models.py` already uses to keep a credential out of a
-# durable controller receipt; reusing it here means both boundaries share one
+# Not the only test applied below: a future chair's credential need not start
+# with one of these four words, so `looks_like_credential_field` (the same
+# name-shape scan `operations/pod/models.py` uses) also runs, sharing one
 # definition of "looks like a secret" rather than drifting apart.
 PROVIDER_ENV_PREFIXES: Final = ("RUNPOD_", "AWS_", "HF_", "HUGGINGFACE_")
 
-# Variables that decide *what code the interpreter loads*, which is a different
-# concern from a credential and is dropped for a different reason. The advance
-# worker is the one process in this design that may write into the run tree, so
-# whoever controls its imports controls what it writes there: an inherited
-# `PYTHONPATH`, a user site-packages directory, or a preloaded shared object
-# could shadow `advance.py` and mint a record this module never wrote.
+# Not a credential concern but an import concern: the advance worker is the
+# one process that may write into the run tree, so an inherited `PYTHONPATH`,
+# user site-packages, or preloaded shared object could shadow `advance.py`
+# and mint a record this module never wrote.
 _INTERPRETER_CONTROL_PREFIXES: Final = ("PYTHON", "LD_", "DYLD_")
 
-# This is deliberately a closed allowlist, not "everything that does not look
-# secret". A name such as CLAUDE_CONFIG_DIR is not itself a credential, but it
-# points at a credential store and has no business crossing this boundary. The
-# renderer and worker need only terminal/locale presentation facts. Linux used
-# to pass the broad scrubbed mapping to `setpriv --reset-env`, which then
-# replaced it with HOME/SHELL/USER/LOGNAME/PATH, while Seatbelt passed the broad
-# mapping unchanged. Removing that launcher rewrite and constructing one exact
-# mapping here makes both platforms execute with the same environment.
+# A closed allowlist, not "everything that does not look secret": a name such
+# as CLAUDE_CONFIG_DIR points at a credential store and has no business
+# crossing this boundary, and the renderer and worker need only
+# terminal/locale presentation facts.
 _CUSTODY_ENVIRONMENT_NAMES: Final = frozenset(
     {"LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "TERM", "TZ"}
 )
 
-# Isolated mode implies `-E` and `-s`, removes the current directory from the
-# interpreter's implicit import path, and `-S` prevents a system `.pth` or
-# `sitecustomize` hook from running before this repository chooses its import
-# roots explicitly. The module command below inserts the loaded checkout and
-# the interpreter's already-active package directories only after isolated
-# startup has completed; it never executes their `.pth` or customization hooks.
+# `-I` implies `-E`/`-s` and drops the current directory from the implicit
+# import path; `-S` stops a system `.pth` or `sitecustomize` hook from
+# running before this repository chooses its import roots explicitly.
 CHILD_INTERPRETER_FLAGS: Final = ("-I", "-S")
 
 
@@ -143,16 +128,12 @@ def python_module_command(module: str, *arguments: str) -> list[str]:
     """Name one loaded-checkout module and known roots after isolated startup.
 
     The import root is fixed to the checkout that loaded this custody
-    boundary, and this function takes no workspace argument at all, so no
-    caller can nominate the tree the confined child imports from. The child's
-    *working directory* is a separate decision the trusted parent makes at
-    `run_confined(cwd=...)`, and the separation is deliberate: the operator's
-    workspace (the `--workspace` default in `cli.py`) is a folder of their own
-    and legitimately not this checkout, so the two cannot be checked against
-    each other. Isolated startup keeps that working directory off `sys.path`,
-    which is what makes holding them apart safe. A checkout is the only
-    supported way to run this code (`common/checkout.py` refuses otherwise);
-    an installed wheel is not a supported workspace.
+    boundary; this function takes no workspace argument, so no caller can
+    nominate the tree the confined child imports from. The working
+    directory is a separate decision the trusted parent makes at
+    `run_confined(cwd=...)`, since the operator's own workspace is
+    legitimately not this checkout; isolated startup keeps that directory
+    off `sys.path`, which is what makes holding the two apart safe.
     """
 
     root = Path(__file__).resolve().parents[2]
@@ -204,23 +185,15 @@ def require_no_provider_credentials(environment: dict[str, str] | None = None) -
 
 
 # ``setpriv`` exits with this code when it establishes no privilege change at
-# all -- including "Landlock is not supported"/"is supported but currently
-# disabled" on a kernel without it -- and therefore never execs the wrapped
-# program (util-linux ``sys-utils/setpriv.c``, ``SETPRIV_EXIT_PRIVERR = 127``,
-# and ``sys-utils/setpriv-landlock.c``'s ``do_landlock`` on
-# ``landlock_create_ruleset`` failure; both read from the util-linux source at
-# https://github.com/util-linux/util-linux on 2026-08-22). The wrapped console
-# or advance worker never runs, so this is a custody-boundary refusal, not a
-# fact about the run tree or the advance request it was never given.
+# all -- including Landlock unsupported or disabled -- and never execs the
+# wrapped program, so this is a custody-boundary refusal, not a fact about
+# the run tree or the advance request it was never given.
 SETPRIV_PRIVILEGE_FAILURE_EXIT: Final = 127
 
-# ``sandbox-exec`` prefixes its own diagnostics with its program name and never
-# execs the target when the profile fails to compile or apply, so a line
-# beginning this way is the launcher speaking, not the console
-# (`sandbox-exec: execvp() of './writefoo' failed: Operation not permitted` is
-# the documented shape -- https://7402.org/blog/2020/macos-sandboxing-of-folder.html,
-# read 2026-08-22). Neither of this repository's two confined children ever
-# writes that prefix, so the test is specific.
+# ``sandbox-exec`` prefixes its own diagnostics with its program name and
+# never execs the target when the profile fails to apply, so a line
+# beginning this way is the launcher speaking, not the console; neither
+# confined child ever writes this prefix itself.
 SANDBOX_EXEC_DIAGNOSTIC_PREFIX: Final = "sandbox-exec:"
 
 
@@ -350,21 +323,13 @@ class LandlockConfinement(Confinement):
 class SeatbeltConfinement(Confinement):
     """macOS: a Seatbelt profile applied by ``sandbox-exec``.
 
-    The profile starts from ``deny default`` and grants only global file reads,
-    exec of the exact Python binary being launched, and (for the worker) one
-    writable subtree. Network, Mach service lookup, process inspection, and
-    process creation are not granted. This avoids depending on disputed SBPL
-    rule-precedence folklore to punch an allow through a blanket deny, and it
-    means an accidentally omitted operation fails closed in the native probe.
-    The profile is applied before ``execvp`` and remains attached across exec.
-
-    This backend was exercised on macOS 15 (Darwin 24) through both confined
-    children. The native run established that captured stdin/stdout remain
-    usable, the framework interpreter's exact re-exec target is sufficient,
-    and `verify_confinement` observes denied writes and outbound connections
-    after the profile applies. The probe still runs before every launch: a
-    past native pass is evidence about that host and moment, not permission to
-    assume a later host enforces the same profile.
+    Starts from ``deny default`` and grants only global file reads, exec of
+    the exact Python binary being launched, and (for the worker) one
+    writable subtree; network, Mach service lookup, process inspection and
+    process creation are not granted. The profile is applied before
+    ``execvp`` and remains attached across exec, but `verify_confinement`
+    still runs before every launch: a past pass on one host is not
+    permission to assume a later host enforces the same profile.
     """
 
     name = "macOS Seatbelt (sandbox-exec)"
@@ -524,17 +489,11 @@ def _diagnostic(completed: subprocess.CompletedProcess) -> str:
     return (completed.stderr or completed.stdout or "").strip() or "no diagnostic"
 
 
-# The probe must distinguish three outcomes that an exit code alone cannot: mutation
-# and delegation were refused (the boundary holds), either succeeded (the
-# boundary is incomplete), and nothing ran at all (the launcher failed). Only the first is a
-# pass, so a launcher that silently declines to confine cannot be mistaken for
-# a kernel that refused the write.
-# The network half probes an outbound connect, not bare socket creation:
-# macOS Seatbelt mediates `network-outbound` while socket() itself succeeds
-# under (deny default), so a creation-only probe reports the sandbox absent
-# where it is in force. A denial surfaces as EPERM/EACCES from the kernel;
-# ECONNREFUSED or a timeout means the connect reached the network stack,
-# which is exactly the capability the boundary must not grant.
+# Distinguishes three outcomes an exit code alone cannot: refused (the
+# boundary holds), permitted (the boundary is incomplete), or nothing ran
+# (the launcher failed); only refused is a pass. Probes an outbound connect,
+# not bare socket creation, since macOS Seatbelt mediates `network-outbound`
+# while socket() itself succeeds under (deny default).
 _PROBE_SOURCE: Final = (
     "import errno, socket, sys\n"
     "from pathlib import Path\n"
@@ -628,21 +587,18 @@ def verify_confinement(
 
 
 # Linux exposes a same-user process's original environment through
-# `/proc/<pid>/environ`, even when the child itself was launched with `env={}`.
-# Provider credentials normally enter the operator in that original mapping,
-# so scrubbing only the child's mapping did not satisfy the compromised-UI
-# claim. PR_SET_DUMPABLE=0 makes the kernel's ptrace access check refuse that
-# read while the child exists. The prior value is restored after wait() so this
-# narrow command does not silently change the operator process for its lifetime.
+# `/proc/<pid>/environ` even when the child was launched with `env={}`, so
+# scrubbing only the child's mapping is not enough. PR_SET_DUMPABLE=0 makes
+# the kernel's ptrace check refuse that read while the child exists; the
+# prior value is restored after wait().
 _PR_GET_DUMPABLE: Final = 3
 _PR_SET_DUMPABLE: Final = 4
 
 # `setpriv --seccomp-filter` consumes raw native `struct sock_filter` records.
-# This deliberately small cBPF program permits the ordinary Python syscall set
-# and returns EPERM only for routes that can delegate around Landlock: creating
-# a socket, injecting into another same-user process, or opening an io_uring
-# that could perform socket operations. The architecture check kills a compat
-# executable rather than interpreting its syscall numbers under the native map.
+# This small cBPF program permits the ordinary Python syscall set and returns
+# EPERM only for routes that can delegate around Landlock: creating a socket,
+# injecting into another same-user process, or opening an io_uring that could
+# perform socket operations.
 _BPF_LD_W_ABS: Final = 0x20
 _BPF_JMP_JEQ_K: Final = 0x15
 _BPF_JMP_JGE_K: Final = 0x35

@@ -137,11 +137,8 @@ OPERATOR_CLOSE_PREFIX = "CLOSE"
 DEFAULT_FIXTURE = "synthetic-two-page-v0"
 MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_NOTIFY_MESSAGE_CHARACTERS = 500
-"""A held run with hundreds of unsealed pages built a notification message with
-one entry per page and no ceiling at all; the underlying transport truncates
-`notify_bridge`'s own failure-detail string the same way, at 160 characters, so a
-cap here is not a new idea in this codebase, only a missing one on the outbound
-message itself."""
+"""Bounds a notification message: an unsealed run with hundreds of pages would
+otherwise build one entry per page with no ceiling at all."""
 # Named once: the fault drill and its real-ingress guard compare against it, and
 # two spellings could drift apart silently.
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
@@ -152,13 +149,10 @@ FETCH_RUN_PREFIX = DEFAULT_RUNS_DIRECTORY
 """Where `pod_run` writes run trees on the volume, relative to its mount:
 `<volume>/runs/<run_id>` (`operations/pod/pod_run.py`, `DEFAULT_RUNS_DIRECTORY`)."""
 FETCH_EVIDENCE_PREFIX = "preflight"
-"""Where a launch's PREFLIGHT evidence sits on the volume, relative to its mount:
-`<volume>/preflight/<report stem>/` (`operations/pod/bootstrap_main.py`,
-`PREFLIGHT_DIRECTORY`) -- the golden page, the serving logs, and the
-content-addressed serving receipts, launch audits and evidence manifests. Spelled
-here rather than imported because `bootstrap_main` pulls the whole serving stack
-in behind it, which this surface has no business loading to learn a directory
-name; `operations/pod/test_pod_run.py` holds the two spellings together."""
+"""Where a launch's PREFLIGHT evidence sits on the volume, relative to its
+mount: the golden page, serving logs, and content-addressed receipts, audits
+and manifests. Spelled here rather than imported, since the module that
+defines it pulls the whole serving stack in behind it."""
 EVIDENCE_DIRECTORY = "evidence"
 """Where fetched evidence lands under `--into`, beside `<run_id>/` rather than
 inside it: the run tree must stay byte-for-byte what the volume holds under
@@ -476,7 +470,7 @@ class OperatorSurface:
         """Show one line, with terminal control bytes removed on the way out.
 
         Much of what is printed comes from files and run trees. Receipts keep the
-        original bytes (principle 4); only the terminal output is stripped.
+        original bytes; only the terminal output is stripped.
         """
 
         self._present(strip_control_bytes(line))
@@ -943,17 +937,13 @@ class OperatorSurface:
     ) -> Path:
         """Bring one run tree back from the volume, every object digest-checked.
 
-        Each object is checked the way the tree checks itself; an unaccounted
-        key refuses, and an existing local file is compared, never replaced.
-        Serving logs are the exception: no manifest records them and a live
-        chair still appends to them, so they arrive as unverified side evidence
-        and a bad one is refused alone rather than losing the whole run.
-
-        Preflight evidence under ``evidence_prefixes`` comes too, because it
-        is provenance on a volume that will be destroyed (principle 6). Records
-        at operator-chosen or root paths come only when named in
-        ``evidence_keys`` (operations/pod/README.md lists them): finding them
-        would mean listing the whole volume, which holds page images.
+        Serving logs arrive as unverified side evidence, since no manifest
+        records them and a live chair still appends; a bad one is refused
+        alone rather than losing the whole run. Preflight evidence under
+        ``evidence_prefixes`` also comes home, being provenance on a volume
+        that will be destroyed. Records at other paths come only when named
+        in ``evidence_keys``, since finding them otherwise would mean
+        listing the whole volume, which holds page images.
         """
 
         try:
@@ -1021,7 +1011,7 @@ class OperatorSurface:
             destination_root / EVIDENCE_DIRECTORY,
         )
         partial = bool(outcome.unmanifested_stages)
-        # Serving logs arrived but were checked against nothing (principle 8).
+        # Serving logs arrived but were checked against nothing.
         verified_objects = outcome.fetched + outcome.reused - len(outcome.unverified_serving_logs)
         checked_clause = (
             "every one checked"
@@ -1653,7 +1643,7 @@ class OperatorSurface:
             self.present(f"Exporting run {recorded_id} from run root {run_root}.")
             export_payload = self._armarium_export(run_root, recorded_id)
             # The same reconciliation `run()` requires before calling a record
-            # complete (principle 2).
+            # complete.
             aggregate = export_payload["aggregate"]
             if aggregate.get("status") == "complete":
                 self._require_reconciled_act_partition(export_payload)
@@ -1668,7 +1658,7 @@ class OperatorSurface:
             self._write_base_armarium_bundle(run_root, recorded_id, staged)
             digest = sha256_file(staged)
             # Content-addressed, so a later export never overwrites bytes an
-            # earlier receipt vouches for (principle 4).
+            # earlier receipt vouches for.
             destination = exports_dir / f"{recorded_id}-armarium-base-{digest}.zip"
             try:
                 os.link(staged, destination, follow_symlinks=False)
@@ -1702,7 +1692,7 @@ class OperatorSurface:
         for line in table:
             self.present(line)
         # Receipt state, exit status and notice all follow the aggregate's
-        # status, so a partial run is never recorded complete (principle 2).
+        # status, so a partial run is never recorded complete.
         aggregate = export_payload.get("aggregate")
         recorded_status = aggregate.get("status") if isinstance(aggregate, dict) else None
         state = recorded_status if isinstance(recorded_status, str) else "unknown"
@@ -2641,7 +2631,7 @@ class OperatorSurface:
         if not isinstance(payload, dict) or not isinstance(payload.get("aggregate"), dict):
             raise ValueError("Armarium export record has no usable aggregate")
         # Required lists: the producer always writes all three, so a missing
-        # one means a mismatched schema, not an empty result (principle 2).
+        # one means a mismatched schema, not an empty result.
         for member in ("pages", "delivered", "non_delivered"):
             if member not in payload:
                 raise ValueError(f"Armarium export record is missing {member}")
@@ -2653,8 +2643,7 @@ class OperatorSurface:
         """Refuse a `complete` export unless every expected act appears exactly once.
 
         Shared by `run()` and `export()` so both judge "complete" alike. A record
-        from other code could pad or drop acts in ways a raw count misses
-        (principle 2). Uses `.get` because some callers bypass `_armarium_export`.
+        from other code could pad or drop acts in ways a raw count misses. Uses `.get` because some callers bypass `_armarium_export`.
         """
 
         expected_acts = export_payload.get("expected_acts")
@@ -2698,7 +2687,7 @@ class OperatorSurface:
         source = tree.root
         # Each member must exist and be the expected kind (file or directory);
         # otherwise a bundle missing its evidence would still be called
-        # complete (principle 2).
+        # complete.
         temporary = destination.with_name(f".{destination.name}.tmp-{secrets.token_hex(16)}")
         root_descriptor: int | None = None
         run_descriptor: int | None = None
@@ -3164,7 +3153,7 @@ def _read_published_lease(path: Path) -> PodLease | None:
     """Read one published lease without writing anything beside it.
 
     `LeaseStore.load()` creates a lock file, and `status` must work on a
-    read-only state directory (principle 2). Leases are published whole, so a
+    read-only state directory. Leases are published whole, so a
     lock-free read is never torn; the paid gate keeps its own locked read.
     No-follow, non-blocking and regular-only, so a raced link or a FIFO cannot
     fool or hang `status`; bounded, because only a foreign file is that large.
@@ -3866,11 +3855,11 @@ class FetchRunOutcome:
     unmanifested_stages: tuple[str, ...] = ()
     envelope_only_artifacts: tuple[str, ...] = ()
     # Serving logs: in no manifest, so digested on arrival but never counted as
-    # verified (principle 8).
+    # verified.
     unverified_serving_logs: tuple[tuple[str, str], ...] = ()
     # Serving logs that did not come home, and why. A live engine still appends
     # to them, so a mismatch is refused per log, not for the whole tree
-    # (principle 2).
+    # .
     refused_serving_logs: tuple[str, ...] = ()
 
 
@@ -4006,7 +3995,7 @@ def _fetch_run_tree(
         # An artifact without a manifest entry may come from a stage killed
         # before `finish()`; resolve it against a manifest derived from its
         # envelope. Only artifacts outside the stored manifests are reported
-        # as envelope-only (principle 8).
+        # as envelope-only.
         manifest_recorded = set(expected)
         manifested_stage_names = {manifest["stage"] for manifest in manifests.values()}
         unmanifested_stages: set[str] = set()
@@ -4098,8 +4087,7 @@ def _is_serving_log(relative: str) -> bool:
 class FetchEvidenceOutcome:
     """What the evidence pass brought home, and what it did not.
 
-    Preflight evidence is provenance on a volume that will be destroyed
-    (principle 6); what did not arrive is named (principle 2).
+    Preflight evidence is provenance on a volume that will be destroyed; what did not arrive is named.
     """
 
     fetched: int
@@ -4335,7 +4323,7 @@ def _exported_work(
     Never the fixture declaration, which can name refused or untouched pages
     and miss minted acts. Read defensively so the summary line always prints;
     an unreadable row is counted as its own entry so the names match the
-    total (principle 2).
+    total.
     """
 
     valid_pages = [
