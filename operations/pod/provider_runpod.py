@@ -35,8 +35,9 @@ parameter (GraphQL documents no header form, so every error string and
 fixture record here scrubs the query). Neither field's documentation names a
 currency; `BALANCE_CURRENCY` records a documented reading from the billing
 pages instead, and the first authorised live run checks it against the
-console. GraphQL is itself deprecated in favour of v2, but v2 publishes no
-balance, so this observer outlives the REST v1 route.
+console. GraphQL itself is deprecated, retiring in early 2027 in favour of
+v2 -- a sunset of this observer's own, distinct from the REST v1 route's:
+v2 publishes no balance, so this observer is not retired by that migration.
 
 **Credential:** supplied to `UrllibRunPodTransport` explicitly at
 construction. Nothing here reads a credential from a tracked file
@@ -1156,8 +1157,10 @@ def _create_payload(request: PodCreateRequest, route: str = "v1") -> dict[str, o
     and never afterwards. `containerDiskInGb` is sent because the bootstrap
     downloads its serving stack onto the container-local disk twice over
     (cache, then venv); leaving the size to the image or account default risks
-    ENOSPC after the download is already paid for.
-    `PodCreateRequest.container_disk_gb` carries the number and the derivation.
+    ENOSPC after the download is already paid for. Documented, not yet
+    observed, like every other field here: the first live create confirms the
+    provider accepts it. `PodCreateRequest.container_disk_gb` carries the
+    number and the derivation.
     """
 
     payload: dict[str, object] = {
