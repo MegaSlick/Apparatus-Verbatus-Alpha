@@ -3215,21 +3215,65 @@ def declared_recovery(scenario: dict | None, act_key: str) -> bool:
     return act_key in scenario["recover_acts"]
 
 
+def _publish_designator_hold_review(
+    context,
+    act: dict,
+    *,
+    budget: dict,
+    coverage: dict,
+    geometry_coverage: dict,
+    content_coverage: dict,
+    content_findings: dict[int, dict],
+    page_findings: dict[int, dict],
+) -> None:
+    """An explicit review for a Designator-held act, so its terminal category derives.
+
+    A hold may still have a cut near-side region (only a continuation's page failed to
+    seal), so the page facts come from what was cut rather than being reported empty.
+    """
+    act_id = act["act_id"]
+    hold, hold_path = designator_hold(context, act_id)
+    hold_regions = artifacts_for(context, DESIGNATOR, "region", act_id)
+    publish_review(
+        context,
+        subject_id=act_id,
+        outcome="held-for-review",
+        prior=current_review(context, act_id),
+        inputs=[context.input_ref(hold_path)]
+        + [context.input_ref(region["payload"]["image_path"]) for region in hold_regions],
+        payload={
+            "act_key": act["act_key"],
+            "reason": f"the Designator held this act: {hold['payload']['reason']}",
+            "coverage": coverage,
+            "geometry_coverage": geometry_coverage,
+            "testimony_content_coverage": content_coverage,
+            "testimony_content_coverage_continuation": (
+                testimony_content_for_continuation_pages(
+                    content_findings, hold_regions, act["page_ordinal"]
+                )
+            ),
+            "continuation": recensor_continuation_link(hold_regions, act_id),
+            "page_coverage": page_coverage_for(hold_regions, page_findings),
+            "recoveries_used": 0,
+            "budget_allowed": budget["allowed"],
+            "absolute_cap": budget["absolute_cap"],
+            # No Perlectio, so no audit: distinct from audited-and-resolved (False).
+            "audit_unresolved": None,
+            "audit_examination": None,
+            "uncertainty_assessment": None,
+            "cross_capture_coverage": None,
+        },
+    )
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    # Either ingress route, decided from one read of the run authority; the
-    # real route carries the registry, the sealed digests and the parsed
-    # recovery policy the lines below require.
     context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
-    # The sealed policy parsed when the run's binding was checked, never re-read: a
-    # rewrite in between would publish an allowance the run never sealed, unrecoverably.
-    # The recheck proves the carried policy is the sealed one.
+    # The policy parsed when the run's binding was checked, never re-read: a rewrite in
+    # between would publish an allowance the run never sealed.
     budget = context.recovery_policy
     context.require_sealed_config("recovery", budget["config_sha256"])
-
-    # The declared scenario on the fixture route; nothing on a real submission.
-    # `hold_acts` and `recover_acts` are the two things read from it, below.
     scenario = declared_scenario(context)
     floor = context.witness_floor
 
@@ -3239,29 +3283,20 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     preflight_recovery_history(context, budget)
     preflight_review_evidence(context, budget)
 
-    # Both residual measurement and the witness-pointer gate use the union of
-    # every proposal and recovery crop currently cut on the page.
     cut_regions = regions_by_source_page(context)
-    # Verify sealed pages only when some region is cut; pixels no crop came from are
-    # never read.
+    # Pixels no crop came from are never read.
     sealed_pages = sealed_page_images(context) if cut_regions else {}
     capture_digests = capture_digest_by_page(sealed_pages)
     page_findings = page_coverage_findings(context, sealed_pages)
     geometry_inputs = geometry_coverage_inputs(context)
     content_findings = testimony_content_findings(context)
     ink_maps = ink_map_by_page(context)
-    # The sealed noise floor a pointer's ink must clear, proved against this run's seal;
-    # read once, as it is one flat count.
     coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     minimum_ink_pixels = coverage_config["coverage_audit"]["minimum_ink_pixels"]
-    # The remaining page-level inputs read once per run for the same reason:
-    # the sealed occlusion records by page, and a cache of the local-act
-    # proposal geometry every cross-capture view asks for.
     occlusions = occlusion_records_by_page(context)
     proposal_geometry: dict[str, dict] = {}
-    # Tree-backed accounting keeps the page-wide grant spent across Recensor
-    # passes; an in-memory counter would reset after the requested recrop.
+    # Counted from the tree: an in-memory counter would reset after the requested recrop.
     funded_pages = observation_funded_pages(context, expected_acts(context))
 
     held = 0
@@ -3273,81 +3308,43 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         geometry_coverage = geometry_coverage_for(geometry_inputs, act["page_ordinal"])
 
         if act["outcome"] == "held":
-            # No reading and no recovery: this act's missing ink was never sealed. It
-            # still gets an explicit review, so its terminal category derives like every
-            # other act's.
-            hold, hold_path = designator_hold(context, act_id)
-            # A hold may still have a cut near-side region (only a continuation's page
-            # failed to seal), so read what was cut rather than report empty facts.
-            hold_regions = artifacts_for(context, DESIGNATOR, "region", act_id)
-            publish_review(
+            _publish_designator_hold_review(
                 context,
-                subject_id=act_id,
-                outcome="held-for-review",
-                prior=current_review(context, act_id),
-                inputs=[context.input_ref(hold_path)]
-                + [context.input_ref(region["payload"]["image_path"]) for region in hold_regions],
-                payload={
-                    "act_key": act_key,
-                    "reason": f"the Designator held this act: {hold['payload']['reason']}",
-                    "coverage": coverage,
-                    "geometry_coverage": geometry_coverage,
-                    "testimony_content_coverage": content_coverage,
-                    # Derived from what was cut, as `page_coverage` is.
-                    "testimony_content_coverage_continuation": (
-                        testimony_content_for_continuation_pages(
-                            content_findings, hold_regions, act["page_ordinal"]
-                        )
-                    ),
-                    "continuation": recensor_continuation_link(hold_regions, act_id),
-                    "page_coverage": page_coverage_for(hold_regions, page_findings),
-                    "recoveries_used": 0,
-                    "budget_allowed": budget["allowed"],
-                    "absolute_cap": budget["absolute_cap"],
-                    # None: no Perlectio, so no audit; distinct from audited and
-                    # resolved (False) or unresolved (True).
-                    "audit_unresolved": None,
-                    "audit_examination": None,
-                    "uncertainty_assessment": None,
-                    # None: a held act was never shown capture pixels.
-                    "cross_capture_coverage": None,
-                },
+                act,
+                budget=budget,
+                coverage=coverage,
+                geometry_coverage=geometry_coverage,
+                content_coverage=content_coverage,
+                content_findings=content_findings,
+                page_findings=page_findings,
             )
             held += 1
             continue
 
         state = recovery_state(context, act_id, budget)
         if state["outstanding_request_ids"]:
-            # The matching review is already the durable record of this hold. A
-            # direct Recensor retry must not turn it into a later acceptance while
-            # the Designator has not yet cut the requested recovery crop.
+            # The matching review already records this hold; a retry must not accept
+            # the act before the Designator cuts the requested crop.
             held += 1
             continue
 
-        # `preflight_review_evidence`, above, already refused a non-held act with
-        # no reading at all, over this same list and the same Designator seal
-        # this process never writes to.
+        # Non-empty: `preflight_review_evidence` refused an act with no reading.
         readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
 
         # Every review names the exact Perlectio it assessed, as input and payload, so
         # the Archetypus can prove it establishes that reading.
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         latest_payload = _payload(latest, f"reading of {act_id}")
-        audit_facts = audit_state(context, latest, act_id, expected_act_key=act["act_key"])
-        audit_unresolved = None if audit_facts is None else audit_facts["unresolved"]
-        audit_examination = None if audit_facts is None else audit_facts["examination"]
-        audit_reproof_truncation = (
-            None if audit_facts is None else audit_facts["reproof_truncation"]
-        )
-        # The same closed `{state, problem}` object every record uses; `None` means no
-        # Perlectio, so no report.
+        audit_facts = audit_state(context, latest, act_id, expected_act_key=act["act_key"]) or {}
+        audit_unresolved = audit_facts.get("unresolved")
+        audit_examination = audit_facts.get("examination")
+        # `None` means no Perlectio, so no report.
         assessment = latest_payload.get("uncertainty_assessment")
         assessment_record = (
             {"state": assessment.get("state"), "problem": assessment.get("problem")}
             if isinstance(assessment, dict)
             else None
         )
-        assessment_state = assessment.get("state") if isinstance(assessment, dict) else None
         # The survey must come from the exact Perlectio this review assesses.
         cross_coverage = act_cross_capture_coverage(
             context,
@@ -3360,8 +3357,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             cross_capture_occluded_everywhere,
             cross_capture_unresolved,
         ) = cross_capture_review_causes(cross_coverage)
-        # After `audit_state`; a held act has no audit chain and took its own branch
-        # above.
         findings_route = review_route_from_findings(
             cross_capture_occluded_everywhere=cross_capture_occluded_everywhere,
             cross_capture_unresolved=cross_capture_unresolved,
@@ -3370,9 +3365,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             under_witnessed=coverage["under_witnessed"],
             unreconciled=declared_unreconciled(scenario, act_key),
             audit_examination=audit_examination,
-            audit_reproof_truncation=audit_reproof_truncation,
-            assessment_malformed=assessment_state == "malformed",
-            assessment_problem=assessment.get("problem") if isinstance(assessment, dict) else None,
+            audit_reproof_truncation=audit_facts.get("reproof_truncation"),
+            assessment_malformed=(assessment_record or {}).get("state") == "malformed",
+            assessment_problem=(assessment_record or {}).get("problem"),
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
@@ -3389,9 +3384,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # every act on it, because nobody knows which act the uncovered ink belongs to.
         page_coverage = page_coverage_for(state["regions"], page_findings)
         flagged_pages = page_coverage["flagged_pages"]
-        # The testimony-content half of the same "every page this act touches"
-        # rule, off the same region set. Recorded, never routed: see
-        # `testimony_content_for_continuation_pages`.
+        # Recorded, never routed: see `testimony_content_for_continuation_pages`.
         continuation_content_coverage = testimony_content_for_continuation_pages(
             content_findings, state["regions"], act["page_ordinal"]
         )
@@ -3491,9 +3484,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "act_key": act_key,
                 "attempt_ordinal": request_ordinal,
                 "recovery_kind": FALLBACK_RECROP,
-                # The origin as data, so the page-wide bound counts a fact rather than
-                # parsing prose. Declaration takes precedence for funding; the reason
-                # lists every cause.
+                # As data, so the page-wide bound counts a fact rather than parsing prose.
                 "origin": request_origin,
                 "reason": recovery_request_reason(
                     declared_crop=declared_recovery(scenario, act_key),
@@ -3563,8 +3554,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "recovery_request_ordinal": request_ordinal,
                     "recovery_kind": FALLBACK_RECROP,
                     "coverage": coverage,
-                    # Present on every review shape, so "checked and clear" differs from
-                    # "never checked".
                     "geometry_coverage": geometry_coverage,
                     "testimony_content_coverage": content_coverage,
                     "testimony_content_coverage_continuation": continuation_content_coverage,
@@ -3584,9 +3573,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             held += 1
             continue
 
-        # Whether the reading succeeded, not merely exists: the Archetypus copies the
-        # latest reading's text, so text nobody successfully read is held visibly
-        # (principle 2).
+        # The Archetypus copies the latest reading's text, so text nobody successfully
+        # read is held visibly (principle 2).
         blank_evidence = None
         if reading_class is not OutcomeClass.COMPLETED:
             # `no-readable-text` is the Perlector's own positive finding of absence, so
@@ -3698,9 +3686,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             else:
                 reason = "coverage and geometry reconcile"
 
-        # Derived from the outcome's own class rather than counted by hand in each
-        # branch above, so a review shape added later cannot land in the tree
-        # without also landing in this stage's exit code.
+        # From the outcome's class, so a review shape added later also reaches the exit code.
         if classify(RECENSOR, outcome) is not OutcomeClass.COMPLETED:
             held += 1
 
@@ -3709,9 +3695,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             subject_id=act_id,
             outcome=outcome,
             prior=current_review(context, act_id),
-            # `latest`, not `readings[0]`: manifest order is a hash. `basis_regions` is
-            # empty unless the reading completed, since a `not-run` Perlectio has no
-            # `basis`.
+            # `latest`, not `readings[0]`: manifest order is a hash.
             inputs=[reading_ref]
             + [context.input_ref(reference["image_path"]) for reference in basis_regions],
             payload={
@@ -3726,20 +3710,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "budget_allowed": budget["allowed"],
                 "absolute_cap": budget["absolute_cap"],
                 "perlectio_ref": reading_ref,
-                # Recorded for every act, so "checked and clear" differs from "never
-                # checked".
+                # Recorded for every act: "checked and clear" is not "never checked".
                 "page_coverage": page_coverage,
-                # The Pass-C verdict as data, so an audit-cap hold is separable from
-                # other holds without matching prose.
                 "audit_unresolved": audit_unresolved,
-                # The fact behind the boolean, so review can tell an exhausted cap from
-                # an unfinished re-proof; `None` exactly where `audit_unresolved` is.
                 "audit_examination": audit_examination,
-                # The reader's `{state, problem}`, so an empty uncertainty layer can be
-                # told from an absent channel.
                 "uncertainty_assessment": assessment_record,
                 "cross_capture_coverage": cross_coverage,
-                # Only on `confirmed-blank`, the one outcome that rests on it.
                 **({"blank_evidence": blank_evidence} if blank_evidence is not None else {}),
             },
         )
