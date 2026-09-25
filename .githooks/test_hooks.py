@@ -501,4 +501,8 @@ def test_pre_commit_scans_the_index_not_the_working_copy(tmp_path):
     (repo / "config.txt").write_text(f"token = {SAMPLE_SECRET}\n")
     git(repo, "add", "config.txt")
     (repo / "config.txt").write_text("clean\n")
-    assert run_hook(repo, "pre-commit").returncode == 1
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1
+    assert "[runpod-api-key]" in result.stdout + result.stderr
+    git(repo, "add", "config.txt")
+    assert run_hook(repo, "pre-commit").returncode == 0

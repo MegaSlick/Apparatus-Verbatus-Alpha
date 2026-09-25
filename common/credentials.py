@@ -1,8 +1,10 @@
 """One reading of "this looks like a secret", shared by every boundary that screens for one.
 
-Each caller's check is its pre-change rule OR the new piece rule, so it catches everything
-it caught before. Accepted risk: the argv refusal and log redaction let a run ending in a
-known file extension or domain pass, so "<opaque>.json" passes there.
+Each caller's check is its baseline rule OR the shape rule, so it catches everything the
+baseline catches. Accepted risk: the argv refusal and log redaction let a run ending in a
+known file extension or domain pass, so "<opaque>.json" passes there. The argv refusal
+does not catch "user:<opaque>" or an opaque path segment, as its baseline did not: run
+folders and temp directories are long mixed-alphanumeric segments.
 """
 
 from __future__ import annotations
@@ -19,6 +21,11 @@ CREDENTIAL_PIECE: Final = re.compile(r"""[^\s/\\:@=?&,;"'()\[\]{}<>]+""")
 _URL_SECRET: Final = re.compile(
     r"://[^/:@\s]*:(?P<password>[^/@\s]+)@|[?&][^=&#\s]*=(?P<query>[^&#\s]*)"
 )
+# Whole words the shape rule reads as data, not secrets: an ISO timestamp, an org/model id.
+_TIMESTAMP_OR_MODEL_ID: Final = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?"
+    r"|[A-Za-z][A-Za-z0-9_.]*/[A-Za-z][A-Za-z0-9_.]*(?:-[A-Za-z0-9_.]+)+"
+)
 _FILE_OR_HOST_SUFFIXES: Final = frozenset(
     "bin bz2 com csv dev gguf gz io internal invalid jpg json jsonl local log md net org pdf "
     "png py safetensors sh tar tif tiff toml txt xz yaml yml zip zst".split()
@@ -34,7 +41,7 @@ def looks_like_credential_env(name: str) -> bool:
     return name.startswith(PROVIDER_ENV_PREFIXES) or looks_like_credential_field(name)
 
 
-# --- the new rule -----------------------------------------------------------------------
+# --- the shape rule -----------------------------------------------------------------------
 
 
 def _opaque(run: str, files_and_hosts_pass: bool) -> bool:
@@ -72,7 +79,9 @@ def credential_piece(text: str, *, files_and_hosts_pass: bool = False) -> str | 
         return secret
     for word in text.split():
         stripped = word.strip("\"'(),;:")
-        if _opaque(stripped, files_and_hosts_pass):
+        if _opaque(stripped, files_and_hosts_pass) and not _TIMESTAMP_OR_MODEL_ID.fullmatch(
+            stripped
+        ):
             return stripped
         for piece in CREDENTIAL_PIECE.findall(word):
             if is_credential_piece(piece, files_and_hosts_pass=files_and_hosts_pass):
@@ -84,7 +93,7 @@ def looks_like_credential_value(text: str, *, files_and_hosts_pass: bool = False
     return credential_piece(text, files_and_hosts_pass=files_and_hosts_pass) is not None
 
 
-def _new_argv_piece(value: str) -> str | None:
+def _shape_argv_piece(value: str) -> str | None:
     """A bare value gets the full shape test; a path segment only a key prefix or a dotted token."""
 
     if not any(character in "/\\.:@" for character in value) and is_credential_piece(value):
@@ -102,15 +111,15 @@ def _new_argv_piece(value: str) -> str | None:
     )
 
 
-# --- each caller's pre-change rule, kept verbatim ---------------------------------------
+# --- each caller's baseline rule ---------------------------------------
 
-_LEGACY_SAFE_CHARACTERS: Final = frozenset(" /\\.:@")
+_BASELINE_SAFE_CHARACTERS: Final = frozenset(" /\\.:@")
 
 
-def _legacy_models_value(value: str) -> bool:
+def _baseline_models_value(value: str) -> bool:
     if value.startswith(CREDENTIAL_VALUE_PREFIXES):
         return True
-    if len(value) < 20 or any(character in _LEGACY_SAFE_CHARACTERS for character in value):
+    if len(value) < 20 or any(character in _BASELINE_SAFE_CHARACTERS for character in value):
         return False
     if all(character in "0123456789abcdef" for character in value):
         return False
@@ -119,17 +128,17 @@ def _legacy_models_value(value: str) -> bool:
     )
 
 
-_LEGACY_NOTIFY_MARKERS: Final = (*CREDENTIAL_MARKERS, "apikey")
-_LEGACY_NOTIFY_SAFE_CHARACTERS: Final = frozenset(" \t\\,;()[]{}'\"")
+_BASELINE_NOTIFY_MARKERS: Final = (*CREDENTIAL_MARKERS, "apikey")
+_BASELINE_NOTIFY_SAFE_CHARACTERS: Final = frozenset(" \t\\,;()[]{}'\"")
 
 
-def _legacy_notify_word(word: str) -> bool:
+def _baseline_notify_word(word: str) -> bool:
     normalized = word.lower().replace("-", "_")
-    if any(marker in normalized for marker in _LEGACY_NOTIFY_MARKERS):
+    if any(marker in normalized for marker in _BASELINE_NOTIFY_MARKERS):
         return True
     if word.startswith(CREDENTIAL_VALUE_PREFIXES):
         return True
-    if len(word) < 20 or any(character in _LEGACY_NOTIFY_SAFE_CHARACTERS for character in word):
+    if len(word) < 20 or any(character in _BASELINE_NOTIFY_SAFE_CHARACTERS for character in word):
         return False
     if all(character in "0123456789abcdef" for character in word):
         return False
@@ -138,29 +147,29 @@ def _legacy_notify_word(word: str) -> bool:
     )
 
 
-def _legacy_notify_rule(message: str) -> bool:
+def _baseline_notify_rule(message: str) -> bool:
     for word in message.split():
         stripped = word.strip("\"'(),;:")
-        if stripped and _legacy_notify_word(stripped):
+        if stripped and _baseline_notify_word(stripped):
             return True
     return False
 
 
-def _legacy_fixture_rule(value: str) -> bool:
-    if _legacy_models_value(value):
+def _baseline_fixture_rule(value: str) -> bool:
+    if _baseline_models_value(value):
         return True
     return any(
-        stripped and _legacy_models_value(stripped)
+        stripped and _baseline_models_value(stripped)
         for stripped in (word.strip("\"'(),;:") for word in value.split())
     )
 
 
-_LEGACY_TOKEN_PARTS: Final = re.compile(r"""[^\s"'{}\[\],;:=]+""")
+_BASELINE_TOKEN_PARTS: Final = re.compile(r"""[^\s"'{}\[\],;:=]+""")
 
 
-def _legacy_redaction_rule(token: str) -> bool:
-    return _legacy_models_value(token) or any(
-        _legacy_models_value(part) for part in _LEGACY_TOKEN_PARTS.findall(token)
+def _baseline_redaction_rule(token: str) -> bool:
+    return _baseline_models_value(token) or any(
+        _baseline_models_value(part) for part in _BASELINE_TOKEN_PARTS.findall(token)
     )
 
 
@@ -168,18 +177,18 @@ def _legacy_redaction_rule(token: str) -> bool:
 
 
 def notification_carries_credential(message: str) -> bool:
-    return _legacy_notify_rule(message) or looks_like_credential_value(message)
+    return _baseline_notify_rule(message) or looks_like_credential_value(message)
 
 
 def fixture_value_carries_credential(value: str) -> bool:
-    return _legacy_fixture_rule(value) or looks_like_credential_value(value)
+    return _baseline_fixture_rule(value) or looks_like_credential_value(value)
 
 
 def argv_credential_piece(value: str) -> str | None:
-    return value if _legacy_models_value(value) else _new_argv_piece(value)
+    return value if _baseline_models_value(value) else _shape_argv_piece(value)
 
 
 def log_word_carries_credential(word: str) -> bool:
-    return _legacy_redaction_rule(word) or looks_like_credential_value(
+    return _baseline_redaction_rule(word) or looks_like_credential_value(
         word, files_and_hosts_pass=True
     )
