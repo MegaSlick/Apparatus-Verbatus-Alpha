@@ -30,7 +30,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Final
+from typing import Any, Callable, Final, NamedTuple
 from zipfile import ZIP_STORED, BadZipFile, LargeZipFile, ZipFile, ZipInfo
 
 from display import DISPLAY_CONVENTION, render_display, strip_display
@@ -2695,12 +2695,19 @@ def _jsonl_rows(path, subject: str, row: str):
             yield _decode_json(line, f"{row} is not JSON")
 
 
+class _TextBundleRecord(NamedTuple):
+    literal: str
+    digest: str
+    citations: tuple[tuple[str, str], ...]
+    uncertainty: dict[str, Any]
+    text_status: str
+    annotations: list[Any]
+    heading_key: str
+
+
 def _text_bundle_records(
     root, source_pages: list[dict[str, Any]] | None = None
-) -> dict[
-    str,
-    tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list[Any], str],
-]:
+) -> dict[str, _TextBundleRecord]:
     """Parse literal records and their page/hash citations from the readable bundle."""
     if source_pages is None:
         source_pages = _load_sources(root)["pages"]
@@ -2716,10 +2723,7 @@ def _text_bundle_records(
         known_pages.add((path, digest))
         source_folders.add(_source_folder_for_declared_path(path))
 
-    records: dict[
-        str,
-        tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list, str],
-    ] = {}
+    records: dict[str, _TextBundleRecord] = {}
     record_locations: set[tuple[str, str]] = set()
     # Enumerate the folders from the authenticated source graph, not an `rglob`
     # walk, which could silently skip a linked or unreadable subtree.
@@ -2750,10 +2754,7 @@ def _text_bundle_records(
                 if not heading_key:
                     raise SchemaRefusal("a text-bundle human heading has no act key")
                 citations = []
-                pending = None
-                pending_uncertainty = None
-                pending_text_status = None
-                pending_annotations = None
+                pending = pending_uncertainty = pending_text_status = pending_annotations = None
             elif line.startswith("source-page: "):
                 if current_id is None or index + 1 >= len(lines):
                     raise SchemaRefusal(
@@ -2766,7 +2767,7 @@ def _text_bundle_records(
                 digest = digest_line.removeprefix("source-sha256: ")
                 _require_sha256(digest, "a text-bundle source citation digest")
                 citation = (declared_path, digest)
-                if known_pages is not None and citation not in known_pages:
+                if citation not in known_pages:
                     raise SchemaRefusal("a text-bundle source citation names no packaged page")
                 citations.append(citation)
             elif line.startswith("source-sha256: "):
@@ -2875,7 +2876,7 @@ def _text_bundle_records(
                 )
                 if folder not in citation_folders:
                     raise SchemaRefusal("a text-bundle act is enclosed by the wrong source folder")
-                candidate = (
+                candidate = _TextBundleRecord(
                     *pending,
                     pending_uncertainty,
                     pending_text_status,
@@ -2906,16 +2907,14 @@ def _text_bundle_records(
 
 def _text_bundle_literals(root) -> dict[str, tuple]:
     return {
-        act_id: (literal, digest, uncertainty, text_status, annotations)
-        for act_id, (
-            literal,
-            digest,
-            _citations,
-            uncertainty,
-            text_status,
-            annotations,
-            _heading_key,
-        ) in _text_bundle_records(root).items()
+        act_id: (
+            record.literal,
+            record.digest,
+            record.uncertainty,
+            record.text_status,
+            record.annotations,
+        )
+        for act_id, record in _text_bundle_records(root).items()
     }
 
 
@@ -4504,16 +4503,8 @@ def _verify_product_accounting(
             raise SchemaRefusal(
                 "the text bundle does not contain exactly the manifest's delivered acts"
             )
-        for act_id, (
-            _literal,
-            _digest,
-            text_citations,
-            _uncertainty,
-            _text_status,
-            _annotations,
-            heading_key,
-        ) in text_records.items():
-            if heading_key != act_keys[act_id]:
+        for act_id, record in text_records.items():
+            if record.heading_key != act_keys[act_id]:
                 raise SchemaRefusal(
                     "a text-bundle human heading does not authenticate its machine act identity"
                 )
@@ -4521,7 +4512,7 @@ def _verify_product_accounting(
                 (region["declared_path"], region["declared_sha256"])
                 for region in citations[act_id]["source_regions"]
             )
-            if text_citations != expected_citations:
+            if record.citations != expected_citations:
                 raise SchemaRefusal(
                     "the text bundle does not retain every delivered source citation"
                 )
