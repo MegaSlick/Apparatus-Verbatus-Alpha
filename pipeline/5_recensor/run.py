@@ -157,6 +157,13 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     return records
 
 
+def _records_of_kind(context, stage: str, kind: str):
+    """Read every artifact of one kind from a stage's manifest, in manifest order."""
+    for entry in stage_manifest(context, stage)["artifacts"]:
+        if entry["kind"] == kind:
+            yield context.tree.read_artifact(stage, kind, entry["artifact_id"])
+
+
 _BOX_SIDES = ("x", "y", "w", "h")
 
 
@@ -326,10 +333,7 @@ def occlusion_records_by_page(context) -> dict[str, list[dict]]:
     survey, where they name the page.
     """
     records: dict[str, list[dict]] = {}
-    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "occlusion":
-            continue
-        record = context.tree.read_artifact(DESIGNATOR, "occlusion", entry["artifact_id"])
+    for record in _records_of_kind(context, DESIGNATOR, "occlusion"):
         payload = _payload(record, f"Designator occlusion {record['artifact_id']}")
         page = payload.get("page_id")
         if not isinstance(page, str) or not page:
@@ -1340,10 +1344,7 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
     no act's review reports it.
     """
     by_page: dict[int, list[dict]] = {}
-    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "region":
-            continue
-        record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+    for record in _records_of_kind(context, DESIGNATOR, "region"):
         payload = record.get("payload")
         transform = payload.get("transform") if isinstance(payload, dict) else None
         if not isinstance(transform, dict):
@@ -1398,10 +1399,7 @@ def sealed_page_images(context) -> dict[int, dict]:
     verified first, as every stage that reads page pixels does.
     """
     pages: dict[int, dict] = {}
-    for entry in stage_manifest(context, EXEMPLAR)["artifacts"]:
-        if entry["kind"] != "page":
-            continue
-        record = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+    for record in _records_of_kind(context, EXEMPLAR, "page"):
         if record["outcome"] != "sealed":
             continue
         ordinal = record["payload"].get("ordinal")
@@ -1568,10 +1566,7 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
     """
     coverage_config = None
     maps: dict[int, dict | None] = {}
-    for entry in stage_manifest(context, INK_MAP)["artifacts"]:
-        if entry["kind"] != "ink-map":
-            continue
-        record = context.tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
+    for record in _records_of_kind(context, INK_MAP, "ink-map"):
         payload = _payload(record, "ink-map")
         ordinal = payload.get("page_ordinal")
         evidence = payload.get("edge_findings")
@@ -1953,10 +1948,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         act["act_key"] for act in acts if act["act_key"].startswith("page-residual:")
     ]
     findings: dict[int, dict] = {}
-    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "conservation":
-            continue
-        record = context.tree.read_artifact(DESIGNATOR, "conservation", entry["artifact_id"])
+    for record in _records_of_kind(context, DESIGNATOR, "conservation"):
         payload = _payload(record, f"Designator conservation {record['artifact_id']}")
         ordinal = payload.get("page_ordinal")
         measurable = payload.get("ink_measurable")
@@ -2320,10 +2312,7 @@ def current_page_testimonia(context) -> dict[tuple[int, str], dict]:
     currency signal, and duplicate or gapped ordinals are accounting failures.
     """
     records: dict[tuple[int, str], list[dict]] = {}
-    for entry in stage_manifest(context, ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "page-testimonium":
-            continue
-        record = context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+    for record in _records_of_kind(context, ATTESTATORES, "page-testimonium"):
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
         ordinal, chair = payload.get("page_ordinal"), payload.get("chair")
         # A boolean ordinal hashes as its integer counterpart, so accepting one
