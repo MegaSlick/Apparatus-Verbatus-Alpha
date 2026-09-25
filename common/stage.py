@@ -49,6 +49,7 @@ from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
 from common.contracts.outcomes import (
     BOUNDARY_OUTCOMES,
+    _is_int,
     classify,
 )
 from common.contracts.outcomes import (
@@ -100,7 +101,7 @@ from common.recovery import (
     reconcile_recovery_requests,
     recovery_kind_budget,
 )
-from common.runtree.store import PublishResult, RunTree
+from common.runtree.store import PublishResult, RunTree, _inode_identity
 from common.witness_adapters import validate_witness_adapter_bindings
 from common.witness_context import validate_witness_context_configuration
 
@@ -119,16 +120,20 @@ class RunHalted(ContractError):
     """The run-level hard-failure cap refuses another stage entry."""
 
 
-DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "pdf_render.toml"
-DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "witness_context.toml"
-)
-DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "perlector_protocol.toml"
-)
-DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "perlector_audit.toml"
-)
+_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+DEFAULT_PDF_RENDER_CONFIG_PATH = _CONFIG_DIR / "pdf_render.toml"
+DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = _CONFIG_DIR / "witness_context.toml"
+DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH = _CONFIG_DIR / "perlector_protocol.toml"
+DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH = _CONFIG_DIR / "perlector_audit.toml"
+# Padding changes the crop bytes a witness sees, so it is sealed into the run.
+DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = _CONFIG_DIR / "designator_padding.toml"
+DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH = _CONFIG_DIR / "designator_geometry.toml"
+# Grouping thresholds decide which acts exist, so they are sealed too.
+DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH = _CONFIG_DIR / "designator_grouping.toml"
+DEFAULT_CORPUS_FRAME_CONFIG_PATH = _CONFIG_DIR / "corpus_frame.toml"
+DEFAULT_SERVING_RECIPES_CONFIG_PATH = _CONFIG_DIR / "serving_recipes.toml"
+DEFAULT_POD_PLACEMENT_CONFIG_PATH = _CONFIG_DIR / "pod_placement.toml"
+DEFAULT_TRIAGE_MODES_CONFIG_PATH = _CONFIG_DIR / "triage_modes.toml"
 
 # The run-level blind/named toggle, named once so the CLI, the config digest and
 # the Perlectio schema cannot disagree about the closed set.
@@ -151,29 +156,6 @@ REAL_SCENARIO: Final = "real-submission"
 # may not import a stage.
 REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v5"
 
-# Padding changes the crop bytes a witness sees, so it is sealed into the run.
-DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "designator_padding.toml"
-)
-DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "designator_geometry.toml"
-)
-# Grouping thresholds decide which acts exist, so they are sealed too.
-DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "designator_grouping.toml"
-)
-DEFAULT_CORPUS_FRAME_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "corpus_frame.toml"
-)
-DEFAULT_SERVING_RECIPES_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "serving_recipes.toml"
-)
-DEFAULT_POD_PLACEMENT_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "pod_placement.toml"
-)
-DEFAULT_TRIAGE_MODES_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "triage_modes.toml"
-)
 MAX_TRIAGE_MODES_CONFIG_BYTES: Final = 64 * 1024
 
 
@@ -209,8 +191,7 @@ def _validate_triage_modes_config(raw: bytes, path: str | Path) -> None:
     if set(record) != set(TRIAGE_MODES) or any(
         not isinstance(policy, dict)
         or set(policy) != {"review_at_or_below_confidence"}
-        or not isinstance(policy["review_at_or_below_confidence"], int)
-        or isinstance(policy["review_at_or_below_confidence"], bool)
+        or not _is_int(policy["review_at_or_below_confidence"])
         or not 0 <= policy["review_at_or_below_confidence"] <= 4
         for policy in record.values()
     ):
@@ -535,41 +516,24 @@ class StageContext:
     def witness_context_config_path(self) -> str:
         return self.args.witness_context_config
 
+    # The four sampling knobs below are read from argv and sealed like `witness_context`.
     @property
     def nuda_per_mille(self) -> int:
-        """The sealed Lectio nuda sampling rate, in thousandths.
-
-        Argv on both routes, backed by `config_digest` on the fixture route and
-        by the `run-policy` digest on the real one. See `witness_context`.
-        """
+        """The Lectio nuda sampling rate, in thousandths."""
         return self.args.nuda_per_mille
 
     @property
     def nuda_approval_ref(self) -> str:
-        """The sealed selector for the sampling design this run draws nuda under.
-
-        Empty when nothing is sampled.  Argv on both routes, backed by
-        `config_digest` on the fixture route and by the `run-policy` digest on
-        the real one. See `witness_context`.
-        """
+        """The sampling design this run draws nuda under; empty when nothing is sampled."""
         return self.args.nuda_approval_ref
 
     @property
     def perlector_instrument_per_mille(self) -> int:
-        """The sealed instrumented-reading rate, in thousandths.
-
-        Argv on both routes, backed by `config_digest` on the fixture route and
-        by the `run-policy` digest on the real one. See `witness_context`.
-        """
+        """The instrumented-reading rate, in thousandths."""
         return self.args.perlector_instrument_per_mille
 
     @property
     def perlector_instrument_approval_ref(self) -> str:
-        """The selector for the approval the instrumented reading draws under.
-
-        Argv on both routes, backed by `config_digest` on the fixture route and
-        by the `run-policy` digest on the real one. See `witness_context`.
-        """
         return self.args.perlector_instrument_approval_ref
 
     @property
@@ -699,13 +663,7 @@ class StageContext:
                 "StageContext has no run-sealed serving configuration inputs; "
                 "construct serving through open_context"
             )
-        observed_inputs = _serving_config_inputs(
-            audit.get("configuration_inputs"), "serving launch audit"
-        )
-        if observed_inputs != dict(self.serving_config_inputs):
-            raise SchemaRefusal(
-                "serving launch audit configuration inputs differ from the run-sealed inputs"
-            )
+        self._require_run_sealed_serving_inputs(audit)
         return self._write_serving_blob(audit, "serving launch audit")
 
     def write_serving_evidence_manifest(
@@ -770,6 +728,10 @@ class StageContext:
             raise SchemaRefusal("serving launch audit has the wrong or missing schema")
         if not isinstance(audit.get("chair"), str) or not audit["chair"].strip():
             raise SchemaRefusal("serving launch audit has no non-blank chair")
+        self._require_run_sealed_serving_inputs(audit)
+        return audit
+
+    def _require_run_sealed_serving_inputs(self, audit: dict[str, Any]) -> None:
         observed_inputs = _serving_config_inputs(
             audit.get("configuration_inputs"), "serving launch audit"
         )
@@ -777,7 +739,6 @@ class StageContext:
             raise SchemaRefusal(
                 "serving launch audit configuration inputs differ from the run-sealed inputs"
             )
-        return audit
 
     def _write_serving_blob(self, value: dict[str, Any], label: str) -> dict[str, str]:
         """Canonical content-addressed storage shared by serving evidence records.
@@ -804,8 +765,6 @@ class StageContext:
         The digest is read from the bytes on disk rather than passed in, so a
         reference cannot claim a digest the file does not have.
         """
-        from common.contracts.canonical import digest_bytes
-
         return {
             "relative_path": relative_path,
             "sha256": digest_bytes(self.tree.read_bytes(relative_path)),
@@ -822,10 +781,19 @@ class StageContext:
 
 _SEAL_EXCLUDED_KINDS: Final = frozenset({"stage-seal", "decode-environment"})
 _DECODE_PATHS: Final = frozenset({"project-png", "pillow", "pdfium", "none"})
-# Every stage that decodes or transforms image bytes in its own pass must seal
-# ``produced_pixels: true``; DAI makes Attestatores such a stage.
-_PIXEL_STAGES: Final = frozenset(
-    {"door", "exemplar", "ink-map", "designator", "attestatores", "perlector", "recensor"}
+# A stage that decodes or transforms image bytes seals `produced_pixels: true`
+# (DAI makes the Attestatores one); pass-through stages record `none`.  The
+# project-PNG route includes `grayscale_rows`'s Pillow fallback.
+_STAGE_DECODE_PATHS: Final = MappingProxyType(
+    {
+        "door": frozenset({"pillow", "pdfium"}),
+        "exemplar": frozenset({"project-png"}),
+        "ink-map": frozenset({"project-png"}),
+        "designator": frozenset({"project-png"}),
+        "attestatores": frozenset({"project-png"}),
+        "perlector": frozenset({"project-png"}),
+        "recensor": frozenset({"project-png"}),
+    }
 )
 _DECODER_NAMES: Final = frozenset({"pillow", "jpeg-codec", "pillow-heif", "libheif", "pdfium"})
 _DECODE_ENVIRONMENT_FIELDS: Final = frozenset(
@@ -920,20 +888,7 @@ def _decode_environment(stage: str) -> dict[str, Any]:
     jpg = features.version_codec("jpg") or "unavailable"
     turbo = features.version_feature("libjpeg_turbo")
     heif = pillow_heif.libheif_info().get("libheif", "unavailable")
-    # Pass-through stages record `none`; the Door names both library routes it
-    # can take.
-    paths = {
-        "door": {"pillow", "pdfium"},
-        "exemplar": {"project-png"},
-        # `grayscale_rows`'s Pillow fallback is part of the project-PNG route.
-        "ink-map": {"project-png"},
-        "designator": {"project-png"},
-        "attestatores": {"project-png"},
-        "perlector": {"project-png"},
-        "recensor": {"project-png"},
-    }.get(stage, {"none"})
-    if not paths <= _DECODE_PATHS:
-        raise SchemaRefusal(f"{stage} records an unknown decode path")
+    paths = _STAGE_DECODE_PATHS.get(stage, frozenset({"none"}))
     return {
         "decoders": [
             {"name": "pillow", "version": Image.__version__},
@@ -1065,10 +1020,9 @@ def _stage_blob_inventory(
     try:
         opened_directory = os.fstat(directory_fd)
         named_directory = os.stat(blobs_root, follow_symlinks=False)
-        if not stat.S_ISDIR(opened_directory.st_mode) or (
-            opened_directory.st_dev,
-            opened_directory.st_ino,
-        ) != (named_directory.st_dev, named_directory.st_ino):
+        if not stat.S_ISDIR(opened_directory.st_mode) or _inode_identity(
+            opened_directory
+        ) != _inode_identity(named_directory):
             raise SchemaRefusal(f"{stage} blob inventory is not one contained directory")
         with os.scandir(directory_fd) as entries:
             names = sorted(entry.name for entry in entries)
@@ -1105,10 +1059,8 @@ def _stage_blob_inventory(
                     f"{stage} blob {name!r} contains digest {observed}, not the digest in its name"
                 )
             inventory.append({"name": name, "sha256_of_content": observed})
-        named_directory = os.stat(blobs_root, follow_symlinks=False)
-        if (opened_directory.st_dev, opened_directory.st_ino) != (
-            named_directory.st_dev,
-            named_directory.st_ino,
+        if _inode_identity(opened_directory) != _inode_identity(
+            os.stat(blobs_root, follow_symlinks=False)
         ):
             raise SchemaRefusal(f"{stage} blob inventory directory changed while it was read")
         return inventory
@@ -1166,7 +1118,7 @@ def _publisher_link_allowance(
             sibling = os.stat(other, dir_fd=directory_fd, follow_symlinks=False)
         except OSError:  # pragma: no cover - the temporary vanished mid-inventory
             continue
-        if (sibling.st_dev, sibling.st_ino) == identity:
+        if _inode_identity(sibling) == identity:
             explained += 1
     return explained
 
@@ -1185,12 +1137,12 @@ def _digest_regular_file_at(
         with os.fdopen(descriptor, "rb") as handle:
             opened = os.fstat(handle.fileno())
             named_before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            identity = (opened.st_dev, opened.st_ino)
+            identity = _inode_identity(opened)
             allowed_links = 1 + _publisher_link_allowance(directory_fd, siblings, name, identity)
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or opened.st_nlink > allowed_links
-                or identity != (named_before.st_dev, named_before.st_ino)
+                or identity != _inode_identity(named_before)
             ):
                 raise SchemaRefusal(
                     f"{stage} blob {name!r} is not one contained regular file: it is reachable "
@@ -1205,8 +1157,8 @@ def _digest_regular_file_at(
         ) from error
 
     if (
-        identity != (closed_over.st_dev, closed_over.st_ino)
-        or identity != (named_after.st_dev, named_after.st_ino)
+        identity != _inode_identity(closed_over)
+        or identity != _inode_identity(named_after)
         or not stat.S_ISREG(named_after.st_mode)
         or closed_over.st_nlink > allowed_links
         or (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
@@ -1600,16 +1552,7 @@ def validate_witness_context_bindings(
         raise ContractError(
             f"witness_context {witness_context!r} is not one of {WITNESS_CONTEXT_REGIMES}"
         )
-    if (
-        not isinstance(nuda_per_mille, int)
-        or isinstance(nuda_per_mille, bool)
-        or not (0 <= nuda_per_mille <= MAX_NUDA_PER_MILLE)
-    ):
-        raise ContractError(
-            f"nuda_per_mille must be an integer in [0, {MAX_NUDA_PER_MILLE}], got {nuda_per_mille!r}"
-        )
-    if not isinstance(nuda_approval_ref, str):
-        raise ContractError("nuda_approval_ref must be a string")
+    _require_sampling_knobs("nuda", nuda_per_mille, MAX_NUDA_PER_MILLE, nuda_approval_ref)
     # A nuda sample needs the project lead's predeclared design, sealed beside
     # the rate so no run can later claim an approval it did not start under.
     if nuda_per_mille and nuda_approval_ref != NUDA_APPROVAL_SUBJECT:
@@ -1618,17 +1561,12 @@ def validate_witness_context_bindings(
             f"sampling design selector {NUDA_APPROVAL_SUBJECT!r} in --nuda-approval-ref; an arbitrary "
             "string is not an approval record"
         )
-    if (
-        not isinstance(perlector_instrument_per_mille, int)
-        or isinstance(perlector_instrument_per_mille, bool)
-        or not (0 <= perlector_instrument_per_mille <= MAX_PERLECTOR_INSTRUMENT_PER_MILLE)
-    ):
-        raise ContractError(
-            "perlector_instrument_per_mille must be an integer in [0, 1000], got "
-            f"{perlector_instrument_per_mille!r}"
-        )
-    if not isinstance(perlector_instrument_approval_ref, str):
-        raise ContractError("perlector_instrument_approval_ref must be a string")
+    _require_sampling_knobs(
+        "perlector_instrument",
+        perlector_instrument_per_mille,
+        MAX_PERLECTOR_INSTRUMENT_PER_MILLE,
+        perlector_instrument_approval_ref,
+    )
     if (
         perlector_instrument_per_mille
         and perlector_instrument_approval_ref != PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT
@@ -1645,6 +1583,15 @@ def validate_witness_context_bindings(
         shipped_config_root=DEFAULT_WITNESS_CONTEXT_CONFIG_PATH.parent,
     )
     return validation.source_sha256
+
+
+def _require_sampling_knobs(name: str, per_mille: Any, maximum: int, approval_ref: Any) -> None:
+    if not _is_int(per_mille) or not 0 <= per_mille <= maximum:
+        raise ContractError(
+            f"{name}_per_mille must be an integer in [0, {maximum}], got {per_mille!r}"
+        )
+    if not isinstance(approval_ref, str):
+        raise ContractError(f"{name}_approval_ref must be a string")
 
 
 def real_run_policy_digest(
@@ -1733,52 +1680,26 @@ def run_config_bindings(
             )
         pdf_render_config_digest = pdf_render_config_sha256
     else:
-        try:
-            pdf_render_config_digest = digest_bytes(Path(pdf_render_config_path).read_bytes())
-        except OSError as error:
-            raise ContractError(
-                "the PDF render configuration binding at "
-                f"{pdf_render_config_path} could not be read"
-            ) from error
-    try:
-        perlector_protocol_config_digest = digest_bytes(
-            Path(perlector_protocol_config_path).read_bytes()
+        pdf_render_config_digest = _read_config_digest(
+            pdf_render_config_path, "PDF render configuration"
         )
-    except OSError as error:
-        raise ContractError(
-            "the Perlector protocol configuration binding at "
-            f"{perlector_protocol_config_path} could not be read"
-        ) from error
-    try:
-        perlector_audit_config_digest = digest_bytes(Path(perlector_audit_config_path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            "the Perlector audit configuration binding at "
-            f"{perlector_audit_config_path} could not be read"
-        ) from error
-    try:
-        padding_config_digest = digest_bytes(Path(designator_padding_config_path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            "the Designator padding configuration binding at "
-            f"{designator_padding_config_path} could not be read"
-        ) from error
-    try:
-        geometry_config_digest = digest_bytes(Path(designator_geometry_config_path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            "the Designator geometry configuration binding at "
-            f"{designator_geometry_config_path} could not be read"
-        ) from error
+    perlector_protocol_config_digest = _read_config_digest(
+        perlector_protocol_config_path, "Perlector protocol configuration"
+    )
+    perlector_audit_config_digest = _read_config_digest(
+        perlector_audit_config_path, "Perlector audit configuration"
+    )
+    padding_config_digest = _read_config_digest(
+        designator_padding_config_path, "Designator padding configuration"
+    )
+    geometry_config_digest = _read_config_digest(
+        designator_geometry_config_path, "Designator geometry configuration"
+    )
     # Hashed only: its schema lives in a stage module `common/` may not import,
     # so a malformed file is refused when the Designator loads it.
-    try:
-        grouping_config_digest = digest_bytes(Path(designator_grouping_config_path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            "the Designator grouping configuration binding at "
-            f"{designator_grouping_config_path} could not be read"
-        ) from error
+    grouping_config_digest = _read_config_digest(
+        designator_grouping_config_path, "Designator grouping configuration"
+    )
     _, alignment_config_digest = load_alignment_limits(alignment_config_path)
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
@@ -1789,20 +1710,12 @@ def run_config_bindings(
     _validate_triage_modes_config(triage_modes_raw, triage_modes_config_path)
     triage_modes_config_digest = digest_bytes(triage_modes_raw)
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
-    try:
-        serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            "the serving recipes configuration binding at "
-            f"{serving_recipes_config_path} could not be read"
-        ) from error
-    try:
-        pod_placement_config_digest = digest_bytes(Path(pod_placement_config_path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            "the pod placement configuration binding at "
-            f"{pod_placement_config_path} could not be read"
-        ) from error
+    serving_recipes_config_digest = _read_config_digest(
+        serving_recipes_config_path, "serving recipes configuration"
+    )
+    pod_placement_config_digest = _read_config_digest(
+        pod_placement_config_path, "pod placement configuration"
+    )
     serving_config_inputs = {
         "schema": SERVING_CONFIG_INPUTS_SCHEMA,
         "serving_recipes_sha256": serving_recipes_config_digest,
@@ -1992,7 +1905,7 @@ def load_corpus_frame_policy(path: str | Path) -> tuple[dict[str, int], str]:
     if set(record) != {"max_pages_per_shard"}:
         raise ContractError("corpus-frame shard configuration has the wrong closed schema")
     limit = record["max_pages_per_shard"]
-    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+    if not _is_int(limit) or not 1 <= limit <= 1000:
         raise ContractError("corpus-frame max_pages_per_shard must be an integer in [1, 1000]")
     return {"max_pages_per_shard": limit}, digest_bytes(raw)
 
@@ -2321,6 +2234,12 @@ def scenario_for(fixture: dict[str, Any], name: str) -> dict[str, Any]:
     raise ContractError(f"the fixture declares no scenario {name!r}; declared: {declared}")
 
 
+_EXPECTED_ACT_NAMES: Final = ("act_id", "act_key", "page_id")
+_EXPECTED_ACT_FIELDS: Final = frozenset(
+    {*_EXPECTED_ACT_NAMES, "page_ordinal", "has_continuation", "outcome", "evidence"}
+)
+
+
 def expected_acts(context) -> list[dict[str, Any]]:
     """Every act the proposal seal expects, each with a validated Designator outcome.
 
@@ -2341,7 +2260,7 @@ def expected_acts(context) -> list[dict[str, Any]]:
     count = payload.get("count")
     if not isinstance(acts, list) or not acts:
         raise FatalAccounting("the Designator proposal seal names no expected acts")
-    if not isinstance(count, int) or isinstance(count, bool) or count != len(acts):
+    if not _is_int(count) or count != len(acts):
         raise FatalAccounting(
             "the Designator proposal seal count does not reconcile with its expected-act rows"
         )
@@ -2350,29 +2269,14 @@ def expected_acts(context) -> list[dict[str, Any]]:
     for act in acts:
         if not isinstance(act, dict):
             raise FatalAccounting("the Designator proposal seal has a non-object expected-act row")
-        required = {
-            "act_id",
-            "act_key",
-            "page_id",
-            "page_ordinal",
-            "has_continuation",
-            "outcome",
-            "evidence",
-        }
-        if set(act) != required:
+        if set(act) != _EXPECTED_ACT_FIELDS:
             raise FatalAccounting(
                 "the Designator proposal seal expected-act row has fields other than its "
                 "closed denominator contract"
             )
         if (
-            not isinstance(act["act_id"], str)
-            or not act["act_id"]
-            or not isinstance(act["act_key"], str)
-            or not act["act_key"]
-            or not isinstance(act["page_id"], str)
-            or not act["page_id"]
-            or not isinstance(act["page_ordinal"], int)
-            or isinstance(act["page_ordinal"], bool)
+            any(not isinstance(act[name], str) or not act[name] for name in _EXPECTED_ACT_NAMES)
+            or not _is_int(act["page_ordinal"])
             or not isinstance(act["has_continuation"], bool)
             or not isinstance(act["evidence"], list)
         ):
@@ -2455,11 +2359,7 @@ def _verify_real_act_denominator(
                 f"{payload.get('schema')!r}"
             )
         if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA and attempts_by_page is None:
-            attempts_by_page = {}
-            for attempt in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND):
-                attempt_page_id = attempt.get("subject_id")
-                if isinstance(attempt_page_id, str):
-                    attempts_by_page.setdefault(attempt_page_id, []).append(attempt)
+            attempts_by_page = _structure_attempts_by_page(context)
             sealed_decoding = load_decoding_policy(context.args.decoding_config)
         _verify_structure_attempt_chain(
             context,
@@ -2480,11 +2380,7 @@ def _verify_real_act_denominator(
                 "nothing may decide which hold speaks for it"
             )
         hold = holds[0] if holds else None
-        hold_payload = (
-            hold.get("payload")
-            if hold is not None and isinstance(hold.get("payload"), dict)
-            else {}
-        )
+        hold_payload = _payload_of(hold) if hold is not None else {}
         # Otherwise such a row would fall through as a proposal, its hold unread.
         if hold is not None and not {"residual_bounds", "page_bounds"} & set(hold_payload):
             raise FatalAccounting(
@@ -2560,6 +2456,15 @@ def _verify_real_act_denominator(
     _verify_every_conservation_residual_is_accounted(context, observed, holds_by_subject)
 
 
+def _structure_attempts_by_page(context) -> dict[str, list[dict[str, Any]]]:
+    by_page: dict[str, list[dict[str, Any]]] = {}
+    for attempt in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND):
+        page_id = attempt.get("subject_id")
+        if isinstance(page_id, str):
+            by_page.setdefault(page_id, []).append(attempt)
+    return by_page
+
+
 def _verify_structure_attempt_chain(
     context: StageContext,
     payload: Mapping[str, Any],
@@ -2581,11 +2486,9 @@ def _verify_structure_attempt_chain(
         not isinstance(policy, Mapping)
         or set(policy) != {"max_attempts", "seed_schedule"}
         or policy.get("seed_schedule") not in {"fixed-base", "base-plus-attempt-ordinal-minus-one"}
-        or not isinstance(policy.get("max_attempts"), int)
-        or isinstance(policy.get("max_attempts"), bool)
+        or not _is_int(policy.get("max_attempts"))
         or not 1 <= policy["max_attempts"] <= 3
-        or not isinstance(ordinal, int)
-        or isinstance(ordinal, bool)
+        or not _is_int(ordinal)
         or not isinstance(references, list)
         or len(references) != ordinal
         or not 1 <= ordinal <= policy.get("max_attempts", 0)
@@ -2607,13 +2510,8 @@ def _verify_structure_attempt_chain(
             "sealed by its decoding configuration"
         )
     if attempts_by_page is None:
-        stored_attempts = [
-            row
-            for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND)
-            if row.get("subject_id") == page_id
-        ]
-    else:
-        stored_attempts = list(attempts_by_page.get(page_id, []))
+        attempts_by_page = _structure_attempts_by_page(context)
+    stored_attempts = list(attempts_by_page.get(page_id, []))
     if len(stored_attempts) != ordinal:
         raise FatalAccounting(
             f"page {page_id}'s terminal structure answer names {ordinal} attempts but its "
@@ -2646,8 +2544,7 @@ def _verify_structure_attempt_chain(
             or attempt.get("attempt_ordinal") != expected_ordinal
             or attempt.get("attempt_policy") != policy
             or attempt.get("attempts") != prior
-            or not isinstance(attempt.get("attempt_seed"), int)
-            or isinstance(attempt.get("attempt_seed"), bool)
+            or not _is_int(attempt.get("attempt_seed"))
             or attempt.get("decoding") != payload.get("decoding")
         ):
             raise FatalAccounting(
@@ -2779,20 +2676,24 @@ def _verify_structure_request_image(
             "retained digest"
         )
     resize = presented["transform"]["resize"]
-    capacity = payload.get("capacity")
-    images = capacity.get("images") if isinstance(capacity, Mapping) else None
-    if (
-        not isinstance(images, list)
-        or len(images) != 1
-        or not isinstance(images[0], Mapping)
-        or images[0].get("width") != resize["target_width_px"]
-        or images[0].get("height") != resize["target_height_px"]
-    ):
+    if not _capacity_is_one_image(payload, resize["target_width_px"], resize["target_height_px"]):
         raise ContractError(
             f"structure attempt for page {page_id} capacity was not computed over the native "
             "request image"
         )
     return presented
+
+
+def _capacity_is_one_image(payload: Mapping[str, Any], width: object, height: object) -> bool:
+    capacity = payload.get("capacity")
+    images = capacity.get("images") if isinstance(capacity, Mapping) else None
+    return (
+        isinstance(images, list)
+        and len(images) == 1
+        and isinstance(images[0], Mapping)
+        and images[0].get("width") == width
+        and images[0].get("height") == height
+    )
 
 
 def _structure_source_page(
@@ -2854,15 +2755,7 @@ def verify_structure_attempt_call(
                 f"legacy v2 structure attempt for page {page_id} does not retain its exact "
                 "sealed-page input"
             )
-        capacity = payload.get("capacity")
-        images = capacity.get("images") if isinstance(capacity, Mapping) else None
-        if (
-            not isinstance(images, list)
-            or len(images) != 1
-            or not isinstance(images[0], Mapping)
-            or images[0].get("width") != page_size[0]
-            or images[0].get("height") != page_size[1]
-        ):
+        if not _capacity_is_one_image(payload, *page_size):
             raise ContractError(
                 f"legacy v2 structure attempt for page {page_id} capacity was not computed "
                 "over its directly presented sealed page"
@@ -3001,8 +2894,7 @@ def verify_structure_attempt_call(
         or (
             schema == CHAIR_CALL_RECORD_SCHEMA
             and (
-                not isinstance(call.get("response_status"), int)
-                or isinstance(call.get("response_status"), bool)
+                not _is_int(call.get("response_status"))
                 or not 100 <= call["response_status"] <= 599
             )
         )
@@ -3059,7 +2951,7 @@ def _verify_proposal_act_row(
         "structure-status",
         artifact_id(DESIGNATOR, "structure-status", row["page_id"]),
     )
-    status_payload = status.get("payload") if isinstance(status.get("payload"), Mapping) else {}
+    status_payload = _payload_of(status)
     if (
         status_payload.get("state") != "scanned"
         or status_payload.get("page_id") != row["page_id"]
@@ -3086,7 +2978,7 @@ def _verify_proposal_act_row(
         kind=STRUCTURE_ANSWER_KIND,
         subject_id=row["page_id"],
     )
-    payload = answer.get("payload") if isinstance(answer.get("payload"), Mapping) else {}
+    payload = _payload_of(answer)
     if payload.get("schema") not in STRUCTURE_ANSWER_RECORD_SCHEMAS:
         raise FatalAccounting(
             f"act {act_id}'s page names a structure answer whose schema is "
@@ -3332,8 +3224,7 @@ def _verify_every_conservation_residual_is_accounted(
         holds_by_subject = _designator_records_by_subject(context, "hold")
     accounted_pages = _page_residual_holds_by_page(holds_by_subject, observed)
     for page_id, record in _designator_records_by_subject(context, "conservation").items():
-        payload = record.get("payload")
-        payload = payload if isinstance(payload, Mapping) else {}
+        payload = _payload_of(record)
         enumeration = payload.get("residual_enumeration")
         if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
             _verify_withheld_page_is_held_as_one_item(
@@ -3416,8 +3307,7 @@ def sealed_residual_presentation_policy(context) -> dict[str, int]:
     )
     names = ("residual_aggregate_max_pixel_count", "residual_aggregate_max_area_px")
     if set(table) != set(names) | {"provenance"} or any(
-        not isinstance(table.get(name), int) or isinstance(table.get(name), bool) or table[name] < 0
-        for name in names
+        not _is_int(table.get(name)) or table[name] < 0 for name in names
     ):
         raise FatalAccounting(
             "the sealed Designator residual presentation policy is not the closed pair of "
@@ -3464,9 +3354,7 @@ def _verify_residual_component_partition(
         )
     policy = sealed_residual_presentation_policy(context)
     if any(
-        not isinstance(payload.get(name), int)
-        or isinstance(payload.get(name), bool)
-        or payload.get(name) != value
+        not _is_int(payload.get(name)) or payload.get(name) != value
         for name, value in policy.items()
     ):
         raise FatalAccounting(
@@ -3496,9 +3384,7 @@ def _verify_residual_component_partition(
             if (
                 not isinstance(bounds, Mapping)
                 or set(bounds) != {"x", "y", "w", "h"}
-                or any(
-                    not isinstance(bounds[k], int) or isinstance(bounds[k], bool) for k in bounds
-                )
+                or any(not _is_int(bounds[k]) for k in bounds)
                 or bounds["x"] < 0
                 or bounds["y"] < 0
                 or bounds["w"] <= 0
@@ -3551,7 +3437,7 @@ def _page_residual_holds_by_page(
     """
     by_page: dict[str, list[Mapping[str, Any]]] = {}
     for act_id, hold in holds_by_subject.items():
-        payload = hold.get("payload") if isinstance(hold.get("payload"), Mapping) else {}
+        payload = _payload_of(hold)
         if "page_bounds" not in payload:
             continue
         row = observed.get(act_id)
@@ -3679,7 +3565,7 @@ def _verify_minted_act_rows(
                 f"act {act_id} extends the denominator beyond {beyond} but the Designator "
                 "published no hold record for it"
             )
-        payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
+        payload = _payload_of(hold)
         # Presence, not shape, so a malformed page hold is refused as one.
         if "page_bounds" in payload:
             _verify_page_residual_act_row(context, act_id, row, hold)
@@ -3747,6 +3633,16 @@ def _prove_page_wide_act_rectangle(
         ) from error
 
 
+def _binds_page_row(payload: Mapping[str, Any], row: Mapping[str, Any], act_key: str) -> bool:
+    """Whether a page-wide record names its seal row's page, ordinal, derived key and a rectangle."""
+    return (
+        isinstance(payload.get("page_bounds"), dict)
+        and payload.get("act_key") == row["act_key"] == act_key
+        and payload.get("page_id") == row["page_id"]
+        and payload.get("page_ordinal") == row["page_ordinal"]
+    )
+
+
 def _verify_page_fallback_act_row(
     context,
     act_id: str,
@@ -3767,17 +3663,10 @@ def _verify_page_fallback_act_row(
             "Designator published no page-fallback record for it; it is not 'held' either, so it "
             "is not a conservation residual"
         )
-    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    payload = _payload_of(record)
     bounds = payload.get("page_bounds")
     ordinal = row["page_ordinal"]
-    expected_key = fallback_page_act_key(ordinal)
-    if (
-        not isinstance(bounds, dict)
-        or payload.get("act_key") != row["act_key"]
-        or payload.get("act_key") != expected_key
-        or payload.get("page_id") != row["page_id"]
-        or payload.get("page_ordinal") != ordinal
-    ):
+    if not _binds_page_row(payload, row, fallback_page_act_key(ordinal)):
         raise FatalAccounting(
             f"act {act_id}'s page-fallback record does not carry the page id, page ordinal, "
             "derived fallback key, and page rectangle it must bind"
@@ -3818,7 +3707,7 @@ def _verify_page_residual_act_row(
     (principle 8) and cause are all recomputed; consumers route on the cause
     code.
     """
-    payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
+    payload = _payload_of(hold)
     if "residual_bounds" in payload:
         raise FatalAccounting(
             f"act {act_id}'s hold names both a residual rectangle and a page rectangle; a hold "
@@ -3827,14 +3716,7 @@ def _verify_page_residual_act_row(
         )
     bounds = payload.get("page_bounds")
     ordinal = row["page_ordinal"]
-    expected_key = page_residual_act_key(ordinal)
-    if (
-        not isinstance(bounds, dict)
-        or payload.get("act_key") != row["act_key"]
-        or payload.get("act_key") != expected_key
-        or payload.get("page_id") != row["page_id"]
-        or payload.get("page_ordinal") != ordinal
-    ):
+    if not _binds_page_row(payload, row, page_residual_act_key(ordinal)):
         raise FatalAccounting(
             f"act {act_id}'s page-residual hold does not carry the page id, page ordinal, "
             "derived page-residual key, and page rectangle it must bind"
@@ -3893,8 +3775,7 @@ def _verify_page_residual_premise(
     act_id: str, page_id: str, hold_payload: Mapping[str, Any], conservation: dict[str, Any]
 ) -> None:
     """The conservation record's own account of why this page is held as one item."""
-    payload = conservation.get("payload")
-    payload = payload if isinstance(payload, Mapping) else {}
+    payload = _payload_of(conservation)
     declared = hold_payload.get("residual_component_count")
     if not _is_count(declared):
         raise FatalAccounting(
@@ -3969,9 +3850,13 @@ def _verify_page_residual_premise(
             )
 
 
+def _payload_of(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    payload = record.get("payload")
+    return payload if isinstance(payload, Mapping) else {}
+
+
 def _is_count(value: Any) -> bool:
-    """A plain non-negative integer. `bool` is an `int` and is not a count."""
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return _is_int(value) and value >= 0
 
 
 def _verify_residual_traces_to_conservation(
@@ -4121,12 +4006,7 @@ def open_context(
         )
     fixture = load_fixture(args.fixture_root)
     scenario_for(fixture, args.scenario)
-    cache_root = getattr(args, "cache_root", None)
-    registry = (
-        registry_factory(args.models_config, cache_root=cache_root)
-        if cache_root is not None
-        else registry_factory(args.models_config)
-    )
+    registry = _open_registry(args, registry_factory)
     bindings = run_config_bindings(
         registry.config,
         fixture,
@@ -4190,21 +4070,7 @@ def open_context(
         )
     verify_predecessor_seal(tree, stage)
     refuse_halted_run(tree, stage, args.hard_failure_config)
-    return StageContext(
-        tree=tree,
-        run=run,
-        fixture=fixture,
-        scenario=args.scenario,
-        stage=stage,
-        # From `run.json` only, so stage and run cannot disagree.
-        adapter_revision=adapter_recipe_for(run, stage),
-        args=args,
-        registry=registry,
-        sealed_config_digests=bindings["sealed_config_digests"],
-        armarium_formats=bindings["armarium_formats"],
-        serving_config_inputs=bindings["serving_config_inputs"],
-        recovery_policy=bindings["recovery_policy"],
-    )
+    return _bound_context(tree, run, fixture, args.scenario, stage, args, registry, bindings)
 
 
 def open_stage_context(
@@ -4240,22 +4106,38 @@ def _open_real_context(
     """
     verify_snapshot_is_current(run, args.corpus_register)
     read_snapshot(tree, run)
-    cache_root = getattr(args, "cache_root", None)
-    registry = (
-        registry_factory(args.models_config, cache_root=cache_root)
-        if cache_root is not None
-        else registry_factory(args.models_config)
-    )
+    registry = _open_registry(args, registry_factory)
     bindings = real_run_bindings(registry.config, args)
     # Before the seal check, so a moved policy is named as one.
     _refuse_incompatible_real_reuse(run, bindings, run_id=args.run_id)
     verify_predecessor_seal(tree, stage)
     refuse_halted_run(tree, stage, args.hard_failure_config)
+    return _bound_context(tree, run, None, REAL_SCENARIO, stage, args, registry, bindings)
+
+
+def _open_registry(args, registry_factory: Callable[..., StageChairProtocol]) -> StageChairProtocol:
+    cache_root = getattr(args, "cache_root", None)
+    if cache_root is None:
+        return registry_factory(args.models_config)
+    return registry_factory(args.models_config, cache_root=cache_root)
+
+
+def _bound_context(
+    tree: RunTree,
+    run: Mapping[str, Any],
+    fixture: dict[str, Any] | None,
+    scenario: str,
+    stage: str,
+    args,
+    registry: StageChairProtocol,
+    bindings: Mapping[str, Any],
+) -> StageContext:
+    """A context over the bindings just checked; the adapter recipe comes from `run.json` only."""
     return StageContext(
         tree=tree,
         run=run,
-        fixture=None,
-        scenario=REAL_SCENARIO,
+        fixture=fixture,
+        scenario=scenario,
         stage=stage,
         adapter_revision=adapter_recipe_for(run, stage),
         args=args,
@@ -4356,7 +4238,7 @@ def exemplar_page_ids(context) -> dict[int, str]:
         page = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
         payload = page.get("payload")
         ordinal = payload.get("ordinal") if isinstance(payload, Mapping) else None
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        if not _is_int(ordinal):
             raise FatalAccounting(
                 f"Exemplar page {page.get('artifact_id')!r} has no integer ordinal, so it "
                 "cannot be matched to one submitted source"
@@ -4392,7 +4274,7 @@ def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str |
     sealed_digests = run.get(SEALED_CONFIG_DIGESTS_FIELD)
     # Hand-built test trees may lack the policy; a real run never may.
     if not isinstance(sealed_digests, Mapping) or "hard-failure" not in sealed_digests:
-        if "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS:
+        if is_real_ingress(run):
             raise ContractError(
                 f"{stage} refuses to start: this real run authority seals no hard-failure "
                 "configuration digest, so its run-level cap cannot be proven"
@@ -4437,7 +4319,7 @@ def latest_attempt(records: list[dict[str, Any]], what: str, *, operation: str) 
     ordinals: dict[int, str] = {}
     for record in records:
         ordinal = record.get("payload", {}).get("attempt_ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        if not _is_int(ordinal):
             raise FatalAccounting(
                 f"a {what} artifact carries no attempt ordinal, so which attempt is "
                 "current cannot be derived. A guess here silently picks a stale record"
@@ -4503,8 +4385,7 @@ def current_recovery_request(
         or request_ref not in review.get("inputs", [])
         or not isinstance(reading_ref, dict)
         or reading_ref not in review.get("inputs", [])
-        or not isinstance(ordinal, int)
-        or isinstance(ordinal, bool)
+        or not _is_int(ordinal)
         or review_payload.get("recovery_policy") != recovery_policy
     ):
         raise ContractError(
@@ -4567,9 +4448,7 @@ def current_recovery_request(
     kind_used = request_payload.get("kind_budget_used")
     if (
         request_payload.get("kind_budget_allowed") != kind_allowed
-        or not isinstance(kind_used, int)
-        or isinstance(kind_used, bool)
-        or kind_used < 0
+        or not _is_count(kind_used)
         or kind_used >= kind_allowed
     ):
         raise ContractError(
