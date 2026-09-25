@@ -425,20 +425,19 @@ class VLLMReader:
             act_key=dossier.get("act_key"),
             response=response,
         )
-        # The pinned instruction asks the engine for the text and nothing else,
-        # so this reader has no channel through which a doubt could arrive, and
-        # says so: `not-assessed` is a fact about this chair's capability, never
-        # a claim that the reading is confident. A doubt grammar for the live
-        # prompt is a later change, made where a real answer can be observed;
-        # until then the export discloses the absence per act (independent
-        # audit of 2026-09-10, F2).
+        if instrument is None:
+            reading, assessment = annotations.read_doubt_marks(response.content)
+        else:
+            reading, assessment = (
+                response.content,
+                annotations.not_assessed(
+                    "a re-proof answers in JSON; doubt marks are read only from a plain reading"
+                ),
+            )
         result: LectioResult = {
-            "text": response.content,
+            "text": reading,
             "stop_reason": stop_reason,
-            "assessment": annotations.not_assessed(
-                "the live reader's pinned instruction asks for the text alone; this chair "
-                "reports no doubts"
-            ),
+            "assessment": assessment,
         }
         result["engine_call"] = {
             "call_record_ref": dict(response.call_record_ref),

@@ -78,19 +78,15 @@ def _fake_perlector_v0(
     return "\n".join(_neutral_dossier_lines(chair_role, dossier, protocol_config))
 
 
-# The one pinned transcription instruction for `unproven-real-perlector`
-# (`config/models-real.toml`), the first recipe this module renders for a
-# real serving engine rather than a fixture. Per GOVERNANCE 3 ("the Perlector
-# never picks") and GOVERNANCE 10 ("the instrument may not constrain what it
-# measures"): it names no witness preference, sets no severity or confidence
-# floor, and says nothing about which way to argue. It asks for the ink
-# transcribed as written, unmodernized, through to the end -- nothing else.
-# Code, covered by `builder_sha256` like every builder in this module;
-# reworded only as a reviewed two-file change with `config/README.md`'s R5a
-# register, the same rule already governing the Pass-B fragment.
+# The pinned instruction for `unproven-real-perlector`. It names no witness
+# preference and sets no floor (principles 1 and 8); it asks for the ink as
+# written and gives the reader the doubt marks `annotations.read_doubt_marks`
+# parses (principle 3).
 TRANSCRIPTION_INSTRUCTION: Final = (
     "Transcribe the ink exactly as it is written on the page. Do not modernize spelling, "
-    "expand abbreviations, or correct the scribe. Read through to the end of the act."
+    "expand abbreviations, or correct the scribe. Read through to the end of the act. "
+    "Where ink cannot be read, write [[?]] in its place. Where a reading is uncertain, "
+    "write it as [[reading]], or as [[reading|other|other]] to add other possible readings."
 )
 
 

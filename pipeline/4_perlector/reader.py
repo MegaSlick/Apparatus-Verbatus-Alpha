@@ -212,7 +212,7 @@ class FixtureReader:
         scenario declares one: a `reader_assessment` row names the state, and
         `reader_doubt` / `reader_gap` rows carry the spans and gaps an
         `assessed` state publishes. No row means this chamber has no channel,
-        which is `not-assessed` -- the same fact the live reader reports today.
+        which is `not-assessed`.
         Rows are declared exactly as a model would return them and are NOT
         validated against the text here: a row whose offset falls past the text
         is the fixture's way of exercising the producer's `malformed` path.
