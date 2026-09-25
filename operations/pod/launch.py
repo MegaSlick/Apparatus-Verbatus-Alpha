@@ -1624,12 +1624,8 @@ class PodRuntime:
                     arming=arming, request=request, record=record, lease=lease
                 )
             except Exception as error:
-                arming = ControllerArming(
-                    False,
-                    arming.pod_timer_acknowledged,
-                    self.now(),
-                    f"controller acknowledgement is not bound to this launch: {error}",
-                    arming.receipt,
+                arming = self._unarmed(
+                    arming, f"controller acknowledgement is not bound to this launch: {error}"
                 )
         if arming.armed:
             try:
@@ -1639,12 +1635,8 @@ class PodRuntime:
                     now=self.now(),
                 )
             except Exception as error:
-                arming = ControllerArming(
-                    False,
-                    arming.pod_timer_acknowledged,
-                    self.now(),
-                    f"controller receipt could not be durably recorded: {error}",
-                    arming.receipt,
+                arming = self._unarmed(
+                    arming, f"controller receipt could not be durably recorded: {error}"
                 )
             else:
                 return LaunchResult(
@@ -1669,6 +1661,11 @@ class PodRuntime:
             owner_token=owner_token,
             situation="controller arming failed",
             controller_arming=arming,
+        )
+
+    def _unarmed(self, arming: ControllerArming, detail: str) -> ControllerArming:
+        return ControllerArming(
+            False, arming.pod_timer_acknowledged, self.now(), detail, arming.receipt
         )
 
     @staticmethod
