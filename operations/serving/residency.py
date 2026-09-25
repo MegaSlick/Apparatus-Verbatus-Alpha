@@ -20,21 +20,12 @@ from common.chairs.models import ChairIdentity
 
 from .errors import ResidencyError, ServiceStopError
 
-# The one lease path every serving caller on one pod must share -- the pod
-# preflight and each pipeline stage that serves a chair.
-#
-# Container-local, not on the network volume, for two reasons that the run-tree
-# path this replaced satisfied neither of. First, an advisory lock on a network
-# mount is not something the mount is known to honour, and a lock that silently
-# grants itself to everyone is the co-residency the single-resident rule exists
-# to prevent. Second, the boundary is the *card*, which belongs to the pod and
-# not to any one run: two stages resumed under different run ids each resolved
-# their own lock inside their own run tree, so both acquired, and two vLLM
-# servers contended for one GPU with no named refusal.
-#
-# A path, not a run-tree resolution: a caller that wants a different boundary
-# (a developer machine serving two unrelated trees) passes its own path to
-# `FileResidencyLease`, which is what the stage tests do.
+# Shared by every serving caller on one pod (preflight and each pipeline
+# stage). Container-local, not on the network volume: an advisory lock there
+# is not guaranteed honoured, and the boundary is the GPU card, not a run
+# tree -- a run-scoped lock let two stages each acquire their own and put two
+# vLLM servers on one GPU with no refusal. A caller wanting a different
+# boundary passes its own path to `FileResidencyLease` instead.
 POD_RESIDENCY_LOCK_PATH: Final = Path("/tmp/verbatus-pod-gpu.lock")
 
 
@@ -91,10 +82,8 @@ class _FileResidencyHandle:
             raise ServiceStopError(
                 f"could not release serving residency lease {self.path}: {error}"
             ) from error
-        # The OS-level lock is gone the instant LOCK_UN succeeds, independent of
-        # whether closing the descriptor afterward also succeeds (flock(2)).  A
-        # failed close here must not report the lease as still retained: a
-        # different process is already free to acquire it.
+        # flock(2): the lock is gone the instant LOCK_UN succeeds, so a later
+        # close failure must not report the lease as still held.
         self._handle = None
         try:
             handle.close()
@@ -120,14 +109,10 @@ class FileResidencyLease:
         handle: TextIO | None = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            # `O_NOFOLLOW`, and mode 0600 on creation. The one pod-wide lease is
-            # a fixed name in a world-writable directory, so on a shared
-            # developer machine -- not in the single-tenant pod container this
-            # was written for -- somebody else's symlink at that name would
-            # otherwise be followed and locked wherever it pointed. Refused here
-            # instead, loudly, through the `OSError` arm below, which is the
-            # same answer the lease already gives when another user's file
-            # denies it. A symlink at the lease path is never a lease.
+            # O_NOFOLLOW: the fixed lease name sits in a world-writable
+            # directory, so on a shared (non-pod) machine another user's
+            # symlink there must not be followed and locked; the OSError arm
+            # below refuses it the same way it refuses a denied file.
             descriptor = os.open(
                 self.path,
                 os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,

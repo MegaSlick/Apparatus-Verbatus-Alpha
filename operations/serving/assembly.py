@@ -191,29 +191,25 @@ def _load_bound_configuration(
 
     expected = ServingConfigInputs.from_record(sealed_config_inputs)
     recipes = load_serving_recipes(recipes_path)
-    # **One read, digested and parsed.** `PlacementTable` carries no
-    # `source_sha256` in spec 04's landed shape, and the first version of this
-    # repair covered that by reading the file a second time to digest it — which
-    # means the parsed table and the digest need not describe the same bytes at
-    # all. An ordinary replacement between the two reads produced a table whose
-    # `generic-24gb` batch size was 9 while the digest attested to the sealed
-    # bytes saying 1, and this function returned it: a run bound to a placement it
-    # never sealed, with every check passing. Reproduced by the Sol read of this
-    # branch.
-    # `ServingConfigurationError`, not a bare `OSError` and not a bare
-    # `PlacementRefusal`: this is the serving assembly's own boundary and every
-    # other failure here refuses in its vocabulary. **Both the read and the parse
-    # are translated.** An earlier version of this comment said the read "was the
-    # one path out of this function that escaped it" — it was not. Measured
-    # against the same file three ways, a missing file refused as
-    # `ServingConfigurationError` while malformed TOML and a non-UTF-8 file
-    # refused as `PlacementRefusal`, which is a `ValueError` and not a
-    # `ServingError` — so a handler written for this boundary caught one of the
-    # three and missed two. `operations/pod/preflight.py::load_placement_table`
-    # already translates this same refusal the same way, and
-    # `load_serving_recipes` on the line above
-    # translates all three of its own. This is the second site of one rule rather
-    # than a new rule, which is the shape this branch keeps finding.
+    placement, placement_sha256 = _read_and_parse_placement(placement_path)
+    expected.require_loaded(
+        recipes_sha256=recipes.source_sha256,
+        placement_sha256=placement_sha256,
+    )
+    return recipes, placement, expected
+
+
+def _read_and_parse_placement(placement_path: str | Path) -> tuple[PlacementTable, str]:
+    """Read the placement table once and parse those same bytes.
+
+    `PlacementTable` carries no digest of its own, so the digest and the parsed
+    table must come from one read; a second read could see a replaced file and
+    seal a run to a placement it never parsed. Both the read and the parse are
+    translated to `ServingConfigurationError`, the boundary's own vocabulary,
+    since a missing file raises `OSError` while malformed or non-UTF-8 TOML
+    raises `PlacementRefusal` (a `ValueError`, not a `ServingError`).
+    """
+
     try:
         placement_bytes = Path(placement_path).read_bytes()
     except OSError as error:
@@ -226,12 +222,7 @@ def _load_bound_configuration(
         raise ServingConfigurationError(
             f"cannot parse placement table {placement_path}: {error}"
         ) from error
-    placement_sha256 = digest_bytes(placement_bytes)
-    expected.require_loaded(
-        recipes_sha256=recipes.source_sha256,
-        placement_sha256=placement_sha256,
-    )
-    return recipes, placement, expected
+    return placement, digest_bytes(placement_bytes)
 
 
 def _sealed_config_inputs(
