@@ -647,24 +647,34 @@ def declared_malformed(context, ordinal: int) -> dict[tuple[str, str], str]:
     return rows
 
 
+def _scenario_rows(context, rows) -> list[dict[str, Any]]:
+    """The rows declared for this scenario, or else the scenario-agnostic ones."""
+    base: list[dict[str, Any]] = []
+    scoped: list[dict[str, Any]] = []
+    for row in rows:
+        declared_scenario = row.get("scenario")
+        if declared_scenario is None:
+            base.append(row)
+        elif declared_scenario == context.scenario:
+            scoped.append(row)
+    return scoped or base
+
+
 def testimony_for(context, act_key: str, chair: str, ordinal: int) -> dict[str, Any] | None:
     """Return the fixture's response for this exact attempt.
 
     A scenario-specific declaration overrides a scenario-agnostic declaration.
     """
-    base_matches = []
-    scenario_matches = []
-    for row in context.fixture["testimony"]:
-        if row["act_key"] != act_key or row["chair"] != chair:
-            continue
-        if not _declared_for_ordinal(row, ordinal):
-            continue
-        declared_scenario = row.get("scenario")
-        if declared_scenario is None:
-            base_matches.append(row)
-        elif declared_scenario == context.scenario:
-            scenario_matches.append(row)
-    matches = scenario_matches or base_matches
+    matches = _scenario_rows(
+        context,
+        (
+            row
+            for row in context.fixture["testimony"]
+            if row["act_key"] == act_key
+            and row["chair"] == chair
+            and _declared_for_ordinal(row, ordinal)
+        ),
+    )
     if len(matches) > 1:
         raise SchemaRefusal(f"fixture declares more than one response for {(act_key, chair)!r}")
     return matches[0] if matches else None
@@ -2046,17 +2056,14 @@ def _retains_chandra_observation_payload(record: Mapping[str, Any]) -> bool:
 
 def churro_page_capture(context, page_ordinal: int, chair: str) -> dict[str, Any] | None:
     """Return the page-keyed row; scenario scope overrides only the unscoped default."""
-    base: list[dict[str, Any]] = []
-    scoped: list[dict[str, Any]] = []
-    for row in context.fixture.get("churro_page_response", []):
-        if row.get("page_ordinal") != page_ordinal or row.get("chair") != chair:
-            continue
-        declared_scenario = row.get("scenario")
-        if declared_scenario is None:
-            base.append(row)
-        elif declared_scenario == context.scenario:
-            scoped.append(row)
-    matches = scoped or base
+    matches = _scenario_rows(
+        context,
+        (
+            row
+            for row in context.fixture.get("churro_page_response", [])
+            if row.get("page_ordinal") == page_ordinal and row.get("chair") == chair
+        ),
+    )
     if len(matches) > 1:
         raise SchemaRefusal(
             f"fixture declares more than one Churro page response for {(page_ordinal, chair)!r}"
@@ -2590,6 +2597,15 @@ def declared_chandra_anchor_chair(context) -> str:
     return chairs[0]
 
 
+def _adapter_presentation(context, adapter: Any, resolved: Any, source: dict[str, Any]):
+    """What the adapter presents to its model, checked against the sealed source."""
+    if adapter is None:
+        return source
+    presented = adapter.present(context, source)
+    witness_adapters.validate_adapter_presentation(resolved.witness_adapter, source, presented)
+    return presented
+
+
 def publish_attempt(
     context,
     *,
@@ -2617,12 +2633,7 @@ def publish_attempt(
         if attempted and isinstance(resolved, ChairIdentity)
         else None
     )
-    if adapter is not None:
-        source_presentation = presented
-        presented = adapter.present(context, source_presentation)
-        witness_adapters.validate_adapter_presentation(
-            resolved.witness_adapter, source_presentation, presented
-        )
+    presented = _adapter_presentation(context, adapter, resolved, presented)
     unpresented_regions = unpresented_region_ids(presented, regions)
     fixture_observed = (
         _fixture_native_observations(
@@ -2641,21 +2652,17 @@ def publish_attempt(
         observed: list[dict[str, Any]] = []
     elif fixture_observed is not None:
         observed = fixture_observed
-    elif takes_page_size:
-        # Normalized boxes convert against the sealed page's size, not the crop's.
-        observed = adapter.observe(
-            presented,
-            attempt.observation_payload
-            if attempt.observation_payload is not None
-            else attempt.native_payload,
-            page_size=sealed_page_size,
-        )
     elif adapter is not None:
-        observed = adapter.observe(
-            presented,
+        response = (
             attempt.observation_payload
             if attempt.observation_payload is not None
-            else attempt.native_payload,
+            else attempt.native_payload
+        )
+        # Normalized boxes convert against the sealed page's size, not the crop's.
+        observed = (
+            adapter.observe(presented, response, page_size=sealed_page_size)
+            if takes_page_size
+            else adapter.observe(presented, response)
         )
     else:
         observed = observed_from_presentation(presented)
@@ -3494,12 +3501,7 @@ def publish_page_testimonia_and_attachments(
                 if attempted_page
                 else None
             )
-            if adapter is not None:
-                source_presentation = presented
-                presented = adapter.present(context, source_presentation)
-                witness_adapters.validate_adapter_presentation(
-                    resolved.witness_adapter, source_presentation, presented
-                )
+            presented = _adapter_presentation(context, adapter, resolved, presented)
             unpresented_regions = unpresented_region_ids(presented, page_proposal_regions)
             page_attempt = attempt_id(page_subject_id, f"read:{chair}", ordinal)
             roles = {
@@ -4331,35 +4333,24 @@ def _serve_act_unit(
             what=f"the {resolved.witness_adapter} request for act {act['act_id']}",
             adapter=adapter,
         )
-        attempts_by_pair[(act["act_id"], chair)] = attempt
-        publish_attempt(
+    else:
+        response = client.read(built.request)
+        live = live_witness.live_attempt_from_response(
             context,
-            act=act,
-            chair=chair,
-            resolved=resolved,
-            ordinal=ordinal,
-            regions=regions,
-            attempt=attempt,
-            live=True,
+            adapter,
+            resolved.witness_adapter,
+            response,
+            presentation=presentation,
+            presented=built.presented,
+            prompt=built.prompt,
+            generation_declared=built.request.generation_declared,
+            parser="text",
+            generation_accounting=built.generation_accounting,
         )
-        return 1
-    response = client.read(built.request)
-    live = live_witness.live_attempt_from_response(
-        context,
-        adapter,
-        resolved.witness_adapter,
-        response,
-        presentation=presentation,
-        presented=built.presented,
-        prompt=built.prompt,
-        generation_declared=built.request.generation_declared,
-        parser="text",
-        generation_accounting=built.generation_accounting,
-    )
-    _refuse_unpublishable_response(
-        response, f"the {resolved.witness_adapter} response for act {act['act_id']}"
-    )
-    attempt = attempt_from_live(live)
+        _refuse_unpublishable_response(
+            response, f"the {resolved.witness_adapter} response for act {act['act_id']}"
+        )
+        attempt = attempt_from_live(live)
     attempts_by_pair[(act["act_id"], chair)] = attempt
     publish_attempt(
         context,
