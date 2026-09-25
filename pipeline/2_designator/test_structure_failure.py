@@ -6,9 +6,10 @@ that this stage writes a hold but that it survives every later stage and
 arrives in the Armarium's review list as a named loss, not an absence.
 
 What this file does NOT prove: that recovery can propose a replacement region
-for such a page. `recovery_pass` refuses any act the seal holds -- a held act
-is terminal -- which is a cross-stage recovery contract shared with the
-Recensor, not a Designator decision.
+for such a page. CONTRACT.md's "What this contract does not settle" names this
+required and not yet met: `recovery_pass` refuses any act the seal holds -- a
+held act is terminal -- which is a cross-stage recovery contract shared with
+the Recensor, not a Designator decision.
 """
 
 import subprocess
@@ -503,9 +504,8 @@ def test_a_page_of_int_lists_is_refused_by_name_inside_the_dark_distribution_tes
     module a list-of-lists page gets all the way to the surround test and then
     fails with an `AttributeError` naming neither the scanline nor the reason.
     `conservation._unit_ink_runs` guards the same assumption the same way, and
-    this is the test that says so -- the guard was added in the branch's audit
-    round with no test of its own, which is how a named refusal quietly becomes
-    an unnamed one again.
+    this is the test that says so -- without one a named refusal can quietly
+    become an unnamed one again.
 
     The page has to reach the surround test to reach the guard, so it is a
     framed one: a dark border around a lighter interior, in lists of ints.

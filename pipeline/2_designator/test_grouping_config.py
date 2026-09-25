@@ -91,11 +91,11 @@ def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
     assert config["page_area_bp"]["page_spanning_area_bp"] == 5000
     assert config["page_area_bp"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["page_area_bp"]["provenance"]["sample_count"] == 17
-    # [coverage_audit] isn't this stage's policy -- it's the outside-coverage
-    # audit's, validated here so a malformed one is refused before any stage runs.
     assert config["continuation"]["page_edge_reach_bp"] == 280
     assert config["continuation"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["continuation"]["provenance"]["sample_count"] == 44
+    # [coverage_audit] isn't this stage's policy -- it's the outside-coverage
+    # audit's, validated here so a malformed one is refused before any stage runs.
     assert config["coverage_audit"]["substantial_ink_area_bp"] == 4
     assert config["coverage_audit"]["edge_band_bp"] == 100
     assert config["coverage_audit"]["provenance"]["calibrated_for_this_corpus"] is True

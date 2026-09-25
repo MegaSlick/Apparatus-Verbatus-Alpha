@@ -33,7 +33,8 @@ ANCHOR_REACH_PX = 2
 BRACE_MIN_HEIGHT_PX = 30
 PAGE_EDGE_REACH_PX = 4
 # The sealed [grouping.page_area_bp] value, spelled here rather than loaded so
-# these tests stay a test of the module, not the config.
+# these tests stay a test of the module, not the config. test_grouping_config.py
+# is what holds the two to the same number.
 PAGE_SPANNING_AREA_BP = 5000
 GAP_TOLERANCE_PX = 3
 
@@ -140,9 +141,8 @@ def test_no_components_groups_to_nothing():
 
 @pytest.mark.parametrize("margin_px", [0, PAGE_W, -5, 1.5])
 def test_group_page_refuses_a_bad_margin_even_with_no_components(margin_px):
-    """The margin threshold is validated whether or not there is ink to sort:
-    `group_page` used to short-circuit to `[]` on an empty page ahead of the
-    margin check, so a bad sealed margin passed silently on an ink-free page.
+    """The margin threshold is validated whether or not there is ink to sort,
+    so a bad sealed margin cannot pass silently on an ink-free page.
     """
     with pytest.raises(
         ContractError,
@@ -755,7 +755,9 @@ def test_a_page_of_nothing_but_bezel_groups_to_nothing_so_the_fallback_grid_fire
     `detected` and the fallback grid never ran. A page whose only component
     spans it now returns no groups, which `run.py` reads as `fallback-tiles`;
     both halves (the empty result and `fallback_tiles` covering the page) are
-    asserted since either alone wouldn't prove the point.
+    asserted since either alone wouldn't prove the point. What this cannot
+    check from here is `run.py` making that call; `test_structure_failure.py`
+    is where the live path's `structure_evidence` is pinned.
     """
     assert group([_bezel()]) == []
 

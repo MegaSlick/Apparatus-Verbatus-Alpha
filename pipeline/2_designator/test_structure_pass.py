@@ -818,7 +818,8 @@ def test_a_block_with_no_usable_box_is_recorded_and_never_minted(live_run, tmp_p
     assert [b["text_length"] for b in payload["blocks_without_proposal"]] == [14, 13, 0]
     assert all(b["text_digest"] for b in payload["blocks_without_proposal"])
     # Both malformed-bbox findings are here: one for a box that couldn't be
-    # read, one for a box that was never there.
+    # read, one for a box that was never there; keeping only the last would
+    # drop a block's whole account of itself while still counting the block.
     assert [(f["kind"], f["ordinal"]) for f in payload["findings"]] == [
         ("malformed-bbox", 1),
         ("malformed-bbox", 2),
@@ -971,7 +972,7 @@ def test_the_repetition_measure_separates_the_live_runs_looping_pages():
     assert structure_pass.repetition_share(phrase) >= structure_pass.DEGENERATE_REPETITION_SHARE
 
     # One character repeated scores 1.0; a fifteen-character phrase yields
-    # fifteen distinct windows and scores well under the floor.
+    # fifteen distinct windows and scores about 0.07, just above the floor.
     assert structure_pass.repetition_share("a" * 600) == 1.0
     phrase_share = structure_pass.repetition_share("abcdefghijklmno" * 40)
     assert structure_pass.DEGENERATE_REPETITION_SHARE < phrase_share < 0.1
@@ -2442,9 +2443,13 @@ def test_a_field_outside_the_structure_answer_contract_refuses_by_name():
         designator._validate_structure_answer_payload(record)
 
 
-# One page written to raise every finding the layout grammar has. Hand-written
-# rather than assembled by a builder: the point is to reach the grammar's own
-# edges, and a builder that could produce all of them would be a second grammar.
+# One page written to raise every finding the layout grammar has: a nested
+# `data-bbox`, stray character data, a Blank-Page, a malformed box, a div
+# wrapped in a `<span>` (the block reader skips it but the deliberately
+# different div counter sees it, so the two counts part), and a block left
+# open at the end. Hand-written rather than assembled by a builder: the point
+# is to reach the grammar's own edges, and a builder that could produce all of
+# them would be a second grammar.
 _EVERY_FINDING_PAGE = (
     '<div data-bbox="0 0 100 100" data-label="Text">'
     '<p data-bbox="5 5 50 50">a nested box the vendor deletes</p></div>\n'
@@ -2481,7 +2486,7 @@ def test_every_finding_the_grammar_raises_is_publishable_by_this_stage():
 
 def test_the_producers_finding_kinds_and_the_validators_agree():
     """Two lists written out separately, neither derived from the other, so a
-    validator that imported the producer's table couldn't agree with it by
+    validator that imported the producer's table would agree with it by
     construction: this catches a kind added to one and forgotten in the other.
     """
     assert (
@@ -2515,10 +2520,9 @@ def test_an_act_entry_that_grew_a_label_again_refuses_before_publication(
 ):
     """The regression the closed set exists for, over the real chain.
 
-    `label` was published in clear until this branch's review; the act entry's
-    field set is what makes putting it back a refusal rather than a quiet
-    return. Nothing is published for the run: the refusal is raised before the
-    first answer record reaches the tree.
+    The act entry's field set is what makes putting `label` back a refusal
+    rather than a quiet return. Nothing is published for the run: the refusal
+    is raised before the first answer record reaches the tree.
     """
     root, catalogue = live_run
     original = structure_pass._act_record
@@ -2611,8 +2615,11 @@ def test_a_custody_refusal_holds_that_page_instead_of_aborting_the_run(
     """`retain_chandra_response` refuses; the page is held and the run goes
     on, rather than one page's custody failure discarding every other page's
     answer. The bytes themselves are not lost -- the client retained them
-    before custody was reached -- so the refusal costs only the binding, and
-    `custody_problem` names it with both custody references left null.
+    before custody was reached -- so the refusal costs only the binding.
+
+    Held, not minted: a rectangle minted without the custody binding would be
+    attributed to a call nothing ties it to. `custody_problem` names the
+    refusal with both custody references left null.
     """
     root, catalogue = live_run
     original = structure_pass.retain_chandra_response

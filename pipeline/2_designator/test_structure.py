@@ -202,7 +202,8 @@ def test_zero_gap_tolerance_still_requires_pixels_to_touch():
 def test_zero_gap_tolerance_still_connects_diagonal_neighbours():
     """Connectivity here is 8-connected (Chebyshev radius), not 4-connected:
     two ink pixels touching only at a corner still union into one component
-    even at zero gap tolerance.
+    even at zero gap tolerance. A pen stroke's own diagonal jitter must not
+    scan as two separate marks.
     """
     width, height = 10, 10
     rows = blank_rows(width, height)
@@ -753,8 +754,9 @@ def test_a_photographed_page_infers_its_paper_instead_of_refusing():
     ink = ink_pixels(width, height, rows, background=205, margin=PRIMARY_MARGIN)
     assert (0, 0) in ink, "a corner of the surround must still be counted as ink"
     assert (width - 1, height - 1) in ink
-    # On a real page the dark set and ink set need not coincide exactly; the
-    # subset assertion below is what actually holds in both cases.
+    # `>=`, not `>`: this page's dark set and ink set coincide exactly. On a
+    # real page they do not, and the subset assertion below is what actually
+    # holds in both cases.
     assert len(ink) >= dark_distribution["dark_pixel_count"]
     assert all((x, y) in ink for y in range(height) for x in range(width) if rows[y][x] == 0)
     # _dark_distribution caps its level at the ink threshold, so its counts
@@ -867,8 +869,10 @@ def test_the_ink_margin_is_floored_at_primary_margin_where_the_two_modes_are_clo
 
 def test_the_paper_mode_and_the_modal_background_are_one_value_on_that_branch():
     """The derivation reads `paper`; the modal branch publishes `background`.
-    They are the same integer there and the code relies on it, asserted on a
-    page rather than argued.
+    They are the same integer there and the code relies on it: a background
+    that survives `mode * counted >= total` is at or above the page's own
+    mean, so the global mode is also the mode of the population at or above
+    the mean. Asserted on a page rather than argued.
     """
     width, height = 200, 260
     rows = blank_rows(width, height)
@@ -1165,7 +1169,8 @@ def test_the_ink_bound_is_asked_of_the_surround_branch_too():
 def test_a_page_photographed_against_a_light_surface_is_refused_by_name():
     """A white bezel at 230 or above wins the mode, the paper below it falls
     under the threshold that implies, and `max_ink_bp` refuses the page by
-    name instead of publishing an ink fraction that reconciles exactly.
+    name instead of publishing an ink fraction that reconciles exactly. A
+    synthetic measurement, not a calibration sample.
     """
     width, height = 400, 300
     for frame in (255, 245, 230):

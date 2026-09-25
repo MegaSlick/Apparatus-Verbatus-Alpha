@@ -657,7 +657,7 @@ def test_resolver_consumer_refuses_a_raw_proposal_with_unsealed_extra_field():
         resolve([forged, raw_sources[1]], [])
 
 
-# --- BREAKER battery (Sonnet R2 adversarial test-authorship duty) ---------------
+# --- full-width tiling edge cases -----------------------------------------
 
 
 def test_surya_tiles_the_full_page_width_not_only_the_first_tile_column():
@@ -1216,7 +1216,9 @@ def test_a_detection_wider_than_the_overlap_keeps_its_complete_sighting_and_its_
     tile that touches it, so overlapping tiles clip it differently and each
     clipping is retained as its own raw proposal -- honest retention, not
     double counting, since the resolver publishes the complete sighting as
-    containing each fragment rather than choosing between them.
+    containing each fragment rather than choosing between them. No coverage
+    denominator is inflated -- the residual-ink check counts page pixels,
+    never proposals.
     """
     policy = load_geometry_policy()
     line = [

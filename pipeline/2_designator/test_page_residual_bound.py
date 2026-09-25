@@ -55,8 +55,8 @@ def _grouping_config_with_bound(
 ) -> Path:
     """The shipped grouping policy with an isolated cardinality bound.
 
-    The other thresholds are copied byte for byte, so these runs resolve to
-    the same geometry the shipped policy resolves to. Cardinality tests
+    The six page-fraction thresholds are copied byte for byte, so these runs
+    resolve to the same geometry the shipped policy resolves to. Cardinality tests
     promote every component to isolate their legacy ceiling; aggregate
     presentation cases keep the sealed floors.
     """

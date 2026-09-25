@@ -23,7 +23,9 @@ from common.residual_ink import (
 
 # A 200x200 frame of near-black around a lit interior with three marks: the
 # frame's 20,400 pixels outnumber the interior's paper, so the page's single
-# most common value is the frame's, which residual_ink.py used to call paper.
+# most common value is the frame's, not the paper the shared inference finds.
+# Nothing here is a calibration sample; the Designator's 127 real pages are in
+# its own survey.
 FRAME = 5
 PAPER = 210
 DARK_STROKE = 40
