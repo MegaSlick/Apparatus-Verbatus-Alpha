@@ -128,27 +128,15 @@ def _spend_refusal_state(assessment: SpendAssessment) -> LaunchState:
 def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> tuple[str, ...]:
     """Fold the launch token into every report path the launch seals.
 
-    A volume outlives any one pod, so an unbound report path lets a second
-    launch's durable evidence overwrite the first's (principle 4).  Binding
-    happens once, here, at sealing time -- the request's own validation then
-    refuses a report path that does not carry the sealed token.
+    A volume outlives any one pod, so an unbound path lets a second launch's
+    evidence overwrite the first's (principle 4). This binds the outer
+    ``--report-path`` and, inside ``--bootstrap-command-json``, every flag
+    ``models.NESTED_LAUNCH_BOUND_FLAGS`` names; ``bootstrap_main`` refuses an
+    unbound one only pod-side, after billing has begun.
 
-    This binds the outer timer's own ``--report-path`` and, inside the nested
-    bootstrap argv sealed in ``--bootstrap-command-json``, every flag
-    ``models.NESTED_LAUNCH_BOUND_FLAGS`` names -- its ``--report-path`` and its
-    ``--journal``. ``bootstrap_main.resolve_plan`` requires the same sealed
-    ``VERBATUS_LAUNCH_TOKEN`` in the name of both
-    (``_require_launch_token_named``), so an unbound one refuses at pod-side
-    plan time -- after the pod had already started billing. The journal half
-    matters because ``--journal`` is required for every non-``--hold-only``
-    plan.
-
-    ``PodCreateRequest.__post_init__`` already refuses a command that does not
-    carry exactly one ``--report-path`` with a value, so neither refusal below
-    is reachable through ``create``.  They are stated anyway because this
-    helper's contract would otherwise be enforced only at a distance, and
-    because ``tuple.index`` fails on a money path with a message that names
-    nothing.  ``create`` reports either as a request refusal, not a lease one.
+    ``PodCreateRequest`` already refuses a command without exactly one valued
+    ``--report-path``; the refusals below keep this helper's contract local and
+    name the flag rather than failing in ``tuple.index``.
     """
 
     if "--report-path" not in command:
@@ -194,12 +182,8 @@ _POD_RUN_MODULE: Final = "operations.pod.pod_run"
 def _runs_the_orchestrator(nested: list[str]) -> bool:
     """Whether this bootstrap child is ``pod_run`` rather than a hold-only boot.
 
-    Both spellings, because a request is a plain argv and nothing forces one:
-    ``-m operations.pod.pod_run`` is what the boot templates render, and a
-    path-spelled ``.../pod_run.py`` is the same program by another name. Getting
-    this wrong costs only accuracy in the derived key list -- a hold-only launch
-    would be asked for records it never wrote -- so it errs toward recognising
-    the program rather than toward a tidy single spelling.
+    Both the ``-m`` and the path spelling count: a wrong answer costs only
+    accuracy in the derived key list, so it errs toward recognising the program.
     """
 
     return any(part == _POD_RUN_MODULE or part.endswith("pod_run.py") for part in nested)
@@ -233,19 +217,10 @@ def bound_report_paths(
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Each launch-bound report path a sealed ``docker_start_cmd`` names, with its siblings.
 
-    The outer ``--report-path`` is the pod timer's; the nested one inside
-    ``--bootstrap-command-json`` is the bootstrap child's -- ``pod_run``'s for a
-    run launch, ``bootstrap_main --hold-only``'s for Boot A.  Both were bound to
-    this launch's token by ``_bind_report_path_to_launch`` at sealing time, and
-    ``models._required_timer_arguments`` has already refused a request carrying
-    anything but exactly one outer path and at most one nested one, so this
-    reads a shape that is already proven rather than re-validating it.
-
-    Which siblings go with which path is decided by *which program writes it*,
-    not by listing every sibling any program could write: a key that cannot
-    exist would come back as a per-object refusal in the fetch-run receipt, and
-    a receipt full of refusals for records nothing ever wrote is a worse record
-    than none.
+    The outer ``--report-path`` is the pod timer's; the nested one is the
+    bootstrap child's. Siblings follow the program that writes the path, not
+    every sibling any program could write: a key that cannot exist would come
+    back as a refusal in the fetch-run receipt.
     """
 
     command = list(docker_start_cmd)
@@ -266,18 +241,10 @@ def launch_evidence_keys(
 ) -> tuple[str, ...]:
     """Volume-relative object keys of every launch-scoped record, derived not guessed.
 
-    ``fetch-run`` brings ``runs/<id>/`` and ``preflight/`` home on its own and
-    refuses to *guess* at the launch-token-named reports, because guessing
-    would mean listing a whole volume that also holds the submission's page
-    images.  It does not have to guess: the launch receipt this operator's own
-    machine wrote already carries the sealed ``docker_start_cmd``, and the
-    bound paths are in it.  This is that derivation, in one place, so nobody is
-    asked to retype a 32-hex token out of a JSON receipt -- the step that gets
-    skipped on a phone.
-
-    A path outside the volume mount is dropped rather than returned: ``fetch-run``
-    could not fetch it anyway, and returning it would put a misleading name in
-    the receipt.
+    ``fetch-run`` will not list a whole volume to find launch-token-named
+    reports; the operator's own launch receipt already carries the sealed
+    command, so the keys come from it and nobody retypes a token on a phone.
+    Paths outside the mount are dropped: ``fetch-run`` could not fetch them.
     """
 
     mount = PurePosixPath(volume_mount_path)
@@ -297,31 +264,13 @@ def launch_evidence_keys(
 def launch_evidence_prefixes(
     docker_start_cmd: tuple[str, ...] | list[str], *, volume_mount_path: str
 ) -> tuple[str, ...]:
-    """The one volume-relative evidence prefix that scopes a fetch to this
-    launch's preflight directory.
+    """The volume-relative evidence prefix that scopes a fetch to this launch's
+    preflight directory, rather than the whole ``preflight/`` tree.
 
-    ``--evidence-key`` (`launch_evidence_keys`, above) names individual
-    objects, derived from every bound report path; ``--evidence-prefix``
-    names a whole directory to bring home under ``<into>/evidence/`` in bulk,
-    and its own default is the *entire* ``preflight/`` tree -- correct across
-    every launch a volume has ever seen, wrong for attributing one of them.
-
-    This is deliberately **not** built from `bound_report_paths`: every real
-    request (`boot_a_request.py`, `boot_b_request.py`) writes its report
-    paths at the *volume root*, not under ``preflight/`` -- only
-    ``bootstrap_main.PreflightRequest.preflight_root`` does, and it names
-    ``<mount>/preflight/<bootstrap_main's own --report-path stem>``, not the
-    pod timer's outer report and not (for a full run launch) ``pod_run``'s
-    own nested report. `bound_report_paths` deliberately does not
-    distinguish those two nested reports (both get the same run-report
-    siblings, by design, for `launch_evidence_keys`'s purpose), so reusing it
-    here would derive a prefix matching nothing on the volume.
-
-    A full run launch's nested ``--bootstrap-command-json`` argv is
-    ``pod_run``'s own argv with ``bootstrap_main``'s appended after the
-    first literal ``--`` (``pod_run.split_argv``); a hold-only launch has no
-    ``--`` and the nested argv *is* ``bootstrap_main``'s own. Either way,
-    `_nested_argv_halves` returns bootstrap_main's own half last.
+    Not built from `bound_report_paths`: only ``bootstrap_main``'s own
+    ``--report-path`` names a directory under ``preflight/``
+    (``PreflightRequest.preflight_root``), and `_nested_argv_halves` returns
+    bootstrap_main's half last whether or not ``pod_run`` precedes it.
     """
 
     nested = _nested_bootstrap_argv(docker_start_cmd)
@@ -362,17 +311,8 @@ def launch_run_id(docker_start_cmd: tuple[str, ...] | list[str]) -> str | None:
     """The run id a full run launch's sealed ``docker_start_cmd`` actually
     started, or ``None`` for a hold-only launch, which starts no run.
 
-    ``--run-id`` is ``pod_run``'s own required flag (``pod_run.py``'s
-    parser), sealed inside the nested ``--bootstrap-command-json`` argv, not
-    a top-level field of the request the way ``volume_id`` is -- so, like
-    the derivations above, it can only be read out of the sealed command,
-    not carried separately where it could silently disagree with it. Read
-    from the argv's pod_run half specifically (`_nested_argv_halves`'s
-    first), not the whole nested list, the same way `launch_evidence_prefixes`
-    reads `--report-path` from the bootstrap half only: a hold-only launch's
-    appended ``bootstrap_main`` half has no ``--run-id`` flag of its own to
-    collide with, but reading the split half rather than the flat list is
-    what keeps that true rather than assumed.
+    Read from the sealed command, never carried beside it where it could
+    disagree, and from the ``pod_run`` half only (`_nested_argv_halves`).
     """
 
     nested = _nested_bootstrap_argv(docker_start_cmd)
@@ -392,35 +332,11 @@ def _bound_report_path(raw_path: str, launch_token: str) -> str:
 def _bind_nested_report_path(bootstrap_command_json: str, launch_token: str) -> str:
     """Bind the launch token into a nested bootstrap argv's own ``--report-path``.
 
-    ``--bootstrap-command-json`` carries a second, JSON-encoded argv that
-    ``pod_timer`` runs as the pod's mandatory bootstrap step
-    (``operations/pod/boot_a_request.py`` renders ``bootstrap_main --hold-only``
-    this way for Boot A). ``models._required_timer_arguments`` has already
-    proven this decodes to a non-empty JSON array of non-empty strings before
-    a request reaches this helper, so no further shape-checking is needed
-    here. A nested argv carrying no ``--report-path`` of its own -- the
-    library-module placeholder the tests use, which exits before ever
-    reading one -- is returned unchanged rather than treated as a refusal:
-    binding a path that was never asked for would be inventing one.
-
-    Binding is done through :func:`operations.pod.models.rebind_nested_flag`,
-    which reads the argv the same way
-    :func:`operations.pod.models._nested_flag_values` does -- both spellings
-    ``--report-path value`` and ``--report-path=value`` -- so the binder and
-    the money-path validator that re-checks its output cannot drift apart. An
-    equals-form path the binder failed to recognise would be left unbound and
-    then permanently refused downstream, since no launch token can be
-    pre-written by an operator: it is minted inside ``create``.
-
-    ``models._required_timer_arguments`` refuses a nested ``--report-path``
-    that carries more than one occurrence, or one that carries no value,
-    before this helper ever runs -- so a truncated or duplicated nested flag
-    is not reachable through ``create``. Those shapes are still passed
-    through unrebound here rather than made to raise, the same way
-    ``_bind_report_path_to_launch``'s own unreachable-through-``create``
-    refusals above are kept as a named contract rather than assumed: a
-    caller other than ``create`` should not have to trust that argv shape
-    by accident.
+    ``models._required_timer_arguments`` has already proven the JSON shape. A
+    nested argv with no such flag is returned unchanged: binding a path never
+    asked for would invent one. `models.rebind_nested_flag` reads both
+    spellings exactly as the money-path validator does, so an equals-form path
+    cannot slip through unbound and then be refused forever downstream.
     """
 
     bound = json.loads(bootstrap_command_json)
@@ -451,35 +367,21 @@ without waiting out the delivery debounce, so a genuinely new drop is not lost.
 MAX_SPEND_ALERT_STATE_BYTES: Final = 4096
 """How much of a debounce stamp is read before it is called corrupt.
 
-The stamp this package writes is about sixty bytes.  It is read back from a
-directory a paid run writes to, so its size is untrusted input like its content:
-without a bound, one oversized file is read into memory at every spend gate, and
-one *long* file defeats the corrupt-reverts-to-sending rule outright, because
-``int`` refuses a decimal string past ``sys.int_max_str_digits`` with a
-``ValueError`` rather than a value.  A stamp that cannot be believed must send.
+The stamp (about sixty bytes) lives where a paid run writes, so its size is
+untrusted too; an overlong digit string would make ``int`` raise rather than
+revert to sending. A stamp that cannot be believed must send.
 """
 
 
 SPEND_LOCK_WAIT_SECONDS: Final = 30.0
 """How long either cross-process lock may be waited for before it is a failure.
 
-``operations/pod/`` forbids unbounded waits on the money path, and a blocking
-``flock`` is exactly that: one holder that never finishes -- a provider call
-hung inside the spend gate, or a crashed process on a filesystem that keeps the
-lock -- would leave the next operator with no output at all rather than a named
-refusal.
-
-What this bound is *not*: a duration chosen to let every ordinary overlap wait
-and win. ``create`` and ``adopt`` hold this lock around the whole of
-``_create_locked``/``_adopt_locked``, which includes the provider call,
-controller arming, and any ``_close_and_record`` -- and a close polls to
-``shutdown_deadline_seconds`` and then retries billing reconciliation, so a
-holder can legitimately keep it for well over thirty seconds during an entirely
-ordinary failed launch. A second caller that waits this long is refused by name
-*while an earlier launch is still unresolved*, and that is the intended outcome
-rather than an accident of the number: two paid actions overlapping on one
-account balance is the state this lock exists to prevent. Nothing is spent, and
-the refusal names the lock.
+A blocking ``flock`` is an unbounded wait on the money path: a hung holder
+would leave the next operator with no output at all. A holder can
+legitimately keep the lock longer than this during an ordinary failed launch
+(a close polls to its deadline, then reconciles billing); a second caller is
+then refused by name, which is intended: two paid actions overlapping on one
+balance is what this lock prevents.
 """
 
 SPEND_LOCK_POLL_SECONDS: Final = 0.05
@@ -1201,31 +1103,14 @@ class PodRuntime:
     ) -> str | None:
         """Hold a create to the reviewed card table, by name and by reviewed price.
 
-        `PodCreateRequest.gpu_type` is free text that goes straight to the
-        provider; the only other mechanical bound on *which card* gets
-        rented is `max_hourly_usd`, so a typo or a wrong tier that happens to
-        fit under the ceiling would otherwise launch.
+        `gpu_type` goes straight to the provider, and only `max_hourly_usd`
+        otherwise bounds which card is rented. The row is matched on
+        `gpu_type_id` alone, the only spelling ever sent to the API. Its
+        reviewed price must fit under the ceiling net of the volume rate once
+        known; the ceiling on the provider's quoted price still runs as well.
 
-        Two conditions, both refusing by name:
-
-        * the request's `gpu_type` must be a row of the reviewed table, matched
-          on `gpu_type_id` alone (`PlacementTable.profile_for_gpu_type_id`).
-          `gpu_type_id` is the only spelling that has ever gone to the API:
-          `boot_a_request.py` renders `"gpu_type": card.gpu_type_id`, and the
-          table's `name` column is prose for the operator. Accepting the name
-          too would allowlist a string no provider is known to take, so a create
-          could pass this gate and then fail at the API -- or rent something
-          else;
-        * that row's reviewed hourly price must fit under `max_hourly_usd`, net
-          of the volume's hourly rate when the estimate has supplied one. This
-          binds the *reviewed* price rather than the quoted one, which is the
-          part the existing ceiling cannot do: the ceiling re-applied to the
-          provider's returned price stays exactly as it was, and still runs.
-
-        `None` -- no table, or an unconfigured policy -- enforces nothing here.
-        An unconfigured policy refuses every paid path at the spend gate a few
-        lines later, and saying so twice, in different words, would only
-        obscure which refusal an operator is actually looking at.
+        No table, or an unconfigured policy, enforces nothing here: the spend
+        gate refuses an unconfigured policy anyway, in one set of words.
         """
 
         table = self.placement_table
