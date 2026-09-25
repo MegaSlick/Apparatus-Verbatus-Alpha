@@ -107,9 +107,9 @@ class GpuProfile:
     disk_gib: Decimal
     dtype: str
     discovery_detail: str = ""
-    """Why measurement failed, when it did.  The probe is the only place that
-    sees the driver's own error text, and spec 04 asks a red report for "what
-    happened" as well as "what to do next"."""
+    """Why measurement failed, when it did: the probe is the only place that
+    sees the driver's own error text, and a red report must say what happened
+    as well as what to do next."""
     measured: bool = False
     """True only when a real driver read produced these numbers.
 
@@ -131,11 +131,11 @@ class GpuProfile:
     and in every reader's autocomplete.  `__post_init__` refuses anything else.
     """
     gpu_count: int = 1
-    """How many cards `nvidia-smi` reported (F064).  A single query prints one
-    line per visible GPU; reading only the first silently measured one card's
-    VRAM as the machine's whole placement-deciding number and never said how
-    many cards were actually seen.  Default 1 for a synthetic/unmeasured
-    profile, matching this build's one-GPU assumption everywhere else."""
+    """How many cards `nvidia-smi` reported. A single query prints one line
+    per visible GPU; reading only the first would silently measure one card's
+    VRAM as the machine's whole placement-deciding number. Default 1 for a
+    synthetic/unmeasured profile, matching this build's one-GPU assumption
+    everywhere else."""
 
     def __post_init__(self) -> None:
         # The two halves of one fact, so neither can be set alone: a caller that
@@ -196,7 +196,7 @@ class SystemGpuProbe:
 
         `expected_gpu_count`, when the caller knows it (the create request's
         own `gpuCount`), is checked against what `nvidia-smi` actually
-        measured rather than left as two independent numbers (F064).
+        measured rather than left as two independent numbers.
         """
         disk_detail = ""
         try:
@@ -362,9 +362,9 @@ class PlacementTier:
 class CardProfile:
     """A prebuilt profile for a card actually rented, with its price-sheet entry.
 
-    Spec 04 ships these for the cards this project rents and falls back to
-    computed placement for anything else. The profile names a tier; it never
-    names a *model*, so nothing here selects among chairs or witnesses.
+    Shipped for the cards this project rents; anything else falls back to
+    computed placement. The profile names a tier; it never names a *model*,
+    so nothing here selects among chairs or witnesses.
     """
 
     name: str
@@ -417,8 +417,8 @@ class PlacementTable:
     def profile_for(self, card_name: str | None) -> CardProfile | None:
         """The prebuilt profile whose `name` or `gpu_type_id` the card reported.
 
-        `None` for every unknown card, which is spec 04's stated behaviour: an
-        unknown card falls back to computed placement rather than to a guess.
+        `None` for every unknown card: it falls back to computed placement
+        rather than to a guess.
         """
 
         if not card_name:
@@ -792,7 +792,6 @@ class PreflightReport:
                 "discovery_detail": self.profile.discovery_detail or None,
             },
             "placement_tier": self.tier,
-            # Spec 04: "the preflight report says which plan it chose and why."
             "placement_card_profile": self.card_profile,
             "placement_card_profile_note": self.card_profile_note,
             "placement_plan_source": self.plan_source,

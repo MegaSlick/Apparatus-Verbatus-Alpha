@@ -136,16 +136,12 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     This binds the outer timer's own ``--report-path`` and, inside the nested
     bootstrap argv sealed in ``--bootstrap-command-json``, every flag
     ``models.NESTED_LAUNCH_BOUND_FLAGS`` names -- its ``--report-path`` and its
-    ``--journal``.  Only the outer path was bound before;
-    ``bootstrap_main.resolve_plan`` requires the same sealed
-    ``VERBATUS_LAUNCH_TOKEN`` in the name of *both* of those
-    (``_require_launch_token_named``), so an unbound one refused at pod-side
-    plan time -- after the pod had already started billing.  The journal half
-    is what a full bootstrap plan needs: ``--journal`` is required for every
-    non-``--hold-only`` plan, so until it was bound here the only launchable
-    shape was the drill.
-    ``operations/pod/boot_a_request.py``'s own docstring named this as an
-    unbound seam left for this unit; it is closed here rather than left open.
+    ``--journal``. ``bootstrap_main.resolve_plan`` requires the same sealed
+    ``VERBATUS_LAUNCH_TOKEN`` in the name of both
+    (``_require_launch_token_named``), so an unbound one refuses at pod-side
+    plan time -- after the pod had already started billing. The journal half
+    matters because ``--journal`` is required for every non-``--hold-only``
+    plan.
 
     ``PodCreateRequest.__post_init__`` already refuses a command that does not
     carry exactly one ``--report-path`` with a value, so neither refusal below
@@ -322,7 +318,7 @@ def launch_evidence_prefixes(
     docker_start_cmd: tuple[str, ...] | list[str], *, volume_mount_path: str
 ) -> tuple[str, ...]:
     """The one volume-relative evidence prefix that scopes a fetch to this
-    launch's preflight directory (F110/G11).
+    launch's preflight directory.
 
     ``--evidence-key`` (`launch_evidence_keys`, above) names individual
     objects, derived from every bound report path; ``--evidence-prefix``
@@ -419,11 +415,10 @@ def _bind_nested_report_path(bootstrap_command_json: str, launch_token: str) -> 
     which reads the argv the same way
     :func:`operations.pod.models._nested_flag_values` does -- both spellings
     ``--report-path value`` and ``--report-path=value`` -- so the binder and
-    the money-path validator that re-checks its output cannot drift apart
-    the way they once did (the binder recognized only the separate-value
-    spelling, so an equals-form nested path was left unbound and then
-    permanently refused downstream: no launch token can be pre-written by
-    an operator, since it is minted inside ``create``).
+    the money-path validator that re-checks its output cannot drift apart. An
+    equals-form path the binder failed to recognise would be left unbound and
+    then permanently refused downstream, since no launch token can be
+    pre-written by an operator: it is minted inside ``create``.
 
     ``models._required_timer_arguments`` refuses a nested ``--report-path``
     that carries more than one occurrence, or one that carries no value,
@@ -1240,20 +1235,15 @@ class PodRuntime:
         for path in paths:
             if exclude is not None and path == exclude:
                 continue
-            # The link test is inside the same guard as the read.  `is_symlink`
-            # re-raises a permission error rather than answering False, and an
-            # unreadable lease directory therefore used to throw out of the paid
-            # gate instead of refusing through it -- past `create`'s own
-            # `_SpendGateLockFailure` catch, and past the post-create
-            # re-assessment that closes a pod it will not authorize.  Whatever
-            # stops this file being read leaves the remaining liability unknown,
-            # which is one answer with one name.
-            # Cause first here too, and for the two phase refusals below. The
-            # reason is truncated at 160 characters and a lease path is as long
-            # as its root: putting the path first pushed "could not be read" off
-            # the end on an ordinary macOS temporary directory, leaving an
-            # operator -- and the test that names this cause -- with a bare path
-            # and no diagnosis.
+            # The link test is inside the same guard as the read, because
+            # `is_symlink` re-raises a permission error rather than answering
+            # False: whatever stops this file being read must refuse through
+            # the paid gate, not escape past it, and leaves the remaining
+            # liability unknown either way.
+            # Cause first here too, and for the two phase refusals below: the
+            # reason is truncated at 160 characters and a lease path can be as
+            # long as its root, so a path-first message can push the actual
+            # diagnosis off the end.
             try:
                 if path.is_symlink():
                     return total, f"a lease is a symlink: {path}"
@@ -1261,12 +1251,10 @@ class PodRuntime:
             except Exception as error:
                 return total, f"a lease could not be read: {path}: {error}"
             if lease is None:
-                # `glob` listed this path, so something was accounted for here a
-                # moment ago and is now gone.  Excluding it would silently drop a
-                # liability that may still be billing, which is the one answer this
-                # total is not allowed to give.
-                # Cause first: the reason is truncated at 160 characters, and a long
-                # lease path would otherwise push the only diagnosis off the end.
+                # `glob` listed this path, so it was accounted for a moment
+                # ago and is now gone. Excluding it would silently drop a
+                # liability that may still be billing, which this total may
+                # not do.
                 return total, f"a listed lease vanished before it could be read: {path}"
             if lease.phase == "closed-verified":
                 continue
@@ -1299,8 +1287,8 @@ class PodRuntime:
         for path in paths:
             # Inside the guard for the same reason as `_reserved_liability`:
             # `is_symlink` re-raises a permission error rather than answering
-            # False, and an unreadable lease used to throw out of the paid gate
-            # instead of refusing through it.
+            # False, and an unreadable lease must refuse through the paid gate
+            # rather than escape past it.
             try:
                 if path.is_symlink():
                     return _unproven_lease_root(f"lease {path} is a symlink")

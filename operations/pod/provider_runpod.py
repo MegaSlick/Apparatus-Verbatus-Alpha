@@ -274,14 +274,12 @@ class UrllibRunPodTransport:
         else:
             headers["Authorization"] = f"Bearer {self.capability}"
         request = urllib.request.Request(url, data=encoded, method=method, headers=headers)
-        # `timeout_seconds` bounds the whole call — connect, headers and body
-        # against one monotonic deadline — rather than one blocking receive. At
-        # 36acde636f this transport had no elapsed bound on the body at all: a
-        # loopback responder dribbling a byte at a time answered a 0.15 s budget
-        # after 8.559 s, and one dribbling its headers after 1.273 s. Every
-        # caller of this class is a money-path verb whose controller checks its
-        # own deadline only between calls, so an unbounded call is an unbounded
-        # controller.
+        # `timeout_seconds` bounds the whole call -- connect, headers and body
+        # against one monotonic deadline -- rather than one blocking receive:
+        # a loopback responder dribbling a byte at a time can answer a 0.15s
+        # budget many seconds late. Every caller here is a money-path verb
+        # whose controller checks its own deadline only between calls, so an
+        # unbounded call is an unbounded controller.
         deadline = time.monotonic() + self.timeout_seconds
         # Environment proxy discovery is left ON for this opener, deliberately, and this is
         # the opposite decision from `operations/serving/http.py`, which disables
