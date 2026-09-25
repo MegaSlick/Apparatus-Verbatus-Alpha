@@ -291,26 +291,12 @@ class UrllibRunPodTransport:
         else:
             headers["Authorization"] = f"Bearer {self.capability}"
         request = urllib.request.Request(url, data=encoded, method=method, headers=headers)
-        # `timeout_seconds` bounds the whole call -- connect, headers and body
-        # against one monotonic deadline -- rather than one blocking receive:
-        # a loopback responder dribbling a byte at a time answered a 0.15 s
-        # budget after 8.559 s. Every caller here is a money-path verb whose
-        # controller checks its own deadline only between calls, so an
-        # unbounded call is an unbounded controller.
+        # One monotonic deadline bounds the whole call, not each blocking receive:
+        # a responder dribbling a byte at a time answered a 0.15 s budget after 8.559 s.
         deadline = time.monotonic() + self.timeout_seconds
-        # Environment proxy discovery is left ON for this opener, deliberately, and this is
-        # the opposite decision from `operations/serving/http.py`, which disables
-        # it with an explicit `ProxyHandler({})`. The two are different
-        # boundaries. That one addresses 127.0.0.1 and a proxy there means the
-        # request left the machine, which is the defect. This one addresses
-        # `rest.runpod.io`/`api.runpod.io` — an external service by design — and
-        # an operator on a network whose only route out is a proxy has to be
-        # able to reach it or no pod can ever be closed. The capability is not
-        # exposed to that proxy: both roots are HTTPS, so urllib issues
-        # `CONNECT` and the bearer header (or the query-placed key) travels
-        # inside TLS the proxy cannot read. A proxy that answers for the API
-        # anyway is a machine-in-the-middle the certificate check already
-        # refuses.
+        # Proxy discovery stays on, unlike `operations/serving/http.py` (which talks
+        # to 127.0.0.1): an operator whose only route out is a proxy must still be
+        # able to close a pod, and both roots are HTTPS, so the key stays inside TLS.
         opener, cancel = recording_opener(_RefuseRedirects)
 
         def exchange() -> HttpResponse:
@@ -333,13 +319,8 @@ class UrllibRunPodTransport:
                 cancel=cancel,
             )
         except DeadlineExceeded as error:
-            # A mutating verb interrupted here has an *unknown* outcome, and
-            # this refusal deliberately says nothing about whether the provider
-            # acted. `RunPodProvider.create` is what preserves that: it
-            # correlates the launch token before it ever POSTs, so a create
-            # whose response was never seen is found rather than re-issued, and
-            # `recovery_only` makes the recovery path a pure lookup. Nothing
-            # here may retry a mutating call.
+            # An interrupted mutating call has an unknown outcome and is never
+            # retried; `create` correlates its launch token before any POST.
             raise ProviderFailure(f"RunPod HTTP request failed: {error}") from error
         except (urllib.error.URLError, OSError) as error:
             # `reason`, never `str(error)` with a URL in it: in query placement
@@ -379,14 +360,7 @@ class GraphQLBalanceObserver:
     ) -> None:
         self.transport = transport
         self.now = now
-        # `None` by default -- exactly like `balance_observer` itself two
-        # classes up -- so every offline test that builds this observer
-        # directly, as most of this file's tests do, never touches
-        # `operations/notify/notify.sh`. The real `notify_hooks.notify_balance`
-        # arrives only through `RunPodProvider`: as its `balance_notify`
-        # argument when *it* builds this observer as the default for a live
-        # transport (below), or through `set_balance_notify`, which is what
-        # `cli.py --notify` reaches. No offline test both builds and calls it.
+        # `None` by default, so an observer built directly never pings a phone.
         self.notify = notify
 
     def __call__(self) -> AccountBalanceObservation:
@@ -581,23 +555,10 @@ class _RunPodAdapter:
         self.pod_price = pod_price
         self.volume_price = volume_price
         if balance_observer is None and isinstance(transport, UrllibRunPodTransport):
-            # The default observer exists exactly when a live credential does:
-            # a fake transport gets none, so the offline suite's "balance
-            # source was not configured" refusal is still reachable, and the
-            # provider never touches the key -- `sibling` carries it across.
-            # `balance_notify` here and `set_balance_notify` below are the ONLY
-            # two ways a phone notification reaches this observer, and both are
-            # opt-in: the parameter defaults to `None`, so a bare live-transport
-            # provider -- including the pod-side one `timer_context_from_
-            # environment` builds, and any host call that omits `--notify`
-            # -- carries no hook at all, never pinging a phone unasked. The
-            # host CLI reaches the seam rather than this parameter, because the
-            # provider comes from an untracked `--provider-factory` that this
-            # tree never constructs: `cli.py`'s `_wire_balance_notify` calls
-            # `set_balance_notify` under `args.notify`, duck-typed exactly as
-            # `--record-fixture` reaches `record_exchanges`. So `--notify` is
-            # the single gate for every phone notification a launch can send,
-            # balance included.
+            # Built only for a live credential, so a fake transport keeps the
+            # "not configured" refusal and the key stays inside `sibling`. Phone
+            # pings are opt-in: only `balance_notify` or `set_balance_notify`
+            # (reached from `cli.py --notify`) wire one.
             balance_observer = GraphQLBalanceObserver(
                 transport.sibling(root=RUNPOD_GRAPHQL_ROOT, credential_placement="query"),
                 now=now,
@@ -606,13 +567,8 @@ class _RunPodAdapter:
         self.balance_observer = balance_observer
         self.balance_timeout_seconds = balance_timeout_seconds
         self.now = now
-        # Set once, by the first observation that overran its deadline. See
-        # `observe_account_balance`: after that the source is not called again,
-        # so at most one abandoned thread can ever exist per adapter.
+        # Set once, by the first observation that overran its deadline.
         self._balance_abandoned: str | None = None
-        # True only between starting a worker and that call returning. Guarded by
-        # the same lock as the latch, because the check and the start are one
-        # transaction; see `observe_account_balance`.
         self._balance_in_flight = False
         self._balance_lock = threading.Lock()
 
@@ -673,52 +629,40 @@ class _RunPodAdapter:
     def observe_account_balance(self) -> AccountBalanceObservation:
         """Use the separately supplied observed-balance source, never a guessed reserve.
 
-        Bounded, because this is a money path: see
-        `BALANCE_OBSERVATION_TIMEOUT_SECONDS`. The observer runs on a daemon
-        thread so a source that never returns cannot hold the caller or the
-        interpreter's exit; the deadline is what the caller sees, and it arrives
-        as an ordinary `ProviderFailure` naming the timeout rather than as a
-        stall with nothing recorded.
+        Bounded, because this is a money path (`BALANCE_OBSERVATION_TIMEOUT_SECONDS`):
+        the source runs on a daemon thread, and an overrun reaches the caller as a
+        `ProviderFailure` naming the timeout rather than as a stall.
 
-        **A source that overruns its deadline is not consulted again**, and the
-        reason is billing safety rather than tidiness. The alternatives were:
-
-        *Cancel the blocked call.* Not available. The observer is an arbitrary
-        injected zero-argument callable, and nothing here can interrupt a
-        syscall inside it. Buying cancellation means changing the seam so every
-        source must accept and honour a deadline — placing the guarantee in the
-        one component that has just demonstrated it does not honour one.
-
-        *Let a bounded number accumulate.* This keeps paying the full deadline
-        at every later gate while a pod may already be billing, and still leaks
-        threads up to the cap. It is worse on both axes than refusing.
-
-        *Refuse from then on*, which is this. At most one thread is ever
-        abandoned per adapter — concurrent callers included, since the latch
-        check and the worker start are one locked transaction and a caller
-        arriving mid-observation is refused rather than queued — and every later
-        gate refuses at once instead of stalling another
-        `balance_timeout_seconds` on a money path. That is
-        fail-closed in the direction that matters: the refusal denies paid
-        actions and closes a created pod, because `_observe_balance` turns any
-        raised error into "balance unobservable" and the callers already fail
-        closed on it. It cannot strand a running pod — `_close_and_record`
-        closes through `VerifiedShutdown`, which never assesses spend, so no
-        shutdown path passes through here at all. A stale answer arriving late
-        would be unusable anyway: an observation over sixty seconds old is
-        already refused.
+        **A source that overruns its deadline is never consulted again.** The
+        blocked call cannot be cancelled (the source is an arbitrary callable),
+        and letting abandoned threads accumulate would pay the full deadline at
+        every later gate while a pod may already be billing. So at most one
+        thread is ever abandoned per adapter and every later gate refuses at
+        once. That fails closed where it matters: `_observe_balance` turns the
+        refusal into "balance unobservable", which denies a paid action or
+        closes a created pod, and no shutdown path assesses spend, so it cannot
+        strand a running pod. A late answer would be unusable anyway: an
+        observation over sixty seconds old is already refused.
         """
 
         if self.balance_observer is None:
             raise ProviderFailure("RunPod account balance source was not configured")
-        # Reading the latch and starting the worker must be one transaction. Two
-        # callers that both read "not abandoned" before either started would
-        # both start one, and the at-most-one-abandoned-thread guarantee above
-        # would be a guarantee about the sequential case only. Refusing while an
-        # observation is in flight, rather than queueing behind it, is the same
-        # reasoning as the latch: a second caller on a money path should not
-        # wait out a deadline it can already see is at risk, and refusing denies
-        # a paid action rather than allowing one.
+        self._claim_balance_observation()
+        try:
+            return self._observe_balance_within_deadline()
+        finally:
+            with self._balance_lock:
+                self._balance_in_flight = False
+
+    def _claim_balance_observation(self) -> None:
+        """Check the latch and mark an observation in flight, as one locked step.
+
+        Two callers that both passed the check before either started would both
+        start a worker. A concurrent caller is refused rather than queued: it
+        should not wait out a deadline already at risk, and refusing denies a
+        paid action rather than allowing one.
+        """
+
         with self._balance_lock:
             if self._balance_abandoned is not None:
                 raise ProviderFailure(self._balance_abandoned)
@@ -728,41 +672,34 @@ class _RunPodAdapter:
                     "concurrent paid action is refused rather than queued behind it"
                 )
             self._balance_in_flight = True
-        try:
-            observed: list[AccountBalanceObservation] = []
-            failed: list[BaseException] = []
 
-            def observe() -> None:
-                try:
-                    observed.append(self.balance_observer())  # type: ignore[misc]
-                except BaseException as error:  # noqa: BLE001 - re-raised on the caller's thread
-                    failed.append(error)
+    def _observe_balance_within_deadline(self) -> AccountBalanceObservation:
+        observed: list[AccountBalanceObservation] = []
+        failed: list[BaseException] = []
 
-            worker = threading.Thread(
-                target=observe, name="runpod-balance-observation", daemon=True
+        def observe() -> None:
+            try:
+                observed.append(self.balance_observer())  # type: ignore[misc]
+            except BaseException as error:  # noqa: BLE001 - re-raised on the caller's thread
+                failed.append(error)
+
+        worker = threading.Thread(target=observe, name="runpod-balance-observation", daemon=True)
+        worker.start()
+        worker.join(self.balance_timeout_seconds)
+        if worker.is_alive():
+            overran = (
+                "RunPod account balance source did not answer within "
+                f"{self.balance_timeout_seconds} seconds; it is not consulted again, so "
+                "every later paid action is refused on this same reason"
             )
-            worker.start()
-            worker.join(self.balance_timeout_seconds)
-            if worker.is_alive():
-                overran = (
-                    "RunPod account balance source did not answer within "
-                    f"{self.balance_timeout_seconds} seconds; it is not consulted again, so "
-                    "every later paid action is refused on this same reason"
-                )
-                with self._balance_lock:
-                    self._balance_abandoned = overran
-                raise ProviderFailure(overran)
-            if failed:
-                raise failed[0]
-            if not observed:
-                raise ProviderFailure("RunPod account balance source returned nothing")
-            return observed[0]
-        finally:
-            # Cleared even after a timeout, where it changes nothing: the latch
-            # is set by then and is checked first, so no later call can reach
-            # the worker start again.
             with self._balance_lock:
-                self._balance_in_flight = False
+                self._balance_abandoned = overran
+            raise ProviderFailure(overran)
+        if failed:
+            raise failed[0]
+        if not observed:
+            raise ProviderFailure("RunPod account balance source returned nothing")
+        return observed[0]
 
     def adopt(self, pod_id: str) -> PodRecord:
         response = self.transport.request("GET", f"/pods/{_path_id(pod_id)}{self._INCLUDE_QUERY}")
@@ -1022,10 +959,8 @@ class RunPodProvider(_RunPodAdapter):
         )
 
     def _pod_rows(self) -> list[dict[str, object]]:
-        # Recovery needs the same effective runtime facts as a create/adopt
-        # response.  RunPod omits machine and network-volume objects from list
-        # results unless they are requested explicitly; without these flags an
-        # exact launch-token match cannot be bound back into a PodRecord.
+        # Without these flags the list omits machine and volume, and a launch-token
+        # match could not be bound back into a PodRecord.
         response = self.transport.request("GET", f"/pods{self._INCLUDE_QUERY}")
         if response.status != 200:
             raise ProviderFailure(
@@ -1058,20 +993,13 @@ class RunPodProvider(_RunPodAdapter):
             estimate=PodEstimate(
                 hourly,
                 as_decimal(self.volume_price(volume_id), "RunPod volume price"),
-                # The two figures don't share one provenance: the pod rate is
-                # this response's costPerHr, but v1 has no live volume-price
-                # endpoint this adapter has found, so the volume rate is
-                # still the injected estimate.
                 "RunPod observed pod costPerHr; volume rate supplied at launch, not observed "
                 "from the provider",
                 self.now(),
             ),
             volume_id=volume_id,
-            # `lastStartedAt` is null until the pod first runs, so a just-created
-            # pod falls back to the observation instant. That instant is at or
-            # after the provider's own creation moment, which is why
-            # `capture_cost` allows one bucket of slack before the window start:
-            # the hour bucket containing creation may begin before it.
+            # Null until the pod first runs; the observation instant is then at or
+            # after creation, hence `capture_cost`'s one bucket of slack.
             created_at=_timestamp(created, f"RunPod pod {pod_id} lastStartedAt")
             if isinstance(created, str)
             else self.now(),
@@ -1591,10 +1519,7 @@ class RunPodV2Provider(_RunPodAdapter):
                 self.now(),
             ),
             volume_id=volume_id,
-            # v2's own creation instant, so the close window starts where the
-            # provider's charges can (04-7). No fallback: a pod without one
-            # cannot anchor a billing window, and an observation instant
-            # would narrow it.
+            # No fallback: an observation instant would narrow the billing window (04-7).
             created_at=created_at,
             state=str(state),
             runtime_contract=contract,
@@ -1828,10 +1753,8 @@ def timer_context_from_environment(environment: Mapping[str, str] | None = None)
         route=route,
     )
     lease = PodLease(
-        # The launch token is also the durable local lease identity. Deriving a
-        # lease id from the provider pod id instead would make a second PodLease
-        # for one paid pod, and the controller receipts armed before create name
-        # the first one.
+        # The launch token, not the pod id: the controller receipts armed before
+        # create name this lease, and a second id would split one paid pod in two.
         lease_id=launch_identity,
         launch_token=launch_identity,
         provider_name="runpod",
@@ -2029,9 +1952,7 @@ def _bounded_read(
 
 def _json(body: bytes, label: str) -> object:
     try:
-        # parse_float=Decimal: money fields (costPerHr, billing amount) must
-        # never exist as binary floats, even transiently -- config/spend.toml's
-        # own rule is that money does not survive that.
+        # Money never exists as a binary float, even transiently.
         return json.loads(body, parse_float=Decimal)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ProviderFailure(f"{label} response is not JSON: {error}") from error
