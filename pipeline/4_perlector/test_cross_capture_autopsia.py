@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -468,7 +469,7 @@ class _Tree:
 
     def put_blob(self, *_args):
         self.blobs += 1
-        raise AssertionError("a partition this loop cannot read must not be published")
+        return "2" * 64, SimpleNamespace(relative_path="4_perlector/blobs/partition")
 
 
 class _Context:
@@ -517,8 +518,8 @@ def _singleton_group(act_id):
     }
 
 
-def test_a_partition_with_any_finding_stops_before_the_first_perlectio(monkeypatch):
-    """Partition findings must stop the run before earlier acts become immutable."""
+def test_a_partition_defect_stops_before_the_first_perlectio(monkeypatch):
+    """A finding other than a registered re-shoot must stop the run before any act is read."""
     with pytest.raises(SchemaRefusal, match="not total"):
         _partition(
             monkeypatch,
@@ -527,17 +528,25 @@ def test_a_partition_with_any_finding_stops_before_the_first_perlectio(monkeypat
         )
 
 
-def test_a_clustered_logical_act_is_refused_rather_than_read_once_per_member(monkeypatch):
+def test_an_act_on_a_registered_re_shoot_is_held_and_the_rest_are_read(monkeypatch):
+    """One confirmed re-shoot holds its own acts, never the run."""
+    _partition_row, _ref, holds = _partition(
+        monkeypatch,
+        [_singleton_group("act_1")],
+        findings=[{"code": "capture-page-alignment-unresolved", "act_id": "act_2"}],
+    )
+    assert holds == {"act_2": "capture-page-alignment-unresolved"}
+
+
+def test_a_clustered_logical_act_is_held_rather_than_read_once_per_member(monkeypatch):
     """A local-act loop cannot publish one Perlectio per member of a logical act."""
     clustered = _singleton_group("pac_1")
     clustered["identity_scope"] = "physical-act"
     clustered["physical_act_id"] = "pac_1"
     clustered["member_local_acts"] = [{"act_id": "act_1"}, {"act_id": "act_2"}]
-    with pytest.raises(SchemaRefusal, match="clustered logical act"):
-        _partition(monkeypatch, [clustered])
+    assert _partition(monkeypatch, [clustered])[2] == {"act_1": None, "act_2": None}
     lone_member = dict(clustered, member_local_acts=[{"act_id": "act_1"}])
-    with pytest.raises(SchemaRefusal, match="clustered logical act"):
-        _partition(monkeypatch, [lone_member])
+    assert _partition(monkeypatch, [lone_member])[2] == {"act_1": None}
 
 
 def test_excluding_a_held_act_from_the_partition_denominator_is_reported(monkeypatch, capsys):

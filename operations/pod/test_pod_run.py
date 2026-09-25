@@ -286,7 +286,7 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
 def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
     tmp_path: Path,
 ) -> None:
-    """The normal run uses the cache bootstrap verified and preserves Door triage inputs."""
+    """The normal run uses the cache bootstrap verified and preserves Door triage and register inputs."""
 
     ws = _prepared(tmp_path)
     triage = ws.volume / "triage"
@@ -294,7 +294,8 @@ def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
     decision = triage / "decisions.json"
     clusters = triage / "clusters.json"
     recipe = triage / "recipe.json"
-    for path in (decision, clusters, recipe):
+    register = triage / "register.json"
+    for path in (decision, clusters, recipe, register):
         path.write_text("{}", encoding="utf-8")
     runner = RecordedRunner()
     clock = Clock()
@@ -310,6 +311,8 @@ def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
                     str(clusters),
                     "--triage-producer-recipe",
                     str(recipe),
+                    "--corpus-register",
+                    str(register),
                 ),
             ),
             environ=_environ(clock, lifetime=1.0),
@@ -326,6 +329,8 @@ def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
         ("--triage-decision-manifest", decision),
         ("--triage-clusters", clusters),
         ("--triage-producer-recipe", recipe),
+        # Without the register a confirmed re-shoot is refused at the Door.
+        ("--corpus-register", register),
     ):
         assert command[command.index(flag) + 1] == str(path)
 

@@ -48,7 +48,7 @@ from common.contracts.canonical import (
 from common.contracts.errors import ContractError, IncompatibleReuse
 from common.contracts.identities import physical_page_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
-from common.corpus_register import members_of
+from common.corpus_register import append_records, empty_register, members_of, register_digest
 from common.runtree.store import RunTree
 from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
@@ -215,7 +215,7 @@ def truncated_animated_gif() -> bytes:
     return data[: descriptors[1] + 9]
 
 
-def open_door(tmp_path, sources, *, run_id="r1", ingress=None):
+def open_door(tmp_path, sources, *, run_id="r1", ingress=None, register_bytes=None):
     """A real tree/context writing the door's own artifacts."""
     tree = RunTree.create(
         tmp_path / "runs",
@@ -248,6 +248,7 @@ def open_door(tmp_path, sources, *, run_id="r1", ingress=None):
         adapter_recipes=RECIPES,
         witness_chairs=CHAIRS,
         ingress=ingress or synthetic_fixture_ingress_record(),
+        register_bytes=register_bytes,
     )
     return tree, StageContext(
         tree=tree,
@@ -1594,7 +1595,8 @@ def test_content_aware_shards_do_not_cut_split_pairs_or_clusters():
         door.content_aware_shards(split[2:], max_pages_per_shard=1)
 
 
-def test_re_shoot_cluster_admits_every_member_and_records_no_canonical(tmp_path):
+def _admitted_re_shoot_pair(tmp_path, register_bytes=None):
+    """Two admitted captures triage links as one re-shoot cluster, and their cluster report."""
     first, second = png(4, 3), png(4, 3, rows=(b"\x00" + b"\x63" * 4) * 3)
     first_digest, second_digest = digest_bytes(first), digest_bytes(second)
 
@@ -1638,7 +1640,7 @@ def test_re_shoot_cluster_admits_every_member_and_records_no_canonical(tmp_path)
         triage_rows=rows,
         triage_clusters={"opening-7": cluster},
     )
-    tree, context = open_door(tmp_path, sources)
+    tree, context = open_door(tmp_path, sources, register_bytes=register_bytes)
     assert (
         process_sources(
             context,
@@ -1649,15 +1651,118 @@ def test_re_shoot_cluster_admits_every_member_and_records_no_canonical(tmp_path)
         )
         == 2
     )
+    return context, (first_digest, second_digest)
+
+
+def _re_shoot_register(tmp_path, pages: dict[str, tuple[str, list[str]]]) -> bytes:
+    """A register declaring each named leaf, as `{designation: (corpus_id, members)}`."""
+    records = []
+    for designation, (corpus_id, members) in pages.items():
+        page = physical_page_id(corpus_id, "volume-1", designation)
+        records += [
+            {
+                "kind": "physical-page",
+                "corpus_id": corpus_id,
+                "volume_id": "volume-1",
+                "designation": designation,
+                "physical_page_id": page,
+                "appending_run": "triage",
+            },
+            {
+                "kind": "membership",
+                "physical_page_id": page,
+                "members": sorted(members),
+                "predecessor": None,
+                "appending_run": "triage",
+            },
+        ]
+    register = tmp_path / "register.json"
+    append_records(register, records, expected_digest=register_digest(empty_register()))
+    return register.read_bytes()
+
+
+def _pair_digests() -> list[str]:
+    return [digest_bytes(png(4, 3)), digest_bytes(png(4, 3, rows=(b"\x00" + b"\x63" * 4) * 3))]
+
+
+def test_re_shoot_cluster_admits_every_member_and_records_no_canonical(tmp_path):
+    context, (first_digest, second_digest) = _admitted_re_shoot_pair(tmp_path)
     report = door.publish_cluster_report(context)
     assert report is not None
-    payload = json.loads(tree.read_bytes(report).decode("utf-8"))["payload"]
+    payload = json.loads(context.tree.read_bytes(report).decode("utf-8"))["payload"]
     assert payload["clusters"][0]["cluster_id"] == "opening-7"
     assert {member["source_frame_sha256"] for member in payload["clusters"][0]["members"]} == {
         first_digest,
         second_digest,
     }
     assert "canonical" not in json.dumps(payload)
+
+
+def test_a_re_shoot_the_register_does_not_confirm_is_refused_before_the_seal(tmp_path):
+    """Unconfirmed, each capture would become its own act: one act exported twice, unlinked.
+
+    Refused at the Door's close after its cluster report is sealed and before its own
+    seal, and the run id stays bound to the register it was created with.
+    """
+    context, _digests = _admitted_re_shoot_pair(tmp_path)
+    with pytest.raises(ContractError, match="unconfirmed-re-shoot.*opening-7.*new run id"):
+        door._finish_door_run(context, context.tree, 2)
+    kinds = {entry["kind"] for entry in context.tree.build_manifest(DOOR)["artifacts"]}
+    assert "re-shoot-cluster-report" in kinds
+    assert "stage-seal" not in kinds
+    with pytest.raises(IncompatibleReuse):
+        _admitted_re_shoot_pair(
+            tmp_path,
+            register_bytes=_re_shoot_register(
+                tmp_path, {"opening-7": ("parish-a", _pair_digests())}
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        {"opening-7": ("parish-b", _pair_digests())},
+        {"opening-7": ("parish-a", _pair_digests()[:1])},
+    ],
+    ids=["another-corpus", "a-member-unregistered"],
+)
+def test_a_re_shoot_is_confirmed_only_when_its_corpus_registers_every_member(tmp_path, pages):
+    context, _digests = _admitted_re_shoot_pair(
+        tmp_path, register_bytes=_re_shoot_register(tmp_path, pages)
+    )
+    with pytest.raises(ContractError, match="unconfirmed-re-shoot"):
+        door.require_confirmed_re_shoots(context, door.publish_cluster_report(context))
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        {"opening-7": ("parish-a", _pair_digests())},
+        # A split opening: each leaf holds a different subset of the cluster.
+        {
+            "opening-7-left": ("parish-a", _pair_digests()[:1]),
+            "opening-7-right": ("parish-a", _pair_digests()[1:]),
+        },
+    ],
+    ids=["one-page", "pages-with-different-members"],
+)
+def test_a_re_shoot_the_register_confirms_is_admitted(tmp_path, pages):
+    context, _digests = _admitted_re_shoot_pair(
+        tmp_path, register_bytes=_re_shoot_register(tmp_path, pages)
+    )
+    door.require_confirmed_re_shoots(context, door.publish_cluster_report(context))
+
+
+def test_a_malformed_cluster_report_is_a_named_refusal(tmp_path):
+    context, _digests = _admitted_re_shoot_pair(tmp_path)
+    admission = next(
+        entry
+        for entry in context.tree.build_manifest(DOOR)["artifacts"]
+        if entry["kind"] == "admission"
+    )
+    with pytest.raises(ContractError, match="cluster report.*malformed"):
+        door.require_confirmed_re_shoots(context, admission["relative_path"])
 
 
 @pytest.mark.parametrize("bad_bytes", [True, False, -1, "5", 5.0])

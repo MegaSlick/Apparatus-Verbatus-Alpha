@@ -214,6 +214,7 @@ class RunPlan:
     triage_decision_manifest: Path | None = None
     triage_clusters: Path | None = None
     triage_producer_recipe: Path | None = None
+    corpus_register: Path | None = None
 
     # Not asserts: `assert` disappears under `python -O`, and `resolve_run_plan`
     # already refused a bootstrap plan missing any of these. Stated as raises so
@@ -353,6 +354,7 @@ class RunPlan:
             (self.triage_decision_manifest, "--triage-decision-manifest"),
             (self.triage_clusters, "--triage-clusters"),
             (self.triage_producer_recipe, "--triage-producer-recipe"),
+            (self.corpus_register, "--corpus-register"),
         ):
             if value is not None:
                 command += [flag, str(value)]
@@ -379,6 +381,7 @@ class RunPlan:
             "triage_producer_recipe": str(self.triage_producer_recipe)
             if self.triage_producer_recipe
             else None,
+            "corpus_register": str(self.corpus_register) if self.corpus_register else None,
             "bootstrap": self.bootstrap.to_record(),
         }
 
@@ -403,6 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--triage-decision-manifest", type=Path)
     parser.add_argument("--triage-clusters", type=Path)
     parser.add_argument("--triage-producer-recipe", type=Path)
+    parser.add_argument("--corpus-register", type=Path)
     parser.add_argument(
         "--data-gate-policy",
         type=Path,
@@ -506,6 +510,7 @@ def resolve_run_plan(
         (args.triage_decision_manifest, "--triage-decision-manifest"),
         (args.triage_clusters, "--triage-clusters"),
         (args.triage_producer_recipe, "--triage-producer-recipe"),
+        (args.corpus_register, "--corpus-register"),
     ):
         if value is None:
             triage_paths[flag] = None
@@ -552,6 +557,7 @@ def resolve_run_plan(
         triage_decision_manifest=triage_paths["--triage-decision-manifest"],
         triage_clusters=triage_paths["--triage-clusters"],
         triage_producer_recipe=triage_paths["--triage-producer-recipe"],
+        corpus_register=triage_paths["--corpus-register"],
     )
 
 
