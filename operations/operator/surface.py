@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Final, Iterator, Protocol, Sequence
+from typing import Any, Callable, Final, Iterator, NoReturn, Protocol, Sequence
 
 from common.chairs.config import load_models_toml
 from common.contracts.canonical import canonical_bytes, digest_bytes
@@ -139,10 +139,7 @@ MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_NOTIFY_MESSAGE_CHARACTERS = 500
 """Bounds a notification message: an unsealed run with hundreds of pages would
 otherwise build one entry per page with no ceiling at all."""
-# Named once: the fault drill and its real-ingress guard compare against it, and
-# two spellings could drift apart silently.
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
-# Imported, not copied, so a newly added upload credential is stripped too.
 _TRANSFER_CREDENTIAL_ENV = TRANSFER_CREDENTIAL_ENV
 _COPY_CHUNK_BYTES = 1024 * 1024
 FETCH_RUN_PREFIX = DEFAULT_RUNS_DIRECTORY
@@ -1134,18 +1131,15 @@ class OperatorSurface:
         witness_context_config: str | Path | None = None,
     ) -> RunOutcome:
         if submission_folder is None:
-            if submission_manifest is not None:
-                raise OperatorError(
-                    ErrorCode.INVALID_COMMAND,
-                    detail=("--submission-manifest is meaningful only with --submission-folder"),
-                )
-            if data_gate_policy is not None:
-                raise OperatorError(
-                    ErrorCode.INVALID_COMMAND,
-                    detail="--data-gate-policy is meaningful only with --submission-folder",
-                )
-        # The three roster files travel together or not at all, or the real
-        # roster would resolve against fixture configuration.
+            for flag, value in (
+                ("--submission-manifest", submission_manifest),
+                ("--data-gate-policy", data_gate_policy),
+            ):
+                if value is not None:
+                    raise OperatorError(
+                        ErrorCode.INVALID_COMMAND,
+                        detail=f"{flag} is meaningful only with --submission-folder",
+                    )
         roster_argv = _roster_argv(
             models_config=models_config,
             serving_recipes_config=serving_recipes_config,
@@ -1197,6 +1191,14 @@ class OperatorSurface:
             )
         else:
             self.present("This run sends the recorded real submission to the Door's data gate.")
+        stage_argv = [
+            *_real_ingress_argv(
+                submission_folder=submission_folder,
+                submission_manifest=submission_manifest,
+                data_gate_policy=data_gate_policy,
+            ),
+            *roster_argv,
+        ]
         command = [
             sys.executable,
             str(self.workspace / "pipeline" / "orchestrator" / "run.py"),
@@ -1208,15 +1210,8 @@ class OperatorSurface:
             run_id,
             "--run-root",
             str(run_root),
+            *stage_argv,
         ]
-        command.extend(
-            _real_ingress_argv(
-                submission_folder=submission_folder,
-                submission_manifest=submission_manifest,
-                data_gate_policy=data_gate_policy,
-            )
-        )
-        command.extend(roster_argv)
         # Every receipt this run writes carries the same identity facts, since
         # a later diagnosis may have only the state directory.
         commit, commit_unreadable = _repository_commit_or_reason(self.workspace)
@@ -1257,39 +1252,9 @@ class OperatorSurface:
         )
         if self.faults.laptop_crash:
             self.faults.laptop_crash = False
-            ingress_label = "real submission" if submission_folder is not None else "fixture"
-            observed_work = (
-                "The real submission's pages reached the Door."
-                if submission_folder is not None
-                else "The fixture pages reached the Door."
+            self._crash_after_door(
+                run_root, run_id, scenario, stage_argv, facts, real=submission_folder is not None
             )
-            self._run_door_stage(
-                run_root,
-                run_id,
-                scenario,
-                submission_folder=submission_folder,
-                submission_manifest=submission_manifest,
-                data_gate_policy=data_gate_policy,
-                roster_argv=roster_argv,
-            )
-            receipt = self._write_action(
-                "run",
-                {
-                    **facts,
-                    "summary": (
-                        f"Run interrupted after the Door recorded the {ingress_label}'s page "
-                        "evidence; it can resume."
-                    ),
-                    "state": "interrupted-recoverable",
-                    "last_observed_work": observed_work,
-                },
-                descriptor_action="run",
-            )
-            self.present(
-                f"The laptop-crash drill interrupted after the {ingress_label} reached the Door."
-            )
-            self._present_review_command(run_root, run_id)
-            raise OperatorError(ErrorCode.RUN_INTERRUPTED, detail=f"Saved run receipt: {receipt}")
         try:
             completed = self._run_orchestrator(command)
         except KeyboardInterrupt:
@@ -1344,7 +1309,6 @@ class OperatorSurface:
             )
             self.present(f"Run {run_id} failed: {reason}")
             self._present_review_command(run_root, run_id)
-            # Show the cause, not just the receipt path.
             raise OperatorError(
                 ErrorCode.RUN_FAILED, detail=f"{reason} Saved run receipt: {receipt}"
             )
@@ -1360,67 +1324,7 @@ class OperatorSurface:
             if state == "complete":
                 self._require_reconciled_act_partition(export_payload)
         except Exception as error:
-            if completed.returncode == 3:
-                # Held before the Armarium, so no export record exists; the
-                # reason is the orchestrator's last stderr line.
-                reason = (
-                    _last_line(completed.stderr)
-                    or _last_line(completed.stdout)
-                    or "the orchestrator reported a hold, and no Armarium export record "
-                    "exists to name the reason"
-                )
-                receipt = self._write_action(
-                    "run",
-                    {
-                        **ended,
-                        "summary": (
-                            f"Run {run_id} is held before the Armarium; the hold is recorded "
-                            "in the run tree and no export record exists yet."
-                        ),
-                        "state": "held",
-                        "reason": reason,
-                        "reasons": [reason],
-                        "armarium_export": None,
-                        "armarium_export_unreadable": str(error),
-                    },
-                    descriptor_action="run",
-                )
-                self.present("Run is held. It was not called complete.")
-                self.present(f"Hold reason: {reason}")
-                self._present_review_command(run_root, run_id)
-                self._notify(
-                    "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"
-                )
-                raise OperatorError(
-                    ErrorCode.RUN_HELD, detail=f"{reason} Saved run receipt: {receipt}"
-                ) from error
-            if isinstance(error, UnreconciledActPartitionError):
-                reason = f"the Armarium export record does not reconcile: {error}"
-                state = "armarium-record-unreconciled"
-                summary = (
-                    "Run ended with an Armarium record that was read but does not "
-                    "reconcile as complete."
-                )
-            else:
-                reason = f"the Armarium export record could not be read: {error}"
-                state = "armarium-record-unreadable"
-                summary = "Run ended before its Armarium record was available."
-            receipt = self._write_action(
-                "run",
-                {
-                    **ended,
-                    "summary": summary,
-                    "state": state,
-                    "reason": reason,
-                    "detail": reason,
-                    "armarium_export_unreadable": str(error),
-                },
-                descriptor_action="run",
-            )
-            self._present_review_command(run_root, run_id)
-            raise OperatorError(
-                ErrorCode.RUN_FAILED, detail=f"{reason} Saved run receipt: {receipt}"
-            ) from error
+            self._refuse_unread_export(error, completed, ended, run_root, run_id)
         # `reasons` is external data: only a list may feed decision output, or a
         # string would become one hold reason per character and a mapping its keys.
         reasons = aggregate.get("reasons")
@@ -1500,6 +1404,78 @@ class OperatorSurface:
             ),
         )
 
+    def _refuse_unread_export(
+        self,
+        error: Exception,
+        completed: subprocess.CompletedProcess[str],
+        ended: dict[str, Any],
+        run_root: Path,
+        run_id: str,
+    ) -> NoReturn:
+        """Record why a finished run has no usable Armarium record, then refuse it."""
+
+        if completed.returncode == 3:
+            # Held before the Armarium, so no export record exists; the
+            # reason is the orchestrator's last stderr line.
+            reason = (
+                _last_line(completed.stderr)
+                or _last_line(completed.stdout)
+                or "the orchestrator reported a hold, and no Armarium export record "
+                "exists to name the reason"
+            )
+            receipt = self._write_action(
+                "run",
+                {
+                    **ended,
+                    "summary": (
+                        f"Run {run_id} is held before the Armarium; the hold is recorded "
+                        "in the run tree and no export record exists yet."
+                    ),
+                    "state": "held",
+                    "reason": reason,
+                    "reasons": [reason],
+                    "armarium_export": None,
+                    "armarium_export_unreadable": str(error),
+                },
+                descriptor_action="run",
+            )
+            self.present("Run is held. It was not called complete.")
+            self.present(f"Hold reason: {reason}")
+            self._present_review_command(run_root, run_id)
+            self._notify(
+                "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"
+            )
+            raise OperatorError(
+                ErrorCode.RUN_HELD, detail=f"{reason} Saved run receipt: {receipt}"
+            ) from error
+        if isinstance(error, UnreconciledActPartitionError):
+            reason = f"the Armarium export record does not reconcile: {error}"
+            state = "armarium-record-unreconciled"
+            summary = (
+                "Run ended with an Armarium record that was read but does not "
+                "reconcile as complete."
+            )
+        else:
+            reason = f"the Armarium export record could not be read: {error}"
+            state = "armarium-record-unreadable"
+            summary = "Run ended before its Armarium record was available."
+        receipt = self._write_action(
+            "run",
+            {
+                **ended,
+                "summary": summary,
+                "state": state,
+                "reason": reason,
+                "detail": reason,
+                "armarium_export_unreadable": str(error),
+            },
+            descriptor_action="run",
+        )
+        self._present_review_command(run_root, run_id)
+        raise OperatorError(
+            ErrorCode.RUN_FAILED, detail=f"{reason} Saved run receipt: {receipt}"
+        ) from error
+
     def _run_orchestrator(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         """Run the orchestrator child, treating SIGTERM like SIGINT.
 
@@ -1520,19 +1496,23 @@ class OperatorSurface:
             # Not the main thread; the start receipt still names the run.
             pass
         try:
-            return self.runner(
-                command,
-                cwd=self.workspace,
-                capture_output=True,
-                text=True,
-                check=False,
-                env=_stage_environment(),
-            )
+            return self._run_stage_child(command)
         finally:
             if installed:
                 # `None` means a handler not set from Python; it cannot be
                 # restored as such, and SIG_DFL is what it was.
                 signal.signal(signal.SIGTERM, signal.SIG_DFL if previous is None else previous)
+
+    def _run_stage_child(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        # Stages decode untrusted images, so no provider credential may reach them.
+        return self.runner(
+            command,
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=credential_free_environment(),
+        )
 
     def _present_review_command(self, run_root: Path, run_id: str) -> None:
         """Print the read-only review command for a run."""
@@ -2534,16 +2514,46 @@ class OperatorSurface:
             for line in record_error.render().splitlines():
                 self.present(line)
 
-    def _run_door_stage(
+    def _crash_after_door(
         self,
         run_root: Path,
         run_id: str,
         scenario: str,
+        stage_argv: Sequence[str],
+        facts: dict[str, Any],
         *,
-        submission_folder: str | Path | None = None,
-        submission_manifest: str | Path | None = None,
-        data_gate_policy: str | Path | None = None,
-        roster_argv: Sequence[str] = (),
+        real: bool,
+    ) -> NoReturn:
+        """The laptop-crash drill: run only the Door, then record a resumable interruption."""
+
+        ingress_label = "real submission" if real else "fixture"
+        observed_work = (
+            "The real submission's pages reached the Door."
+            if real
+            else "The fixture pages reached the Door."
+        )
+        self._run_door_stage(run_root, run_id, scenario, stage_argv)
+        receipt = self._write_action(
+            "run",
+            {
+                **facts,
+                "summary": (
+                    f"Run interrupted after the Door recorded the {ingress_label}'s page "
+                    "evidence; it can resume."
+                ),
+                "state": "interrupted-recoverable",
+                "last_observed_work": observed_work,
+            },
+            descriptor_action="run",
+        )
+        self.present(
+            f"The laptop-crash drill interrupted after the {ingress_label} reached the Door."
+        )
+        self._present_review_command(run_root, run_id)
+        raise OperatorError(ErrorCode.RUN_INTERRUPTED, detail=f"Saved run receipt: {receipt}")
+
+    def _run_door_stage(
+        self, run_root: Path, run_id: str, scenario: str, stage_argv: Sequence[str]
     ) -> None:
         command = [
             sys.executable,
@@ -2554,23 +2564,9 @@ class OperatorSurface:
             run_id,
             "--scenario",
             scenario,
+            *stage_argv,
         ]
-        command.extend(
-            _real_ingress_argv(
-                submission_folder=submission_folder,
-                submission_manifest=submission_manifest,
-                data_gate_policy=data_gate_policy,
-            )
-        )
-        command.extend(roster_argv)
-        completed = self.runner(
-            command,
-            cwd=self.workspace,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=_stage_environment(),
-        )
+        completed = self._run_stage_child(command)
         if completed.returncode not in {0, 3}:
             raise OperatorError(ErrorCode.RUN_FAILED, detail=completed.stderr or completed.stdout)
         # A partly admitted Door reports its refusals on stderr even on an
@@ -3341,16 +3337,6 @@ def _pod_from_record(value: dict[str, Any]) -> PodRecord:
         raise OperatorError(
             ErrorCode.CLOSE_NOTHING, detail="the saved pod record is invalid"
         ) from error
-
-
-def _stage_environment() -> dict[str, str]:
-    """Pass the ordinary runtime environment, but never a provider credential.
-
-    Stages decode untrusted images, so no credential may reach them. The shared
-    predicate means a credential shape added there is stripped here too.
-    """
-
-    return credential_free_environment()
 
 
 def _sha256_regular_file_nofollow(path: Path) -> str:
