@@ -643,18 +643,14 @@ def _overlap_area(a: dict, b: dict) -> int:
 def _uncovered_area(target: dict, covers: list[dict]) -> int:
     """How many pixels of `target` no rectangle in `covers` already contains.
 
-    Uses the same `_subtract_rectangle` fold as the fallback tiling, so the two
-    agree on what "covered" means; its pieces are disjoint, so overlapping covers
-    are not double counted. A per-cover containment test would miss a rectangle
-    two covers contain only jointly.
+    Shares `_subtract_all` with the fallback tiling, so the two agree on what
+    "covered" means; overlapping covers are not double counted, and a rectangle
+    two covers contain only jointly still counts as covered.
 
     `target` must be a validated rectangle of positive area; a degenerate one
     yields a meaningless area rather than zero.
     """
-    pieces = [dict(target)]
-    for cover in covers:
-        pieces = [remainder for piece in pieces for remainder in _subtract_rectangle(piece, cover)]
-    return sum(piece["w"] * piece["h"] for piece in pieces)
+    return sum(piece["w"] * piece["h"] for piece in _subtract_all(target, covers))
 
 
 def _coverage_on_page(records: list[dict], page_ordinal: int, page_id: str) -> list[dict]:
@@ -1097,6 +1093,28 @@ def publish_structure_status(
     return published
 
 
+_BACKGROUND_NOT_INFERABLE = {
+    "background": None,
+    "source": "not-inferable",
+    "dark_distribution": None,
+    "ink_margin": None,
+    "dark_mode": None,
+}
+
+
+def _page_bounds(analysis: dict) -> dict:
+    return {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]}
+
+
+def _fallback_grid(width: int, height: int, thresholds) -> list[dict]:
+    return grouping.fallback_tiles(
+        width,
+        height,
+        bands=thresholds.fallback_bands,
+        overlap_px=thresholds.fallback_overlap_px,
+    )
+
+
 def _analyze_page(
     cache: dict, context, ordinal: int, page_record: dict, grouping_policy: dict
 ) -> dict:
@@ -1115,20 +1133,12 @@ def _analyze_page(
             width, height, rows, evidence = page_pixels(
                 context, page_record, grouping_policy=grouping_policy
             )
-            background = evidence["background"]
-            background_source = evidence["source"]
-            dark_distribution = evidence["dark_distribution"]
-            # Carried, not recomputed, so the scan and the record use one value.
-            ink_margin = evidence["ink_margin"]
-            dark_mode = evidence["dark_mode"]
         except structure.BackgroundInferenceRefusal:
-            page_bytes = _read_checked_page_bytes(context, page_record)
-            width, height, rows = grayscale_rows(page_bytes)
-            background = None
-            background_source = "not-inferable"
-            dark_distribution = None
-            ink_margin = None
-            dark_mode = None
+            width, height, rows = grayscale_rows(_read_checked_page_bytes(context, page_record))
+            evidence = _BACKGROUND_NOT_INFERABLE
+        background = evidence["background"]
+        # Carried, not recomputed, so the scan and the record use one value.
+        ink_margin = evidence["ink_margin"]
         thresholds = grouping_config.resolve_thresholds(grouping_policy, width, height)
         components = (
             []
@@ -1167,23 +1177,18 @@ def _analyze_page(
         structure_evidence = "detected"
         if not groups:
             structure_evidence = "fallback-tiles"
-            groups = grouping.fallback_tiles(
-                width,
-                height,
-                bands=thresholds.fallback_bands,
-                overlap_px=thresholds.fallback_overlap_px,
-            )
+            groups = _fallback_grid(width, height, thresholds)
         cache[ordinal] = {
             "width": width,
             "height": height,
             "rows": rows,
             "background": background,
-            "background_source": background_source,
+            "background_source": evidence["source"],
             # None where the interior-mode branch did not run.
-            "dark_distribution": dark_distribution,
+            "dark_distribution": evidence["dark_distribution"],
             # None where the background could not be inferred and no scan ran.
             "ink_margin": ink_margin,
-            "dark_mode": dark_mode,
+            "dark_mode": evidence["dark_mode"],
             "groups": groups,
             "page_spanning": page_spanning,
             "structure_evidence": structure_evidence,
@@ -1468,7 +1473,7 @@ def _publish_withheld_secondary_pass(
     """
     payload = {
         "page_ordinal": ordinal,
-        "page_bounds": {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]},
+        "page_bounds": _page_bounds(analysis),
         "authoritative": False,
         "terminal_disposition": "held-for-review",
         "secondary_enumeration": SECONDARY_ENUMERATION_WITHHELD,
@@ -1731,17 +1736,19 @@ def _subtract_rectangle(bounds: dict, claimed: dict) -> list[dict]:
     return pieces
 
 
+def _subtract_all(bounds: dict, covers: list[dict]) -> list[dict]:
+    """Disjoint rectangles covering ``bounds`` minus every cover."""
+    pieces = [dict(bounds)]
+    for cover in covers:
+        pieces = [remainder for piece in pieces for remainder in _subtract_rectangle(piece, cover)]
+    return pieces
+
+
 def _unclaimed_fallback_tiles(tiles: list[dict], claimed: list[dict]) -> list[dict]:
     """Clip fallback bands to pixels no declared proposal region already owns."""
     unclaimed = []
     for tile in tiles:
-        pieces = [dict(tile["bounds"])]
-        for claim in claimed:
-            pieces = [
-                remainder
-                for piece in pieces
-                for remainder in _subtract_rectangle(piece, claim["bounds"])
-            ]
+        pieces = _subtract_all(tile["bounds"], [claim["bounds"] for claim in claimed])
         unclaimed.extend(
             {
                 "bounds": piece,
@@ -1796,7 +1803,7 @@ def _publish_page_fallback(
     Tiles carry no padding: each already is the final rectangle, overlap included.
     """
     page_id = page_record["subject_id"]
-    page_bounds = {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]}
+    page_bounds = _page_bounds(analysis)
     act_id = derive_minted_act_id(page_id, "page-fallback", page_bounds)
     act_key = fallback_page_act_key(ordinal)
     # Exclude this act's own tiles, or a resumed pass would subtract them from
@@ -1963,7 +1970,7 @@ def _publish_conservation_and_secondary(
                 context,
                 page_id,
                 ordinal,
-                {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]},
+                _page_bounds(analysis),
                 residual_component_count=component_count,
                 aggregated_component_count=len(aggregated),
                 grouping_config_sha256=grouping_policy["config_sha256"],
@@ -2745,12 +2752,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
             **analysis,
             "structure_evidence": "fallback-tiles",
             # The chair decides when to tile; the sealed policy decides how.
-            "groups": grouping.fallback_tiles(
-                analysis["width"],
-                analysis["height"],
-                bands=analysis["thresholds"].fallback_bands,
-                overlap_px=analysis["thresholds"].fallback_overlap_px,
-            ),
+            "groups": _fallback_grid(analysis["width"], analysis["height"], analysis["thresholds"]),
         }
         row = _publish_page_fallback(
             context,
