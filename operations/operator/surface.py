@@ -25,7 +25,7 @@ import tempfile
 import time
 import unicodedata
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -139,10 +139,8 @@ MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_NOTIFY_MESSAGE_CHARACTERS = 500
 """Bounds a notification message: an unsealed run with hundreds of pages would
 otherwise build one entry per page with no ceiling at all."""
-# Named once: the fault drill and its real-ingress guard compare against it, and
-# two spellings could drift apart silently.
+# Named once, so the fault drill and its real-ingress guard cannot drift apart.
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
-# Imported, not copied, so a newly added upload credential is stripped too.
 _TRANSFER_CREDENTIAL_ENV = TRANSFER_CREDENTIAL_ENV
 _COPY_CHUNK_BYTES = 1024 * 1024
 FETCH_RUN_PREFIX = DEFAULT_RUNS_DIRECTORY
@@ -477,8 +475,6 @@ class OperatorSurface:
 
         self._present(strip_control_bytes(line))
 
-    # -- launch ---------------------------------------------------------------
-
     def prepare_launch(
         self,
         request: PodCreateRequest,
@@ -650,8 +646,6 @@ class OperatorSurface:
         self.present("This rehearsal contacted no cloud provider and created no bill.")
         return result
 
-    # -- upload ---------------------------------------------------------------
-
     def submit_and_upload(
         self,
         source: str | Path,
@@ -722,22 +716,7 @@ class OperatorSurface:
             self.present(f"Upload will send the sealed submission record to {subject}.")
             self.present("Nothing outside that sealed record is read or sent.")
         self.present("No pod needs to be running. This step uses zero GPU-hours.")
-        store: TransferTarget
-        if target is not None:
-            store = target
-        elif volume is not None:
-            try:
-                store = S3VolumeTarget(volume)
-            except Exception as error:
-                self._record_failure("upload", "volume-unavailable", str(error))
-                raise OperatorError(
-                    ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=str(error)
-                ) from error
-        else:
-            store = LocalFixtureObjectStore(
-                self.state_root / "fixture-volume",
-                fail_once_for=self._fault_upload_key(manifest_path, prefix),
-            )
+        store = target if target is not None else self._upload_target(volume, manifest_path, prefix)
         try:
             snapshot_root = self.state_root / "transfer" / ".manifest-snapshots"
             snapshot_root.mkdir(parents=True, exist_ok=True)
@@ -751,33 +730,19 @@ class OperatorSurface:
                 claim_key = f"{prefix}-manifest.sha256"
                 claim_bytes = f"{manifest_sha256}\n".encode("ascii")
                 claim_sha256 = hashlib.sha256(claim_bytes).hexdigest()
-                remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
-                if remote_manifest is not None and (
-                    remote_manifest.sha256 != manifest_sha256
-                    or remote_manifest.size != len(manifest_bytes)
-                ):
-                    raise _UploadManifestConflict(
-                        f"target {manifest_key!r} exists but differs from the sealed submission "
-                        "manifest; it was not overwritten"
-                    )
-                remote_claim = store.inspect(claim_key, expected_size=len(claim_bytes))
-                if remote_claim is not None and (
-                    remote_claim.sha256 != claim_sha256 or remote_claim.size != len(claim_bytes)
-                ):
+                occupied = (
+                    f"target {manifest_key!r} exists but differs from the sealed submission "
+                    "manifest; it was not overwritten"
+                )
+                if _remote_state(store, manifest_key, manifest_bytes, manifest_sha256) == "other":
+                    raise _UploadManifestConflict(occupied)
+                claim = _remote_state(store, claim_key, claim_bytes, claim_sha256)
+                if claim == "other":
                     raise _UploadManifestConflict(
                         f"target {claim_key!r} is permanently claimed by a different sealed "
                         "submission manifest; no image was written"
                     )
-                if remote_claim is None:
-                    store.create_file(
-                        claim_key,
-                        io.BytesIO(claim_bytes),
-                        expected_sha=claim_sha256,
-                    )
-                    remote_claim = store.inspect(claim_key, expected_size=len(claim_bytes))
-                if remote_claim is None or (
-                    remote_claim.sha256 != claim_sha256 or remote_claim.size != len(claim_bytes)
-                ):
+                if _publish_if_absent(store, claim_key, claim_bytes, claim_sha256, claim) != "ours":
                     raise _UploadManifestConflict(
                         f"target {claim_key!r} was concurrently claimed by a different sealed "
                         "submission manifest; no image was written"
@@ -790,23 +755,14 @@ class OperatorSurface:
                     journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
                 ).resume()
                 # Recheck: a manifest that appeared concurrently owns the prefix.
-                remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
-                if remote_manifest is not None and (
-                    remote_manifest.sha256 != manifest_sha256
-                    or remote_manifest.size != len(manifest_bytes)
-                ):
-                    raise TransferFailure(
-                        f"target {manifest_key!r} exists but differs from the sealed submission "
-                        "manifest; it was not overwritten"
+                published = _remote_state(store, manifest_key, manifest_bytes, manifest_sha256)
+                if published == "other":
+                    raise TransferFailure(occupied)
+                if (
+                    _publish_if_absent(
+                        store, manifest_key, manifest_bytes, manifest_sha256, published
                     )
-                if remote_manifest is None:
-                    store.create_file(
-                        manifest_key, io.BytesIO(manifest_bytes), expected_sha=manifest_sha256
-                    )
-                    remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
-                if remote_manifest is None or (
-                    remote_manifest.sha256 != manifest_sha256
-                    or remote_manifest.size != len(manifest_bytes)
+                    != "ours"
                 ):
                     raise TransferFailure(
                         f"target {manifest_key!r} did not verify after publication"
@@ -842,7 +798,6 @@ class OperatorSurface:
                 },
                 descriptor_action="upload",
             )
-            # Show the cause, not just the receipt path.
             raise OperatorError(
                 ErrorCode.UPLOAD_PARTIAL, detail=f"{error} Saved receipt: {receipt}"
             ) from error
@@ -879,8 +834,6 @@ class OperatorSurface:
         )
         self.present(f"Saved receipt: {receipt}")
         return receipt
-
-    # -- boot -----------------------------------------------------------------
 
     def boot(self) -> Path:
         """Run the real bootstrap journal with explicit fixture-only effects."""
@@ -923,8 +876,6 @@ class OperatorSurface:
             self.present("No upload record was present; no transfer was assumed complete.")
         self.present(f"Saved report: {receipt}")
         return receipt
-
-    # -- fetch-run ------------------------------------------------------------
 
     def fetch_run(
         self,
@@ -1098,20 +1049,18 @@ class OperatorSurface:
             },
             descriptor_action="fetch-run",
         )
-        if partial:
-            self.present(
-                f"Run {checked_id} is at {destination_root / checked_id}: "
-                f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
-                f"identical, {checked_clause} -- but "
-                f"{', '.join(outcome.unmanifested_stages)} never reached a manifest.json, so "
-                "this run is verified-partial: its artifacts are trusted by envelope alone."
+        self.present(
+            f"Run {checked_id} is at {destination_root / checked_id}: "
+            f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
+            f"identical, {checked_clause}"
+            + (
+                f" -- but {', '.join(outcome.unmanifested_stages)} never reached a "
+                "manifest.json, so this run is verified-partial: its artifacts are trusted by "
+                "envelope alone."
+                if partial
+                else " against the run tree's own digests."
             )
-        else:
-            self.present(
-                f"Run {checked_id} is at {destination_root / checked_id}: "
-                f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
-                f"identical, {checked_clause} against the run tree's own digests."
-            )
+        )
         if outcome.unverified_serving_logs:
             self.present(
                 f"{len(outcome.unverified_serving_logs)} serving log(s) came home as side "
@@ -1158,8 +1107,6 @@ class OperatorSurface:
         self.present(f"Saved receipt: {receipt}")
         return receipt
 
-    # -- run ------------------------------------------------------------------
-
     def run(
         self,
         *,
@@ -1174,18 +1121,15 @@ class OperatorSurface:
         witness_context_config: str | Path | None = None,
     ) -> RunOutcome:
         if submission_folder is None:
-            if submission_manifest is not None:
-                raise OperatorError(
-                    ErrorCode.INVALID_COMMAND,
-                    detail=("--submission-manifest is meaningful only with --submission-folder"),
-                )
-            if data_gate_policy is not None:
-                raise OperatorError(
-                    ErrorCode.INVALID_COMMAND,
-                    detail="--data-gate-policy is meaningful only with --submission-folder",
-                )
-        # The three roster files travel together or not at all, or the real
-        # roster would resolve against fixture configuration.
+            for flag, value in (
+                ("--submission-manifest", submission_manifest),
+                ("--data-gate-policy", data_gate_policy),
+            ):
+                if value is not None:
+                    raise OperatorError(
+                        ErrorCode.INVALID_COMMAND,
+                        detail=f"{flag} is meaningful only with --submission-folder",
+                    )
         roster_argv = _roster_argv(
             models_config=models_config,
             serving_recipes_config=serving_recipes_config,
@@ -1237,6 +1181,14 @@ class OperatorSurface:
             )
         else:
             self.present("This run sends the recorded real submission to the Door's data gate.")
+        stage_argv = [
+            *_real_ingress_argv(
+                submission_folder=submission_folder,
+                submission_manifest=submission_manifest,
+                data_gate_policy=data_gate_policy,
+            ),
+            *roster_argv,
+        ]
         command = [
             sys.executable,
             str(self.workspace / "pipeline" / "orchestrator" / "run.py"),
@@ -1248,15 +1200,8 @@ class OperatorSurface:
             run_id,
             "--run-root",
             str(run_root),
+            *stage_argv,
         ]
-        command.extend(
-            _real_ingress_argv(
-                submission_folder=submission_folder,
-                submission_manifest=submission_manifest,
-                data_gate_policy=data_gate_policy,
-            )
-        )
-        command.extend(roster_argv)
         # Every receipt this run writes carries the same identity facts, since
         # a later diagnosis may have only the state directory.
         commit, commit_unreadable = _repository_commit_or_reason(self.workspace)
@@ -1297,39 +1242,9 @@ class OperatorSurface:
         )
         if self.faults.laptop_crash:
             self.faults.laptop_crash = False
-            ingress_label = "real submission" if submission_folder is not None else "fixture"
-            observed_work = (
-                "The real submission's pages reached the Door."
-                if submission_folder is not None
-                else "The fixture pages reached the Door."
+            raise self._crash_after_door(
+                run_root, run_id, scenario, stage_argv, facts, real=submission_folder is not None
             )
-            self._run_door_stage(
-                run_root,
-                run_id,
-                scenario,
-                submission_folder=submission_folder,
-                submission_manifest=submission_manifest,
-                data_gate_policy=data_gate_policy,
-                roster_argv=roster_argv,
-            )
-            receipt = self._write_action(
-                "run",
-                {
-                    **facts,
-                    "summary": (
-                        f"Run interrupted after the Door recorded the {ingress_label}'s page "
-                        "evidence; it can resume."
-                    ),
-                    "state": "interrupted-recoverable",
-                    "last_observed_work": observed_work,
-                },
-                descriptor_action="run",
-            )
-            self.present(
-                f"The laptop-crash drill interrupted after the {ingress_label} reached the Door."
-            )
-            self._present_review_command(run_root, run_id)
-            raise OperatorError(ErrorCode.RUN_INTERRUPTED, detail=f"Saved run receipt: {receipt}")
         try:
             completed = self._run_orchestrator(command)
         except KeyboardInterrupt:
@@ -1384,7 +1299,6 @@ class OperatorSurface:
             )
             self.present(f"Run {run_id} failed: {reason}")
             self._present_review_command(run_root, run_id)
-            # Show the cause, not just the receipt path.
             raise OperatorError(
                 ErrorCode.RUN_FAILED, detail=f"{reason} Saved run receipt: {receipt}"
             )
@@ -1400,67 +1314,7 @@ class OperatorSurface:
             if state == "complete":
                 self._require_reconciled_act_partition(export_payload)
         except Exception as error:
-            if completed.returncode == 3:
-                # Held before the Armarium, so no export record exists; the
-                # reason is the orchestrator's last stderr line.
-                reason = (
-                    _last_line(completed.stderr)
-                    or _last_line(completed.stdout)
-                    or "the orchestrator reported a hold, and no Armarium export record "
-                    "exists to name the reason"
-                )
-                receipt = self._write_action(
-                    "run",
-                    {
-                        **ended,
-                        "summary": (
-                            f"Run {run_id} is held before the Armarium; the hold is recorded "
-                            "in the run tree and no export record exists yet."
-                        ),
-                        "state": "held",
-                        "reason": reason,
-                        "reasons": [reason],
-                        "armarium_export": None,
-                        "armarium_export_unreadable": str(error),
-                    },
-                    descriptor_action="run",
-                )
-                self.present("Run is held. It was not called complete.")
-                self.present(f"Hold reason: {reason}")
-                self._present_review_command(run_root, run_id)
-                self._notify(
-                    "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"
-                )
-                raise OperatorError(
-                    ErrorCode.RUN_HELD, detail=f"{reason} Saved run receipt: {receipt}"
-                ) from error
-            if isinstance(error, UnreconciledActPartitionError):
-                reason = f"the Armarium export record does not reconcile: {error}"
-                state = "armarium-record-unreconciled"
-                summary = (
-                    "Run ended with an Armarium record that was read but does not "
-                    "reconcile as complete."
-                )
-            else:
-                reason = f"the Armarium export record could not be read: {error}"
-                state = "armarium-record-unreadable"
-                summary = "Run ended before its Armarium record was available."
-            receipt = self._write_action(
-                "run",
-                {
-                    **ended,
-                    "summary": summary,
-                    "state": state,
-                    "reason": reason,
-                    "detail": reason,
-                    "armarium_export_unreadable": str(error),
-                },
-                descriptor_action="run",
-            )
-            self._present_review_command(run_root, run_id)
-            raise OperatorError(
-                ErrorCode.RUN_FAILED, detail=f"{reason} Saved run receipt: {receipt}"
-            ) from error
+            raise self._refuse_unread_export(error, completed, ended, run_root, run_id) from error
         # `reasons` is external data: only a list may feed decision output, or a
         # string would become one hold reason per character and a mapping its keys.
         reasons = aggregate.get("reasons")
@@ -1486,9 +1340,7 @@ class OperatorSurface:
                 ),
                 # The aggregate's own reasons, kept where `status` can show
                 # them before any export exists.
-                "reasons": [
-                    reason if isinstance(reason, str) else str(reason) for reason in reasons
-                ],
+                "reasons": [str(reason) for reason in reasons],
                 "reasons_unreadable": malformed,
                 "expected_acts": expected if isinstance(expected, int) else None,
                 "pages_accounted_for": len(page_records),
@@ -1542,6 +1394,76 @@ class OperatorSurface:
             ),
         )
 
+    def _refuse_unread_export(
+        self,
+        error: Exception,
+        completed: subprocess.CompletedProcess[str],
+        ended: dict[str, Any],
+        run_root: Path,
+        run_id: str,
+    ) -> OperatorError:
+        """Record why a finished run has no usable Armarium record; the refusal to raise."""
+
+        if completed.returncode == 3:
+            # Held before the Armarium, so no export record exists; the
+            # reason is the orchestrator's last stderr line.
+            reason = (
+                _last_line(completed.stderr)
+                or _last_line(completed.stdout)
+                or "the orchestrator reported a hold, and no Armarium export record "
+                "exists to name the reason"
+            )
+            receipt = self._write_action(
+                "run",
+                {
+                    **ended,
+                    "summary": (
+                        f"Run {run_id} is held before the Armarium; the hold is recorded "
+                        "in the run tree and no export record exists yet."
+                    ),
+                    "state": "held",
+                    "reason": reason,
+                    "reasons": [reason],
+                    "armarium_export": None,
+                    "armarium_export_unreadable": str(error),
+                },
+                descriptor_action="run",
+            )
+            self.present("Run is held. It was not called complete.")
+            self.present(f"Hold reason: {reason}")
+            self._present_review_command(run_root, run_id)
+            self._notify(
+                "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"
+            )
+            return OperatorError(
+                ErrorCode.RUN_HELD, detail=f"{reason} Saved run receipt: {receipt}"
+            )
+        if isinstance(error, UnreconciledActPartitionError):
+            reason = f"the Armarium export record does not reconcile: {error}"
+            state = "armarium-record-unreconciled"
+            summary = (
+                "Run ended with an Armarium record that was read but does not "
+                "reconcile as complete."
+            )
+        else:
+            reason = f"the Armarium export record could not be read: {error}"
+            state = "armarium-record-unreadable"
+            summary = "Run ended before its Armarium record was available."
+        receipt = self._write_action(
+            "run",
+            {
+                **ended,
+                "summary": summary,
+                "state": state,
+                "reason": reason,
+                "detail": reason,
+                "armarium_export_unreadable": str(error),
+            },
+            descriptor_action="run",
+        )
+        self._present_review_command(run_root, run_id)
+        return OperatorError(ErrorCode.RUN_FAILED, detail=f"{reason} Saved run receipt: {receipt}")
+
     def _run_orchestrator(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         """Run the orchestrator child, treating SIGTERM like SIGINT.
 
@@ -1562,26 +1484,27 @@ class OperatorSurface:
             # Not the main thread; the start receipt still names the run.
             pass
         try:
-            return self.runner(
-                command,
-                cwd=self.workspace,
-                capture_output=True,
-                text=True,
-                check=False,
-                env=_stage_environment(),
-            )
+            return self._run_stage_child(command)
         finally:
             if installed:
                 # `None` means a handler not set from Python; it cannot be
                 # restored as such, and SIG_DFL is what it was.
                 signal.signal(signal.SIGTERM, signal.SIG_DFL if previous is None else previous)
 
+    def _run_stage_child(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return self.runner(
+            command,
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_stage_environment(),
+        )
+
     def _present_review_command(self, run_root: Path, run_id: str) -> None:
         """Print the read-only review command for a run."""
 
         self.present(f"Review it read-only with: {review_command(run_root, run_id)}")
-
-    # -- export ---------------------------------------------------------------
 
     def export(self, *, run_id: str | None = None, run_root: Path | None = None) -> Path:
         """Make a local evidence bundle from the base-tree Armarium artifact.
@@ -1644,8 +1567,6 @@ class OperatorSurface:
             run_root = self._state_path(str(run_record["run_root"]))
             self.present(f"Exporting run {recorded_id} from run root {run_root}.")
             export_payload = self._armarium_export(run_root, recorded_id)
-            # The same reconciliation `run()` requires before calling a record
-            # complete.
             aggregate = export_payload["aggregate"]
             if aggregate.get("status") == "complete":
                 self._require_reconciled_act_partition(export_payload)
@@ -1671,24 +1592,16 @@ class OperatorSurface:
                         "the bytes its name claims"
                     ) from None
             staged.unlink()
-        except OperatorError as error:
-            # The bundle writer's own refusal: still clean up and record it.
+        except (OperatorError, OSError, zipfile.BadZipFile) as error:
             staged.unlink(missing_ok=True)
             self._record_failure(
                 "export",
                 "local-copy-failed",
-                str(error.detail or error),
+                str(error.detail or error) if isinstance(error, OperatorError) else str(error),
                 facts={"run_id": recorded_id, "run_root": self._state_relative(run_root)},
             )
-            raise
-        except (OSError, zipfile.BadZipFile) as error:
-            staged.unlink(missing_ok=True)
-            self._record_failure(
-                "export",
-                "local-copy-failed",
-                str(error),
-                facts={"run_id": recorded_id, "run_root": self._state_relative(run_root)},
-            )
+            if isinstance(error, OperatorError):
+                raise
             raise OperatorError(ErrorCode.EXPORT_FAILED, detail=str(error)) from error
         table = reconciliation_table(export_payload)
         for line in table:
@@ -1716,9 +1629,7 @@ class OperatorSurface:
                 "sha256": digest,
                 "reconciliation": table,
                 "reasons": (
-                    [reason if isinstance(reason, str) else str(reason) for reason in reasons]
-                    if isinstance(reasons, list)
-                    else None
+                    [str(reason) for reason in reasons] if isinstance(reasons, list) else None
                 ),
                 "assumption": "Spec 11 is not in this tree; this is a copy of the base Armarium evidence, not a Spec 11 product bundle.",
             },
@@ -1747,8 +1658,6 @@ class OperatorSurface:
                 f"reason. Saved export receipt: {receipt}"
             ),
         )
-
-    # -- close ---------------------------------------------------------------
 
     def prepare_close(self, *, pod_id: str | None = None) -> PreparedClose:
         """Resolve the recorded pod and show the close notice before any confirmation."""
@@ -1839,6 +1748,13 @@ class OperatorSurface:
                 "built-in operational deadline instead."
             )
         report = self._shutdown(policy).close(record, reason="manual operator close")
+        recorded = {
+            "pod_id": record.pod_id,
+            "confirmation_receipt": self._state_relative(confirmation_receipt),
+            "close_report": report.to_record(),
+            "lease": self._state_relative(lease_store.path),
+            "spend_policy_error": policy_error,
+        }
         try:
             lease_store.record_close(
                 owner_token=lease.owner_token,
@@ -1850,14 +1766,10 @@ class OperatorSurface:
             receipt = self._write_action(
                 "close",
                 {
+                    **recorded,
                     "summary": "Close is UNVERIFIED because the safety lease could not record the provider evidence.",
-                    "pod_id": record.pod_id,
-                    "confirmation_receipt": self._state_relative(confirmation_receipt),
-                    "close_report": report.to_record(),
                     "lease_reconciled": False,
-                    "lease": self._state_relative(lease_store.path),
                     "lease_record_error": str(error),
-                    "spend_policy_error": policy_error,
                 },
                 descriptor_action="close",
             )
@@ -1884,12 +1796,8 @@ class OperatorSurface:
                     if report.verified
                     else "Close is UNVERIFIED; manual reconciliation is required."
                 ),
-                "pod_id": record.pod_id,
-                "confirmation_receipt": self._state_relative(confirmation_receipt),
-                "close_report": report.to_record(),
+                **recorded,
                 "lease_reconciled": True,
-                "lease": self._state_relative(lease_store.path),
-                "spend_policy_error": policy_error,
             },
             descriptor_action="close",
         )
@@ -1900,15 +1808,10 @@ class OperatorSurface:
             )
         return report
 
-    # -- status ---------------------------------------------------------------
-
     def status(self) -> list[str]:
         """Read descriptors, receipts, and leases without writes or provider calls."""
 
-        try:
-            descriptor = self.descriptor.load()
-        except RecordError as error:
-            raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
+        descriptor = self._load_descriptor()
         # A lease is operator evidence even when no receipt was written; unreadable
         # lease evidence likewise prevents an honest claim that the state is empty.
         open_leases, lease_unreadable = self._open_leases()
@@ -1935,57 +1838,8 @@ class OperatorSurface:
             lines.append(f"- safety lease: UNREADABLE; it was not treated as closed. {reason}")
         if descriptor is not None and descriptor["actions"]:
             for action, path_texts in sorted(descriptor["history"].items()):
-                if action == "active-launch":
-                    continue
-                # Load all first: a `started` run receipt renders differently
-                # once a later receipt records its end.
-                loaded: list[tuple[int, Path | None, dict[str, Any] | None, str | None]] = []
-                for number, path_text in enumerate(path_texts, start=1):
-                    try:
-                        receipt_path = self.descriptor.receipt_path(path_text)
-                        loaded.append(
-                            (
-                                number,
-                                receipt_path,
-                                self.receipts.read(receipt_path)["payload"],
-                                None,
-                            )
-                        )
-                    except RecordError as error:
-                        loaded.append((number, None, None, str(error)))
-                for number, receipt_path, payload, failure in loaded:
-                    if payload is None or receipt_path is None:
-                        label = f"{action} record {number}"
-                        unreadable.append(f"{label}: {failure}")
-                        lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
-                        continue
-                    summary = payload.get("summary")
-                    lines.append(
-                        f"- {action} record {number}: "
-                        + (summary if isinstance(summary, str) else "saved record")
-                    )
-                    ended_later = action == "run" and any(
-                        later_payload is not None
-                        and later_payload.get("run_id") == payload.get("run_id")
-                        and later_payload.get("state") != "started"
-                        for later_number, _, later_payload, _ in loaded
-                        if later_number > number
-                    )
-                    try:
-                        lines.extend(
-                            _status_projection(
-                                action,
-                                payload,
-                                state_root=self.state_root,
-                                ended_later=ended_later,
-                            )
-                        )
-                    except RecordError as error:
-                        label = f"{action} record {number}"
-                        unreadable.append(f"{label}: {error}")
-                        lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
-                        continue
-                    lines.append(f"  Saved receipt: {receipt_path}")
+                if action != "active-launch":
+                    lines.extend(self._action_history_lines(action, path_texts, unreadable))
         for line in lines:
             self.present(line)
         if unreadable:
@@ -1995,7 +1849,50 @@ class OperatorSurface:
             )
         return lines
 
-    # -- internal -------------------------------------------------------------
+    def _action_history_lines(
+        self, action: str, path_texts: list[str], unreadable: list[str]
+    ) -> list[str]:
+        """One action's saved receipts for `status`; each unreadable one is added to `unreadable`."""
+
+        # Load all first: a `started` run receipt renders differently once a
+        # later receipt records its end.
+        loaded: list[tuple[int, Path | None, dict[str, Any] | None, str | None]] = []
+        for number, path_text in enumerate(path_texts, start=1):
+            try:
+                receipt_path = self.descriptor.receipt_path(path_text)
+                loaded.append(
+                    (number, receipt_path, self.receipts.read(receipt_path)["payload"], None)
+                )
+            except RecordError as error:
+                loaded.append((number, None, None, str(error)))
+        lines: list[str] = []
+        for number, receipt_path, payload, failure in loaded:
+            label = f"{action} record {number}"
+            if payload is not None and receipt_path is not None:
+                summary = payload.get("summary")
+                lines.append(
+                    f"- {label}: " + (summary if isinstance(summary, str) else "saved record")
+                )
+                ended_later = action == "run" and any(
+                    later_payload is not None
+                    and later_payload.get("run_id") == payload.get("run_id")
+                    and later_payload.get("state") != "started"
+                    for later_number, _, later_payload, _ in loaded
+                    if later_number > number
+                )
+                try:
+                    lines.extend(
+                        _status_projection(
+                            action, payload, state_root=self.state_root, ended_later=ended_later
+                        )
+                    )
+                    lines.append(f"  Saved receipt: {receipt_path}")
+                    continue
+                except RecordError as error:
+                    failure = str(error)
+            unreadable.append(f"{label}: {failure}")
+            lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
+        return lines
 
     def _runtime(self, policy: SpendPolicy) -> PodRuntime:
         return PodRuntime(
@@ -2168,6 +2065,20 @@ class OperatorSurface:
             self.faults.provider_error = False
             self.provider.inject_failure("estimate", ProviderFailure("injected provider failure"))
 
+    def _upload_target(
+        self, volume: VolumeSpec | None, manifest_path: Path, prefix: str
+    ) -> TransferTarget:
+        if volume is None:
+            return LocalFixtureObjectStore(
+                self.state_root / "fixture-volume",
+                fail_once_for=self._fault_upload_key(manifest_path, prefix),
+            )
+        try:
+            return S3VolumeTarget(volume)
+        except Exception as error:
+            self._record_failure("upload", "volume-unavailable", str(error))
+            raise OperatorError(ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=str(error)) from error
+
     def _fault_upload_key(self, manifest_path: Path, prefix: str) -> str | None:
         if not self.faults.partial_upload:
             return None
@@ -2188,11 +2099,14 @@ class OperatorSurface:
         for action in actions:
             value = descriptor["actions"].get(action)
             if isinstance(value, str):
-                try:
-                    return self.descriptor.receipt_path(value)
-                except RecordError as error:
-                    raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
+                return self._receipt_path(value)
         return None
+
+    def _receipt_path(self, entry: str) -> Path:
+        try:
+            return self.descriptor.receipt_path(entry)
+        except RecordError as error:
+            raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
 
     def _load_descriptor(self) -> dict[str, Any] | None:
         """The descriptor, or the same named refusal `status` gives for an unreadable one."""
@@ -2218,10 +2132,7 @@ class OperatorSurface:
             return []
         loaded: list[tuple[Path, dict[str, Any]]] = []
         for entry in descriptor["history"].get("run", []):
-            try:
-                path = self.descriptor.receipt_path(entry)
-            except RecordError as error:
-                raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
+            path = self._receipt_path(entry)
             loaded.append((path, self._read_receipt(path)["payload"]))
         return loaded
 
@@ -2487,7 +2398,6 @@ class OperatorSurface:
                     ),
                 ) from error
             except OSError as error:
-                # Any other error means exclusion could not be established.
                 raise OperatorError(
                     ErrorCode.SAFETY_CHECK_FAILED,
                     detail=(
@@ -2580,16 +2490,46 @@ class OperatorSurface:
             for line in record_error.render().splitlines():
                 self.present(line)
 
-    def _run_door_stage(
+    def _crash_after_door(
         self,
         run_root: Path,
         run_id: str,
         scenario: str,
+        stage_argv: Sequence[str],
+        facts: dict[str, Any],
         *,
-        submission_folder: str | Path | None = None,
-        submission_manifest: str | Path | None = None,
-        data_gate_policy: str | Path | None = None,
-        roster_argv: Sequence[str] = (),
+        real: bool,
+    ) -> OperatorError:
+        """The laptop-crash drill: run only the Door, then record a resumable interruption."""
+
+        ingress_label = "real submission" if real else "fixture"
+        observed_work = (
+            "The real submission's pages reached the Door."
+            if real
+            else "The fixture pages reached the Door."
+        )
+        self._run_door_stage(run_root, run_id, scenario, stage_argv)
+        receipt = self._write_action(
+            "run",
+            {
+                **facts,
+                "summary": (
+                    f"Run interrupted after the Door recorded the {ingress_label}'s page "
+                    "evidence; it can resume."
+                ),
+                "state": "interrupted-recoverable",
+                "last_observed_work": observed_work,
+            },
+            descriptor_action="run",
+        )
+        self.present(
+            f"The laptop-crash drill interrupted after the {ingress_label} reached the Door."
+        )
+        self._present_review_command(run_root, run_id)
+        return OperatorError(ErrorCode.RUN_INTERRUPTED, detail=f"Saved run receipt: {receipt}")
+
+    def _run_door_stage(
+        self, run_root: Path, run_id: str, scenario: str, stage_argv: Sequence[str]
     ) -> None:
         command = [
             sys.executable,
@@ -2600,23 +2540,9 @@ class OperatorSurface:
             run_id,
             "--scenario",
             scenario,
+            *stage_argv,
         ]
-        command.extend(
-            _real_ingress_argv(
-                submission_folder=submission_folder,
-                submission_manifest=submission_manifest,
-                data_gate_policy=data_gate_policy,
-            )
-        )
-        command.extend(roster_argv)
-        completed = self.runner(
-            command,
-            cwd=self.workspace,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=_stage_environment(),
-        )
+        completed = self._run_stage_child(command)
         if completed.returncode not in {0, 3}:
             raise OperatorError(ErrorCode.RUN_FAILED, detail=completed.stderr or completed.stdout)
         # A partly admitted Door reports its refusals on stderr even on an
@@ -2688,9 +2614,6 @@ class OperatorSurface:
     def _write_base_armarium_bundle(self, run_root: Path, run_id: str, destination: Path) -> None:
         tree = RunTree(run_root, run_id)
         source = tree.root
-        # Each member must exist and be the expected kind (file or directory);
-        # otherwise a bundle missing its evidence would still be called
-        # complete.
         temporary = destination.with_name(f".{destination.name}.tmp-{secrets.token_hex(16)}")
         root_descriptor: int | None = None
         run_descriptor: int | None = None
@@ -2725,13 +2648,7 @@ class OperatorSurface:
                 )
             if not members:
                 # An empty `7_armarium` would ship a "complete" bundle with no readings.
-                raise OperatorError(
-                    ErrorCode.EXPORT_FAILED,
-                    detail=(
-                        "the Armarium evidence bundle cannot be written as complete: "
-                        "7_armarium holds no evidence files"
-                    ),
-                )
+                raise _incomplete_bundle("7_armarium holds no evidence files")
             try:
                 os.link(temporary, destination, follow_symlinks=False)
             except FileExistsError as error:
@@ -2821,7 +2738,6 @@ class OperatorSurface:
         # reasons from artifacts may contain newlines.
         one_line = " ".join(message.split()) or "no detail recorded"
         if len(one_line) > MAX_NOTIFY_MESSAGE_CHARACTERS:
-            # The suffix counts toward the limit.
             suffix = "... (truncated; see the run receipt for the full text)"
             one_line = one_line[: MAX_NOTIFY_MESSAGE_CHARACTERS - len(suffix)] + suffix
         try:
@@ -2912,6 +2828,8 @@ def _status_projection(
     """
 
     lines: list[str] = []
+    run_id = payload.get("run_id")
+    state = payload.get("state")
     if action == "boot":
         report = payload.get("report")
         if isinstance(report, dict) and isinstance(report.get("color"), str):
@@ -2926,7 +2844,7 @@ def _status_projection(
         recorded_sha256 = payload.get("submission_manifest_sha256")
         # Only receipts claiming bytes moved must bind a digest; one refused
         # before transfer has none, and `status` must keep working after failures.
-        if payload.get("state") in {"complete", "partial-transfer"}:
+        if state in {"complete", "partial-transfer"}:
             if not (
                 isinstance(recorded_sha256, str)
                 and len(recorded_sha256) == 64
@@ -2935,17 +2853,11 @@ def _status_projection(
                 raise RecordError("saved upload record does not bind its submission record digest")
             lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
         lines.extend(_volume_status_lines(payload.get("volume")))
-        detail = payload.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            lines.append(f"  Reason: {detail}")
+        lines.extend(_reason_line(payload.get("detail")))
     elif action == "run":
-        run_id = payload.get("run_id")
         run_root = _display_path(payload.get("run_root"), state_root)
-        state = payload.get("state")
-        if isinstance(run_id, str):
-            lines.append(f"  Run: {run_id}" + (f"; run root: {run_root}" if run_root else "") + ".")
-        if isinstance(state, str):
-            lines.append(f"  Saved run state: {state}.")
+        lines.extend(_run_line(run_id, ("run root", run_root)))
+        lines.extend(_state_line("run", state))
         if state == "started" and isinstance(run_id, str) and not ended_later:
             lines.append(
                 "  No later record of this run is saved here, so it never reported an end "
@@ -2969,80 +2881,47 @@ def _status_projection(
         if isinstance(run_id, str) and run_root:
             lines.append(f"  Review it read-only with: {review_command(Path(run_root), run_id)}")
     elif action == "export":
-        run_id = payload.get("run_id")
         bundle = _display_path(payload.get("bundle"), state_root)
-        state = payload.get("state")
-        if isinstance(run_id, str):
-            lines.append(f"  Run: {run_id}" + (f"; bundle: {bundle}" if bundle else "") + ".")
-        if isinstance(state, str):
-            lines.append(f"  Saved export state: {state}.")
-        detail = payload.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            lines.append(f"  Reason: {detail}")
+        lines.extend(_run_line(run_id, ("bundle", bundle)))
+        lines.extend(_state_line("export", state))
+        lines.extend(_reason_line(payload.get("detail")))
         table = payload.get("reconciliation")
         if isinstance(table, list):
             lines.extend(f"  {line}" for line in table if isinstance(line, str))
     elif action == "fetch-run":
-        run_id = payload.get("run_id")
         into = payload.get("into")
-        state = payload.get("state")
-        if isinstance(run_id, str):
-            lines.append(
-                f"  Run: {run_id}"
-                + (f"; fetched into: {into}" if isinstance(into, str) else "")
-                + "."
-            )
+        lines.extend(_run_line(run_id, ("fetched into", into)))
         lines.extend(_volume_status_lines(payload.get("volume")))
-        if isinstance(state, str):
-            lines.append(f"  Saved fetch state: {state}.")
-        detail = payload.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            lines.append(f"  Reason: {detail}")
+        lines.extend(_state_line("fetch", state))
+        lines.extend(_reason_line(payload.get("detail")))
         if isinstance(run_id, str) and isinstance(into, str):
             lines.append(f"  Review it read-only with: {review_command(Path(into), run_id)}")
     elif action == "backup":
-        run_id = payload.get("run_id")
-        run_root = payload.get("run_root")
-        destination = payload.get("mac_directory")
-        state = payload.get("state")
-        if isinstance(run_id, str):
-            lines.append(
-                f"  Run: {run_id}"
-                + (f"; run root: {run_root}" if isinstance(run_root, str) else "")
-                + (f"; destination: {destination}" if isinstance(destination, str) else "")
-                + "."
+        lines.extend(
+            _run_line(
+                run_id,
+                ("run root", payload.get("run_root")),
+                ("destination", payload.get("mac_directory")),
             )
-        if isinstance(state, str):
-            lines.append(f"  Saved backup state: {state}.")
+        )
+        lines.extend(_state_line("backup", state))
         report = payload.get("report")
         if isinstance(report, dict):
             lines.append(
                 f"  Snapshot {report.get('snapshot_sha256')}: {report.get('copied')} copied, "
                 f"{report.get('reused')} reused."
             )
-        detail = payload.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            lines.append(f"  Reason: {detail}")
+        lines.extend(_reason_line(payload.get("detail")))
     elif action == "advance":
-        run_id = payload.get("run_id")
         run_root = _display_path(payload.get("run_root"), state_root)
-        stage = payload.get("stage")
-        if isinstance(run_id, str):
-            lines.append(
-                f"  Run: {run_id}"
-                + (f"; run root: {run_root}" if run_root else "")
-                + (f"; stage: {stage}" if isinstance(stage, str) else "")
-                + "."
-            )
+        lines.extend(_run_line(run_id, ("run root", run_root), ("stage", payload.get("stage"))))
         seal_digest = payload.get("seal_digest")
         if isinstance(seal_digest, str):
             lines.append(f"  Passed boundary sealed at: {seal_digest}.")
         approval_record = payload.get("approval_record")
         if isinstance(approval_record, dict):
             lines.append(f"  Approval record: {approval_record.get('relative_path')}")
-        reason = payload.get("reason")
-        if isinstance(reason, str) and reason.strip():
-            lines.append(f"  Reason: {reason}")
+        lines.extend(_reason_line(payload.get("reason")))
     elif action == "unexpected":
         exception_type = payload.get("exception_type")
         message = payload.get("message")
@@ -3060,7 +2939,7 @@ def _status_projection(
         report = payload.get("close_report")
         if not isinstance(report, dict):
             return lines
-        state = report.get("state")
+        close_state = report.get("state")
         cost = report.get("cost_capture")
         volume = report.get("volume")
         if isinstance(cost, dict):
@@ -3071,13 +2950,30 @@ def _status_projection(
                     "  Saved charges captured through {}: ${} (fixture billing, not a "
                     "measurement).".format(cutoff, total)
                 )
-        if state != "verified" and isinstance(state, str):
-            lines.append(f"  Saved close state: {state.upper()}.")
+        if close_state != "verified" and isinstance(close_state, str):
+            lines.append(f"  Saved close state: {close_state.upper()}.")
         if isinstance(volume, dict) and isinstance(volume.get("ongoing_hourly_usd"), str):
             lines.append(
                 "  Saved retained-volume price: $" + volume["ongoing_hourly_usd"] + " per hour."
             )
     return lines
+
+
+def _run_line(run_id: object, *parts: tuple[str, object]) -> list[str]:
+    """`  Run: <id>; <label>: <value>.` naming each recorded part, or nothing without an id."""
+
+    if not isinstance(run_id, str):
+        return []
+    named = "".join(f"; {label}: {value}" for label, value in parts if isinstance(value, str))
+    return [f"  Run: {run_id}{named}."]
+
+
+def _state_line(verb: str, state: object) -> list[str]:
+    return [f"  Saved {verb} state: {state}."] if isinstance(state, str) else []
+
+
+def _reason_line(reason: object) -> list[str]:
+    return [f"  Reason: {reason}"] if isinstance(reason, str) and reason.strip() else []
 
 
 STATUS_OUTPUT_LINES: Final = 12
@@ -3143,6 +3039,27 @@ def _read_sealed_manifest(path: Path) -> bytes:
     if len(data) > MAX_SEALED_MANIFEST_BYTES:
         raise OSError(f"the sealed submission record exceeds {MAX_SEALED_MANIFEST_BYTES} bytes")
     return data
+
+
+def _remote_state(store: TransferTarget, key: str, data: bytes, sha256: str) -> str:
+    """What `key` holds against these exact bytes: "absent", "ours" or "other"."""
+
+    remote = store.inspect(key, expected_size=len(data))
+    if remote is None:
+        return "absent"
+    return "ours" if remote.sha256 == sha256 and remote.size == len(data) else "other"
+
+
+def _publish_if_absent(
+    store: TransferTarget, key: str, data: bytes, sha256: str, state: str
+) -> str:
+    """Write `data` at `key` when `state` is "absent" and return the state read back;
+    any other `state` is returned as given."""
+
+    if state != "absent":
+        return state
+    store.create_file(key, io.BytesIO(data), expected_sha=sha256)
+    return _remote_state(store, key, data, sha256)
 
 
 def _load_policy(path: str | Path) -> SpendPolicy:
@@ -3396,7 +3313,7 @@ def _pod_from_record(value: dict[str, Any]) -> PodRecord:
 
 
 def _stage_environment() -> dict[str, str]:
-    """Pass the ordinary runtime environment, but never a provider credential.
+    """The ordinary environment with every provider credential stripped.
 
     Stages decode untrusted images, so no credential may reach them. The shared
     predicate means a credential shape added there is stripped here too.
@@ -3414,34 +3331,36 @@ def _sha256_regular_file_nofollow(path: Path) -> str:
         raise OSError(
             f"the existing content-addressed export is not a readable file: {path}"
         ) from error
-    digest = hashlib.sha256()
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise OSError(f"the existing content-addressed export is not a regular file: {path}")
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
-            while chunk := handle.read(_COPY_CHUNK_BYTES):
-                digest.update(chunk)
-        after = os.fstat(descriptor)
-        observed_before = (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-            before.st_ctime_ns,
-        )
-        observed_after = (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        )
-        if observed_after != observed_before:
+            digest = hashlib.file_digest(handle, "sha256")
+        if not _unchanged(before, os.fstat(descriptor)):
             raise OSError(f"the existing content-addressed export changed while read: {path}")
         return digest.hexdigest()
     finally:
         os.close(descriptor)
+
+
+_FILE_IDENTITY = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+_DIRECTORY_IDENTITY = ("st_dev", "st_ino", "st_mtime_ns", "st_ctime_ns")
+
+
+def _unchanged(
+    before: os.stat_result, after: os.stat_result, *, fields: tuple[str, ...] = _FILE_IDENTITY
+) -> bool:
+    """Whether two observations of one open file agree: same inode, not rewritten."""
+
+    return all(getattr(before, field) == getattr(after, field) for field in fields)
+
+
+def _incomplete_bundle(reason: str) -> OperatorError:
+    return OperatorError(
+        ErrorCode.EXPORT_FAILED,
+        detail=f"the Armarium evidence bundle cannot be written as complete: {reason}",
+    )
 
 
 def _open_bundle_root(source: Path) -> int:
@@ -3483,52 +3402,23 @@ def _open_expected_member(
     try:
         named = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
     except FileNotFoundError as error:
-        raise OperatorError(
-            ErrorCode.EXPORT_FAILED,
-            detail=(
-                f"the Armarium evidence bundle cannot be written as complete: {label} is missing"
-            ),
-        ) from error
+        raise _incomplete_bundle(f"{label} is missing") from error
     if stat.S_ISLNK(named.st_mode):
-        raise OperatorError(
-            ErrorCode.EXPORT_FAILED,
-            detail=(
-                "the Armarium evidence bundle cannot be written as complete: "
-                f"{label} is a symbolic link, not a {expected_kind}"
-            ),
-        )
+        raise _incomplete_bundle(f"{label} is a symbolic link, not a {expected_kind}")
     expected = stat.S_ISDIR(named.st_mode) if directory else stat.S_ISREG(named.st_mode)
     if not expected:
-        raise OperatorError(
-            ErrorCode.EXPORT_FAILED,
-            detail=(
-                "the Armarium evidence bundle cannot be written as complete: "
-                f"{label} is not a {expected_kind}"
-            ),
-        )
+        raise _incomplete_bundle(f"{label} is not a {expected_kind}")
     flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
     if directory:
         flags |= os.O_DIRECTORY
     try:
         descriptor = os.open(name, flags, dir_fd=parent_descriptor)
     except OSError as error:
-        raise OperatorError(
-            ErrorCode.EXPORT_FAILED,
-            detail=(
-                "the Armarium evidence bundle cannot be written as complete: "
-                f"{label} changed before it could be opened safely"
-            ),
-        ) from error
+        raise _incomplete_bundle(f"{label} changed before it could be opened safely") from error
     opened = os.fstat(descriptor)
     if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
         os.close(descriptor)
-        raise OperatorError(
-            ErrorCode.EXPORT_FAILED,
-            detail=(
-                "the Armarium evidence bundle cannot be written as complete: "
-                f"{label} changed between check and open"
-            ),
-        )
+        raise _incomplete_bundle(f"{label} changed between check and open")
     return descriptor
 
 
@@ -3564,22 +3454,7 @@ def _write_bundle_descriptor(
     ):
         while chunk := input_handle.read(_COPY_CHUNK_BYTES):
             output_handle.write(chunk)
-    after = os.fstat(descriptor)
-    observed_opened = (
-        opened.st_dev,
-        opened.st_ino,
-        opened.st_size,
-        opened.st_mtime_ns,
-        opened.st_ctime_ns,
-    )
-    observed_after = (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-        after.st_ctime_ns,
-    )
-    if observed_after != observed_opened:
+    if not _unchanged(opened, os.fstat(descriptor)):
         raise OperatorError(
             ErrorCode.EXPORT_FAILED,
             detail=f"the Armarium evidence member changed while copied: {archive_name}",
@@ -3637,27 +3512,8 @@ def _write_bundle_directory(
             finally:
                 os.close(child)
         else:
-            raise OperatorError(
-                ErrorCode.EXPORT_FAILED,
-                detail=(
-                    "the Armarium evidence bundle cannot be written as complete: "
-                    f"{label} is not a regular file"
-                ),
-            )
-    after = os.fstat(directory_descriptor)
-    observed_before = (
-        before.st_dev,
-        before.st_ino,
-        before.st_mtime_ns,
-        before.st_ctime_ns,
-    )
-    observed_after = (
-        after.st_dev,
-        after.st_ino,
-        after.st_mtime_ns,
-        after.st_ctime_ns,
-    )
-    if observed_after != observed_before:
+            raise _incomplete_bundle(f"{label} is not a regular file")
+    if not _unchanged(before, os.fstat(directory_descriptor), fields=_DIRECTORY_IDENTITY):
         raise OperatorError(
             ErrorCode.EXPORT_FAILED,
             detail=f"the Armarium evidence directory changed while copied: {source_prefix}",
@@ -3857,12 +3713,9 @@ class FetchRunOutcome:
     # verified by envelope only, so the outcome is "verified-partial".
     unmanifested_stages: tuple[str, ...] = ()
     envelope_only_artifacts: tuple[str, ...] = ()
-    # Serving logs: in no manifest, so digested on arrival but never counted as
-    # verified.
+    # In no manifest, so digested on arrival but never counted as verified.
     unverified_serving_logs: tuple[tuple[str, str], ...] = ()
-    # Serving logs that did not come home, and why. A live engine still appends
-    # to them, so a mismatch is refused per log, not for the whole tree
-    # .
+    # A live engine still appends to its log, so a bad one is refused alone.
     refused_serving_logs: tuple[str, ...] = ()
 
 
@@ -3886,14 +3739,8 @@ def _fetch_run_tree(
         if is_publication_temporary(relative, scope):
             excluded.append(relative)
             continue
-        if (
-            not relative
-            or relative.startswith("/")
-            or ".." in relative.split("/")
-            or not any(
-                relative.startswith(item) if item.endswith("/") else relative == item
-                for item in scope
-            )
+        if _escapes_root(relative) or not any(
+            relative.startswith(item) if item.endswith("/") else relative == item for item in scope
         ):
             raise FetchRunRefusal(
                 f"the volume holds {key!r} under the run prefix, and no stage of a run tree "
@@ -3928,7 +3775,8 @@ def _fetch_run_tree(
     try:
         for relative in ordered:
             target = root / relative
-            if _is_serving_log(relative):
+            serving_log = _is_serving_log(relative)
+            if serving_log:
                 # A log is still appended to while fetched, so a mismatch or
                 # oversize log is refused alone; the same guards still run.
                 # `is_symlink` too, so cleanup never deletes a dangling link
@@ -3936,33 +3784,27 @@ def _fetch_run_tree(
                 existed = target.exists() or target.is_symlink()
                 parent_existed = target.parent.exists() or target.parent.is_symlink()
                 try:
-                    log_size, log_reused = _fetch_or_compare(reader, prefix + relative, target)
+                    size, was_reused = _fetch_or_compare(reader, prefix + relative, target)
                 except Exception as error:  # noqa: BLE001 -- recorded per log, never fatal
                     if not existed:
                         target.unlink(missing_ok=True)
                     if not parent_existed:
-                        try:
+                        with suppress(OSError):
                             target.parent.rmdir()
-                        except OSError:
-                            pass
                     refused_logs.append(f"{relative}: {error}")
                     continue
-                if not log_reused:
-                    staged.append(target)
-                total += log_size
-                fetched += not log_reused
-                reused += log_reused
-                # Digested for the receipt; there is nothing to check it against.
-                serving_logs.append((relative, _sha256_of(target)))
-                continue
-            data_size, was_reused = _fetch_or_compare(reader, prefix + relative, target)
+            else:
+                size, was_reused = _fetch_or_compare(reader, prefix + relative, target)
             if not was_reused:
                 staged.append(target)
-            total += data_size
+            total += size
             fetched += not was_reused
             reused += was_reused
             name = PurePosixPath(relative).name
-            if relative == RUN_FILE:
+            if serving_log:
+                # Digested for the receipt; there is nothing to check it against.
+                serving_logs.append((relative, _sha256_of(target)))
+            elif relative == RUN_FILE:
                 tree.read_run()  # self-hash, schema, and run id, or a ContractError
             elif name in _MANIFEST_NAMES:
                 manifest = _fetched_manifest(tree, relative)
@@ -3984,10 +3826,10 @@ def _fetch_run_tree(
                 # A rebuildable index or derived receipt: checked as JSON here,
                 # verified by the tree's readers when next opened.
                 try:
-                    size = target.stat().st_size
-                    if size > MAX_RECORD_READ_BYTES:
+                    record_size = target.stat().st_size
+                    if record_size > MAX_RECORD_READ_BYTES:
                         raise FetchRunRefusal(
-                            f"{relative} is {size} bytes, above the "
+                            f"{relative} is {record_size} bytes, above the "
                             f"{MAX_RECORD_READ_BYTES}-byte limit for a JSON record; it is "
                             "not readable here as one."
                         )
@@ -3995,41 +3837,7 @@ def _fetch_run_tree(
                 except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     # Deep nesting raises RecursionError within any size bound.
                     raise FetchRunRefusal(f"{relative} is not readable JSON: {error}") from error
-        # An artifact without a manifest entry may come from a stage killed
-        # before `finish()`; resolve it against a manifest derived from its
-        # envelope. Only artifacts outside the stored manifests are reported
-        # as envelope-only.
-        manifest_recorded = set(expected)
-        manifested_stage_names = {manifest["stage"] for manifest in manifests.values()}
-        unmanifested_stages: set[str] = set()
-        if unresolved:
-            directories_needed = {relative.partition("/artifacts/")[0] for relative in unresolved}
-            for directory in sorted(directories_needed):
-                candidates = sorted(
-                    stage
-                    for stage, stage_directory in WRITING_DIRECTORIES.items()
-                    if stage_directory == directory and stage not in manifested_stage_names
-                )
-                for stage in candidates:
-                    derived = tree.build_manifest(stage, verify_inputs=False)
-                    if not derived["artifacts"]:
-                        continue
-                    unmanifested_stages.add(stage)
-                    for entry in derived["artifacts"]:
-                        expected.setdefault(entry["relative_path"], entry["sha256"])
-            for relative, digest in unresolved.items():
-                recorded = expected.get(relative)
-                if recorded is None:
-                    raise FetchRunRefusal(
-                        f"{relative} arrived from the volume but no stage manifest -- stored "
-                        "or derived from its own envelope -- records it; an artifact nobody "
-                        "inventoried is not evidence."
-                    )
-                if recorded != digest:
-                    raise FetchRunRefusal(
-                        f"{relative} digests to {digest}, not the {recorded} its stage "
-                        "manifest records; the fetched tree does not reconcile with itself."
-                    )
+        unmanifested_stages = _resolve_unmanifested(tree, unresolved, expected, manifests)
         stages: list[str] = []
         for relative, manifest in manifests.items():
             stage = manifest["stage"]
@@ -4044,23 +3852,7 @@ def _fetch_run_tree(
                 )
             stages.append(stage)
     except BaseException:
-        for path in staged:
-            path.unlink(missing_ok=True)
-        # Then their now-empty directories, bottom-up; `rmdir` leaves any
-        # directory still holding an earlier fetch's files.
-        for directory in sorted(
-            {parent for path in staged for parent in path.parents if root in parent.parents},
-            key=lambda item: len(item.parts),
-            reverse=True,
-        ):
-            try:
-                directory.rmdir()
-            except OSError:
-                pass
-        try:
-            root.rmdir()
-        except OSError:
-            pass
+        _remove_staged(staged, root)
         raise
     return FetchRunOutcome(
         fetched,
@@ -4069,10 +3861,83 @@ def _fetch_run_tree(
         tuple(sorted(stages)),
         tuple(excluded),
         tuple(sorted(unmanifested_stages)),
-        tuple(sorted(name for name in unresolved if name not in manifest_recorded)),
+        tuple(sorted(name for name in unresolved if name not in expected)),
         tuple(sorted(serving_logs)),
         tuple(sorted(refused_logs)),
     )
+
+
+def _resolve_unmanifested(
+    tree: RunTree,
+    unresolved: dict[str, str],
+    expected: dict[str, str],
+    manifests: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Check artifacts no stored manifest records against their stage's own envelopes.
+
+    A stage killed before `finish()` leaves artifacts but no manifest. Each such
+    stage's manifest is derived from its envelopes, and the stages that needed
+    one are returned. A stored manifest entry wins over a derived one; `expected`
+    is only read. An artifact still unrecorded, or whose digest disagrees, is
+    refused.
+    """
+
+    derived_digests: dict[str, str] = {}
+    manifested_stage_names = {manifest["stage"] for manifest in manifests.values()}
+    unmanifested_stages: set[str] = set()
+    if not unresolved:
+        return unmanifested_stages
+    for directory in sorted({relative.partition("/artifacts/")[0] for relative in unresolved}):
+        candidates = sorted(
+            stage
+            for stage, stage_directory in WRITING_DIRECTORIES.items()
+            if stage_directory == directory and stage not in manifested_stage_names
+        )
+        for stage in candidates:
+            derived = tree.build_manifest(stage, verify_inputs=False)
+            if not derived["artifacts"]:
+                continue
+            unmanifested_stages.add(stage)
+            for entry in derived["artifacts"]:
+                derived_digests.setdefault(entry["relative_path"], entry["sha256"])
+    for relative, digest in unresolved.items():
+        recorded = expected.get(relative, derived_digests.get(relative))
+        if recorded is None:
+            raise FetchRunRefusal(
+                f"{relative} arrived from the volume but no stage manifest -- stored "
+                "or derived from its own envelope -- records it; an artifact nobody "
+                "inventoried is not evidence."
+            )
+        if recorded != digest:
+            raise FetchRunRefusal(
+                f"{relative} digests to {digest}, not the {recorded} its stage "
+                "manifest records; the fetched tree does not reconcile with itself."
+            )
+    return unmanifested_stages
+
+
+def _remove_staged(staged: list[Path], root: Path) -> None:
+    """Delete what one fetch wrote, then every directory that left empty.
+
+    `rmdir` refuses a directory still holding an earlier fetch's files, so
+    only this fetch's own leavings go.
+    """
+
+    for path in staged:
+        path.unlink(missing_ok=True)
+    for directory in sorted(
+        {parent for path in staged for parent in path.parents if root in parent.parents},
+        key=lambda item: len(item.parts),
+        reverse=True,
+    ):
+        with suppress(OSError):
+            directory.rmdir()
+    with suppress(OSError):
+        root.rmdir()
+
+
+def _escapes_root(relative: str) -> bool:
+    return not relative or relative.startswith("/") or ".." in relative.split("/")
 
 
 def _is_serving_log(relative: str) -> bool:
@@ -4142,7 +4007,7 @@ def _fetch_evidence(
         )
         return FetchEvidenceOutcome(0, 0, 0, (), tuple(empty), tuple(refusals))
     for key in ordered:
-        if not key or key.startswith("/") or ".." in key.split("/"):
+        if _escapes_root(key):
             refusals.append(f"{key!r} is not a path this verb will write under {destination}")
             continue
         target = destination / key
@@ -4227,11 +4092,8 @@ def _fetched_manifest(tree: RunTree, relative: str) -> dict[str, Any]:
 
 
 def _sha256_of(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as handle:
-        while chunk := handle.read(_COPY_CHUNK_BYTES):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _display_usd(amount: Decimal) -> str:
