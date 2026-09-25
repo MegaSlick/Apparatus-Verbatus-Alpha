@@ -130,14 +130,10 @@ class UrllibHttpTransport:
         deadline = time.monotonic() + timeout_seconds
         opener, cancel = _build_opener()
 
-        # One boundary over *both* body reads.  The 4xx/5xx read used to sit in a
-        # sibling `except` clause, where a failure raised inside it could not be
-        # caught by the clause that follows: the identical malformed chunked body
-        # became `EndpointUnavailable` at 200 and a bare `http.client.IncompleteRead`
-        # at 503.  The readiness poll retries the first and aborts the start on the
-        # second, so which of two equally broken responses arrived decided whether a
-        # launch got its remaining intervals.  An error status is still a complete
-        # HTTP response; reading its body is the same act, under the same contract.
+        # One boundary over both body reads: an error status is still a
+        # complete HTTP response, and reading its body is the same act under
+        # the same contract, so a malformed body cannot be classified
+        # differently depending on which status carried it.
         def exchange() -> HttpResponse:
             try:
                 with opener.open(request, timeout=timeout_seconds) as response:
@@ -289,16 +285,9 @@ def request_body(
                 )
             value[field] = expected
     # Render first, then check the decoded *rendered* snapshot -- never the
-    # still-mutable `value` -- so a request rendered here cannot route around
-    # it (hostile review item A; `assert_wire_part_order`'s own docstring
-    # names the one door downstream of this function that is not itself
-    # checked). Checking `value` directly would only prove the Python object
-    # graph looks right at the moment of the check: a `dict` subclass whose
-    # `get("type")` disagrees with what `json.dumps` actually serializes (or
-    # a concurrent mutation between the check and the serialize) would pass
-    # the check while the wire body itself opened with text -- re-parsing
-    # the exact bytes closes that gap by
-    # construction, not by trusting the object that produced them.
+    # still-mutable `value` -- so a caller cannot pass a Python object that
+    # looks right at check time but serializes differently: re-parsing the
+    # exact bytes closes that gap by construction.
     rendered = _canonical_json(value)
     assert_wire_part_order(json.loads(rendered), label=f"request for {model_id}")
     return rendered
@@ -506,32 +495,20 @@ def assert_wire_part_order(payload: Mapping[str, object], *, label: str) -> None
     an image, across the whole rendered request.
 
     Narrower than "every message's first part must be an image": a
-    string-content message (the readiness probe's bare `"READY"`), a non-user
-    role (Churro's system-turn text preamble, `live_witness.py`), and a
-    text-only user content list (no `image_url` part at all) are all
-    legitimate shapes this check must not refuse. Checked here, inside
-    `request_body`, because this is the one place every request this package
-    renders already passes through -- the golden-page smoke, the readiness
-    probe, both adapter-calibration probes, and every pipeline reading
-    (`ServingManager.request`, `_post_probe`, `ChairClient.read`) -- so a
-    future seam cannot route a rendered request around it the way three
-    unwired functions once did (hostile review item A). `request_reading`
-    is the one door downstream of `request_body` that this walker cannot
-    see: it POSTs a caller-already-built body verbatim, so any future
-    caller that reaches it without going through `request_body` first
-    bypasses this check entirely -- today's only caller, `ChairClient.read`,
-    always builds through `request_body`.
+    string-content message, a non-user role, and a text-only user content
+    list are all legitimate shapes this must not refuse. Checked here, inside
+    `request_body`, since that is the one place every request this package
+    renders already passes through, so a future seam cannot route a rendered
+    request around it. `request_reading` is the one downstream door this
+    walker cannot see, as it POSTs an already-built body verbatim; today's
+    only caller of it always builds through `request_body` first.
 
-    An `image_url` part inside a non-`user` role message is one shape this
-    walker never inspects at all, not even for order -- it is skipped by
-    the role check before the image scan runs. No production builder in
-    this package emits one today, and `chat_image_bytes_all` separately
-    refuses an `image_url` outside a `role=user` content list on every path
-    that calls it -- but the readiness probe and a `requires_image=False`
-    calibration never call `chat_image_bytes_all`, so a hypothetical future
-    builder that placed an image in a system turn on one of those two paths
-    would pass both checks unnoticed. Named here rather than left for a
-    reader to discover by grep.
+    An `image_url` inside a non-`user` role message is skipped by the role
+    check before the image scan runs, unchecked even for order. No production
+    builder emits one today, and `chat_image_bytes_all` separately refuses
+    it wherever that function is called -- but the readiness probe and a
+    `requires_image=False` calibration never call it, so this gap is named
+    here rather than left for a reader to discover by grep.
     """
 
     messages = payload.get("messages")
@@ -567,11 +544,11 @@ def chat_image_bytes_all(
     never let a caller claim an image was sent that vLLM would not see.
 
     ``messages`` and each message's ``content`` accept a tuple as well as a
-    list, matching ``assert_wire_part_order`` (F133 follow-up): both
-    ``active_candidates`` and ``_all_image_url_candidates``'s own walk must
-    see the same shape a tuple-typed caller used, or an image inside it would
-    vanish from both counts equally and the mismatch this function exists to
-    catch would never fire.
+    list, matching ``assert_wire_part_order``: both ``active_candidates`` and
+    ``_all_image_url_candidates``'s own walk must see the same shape a
+    tuple-typed caller used, or an image inside it would vanish from both
+    counts equally and the mismatch this function exists to catch would never
+    fire.
     """
 
     messages = payload.get("messages")
@@ -727,35 +704,22 @@ def _connection_refused(error: BaseException) -> bool:
 def _bounded_read(response: Any, deadline: float) -> bytes:
     """Read a body bounded in both size and time.
 
-    ``deadline`` is the caller's *whole-call* monotonic deadline, set before the
-    connection was opened, not a fresh budget for the body alone.  That is the
-    repair: this function used to start its own clock once headers had already
-    arrived, so a request whose headers dribbled in spent the configured budget
-    twice — measured at 1.280 s against a declared 0.15 s at 36acde636f.  What
-    the connect and header phases actually consumed now comes out of the same
-    deadline the body is read against.
+    ``deadline`` is the caller's whole-call monotonic deadline, set before the
+    connection was opened, so what the connect and header phases already
+    consumed comes out of the same budget the body is read against -- not a
+    fresh one that lets a slow header phase double the configured wait. The
+    whole-call bound itself is enforced above this by a joined worker thread,
+    since no check between reads can regain control from an already-blocked
+    receive; this check turns an ordinary slow body into a precise, named
+    refusal instead. One extra byte past the size bound is requested so a
+    response at exactly the limit does not look like an overage.
 
-    The whole-call bound is enforced above this, by a worker thread joined with
-    the budget, because no check between reads can regain control from a receive
-    that is already blocked.  This check is what turns the ordinary slow-body
-    case into a precise, named refusal instead of a cancelled thread.
-
-    The extra byte requested past the size bound is what turns "read a lot" into
-    a detectable overage rather than a response that merely happens to be
-    exactly at the limit.
-
-    ``read1`` rather than ``read``: the latter blocks until it has the whole
-    amount asked for, so a trickling responder would never return control here
-    and the deadline below would never be consulted.
-
-    That choice costs one guarantee back, which is why the undelivered check at
-    the end exists.  ``HTTPResponse.read()`` raises ``IncompleteRead`` when a
-    ``Content-Length`` body ends early; ``read1`` just returns ``b""`` and closes
-    the connection, so a responder that declares 64 bytes, sends 16 and hangs up
-    handed this transport a short body and an HTTP 200.  Chunked bodies still
-    raise ``IncompleteRead`` and reach the caller's transport clause; identity
-    bodies had nothing at all, so ``length`` — what ``http.client`` still expects
-    and did not get — is checked here instead.
+    ``read1``, not ``read``, so a trickling responder returns control here
+    instead of blocking until the full amount arrives -- at the cost of
+    ``read1`` returning ``b""`` on an early-closed connection instead of
+    raising `IncompleteRead` the way ``read`` would for a `Content-Length`
+    body; the `length` check below catches that case for an identity body
+    (a chunked body still raises `IncompleteRead` and reaches the caller).
     """
 
     remaining = _MAX_RESPONSE_BYTES + 1
