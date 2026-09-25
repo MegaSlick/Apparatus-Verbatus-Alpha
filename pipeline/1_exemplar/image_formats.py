@@ -1,28 +1,20 @@
 """Structural checks and decoder-backed raster helpers for the door.
 
-Spec 03's ruling: the door uses a real decoder where
-decoding is the point. Pillow supplies ordinary raster support, while the structural
-walkers below keep catching malformed common containers before a later stage could
-mistake them for a page. A decoder gap is an alarm about this pipeline, never a
-format policy that rejects the submitted image.
+"Real" means structural, not photometric: each validator walks the container far
+enough to check the bytes are structurally consistent with the format they claim,
+and reads true geometry off them, without reconstructing actual pixels. A file
+that passes is structurally consistent with the format it claims; what its pixels
+show is not this module's question, and Pillow supplies ordinary raster decoding
+for that.
 
-**"Real" here means structural, not photometric.** Each validator walks the real
-container far enough to prove the bytes are a genuine, uncorrupted instance of the
-format they claim, and reads true geometry off them: PNG chunk CRCs and an inflate
-that yields exactly the declared byte count, JPEG marker segments well-formed and
-terminating in EOI, TIFF's IFD internally consistent and inside the file. None of
-the three reconstructs actual pixels — that is a **named, documented limit, not a
-shortcut**. A file that passes here is provably the format it claims; what its
-pixels show is not this module's question.
+Every walk is bounded before it begins: these bytes are untrusted local input, and
+an unbounded inflate or iteration over a file-declared number is a loop counter an
+attacker controls. The limits below are admission policy — a source past one of
+them is refused outright, never partially inspected.
 
-**Every walk is bounded before it begins.** The bytes reaching these validators are
-untrusted local input, and a validator that inflates or iterates on numbers a file
-declared about itself is a validator an attacker writes the loop counter for. The
-limits below are admission policy, not caller options: a source past one of them is
-refused, never partially inspected.
-
-Lives beside the door (`pipeline/1_exemplar/`) and is door-private: nothing outside
-this stage imports it, so structural inspection only ever happens once, at admission.
+Door-private (`pipeline/1_exemplar/`): nothing outside this stage imports it, so
+this stage is the only caller — a raster page can still be decoded, and checked,
+more than once, as `render_raster_page` does.
 """
 
 import struct
@@ -41,20 +33,18 @@ from common.imaging import imaging_library_versions, render_triage_derivative
 pillow_heif.register_heif_opener()
 
 
-# Bounds on what may be inspected at all. A source larger than `MAX_SOURCE_BYTES`
-# is refused before a validator sees it; a declared geometry past `MAX_DIMENSION`
-# or `MAX_PIXELS` is refused before anything is decompressed, so the inflate below
-# is always bounded by a number that has already been sanity-checked.
+# Bounds on what may be inspected at all: geometry and chunk/segment counts are
+# refused before anything is decompressed, so the inflate below is always bounded
+# by a number already sanity-checked.
 MAX_SOURCE_BYTES: Final = 64 * 1024 * 1024
 MAX_DIMENSION: Final = 100_000
 MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
 MAX_TIFF_DATA_SEGMENTS: Final = 100_000
-# A declared page count has to fit in the bytes that arrived. This is not the page
-# cap ruling 17 retired — a reel's page count stays the document's to declare — it
-# refuses a count no container of that size could physically hold. Pillow's smallest
-# real page costs ~128 bytes, so no genuine document reaches either floor.
+# A declared page count must fit in the bytes that arrived; a reel's own page count
+# is still the document's to declare. Pillow's smallest real page costs ~128 bytes,
+# so no genuine document reaches either floor.
 MIN_BYTES_PER_DECLARED_TIFF_PAGE: Final = 32
 MIN_BYTES_PER_DECLARED_FRAME: Final = 32
 
@@ -103,26 +93,20 @@ def unrecognized(detail: str) -> FormatRefusal:
 
 PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
 JPEG_SIGNATURE: Final = b"\xff\xd8"
-# Classic TIFF and BigTIFF alike. BigTIFF is TIFF — the same tags and the same
-# image, with 64-bit offsets — and "TIFF 100% must work" does not carve it out.
-# It is sniffed here rather than left to the unknown-magic fallback so that a
-# large archival scan is admitted *as a TIFF, by name*, instead of by the accident
-# of no signature matching: the structural walker below cannot read its 64-bit
-# offset table and says so, and the decoder answers instead.
+# BigTIFF shares TIFF's tags and images, only with 64-bit offsets, so it is sniffed
+# here as TIFF by name rather than falling through to the unknown-magic case; the
+# structural walker below cannot read its offset table and the decoder answers.
 TIFF_SIGNATURES: Final = (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")
 PDF_SIGNATURE: Final = b"%PDF-"
-# PDFium accepts a PDF header after a bounded transport preamble. The Door reads
-# this much from the head of a streamed source, so the route stays byte-based while
-# a preamble cannot make an otherwise readable document look unrecognized.
+# PDFium accepts a PDF header after a bounded leading transport preamble; the door
+# reads this much from the head of a streamed source to match that.
 PDF_HEADER_PREFIX_BYTES: Final = 1024
 GIF_SIGNATURES: Final = (b"GIF87a", b"GIF89a")
 BMP_SIGNATURES: Final = (b"BM", b"BA", b"CI", b"CP", b"IC", b"PT")
 WEBP_SIGNATURE: Final = b"WEBP"
 
-# The one table `sniff()` walks, so the list of formats the door can detect is
-# *derived* from what the sniffer executes rather than hand-copied beside it. A
-# second hand-kept list is the same shape of drift as two admission tables: the
-# policy-coverage check would compare the copy against the copy and agree.
+# The one table sniff() walks, so the formats the door can detect are derived from
+# what the sniffer executes rather than hand-copied beside it.
 _SIGNATURES: Final = (
     ("png", (PNG_SIGNATURE,)),
     ("jpeg", (JPEG_SIGNATURE,)),
@@ -132,22 +116,17 @@ _SIGNATURES: Final = (
     ("bmp", BMP_SIGNATURES),
 )
 
-# ISO base media file format "brand" codes that mark a file as HEIC/HEIF. Detected
-# from the `ftyp` box that opens every such container, never from a `.heic` file
-# extension — admission is by bytes, and the extension plays no part in what a file
-# actually is (harvest Q12/Q14, spec 03's admission-by-bytes invariant).
+# ISO base media file format "brand" codes marking a file as HEIC/HEIF, read from
+# the `ftyp` box that opens every such container — never from a file extension,
+# since admission is by bytes only.
 _HEIC_BRANDS: Final = frozenset(
     {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs"}
 )
 _AVIF_BRANDS: Final = frozenset({b"avif", b"avis"})
 _HEIF_BRANDS: Final = frozenset({b"mif1", b"msf1"})
-# A real `ftyp` box's compatible-brands list is a handful of 4-byte codes --
-# never remotely this many. Bounding how far `_iso_bmff_image_format` walks
-# independent of an attacker-declared box size or the file's own length keeps
-# sniffing near-constant-time: unbounded, a crafted admission-ceiling-sized
-# file (`MAX_SOURCE_BYTES`) whose header claims a matching box size drives
-# millions of 4-byte slice-and-set-insert iterations before any decoder or
-# size bound runs.
+# A real ftyp box's brand list is a handful of 4-byte codes; this ceiling keeps
+# _iso_bmff_image_format's scan near-constant-time regardless of an
+# attacker-declared box size or the file's own length.
 _FTYP_BRAND_SCAN_CEILING: Final = 16 + 256 * 4
 
 
@@ -158,9 +137,6 @@ def sniff(data: bytes) -> str | None:
     the bytes are a valid instance of it. `admission.py` calls the matching
     validator before ever admitting anything.
     """
-    # Unlike raster signatures, PDFium accepts this header within a bounded
-    # leading transport preamble. PDFium still validates the document before a
-    # page is admitted.
     if PDF_SIGNATURE in data[:PDF_HEADER_PREFIX_BYTES]:
         return "pdf"
     for name, signatures in _SIGNATURES:
@@ -441,39 +417,25 @@ _JPEG_LOSSLESS_MARKERS: Final = frozenset({0xC3, 0xC7, 0xCB, 0xCF})
 def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> ImageGeometry:
     """Walk marker segments to an EOI, reading geometry off SOF.
 
-    **What is proven, exactly.** The file is framed by SOI and a terminating EOI at
-    the very end; every marker segment's declared length lies inside the file; there
-    is exactly one start-of-frame, whose component count agrees with its own segment
-    length; every DQT, DHT and DAC segment's own internal lengths add up; and — the
-    part this validator used to claim and not perform — **every quantization and
-    Huffman table a scan selects has actually been defined by a preceding DQT or
-    DHT**. A frame whose components name a quantization table nobody defined, or a
-    scan whose components name a Huffman table nobody defined, is not a decodable
-    JPEG and is refused. Before that check, the project's own synthetic "genuine"
-    JPEG — SOI, SOF, SOS, three arbitrary bytes, EOI, no tables at all — was admitted
-    as a 5x4 image, which no decoder on earth could have turned into pixels.
+    Proven: SOI framing an EOI marker somewhere in the file; every marker segment's declared
+    length inside the file; exactly one start-of-frame whose component count agrees
+    with its segment length; every DQT/DHT/DAC segment's internal lengths add up;
+    and every quantization or Huffman table a scan selects was actually defined by a
+    preceding DQT/DHT — a scan naming an undefined table is not decodable and is
+    refused. An arithmetic-coded frame's DAC conditioning is checked for shape only:
+    a DAC segment is optional, so there is no selector that must have been defined.
 
-    **An arithmetic-coded frame's conditioning is checked for shape and not
-    reconciled**, because a DAC segment is optional — the default conditioning is
-    legal — so there is no selector that must have been defined. Saying "DQT, DHT or
-    DAC" here would be claiming a reconciliation that does not happen, which is the
-    defect this docstring exists downstream of.
+    Not proven: the entropy-coded scan data is skipped to the next unstuffed marker
+    rather than Huffman-decoded, since that is pixel reconstruction — this proves
+    the container and its table references are consistent, not that the compressed
+    samples decode.
 
-    **What is not proven.** The entropy-coded scan data is skipped by scanning for
-    the next unstuffed marker rather than Huffman-decoded, because that is pixel
-    reconstruction. So this proves the container and its table references are whole
-    and mutually consistent; it does not prove the compressed samples decode, and it
-    does not claim to. That is the same named, documented limit the module docstring
-    states for all three formats.
+    Trailing bytes after EOI are retained: some scanners append metadata or padding,
+    and the EOI still closes the image.
 
-    Trailing bytes after EOI are retained. Some scanners append metadata or padding;
-    the EOI still closes the JPEG image and this door must not call that normal form
-    corrupted merely because it carries bytes after it.
-
-    `expected_components` is an optional container-level consistency check for a
-    caller that already knows how many components the JPEG payload must declare.
-    The current whole-page PDF renderer never extracts embedded JPEG streams; any
-    future caller that does use this argument must name its own container contract.
+    `expected_components` lets a caller that already knows the container's own
+    component count cross-check it; the current PDF renderer never extracts
+    embedded JPEG streams, so no caller passes it today.
     """
     if not data.startswith(JPEG_SIGNATURE):
         raise corrupt("JPEG: missing SOI")
@@ -719,18 +681,13 @@ def _validate_jpeg_scan(
 ) -> None:
     """Reconcile one scan header against the tables defined before it.
 
-    Which entropy tables a scan needs depends on what kind of scan it is, and
-    getting that wrong in either direction is a real cost: demanding both DC and AC
-    tables of a progressive scan would refuse ordinary progressive JPEGs, and
-    demanding neither is the hole this closes. In a sequential frame every scanned
-    component uses both. In a progressive frame a first DC scan uses its DC table,
-    a DC *refinement* scan (`Ah > 0`) is coded as raw bits and uses no table at all,
-    and an AC scan uses only its AC table. A **lossless** frame codes DC only and
-    legally defines no AC table — demanding one refused a conforming file, which
-    this validator caught itself doing before it shipped.
-
-    A quantization table is a different matter: every frame component names one, in
-    every frame type, so that check is unconditional.
+    Which entropy tables a scan needs depends on its kind, so this cannot demand one
+    fixed shape: a sequential scan uses both DC and AC; a progressive first DC scan
+    uses its DC table, a DC refinement scan (`Ah > 0`) is coded as raw bits and uses
+    none, and an AC scan uses only its AC table; a lossless frame codes DC only and
+    legally defines no AC table at all. A quantization table is named by every
+    frame component in every non-lossless frame; a lossless frame does not
+    quantize, so that check is skipped for it too.
     """
     scan_components = payload[0] if payload else 0
     if (
@@ -748,11 +705,8 @@ def _validate_jpeg_scan(
         selectors = payload[2 + 2 * index]
         if component_id not in by_id:
             raise corrupt("JPEG: a scan names a component the frame does not declare")
-        # A lossless frame does not quantize, so it legally carries no DQT at all
-        # and its Tq field is required to be zero. Demanding one refused a conforming
-        # file — and the first form of this repair did exactly that while believing
-        # it had exempted lossless frames, because it exempted only the *Huffman*
-        # check. An adversarial read caught it; the test below is the other half.
+        # A lossless frame does not quantize: it legally carries no DQT at all, so
+        # this check must skip it too, not only the Huffman check below.
         quantization_id = by_id[component_id]
         if not lossless and quantization_id not in quantization_tables:
             raise corrupt(
@@ -861,25 +815,22 @@ _TIFF_LAYOUT_TAGS: Final = (
 def validate_tiff(data: bytes) -> ImageGeometry:
     """Prove one image directory whose stored samples reconcile with its geometry.
 
-    **What is proven, exactly.** Classic (32-bit offset) little- or big-endian TIFF;
-    one image directory, every entry's value inside the file; the baseline tags a
-    reader needs to know what the samples *are* — `PhotometricInterpretation`,
-    `Compression`, `BitsPerSample`, `SamplesPerPixel`; and the strip or tile
-    inventory reconciled against the declared geometry, so the number of segments is
-    the number the image's own rows and tiles require. For an **uncompressed** image
-    the byte counts are checked exactly, row by row: a 6x5 8-bit image must carry 30
-    bytes and not one. Before that check, a 63-byte file could declare a 1000x1000
-    image behind a single stored byte and be admitted as genuine.
+    Proven: classic (32-bit offset) little- or big-endian TIFF; one image directory
+    with every entry the validator interprets holding a value inside the file (an
+    entry of unrecognised type it never reads is skipped uninspected); the baseline
+    tags a reader needs to know what the samples are (PhotometricInterpretation,
+    Compression, BitsPerSample, SamplesPerPixel); and the strip or tile inventory
+    reconciled against the declared geometry, so the segment count is what the
+    image's own rows and tiles require. For an uncompressed image each segment must
+    hold at least its required row bytes.
 
-    **What is not proven.** For a *compressed* image the stored byte counts cannot be
-    reconciled without decompressing, which is pixel reconstruction — so the segment
-    count is checked against the geometry and the byte counts are not. That is a
-    named, documented limit, not a shortcut, and it is why this module says a file
-    that passes here is provably the format it claims rather than provably intact.
+    Not proven: a compressed image's stored byte counts cannot be reconciled without
+    decompressing, which is pixel reconstruction, so only its segment count is
+    checked against the geometry.
 
-    A later image directory is normal multi-page TIFF, not a refusal. The door asks
-    Pillow for the bounded page count and renders each directory separately; this
-    first-directory walker remains a structural check of the source's opening page.
+    A later image directory is normal multi-page TIFF, not a refusal: the door asks
+    Pillow for the bounded page count and renders each directory separately, and
+    this walker only checks the opening page's structure.
     """
     if len(data) < 8 or data[:2] not in (b"II", b"MM"):
         raise corrupt("TIFF: missing byte-order header")
@@ -913,12 +864,10 @@ def validate_tiff(data: bytes) -> ImageGeometry:
         )
         size = _TIFF_TYPE_SIZES.get(field_type)
         if size is None:
-            # TIFF 6.0 tells a reader to skip a field whose type it does not
-            # recognise rather than reject the file. Refusing the whole image over an
-            # unknown type in a tag this validator never reads would refuse a
-            # conforming file for a field nobody here touches — a page nobody reads,
-            # goal 2. A tag we *do* interpret is a different matter: an unreadable
-            # value there is a check that cannot run, which is a failure.
+            # TIFF 6.0 has a reader skip a field of unrecognised type rather than
+            # reject the file; that only holds for a tag this validator never reads.
+            # A tag it does interpret with an unreadable value is a check that
+            # cannot run, so that case is refused instead.
             if interpreted:
                 raise corrupt(
                     f"TIFF: tag {tag} carries unknown field type {field_type}, and "
@@ -976,11 +925,11 @@ def _tiff_single(layout: dict[int, list[int]], tag: int, default: int | None, na
 
 
 def _tiff_dimension(tag: int, value: bytes, field_type: int, count: int, endian: str) -> int:
-    """A dimension is one SHORT or one LONG. A `count` of anything else leaves
-    `value` the wrong length for the unpack, and a bare `struct.error` is not a
-    named refusal — this is the fail-closed check that keeps a malformed count a
-    refusal the door can name rather than a crash that aborts every other source
-    still waiting to be decided."""
+    """A dimension is one SHORT or one LONG.
+
+    Any other `count` leaves `value` the wrong length for the unpack, which the
+    check below turns into a named refusal instead of a bare `struct.error`.
+    """
     if count != 1 or field_type not in (3, 4):
         raise corrupt(f"TIFF: tag {tag} is not one SHORT or LONG")
     return struct.unpack(endian + ("H" if field_type == 3 else "I"), value)[0]
@@ -1010,10 +959,9 @@ def _validate_tiff_sample_storage(
 ) -> None:
     """Reconcile the stored strip or tile inventory against the declared image.
 
-    The inventory being *in the file* was the whole of the old check, which let a
-    63-byte file declare a million pixels behind one stored byte. Here the number of
-    segments must be the number the geometry requires, and for an uncompressed image
-    each segment's byte count must be exactly what its rows occupy.
+    The number of segments must be the number the geometry requires, and for an
+    uncompressed image each segment's byte count must be exactly what its rows
+    occupy — an inventory merely present in the file is not enough on its own.
     """
     samples = _tiff_single(layout, _TIFF_TAG_SAMPLES_PER_PIXEL, 1, "SamplesPerPixel")
     if not 1 <= samples <= 8:
@@ -1105,11 +1053,10 @@ VALIDATORS: Final = {
     "tiff": validate_tiff,
 }
 
-# Derived from what this module can actually do, never written out a second
-# time: from the table `sniff()` walks, plus HEIC, whose detection is a brand
-# check rather than a prefix. `admission.py` re-exports it to check the policy's
-# coverage, and a hand-kept copy there would only ever agree with another
-# hand-kept copy.
+# Derived from what this module can actually do, never hand-copied: the table
+# sniff() walks (WebP included, by its RIFF/WEBP prefix), plus HEIC/HEIF/AVIF,
+# whose detection is a brand check rather than a signature prefix. admission.py
+# re-exports it for its policy-coverage check.
 SNIFFABLE_FORMATS: Final = frozenset(
     {name for name, _ in _SIGNATURES} | {"heic", "heif", "avif", "webp"}
 )
@@ -1136,26 +1083,13 @@ class DecodedRaster(NamedTuple):
 def _structural_corruption_check(format_name: str | None, data: bytes) -> None:
     """Run a structural walker as a corruption detector, and only as that.
 
-    Spec 03 keeps structural validation and says exactly what it may no longer do:
-    "Walking the container to prove the bytes are a genuine, uncorrupted instance of
-    the format they claim ... is exactly the corruption detection ruling 2 asks for,
-    and it stays. **What it may no longer do is decide a real file is inadmissible
-    because nothing here reconstructs its pixels.**"
-
-    Those two halves are distinguishable in the walkers' own vocabulary, and neither
-    lane split them. A `corrupt ...` refusal says the bytes are not a genuine
-    instance of what they claim — that is damage, and it is refused here before a
-    permissive decoder can render half of it as a page. An `unsupported ...` refusal
-    says only that *this narrow walker* does not interpret that layout: BigTIFF,
-    planar storage, a lossless JPEG process. That is a statement about this module,
-    not about the file, so the real decoder gets to answer instead. If the decoder
-    cannot read it either, its own refusal is what surfaces — an
-    `unsupported-variant` alarm naming a reader this project owes.
-
-    Lane A dropped TIFF's structural walk entirely for fear it would refuse valid
-    compressed and multi-page scans; Lane B kept the walk and let it decide
-    admission. Splitting the verdict keeps the corruption detection over every
-    format without either cost.
+    A walker's own vocabulary splits the two halves of that job. A `corrupt`
+    refusal says the bytes are not a genuine instance of what they claim — that is
+    damage, refused here before a permissive decoder can render half of it as a
+    page. An `unsupported` refusal says only that this narrow walker does not
+    interpret that layout (BigTIFF, planar storage, a lossless JPEG process): a
+    statement about this module, not the file, so the real decoder answers instead
+    and surfaces its own refusal if it cannot read the file either.
     """
     if format_name not in VALIDATORS:
         return
@@ -1170,28 +1104,17 @@ def _structural_corruption_check(format_name: str | None, data: bytes) -> None:
 def _decoder_only(detail: str, *, format_name: str | None = None):
     """Guard a region that contains nothing but the installed decoder's own work.
 
-    A previous round widened this module's catch set to whatever classes Pillow had
-    been *seen* to raise, and a later one narrowed it back by removing
-    `KeyError`, `IndexError` and `AttributeError` — on the reasoning that the
-    protected block also contained this project's routing and geometry code, so
-    catching those would mislabel a programming defect as image corruption. The
-    reasoning was right and its premise was wrong: Pillow raises `IndexError` on
-    ordinary malformed input. A two-frame GIF truncated inside its second image
-    descriptor makes `n_frames` fail at `GifImagePlugin._seek` with a bare
-    `IndexError`, which escaped `decode_raster` entirely and took the whole
-    submission's expansion down with it — the exact whole-Door crash the
-    `TypeError` arm exists to prevent, reopened one byte along.
-
-    An exception class cannot carry the distinction that argument needs, because
-    the question is *whose code raised it*. A region can. Everything inside this
-    guard is Pillow's, so any exception from it is about the bytes; this project's
-    own checks stay outside, where a defect in them still surfaces as itself.
+    Pillow raises `IndexError`, `KeyError` and `AttributeError`, not only the more
+    obvious exceptions, on ordinary malformed input (e.g. a truncated GIF's second
+    image descriptor fails `n_frames` at `GifImagePlugin._seek` with a bare
+    `IndexError`). An exception class alone cannot say whether that came from
+    Pillow or from this project's own routing and geometry code, so this guard
+    catches by region instead: everything inside it is Pillow's, and any exception
+    from it is about the bytes; this project's own checks stay outside the guard.
 
     `FormatRefusal` subclasses `ValueError`, so it is re-raised explicitly ahead of
-    the broad clause. Without that, a `corrupt` verdict raised by this module came
-    back out relabelled `unsupported`, with the real reason buried in a
-    parenthesis — two different sentences to tell the operator, collapsed
-    into the wrong one.
+    the broad clause — otherwise a `corrupt` verdict this module raised would come
+    back out relabelled `unsupported`.
     """
     try:
         yield
@@ -1226,19 +1149,15 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         _validate_iso_bmff_image_header(data, detected_by_signature)
     classic_tiff_pages: int | None = None
     if detected_by_signature == "tiff":
-        # The structural walker proves that the document's declared chain is
-        # finite and inside the file. Its page count is the fan-out denominator;
-        # there is deliberately no policy cap, because microfilm can exceed 5,000
-        # pages and the submitted document — not a project preference — says how
-        # many pages arrived.
+        # The structural walker proves the document's declared page chain is
+        # finite and inside the file; there is deliberately no policy cap on the
+        # count, since microfilm can exceed 5,000 pages and the document itself
+        # says how many arrived.
         classic_tiff_pages = _validate_classic_tiff_page_chain(data)
     _structural_corruption_check(detected_by_signature, data)
     try:
-        # Pillow warns for a decompression bomb while opening some formats.  A
-        # warning emitted to a terminal is neither a sealed outcome nor a useful
-        # failure mode, so turn it into the same named decoder alarm as its error
-        # form.  Our own geometry check below is the project limit; Pillow's is a
-        # conservative first line before it allocates decoder state.
+        # Pillow warns rather than raises for a decompression bomb on some formats;
+        # turn that warning into the same named decoder alarm as its error form.
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(data)) as image:
@@ -1246,12 +1165,9 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                     "read what these bytes contain", format_name=detected_by_signature
                 ):
                     reported_format = image.format
-                    # Pillow's ``n_frames`` walk can touch a later bad IFD before
-                    # we have asked it for page zero.  A structurally complete
-                    # classic TIFF chain gives us the same finite count without
-                    # interpreting every page's tags, so page zero stays eligible
-                    # for its own decode and a bad later page gets its own ordinal
-                    # and named outcome.
+                    # Pillow's n_frames walk can touch a later bad IFD before page
+                    # zero is even requested; a structurally complete classic-TIFF
+                    # chain gives the same finite count without that risk.
                     frames = (
                         classic_tiff_pages
                         if classic_tiff_pages is not None
@@ -1261,20 +1177,17 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                 if not isinstance(frames, int) or frames < 1:
                     raise corrupt("image: decoder returned no frames")
                 # Whatever the decoder reports still has to fit in the bytes that
-                # arrived. APNG reads its frame count straight out of the acTL chunk,
-                # so it does not scale with file size at all: a measured 125-byte APNG
-                # declared a million frames, and an animated GIF reached the same fan-out
-                # at 15 bytes a frame. The classic-TIFF walk is bounded by its own chain
-                # and has already returned above; this is the bound for every container
-                # that never reaches that walk.
+                # arrived: APNG's frame count comes straight from the acTL chunk and
+                # does not scale with file size, and GIF can fan out almost as
+                # cheaply. The classic-TIFF chain is already bounded above; this
+                # bounds every other container.
                 _refuse_implausible_frame_count(detected, frames, len(data))
                 if not isinstance(page_index, int) or isinstance(page_index, bool):
                     raise corrupt("image: page index is not an integer")
                 if not 0 <= page_index < frames:
                     raise corrupt(f"{detected}: page index {page_index} is outside 0..{frames - 1}")
-                # Seeking chooses the frame but does not ask Pillow to decode its
-                # pixels.  Bound that frame's declared dimensions before `load()`
-                # can inflate attacker-controlled data into memory.
+                # seek() chooses the frame without decoding it; bound its declared
+                # dimensions before load() can inflate attacker-controlled data.
                 with _decoder_only(f"reach page {page_index}", format_name=detected_by_signature):
                     image.seek(page_index)
                     declared = (image.width, image.height)
@@ -1283,11 +1196,9 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                     image.load()
                 return DecodedRaster(detected, geometry.width, geometry.height, frames)
     except FormatRefusal:
-        # This module's own verdicts, raised by the project-owned checks between the
-        # guarded regions. `FormatRefusal` subclasses `ValueError`, so without this
-        # arm the clause below relabelled every one of them `unsupported` and buried
-        # the real reason in a parenthesis — a `corrupt` page, which says the bytes
-        # are damaged, arriving as a statement about a decoder this build lacks.
+        # This module's own verdicts, from the project-owned checks between the
+        # guarded regions. FormatRefusal subclasses ValueError, so without this arm
+        # the clause below would relabel every one of them "unsupported".
         raise
     except UnidentifiedImageError as error:
         if detected_by_signature is not None:
@@ -1302,14 +1213,11 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
             f"image variant: decoder rejected unsafe pixel dimensions ({error})"
         ) from error
     except (OSError, SyntaxError, ValueError) as error:
-        # `Image.open` itself is the one decoder call outside a `_decoder_only`
-        # region — it has to be, because its two named arms above want their own
-        # wording and its return value owns the context manager that closes the
-        # file. Its plugins convert most of their own faults to
-        # UnidentifiedImageError; these three are what an eager header read can
-        # still raise before a plugin has been chosen. Everything after it is
-        # guarded by region, so no class list here has to guess at Pillow's
-        # internals again.
+        # Image.open is the one decoder call outside a _decoder_only region: its
+        # own two named arms above want their own wording, and its return value
+        # owns the context manager that closes the file. These three classes are
+        # what an eager header read can still raise before a plugin is chosen;
+        # everything after open() is guarded by region instead.
         if detected_by_signature is not None and has_reader(detected_by_signature):
             raise corrupt(
                 f"{detected_by_signature}: the installed decoder could not open these bytes ({error})"
@@ -1352,12 +1260,10 @@ def has_reader(format_name: str) -> bool:
 def missing_reader_detail(format_name: str) -> str:
     """Why a sniffed format did not decode, worded as whose defect it is.
 
-    Either "the image got corrupted" or "the pipeline is broken" -- those are
-    different sentences to tell the operator, and which one is true
-    is knowable: if nothing installed here reads that format at all, this project
-    owes them a reader and says so; if a reader exists and still could not open the
-    file, that is about these bytes. Lane B worded the first case correctly and had
-    no way to reach the second; Lane A could reach both and worded them alike.
+    "The image got corrupted" and "the pipeline is broken" are different sentences
+    to tell the operator: if nothing installed here reads the format at all, this
+    project owes them a reader and says so; if a reader exists and still could not
+    open the file, that is about these bytes.
     """
     if not has_reader(format_name):
         return (
@@ -1368,7 +1274,12 @@ def missing_reader_detail(format_name: str) -> str:
 
 
 def count_raster_pages(data: bytes) -> int:
-    """Read a decoder-backed page count without creating output pixels."""
+    """A page count without creating output pixels.
+
+    For classic TIFF this is the structural directory-chain count, not Pillow's,
+    and does not confirm every directory decodes; every other format is
+    decoder-backed.
+    """
     if sniff(data) == "tiff":
         classic_pages = _validate_classic_tiff_page_chain(data)
         if classic_pages is not None:
@@ -1379,9 +1290,8 @@ def count_raster_pages(data: bytes) -> int:
 def raster_renderer_recipe() -> dict[str, Any]:
     """The Pillow facts that affect a door-produced page render.
 
-    This is also bound before a real run is created.  A Pillow upgrade must make a
-    resumed render a new run rather than discover different immutable pixels only
-    after it has published a blob.
+    Bound before a real run is created, so a Pillow upgrade starts a new run rather
+    than discovering different immutable pixels after publishing a blob.
     """
     return {
         **imaging_library_versions(),
@@ -1392,13 +1302,13 @@ def raster_renderer_recipe() -> dict[str, Any]:
     }
 
 
+# Pillow's PNG encoder cannot represent I (unbounded signed) or F (float); the
+# 16-bit modes just exceed PNG's 8-bit RGB. TIFF holds all four without clipping.
+# Pillow normalises a little-endian 16-bit TIFF to "I;16" when re-opened.
 _HIGH_PRECISION_TIFF_MODES: Final = {
-    # Pillow's PNG encoder cannot represent the unbounded signed integer or float
-    # modes.  TIFF can, so use it rather than clipping real samples to 8-bit RGB.
     "I": "I",
     "F": "F",
     "I;16B": "I;16B",
-    # Pillow normalises a little-endian 16-bit TIFF to ``I;16`` when re-opened.
     "I;16L": "I;16",
 }
 _PNG_IDENTITY_MODES: Final = frozenset({"1", "L", "LA", "RGB", "RGBA", "I;16"})
@@ -1421,13 +1331,10 @@ def render_raster_page(
                 data, page_index=page_index, part=split_part
             )
         except ValueError as error:
+            # Worded apart from "the installed decoder could not": this route also
+            # carries policy refusals (an unhonourable color_mode, geometry outside
+            # the master), which are about the manifest, not the decoder.
             raise unsupported(
-                # Not "the installed decoder could not", which the sibling routes
-                # above say truthfully: this one also carries the refusals that are
-                # policy rather than decoding — a colour_mode 'keep' the encoder
-                # cannot honour, and geometry outside the master — and blaming the
-                # decoder sends an operator to reinstall a library over a manifest
-                # they should be correcting instead.
                 f"{decoded.format}: the triage page geometry could not be applied ({error})"
             ) from error
         # Provenance names the decoded master mode and the encoded PNG mode; they
@@ -1458,13 +1365,11 @@ def render_raster_page(
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(data)) as image:
                 # Every call here is Pillow's, so the whole body is one guarded
-                # region: this stage owns the mode policy below, not the decoding,
-                # and a decoder fault on a frame `decode_raster` already accepted
-                # is still a statement about the bytes rather than about us.
+                # region; this stage owns the mode policy below, not the decoding.
                 with _decoder_only(f"rasterise page {page_index}"):
                     image.seek(page_index)
-                    # `decode_raster()` above already made this exact source/frame
-                    # pass the project geometry bound before loading it.
+                    # decode_raster() above already passed this exact frame's
+                    # geometry against the project bound before loading it.
                     image.load()
                     source_mode = image.mode
                     source_bands = list(image.getbands())
@@ -1477,13 +1382,10 @@ def render_raster_page(
                         mode_transform = "identity"
                         output_codec = "png"
                     else:
-                        # Premultiplied alpha is its own case. Pillow spells that
-                        # band in lower case, so `"A" in source_bands` read mode
-                        # `La` as having none and asked for RGB — a conversion
-                        # Pillow refuses outright ("conversion from La to L not
-                        # supported"), turning a page it could have kept into a
-                        # refusal. `La` converts only to `LA` and `RGBa` only to
-                        # `RGBA`, so those go straight to their counterpart.
+                        # Premultiplied alpha is its own case: Pillow spells that
+                        # band lowercase, so a plain "A" in source_bands check misses
+                        # it and asks for RGB, a conversion Pillow refuses outright.
+                        # "La" converts only to "LA" and "RGBa" only to "RGBA".
                         premultiplied = {"La": "LA", "RGBa": "RGBA"}.get(source_mode)
                         if premultiplied is not None:
                             target_mode = premultiplied
@@ -1548,13 +1450,11 @@ def _refuse_implausible_frame_count(detected: str, frames: int, container_size: 
 def _validate_classic_tiff_page_chain(data: bytes) -> int | None:
     """Return a finite classic-TIFF page count without decoding later pages.
 
-    Pillow owns actual pixel decoding and accepts several valid TIFF layouts this
-    project's narrow first-page structural walker deliberately does not interpret.
-    The link chain is different: every classic directory gives a finite next-IFD
-    offset, so a loop is objectively malformed and could otherwise leave a decoder
-    reporting an arbitrary first-frame count.  Check only that universal shape;
-    BigTIFF is left entirely to the installed decoder rather than rejected for
-    being a wider offset layout.
+    Pillow accepts several valid TIFF layouts this project's narrow first-page
+    walker deliberately does not interpret, but every classic directory's next-IFD
+    offset is finite, so a cycle is objectively malformed and could otherwise leave
+    a decoder reporting an arbitrary frame count. Only that universal shape is
+    checked; BigTIFF is left entirely to the installed decoder.
     """
     if len(data) < 8 or data[:2] not in (b"II", b"MM"):
         return None
@@ -1564,13 +1464,10 @@ def _validate_classic_tiff_page_chain(data: bytes) -> int | None:
         return None
     (offset,) = struct.unpack_from(endian + "I", data, 4)
     if offset == 0:
-        # `validate_tiff` refuses this identical shape as CORRUPT (no image
-        # directory at all). Returning 0 here instead let it read as "an empty
-        # container", not "damaged" -- `count_raster_pages` took that 0 as a page
-        # count rather than an alarm, and the source was fanned out to zero
-        # ordinals: admitted nowhere, refused nowhere, absent from the run's own
-        # source_manifest. Raising here is what makes the two TIFF entry points
-        # agree on the one fact that matters: a directory-less header is damage.
+        # Must raise, not return 0: validate_tiff refuses this identical shape as
+        # CORRUPT, and count_raster_pages would otherwise take a 0 as a real page
+        # count and fan the source out to zero ordinals — admitted nowhere, refused
+        # nowhere. Both TIFF entry points must agree that this header is damage.
         raise corrupt("TIFF: the header names no image directory")
     seen: set[int] = set()
     pages = 0
@@ -1585,9 +1482,8 @@ def _validate_classic_tiff_page_chain(data: bytes) -> int | None:
         if next_offset_at + 4 > len(data):
             raise corrupt("TIFF: image-directory entries run past the file")
         pages += 1
-        # Checked inside the walk rather than after it, so a hostile chain is
-        # refused at the byte that makes it impossible instead of after eleven
-        # million iterations. A real document trips this on no page.
+        # Checked inside the walk, not after it, so a hostile chain is refused at
+        # the byte that makes it impossible rather than after a huge iteration count.
         if pages * MIN_BYTES_PER_DECLARED_TIFF_PAGE > len(data):
             raise corrupt(
                 f"TIFF: the directory chain declares more than {pages - 1} pages in "

@@ -1,4 +1,4 @@
-"""Checksummed, resumable transfer from Spec 03's sealed submission manifest.
+"""Checksummed, resumable transfer from the sealed submission manifest.
 
 The transport is deliberately provider-neutral.  A provider object-store adapter
 can implement ``TransferTarget`` without leaking its API into bootstrap logic.
@@ -102,9 +102,9 @@ class ChecksummedTransfer:
     def resume(self) -> TransferReport:
         """Verify source, target, and journal row by row; retry only unfinished rows.
 
-        A submission manifest is Spec 03's output, not this pod's: a freshly
-        launched pod that has processed nothing yet has none to transfer.  That
-        is a vacuous success, not a failure — only a manifest that exists and
+        A submission manifest is produced upstream, not by this pod: a freshly
+        launched pod that has processed nothing yet has none to transfer. That
+        is a vacuous success, not a failure -- only a manifest that exists and
         fails to parse or verify is a named `TransferFailure`.
         """
 
@@ -212,11 +212,11 @@ def normalize_transfer_prefix(value: str) -> str:
 
 
 def _under(root: Path, relative: object) -> Path:
-    # Spec 03's manifest check is non-empty, not absolute, no dot-dot, and it
-    # stops there: an embedded NUL reaches os.lstat as a bare ValueError rather
-    # than a named refusal, and "./x" and "a//b" resolve to a real file whose
-    # object key keeps the un-normalized spelling. This is the last look before
-    # the open, so every component is checked.
+    # The manifest's own check stops at non-empty/not-absolute/no-dot-dot: an
+    # embedded NUL reaches os.lstat as a bare ValueError rather than a named
+    # refusal, and "./x" and "a//b" resolve to a real file whose object key
+    # keeps the un-normalized spelling. This is the last look before the
+    # open, so every component is checked.
     if (
         not isinstance(relative, str)
         or not relative

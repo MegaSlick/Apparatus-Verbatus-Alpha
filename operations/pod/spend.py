@@ -192,8 +192,7 @@ class SpendPolicy:
         # this bound honest if that schedule ever changes).  This bounds only
         # what it names: a single close on the controller that reads this
         # policy.  The pod-side timer builds its shutdown from code defaults,
-        # not this policy, and may re-attempt a bounded number of closes --
-        # both facts are recorded in the audit note rather than claimed here.
+        # not this policy, and may re-attempt a bounded number of closes.
         # Ceil, not int: a fractional retry interval must round the bound up,
         # never silently shave it.
         billing_tail = math.ceil(
@@ -220,11 +219,11 @@ class SpendRefusalCause(StrEnum):
     """Why a spend assessment refused, recorded where the reason is raised.
 
     ``launch._spend_refusal_state`` turns this into the ``LaunchState`` an
-    operator reads, and it used to derive it by matching the text of
-    ``reasons``. Reflowing one of those strings -- fixing a typo, rewrapping a
-    line -- silently reclassified a money-safety refusal as a price-ceiling one,
-    and no test could catch it because the tests assert on the same prose. The
-    wording is for people; this is what the code decides on.
+    operator reads. Deriving that by matching the text of ``reasons`` instead
+    would let reflowing one of those strings -- fixing a typo, rewrapping a
+    line -- silently reclassify a money-safety refusal as a price-ceiling
+    one, undetectably, since the tests assert on the same prose. The wording
+    is for people; this is what the code decides on.
     """
 
     HARD_FLOOR = "hard-floor"

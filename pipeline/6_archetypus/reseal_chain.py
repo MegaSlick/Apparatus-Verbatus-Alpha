@@ -1,11 +1,8 @@
-"""The one reseal chain the stage's test forgeries go through.
-
-Three test files used to rebuild the same sequence independently: patch the
-review's inputs, patch `payload["perlectio_ref"]`, recompute `self_hash`, write
-canonical bytes. When the review or Perlectio envelope gains a bound field, one
-shared chain moves every forgery with it — three private copies would keep
-sealing the old shape, and their refusal-message tests would keep passing
-against a record no stage would ever write.
+"""The one reseal chain the stage's test forgeries go through: patch the
+review's inputs, patch `payload["perlectio_ref"]`, recompute `self_hash`,
+write canonical bytes. One shared chain keeps every forgery moving with the
+review/Perlectio envelope shape, rather than drifting private copies out of
+sync with it.
 
 Test support, not stage code: `run.py` never imports this. Test modules in this
 directory import it by name (pytest puts the directory on `sys.path` for them).
@@ -34,10 +31,8 @@ def repoint_review(tree, review: dict, forged_ref: dict) -> None:
     review["payload"]["perlectio_ref"] = forged_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
-    # Callers often rewrote the referenced Perlectio immediately before
-    # repointing the review.  Rebinding an unchanged Perlector seal is a
-    # byte-identical no-op, so doing it here also keeps the simpler reference
-    # substitutions above deliberately coherent.
+    # Rebinding an unchanged Perlector seal is a byte-identical no-op, so this
+    # stays safe even when the caller did not just rewrite the Perlectio.
     _rebind_stage_seal(tree, PERLECTOR)
     _rebind_stage_seal(tree, RECENSOR)
 
@@ -52,9 +47,8 @@ def reseal_reviewed_reading(tree, review: dict, mutate) -> str:
     reading_path = tree.resolve(old_ref["relative_path"])
     reading = json.loads(reading_path.read_text(encoding="utf-8"))
     mutate(reading["payload"])
-    # Reseal the nested payload hash too, when the producer carries one, so a
-    # later stage-side check of it cannot make every forgery here fail at the
-    # hash instead of at the refusal the calling test names.
+    # Reseal the nested payload hash too, when present, or a stage-side check
+    # of it would fail every forgery here before the refusal under test.
     if "self_hash" in reading["payload"]:
         reading["payload"]["self_hash"] = self_hash(reading["payload"])
     reading["self_hash"] = self_hash(reading)

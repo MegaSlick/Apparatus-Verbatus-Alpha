@@ -1,58 +1,32 @@
 """Reading a submitted folder without following anything out of it.
 
-One reader, used by both: `submit.py` inventories a folder to seal a manifest, and
-`pipeline/1_exemplar/door.py` reads the same folder to admit its bytes. A second
-walker would be a second set of rules about what a submission *is*, and the drift
-between two such sets is the defect this whole spec exists to kill.
+One reader, shared by `submit.py` (sealing a manifest) and
+`pipeline/1_exemplar/door.py` (admitting bytes), so there is one set of rules
+for what a submission is rather than two that can drift.
 
-**Every open is anchored to a directory descriptor and refuses to follow a link.**
-A submitted folder is untrusted local material: a symlink inside it points at
-something the submitter did not submit, and reading that thing would put bytes into
-a sealed corpus that nobody chose to give us. `O_NOFOLLOW | O_DIRECTORY`, `dir_fd`
-relative opens, and an `lstat` before every decision are what make "this file is
-under this folder" true at the moment of reading rather than at the moment of
-listing.
+A submitted folder is untrusted local material, so every open is anchored to
+a directory descriptor and refuses to follow a link: `O_NOFOLLOW |
+O_DIRECTORY`, `dir_fd`-relative opens, and an `lstat` before every decision
+make "this file is under this folder" true at the moment of reading, not of
+listing. `read_submission` proves this once per file, at enumeration time,
+then closes its descriptors; `open_submission_source` repeats the same
+anchored walk to hand back a live descriptor a later reader (digest, format
+sniff, PDFium) can share, and `assert_unchanged` proves the held bytes still
+match `expected_sha256`, permitting a verified name replacement but not a
+rewrite.
 
-**Proving it once is not enough, because the walk ends.** `read_submission`
-establishes that no component of a submitted path was a link *at the moment it
-enumerated the folder*, then closes every descriptor. The bytes that become the
-sealed Exemplar are read later, by the door, and a plain second open by path would
-follow a link planted in between — undoing the proof at exactly the point it
-matters. `open_submission_source` is the same anchored walk offered as a reopen,
-and it hands back the live descriptor rather than a path, so the digest, the format
-sniff and PDFium's own reads are all of one file. `assert_unchanged` closes the
-other half: anchoring proves *which* file, and the before/after `fstat` proves the
-file did not move under the reader while it was being read.
+A source that cannot be read is a failure of the whole inventory, not a
+silently shrunk one: a per-file refusal belongs to the door, which needs
+bytes to refuse with.
 
-**A source that cannot be read is a failure of the whole inventory, not a gap in
-it.** A per-file refusal is the *door's* job and needs bytes to refuse; an
-inventory that quietly omitted a file it could not open would shrink the
-denominator the Armarium's census later reconciles against, which is exactly the
-silent loss principle 2 forbids.
+Refusal messages never interpolate a submitted path, since `submit.py`'s CLI
+prints them to stderr and the data-handling policy's logging rule excludes
+that value; the name still rides on the exception as `entry`, for
+`submit.py`'s own private refusal report.
 
-**A refusal here says what happened and not what it was called.** The messages used
-to interpolate the offending entry's submitted relative path, and `submit.py`'s CLI
-prints every one of them to stderr — so a rejected submission emitted a declared
-path into the channel a runner captures, which the data-handling policy's logging
-rule excludes. The name still exists: it rides on the exception as `entry`, for the
-submit door's approved private refusal report.
-
-**The walk is bounded in four directions, not one.** `max_bytes` bounded a single
-file's retained bytes and nothing else: a submission's file count, its aggregate
-retained bytes, its directory depth and its entries per directory were all
-attacker-shaped. Depth was the sharpest — 2,000 nested directories escaped as a
-`RecursionError` and CPython's exit 1 rather than a named refusal, past the
-`ContractError` handler entirely.
-
-**A fifth direction: aggregate bytes actually read, not only retained (F026).**
-`_Budget.admit`'s own `size` parameter — the true bytes `_read_once` streamed to
-the digest, whatever `max_bytes` said — went unread by its body, so the aggregate
-check only ever summed `retained`. The production submitter and Door both ask for
-`max_bytes=0`, so `retained` is always zero for them and the aggregate check
-never tripped: a submission near the file-count and per-file-size limits could
-stream terabytes through the hasher with nothing to stop it before the file-count
-bound finally did. `MAX_SUBMITTED_READ_BYTES` now bounds `size` the same way
-`MAX_SUBMITTED_BYTES` already bounded `retained`.
+The walk is bounded in four independent directions -- file count, aggregate
+retained bytes, aggregate bytes actually read, and directory depth/entries --
+because a single per-file `max_bytes` bounds one source, not a corpus.
 """
 
 import hashlib
@@ -64,25 +38,18 @@ from typing import BinaryIO, Final, Iterator, NamedTuple
 
 from common.contracts.errors import ContractError
 
-# Read in chunks so an oversized source is hashed without ever being held whole.
-# Its refusal still needs an exact digest — the run's source manifest names every
-# submitted file, refused ones included — so it is streamed to the hash rather than
-# read wholesale only to discover it was too big.
+# Hash sources in chunks. A source beyond the retention limit contributes no
+# retained data, while an aggregate read-limit breach aborts inventory before
+# a manifest is built.
 _CHUNK: Final = 1024 * 1024
 
-# What a submission may be, in aggregate. One scanned register volume is hundreds of
-# pages in a shallow tree; these are far above anything real and far below what
-# exhausts a machine. A bound nobody can reach is still the difference between a
-# named refusal and an out-of-memory kill nobody can read afterwards.
-#
-# `MAX_SUBMITTED_BYTES` counts *retained* bytes, always zero for the production
-# submitter and Door (both ask for `max_bytes=0`). `MAX_SUBMITTED_READ_BYTES`
-# (F026) is the aggregate bound that actually binds them: each source is still
-# read whole to its digest whatever `max_bytes` says, so 100,000 files each just
-# under the door's own 64 MiB per-file admission bound could otherwise stream
-# terabytes through the hasher with nothing to stop it -- the per-file limit
-# bounds one source, not a corpus, same as the retained-bytes bound already says
-# of itself.
+# Bounds far above any real submission and far below what exhausts a machine:
+# a bound nobody can reach is still the difference between a named refusal and
+# an unreadable out-of-memory kill. `MAX_SUBMITTED_BYTES` counts only
+# *retained* bytes (always zero for the production submitter and door, which
+# ask for `max_bytes=0`); `MAX_SUBMITTED_READ_BYTES` rejects a submission after
+# the aggregate bytes streamed through the hasher exceed the limit. Each source
+# is fully read before that check.
 MAX_SUBMITTED_FILES: Final = 100_000
 MAX_SUBMITTED_BYTES: Final = 8 * 1024 * 1024 * 1024
 MAX_SUBMITTED_READ_BYTES: Final = 8 * 1024 * 1024 * 1024
@@ -176,19 +143,11 @@ class OpenedSubmissionSource:
                 "bind evidence to moving bytes",
                 entry=self._entry,
             )
-        # A rewrite of the held inode can wear this exact shape.  Restoring the
-        # original size with the same byte count, restoring mtime with `utime`, and
-        # unlinking one of the inode's names leaves device, inode, mode, size, mtime
-        # and the link-count delta all matching a benign replacement — and ctime,
-        # the only remaining difference, is the one field a genuine name
-        # replacement also moves.  Stat cannot separate the two, so content does:
-        # the held bytes are hashed against the digest this source was bound to.
-        # `os.pread` reads at absolute offsets and never moves the shared file
-        # position, so a decoder part-way through this stream is unaffected.
-        # With no digest there is nothing to prove the held bytes against, and an
-        # unprovable exemption is the hole itself.  Refuse: the cost is a named
-        # refusal on a rename nobody can corroborate, against sealing bytes that
-        # may not be the ones already read.
+        # A crafted rewrite (restore size and mtime with `utime`, unlink one
+        # name) can wear this exact stat shape, since ctime moves the same way
+        # under a genuine rename. Stat cannot separate the two, so content
+        # does: the held bytes are hashed (via `os.pread`, which cannot move a
+        # decoder's shared file position) against the bound digest.
         if expected_sha256 is None:
             raise SubmissionInputError(
                 "a submitted source lost a name while it was being read, and no ledgered "
@@ -238,10 +197,10 @@ class RawPathReference(NamedTuple):
 class SubmissionInputError(ContractError):
     """A folder could not be inventoried without lying about what is in it.
 
-    `str(...)` never carries a submitted name or path, because `submit.py`'s CLI
-    prints it to stderr and the data-handling policy's logging rule excludes exactly
-    those values from operational output. `entry` holds the submitted relative path
-    when one is what went wrong, for a caller with an approved place to record it.
+    `str(...)` never carries a submitted name or path, since `submit.py`'s CLI
+    prints it to stderr and the logging rule excludes those values from
+    operational output. `entry` holds the relative path for a caller with an
+    approved place to record it.
     """
 
     def __init__(self, message: str, *, entry: str | RawPathReference | None = None):
@@ -360,13 +319,10 @@ def _open_submission_root(folder: Path) -> int:
 def _source_components(relative_path: str) -> tuple[str, ...]:
     """Accept only the canonical slash-relative names an inventory can emit.
 
-    No real directory listing can ever produce a NUL byte in a name -- the kernel
-    itself forbids it. A hand-built manifest is not bound by that, and `os.open`
-    raises a bare `ValueError` for one rather than `OSError`, which is not this
-    project's alarm vocabulary and is not caught anywhere above this call: it
-    would otherwise escape as a raw traceback and take the rest of the submission
-    down with it, the exact "one bad name breaks the whole folder" shape this
-    module's docstring already names as fixed for directory depth.
+    A hand-built manifest, unlike a real directory listing, is not bound by
+    the kernel's ban on NUL bytes in names, and `os.open` raises a bare
+    `ValueError` for one -- refused by name here rather than escaping as a
+    raw traceback.
     """
     if not isinstance(relative_path, str) or not relative_path:
         raise SubmissionInputError(
@@ -487,7 +443,7 @@ def _walk(
 ) -> list[SubmittedSource]:
     if depth > MAX_DIRECTORY_DEPTH:
         # Checked before descending, so a pathological tree is a named refusal
-        # rather than a RecursionError escaping past the ContractError handler.
+        # rather than a RecursionError.
         raise SubmissionInputError(
             f"the submission nests deeper than {MAX_DIRECTORY_DEPTH} directories; a tree "
             "this deep is refused by name rather than by running out of stack",
@@ -508,12 +464,9 @@ def _walk(
     for name in names:
         relative_path = f"{prefix}/{name}" if prefix else name
         try:
-            # `os.listdir` surrogate-escapes bytes that are not valid UTF-8, and a
-            # surrogate cannot be encoded again — so a submitted name in some other
-            # encoding reached `canonical_bytes` and escaped as a UnicodeEncodeError
-            # traceback past the ContractError handler, exit 1, with the path
-            # printed on the way out. Refused by name instead, and the name itself
-            # is not repeated into the message.
+            # `os.listdir` surrogate-escapes non-UTF-8 bytes, which cannot be
+            # encoded again; refused by name here instead of escaping as a
+            # traceback with the path printed on the way out.
             relative_path.encode("utf-8")
         except UnicodeEncodeError as error:
             raise SubmissionInputError(

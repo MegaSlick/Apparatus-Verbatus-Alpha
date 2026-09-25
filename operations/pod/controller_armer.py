@@ -34,9 +34,9 @@ detail, the refusal receipt and the drill's evidence file -- because the first
 authorized boot exists to return a number for each, and a single number
 covering both is a number about neither.
 
-The container wait never refuses on its own.  Its signal is optional and, by
-open item 04-6, documented rather than observed; "no start was reported" is
-therefore not evidence that no start happened, and the thing that decides
+The container wait never refuses on its own.  Its signal is optional and
+documented rather than observed; "no start was reported" is therefore not
+evidence that no start happened, and the thing that decides
 whether a pod is armed stays what it always was -- a report this pod wrote,
 read back through the channel.
 
@@ -52,13 +52,11 @@ lead raises the drill's lifetime -- rather than discovering the squeeze on a
 live pod.
 `operations/pod/README.md`'s boot plan carries the arithmetic.
 
-That used to be prose and nothing else, and prose holds nobody: clamped to the
-hard deadline itself, a slow launch waited right up to it, `_attempt` returned
-``BOUND_EXPIRED``, and only then did `launch._arm_or_close` begin the verified
-close -- so the pod billed past its own hard deadline while the close it exists
-to guarantee was attempted.  The reserve is subtracted in code now, and
+Enforced in code, not left as prose to trust: the two bounds are clamped to
+the hard deadline minus `close_reserve_seconds` (see its docstring for why),
+so `_attempt` returns ``BOUND_EXPIRED`` before that reserve is touched, and
 `preflight` refuses a configuration whose two bounds plus that reserve cannot
-fit the policy's whole hard lifetime.  A refusal before the create costs
+fit the policy's whole hard lifetime. A refusal before the create costs
 nothing.
 
 **Arming order, and why the supervisor goes first.**  The supervisor is
@@ -186,15 +184,15 @@ to be replaced by one derived from it.
 CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS: Final = CONTAINER_START_TIMEOUT_SECONDS
 """How long a launch may wait for the pod's container to start, before the bound above begins.
 
-The two waits are different things and they were previously one number.
-``CONTROLLER_ARMING_TIMEOUT_SECONDS`` exists to bound *the channel* -- how long
-an object written through the volume mount takes to appear in the volume's
-network view.  But the clock on it started when ``create`` returned, and
-between ``create`` returning and the pod's timer writing anything at all lie
-scheduling, an image pull that is commonly several gigabytes on a cold host,
-and container start.  A pod that spent six minutes pulling had its whole
-propagation budget spent before it ran, and was terminated for a report it was
-about to write.
+The two waits are different things. ``CONTROLLER_ARMING_TIMEOUT_SECONDS``
+bounds *the channel* -- how long an object written through the volume mount
+takes to appear in the volume's network view.  Its clock starts only when
+this container wait ends, not when ``create`` returns: between ``create``
+returning and the container existing lie scheduling and an image pull that is
+commonly several gigabytes on a cold host, and that time is not the channel's
+to spend.  A pod that spends six minutes pulling gets its whole propagation
+budget once the container starts only when the lease still has that budget
+available before the close reserve.
 
 So this bounds only the wait for the container to exist, it is deliberately
 generous, and what it actually took is recorded rather than assumed: the
@@ -205,10 +203,10 @@ and it is a bound rather than a measurement -- nothing in this repository has
 yet observed a real pull.
 
 **Exceeding it does not close the pod.**  The signal it waits on is the
-provider's own "this container has started" moment, and no provider is obliged
-to have one (`ContainerLivenessProbe` is optional, and open item 04-6 records
-that every RunPod field name here is documented rather than observed).  An
-unobserved start is therefore not evidence of a failed start: the wait ends,
+provider's own "this container has started" moment, and no provider is
+obliged to have one (`ContainerLivenessProbe` is optional, and every RunPod
+field name here is documented rather than observed).  An unobserved start is
+therefore not evidence of a failed start: the wait ends,
 what it saw is recorded, and the channel bound below -- which reads evidence
 this pod actually wrote -- is what decides whether anything is armed.
 """
@@ -664,8 +662,7 @@ class ChannelControllerArmer:
                 )
         # And the whole arming has to leave a verified close inside the lease.
         # Refusing here costs nothing; discovering the squeeze on a live pod
-        # costs the pod, which is what the module docstring used to ask a
-        # factory author to avoid by hand.
+        # costs the pod.
         #
         # Against the policy's own `hard_lifetime_seconds` rather than against
         # what is left of *this* request's deadline: this is a configuration
@@ -907,8 +904,7 @@ class ChannelControllerArmer:
         )
 
         # 2. Then the wait for the container to exist at all -- the image
-        #    pull, which used to be spent out of the channel's budget below.
-        #    It never refuses: an unobserved start is not a failed start.
+        #    pull. It never refuses: an unobserved start is not a failed start.
         base, refusal = self._await_container(
             base,
             store=store,

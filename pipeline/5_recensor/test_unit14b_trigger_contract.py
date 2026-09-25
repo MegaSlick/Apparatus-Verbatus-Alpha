@@ -26,8 +26,8 @@ from common.residual_ink import (
 )
 
 # The sealed noise floor, read from `[coverage_audit.noise_floor]` the way the
-# stage reads it: since 2026-09-14 it is not a module constant, and a stimulus
-# anchored on this name moves with the sealed value.
+# stage reads it, so a stimulus anchored on this name moves with the sealed
+# value rather than a module constant.
 MINIMUM_INK_PIXELS = load_coverage_audit_config()["coverage_audit"]["minimum_ink_pixels"]
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -489,7 +489,7 @@ def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():
         {"kind": "unrouted-observation", "bounds": [0, 0, 5, 5]},
         # The two shapes that clear `isinstance(bounds, dict)` and reach the
         # arithmetic: a rectangle missing a side, and one whose side is not a
-        # number. Both used to escape as a bare KeyError or TypeError.
+        # number. Both would otherwise escape as a bare KeyError or TypeError.
         {"kind": "unrouted-observation", "bounds": {"x": 0, "y": 0, "w": 5}},
         {"kind": "unrouted-observation", "bounds": {"x": 0, "y": 0, "w": 5, "h": "5"}},
         "not-even-a-mapping",

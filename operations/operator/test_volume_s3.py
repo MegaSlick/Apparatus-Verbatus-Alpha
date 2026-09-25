@@ -605,14 +605,9 @@ def test_a_rehearsal_with_no_volume_named_still_uses_the_local_fixture(tmp_path:
 
 
 # -- the read channel -------------------------------------------------------
-#
-# `S3VolumeReadChannel` answers `operations.pod.controller_armer`'s one
-# question -- is the pod's report there yet -- and the armer reads `None` as
-# "not yet, keep waiting". So the only thing that matters here is the same
-# distinction the transfer target turns on, in the other direction: nothing but
-# a positively absent object may come back as `None`, because everything else
-# would be a broken credential arming a pod, or a pod closed over a report it
-# had in fact written.
+# `S3VolumeReadChannel` answers whether the pod's report is there yet, and
+# the armer reads `None` as "not yet, keep waiting", so nothing but a
+# positively absent object may come back as `None`.
 
 
 class _Body:

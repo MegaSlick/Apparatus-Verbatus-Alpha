@@ -55,16 +55,12 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 # 32 bytes of CSPRNG output, URL-safe: 43 characters, all inside the witness
 # alphabet `VisionSmokeCall` accepts and comfortably inside its length bound.
 _WITNESS_ENTROPY_BYTES = 32
-# The rendered page. Large type on a wide page, so the witness is a line of
-# text a vision model reads rather than a strip of bitmap glyphs, and the whole
-# page still sits under the smallest tier's longest-edge cap (1344 pixels,
-# config/pod_placement.toml) so `_verify_png` never refuses it. The witness
-# line's width varies with which characters the CSPRNG drew (a run of wide
-# glyphs measures far past a run of narrow ones), so the font size is not
-# fixed: `render_golden_page` measures the line and shrinks from
-# `_GOLDEN_PAGE_FONT_SIZE` down to `_GOLDEN_PAGE_FONT_FLOOR` until it fits
-# inside the page width minus both margins, and refuses to render rather than
-# let PIL clip a line silently off the canvas.
+# The rendered page: large type on a wide page under the smallest tier's
+# longest-edge cap (config/pod_placement.toml), so `_verify_png` never refuses
+# it. The witness line's width varies with which characters the CSPRNG drew,
+# so `render_golden_page` shrinks the font from `_GOLDEN_PAGE_FONT_SIZE` down
+# to `_GOLDEN_PAGE_FONT_FLOOR` until it fits, refusing rather than letting PIL
+# clip a line off the canvas.
 _GOLDEN_PAGE_SIZE = (1280, 400)
 _GOLDEN_PAGE_MARGIN = 48
 _GOLDEN_PAGE_FONT_SIZE = 40
@@ -201,18 +197,13 @@ class NvidiaSmiUtilization:
                 return ()
             lines = [line.strip() for line in query.stdout.splitlines() if line.strip()]
             if not lines:
-                # Refused by name (F064's sibling gap): the old
-                # `splitlines()[0]` read this same case as an IndexError caught
-                # by the blanket handler below, so an instrument that measured
-                # nothing and one that crashed on empty output were
-                # indistinguishable from here. Both still report the same
-                # `()` -- `VisionSmokeCall` has no channel for a reason on this
-                # path -- but the branch is now a decision, not an accident.
+                # Division below by `len(lines)` would otherwise raise
+                # `decimal.DivisionByZero`, which the `except` clause here
+                # does not catch.
                 return ()
-            # Every visible card, not only the first (F064): with more than
-            # one card the process-wide figure this reports is the mean of
-            # what each is doing around this read, not whichever card
-            # nvidia-smi happened to list first.
+            # Every visible card, not only the first: with more than one card
+            # the process-wide figure reported is the mean of what each is
+            # doing around this read, not whichever nvidia-smi listed first.
             gpu_percent = sum(Decimal(line) for line in lines) / Decimal(len(lines))
             cpus = self.cpu_count() or 0
             if cpus <= 0:

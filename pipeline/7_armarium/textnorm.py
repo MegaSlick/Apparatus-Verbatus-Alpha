@@ -1,49 +1,37 @@
 r"""Derived search-fold normalization for Armarium projections.
 
-This module deliberately has one small job: make a lossy search key from an
-established text, deterministic **for a given Unicode database** and not across
-them -- this line claimed determinism outright until it was measured.  Python
-ships a different UCD per version: 15.0 on 3.12 and 16.0 on 3.14 (CI runs both),
-15.1 on 3.13, which nothing in the ladder runs today, and characters assigned between them fold
-differently.  It never establishes, replaces, compares, or
-selects a reading.  Callers must retain the literal Archetypus text beside any
-value returned here and label the value as derived.  principle 5's one-text rule
-is untouched by it: the Archetypus ``text`` field is never written from here and
-nothing this function returns may round-trip back into one.
+Makes a lossy search key from established text, deterministic only **for a
+given Unicode database**: Python ships a different UCD per version (15.0 on
+3.12, 16.0 on 3.14 -- CI runs both -- and 15.1 on 3.13, which nothing in the
+ladder runs today), and characters assigned between them fold differently. Never establishes, replaces, compares, or selects a reading:
+callers must retain the literal Archetypus text beside any value returned
+here and label the value as derived; nothing this function returns may
+round-trip back into ``text`` (principle 5).
 
-**The substitution table and the apostrophe set are carried from the window, and
-named as carried** — adapted code is named as such (principle 12), and it
-enters only when it is the best option and understood line by line
-(principle 11).  Source: ``local/textnorm.py`` in the old repository, read
-through the window.  What is carried is the *data* in ``_SUBSTITUTIONS`` and ``_APOSTROPHES``,
-because each entry records a fact about this project's actual source material that
-cannot be re-derived from Unicode or from anything inside this repository:
+``_SUBSTITUTIONS`` and ``_APOSTROPHES`` are adapted from ``local/textnorm.py``
+in the old repository (principle 12) because each entry records a fact about
+this project's actual source material, not something re-derivable from
+Unicode:
 
-* ``ȣ``/``Ȣ`` (U+0223/U+0222, the Algonquian/Iroquoian "8" digraph) fold to the
-  ASCII digit ``8`` because that is how this corpus's data already spells the
-  digraph -- the old file records 400 of 400 names in the Oka seed list using
-  literal ``8`` and none using the Unicode glyph.  The substitution exists so a
-  model that emits the real ligature folds to the same key as the ``8``-spelled
-  form.  The digit itself is never folded away by any later step, on purpose: it
-  is what distinguishes an indigenous name token from an ordinary French one, and
-  removing it would false-match the two.  Nothing may add ``8`` to a strip set.
-* ``œ``/``Œ`` and ``æ``/``Æ`` have no NFD decomposition at all, so an accent fold
-  alone would leave them standing; expanding them is what makes "sœur"/"soeur"
-  collide the way a person typing a search expects.
-* The apostrophe family is *stripped* rather than turned into a space, because in
-  this corpus an apostrophe is an elision mark inside one name unit -- d'Amours,
-  d'Argenteuil -- not a word separator, so "damours" must hit "d'Amours" as one
-  token.  The grave accent is in the set as a cursive-transcription stand-in.
-  This is a recorded choice: a corpus needing apostrophe-as-separator would revisit
-  it here.
+* ``ȣ``/``Ȣ`` (U+0223/U+0222, the Algonquian/Iroquoian "8" digraph) fold to
+  the ASCII digit ``8`` because that is how this corpus already spells the
+  digraph -- 400 of 400 Oka seed names use the literal ``8``, none the
+  Unicode glyph -- so a model emitting the real ligature keys the same as the
+  ``8``-spelled form. The digit itself is never stripped: it is what
+  distinguishes an indigenous name token from an ordinary French one. Nothing
+  may add ``8`` to a strip set.
+* ``œ``/``Œ`` and ``æ``/``Æ`` have no NFD decomposition at all, so an accent
+  fold alone would leave them standing; expanding them is what makes
+  "sœur"/"soeur" collide as a search expects.
+* The apostrophe family is stripped, not turned into a space: in this corpus
+  an apostrophe is an elision mark inside one name unit (d'Amours,
+  d'Argenteuil), not a word separator, so "damours" must hit "d'Amours" as
+  one token. The grave accent stands in for cursive transcription.
 
-The *code* below is written new and does one thing the old file did not.  The old
-pipeline substituted before decomposing, which is not idempotent: ``ǣ`` (U+01E3)
-is not in the table, so it decomposed to ``æ`` plus a combining macron and folded
-to ``æ``, and only a *second* pass turned that into ``ae``.  Decomposing first and
-substituting after makes the marked ligature reach ``ae`` in one pass, so
-``search_fold(search_fold(s)) == search_fold(s)`` holds -- the idempotence property
-the old file's own docstring claimed and its ordering did not deliver.
+Decomposing before substituting (the old file did the reverse) is what makes
+``search_fold(search_fold(s)) == search_fold(s)`` hold: ``ǣ`` (U+01E3) isn't
+in the table, so substituting first left a second pass needed to turn its
+NFD-decomposed ``æ`` + combining macron into ``ae``.
 """
 
 from __future__ import annotations

@@ -39,12 +39,12 @@ class TriageRefusal(ProducerRefusal):
 
 
 def _refuse_preference_named(value: Any, what: str) -> None:
-    """Principle 1's refusal, in this console's own operator-facing vocabulary.
+    """Reraise `refuse_capture_preference`'s refusal as this console's own vocabulary.
 
-    The CLI boundary handles `TriageRefusal`, not the `SchemaRefusal` raised by
-    `refuse_capture_preference`; without this translation a picker attempt loses
-    its name. `what` is forwarded so the inner refusal names the triage record
-    that carried the field, rather than blaming the corpus register for it.
+    The refusal keeps any step here from picking among witnesses. The CLI
+    boundary handles `TriageRefusal`, not the `SchemaRefusal`
+    `refuse_capture_preference` raises. `what` names the triage record that
+    carried the field, rather than blaming the corpus register for it.
     """
     try:
         refuse_capture_preference(value, what=what)
@@ -353,8 +353,8 @@ _QUEUE_FIELDS = frozenset({"schema", "mode_declaration", "manifest_sha256", "ite
 def _checked_queue(queue: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]]:
     """The fixed-point queue form whose digest the journal actually persists."""
     data, persisted = _persisted_form(queue, "queue")
-    # Name the consequential rule before the ordinary closed-schema refusal: a
-    # preference field is not merely an extra key, it is an attempted picker.
+    # Checked before the closed-schema refusal below: a preference field is
+    # not merely an extra key, it is an attempted picker.
     _refuse_preference_named(persisted, "queue")
     if (
         set(persisted) != _QUEUE_FIELDS
@@ -366,12 +366,9 @@ def _checked_queue(queue: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]]:
     ):
         raise TriageRefusal("triage refusal queue-invalid: queue is not a closed review queue")
     # A cluster-candidate is indexed for `evidence["instrument_config_sha256"]`
-    # and `both_digests` by both `accept_candidate` and `draft_confirmation`.
-    # "Is a dict" was the only requirement, so a candidate missing either key
-    # left a public seam raising a bare KeyError -- a traceback where this
-    # module's whole contract is a named TriageRefusal. Checking the shape here
-    # covers both call sites at once rather than teaching each one the same
-    # lesson separately.
+    # and `both_digests` by both `accept_candidate` and `draft_confirmation`,
+    # so shape is checked here rather than leaving a missing key to raise a
+    # bare KeyError at either call site.
     for item in persisted["items"]:
         if item.get("kind") != "cluster-candidate":
             continue
@@ -631,16 +628,14 @@ def accept_candidate(
         target_resolved = target.resolve()
         paths_alias = (
             state_resolved == target_resolved
-            # `Path.resolve` does not correct case, and APFS -- the default
-            # filesystem this console ships to (see `backup.py`'s `_contains`)
-            # -- is case-insensitive. Two spellings that name no file yet are
-            # one directory entry the moment both writes land, and neither the
-            # exact-text check above nor `samefile` below (which needs both
-            # paths to already exist) can see that collision before it
-            # happens: the journal write would durably publish, and the
-            # unconditional `os.replace` behind the confirmation write would
-            # then silently clobber it, with no schema check on that path to
-            # catch the loss. Checked on normalized text instead.
+            # `Path.resolve` does not correct case, and the default
+            # filesystem this console ships to is case-insensitive. Two
+            # spellings naming no file yet become one directory entry the
+            # moment both writes land, which neither the exact-text check
+            # above nor `samefile` below can see before that happens: the
+            # journal write would durably publish, and the unconditional
+            # `os.replace` behind the confirmation write would then silently
+            # overwrite it, with no schema check on that path to catch the loss.
             or state_resolved.as_posix().casefold() == target_resolved.as_posix().casefold()
             or (state_target.exists() and target.exists() and state_target.samefile(target))
         )

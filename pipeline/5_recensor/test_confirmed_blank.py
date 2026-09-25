@@ -141,8 +141,8 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     # additive, not a change to the ordinary path. R6's own content-coverage
     # check (the other act's page Testimonium against its aligned attachments)
     # also finds no shortfall: a1's genuinely-empty contribution adds no
-    # characters to the page text at all -- the join used to give it a leading
-    # separator no act delivered -- and the alignment correctly
+    # characters to the page text at all -- not even a leading separator no act
+    # delivered -- and the alignment correctly
     # maps a2's matched span back to that raw page text (not the
     # whitespace-collapsed comparison view `align_to_anchor` matches over) so
     # the join never reads as lost coverage.

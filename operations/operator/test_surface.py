@@ -952,7 +952,7 @@ def test_a_corrupted_saved_record_never_hides_the_intact_ledgers_behind_unexpect
     `status` reports an unreadable record beside the intact ones only for
     `RecordError`; a raw `TypeError` walks past that guard, abandons the whole
     listing, and reports `UNEXPECTED` — the opposite of the honesty ledger this
-    verb exists to show (principle 2).
+    verb exists to show.
     """
 
     surface = _surface(tmp_path)
@@ -1027,7 +1027,7 @@ def test_a_record_too_large_to_be_one_of_ours_is_refused_rather_than_read(
     tmp_path: Path,
 ) -> None:
     """`status` reads every recorded receipt, so an unbounded read is its own
-    failure — and an out-of-memory kill prints nothing at all (principle 2).
+    failure — and an out-of-memory kill prints nothing at all.
     """
 
     surface = _surface(tmp_path)
@@ -1922,7 +1922,7 @@ def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
 def test_a_nothing_to_transfer_report_does_not_read_as_upload_complete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F027: the top-level receipt state must agree with the nested transfer record.
+    """The top-level receipt state must agree with the nested transfer record.
 
     Not reachable today through `upload()` itself -- the sealed manifest
     snapshot it writes always exists by the time `resume()` checks for one --
@@ -2418,10 +2418,9 @@ def test_cli_upload_forwards_a_named_prefix_for_both_manifest_routes(
     assert observed == [("sealed", "batch-two"), ("new", "batch-three")]
 
 
-# `submission/two` joins these: a nested prefix writes image keys below it while
-# control files land as siblings inside the default `submission/` inventory, so a
-# later default Door run inventories files its manifest does not name and refuses
-# the run -- after the upload has already reported success.
+# `submission/two` joins these: a nested prefix writes image keys below it
+# while control files land as siblings inside the default `submission/`
+# inventory.
 @pytest.mark.parametrize(
     "prefix", ("/absolute", "../escape", "a//b", "a/./b", "bad\x00key", "submission/two")
 )
@@ -2675,7 +2674,7 @@ def test_pipeline_children_do_not_receive_upload_only_credentials(
 def test_pipeline_children_do_not_receive_any_provider_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F016: not only the transfer's own two S3 keys -- every provider
+    """Not only the transfer's own two S3 keys -- every provider
     credential a decoder RCE in a stage reached by a submitted page could spend
     (pod creation money included) must stay off this environment, the same as
     the confined console/backup/advance/ScanTailor children already get from
@@ -2806,7 +2805,7 @@ def test_door_module_leaves_no_trace_in_sys_path_or_sys_modules():
 
 
 def test_exported_work_names_every_delivered_and_non_delivered_act():
-    """F030: the closing accounting line reads a completed run's own export
+    """The closing accounting line reads a completed run's own export
     record, so it can name an act (like ink-free-page's minted fallback) that
     no fixture declaration could have known about in advance."""
     pages, acts = _exported_work(
@@ -3491,7 +3490,7 @@ def test_a_malformed_reasons_field_is_named_unreadable_not_silently_dropped(
 def test_an_unbounded_notification_message_is_truncated_before_it_is_sent(
     tmp_path: Path,
 ) -> None:
-    """F020: a held run with hundreds of unsealed pages must not build a
+    """A held run with hundreds of unsealed pages must not build a
     notification message with no ceiling at all -- the transport already
     truncates its own failure-detail string this way; the outbound message
     needs the same treatment."""
@@ -5756,7 +5755,7 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     assert payload["stages_verified"] == ["designator"]
     # Every artifact here is recorded by a stored manifest, so none of them was
     # verified "by their own envelope" -- naming them all was a false statement
-    # about what was measured (principle 8) and made the field useless for
+    # about what was measured and made the field useless for
     # telling a crashed stage's artifacts from the rest.
     assert payload["envelope_only_artifacts"] == []
     assert payload["excluded_publication_temporaries"] == [
@@ -5778,9 +5777,7 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
 
 # The three stages that serve a chair, and the module each one's
 # `default_serving_factory` lives in. Read from source below rather than
-# imported: a stage module pulls the whole serving stack in behind it, and the
-# claim being made is about the expression at the call site, not about a value
-# some fixture context would produce.
+# imported, since a stage module pulls the whole serving stack in behind it.
 _SERVING_STAGE_SOURCES = {
     "designator": "pipeline/2_designator/structure_pass.py",
     "attestatores": "pipeline/3_attestatores/run.py",
@@ -5940,7 +5937,7 @@ def test_a_serving_log_that_grew_since_the_last_fetch_refuses_by_itself(
     for immutable evidence and fatal to the whole fetch if a log is held to it:
     the second call brought home nothing at all, with no remedy named anywhere.
     The log is refused by itself instead, named in the receipt and on the
-    screen, and the verified run tree still arrives (principle 2).
+    screen, and the verified run tree still arrives.
     """
 
     volume, reader = _volume_run(tmp_path)
@@ -6040,7 +6037,7 @@ def test_a_symlink_where_a_serving_log_belongs_is_refused_and_left_alone(
 def test_a_refused_serving_log_is_not_counted_among_what_was_verified(
     tmp_path: Path,
 ) -> None:
-    """The counts stay honest across both serving-log states (principle 8).
+    """The counts stay honest across both serving-log states.
 
     `fetched` and `reused` count arrivals; `verified_objects` counts what was
     checked against a digest the run tree recorded. A log that arrived was not,
@@ -6117,7 +6114,7 @@ def test_fetch_run_refuses_a_directory_marker_key_rather_than_writing_it(tmp_pat
 
     Which arm refuses it is not the claim -- the claim is that no run tree comes
     home with a file standing where a directory should be, and that the operator
-    is told (principle 2).
+    is told.
     """
 
     volume, reader = _volume_run(tmp_path)
@@ -6171,9 +6168,9 @@ def test_fetch_run_brings_the_launch_evidence_home_and_names_what_it_did_not(
     The launch's PREFLIGHT tree -- which chairs were preflighted, against which
     catalogue digests, at what measured tier -- is written outside
     ``runs/<run_id>/`` and used to have no tracked path home, while the volume
-    it lives on is destroyed under the retention policy (principle 6). What
+    it lives on is destroyed under the retention policy. What
     still cannot be fetched by name is said out loud rather than left to be
-    inferred from an empty folder (principle 2).
+    inferred from an empty folder.
     """
 
     volume, reader = _volume_run(tmp_path)
@@ -6219,7 +6216,7 @@ def test_fetch_run_takes_a_named_evidence_key_and_records_one_it_cannot_read(
     records the pod-run report fetched with its digest cannot also assert that
     the pod-run report was not fetched. The field states the derivation limit
     and how many keys this call named; what arrived is read off ``objects`` and
-    ``refusals`` (principle 8).
+    ``refusals``.
     """
 
     volume, reader = _volume_run(tmp_path)
@@ -6785,7 +6782,7 @@ def test_every_run_receipt_carries_identity_configuration_commit_and_output(
         assert (commit is None) != (receipt["repository_commit_unreadable"] is None)
         if commit is not None:
             assert commit == _repository_commit(ROOT)
-            # F098: the orchestrator invocation itself must carry the commit
+            # The orchestrator invocation itself must carry the commit
             # the receipt says the run ran under, not only the receipt.
             assert argv[argv.index("--repository-commit") + 1] == commit
     assert finished["exit_code"] == 0
@@ -7145,7 +7142,7 @@ def test_export_run_root_naming_no_matching_receipt_is_refused(tmp_path: Path) -
 
 
 def test_derived_evidence_prefixes_reads_the_launch_receipt(tmp_path: Path) -> None:
-    """F110/G11: `--evidence-prefix` derives from the same saved launch receipt
+    """`--evidence-prefix` derives from the same saved launch receipt
     `--evidence-key` already does (`cli._derived_evidence_keys`), so an
     operator is not asked to retype a 32-hex token by hand for one flag while
     the other derives it for free. Real requests write every report path at
@@ -7237,9 +7234,9 @@ def test_status_names_fetch_run_volumes_and_unexpected_failures(tmp_path: Path) 
 def test_status_names_an_advance_so_the_operators_sequence_is_reconstructible(
     tmp_path: Path,
 ) -> None:
-    """F108: status had no arm for advance at all before this.
+    """Status must have an arm for advance.
 
-    Exercises `record_advance` and `_status_projection`'s new arm directly,
+    Exercises `record_advance` and `_status_projection`'s advance arm directly,
     the way `record_backup`'s own coverage does for the sibling verb --
     `_advance_with_confirmation`'s own boundary/confirmation machinery is
     covered separately in test_advance_modes.py and test_permission_boundary.py.

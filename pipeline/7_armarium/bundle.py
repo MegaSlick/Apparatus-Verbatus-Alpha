@@ -1,25 +1,23 @@
 """Take the sealed export bundle out of the run tree and put it where it was asked for.
 
-`run.py` builds the product, verifies it, and seals it as a content-addressed blob
-referenced by the `export` artifact. That is the right home for it -- the run's own
-record then says an export happened and names its digest -- but a blob inside a run
-tree has not left the pipeline, and goal 5 is that everything read leaves it. This
-program is the last step: read the sealed blob, verify it again from the outside, and
-publish it to an operator-chosen destination.
+`run.py` builds, verifies and seals the product as a content-addressed blob
+referenced by the `export` artifact, but a blob inside a run tree has not left
+the pipeline. This program is the last step: read the sealed blob, verify it
+again from the outside, and publish it to an operator-chosen destination.
 
-**It is a reader, not a second writer.** It builds nothing, projects nothing and
-touches no text. Every byte it publishes came out of the run tree and is checked
-against the digest the `export` artifact recorded, so there is no path here by which a
-second version of an established reading could reach a deliverable.
+**It is a reader, not a second writer.** It builds nothing, projects nothing
+and touches no text. Every byte it publishes came out of the run tree and is
+checked against the digest the `export` artifact recorded, so there is no
+path here by which a second version of an established reading could reach a
+deliverable.
 
-**Publish is all-or-nothing, and an existing destination is refused rather than
-merged into.** The pattern -- refuse the target, build under a hidden sibling name,
-rename into place, remove the sibling on any failure -- was read at the window
-(`local/export_clean_workspaces.py::_atomic_target`) and is reasoned rather than
-carried: the failure it prevents is a destination holding half of one publication and
-half of another, which is exactly the state nobody can later tell apart from a
-complete one. `os.replace` is used instead of the window's `rename` because it is the
-same atomic operation with the semantics stated in the name.
+**Publish is all-or-nothing, and an existing destination is refused rather
+than merged into.** The reserve/stage/rename-into-place pattern was read at
+`local/export_clean_workspaces.py::_atomic_target` and is reasoned rather
+than carried here (principle 12): the failure it prevents is a destination
+holding halves of two different publications, indistinguishable later from a
+complete one. `os.replace` is used instead of that file's `rename` because it
+is the same atomic operation.
 
     python pipeline/7_armarium/bundle.py --run-root <dir> --run-id <id> --out <dest>
 
@@ -106,22 +104,17 @@ def _expected_run_binding(payload: dict, run: dict) -> dict:
     a fixture run's payload carries `fixture_id`, a real run's carries
     `submission_id`, never both and never neither. Which field the payload
     carries is read rather than decided again -- that decision was `run.py`'s
-    (`export_run_identity`), made once, before this bundle was ever sealed --
-    so a payload naming both or neither is refused by name instead of silently
-    comparing against a binding this stage invented.
+    (`export_run_identity`), made once, before this bundle was ever sealed.
 
-    **Which shape it may carry is not the payload's own to say, though.** A
-    `submission_id` is a real submission's filename-ledger self-hash
-    (`common.stage.submission_identity`), and this reader used to accept
-    whichever value the payload named: a fixture run's package relabelled to
-    the `submission_id` shape published cleanly, under a submission identity
-    the run never had and a ledger nobody ever admitted. `config_digest` beside
-    it was already checked against `run.json`; the identity that says *whose
-    pages these are* was not checked against anything. So the run authority
-    decides the route here -- a submission identifier is refused on a run that
-    names no real submission, held to that submission's exact identity on a run
-    that does, and a fixture identifier is refused on a real run for the same
-    reason in the other direction.
+    **Which shape it may carry is not the payload's own to say, though.**
+    `config_digest` is already checked against `run.json`; the identity that
+    says *whose pages these are* must be checked too, or a fixture run's
+    package relabelled to the `submission_id` shape would publish cleanly
+    under a submission identity the run never had. So the run authority
+    decides the route: a submission identifier is refused on a run that names
+    no real submission and held to that submission's exact identity
+    (`common.stage.submission_identity`) on a run that does, and a fixture
+    identifier is refused on a real run for the same reason in reverse.
     """
     has_fixture = "fixture_id" in payload
     has_submission = "submission_id" in payload

@@ -45,8 +45,8 @@ from proof.synthetic_pages import PAGES, page_bytes  # noqa: E402
 def _policy(width: int, height: int):
     """This page's own resolved background policy, from the shipped sealed file.
 
-    Every measure here takes one since 2026-09-06: the ink predicate is taken
-    below the background `common.background` infers, under the same sealed
+    Every measure here takes one: the ink predicate is taken below the
+    background `common.background` infers, under the same sealed
     `[grouping.background]` block the Designator runs under, and no call site is
     allowed a default -- measuring under a policy nobody sealed is what the
     required keyword prevents.
@@ -58,9 +58,9 @@ def _coverage(width: int, height: int):
     """This page's own resolved coverage-audit policy, from the shipped file.
 
     The companion to `_policy`, and required at the same call sites for the same
-    reason: since 2026-09-06 the two outside-coverage gates and the perimeter
-    band are fractions of the page sealed in `[coverage_audit]`, and no call site
-    is allowed a default.
+    reason: the two outside-coverage gates and the perimeter band are fractions
+    of the page sealed in `[coverage_audit]`, and no call site is allowed a
+    default.
     """
     from common.residual_ink import load_coverage_audit_config, resolve_coverage_audit_policy
 
@@ -114,28 +114,21 @@ def _straightforward_counts(
 ) -> tuple[int, int]:
     """`(total_ink, outside_ink)` the obvious, per-pixel way.
 
-    The reference the module's C-level implementation is checked against. This
-    is deliberately the slow, plainly-correct version -- one interpreted
-    comparison per pixel -- exactly what `residual_ink` did before
-    `bytes.translate` and `int.bit_count` replaced those loops for real-page
-    speed.
+    The reference the module's C-level implementation is checked against:
+    deliberately the slow, plainly-correct version -- one interpreted
+    comparison per pixel -- of what `residual_ink` computes with
+    `bytes.translate` and `int.bit_count` for real-page speed.
 
-    **The page-spanning mask is given too, and for the same reason the
-    background is.** Since 2026-09-06 the audited counts are this page's ink
-    with its page-spanning component taken out of both, and finding that
-    component is `common.components`' labelling -- proved against its own
-    per-pixel oracle in `pipeline/2_designator/test_structure.py`, not here.
-    What this reference exists to check is the *counting*, so it is handed the
-    same mask and does the arithmetic the slow way.
-
-    **The background is given, not inferred here.** It used to be this
-    function's own `histogram.index(max(histogram))`, which was a second copy of
-    the module's retired inference, so the two agreed by being the same mistake:
-    on a page whose mode is not paper both returned the bezel and both counted
-    almost nothing. Since 2026-09-06 the inference is
-    `common.background.infer_background_evidence`'s and is proved elsewhere;
-    what this reference exists to check is the *counting*, which is what the
-    optimisation actually changed.
+    **The page-spanning mask and the background are both given, not derived
+    here.** The audited counts are this page's ink with its page-spanning
+    component taken out of both; finding that component is
+    `common.components`' labelling, proved against its own per-pixel oracle in
+    `pipeline/2_designator/test_structure.py`. The background is
+    `common.background.infer_background_evidence`'s, proved elsewhere -- a
+    duplicate inference here would let the two agree by making the same
+    mistake instead of catching it. What this reference exists to check is
+    the *counting*, so it is handed both facts and does only the arithmetic
+    the slow way.
     """
     spanning = spanning_mask if spanning_mask is not None else bytearray(width * height)
     mask = bytearray(width * height)
@@ -303,9 +296,9 @@ def test_a_small_fraction_of_heavily_covered_ink_is_not_flagged():
     # Wide enough that ink -- covered and uncovered together -- stays a
     # minority of the page, so the background inference (a histogram mode)
     # is not itself confused by the covered block. **And large enough for the
-    # two gates to be different numbers**, which since 2026-09-06 they are only
-    # above about 60,000 pixels of page area: `substantial_ink_area_bp` resolves
-    # to `MINIMUM_INK_PIXELS` there and is floored at it below, so on a smaller
+    # two gates to be different numbers**, which they are only above about
+    # 60,000 pixels of page area: `substantial_ink_area_bp` resolves to
+    # `MINIMUM_INK_PIXELS` there and is floored at it below, so on a smaller
     # page the substantial gate fires wherever the noise floor is cleared and
     # the fraction gate has nothing left to decide. 1200x800 resolves the
     # substantial gate to 384.
@@ -351,10 +344,9 @@ def test_a_substantial_absolute_miss_is_flagged_even_where_the_fraction_gate_wou
 
 def test_a_large_enough_fraction_outside_coverage_is_flagged_even_with_other_ink_covered():
     # A page large enough that neither block's bounding box covers half of it:
-    # since 2026-09-06 the audit withholds a page-spanning component the way the
-    # Designator's grouping does, and on a 20x20 canvas a 10x10 block IS a
-    # page-spanning component. The shapes and their ratio are the ones this test
-    # has always used, scaled by 20.
+    # the audit withholds a page-spanning component the way the Designator's
+    # grouping does. The 200/300/120 below are this test's original 10/15/6
+    # shapes, scaled by 20 onto a 600x600 canvas.
     rows = canvas(600, 600)
     paint(rows, 0, 0, 200, 200)  # 40,000 covered ink pixels
     # Clear of the covered block by more than `gap_tolerance_px`, so the two do
@@ -450,13 +442,12 @@ def test_page_residual_ink_refuses_undecodable_bytes():
 def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink():
     """The map's early edge observation is not a hold after the crop re-measure.
 
-    **The fixture pages no longer carry the observation at all**, and that is
-    asserted here rather than worked around: their 64-pixel band used to reach a
-    third of the way into a 200x260 page and see the acts themselves, and
-    `edge_band_bp` resolves to 2 pixels there, where these pages have no ink.
-    So the release is exercised on a page built to carry edge ink -- one act
-    crop that reaches the page's own margin -- which is the shape a real page
-    presents and the fixture does not.
+    **The fixture pages carry no such observation at all**, and that is asserted
+    here rather than worked around: `edge_band_bp` resolves to 2 pixels on
+    their 200x260 canvas, where these pages have no ink. So the release is
+    exercised on a page built to carry edge ink -- one act crop that reaches
+    the page's own margin -- which is the shape a real page presents and the
+    fixture does not.
     """
     for page in PAGES:
         image = page_bytes(page["ordinal"])

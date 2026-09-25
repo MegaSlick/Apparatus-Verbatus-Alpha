@@ -192,12 +192,8 @@ def test_receipt_binds_the_report_and_refuses_a_moved_head(tmp_path):
     assert json.loads(output.read_text()) == record
     assert record["candidate"] == candidate
     assert len(record["report_sha256"]) == 64
-    # Pin the form of `report`, because nothing else here does. `tmp_path / record[...]`
-    # discards `tmp_path` whenever the right operand is absolute, so that join passed
-    # under either form and left the field's shape untested. If someone made it relative
-    # -- which the README's "under workbench/raw/reviews/<candidate>/" invites -- a tool
-    # reading receipts would resolve it against the wrong directory and call the reviewed
-    # snapshot missing. The receipt is the whole evidence artefact; its pointer is pinned.
+    # Pinned absolute, because a relative one would let a tool resolve the
+    # receipt's snapshot pointer against the wrong directory.
     assert Path(record["report"]).is_absolute(), "the receipt must name the snapshot unambiguously"
     snapshot = Path(record["report"])
     assert snapshot.parent == tmp_path / "workbench" / "raw" / "reviews" / candidate

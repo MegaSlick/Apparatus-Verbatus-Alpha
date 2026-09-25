@@ -59,28 +59,18 @@ def prepare_log_root(log_root: str | Path) -> Path:
 
     Lives here so both production seams give the same guarantee:
     ``assemble_serving_preflight_callback`` calls it when its callback runs,
-    and :meth:`ServingSmokeReader.read` calls it before each start — so the
-    plain smoke-reader seam cannot write a run's logs through a symlinked or
-    group-readable root that only the callback seam used to refuse.
-    Construction stays effect-free on both seams either way.
+    and :meth:`ServingSmokeReader.read` calls it before each start — so
+    neither seam can write a run's logs through a symlinked or
+    group-readable root. Construction stays effect-free on both seams either way.
     """
 
     prepared = Path(log_root)
-    # **A symlink to a directory is an existing directory as far as `mkdir` is
-    # concerned.** The comment below used to end "nothing further is needed to
-    # establish that this path is one", and that was the gap: `exist_ok=True`
-    # refuses a file, a symlink to a file and a broken symlink, but forgives a
-    # symlink pointing at a real directory somewhere else — and then `chmod`
-    # follows it and re-modes the target. The run's logs would be written
-    # wherever the link pointed, under a mode this function set on a directory it
-    # never named. `lstat` does not follow, so asking here is what makes "this is
-    # the directory we will write into" true rather than merely likely.
-    #
-    # The residual race is named rather than closed: between this check and the
-    # `mkdir` below, anything that can write the parent directory could swap the
-    # path. Closing that needs `O_NOFOLLOW` directory descriptors and `openat`
-    # throughout, which is disproportionate for a log directory inside the run
-    # tree on a single-user machine.
+    # `mkdir(exist_ok=True)` forgives a symlink pointing at a real directory
+    # elsewhere, and a later `chmod` would follow it and re-mode that target
+    # instead -- so `lstat` (which does not follow) checks first. The residual
+    # race between this check and `mkdir` below is left open: closing it needs
+    # `O_NOFOLLOW` descriptors throughout, disproportionate for a log directory
+    # on a single-user machine.
     try:
         existing = prepared.lstat()
     except FileNotFoundError:
@@ -128,9 +118,9 @@ def assert_resized_pixels_within_trained_geometry(
     resize port) has run -- never against the source image.  A resize
     algorithm that silently under- or over-shoots a vendor's own declared
     training range (Model card "Parameters", ``processor_config.json``) reads
-    a page at the wrong scale with no error anywhere else (hostile review
-    item A; the same silent-drop failure mode as an unrecognised
-    ``mm_processor_kwargs``, GOALS 2's worst-rated failure).
+    a page at the wrong scale with no error anywhere else -- the same
+    silent-drop failure mode as an unrecognised ``mm_processor_kwargs``,
+    GOALS 2's worst-rated failure.
     """
 
     if resized_width <= 0 or resized_height <= 0:
@@ -166,9 +156,9 @@ def assert_generation_config_key_coverage(
     with the recorded reason it is withheld (Churro's paper-era ``0.6``
     temperature is the one case on record).  A key in neither set is not a
     decision anyone made -- it is a vendor value quietly falling on the floor,
-    exactly the shape hostile review item A names for the JSON grammar this
-    project no longer imposes on Chandra.  A key claimed both sent and
-    deliberately withheld is a contradiction, refused the same way.
+    the same shape as the JSON grammar this project no longer imposes on
+    Chandra.  A key claimed both sent and deliberately withheld is a
+    contradiction, refused the same way.
     """
 
     vendor_keys = set(vendor_generation_config)
@@ -193,24 +183,15 @@ def assert_generation_config_key_coverage(
 class UsageReconciliation:
     """One comparison between an engine's own reported usage and the laptop's count.
 
-    ``observed_image_tokens`` is the engine's own per-modality breakdown --
-    ``usage.prompt_tokens_details.multimodal_tokens["image"]`` -- when the
-    response carries one; vLLM v0.27.1 gates that breakdown (not
-    ``prompt_tokens`` itself, which is always present) behind
-    ``--enable-prompt-tokens-details``.  When it is present, ``localized_to``
-    compares the image half and the text half (the remainder) against their
-    own expected counts independently, so a *mixed* real request -- every
-    real request in this design, since Chandra/DAI/Churro all send image and
-    text together -- can still be localized exactly rather than only the
-    image-only and text-only requests a scalar-only comparison could ever
-    tell apart.  Without that breakdown, ``localized_to`` can only ever be
-    more than a guess when one side of the request carries no *expected*
-    tokens of its kind at all: an image-only user turn puts every text token
-    in the one fixed system string, so any mismatch there is necessarily the
-    image half; a text-only readiness probe carries no image, so any mismatch
-    there is necessarily the text half. A mixed request with no per-modality
-    breakdown is reported honestly as ``"unlocalized"`` rather than guessed
-    at from one scalar.
+    ``observed_image_tokens`` is the engine's own per-modality breakdown
+    (``usage.prompt_tokens_details.multimodal_tokens["image"]``), gated behind
+    ``--enable-prompt-tokens-details`` and present only when the request
+    carried multimodal input. When present, ``localized_to`` compares the
+    image and text halves against their own expected counts independently, so
+    a mixed real request can still be localized exactly. Without it, a
+    mismatch can only be localized when one side expects zero tokens; a mixed
+    request with no breakdown is reported honestly as ``"unlocalized"`` rather
+    than guessed at from one scalar.
     """
 
     chair: str
@@ -309,20 +290,13 @@ def reconcile_usage_against_capacity(
     """Compare a live engine's own reported ``prompt_tokens`` against the laptop's count.
 
     ``usage.prompt_tokens`` is present on every real response regardless of
-    launch flags (vLLM v0.27.1 sets it unconditionally). What
-    ``--enable-prompt-tokens-details`` (``render_vllm_argv``; every real
-    profile now carries it) actually gates is ``usage.prompt_tokens_details``,
-    whose ``multimodal_tokens`` breakdown this reconciliation reads when
-    present to localize a mismatch precisely -- see
-    :class:`UsageReconciliation`.  This is a *reconciliation*, not a gate: a
-    mismatch is returned as a named finding rather than raised, because a
-    wrong laptop count would otherwise silently disagree with a correct
-    engine on every request with nothing surfaced anywhere -- and because
-    what the mismatch means (a dropped
-    ``mm_processor_kwargs``, a stale token-cost table, an engine upgrade that
-    changed rounding) is exactly the kind of thing principle 8 keeps out of
-    a hard-coded verdict.  Refusing outright would make this itself a picker
-    among possible causes.
+    launch flags; ``--enable-prompt-tokens-details`` instead gates
+    ``usage.prompt_tokens_details``, read here when present to localize a
+    mismatch precisely (see :class:`UsageReconciliation`). This is a
+    reconciliation, not a gate: a mismatch is returned as a named finding
+    rather than raised, since what it means (a dropped `mm_processor_kwargs`,
+    a stale token-cost table, an engine rounding change) is exactly what
+    principle 8 keeps out of a hard-coded verdict.
     """
 
     if expected_image_tokens < 0 or expected_text_tokens < 0:
@@ -380,9 +354,9 @@ class ServingSmokeReader:
         self.calibration_for = calibration_for
         self.placement_table = placement_table
         # `operations.pod.preflight.SmokeReader.read` does not carry the measured
-        # profile as of spec 04's landed shape, so it travels bound to the reader
-        # instead of per call. `assemble_serving_preflight_callback` sets this the
-        # moment its own probe measures one, right before `PreflightRunner.run`.
+        # profile, so it travels bound to the reader instead of per call.
+        # `assemble_serving_preflight_callback` sets this the moment its own
+        # probe measures one, right before `PreflightRunner.run`.
         self.gpu_profile = gpu_profile
 
     def read(
@@ -504,26 +478,14 @@ class ServingSmokeReader:
     def _assert_profile_within_placement(profile: ServingProfile, placement: PlacementTier) -> None:
         """Refuse a vLLM profile that would exceed the measured tier's plan.
 
-        **`pixel_cap` and `max_pixels` are not in the same unit, and comparing
-        them directly is wrong.** `config/pod_placement.toml`'s `pixel_cap` is a
-        longest-edge cap in pixels — its committed values are 1344, 1792 and
-        2304, which are nonsense as pixel counts (roughly 37x37, roughly 42x42,
-        and exactly 48x48 pixels) and are the ordinary vision-model side caps.
-        A serving profile's `min_pixels`/`max_pixels` go straight into vLLM's
-        `--mm-processor-kwargs`, where they are *total pixel counts*: the old
-        pipeline's own proven values are 3136 (= 56x56, the patch minimum) and
-        2359296 (= 1536x1536), read at the window in `serve_dai.sh` and
-        `serve_chandra.sh`.
-
-        Compared directly, every realistic profile fails: 2359296 > 1792. The
-        sound relation is the square — an image whose longest edge is at most L
-        has at most L*L pixels — so that is what is checked, and it is
-        deliberately conservative rather than exact.
-
-        The underlying problem is that one word carries two meanings, which
-        GLOSSARY does not allow. Renaming the placement field to something that
-        states its unit is the real repair; it belongs to whoever owns
-        `config/pod_placement.toml`, not to this check.
+        `pixel_cap` (`config/pod_placement.toml`) is a longest-edge cap in
+        pixels, while a profile's `max_pixels` is a total pixel count sent to
+        vLLM's `--mm-processor-kwargs` -- comparing them directly always fails,
+        so this checks the sound relation instead: an image whose longest edge
+        is at most L has at most L*L pixels, which is conservative rather than
+        exact. `pixel_cap`'s name reads as a pixel-count cap and is not one,
+        which GLOSSARY.md's one-word-one-concept rule forbids; the fix belongs
+        with `config/pod_placement.toml`, not here.
         """
 
         recipe = placement.recipe
@@ -621,20 +583,12 @@ def _plain_mapping(value: Mapping[str, object], depth: int = 0) -> dict[str, obj
 def _plain_value(item: object, depth: int) -> object:
     """One audit value, detached: mappings become dicts, sequences become lists.
 
-    A sequence recurses through `_plain_value` rather than being scanned one
-    level deep for mappings. The one-level form handled a mapping sitting
-    directly inside a tuple and stopped there, so a mapping under two tuple
-    levels was copied out by reference -- and a `MappingProxyType` reached
-    `json.dumps`, which answers it with `TypeError: Object of type mappingproxy
-    is not JSON serializable`: a crash from inside receipt serialization naming
-    neither the audit nor the field, which is the exact failure the bound below
-    exists to replace with a refusal. Depth is counted per sequence level for
-    the same reason, so a pathological chain of tuples is named rather than
-    exhausting the stack.
-
-    Lists are converted beside tuples. The immutable audit this walks carries
-    tuples, but the copy's job is to detach, and a list left in place is a live
-    reference into the handle's own evidence.
+    Recurses fully rather than scanning one level deep, so a mapping nested
+    under several tuple levels is copied rather than left as a live
+    `MappingProxyType` that `json.dumps` cannot serialize. Depth is counted per
+    sequence level too, so a pathological chain of tuples is named rather than
+    exhausting the stack. Lists convert beside tuples since the copy's job is
+    to fully detach from the handle's own evidence.
     """
 
     if isinstance(item, Mapping):

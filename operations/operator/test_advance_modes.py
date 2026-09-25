@@ -57,7 +57,7 @@ def _run(tmp_path: Path) -> tuple[Path, str]:
         ("semi", "perlector", "designator", "perlector", {"attestatores", "perlector"}),
         ("semi", "designator", "door", "designator", {"designator"}),
         # Armarium's own terminal report can hold before the driver consults
-        # mode too (F-R21C1), so auto can advance it just like Attestatores.
+        # mode too, so auto can advance it just like Attestatores.
         ("auto", "armarium", None, None, {"attestatores", "armarium"}),
     ),
 )
@@ -138,12 +138,9 @@ def _mode_independent_held_stages() -> frozenset[str]:
         and isinstance(tail.value.orelse, ast.Name)
         and tail.value.orelse.id == "EXIT_HELD"
     ):
-        # The tail is only *about* the Armarium because an earlier guard has
-        # already returned for every selection whose last member is something
-        # else. Naming the stage from this file's constant alone would let that
-        # guard be widened or deleted -- the tail would then hold other stages,
-        # the derived set would be wrong, and this test would still be green on
-        # its own assumption. So the guard is read out of the driver too.
+        # The tail is only about the Armarium because an earlier guard has
+        # already returned for every other selection; that guard is read out
+        # of the driver too, rather than named from this file's own constant.
         guards_last_member = any(
             isinstance(node, ast.If)
             and isinstance(node.test, ast.Compare)
@@ -171,10 +168,9 @@ def test_the_always_held_set_is_exactly_the_drivers_own_mode_independent_stops()
 def test_the_attestatores_holds_after_it_has_already_sealed_its_boundary() -> None:
     """Attestatores must seal before its mode-independent hold can be advanced."""
 
-    # The end-of-run tally hold announces itself, seals the boundary, and only
-    # then returns EXIT_HELD: a hold with no seal would leave no witnessed
-    # boundary for the person-held advance to pass. The earlier tally-UNKNOWN
-    # exits are pre-boundary refusals and rightly seal nothing.
+    # The end-of-run tally hold seals the boundary before it returns
+    # EXIT_HELD, since a hold with no seal leaves no witnessed boundary for
+    # the person-held advance to pass.
     source = (ROOT / "pipeline" / "3_attestatores" / "run.py").read_text(encoding="utf-8")
     final_tally = source.rindex("Attestatores attempt tally UNKNOWN")
     sealed_at = source.index("context.seal_boundary()", final_tally)
@@ -285,7 +281,7 @@ def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
 def test_a_supplied_surface_records_the_advance_for_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F108: passing `surface` wires the advance into status; omitting it costs nothing."""
+    """Passing `surface` wires the advance into status; omitting it costs nothing."""
     from .surface import OperatorSurface
 
     run_root, run_id = _run(tmp_path)

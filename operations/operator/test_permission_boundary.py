@@ -727,7 +727,7 @@ def test_the_landlock_boundary_refuses_a_confined_write_to_evidence(tmp_path: Pa
     Folded into that test behind an early `return`, this half ran on Linux and
     silently did not run anywhere else, while the suite printed one pass for
     both. A reader of the results could not tell which of the two claims had
-    actually been measured (principle 8).
+    actually been measured.
 
     "Nonzero, and the file is absent" is satisfied twice over: by the kernel
     refusing the write, and by a launcher that rejected its own arguments and
@@ -765,7 +765,7 @@ def test_a_host_that_cannot_reach_landlock_refuses_instead_of_running_unconfined
     may open on: nothing would confine the child. The stub-driven seams prove
     the classification; this proves it against the real launcher on the real
     host, so the hosts that skip the boundary tests still measure something
-    rather than reporting an untested pass (principle 8).
+    rather than reporting an untested pass.
     """
 
     with pytest.raises(OperatorError) as refusal:
@@ -1646,7 +1646,7 @@ def test_no_archive_member_can_be_both_this_name_and_a_directory():
     kept as a defensive check and given its own sentence -- a defensive check
     that names the wrong fault is worse than none -- but the state it guards is
     unconstructible, and a test claiming to reach it would be claiming more than
-    is true (principle 8).
+    is true.
     """
 
     for spelling in ("review-items.jsonl", "review-items.jsonl/"):
@@ -1743,7 +1743,7 @@ def test_review_charges_the_export_bundle_to_the_same_allowance_as_the_images(
     Bounding the images alone would bound nothing: a parish-sized bundle met
     the machine's memory in the exact projection the image allowance guards.
     The bundle spends from the shared allowance and an oversized run refuses
-    by name (principle 2), with the run tree intact.
+    by name, with the run tree intact.
     """
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
@@ -1876,7 +1876,7 @@ def test_review_refuses_an_act_whose_export_row_lost_its_crop_list():
     `row.get("source_regions", [])` projected an act whose crop list had gone
     missing as an act with no crops. The operator would see the text, see no
     image, and have no way to tell "this act records no crop" from "the record
-    of what I would be approving against the ink is gone" (principle 2).
+    of what I would be approving against the ink is gone".
     """
     with pytest.raises(OperatorError) as excinfo:
         review._act_row(
@@ -1921,7 +1921,7 @@ def test_review_refuses_a_bundle_it_cannot_follow_instead_of_showing_an_empty_qu
     Review items are the acts the pipeline could not settle. Returning `None`
     for a malformed reference gave the operator the same screen as an empty
     queue, so a lost queue and an empty queue were indistinguishable on the
-    one surface a person reads (principle 2). Armarium always records a
+    one surface a person reads. Armarium always records a
     bundle object in its export payload, so an absent bundle is refused too,
     not read as a run with nothing to review.
     """
@@ -2132,9 +2132,9 @@ def test_worker_stderr_beside_a_verified_record_is_reported_and_not_called_a_ref
     Deciding on stderr first made any byte on that pipe a refusal, including
     the `DeprecationWarning` the worker's own `runpy.run_module` prints by
     default -- a completed, verifiable advance reported as refused. Deciding on
-    it not at all would drop a diagnostic the worker meant a person to read
-    (principle 2). The record is checked against the exact request first, and
-    what the worker wrote then reaches the operator beside it.
+    it not at all would drop a diagnostic the worker meant a person to read.
+    The record is checked against the exact request first, and what the
+    worker wrote then reaches the operator beside it.
     """
 
     run_root, run_id = _make_run(tmp_path)
@@ -2890,9 +2890,9 @@ def test_an_advance_whose_boundary_later_changed_is_named_stale_where_a_person_r
 
     Nothing on the read path called `verify_advance`, so the console displayed
     "this boundary was advanced" as a present-tense fact however far the seal
-    had moved since. A check no reader performs is not a check
-    (principle 2). The stale record is still shown — reporting it, not hiding
-    it, is what keeps this a reader rather than a picker.
+    had moved since. A check no reader performs is not a check. The stale
+    record is still shown — reporting it, not hiding it, is what keeps this
+    a reader rather than a picker.
     """
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)

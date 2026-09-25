@@ -1,7 +1,7 @@
 """The RunPod REST v1 adapter is exercised through a fake transport only.
 
 Every payload below is built from the shapes RunPod's own documentation
-publishes for `rest.runpod.io/v1` (fetched 2026-08-09; the URLs are named in
+publishes for `rest.runpod.io/v1` (the URLs are named in
 `provider_runpod.py`'s module docstring). No live call has been made, so these
 tests prove the adapter's *handling* of a documented shape, never that the
 provider actually answers that way — that is the first authorised live run's
@@ -390,14 +390,14 @@ def test_create_correlates_the_launch_token_before_it_posts() -> None:
         BILLING_CUTOFF_MARGIN_ENV: "3600",
         "VERBATUS_RUNPOD_ROUTE": "v1",
     }
-    # The create body used to name no container disk at all, so the pod took
-    # whatever the image or the account defaulted to while the bootstrap
-    # downloaded the serving stack onto it twice over.
+    # The create body must name a container disk: leaving it unnamed would let
+    # the pod take whatever the image or the account defaulted to while the
+    # bootstrap downloaded the serving stack onto it twice over.
     assert body["containerDiskInGb"] == request().container_disk_gb
 
 
 def test_created_records_own_the_pod_rate_alone_not_the_volume_rate_too() -> None:
-    """F063: the volume rate is still the injected estimate(), never observed here."""
+    """The volume rate is still the injected estimate(), never observed here."""
     transport = ScriptedTransport([json_response([]), json_response(pod_payload(), 201)])
 
     record = provider(transport).create(request())
@@ -689,9 +689,8 @@ def test_status_strips_a_padded_but_usable_desiredstatus_before_storing_it(
     padded: str,
 ) -> None:
     """The usability decision and the stored word must agree: deciding on the
-
-    stripped word but storing the padded one let `supervise.py`'s RUNNING
-    guard (which case-folds but did not used to strip) disagree with this
+    stripped word but storing the padded one would let `supervise.py`'s
+    RUNNING guard, which case-folds but does not strip, disagree with this
     seam about the same byte string, closing a healthy pod. See
     `test_supervise.py`'s companion drill for the consuming guard."""
 
@@ -705,12 +704,12 @@ def test_status_strips_a_padded_but_usable_desiredstatus_before_storing_it(
 
 
 def test_status_surfaces_the_container_start_moment_beside_the_lifecycle_word() -> None:
-    """F056: `desiredStatus` cannot separate "still pulling" from "started and silent".
+    """`desiredStatus` cannot separate "still pulling" from "started and silent".
 
     It is what the pod was *asked* to be and reads RUNNING from the instant
-    create returns. `lastStartedAt` is the only field in this body that reports
-    an actual start, and it was previously read only where it becomes
-    `PodRecord.created_at` -- invisible to anything watching a pod come up.
+    create returns. `lastStartedAt` is the only field in this body that
+    reports an actual start; surfacing it beside `PodRecord.created_at` makes
+    it visible to anything watching a pod come up.
     """
 
     transport = ScriptedTransport(
@@ -947,10 +946,10 @@ class _OversizedStream:
 class _ExactSizedStream:
     """Exactly the cap, then EOF, serving no more than the bytes it was asked for.
 
-    It used to answer every ``read`` with the full cap regardless of ``amount``,
-    which no stream does and which a reader accumulating short reads correctly
-    reads as an over-cap body.  The case under test is unchanged: a response of
-    exactly ``_MAX_RESPONSE_BYTES`` is allowed through.
+    Answering every ``read`` with the full cap regardless of ``amount`` would
+    make a reader accumulating short reads see an over-cap body, which no
+    real stream produces. A response of exactly ``_MAX_RESPONSE_BYTES`` must
+    still be allowed through.
     """
 
     def __init__(self) -> None:
@@ -1112,9 +1111,9 @@ def test_a_same_name_pod_with_no_env_still_refuses_token_correlation() -> None:
 
 # -- the GraphQL balance observer -------------------------------------------
 #
-# Documented shapes only (module docstring of provider_runpod.py, 2026-09-02).
-# No live call: the fake transport answers, and two loopback servers measure
-# the query-placed credential the way the redirect test above measures urllib.
+# Documented shapes only (module docstring of provider_runpod.py). No live
+# call: the fake transport answers, and two loopback servers measure the
+# query-placed credential the way the redirect test above measures urllib.
 
 
 def balance_body(**overrides: object) -> bytes:
@@ -1341,10 +1340,10 @@ def test_a_delivered_notification_leaves_the_observation_source_alone() -> None:
 def test_set_balance_notify_wires_the_hook_the_host_cli_reaches() -> None:
     """The seam ``cli.py --notify`` calls by duck type.
 
-    The comment here used to claim the CLI wired ``notify_hooks.notify_balance``
-    into this observer, and no tracked path could: the provider comes from an
-    untracked ``--provider-factory``, so the constructor argument had no caller.
-    A named method on the returned object is the one place the host CLI can
+    No tracked path can wire ``notify_hooks.notify_balance`` into this
+    observer's constructor: the provider comes from an untracked
+    ``--provider-factory``, so the constructor argument has no caller. A
+    named method on the returned object is the one place the host CLI can
     reach a vendor adapter, exactly as ``--record-fixture`` reaches
     ``record_exchanges``.
     """
@@ -1589,13 +1588,13 @@ def test_an_existing_fixture_file_is_narrowed_to_0600_before_anything_is_recorde
 def test_a_body_wearing_the_decimal_mark_is_recorded_as_the_string_it_is(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """A provider body cannot forge a money value on its way to disk.
 
-    The Decimal mark used to be a fixed sentinel rewritten by a regex over the
-    whole serialized line, and a recorded string keeps whatever NUL bytes it
-    carried (`_scrub_body` decodes with errors="replace"). A body echoing
-    NUL + `decimal:` + digits + NUL would have been rewritten from a JSON
-    string into a bare number: evidence altered with no record of it
-    (principle 4). The mark now carries a per-line nonce chosen after the
-    body was read.
+    A recorded string keeps whatever NUL bytes it carried (`_scrub_body`
+    decodes with errors="replace"). A fixed sentinel mark, rewritten by a
+    regex over the whole serialized line, would let a body echoing
+    NUL + `decimal:` + digits + NUL be rewritten from a JSON string into a
+    bare number: evidence altered with no record of it (principle 4). The
+    mark carries a per-line nonce chosen after the body was read, closing
+    that.
     """
 
     from .fixture import FixtureRecorder, read_fixture

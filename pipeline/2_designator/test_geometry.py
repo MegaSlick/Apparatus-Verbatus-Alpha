@@ -1,15 +1,7 @@
 """Property-style tests for padding, rescale, and transform digests.
 
-No float appears in an assertion here on purpose: every quantity this module
-produces is an integer, and a test written with float arithmetic could pass by
-accident even where the implementation quietly reintroduced one.
-
-`geometry` is imported bare, not dotted (`pipeline.2_designator` cannot be a
-Python package path -- `2_designator` starts with a digit). Pytest's default
-"prepend" import mode puts this file's own directory, which has no
-`__init__.py`, on `sys.path` before collecting it, which is what makes the
-bare import resolve; `run.py` in this directory does the same insertion
-explicitly for its own, non-pytest invocation.
+No float appears in an assertion here on purpose, since every quantity this
+module produces is an integer.
 """
 
 import itertools
@@ -36,35 +28,26 @@ PADDING = {"top_bp": 600, "bottom_bp": 1800, "left_bp": 500, "right_bp": 2200}
 
 def test_padding_expands_by_the_configured_fraction_of_its_own_dimension():
     result = apply_padding({"x": 100, "y": 100, "w": 100, "h": 50}, 1000, 1000, PADDING)
-    # top: 50 * 600 / 10000 = 3; bottom: 50 * 1800 / 10000 = 9
-    # left: 100 * 500 / 10000 = 5; right: 100 * 2200 / 10000 = 22
     assert result["bounds"] == {"x": 95, "y": 97, "w": 100 + 5 + 22, "h": 50 + 3 + 9}
     assert result["applied_px"] == {"top": 3, "bottom": 9, "left": 5, "right": 22}
 
 
 def test_padding_rounds_half_up_deterministically():
-    # h=5, top_bp=600 -> 5*600/10000 = 0.3 -> rounds to 0.
-    # h=5, bottom_bp=1800 -> 5*1800/10000 = 0.9 -> rounds to 1.
     result = apply_padding({"x": 10, "y": 10, "w": 10, "h": 5}, 1000, 1000, PADDING)
-    # w=10, left_bp=500 -> exactly 0.5 px. Half-up gives 1; truncation and
-    # round-half-even both give 0, so this tie pins the declared rule.
+    # w=10, left_bp=500 is exactly 0.5px; half-up gives 1, unlike truncation
+    # or round-half-even.
     assert result["applied_px"]["left"] == 1
     assert result["applied_px"]["top"] == 0
     assert result["applied_px"]["bottom"] == 1
 
 
 def test_padding_clamps_at_every_page_edge_and_records_the_shaved_amount():
-    # A region flush against every edge of a small page: nominal padding would
-    # push it past each edge, so the applied amount must be less than nominal
-    # and the final bounds must never leave the page.
     result = apply_padding({"x": 0, "y": 0, "w": 20, "h": 20}, 20, 20, PADDING)
     assert result["bounds"] == {"x": 0, "y": 0, "w": 20, "h": 20}
     assert result["applied_px"] == {"top": 0, "bottom": 0, "left": 0, "right": 0}
 
 
 def test_padding_clamps_on_one_edge_only_when_only_one_edge_is_tight():
-    # Right edge is tight (region touches page right edge); every other edge
-    # has room. Only the right amount should be shaved.
     page_w, page_h = 200, 200
     bounds = {"x": 40, "y": 40, "w": 160, "h": 40}  # x+w == page_w
     nominal = apply_padding(bounds, 10_000, 10_000, PADDING)["applied_px"]
@@ -100,8 +83,6 @@ def test_padding_refuses_a_non_positive_page():
 
 
 def test_padding_refuses_a_bool_coordinate_rather_than_reading_it_as_zero_or_one():
-    # bool is an int subclass in Python -- True silently reads as 1, False as 0,
-    # if a coordinate is only range-checked rather than type-checked.
     with pytest.raises(ContractError, match="non-integer"):
         apply_padding({"x": 0, "y": 0, "w": 200, "h": True}, 1000, 1000, PADDING)
 
@@ -114,9 +95,7 @@ def test_padding_refuses_a_float_coordinate():
 # --- to_model_space / from_model_space round trip ---------------------------
 
 
-# A deterministic grid of (page, model, bounds) rather than `random`: every
-# combination is fixed at collection time, so a failure is reproducible byte
-# for byte and no seed has to be recorded to reproduce it.
+# A fixed grid rather than `random`, so a failure reproduces without a seed.
 _ROUND_TRIP_CASES = list(
     itertools.product(
         [(200, 260), (1000, 1000), (837, 1201)],  # page sizes
@@ -132,25 +111,15 @@ def test_model_space_round_trips_the_page_rectangle_exactly(page, model):
     whole_page = {"x": 0, "y": 0, "w": page_w, "h": page_h}
     projected = to_model_space(whole_page, page_w, page_h, model_w, model_h)
     recovered = from_model_space(projected["bounds"], projected["scale"], page_w, page_h)
-    # The whole page rescales and back-scales to itself exactly: there is no
-    # rounding slack available since both edges are anchored at 0 and at the
-    # page's own dimensions.
+    # No rounding slack: both edges are anchored at 0 and at the page's own size.
     assert recovered == whole_page
 
 
 @pytest.mark.parametrize("page,model", _ROUND_TRIP_CASES)
 def test_a_round_trip_never_loses_a_pixel_of_the_original_rectangle(page, model):
-    """The property that matters is containment, not closeness.
-
-    A round trip through a coarser model space cannot be lossless — the forward
-    conversion genuinely discards information. What it can be is *one-sided*:
-    `from_model_space` rounds low edges down and far edges up, so the recovered
-    rectangle always contains the original. That is the direction goal 2 asks
-    for. A recovered rectangle a pixel too wide costs a sliver of neighbouring
-    paper; a recovered rectangle a pixel too narrow costs the far edge of a
-    signature, which is the "clipped signatures" class the capture padding
-    exists to prevent and which a symmetric rounding rule would reintroduce one
-    conversion later.
+    """The property that matters is containment, not closeness: a lossy round
+    trip is fine as long as it's one-sided and the recovered rectangle always
+    contains the original, never clips it.
     """
     page_w, page_h = page
     model_w, model_h = model
@@ -171,9 +140,9 @@ def test_a_round_trip_grows_a_rectangle_by_at_most_a_pixel_per_edge(page, model)
     bounds = {"x": page_w // 5, "y": page_h // 7, "w": page_w // 3, "h": page_h // 4}
     projected = to_model_space(bounds, page_w, page_h, model_w, model_h)
     recovered = from_model_space(projected["bounds"], projected["scale"], page_w, page_h)
-    # Each edge can gain at most one model-space pixel going out, which is
-    # worth `ceil(page/model)` source pixels coming back, plus one more source
-    # pixel from the inverse's own outward rounding. Two edges per axis.
+    # One model-space pixel of outward rounding each way, per edge, converted
+    # to source pixels (the ceiling division), plus 1 for the inverse's own
+    # rounding back to source space; two edges per axis.
     slack_x = 2 * (-(-page_w // model_w) + 1)
     slack_y = 2 * (-(-page_h // model_h) + 1)
     assert recovered["w"] - bounds["w"] <= slack_x, (recovered, bounds, slack_x)
@@ -205,10 +174,8 @@ def test_from_model_space_refuses_another_pages_scale_even_when_the_rectangle_wo
 @pytest.mark.parametrize(
     ("bounds", "refusal"),
     [
-        # Three of these leave the page; the fourth is a *different* refusal
-        # entirely -- `True` is an `int` in Python, so a bare
-        # `pytest.raises(ContractError)` here passed on the geometry check and on
-        # the type check alike and could not tell which one it had exercised.
+        # The fourth case is a different refusal (type, not geometry); the
+        # message is matched so each case proves the check it's named for.
         (
             {"x": -1, "y": 0, "w": 2, "h": 2},
             r"source bounds .* falls outside its 100x100 pixel space",
@@ -246,11 +213,8 @@ def test_from_model_space_refuses_a_malformed_scale():
 @pytest.mark.parametrize(
     ("page", "refusal"),
     [
-        # Each case must name the dimension it refused. `("100", 100)` is worth
-        # reading twice: a string page width renders into the message as a bare
-        # `100`, so its refusal reads "page 100x100 does not have positive
-        # integer dimensions" -- correct, and indistinguishable from a valid page
-        # by eye. That is precisely why the expectation is pinned per case.
+        # ("100", 100) renders as "page 100x100 ..." -- indistinguishable from a
+        # valid page by eye, which is why each case pins its own expectation.
         ((True, 100), r"page Truex100 does not have positive integer dimensions"),
         ((100, 1.5), r"page 100x1\.5 does not have positive integer dimensions"),
         (("100", 100), r"page 100x100 does not have positive integer dimensions"),
@@ -278,16 +242,14 @@ def test_verify_isotropic_accepts_equal_axis_scales():
 
 
 def test_verify_isotropic_accepts_rounding_noise_from_different_page_dimensions():
-    # Same real-world scale (uniform resize to a 1024 long edge), computed
-    # against a non-square page: the two ratios are numerically different
-    # fractions but represent (nearly) the same physical scale factor.
+    # Same real-world scale, computed on a non-square page: the two ratios are
+    # different fractions representing nearly the same physical scale.
     projected = to_model_space({"x": 0, "y": 0, "w": 200, "h": 199}, 200, 199, 1024, 1020)
     verify_isotropic(projected["scale"], tolerance_bp=100)
 
 
 def test_verify_isotropic_refuses_a_distorted_rescale():
-    # Width scaled by roughly 1x, height scaled by roughly 2x: a squished
-    # resize, not a letterboxed one.
+    # Roughly 1x width, 2x height: a squished resize, not a letterboxed one.
     scale = {
         "x": {"numerator": 1000, "denominator": 1000},
         "y": {"numerator": 2000, "denominator": 1000},
@@ -389,9 +351,8 @@ def test_load_padding_config_reads_the_shipped_defaults():
     assert config["right_bp"] == 2200
     assert len(config["config_sha256"]) == 64
     provenance = config["provenance"]
-    # The shipped default is honest that it is not calibrated for this
-    # project's own corpus -- carried forward from a third-party corpus per a
-    # window read, per `config/designator_padding.toml`'s own comment.
+    # The shipped default is honest that it's carried forward from a
+    # third-party corpus, not calibrated for this project's own.
     assert provenance["calibrated_for_this_corpus"] is False
     assert provenance["sample_count"] == 4572
     assert "Teklia" in provenance["corpus"]
@@ -411,17 +372,9 @@ def test_load_padding_config_refuses_a_missing_table(tmp_path):
 
 @pytest.mark.parametrize("missing_field", ["top_bp", "bottom_bp", "left_bp", "right_bp"])
 def test_load_padding_config_refuses_a_missing_field(tmp_path, missing_field):
-    """Refused for *this* missing field, and not for a different one.
-
-    Written by hand, this wrote a bare `[padding]` table with no
-    `[padding.provenance]` — which `load_padding_config` requires — so every one of
-    the four cases was refused for the absent provenance block and would have
-    passed with the missing-field check deleted entirely. Built through
-    `_write_padding_toml` it carries a valid provenance table, so the parameterized
-    field is the only thing wrong with the file, and the message is matched so the
-    refusal has to be the one this test is named for.
+    """Refused for *this* missing field, not for the absent provenance table
+    a hand-written `[padding]` table would also be refused for.
     """
-
     fields = dict(PADDING)
     del fields[missing_field]
     path = tmp_path / "padding.toml"
@@ -475,17 +428,11 @@ def test_load_padding_config_refuses_malformed_toml_syntax(tmp_path):
 
 
 def test_bp_denominator_is_ten_thousand():
-    # Pinned so a change to the unit is a deliberate, visible edit rather than
-    # a silent redefinition of what every `_bp` field in every payload means.
     assert BP_DENOMINATOR == 10_000
 
 
-# --- [padding.provenance] -----------------------------------------------------
-#
-# A padding fraction with no declared source may not be shipped as a default
-# (`geometry._load_padding_provenance`'s whole reason to exist). Every test
-# below proves one way that refusal actually fires, not merely that the
-# function has a docstring saying it does.
+# --- [padding.provenance]: a padding fraction with no declared source may not
+# be shipped as a default. Each test below proves one way that refusal fires.
 
 
 def test_load_padding_config_accepts_a_well_formed_custom_provenance(tmp_path):
@@ -551,13 +498,8 @@ def test_load_padding_config_refuses_a_non_boolean_calibrated_flag(tmp_path):
 
 
 def test_this_project_has_exactly_one_basis_point_rounding_rule():
-    """`geometry._pad_amount` and `common.background.round_half_up_bp` are one.
-
-    They are not one module's business: the background
-    band `[grouping.background] band_bp` resolves is also read by the Ink Map and
-    the Recensor as well, through `common/background.py`, which may not import a
-    stage. `_pad_amount` delegates there rather than keeping a second copy, and
-    this pins both halves of that -- the same denominator and the same answer,
+    """`geometry._pad_amount` delegates to `common.background.round_half_up_bp`
+    (shared with the Ink Map and Recensor); this pins both halves agree,
     including at the exact half-pixel tie the half-up rule exists for.
     """
     import geometry

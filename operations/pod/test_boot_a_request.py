@@ -176,13 +176,11 @@ def test_the_pod_request_validates_once_the_project_lead_supplies_four_values() 
 def test_the_rendered_request_loads_through_cli_request_once_every_value_is_supplied(
     tmp_path: Path,
 ) -> None:
-    """The document `README.md` and the printed command both promise is
-
-    runnable as printed must actually load through the exact loader the
-    printed command invokes -- not just construct ``PodCreateRequest``
-    directly, which would miss a field ``cli._request`` refuses (e.g. the
-    ``hard_deadline`` placeholder that used to reach `PodCreateRequest`
-    unfilled and unrefused-by-name)."""
+    """What `README.md` and the printed command both promise is runnable must
+    actually load through the exact loader the printed command invokes -- not
+    just construct ``PodCreateRequest`` directly, which would miss a field
+    ``cli._request`` refuses (e.g. an unfilled ``hard_deadline`` placeholder).
+    """
 
     placement = load_placement_table(PLACEMENT)
     now = utc_now()
@@ -286,8 +284,8 @@ def test_main_refuses_an_unreadable_spend_policy_instead_of_raising(
     """`SpendRefusal` is a `PodRuntimeError`, not a `ValueError`.
 
     A missing or malformed `config/spend.toml` is the ordinary way this
-    command is run wrong, and it used to answer with a traceback rather than
-    the REFUSED page every other unrenderable configuration gets.
+    command is run wrong, and must answer with the REFUSED page every other
+    unrenderable configuration gets, not a traceback.
     """
 
     spend = tmp_path / "spend.toml"

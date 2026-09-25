@@ -224,13 +224,10 @@ def boundary_summary(tree: RunTree, stage: str) -> dict[str, Any]:
     """
 
     seal, digest = stored_boundary(tree, stage)
-    # Inside the guard, like every other read of this seal. `stored_boundary`
-    # converts a damaged seal into a named refusal, but `latest_attempt` proves
-    # only `attempt_ordinal`; the other four keys were indexed raw. A payload
-    # that had lost its census or one of its digests raised a bare KeyError,
-    # which is not an `ApprovalRefusal`, so it passed the caller's handler and
-    # reached the unclassified one -- telling the operator to photograph the
-    # message and find a maintainer over evidence this tool can name exactly.
+    # Inside the guard: `stored_boundary` proves only `attempt_ordinal`, and a
+    # payload missing its census or a digest would otherwise raise a bare
+    # `KeyError` that reaches the unclassified handler instead of a named
+    # `ApprovalRefusal`.
     try:
         payload = seal["payload"]
         return {
@@ -308,46 +305,23 @@ def record_advance(
 ) -> ApprovalRecordReference:
     """Append the one allowed decision record after proving its boundary exists.
 
-    **The boundary's verification belongs to the launching parent, and this
-    half of the worker boundary deliberately does not repeat it.**
-    `trigger_advance` calls `sealed_boundary` — `stored_boundary` *plus*
-    `verify_sealed_boundary` — unconfined, read-only, and before the receipt
-    directory is created, so a boundary whose seal no longer verifies still
-    refuses before any advance record exists. This function reads the same
-    stored seal and binds the digest the parent verified.
+    Boundary verification belongs to the launching parent and is not
+    repeated here: `trigger_advance` calls `sealed_boundary` unconfined,
+    read-only and before the receipt directory exists, so an unverifiable
+    seal refuses before any advance record exists. This function reads the
+    same stored seal and binds the digest the parent already verified,
+    since it cannot re-verify inside the confined worker: the decoders that
+    verification needs pull in `ctypes`, which the macOS Seatbelt profile
+    aborts a confined child for importing, and the boundary does not widen
+    to admit a checker.
 
-    It does not re-verify, because inside the confined worker it cannot.
-    `verify_predecessor_seal` and `verify_final_seal` end in
-    `common.stage._decode_environment`, whose `import pypdfium2` pulls in
-    `ctypes` — the one import this repository has already measured aborting a
-    confined child under the macOS Seatbelt profile, recorded at
-    `custody._launcher_environment_hidden`, which imports `ctypes` inside its
-    Linux-only branch for exactly that reason. Widening the profile to admit
-    it is refused on principle: the boundary does not widen to accommodate a
-    checker.
-
-    **Nothing that can refuse was lost by the move.** Every refusal
-    `_verify_stage_seal` raises is reached by reading files, which the profile
-    already permits; the single step that needs the decoders is explicitly an
-    observation Unit 17 owns and never a refusal. In the worker that
-    observation was written to a stderr pipe `trigger_advance` discards on
-    success, so moving it to the parent is where it reaches a person at all
-    (principle 2). Splitting a diagnostic-free variant out of
-    `_verify_stage_seal` was the alternative and is declined: that function
-    exists to be the single definition of what a seal means, and a second,
-    weaker entry point beside it is the shape its own docstring warns against.
-
-    **The read-then-write window is closed by detection, not by locking, and
-    that is the decision rather than an omission.** A seal re-written between
-    the `stored_boundary` read above and the write below — or between the
-    parent's verification and this process starting at all — leaves a record
-    binding a digest that is already stale. No number of re-reads closes that:
-    there is no cross-process lock over a run tree, and principle 4 forbids
-    retracting the record once it is written, so a post-write check could only
-    report what the binding already reports. What the binding buys instead is that
-    the staleness is permanent and visible — `verify_advance` refuses such a
-    record, and `review._still_binds` names it stale on the one surface a
-    person reads, every time they read it.
+    The read-then-write window is closed by detection, not locking: a seal
+    rewritten between the read above and the write below leaves a record
+    binding a digest that is already stale, and no re-read closes that
+    without a cross-process lock this tree does not have. What the binding
+    buys instead is that the staleness stays permanent and visible —
+    `verify_advance` refuses such a record, and `review._still_binds` names
+    it stale every time it is read.
     """
 
     reason = validate_advance_reason(reason)
@@ -424,29 +398,22 @@ def trigger_advance(
     opt-in. `record_advance` refuses a missing digest too: the same fact
     enforced on both sides of the worker boundary.
 
-    The two sides are not symmetric about *verification*, and that asymmetry
-    is deliberate rather than an omission: seal verification re-derives the
-    local decode environment, which the Seatbelt profile denies inside the
-    worker, so it is performed here — before the worker is launched and before
-    its writable directory exists. `record_advance` carries the full reasoning.
+    The two sides are asymmetric about verification, deliberately: seal
+    verification re-derives the local decode environment, which the
+    Seatbelt profile denies inside the worker, so it happens here instead,
+    before the worker is launched and before its writable directory exists.
     """
 
-    # Absolute before it is split between the two processes. The parent builds
-    # the Landlock/Seatbelt allowance from *its* resolution of the run root
-    # while the child resolves the same string against `workspace`, so a
-    # relative path sends the permitted directory and the tree the worker
-    # opens to two different places — the boundary would then guard a tree
-    # nobody wrote to.
+    # Resolved to absolute before it is split between the two processes: the
+    # parent builds the confinement allowance from its own resolution of the
+    # run root, and a relative path here would let the child resolve it
+    # against `workspace` into a different tree than the one guarded.
     root = Path(run_root).resolve()
     tree = RunTree(root, run_id)
-    # **This is the boundary's verification, and it happens here because the
-    # confined worker cannot perform it.** `sealed_boundary` refuses a seal
-    # that no longer witnesses the evidence on disk, and it runs unconfined,
-    # read-only, and above the `receipt_dir.mkdir` below — so the review's
-    # property holds exactly as stated: a boundary whose seal no longer
-    # verifies refuses before any advance record exists, and before the one
-    # path the worker is permitted to write into is even created. The worker's
-    # own check is the digest equality it binds; `record_advance` says why.
+    # The boundary's verification, done here because the confined worker
+    # cannot perform it: `sealed_boundary` runs unconfined, read-only, and
+    # above the `receipt_dir.mkdir` below, so an unverifiable seal refuses
+    # before any advance record exists or the worker's writable path exists.
     try:
         run_identity = directory_identity(tree.root, "the reviewed run tree")
         _seal, current_digest = sealed_boundary(tree, stage)
@@ -478,15 +445,13 @@ def trigger_advance(
         require_directory_identity(tree.root, run_identity, "the reviewed run tree")
     except (ApprovalRefusal, OSError) as error:
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
-    # The run identity travels in argv and the decision travels on stdin, and
-    # the split is the authority boundary, not a style choice: argv is written
-    # by this trusted parent and names *which tree* may be written, while stdin
-    # is the channel a requester (eventually the renderer) may fill and names
-    # only *which sealed boundary* inside that tree. A request that could also
-    # name the tree could redirect the one permitted write at a run nobody
-    # granted. `validate_run_id` has already refused anything but
-    # `[a-z0-9._-]`, and `root` is absolute, so neither value can be read by
-    # the child's parser as an option.
+    # The run identity travels in argv, written by this trusted parent and
+    # naming which tree may be written; the decision travels on stdin, the
+    # channel a requester may fill, naming only which sealed boundary inside
+    # that tree. A request that could also name the tree could redirect the
+    # one permitted write at a run nobody granted. `validate_run_id` has
+    # already refused anything but `[a-z0-9._-]`, and `root` is absolute, so
+    # neither value can be read by the child's parser as an option.
     request = json.dumps({"stage": stage, "reason": reason, "expected_digest": expected_digest})
     if len(request) > MAX_ADVANCE_REQUEST_CHARACTERS:
         raise OperatorError(
@@ -567,22 +532,15 @@ def trigger_advance(
                 f"{error}" + _worker_stderr_clause(completed)
             ),
         ) from error
-    # Read after the reference is checked, deliberately. Deciding on stderr
-    # first made any byte on that pipe a refusal, and the worker runs under
-    # `runpy.run_module(run_name='__main__')`, where an ordinary
-    # `DeprecationWarning` prints by default -- so a completed, verifiable
-    # advance was reported as refused with no fault anywhere. What the worker
-    # wrote is still not discarded (principle 2): the record verified against
-    # the exact request, so this is a note beside a real advance rather than a
-    # verdict on it, and it is the operator who decides what to do about it.
+    # Read after the reference is checked, deliberately: deciding on stderr
+    # first would make any byte on that pipe a refusal, and an ordinary
+    # `DeprecationWarning` prints there by default under `runpy.run_module`,
+    # so a completed, verifiable advance could be reported as refused with
+    # no fault anywhere.
     if completed.stderr.strip():
-        # `strip_control_bytes`, not `sanitize_detail`. That function's own
-        # contract is "called in exactly one place: `render`, on the way to a
-        # person" -- it truncates at 2000 characters, rewrites vocabulary, and
-        # replaces a structured traceback with a placeholder. A worker traceback
-        # is exactly what this note exists to carry, so sanitizing here threw
-        # away the evidence and left the operator no copy of it (principle 2).
-        # This makes the line safe to print and changes nothing else about it.
+        # `strip_control_bytes`, not `sanitize_detail`, which truncates and
+        # replaces a traceback with a placeholder; a worker traceback is
+        # exactly what this note exists to carry.
         try:
             print(
                 "Note: the advance record was written and verified, and the advance worker also "
@@ -590,16 +548,11 @@ def trigger_advance(
                 file=sys.stderr,
             )
         except (OSError, ValueError):
-            # The record is written, verified against the exact request, and
-            # about to be returned. A `BrokenPipeError` — or the `ValueError`
-            # `print` raises on an already-closed stream — here would escape to the
-            # CLI's catch-all and exit 2, telling the operator the advance
-            # failed and inviting a retry of a boundary that is already
-            # advanced and cannot be retracted -- the same fault the worker's
-            # own report had, one process further out. Nothing is silently lost
-            # by swallowing it: a diagnostic channel that cannot be written to
-            # cannot carry a complaint about itself either, and the reference
-            # this returns is what the caller prints.
+            # The record is already written and verified. Letting a
+            # `BrokenPipeError` or closed-stream `ValueError` escape here
+            # would report the advance as failed and invite a retry of a
+            # boundary that cannot be retracted; the reference this returns
+            # is what the caller prints instead.
             pass
     return reference
 
@@ -607,10 +560,10 @@ def trigger_advance(
 def _worker_stderr_clause(completed: subprocess.CompletedProcess) -> str:
     """Carry the worker's own diagnostic into a refusal that was decided elsewhere.
 
-    Raw, like every other raise site in this module. A detail is persisted whole
-    and shortened only by `render` on its way to a person, so sanitizing it here
-    would discard the one copy of the diagnostic that exists anywhere -- and
-    would do it twice over, since `render` sanitizes again afterwards.
+    Raw, like every other raise site in this module: a detail is persisted
+    whole and shortened only by `render` on its way to a person, so
+    sanitizing it here would discard the one copy of the diagnostic that
+    exists anywhere.
     """
 
     text = completed.stderr.strip()

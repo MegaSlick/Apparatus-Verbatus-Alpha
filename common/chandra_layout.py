@@ -1,112 +1,61 @@
 """Chandra's own layout grammar: the vendor's prompt bytes, and a reader for its answer.
 
-The ruling in force is that each witness runs as its developers
-intended: the vendor's preprocessing, prompt bytes, message shape, generation
-values and output grammar are adopted verbatim and pinned by digest, and the
-vendor's harness is not. This module is the Chandra half of the grammar end of
-that line. It carries two things and nothing else:
+Each witness runs as its developers intended: the vendor's prompt bytes and
+output grammar are adopted verbatim and pinned by digest. This module carries
+two things:
 
-1. **The prompt the vendor sends.** `OCR_LAYOUT_PROMPT` -- the `"ocr_layout"`
-   entry of `PROMPT_MAPPING`, which is the prompt every vendor caller uses for
-   a layout read -- reproduced from `chandra/prompts.py` at the pinned commit,
-   built by the vendor's own f-string over the vendor's own 36 tags and 14
-   attributes so the rendered bytes are identical rather than merely similar.
-   `OCR_LAYOUT_PROMPT_SHA256` and `PROMPT_ENDING_SHA256` are checked against
-   the rendered strings at import: a byte edited here, by anyone, for any
-   reason, fails to import rather than quietly changing what a chair is asked.
-   The vendor file itself is **not** stored (the standing "fetched at boot,
-   never stored" ruling); the digests are what lives in the tree, and
-   `common/test_vendor_parity.py`'s network-gated arm re-fetches the pinned
-   file and proves the equality against the vendor rather than against us.
+1. **The prompt the vendor sends.** `OCR_LAYOUT_PROMPT`, reproduced from
+   `chandra/prompts.py` at the pinned commit and checked at import against
+   `OCR_LAYOUT_PROMPT_SHA256`/`PROMPT_ENDING_SHA256`, so an edited byte fails
+   to import rather than quietly changing what a chair is asked. The vendor
+   file itself is not stored; `common/test_vendor_parity.py`'s network-gated
+   arm re-fetches it and proves the equality against the vendor.
 
 2. **A reader for the answer that prompt asks for.** `parse_layout_html`
    re-expresses `chandra/output.py::parse_layout` over the standard library's
-   `html.parser`, so nothing in `pyproject.toml` grows and nothing on the live
-   path imports a vendor package (the namespace guard in
-   `common/test_vendor_parity.py` pins that). It is a re-expression, not a
-   copy, and it departs from the vendor in five recorded places -- see
-   **Departures** below. Every departure moves in one direction: the vendor
-   drops or substitutes, and we retain and name (principle 2).
+   `html.parser`, so nothing here imports a vendor package. It departs from
+   the vendor in five recorded places (**Departures** below), always in the
+   same direction: the vendor drops or substitutes, and we retain and name
+   (principle 2).
 
-**What this module does not do.** It establishes no text and selects nothing
-(principle 1). It is a grammar: bytes in, one named reading of
-those bytes out, with every fact it could not resolve carried beside the
-reading as a finding rather than resolved for it. The adapter that decides
-what a chair is asked and what a Testimonium records is
-`pipeline/3_attestatores/chandra.py`; the Designator's structure pass reads the
-same grammar for its own purpose. Both call this; neither restates it, because
-two readings of one page that disagreed about what a `data-bbox` means would be
-two page-pixel mappings for one chair.
+It establishes no text and selects nothing (principle 1): bytes in, one named
+reading out, with every unresolved fact carried beside it as a finding. The
+adapter deciding what a chair is asked is `pipeline/3_attestatores/chandra.py`;
+the Designator's structure pass reads the same grammar. Both call this; neither
+restates it.
 
-**Provenance.** Prompt bytes and parser behaviour:
-`github.com/datalab-to/chandra` at commit
-`d4f7467435aa4137d9539f000ddf0b7ced3eb43f` (`pyproject.toml` declares
-`chandra-ocr 0.2.0`, Apache-2.0). `chandra/prompts.py` for the prompt,
-`chandra/output.py::parse_layout` for the grammar, `chandra/settings.py` for
-`BBOX_SCALE`. Apache-2.0 permits the carry; the citation is the licence's
-condition and it is discharged here and in the commit that adds this file
-(`cleanroom/README.md`).
+**Provenance.** `github.com/datalab-to/chandra` at commit
+`d4f7467435aa4137d9539f000ddf0b7ced3eb43f` (`chandra-ocr 0.2.0`, Apache-2.0):
+`chandra/prompts.py` for the prompt, `chandra/output.py::parse_layout` for the
+grammar, `chandra/settings.py` for `BBOX_SCALE`.
 
 ## Departures from `chandra/output.py::parse_layout`, and why each one
 
 * **A malformed `data-bbox` yields `bbox_1000: None` and a `malformed-bbox`
-  finding.** The vendor prints `f"Invalid bbox format: {bbox}, defaulting to
-  full image"` and substitutes `[0, 0, 1, 1]` -- which, scaled, is a rectangle
-  of a few pixels in the page's top-left corner, not the full image the message
-  claims. Either way a value the model never reported would be published as
-  though it had been, and the print goes to a stdout nobody retains. Under
-  principle 2 and principle 8 the block is retained with its geometry unresolved and
-  the fact named. `block_page_bounds` returns `None` for it, so no caller can
-  reach a substituted rectangle by accident.
-* **A `Blank-Page` block is retained.** The vendor `continue`s past it in both
-  `parse_layout` and `parse_html`, so a page the model declared blank leaves no
-  record at all and is indistinguishable from a page it never answered about.
-  Here the block is kept, with `blank_page: True`, no text in the page text
-  (its span is zero-width where its text would have sat) and no page geometry
-  (`block_page_bounds` returns `None`). Its declared `data-bbox` is still
-  parsed and recorded, because discarding it would be the same silent loss in
-  a smaller place.
-* **Nested `data-bbox` attributes are recorded, not stripped.** The vendor
-  deletes them from the block's content ("not needed in open source"). They are
-  geometry the model reported; `nested_bboxes` lists them per block in document
-  order and `content` keeps the answer's own bytes. Nothing derives page
-  geometry from them -- they are evidence, not a second geometry channel.
-* **Character data outside every top-level block is counted and named.**
-  The vendor's `find_all("div", recursive=False)` does not see it, and neither
-  does any block here: a block the model answered as a top-level `<p>` or
-  `<table>`, or a line of ink it left between two divs, would otherwise yield
-  a page that parsed cleanly -- `findings == []`, `parse` complete -- with
-  those words absent from `page_text` and from every span. That is a missed
-  act arriving under a successful status, which goal 2 rates worst and
-  principle 2 forbids. It is a `content-outside-blocks` finding carrying the
-  number of non-whitespace characters that were outside. The count and not the
-  text, for the reason the `malformed-bbox` finding quotes under a bound: the
-  response bytes are retained whole upstream and are where the words live,
-  and a chair's own reading is published here as a length rather than as
-  prose. Character data is what is counted because character data is the
-  whole of what `LAYOUT_TEXT_VIEW` reads, so markup outside a block drops no
-  ink the text view would have read either; whitespace between blocks is
-  source formatting and produces nothing.
-* **The returned block count is reconciled against the raw HTML's own
-  top-level `<div>` count.** `_count_top_level_divs` is a second, deliberately
-  different scan -- a depth counter over `div` tags alone, blind to every other
-  element -- so a block the main reader loses to unbalanced markup shows up as
-  a `block-count-mismatch` finding instead of as a shorter list nobody
-  compares. A reconciliation computed by the code it is reconciling proves
-  nothing.
+  finding.** The vendor substitutes `[0, 0, 1, 1]` and only prints a warning
+  to a stdout nobody retains, so a value the model never reported would be
+  published as though it had been. `block_page_bounds` returns `None` for it.
+* **A `Blank-Page` block is retained**, with `blank_page: True`, empty text and
+  no page geometry, rather than dropped entirely as the vendor's `continue`
+  does -- indistinguishable from a page never answered otherwise.
+* **Nested `data-bbox` attributes are recorded, not stripped** (the vendor
+  deletes them "not needed in open source"). `nested_bboxes` lists them per
+  block; nothing derives page geometry from them.
+* **Character data outside every top-level block is counted and named**
+  (`content-outside-blocks`), since the vendor's `recursive=False` scan does
+  not see it and it would otherwise be a missed act under a clean parse. Only
+  the character count is published, not the text -- unlike `malformed-bbox`,
+  which quotes the offending text under a bound.
+* **The returned block count is reconciled against a second, independent scan**
+  of top-level `<div>`s (`_count_top_level_divs`), so a block lost to
+  unbalanced markup shows up as `block-count-mismatch` rather than silently.
 
-Two smaller re-expressions are faithful rather than departures, and are noted
-so a reader is not left to infer them. The vendor's `if not label: label =
-"block"` default is reproduced exactly, with `label_declared` recording whether
-the answer carried a `data-label` at all. And the vendor's `int()` over each
-space-separated bbox component is narrowed to a full match of
-`[+-]?[0-9]+`, because Python's `int` also accepts underscore-separated
-literals (`int("1_0") == 10`) and surrounding whitespace: the first is a
-convenience of the Python lexer, not a shape any model was ever asked for, and
-reading it as ten would be exactly the substituted value the first departure
-exists to prevent. It is a *full* match rather than an anchored one because
-`$` matches before a trailing newline too, which would have left the narrowing
-claiming more than it did.
+Two re-expressions are faithful, not departures: the vendor's `if not label:
+label = "block"` default is reproduced exactly (`label_declared` records
+whether one was present), and the vendor's `int()` over each bbox component is
+narrowed to a full match of `[+-]?[0-9]+`, since Python's `int` also accepts
+underscore-separated literals and surrounding whitespace that no model was
+ever asked for.
 
 ## Geometry
 
@@ -469,7 +418,7 @@ def _quoted(value: str | None) -> dict[str, Any]:
 # one, a model writing a component thousands of digits long reaches `int()`
 # below and CPython's own integer-string-conversion limit turns that into an
 # unhandled `ValueError` that crashes the Designator instead of producing this
-# function's named refusal (G13, "huge integer").
+# function's named refusal.
 _MAX_BBOX_COMPONENT_DIGITS: Final = 16
 _BBOX_COMPONENT: Final = re.compile(rf"[+-]?[0-9]{{1,{_MAX_BBOX_COMPONENT_DIGITS}}}")
 
@@ -512,7 +461,7 @@ def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | Non
     # integer-string limit, which is the only way this call can raise. A guard
     # here would be code no test can reach, implying a failure mode the regex
     # has already removed; the bound above is what keeps that true, and the
-    # regression test measures it (G13).
+    # regression test measures it.
     box = [int(part) for part in parts]
     if not all(0 <= component <= BBOX_SCALE for component in box):
         return None, f"components outside [0, {BBOX_SCALE}]"

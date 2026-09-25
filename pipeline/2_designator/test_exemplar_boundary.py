@@ -1,9 +1,9 @@
-"""The first downstream boundary reconciles the Exemplar before cutting ink.
-
-Both cases begin with the real synthetic orchestrator run, then damage only its
-already-written Exemplar evidence.  The Designator must stop before publishing any
-new proposal rather than allowing the final Armarium census to discover a missing
-source after later stages have worked around it.
+"""The Designator reconciles the Exemplar before cutting ink: most tests run
+the real orchestrator, damage only the Exemplar's written evidence, and check
+the Designator stops before publishing any new proposal. The missing-outcome
+test also damages the Ink Map's own accounting so the run reaches census
+reconciliation; the TOCTOU test below calls the Designator's internals
+directly, on pixels tampered after the upfront check.
 """
 
 import json
@@ -109,11 +109,8 @@ def test_a_tampered_corpus_seal_stops_before_the_designator_reads_any_page(
     path.write_bytes(canonical_bytes(record))
     tree.write_manifest(EXEMPLAR)
     rebind_stage_seal(tree, EXEMPLAR)
-    # Captured after `write_manifest`, which mutates the tree itself. This is the
-    # assertion that actually proves the module docstring's claim — that the
-    # Designator stops *before publishing any new proposal* — and without it a
-    # regression that refused only after writing a region stayed green here while
-    # the four neighbouring tests caught it.
+    # Captured after write_manifest (which mutates the tree), proving the
+    # Designator stops before publishing any new proposal.
     before = snapshot(tree.root)
 
     result = invoke_designator(tmp_path)
@@ -201,21 +198,11 @@ def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary
 def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(
     tmp_path, rebind_stage_seal, rewitness_boundary
 ):
-    """The reconciliation branch at `common/exemplar_boundary.py`, which had no test
-    at all: replacing its condition with `if False` left the whole suite green.
-
-    Deleting the page artifact alone does not reach it — the corpus seal still
-    inputs that artifact, so the run tree refuses at the input-reference check one
-    layer earlier, which is what the neighbouring test exercises. Reaching this
-    branch means removing the page *and* the seal's reference to it, which is
-    exactly the shape a producer bug would leave behind: an Exemplar that no longer
-    accounts for a page `run.json` says arrived, with nothing dangling to notice.
-
-    The refusal names ordinals rather than submitted filenames on purpose. Every
-    ContractError reaches stderr through `run_stage`, and the data-handling
-    policy's logging rule keeps a declared path out of that channel — the same
-    reason `operations/submit/inventory.py` names its refusals by entry. The
-    message used to interpolate `relative_path`, and nothing tested it either way.
+    """The reconciliation branch at `common/exemplar_boundary.py`, previously
+    untested: reaching it means removing both the page artifact and the
+    seal's reference to it (a producer bug with nothing dangling to notice),
+    not just the artifact alone. The refusal names ordinals, never a submitted
+    filename, per the data-handling policy's logging rule.
     """
     tree = populated_run(tmp_path)
     page = next(
@@ -236,11 +223,9 @@ def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(
     seal_path.write_bytes(canonical_bytes(seal))
     tree.resolve(page["relative_path"]).unlink()
     rebind_stage_seal(tree, EXEMPLAR)
-    # The Ink Map sits between Exemplar and Designator and accounted the same
-    # page; the producer bug this test models leaves NO stage accounting for
-    # it. Remove the ink-map artifacts that bound the lost page and re-witness
-    # that boundary, so the Designator reaches the census reconciliation this
-    # test exists for instead of an upstream dangling-input refusal.
+    # Also remove the Ink Map's own accounting of the lost page, so no stage
+    # accounts for it and the Designator reaches census reconciliation rather
+    # than an upstream dangling-input refusal.
     removed = 0
     for entry in list(tree.build_manifest(INK_MAP, verify_inputs=False)["artifacts"]):
         artifact_file = tree.resolve(entry["relative_path"])
@@ -251,12 +236,6 @@ def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(
         ):
             artifact_file.unlink()
             removed += 1
-    # Named, so a changed input shape says so. The loop matches ink-map inputs
-    # by the page artifact's `relative_path`; were the Ink Map to bind the page
-    # blob instead, it would delete nothing, the Designator would refuse at the
-    # earlier dangling-input check, and this test would fail against its census
-    # assertion below -- sending the reader to the census branch rather than to
-    # the input shape that actually moved.
     assert removed == 1, "no ink-map record bound the lost page by its artifact path"
     tree.write_manifest(INK_MAP)
     rewitness_boundary(tree, INK_MAP)
@@ -274,13 +253,9 @@ def _load_designator():
 
 
 def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tmp_path):
-    """The upfront boundary check (`page_records`, proven above) runs once, before
-    the first region is cut. This proves the narrower claim that check alone
-    cannot: a page's bytes changing on disk *after* that one-time check has
-    already passed, but before this specific page's own later read (the
-    structure scan, a crop), is still caught -- rather than being silently
-    baked into sealed Designator evidence on the strength of a check that
-    already happened.
+    """The upfront boundary check runs once; this proves a page's bytes
+    changing on disk after that check but before this page's own later read
+    is still caught.
     """
     root = tmp_path / "runs"
     for program in (
@@ -311,12 +286,10 @@ def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tm
     )
     context = open_context(args, designator.DESIGNATOR)
 
-    # The upfront check: passes, exactly as it does at the top of a real run.
     records = designator.page_records(context)
     pages = designator.sealed_pages(records)
     page_record = pages[1]
 
-    # Tamper the same page's blob *after* that check already passed.
     blob_path = context.tree.resolve(page_record["payload"]["image_path"])
     with Image.open(BytesIO(blob_path.read_bytes())) as image:
         changed = image.copy()

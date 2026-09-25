@@ -201,9 +201,9 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
 
     # An immutable stage artifact cannot be altered through its normal writer.
     # This synthetic reseal is the precise counterfactual Armarium must account
-    # for: the transport envelope remains valid, but its established reading has
-    # no exportable provenance.  Remove old Armarium output so the new terminal
-    # record has no immutable-identity collision with the prior happy export.
+    # for: the transport envelope remains valid, but its established reading
+    # has no exportable provenance. Clear old Armarium output first, or the
+    # new terminal record would collide with the prior happy export's identity.
     shutil.rmtree(tree.root / "7_armarium")
     altered = json.loads(json.dumps(original))
     altered["payload"].pop(missing_field)
@@ -426,10 +426,10 @@ def test_a_damaged_witness_receipt_hard_stops_rather_than_refusing_only_its_act(
 
 # --- The act-attachment view is required at export, not merely checked ----------
 #
-# Audit-and-repair seat 3, R0. F-O2: `export_witnesses` rechecked R0's
-# act-attachment dossier view only `if attachment is not None`, so an established
-# reading that had dropped the field exported with its page-witness custody never
-# rechecked here. The retained witness basis beside it was already required.
+# `export_witnesses` must not recheck the act-attachment dossier view only
+# `if attachment is not None`: an established reading that dropped the field
+# would then export with its page-witness custody never rechecked here, even
+# though the retained witness basis beside it was already required.
 
 
 def _stage_module(name: str, path: Path, *, isolated_modules: tuple[str, ...] = ()):
@@ -522,9 +522,8 @@ def _established_uncertainty_case(armarium, monkeypatch):
         "perlectio_ref": reading_ref,
         "recensor_ref": review_ref,
         "uncertainty": layer,
-        # The record's two damage fields, which export now reconciles like every
-        # other field it copies from the reading: an empty annotation layer, and
-        # the status that derives from it and from the empty gap list above.
+        # The record's two damage fields, reconciled like every other field
+        # export copies from the reading.
         "annotations": [],
         "text_status": "established",
     }

@@ -1,16 +1,13 @@
-"""Spec 10, test 3: status honesty at the schema.
+"""Status honesty at the schema.
 
 `no_readable_text` requires its evidence reference; an empty `text` with
-`established` status is refused at the schema — directly, at the pure validation
-function, not only observed as a side effect of a full run. The end-to-end version
-of the empty-reading case lives in
-`pipeline/orchestrator/test_orchestrator_acceptance.py::
-test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proof`:
-an accepted review over an empty-text reading is refused, not established, because
-the current Recensor never supplies the blank-proof evidence reference this status
-requires (CONTRACT.md's named cross-stage gap). The success path — a forged review
-that does carry that evidence — is exercised beside it, in
-`test_archetypus_establishes_no_readable_text_once_the_review_retains_real_blank_proof`.
+`established` status is refused directly at the pure validation function, not
+only observed as a side effect of a full run. The end-to-end empty-reading
+case (an accepted review over an empty-text reading is refused, not
+established, because the current Recensor never supplies the blank-proof
+evidence reference this status requires -- CONTRACT.md's named cross-stage
+gap) and its success path (a forged review that does carry that evidence) live
+in `pipeline/orchestrator/test_orchestrator_acceptance.py`.
 """
 
 import importlib.util

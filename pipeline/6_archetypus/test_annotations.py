@@ -456,15 +456,9 @@ def test_a_partial_record_is_exportable_by_the_armarium(tmp_path):
 
 
 def test_the_export_carries_a_partial_acts_damage(tmp_path):
-    """The honest export shape. Live, and no longer a strict xfail.
-
-    This was the pin on the Stage 6→7 seam: the Armarium read neither
-    `text_status` nor `annotations`, so a partial act was delivered as though it
-    were whole and the run still aggregated to `complete`. `strict=True` made the
-    day it started passing a suite failure naming exactly what to clean up. That
-    day is this change — the marker is gone, the assertions below run for real,
-    and `pipeline/6_archetypus/CONTRACT.md`'s consumer-obligations section no
-    longer says the Armarium ignores these fields.
+    """A partial act must not be delivered as though it were whole: the export
+    must carry `text_status` and `annotations`, not aggregate a damaged act to
+    `complete`.
     """
     root = tmp_path / "runs"
     _run_through_recensor(root, "r")
@@ -616,18 +610,11 @@ def test_an_internal_gap_in_every_reading_leaves_the_run_visibly_partial(tmp_pat
 
 
 def test_a_sealed_annotation_is_carried_out_rather_than_replaced_by_not_produced(tmp_path):
-    """Sol-S4's second field failure: the layer was not dropped, it was overwritten.
-
-    Every exported row carried `annotations: []` and `annotation_status:
-    "not-produced"` — a true statement about the *semantic* annotation layer
-    `annotation_boundary.py` has never built, written over an act whose Archetypus
-    record sealed a real `illegible` mark. Two different things wore one word and
-    the sealed one lost, so the export made a positive claim that no annotations
-    were produced for an act that carried one.
-
-    Both layers now travel under their own names, and both are asserted here: the
-    transcription layer arrives intact, and the semantic claim stays exactly the
-    true statement it always was about the layer it actually describes.
+    """The *semantic* annotation layer's not-produced claim (true of the layer
+    `annotation_boundary.py` has never built) must never overwrite a real
+    *transcription* mark an Archetypus record sealed: both layers travel under
+    their own names, so each stays a true statement about the layer it
+    describes.
     """
     root = tmp_path / "runs"
     _run_through_recensor(root, "r")

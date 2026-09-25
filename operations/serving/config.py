@@ -96,21 +96,13 @@ _PROFILE_FIELDS = {
     "readiness_probe",
     "preflight_state",
 }
-# Optional on a vLLM row, and optional deliberately.  ``patch_size``/
-# ``merge_size`` are the chair's vision-encoder geometry, read from the pinned
-# revision's own processor configuration -- ``preprocessor_config.json`` where
-# the repository ships one, ``processor_config.json`` (under its
-# ``image_processor`` object) where it does not, which for `attestator_2`'s
-# pinned DAI revision is the only one that exists (``manager.assert_processor_geometry``
-# reads both spellings from the verified snapshot and refuses a launch where
-# the row disagrees); they decide how many prompt tokens one image costs
-# (``common/request_capacity.py``).  vLLM reads them
-# from the model repository, so a row that omits them still launches -- what it
-# cannot do is have a request checked against it before it is sent, and
-# ``request_capacity.row_image_geometry`` refuses by name in that case rather
-# than counting against a default that is wrong for half the roster.  Left
-# optional so a catalogue that has not been measured is incomplete rather than
-# unloadable.
+# Optional deliberately: `patch_size`/`merge_size` are the chair's
+# vision-encoder geometry (checked against the pinned revision's processor
+# config by `manager.assert_processor_geometry`) that decide one image's
+# prompt-token cost. vLLM itself reads them from the model repository, so a
+# row omitting them still launches -- `request_capacity.row_image_geometry`
+# refuses by name instead of counting against a wrong default -- so a
+# catalogue not yet measured is incomplete rather than unloadable.
 _OPTIONAL_PROFILE_FIELDS = {"patch_size", "merge_size"}
 _PREFLIGHT_DIGEST_FIELD = "preflight_digest"
 _PREFLIGHT_IDENTITY_FIELD = "preflight_identity_digest"
@@ -665,24 +657,13 @@ def verify_recipes_cover_chairs(
 ) -> None:
     """Every configured chair resolves to exactly one profile at every tier.
 
-    ``for_identity`` already refuses zero or several matches — but only at the
-    moment a start is attempted, which on the real path is on a rented GPU with
-    the meter running.  A misspelt ``serving_recipe``, a chair added to
-    ``models.toml`` without a catalogue row, or a placement tier added to
-    ``pod_placement.toml`` without one, are all the same shape of gap
-    ``common/stage.py::unaddressed_chairs`` closes a layer up: a configured
-    thing nothing will ever be able to ask for.  This is the offline check, so
-    the three files are reconciled by the test suite rather than by the pod.
-
-    Absent chairs carry no recipe and are skipped: an absence is a decision
-    already recorded.
-
-    A proven profile's ``preflight_identity_digest`` is reconciled here for the
-    same reason.  ``manager._launchable`` refuses a proof that has stopped
-    describing its chair, but it refuses at the moment of launch — which on the
-    real path is again the rented GPU.  A chair repointed in ``models.toml``
-    without its profile being preflighted again is a configuration gap of
-    exactly the shape above, so it fails in a test run too.
+    ``for_identity`` already refuses zero or several matches, but only at
+    launch, on a rented GPU with the meter running. This is the same check
+    made offline: a misspelt ``serving_recipe``, a chair or tier added without
+    a catalogue row, is a configured thing nothing could ever ask for. Absent
+    chairs carry no recipe and are skipped. A proven profile's
+    ``preflight_identity_digest`` is reconciled here too, for the same
+    reason ``manager._launchable`` refuses a stale one only at launch.
     """
 
     tier_values = tuple(tiers)

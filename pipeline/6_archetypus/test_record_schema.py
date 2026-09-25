@@ -50,11 +50,11 @@ REGION = {
 }
 
 
-# The reader's own doubt assessment, closed into the canonical uncertainty layer
-# on 2026-09-11 (independent audit of 2026-09-10, F2): the span layers alone
-# cannot say whether an empty list is "no doubt" or "no doubt was ever asked
-# for". `assessed` is the state every record below wants, because it is the only
-# one under which the spans and gaps may be non-empty.
+# The reader's own doubt assessment, closed into the canonical uncertainty
+# layer because the span layers alone cannot say whether an empty list is "no
+# doubt" or "no doubt was ever asked for". `assessed` is the state every
+# record below wants, because it is the only one under which the spans and
+# gaps may be non-empty.
 _ASSESSED = {"state": "assessed", "problem": None}
 
 
@@ -288,15 +288,13 @@ def test_record_validation_refuses_each_resealed_defect(overrides, expected):
 
 
 def test_record_validation_refuses_a_resealed_region_outside_the_closed_schema():
-    """The read-back proof used to stop at the record's top level.
+    """The read-back proof must not stop at the record's top level.
 
-    `_crop_references` closes `_REGION_FIELDS` at construction — the fix that
-    stopped `consolidated_literal`, the first name in the old pipeline's dead
-    fallback chain, from travelling sealed into the record and out through the
-    export. But `validate_record`, the function every later stage-local read and
-    `CONTRACT.md` both rely on, checked only that `regions` was a non-empty list:
-    a record resealed on disk with the same dead field smuggled inside a region
-    passed it. `_validate_region_fields` now runs on both paths.
+    `_crop_references` closes `_REGION_FIELDS` at construction, but
+    `validate_record` -- the function every later stage-local read and
+    `CONTRACT.md` both rely on -- checks only that `regions` is a non-empty
+    list unless `_validate_region_fields` also runs there: otherwise a record
+    resealed on disk with a dead field smuggled inside a region would pass.
     """
     smuggled = dict(REGION, consolidated_literal="A SECOND READING NOBODY ESTABLISHED")
     with pytest.raises(SchemaRefusal, match="outside the closed region schema"):
@@ -382,13 +380,12 @@ def test_record_validation_refuses_a_gap_whose_position_label_lies_about_its_own
 ):
     """The canonical uncertainty layer's gap position is a claim, not free text.
 
-    U2: the closed field-set check alone accepted any `position` value and never
-    checked a labelled gap's bounds against what that label means, so a resealed
-    record could claim `leading` three characters in, or `internal` at the very
-    edge of the text. Both are checked the same way `pipeline/4_perlector/
-    annotations.py`'s producer-side `validate_gaps` already checks them, so the
-    canonical projection layer does not trust a restatement its own producer
-    would have refused to write.
+    A resealed record must not claim `leading` three characters in, or
+    `internal` at the very edge of the text: a labelled gap's bounds are
+    checked against what that label means, the same way `pipeline/4_perlector/
+    annotations.py`'s producer-side `validate_gaps` already checks them, so
+    the canonical projection layer does not trust a restatement its own
+    producer would have refused to write.
     """
     with pytest.raises(SchemaRefusal, match=expected):
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))
@@ -397,10 +394,10 @@ def test_record_validation_refuses_a_gap_whose_position_label_lies_about_its_own
 def test_record_validation_refuses_a_self_revision_with_a_negative_prior_offset():
     """A prior-draft offset can never be negative, whatever draft it indexes.
 
-    U2: `prior_span` anchors into the Perlector's prior draft, a string this
-    layer never sees, so it cannot bound-check the offset against that draft's
+    `prior_span` anchors into the Perlector's prior draft, a string this layer
+    never sees, so it cannot bound-check the offset against that draft's
     length -- but a negative offset is nonsensical regardless of which string
-    it indexes, and was previously accepted uncaught.
+    it indexes.
     """
     revision = {
         "reading_span": {"start": 0, "end": 0},

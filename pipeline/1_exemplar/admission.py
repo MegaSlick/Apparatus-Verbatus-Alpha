@@ -111,9 +111,9 @@ FORMAT_ROUTES: Final = {
 def load_format_policy() -> dict[str, str]:
     """Return the complete code-owned routing map.
 
-    Ruling 2 leaves no operator choice here: every raster is decoded and fanned out
-    when needed, while PDF is always painted page by page. Deriving the map from the
-    sniffer means a new named format cannot be omitted, and keeping it in code avoids
+    No operator choice here: every raster is decoded and fanned out when needed,
+    while PDF is always painted page by page. Deriving the map from the sniffer
+    means a new named format cannot be omitted, and keeping it in code avoids
     presenting the one legal routing as a configurable decision.
     """
     return dict(FORMAT_ROUTES)

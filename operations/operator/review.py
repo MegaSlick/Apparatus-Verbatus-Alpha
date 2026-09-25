@@ -35,19 +35,11 @@ MAX_REVIEW_ITEMS_BYTES = 16 * 1024 * 1024
 MAX_REVIEW_ITEMS = 50_000
 _REVIEW_ITEMS_MEMBER = "review-items.jsonl"
 
-# The review queue was bounded and the images beside it were not. Every sealed
-# page and every act crop is still read whole to verify its digest, and the
-# projection verifies all of them in one pass, so a parish-sized run met no
-# limit, only the memory of the machine. The evidence would be intact on disk
-# and unreadable on the one surface a person reads.
-#
-# This is a bound, not the eventual answer: a console for real parish volumes
-# should verify one image at a time as the renderer fetches it, which is a
-# change to what the child receives rather than an audit repair. The number is
-# the largest that still passes through this pipe with room for the JSON copy
-# on both sides, so it refuses only runs the one-pass verification design could
-# not have served anyway — and it refuses them by name instead of by
-# exhaustion (principle 2).
+# Every sealed page and crop is read whole, in one pass, to verify its digest,
+# so an unbounded run met no limit here, only the memory of the machine. The
+# number is the largest that still passes through this pipe with room for the
+# JSON copy on both sides; a console that streamed one image at a time as
+# fetched would need no such limit.
 MAX_PROJECTED_IMAGE_BYTES = 256 * 1024 * 1024
 
 
@@ -78,14 +70,13 @@ class _ImageBudget:
 def _budgeted_image_bytes(
     tree: RunTree, relative_path: str, budget: _ImageBudget, what: str
 ) -> bytes:
-    """Charge an image against the budget before it is anywhere near memory.
+    """Charge an image's on-disk size against the budget before reading it.
 
-    `RunTree.read_bytes` loads the whole file and only then hands its length to
-    `spend`, so a page larger than the allowance was fully resident at the exact
-    moment the limit existed to refuse it -- on a parish-sized image that is the
-    console dying rather than refusing by name (principle 2). The size on disk
-    is charged first and the read is then bounded by what was charged, so a file
-    that grew between the two spends nothing it was not allowed.
+    `RunTree.read_bytes` loads the whole file before checking its length, so a
+    file larger than the allowance would already be fully resident by the time
+    the limit could refuse it. The size on disk is charged first and the read
+    is bounded by that charge, so a file that grew between the two spends
+    nothing it was not allowed.
     """
 
     path = tree.resolve(relative_path)
@@ -117,42 +108,23 @@ class ReviewProjection:
     acts: tuple[dict[str, Any], ...]
     review_items: tuple[dict[str, Any], ...] | None
     advance_records: tuple[dict[str, Any], ...]
-    # The pre-export view. Before this,
-    # the projection refused the whole run whenever the Armarium had not
-    # exported -- exactly the moment a person needs to see the images, the
-    # readings and the reason the run stopped. These four are derived from the
-    # same `stage_records` snapshot as everything above, and default so the
-    # seven fields callers construct by position or keyword stay as pinned.
-    #
-    # `export`      what the export record itself says -- whether one exists,
-    #               whether the Armarium then sealed, the record's own outcome
-    #               and its bundle's claims status -- and what that means for
-    #               the rows above (`present`, `record_present`,
-    #               `boundary_sealed`, `outcome`, `claims_status`, `complete`,
-    #               `record_ref`, `review_items_absent_because`, `note`)
-    # `progress`    one row per stage: sealed, unsealed (interrupted or still
-    #               running), not-run, or seal-invalid -- a stage that has not
-    #               run is named as that, never as corruption, and a seal that
-    #               no longer verifies is named as that, never as not-run
-    # `holds`       every act the Designator or the Recensor left unresolved,
-    #               with the recorded reason, pre- and post-export alike
-    # `next_action` the one supported continuation in plain words, and what
-    #               `advance` does and does not do about a hold
-    #
-    # `pages_declared` how many source pages the run authority itself declared,
-    #               so the Pages list carries the denominator the Armarium
-    #               reconciles against rather than a count of records found.
+    # Lets a run without a completed export still be projected: `export` says
+    # what the export record itself claims, `progress` gives one state per
+    # stage (sealed / unsealed / not-run / seal-invalid), `holds` lists every
+    # unresolved act pre- and post-export alike, and `next_action` states the
+    # one supported continuation. All four default so existing positional and
+    # keyword construction stays valid.
     export: dict[str, Any] = field(default_factory=dict)
     progress: tuple[dict[str, Any], ...] = ()
     holds: tuple[dict[str, Any], ...] = ()
     next_action: dict[str, Any] = field(default_factory=dict)
+    # The denominator the Armarium reconciles its census against, not a count
+    # of page records found.
     pages_declared: int | None = None
     pages_declared_note: str | None = None
-    # What to say beside the act count: that no proposal seal exists, or that a
-    # further proposal-seal record is stored beside the canonical one. `None`
-    # when the denominator is the canonical seal and nothing else. A zero that
-    # means "no denominator exists" must not read like a zero that means "no
-    # acts".
+    # None when the act denominator is the canonical seal alone; otherwise
+    # says why (no seal, or an extra seal record beside the canonical one) so
+    # a zero here never reads like "no acts".
     acts_denominator_note: str | None = None
 
 
@@ -167,14 +139,10 @@ class ReadOnlyRun:
     def projection(self) -> ReviewProjection:
         tree = self._tree
         if not (tree.root / RUN_FILE).exists():
-            # F035: a mistyped or nonexistent run id is a wrong command, not
-            # damaged evidence -- RunTree.__init__ only validates the id's
-            # shape, so a name that simply names nothing reaches this far and
-            # would otherwise fall into the catch-all below, which reads as
-            # "preserve the run tree unchanged and investigate," advice aimed
-            # at a tree that exists and failed verification, not one that was
-            # never there. Checked at the exact path RunTree itself will look,
-            # so this can never disagree with read_run() about what "there".
+            # A mistyped or nonexistent run id is a wrong command, not damaged
+            # evidence, so it is refused here rather than falling into the
+            # catch-all below, whose advice ("preserve and investigate") is
+            # for a tree that exists and failed verification.
             raise OperatorError(
                 ErrorCode.INVALID_COMMAND,
                 detail=(
@@ -205,9 +173,8 @@ class ReadOnlyRun:
                     [row["record"] for row in seals], f"{stage} stage seal", operation="seal"
                 )
                 seal = next(row for row in seals if row["artifact_id"] == current["artifact_id"])
-                # The tree's protection is kept beside 21F's display rows: the
-                # boundary is "sealed" only when its stored seal still verifies
-                # against the evidence on disk, and the note says why not.
+                # A boundary is "sealed" only when its stored seal still
+                # verifies against the evidence on disk; the note says why not.
                 try:
                     verify_sealed_boundary(tree, stage)
                 except ContractError as error:
@@ -226,9 +193,9 @@ class ReadOnlyRun:
                         "seal_digest": seal["record_ref"]["sha256"],
                         "census": seal["record"]["payload"]["census"],
                         "seal_record_ref": seal["record_ref"],
-                        # Every completion seal remains visible.  `current` describes
-                        # the seal that the boundary presently names; it does not
-                        # suppress an earlier attempt or decide what an operator does.
+                        # Every completion seal remains visible; `current`
+                        # names the one the boundary presently uses without
+                        # suppressing an earlier attempt.
                         "seals": tuple(
                             {
                                 "artifact_id": candidate["artifact_id"],
@@ -241,13 +208,11 @@ class ReadOnlyRun:
                     }
                 )
             progress = _progress(boundaries, stage_records)
-            # One allowance across pages and crops together: the projection
-            # verifies them all in one pass, so bounding either alone would
-            # bound nothing.
+            # One allowance shared by pages and crops, since both are verified
+            # in the same pass.
             budget = _ImageBudget()
-            # One read of the act denominator for the whole projection: the act
-            # list, the holds seeded from the seal, and the note beside the act
-            # count all describe the same seal, read and checked once.
+            # Read once and shared by the act list, the seal-seeded holds, and
+            # the denominator note, so all three describe the same seal.
             seal_found = _expected_acts(stage_records)
             acts_denominator_note = (
                 seal_found[2]
@@ -262,12 +227,9 @@ class ReadOnlyRun:
             if export_rows:
                 payload, export_ref = _armarium_payload(tree, stage_records)
                 pages = tuple(_image_row(tree, row, export_ref, budget) for row in payload["pages"])
-                # The two act lists carry different writer contracts: Armarium
-                # attaches `source_regions` to every delivered act and never to
-                # a non-delivered one (pipeline/7_armarium/run.py builds review
-                # entries without it). A delivered act missing its crop list is
-                # therefore a damaged record; a non-delivered act without one
-                # is the record as written.
+                # The Armarium attaches `source_regions` to every delivered act
+                # and never to a non-delivered one: missing means damaged on a
+                # delivered row, and means the record as written otherwise.
                 acts = tuple(
                     _act_row(tree, row, export_ref, budget, stage_records=stage_records)
                     for row in payload["delivered"]
@@ -287,13 +249,10 @@ class ReadOnlyRun:
                     export_rows[0], payload, export_ref, armarium_state, review_items
                 )
             else:
-                # No export: the run stopped, or was stopped, before the
-                # Armarium. Everything a person needs to see at that moment --
-                # the sealed pages, the crops, the latest reading and the
-                # review that held it -- is already sealed by the stages that
-                # did run, so it is projected from those records, each row
-                # naming the record it came from. Nothing here is a delivered
-                # result, and `export` says so where a reader reads.
+                # No export: project from whatever the stages that did run
+                # already sealed (pages, crops, latest reading, holding
+                # review), each row naming its own record. None of this is a
+                # delivered result, and `export` says so.
                 pages = _sealed_pages(tree, stage_records, budget)
                 acts = _progressive_acts(tree, stage_records, budget, seal_found)
                 review_items = None
@@ -337,8 +296,8 @@ class ReadOnlyRun:
                 pages_declared_note=declared_note,
             )
         except (ContractError, KeyError, OSError, TypeError, ValueError) as error:
-            # The rendered detail must retain the evidence path from the
-            # underlying refusal; its repair instruction requires a named file.
+            # The rendered detail keeps the underlying refusal's evidence
+            # path, since its repair instruction requires a named file.
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
                 detail=(f"run-tree evidence could not be read: {type(error).__name__}: {error}"),
@@ -346,11 +305,8 @@ class ReadOnlyRun:
 
 
 def _record_row(tree: RunTree, stage: str, manifest_row: dict[str, Any]) -> dict[str, Any]:
-    """Bind displayed record fields and their address to one filesystem read.
-
-    Every stage outcome must remain visible; this projection cannot collapse
-    records into a summary or pair fields with a digest from a later read.
-    """
+    """Bind displayed record fields and their address to one filesystem read,
+    so a field is never paired with a digest from a later read."""
 
     record, record_bytes = tree.read_artifact_snapshot(
         stage, manifest_row["kind"], manifest_row["artifact_id"]
@@ -388,9 +344,6 @@ def _armarium_payload(
         if row["stage"] == ARMARIUM and row["kind"] == "export" and row["artifact_id"] == export_id
     ]
     if not matches:
-        # "appeared 0 times" named a count where the condition is a missing
-        # stage: a run halted before Armarium has no export to review at all,
-        # and the operator should be told that rather than a tally.
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=(
@@ -436,13 +389,13 @@ def _verified_export_blob_digest(
     budget: _ImageBudget,
     record_label: str = "the Armarium export record",
 ) -> str:
-    """A fresh digest must not repair a contradictory recorded path or digest.
+    """Verify a claimed image path and digest without repairing a mismatch.
 
-    `record_label` names the kind of record whose claim is being checked: the
-    Armarium export for the post-export rows, the Exemplar page or Designator
-    region record for the pre-export ones. The check is the same either way --
-    the recorded path must be the digest's own content address and the bytes
-    there must still hash to it -- and a refusal names the record and the file.
+    `record_label` names the record whose claim is checked (the Armarium
+    export post-export, the Exemplar page or Designator region record
+    pre-export); the check is the same either way: the recorded path must be
+    the digest's own content address, and the bytes there must still hash to
+    it.
     """
 
     export_path = export_ref["relative_path"]
@@ -476,12 +429,10 @@ def _verified_export_blob_digest(
     return actual_digest
 
 
-# --- The pre-export view -------------------------------------------------------
-#
-# Every helper below reads only `stage_records` -- the one snapshot the
-# projection already took, each row bound to its digest by `_record_row` -- and
-# the image bytes those records name. Nothing re-opens the tree for a second
-# opinion, so one projection cannot describe two versions of a run.
+# --- The pre-export view ---------------------------------------------------
+# Every helper below reads only the `stage_records` snapshot the projection
+# already took and the image bytes those records name; nothing re-opens the
+# tree, so one projection cannot describe two versions of a run.
 
 
 def _export_state(
@@ -493,24 +444,17 @@ def _export_state(
 ) -> dict[str, Any]:
     """What the export record says about itself, never what its existence suggests.
 
-    Three facts were on disk and none of them reached the screen. The Armarium
-    writes an export record for a *partial* export as readily as a complete one
-    -- outcome `held-for-review` over a bundle claiming `partial` whenever an
-    act was not delivered (`pipeline/7_armarium/run.py`) -- and it writes that
-    record before it seals its own boundary, so a run killed between the two
-    leaves an export record behind a stage this same screen calls interrupted.
-    Deriving "a completed export" from the record's mere presence announced
-    both as finished work (ARCHITECTURE invariant 6, principle 2).
-
-    So `present` means what a reader takes it to mean: a sealed Armarium with
-    an export record under it. `complete` is the further question the record's
-    own outcome and claims status answer, and the note says which of the three
-    states this is in words.
+    The Armarium writes an export record for a partial export as readily as a
+    complete one, and writes it before sealing its own boundary, so a run
+    killed between the two leaves an export record behind an unsealed stage.
+    `present` therefore means a *sealed* Armarium with an export record under
+    it; `complete` is the further question the record's own outcome and
+    claims status answer, and the note spells out which of the three states
+    this is in words.
 
     `review_items_absent_because` separates the two silences behind an empty
-    review queue -- no export at all, and an export whose bundle carries no
-    `review-items.jsonl` member because the format was not configured -- which
-    the renderer previously reported with one sentence naming only the first.
+    review queue: no export at all, versus an export whose bundle carries no
+    `review-items.jsonl` member because the format was not configured.
     """
     bundle = payload.get("bundle")
     claims_status = bundle.get("claims_status") if isinstance(bundle, dict) else None
@@ -554,31 +498,19 @@ def _export_state(
 def _declared_page_count(tree: RunTree) -> tuple[int | None, str | None]:
     """How many source pages the run itself declared, as the Pages denominator.
 
-    "Pages (2)" was a count of the page records found, which is the numerator
-    twice over: a run whose Exemplar never wrote a record for a declared source
-    showed a shorter list with nothing saying it was short. The run authority
-    carries the declared ledger and `read_run` refuses it unless its own
-    self-hash still verifies, which is the denominator the Armarium reconciles
-    its census against (`pipeline/7_armarium/run.py`).
+    A count of page records found is the numerator, not the denominator: a run
+    whose Exemplar never wrote a record for a declared source would show a
+    shorter list with nothing saying it was short. The run authority's own
+    declared ledger is the denominator the Armarium reconciles its census
+    against, so it is read here instead.
 
-    A denominator that cannot be read does not close this surface. This screen
-    exists to open damaged trees, and refusing the whole view because the run
-    authority is missing or no longer verifies would take the images and the
-    reason the run stopped away over a page count -- the F3 shape again, one
-    field further in. The refusal is carried as a note beside the count
-    instead, so the reader is told the denominator is unavailable and why,
-    rather than shown a bare count that looks whole.
+    A denominator that cannot be read must not close this surface, which
+    exists to open damaged trees; the refusal is carried as a note beside the
+    count instead of hiding the images and the reason the run stopped.
     """
-    # `AttributeError` and `TypeError` are in the tuple for one reason: a
-    # `run.json` whose top level is an array or a scalar reaches `read_run`'s
-    # self-hash check and raises `AttributeError` from inside it, which is
-    # neither a `ContractError` nor caught by the projection -- so the CLI's
-    # catch-all reported "a problem it could not classify" and the whole screen
-    # was lost, which is the outcome this helper exists to prevent. That is the
-    # path a non-object authority actually takes today; the shape check below is
-    # this helper's own contract, that it reads an object or says why it did
-    # not. `RunTree.read_run` is a stage boundary and is left to the stage that
-    # owns it.
+    # `AttributeError`/`TypeError`: a `run.json` whose top level is an array or
+    # scalar raises `AttributeError` from inside `read_run`'s self-hash check,
+    # which is neither a `ContractError` nor otherwise caught here.
     try:
         authority = tree.read_run()
     except (ContractError, OSError, AttributeError, TypeError) as error:
@@ -604,20 +536,17 @@ _SCENARIO_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 def _recorded_scenario(stage_records: list[dict[str, Any]]) -> str | None:
     """The scenario this run declared, when a record in the tree names it.
 
-    Only the Armarium export record carries the scenario by name; nothing the
-    stages write before it does, and the run authority does not either -- the
-    scenario reaches the sealed evidence as part of `config_digest`, which is a
-    digest and not a word. So this is `None` for exactly the runs whose resume
-    command is printed, and the sentence there says so rather than printing a
-    `--scenario` the tree never stated.
+    Only the Armarium export record carries the scenario by name; earlier
+    stages and the run authority do not, so this is `None` for exactly the
+    runs whose resume command is printed without `--scenario`.
     """
     for row in _export_rows(stage_records):
         payload = row["record"].get("payload")
         if isinstance(payload, dict) and isinstance(payload.get("scenario"), str):
             scenario = payload["scenario"]
-            # The word goes into a command a person is invited to type, so only
-            # a scenario-name token is repeated; anything else in that field is
-            # treated as not stated, and the sentence says to add the flag.
+            # This feeds a command a person is invited to type, so only a
+            # well-formed scenario token is repeated; anything else counts as
+            # not stated.
             if _SCENARIO_TOKEN.fullmatch(scenario):
                 return scenario
             return None
@@ -666,10 +595,8 @@ def _latest(
     """The current attempt of one act's records, by the shared attempt rule.
 
     `latest_attempt` is the same function every stage uses to choose the
-    reading or review it acts on, so what the console shows as "the latest" is
-    what the pipeline itself would consume -- and its refusals (a duplicated
-    ordinal, an attempt id that does not re-derive, a gap in the sequence) are
-    refusals of the evidence by name, not something this view smooths over.
+    reading or review it acts on, so "the latest" on this console is what the
+    pipeline itself would consume, refusals included.
     """
     rows = _records_of(stage_records, stage, kind, subject_id)
     if not rows:
@@ -685,13 +612,10 @@ def _progress(
 ) -> tuple[dict[str, Any], ...]:
     """One row per stage saying what state its evidence is in, in plain words.
 
-    Four states, because a reader has to tell four different things apart and
-    the tree can show any of them: a stage that completed and sealed; one that
-    wrote records but never sealed (interrupted, or still running); one that
-    has not run at all; and one whose stored seal no longer verifies against
-    what is on disk. The last is never reported as "not run" and the third is
-    never reported as damage -- a legitimate absence and a broken promise are
-    different facts (principle 2, principle 8).
+    Four states a reader must be able to tell apart: completed and sealed;
+    wrote records but never sealed (interrupted or still running); never run;
+    and a stored seal that no longer verifies. A legitimate absence and a
+    broken promise are different facts and must not collapse into each other.
     """
     by_stage = {row["stage"]: row for row in boundaries}
     rows = []
@@ -717,9 +641,6 @@ def _progress(
             )
         else:
             state = "not-run"
-            # Absence is reported as absence. "This stage has not run" is an
-            # inference from an empty directory, and a stage whose evidence was
-            # deleted wholesale looks exactly the same from here.
             note = (
                 "no record and no seal found here: this stage has not run, or nothing it "
                 "wrote is in this tree"
@@ -735,9 +656,9 @@ def _sealed_pages(
 ) -> tuple[dict[str, Any], ...]:
     """Every page the Exemplar accounted for, sealed or refused, from its own record.
 
-    The same row shape the export path produces, so one renderer reads both:
-    a sealed page names its image and the digest the bytes were just checked
-    against; a refused page stays visible with its reason and no image.
+    Produces the same row shape as the export path, so one renderer reads
+    both: a sealed page names its image and checked digest, a refused page
+    stays visible with its reason and no image.
     """
     rows = []
     for row in _records_of(stage_records, EXEMPLAR, "page"):
@@ -806,13 +727,9 @@ def _progressive_crops(
     return crops
 
 
-# The sentence states what this surface read, and stops there. An exclusion is
-# `completed` in the algebra only because an approval record says so
-# (`common/contracts/outcomes.py`, `require_approval`), and nothing here reads
-# one -- the proposal seal's closed row schema has no `approval_ref` field at
-# all, which is why the Armarium refuses every exclusion today for the missing
-# citation. Saying "excluded with approval" asserted a check nobody performed
-# (principle 8: an absence is never presented as a measurement).
+# An exclusion is `completed` only because an approval record says so, and
+# nothing here reads one, so the reason text below never claims an approval
+# was checked.
 _TERMINAL_DESIGNATOR_REASONS: dict[str, tuple[str, str]] = {
     "excluded": (
         "excluded by the Designator",
@@ -838,19 +755,16 @@ def _projected_audit(audit: Any) -> Any:
 def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, Any] | None:
     """The Perlector's current reading of one act, or none, in one vocabulary.
 
-    Built in one place because it is read in two: before the export, where it is
-    the only thing this screen has to show about an act, and after it, where a
-    non-delivered act's export row carries no reading at all and this is where
-    the reading and its doubt report come back from. `_testimonia_rows` exists
-    for the same reason and says the same thing about witnesses.
+    Built once and read from two places: before export, where it is the only
+    thing to show about an act, and after it, for a non-delivered act whose
+    export row carries no reading at all. `_testimonia_rows` exists for the
+    same reason, for witnesses.
 
-    The doubt report and its two layers are carried through EXACTLY as the
-    record holds them, unnormalised. Mapping an unreadable value to `None` here
-    spent the one distinction the renderer needs: `None` is a record written
-    before this contract existed and says so on the screen, while a
-    present-but-malformed value is a fault of the run tree and is refused by
-    field like every other projection list. Flattened to `None`, a broken layer
-    would print as no doubt line at all, on the one surface a person reads.
+    The doubt report and its layers are carried through exactly as the record
+    holds them: `None` means a record written before this contract existed,
+    while a present-but-malformed value is a fault of the run tree, refused
+    by field like every other projection list. Collapsing both to `None`
+    would print a broken layer as no doubt at all.
     """
     reading_row = _latest(stage_records, PERLECTOR, "perlectio", act_id, operation="perlegere")
     if reading_row is None:
@@ -865,20 +779,14 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
         "uncertainty_assessment": payload.get("uncertainty_assessment"),
         "uncertain_spans": payload.get("uncertain_spans"),
         "gaps": payload.get("gaps"),
-        # The producer's own spelling, not the canonical layer's
-        # `self_revisions`: renaming it here would be a second copy of
-        # `common/contracts/uncertainty.from_perlectio`'s rename, free to drift
-        # from it. The renderer counts whichever key the path it is on carries.
+        # Kept as the producer's own field name, not the canonical layer's
+        # `self_revisions`, to avoid a second copy of that rename free to
+        # drift from it.
         "self_revision": payload.get("self_revision"),
-        # Carried whole, like the audit and the doubt layers: the renderer reads
-        # the classification off an object and refuses anything else by field.
         "truncation": truncation,
-        # Absent stays absent; an object is projected to the two fields this
-        # screen reads; anything else is carried through EXACTLY as the record
-        # holds it, for the reason the doubt layers above are. Mapping a
-        # malformed value to `None` here spent the distinction: the renderer
-        # would read "this reading had no audit", and a fault of the run tree
-        # would print as an ordinary absence.
+        # Absent stays absent; an object is projected to the two fields read
+        # here; anything else is carried through exactly as the record holds
+        # it, so a malformed audit is never mistaken for no audit.
         "audit": _projected_audit(audit),
         "record_ref": reading_row["record_ref"],
     }
@@ -887,15 +795,14 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
 def _testimonia_rows(stage_records: list[dict[str, Any]], act_id: str) -> list[dict[str, Any]]:
     """Every Testimonium sealed for one act, in the order the stage wrote them.
 
-    Every attempt stays listed -- nothing here selects among witnesses (hard
-    rule 8) -- and each says which attempt it was, because two rows for one
-    chair with contradictory outcomes and no ordinal between them leave the
-    reader unable to tell the current reading from the superseded one.
+    Every attempt stays listed and each names its attempt ordinal, since two
+    contradictory rows for one chair with no ordinal between them would leave
+    the current reading indistinguishable from a superseded one.
 
-    Read from the sealed Attestatores records, which is why the same rows are
-    available before and after export: the export record names a witness basis
-    only for a *delivered* act, so a held act's witnesses are in the run tree
-    and not in the export.
+    Read from the sealed Attestatores records rather than the export, so the
+    same rows are available before and after export: the export names a
+    witness basis only for a delivered act, and a held act's witnesses live
+    only in the run tree.
     """
     rows = []
     for row in _records_of(stage_records, ATTESTATORES, "testimonium", act_id):
@@ -914,15 +821,11 @@ def _testimonia_rows(stage_records: list[dict[str, Any]], act_id: str) -> list[d
 def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> dict[str, Any]:
     """What the stages that ran say about one act, and where it stands.
 
-    The category is derived from the furthest stage that has spoken about the
-    act, in pipeline order, and says plainly which stage has not: "witnessed,
-    awaiting the Perlector" is a different fact from "held-for-review", and a
-    reader must not have to infer either from a missing row. The one thing read
-    before any of that is the act's own Designator outcome, because `excluded`
-    and `failed` end the act there and nothing downstream is coming. Text shown here is
-    the Perlector's machine reading, never an established or delivered one --
-    the Archetypus and the Armarium are the two stages that would make it so,
-    and their absence is exactly what this view is for.
+    The category names the furthest stage that has spoken about the act, in
+    pipeline order, and says plainly which has not. The Designator outcome is
+    read first, because `excluded` and `failed` end the act there with
+    nothing downstream to come. Any text shown is the Perlector's machine
+    reading, never an established or delivered one.
     """
     act_id = act["act_id"]
     designator_outcome = act.get("outcome")
@@ -952,12 +855,9 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
     established_rows = _records_of(stage_records, ARCHETYPUS, "archetypus", act_id)
     established = None
     if len(established_rows) > 1:
-        # The Archetypus writes exactly one record per act and carries no
-        # attempt token, so a second one is a tree this console cannot read,
-        # not a newer version to prefer. `established_rows[-1]` resolved it by
-        # directory order -- the positional default `latest_attempt` exists to
-        # refuse (`common/stage.py`) -- and would have shown one of two
-        # established texts with nothing saying the other was there.
+        # The Archetypus writes exactly one record per act with no attempt
+        # token, so a second one is a tree this console cannot read, not a
+        # newer version to prefer over the other.
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=(
@@ -976,18 +876,11 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
         }
 
     if designator_outcome in _TERMINAL_DESIGNATOR_REASONS:
-        # `excluded` and `failed` end the act at the Designator: no witness will
-        # report on it and no later stage will speak, so this is read before any
-        # downstream record, not after. Falling through to the `proposed`
-        # default labelled a closed act "marked out, awaiting witnesses" and
-        # left a person waiting for a stage that is never going to run. The
-        # Recensor refuses the same case by name rather than guessing
-        # (`pipeline/5_recensor/test_designator_terminal_outcomes.py`).
+        # `excluded` and `failed` end the act at the Designator, so this is
+        # checked before any downstream record rather than after.
         category, reason = _TERMINAL_DESIGNATOR_REASONS[designator_outcome]
-        # The rows below still print, so nothing is hidden -- but a terminal act
-        # that later stages wrote records for is a disagreement, and the reader
-        # should be told it is one rather than left to notice. The Armarium
-        # refuses exactly this disagreement by name.
+        # A terminal act that later stages still wrote records for is a
+        # disagreement, and the reader is told so rather than left to notice.
         downstream = [
             what
             for what, present in (
@@ -1040,10 +933,8 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
         category = "marked out, awaiting witnesses"
         reason = "the Designator marked this act out; no witness has reported on it"
     else:
-        # Reachable the day the Designator's vocabulary widens. `classify` has
-        # already refused an outcome outside that vocabulary, so what lands here
-        # is a word the vocabulary knows and this surface has no sentence for --
-        # which is a sentence to write, not a row to describe with the wrong one.
+        # Reachable the day the Designator's vocabulary widens: a word
+        # `classify` accepts but this surface has no sentence for yet.
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=(
@@ -1082,46 +973,31 @@ def _expected_acts(
 ) -> tuple[dict[str, Any], list[dict[str, Any]], str | None] | None:
     """The act denominator, read with the checks the pipeline reads it with.
 
-    `common/stage.py::expected_acts` is the one reader all five downstream
-    consumers use, and the console must not show a shorter act list than the
-    seal itself claims while every stage below reads the longer one. It cannot
-    be called here: it needs a live `StageContext` -- a run authority, the
-    sealed serving catalogue, real-ingress evidence -- that a read-only surface
-    has no business constructing, and it re-opens the tree for a second read
-    that this projection exists to avoid (one projection, one snapshot, or one
-    view describes two versions of a run).
-
-    What is reused is every check it makes *about the seal itself*, through the
-    same shared functions rather than a second spelling of them: the canonical
-    proposal-seal artifact id (`artifact_id`, as `_armarium_payload` pins the
-    export), `verify_self_hash` over the payload, `count` reconciling with the
-    rows, the closed field set on each row, the type of every field in that set,
-    no act id or key twice, and `classify(DESIGNATOR, ...)` over each row's
-    outcome. Each disagreement refuses by name.
-
-    One check is deliberately not reproduced: on a real-ingress or
-    served-structure run the shared reader re-derives the denominator from the
-    Designator's own proposal evidence (`_verify_real_act_denominator`). That is
-    a second, independent read of a stage's evidence performed to admit a run,
-    and this surface is neither admitting the run nor able to take that read
-    without becoming a second opinion about the tree it is describing. A seal
-    that would fail it is shown here with every row this seal declares, which is
-    what the tree says; the stage that has to agree with the evidence is the one
+    `common/stage.py::expected_acts` is the one reader every downstream stage
+    uses, so the console must not show a shorter act list than the seal
+    itself claims. It cannot be called directly, since it needs a live
+    `StageContext` this read-only surface has no business constructing and
+    would re-open the tree for a second read. Reused instead are its checks
+    about the seal itself, through the same shared functions: the canonical
+    proposal-seal artifact id, `verify_self_hash`, `count` reconciling with
+    the rows, the closed field set and its types, no act id or key twice, and
+    `classify(DESIGNATOR, ...)` over each outcome. Not reproduced: the
+    real-ingress re-derivation of the denominator from the Designator's own
+    proposal evidence, which is a second independent read this surface has no
+    standing to perform; a seal that would fail it is shown as the tree
+    states it, and the stage that must agree with the evidence is the one
     that refuses.
 
-    The second element of the pair is a note about the denominator itself, for
-    the screen to print beside the act count, or `None` when there is nothing to
-    say about it.
+    Returns the seal, its expected acts, and a note for the screen to print
+    beside the act count, or `None` when there is nothing to say about it.
     """
     seals = _records_of(stage_records, DESIGNATOR, "proposal-seal")
     if not seals:
         return None
-    # The canonical seal is selected by artifact id, the way the shared reader
-    # selects it, rather than by there being exactly one record in the
-    # directory. Refusing the whole view because a foreign neighbour sits beside
-    # the denominator is stricter than the pipeline this mirrors, on a surface
-    # whose purpose is opening damaged trees. The neighbour is not ignored: it
-    # is named beside the act count.
+    # Selected by artifact id, the way the shared reader selects it, rather
+    # than by there being exactly one record in the directory: a foreign
+    # neighbour beside the denominator is named beside the act count, not
+    # cause to refuse the whole view.
     canonical_id = artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
     canonical = [row for row in seals if row["artifact_id"] == canonical_id]
     if not canonical:
@@ -1131,10 +1007,9 @@ def _expected_acts(
             f"{canonical_id}, so nothing declares how many acts it has",
         )
     if len(canonical) > 1:
-        # Two records claiming the one canonical id is not a neighbour to name
-        # beside the count: it is two denominators, and nothing here chooses
-        # between them (the positional pick this surface refused for Archetypus
-        # rows would be the same defect one stage earlier).
+        # Two records under one canonical id is not a neighbour to name beside
+        # the count: it is two denominators, and nothing here picks between
+        # them.
         raise _seal_refusal(
             canonical[0],
             f"is one of {len(canonical)} records stored under the canonical proposal-seal "
@@ -1179,9 +1054,7 @@ def _expected_acts(
             raise _seal_refusal(seal, "names an expected act with no act_id")
         if not isinstance(act["act_key"], str) or not act["act_key"]:
             raise _seal_refusal(seal, f"names act {act['act_id']!r} with no act_key")
-        # The same field types the shared reader requires, in the same order, so
-        # a seal the pipeline would refuse is not read out here as if it were
-        # whole.
+        # The same field types the shared reader requires, in the same order.
         if not isinstance(act["page_id"], str) or not act["page_id"]:
             raise _seal_refusal(seal, f"names act {act['act_id']!r} with no page_id")
         if not isinstance(act["page_ordinal"], int) or isinstance(act["page_ordinal"], bool):
@@ -1205,9 +1078,8 @@ def _expected_acts(
             )
         seen_ids.add(act["act_id"])
         seen_keys.add(act["act_key"])
-        # Fatal in `expected_acts` and fatal here: an outcome outside the closed
-        # vocabulary is invariant #10's imbalance, never a row to read as
-        # marked-out because the word was unfamiliar.
+        # An outcome outside the closed vocabulary is fatal here too, never
+        # read as marked-out because the word was unfamiliar.
         classify(DESIGNATOR, act["outcome"])
     return seal, expected, note
 
@@ -1269,13 +1141,9 @@ def _holds(
     """
     rows: list[dict[str, Any]] = []
     designator_held: set[str] = set()
-    # The seal's own word about an act is a hold too. `_act_summary` already
-    # contemplates the act the seal calls `held` with no hold record beside it,
-    # and before this the Acts section said that act was held while this section
-    # said `(0)` and the next action said nothing was held -- one screen
-    # disagreeing with itself. Seeded by outcome class, so a `failed` act is
-    # counted for the same reason and a `proposed` or `excluded` one (both
-    # COMPLETED in the algebra) is not.
+    # The seal's own word about an act is a hold too, seeded by outcome
+    # class: a `failed` act counts, a `proposed` or `excluded` one (both
+    # COMPLETED) does not.
     seal_rows: list[dict[str, Any]] = []
     seal_held: set[str] = set()
     if found is not None:
@@ -1321,14 +1189,9 @@ def _holds(
         current = _latest(stage_records, RECENSOR, "review", act_id, operation="recense")
         if current is None:
             continue
-        # The set of unresolved outcomes is not spelled out here. A literal
-        # frozenset happened to equal today's vocabulary and would have silently
-        # dropped tomorrow's addition out of this list -- and `continue` past an
-        # unrecognised outcome is the same silence with a different shape.
-        # `classify` is the pipeline's own reading of the word: a COMPLETED
-        # outcome is resolved and belongs in no hold list, anything else is
-        # unresolved or failed and belongs in this one, and a word outside the
-        # closed vocabulary is fatal rather than skipped.
+        # `classify` rather than a literal set of unresolved outcomes, so
+        # tomorrow's vocabulary addition is not silently dropped from this
+        # list; a word outside the closed vocabulary is fatal, not skipped.
         if classify(RECENSOR, current["outcome"]) is OutcomeClass.COMPLETED:
             continue
         payload = _payload_of(current, "the Recensor review record")
@@ -1337,11 +1200,9 @@ def _holds(
                 "act_id": act_id,
                 "act_key": payload.get("act_key"),
                 "source": RECENSOR,
-                # One act held by the Designator is reviewed as held by the
-                # Recensor too, which quotes the hold
-                # (`pipeline/5_recensor/run.py`). Both records stay listed --
-                # they are two sealed facts -- and each now says which it is, so
-                # two rows read as one act twice attested rather than two acts.
+                # An act held by the Designator and reviewed as held by the
+                # Recensor keeps both rows, each saying which it is, so two
+                # sealed facts read as one act twice attested, not two acts.
                 "label": (
                     "Recensor review of that hold"
                     if act_id in designator_held or act_id in seal_held
@@ -1370,7 +1231,7 @@ def _stage_census(progress: tuple[dict[str, Any], ...]) -> str:
     "Everything before X is sealed and nothing from X onward has run" is two
     claims about nine stages derived from one of them. A hand-run single stage
     or a partially restored tree makes both halves false while the Stages list
-    on the same screen shows the truth, so the sentence is now the list.
+    on the same screen shows the truth, so this says the list, not the sentence.
     """
     if not progress:
         return "this projection lists no stages"
@@ -1402,11 +1263,8 @@ def _next_action(
     """
     resume_from = None
     census = f"Stage by stage: {_stage_census(progress)}."
-    # `verbatus run` takes its run root from the workspace, and defaults
-    # `--scenario` to `happy`. The command was printed as though neither
-    # mattered: against a run under another root it would start a new run rather
-    # than resume this one, and against another scenario it would refuse -- safe,
-    # but not what the sentence promised. Both are now said.
+    # `verbatus run` takes its root from the workspace and defaults
+    # `--scenario` to `happy`, so both are stated below rather than implied.
     resume_command = f"`verbatus run --run-id {run_id}"
     resume_command += f" --scenario {scenario}`" if scenario else "`"
     resume_where = " from this workspace's run root"
@@ -1426,8 +1284,6 @@ def _next_action(
                 f"{export.get('claims_status')!r}, so not every act was delivered and this is "
                 "not a finished result."
             )
-        # The post-export sentence used to ignore the stage states entirely and
-        # invite review over a tree whose own seals no longer verified.
         if damaged:
             summary += " Before reviewing anything: " + "; ".join(
                 f"{row['stage']} {dict(_STAGE_STATE_WORDS)[row['state']]}" for row in damaged
@@ -1448,10 +1304,6 @@ def _next_action(
                 "preserve and investigate before anything resumes."
             )
         elif first["state"] == "not-run":
-            # The operator's own word, complete enough to type. The
-            # orchestrator's `--from`/`--to` spelling named a developer command
-            # that also omitted the arguments it needs, so the one supported
-            # next action could not be run as printed.
             summary = (
                 f"{census} The supported continuation is to resume this run with "
                 f"{resume_command}{resume_where}, which picks up from {first['stage']}, the "
@@ -1475,9 +1327,7 @@ def _next_action(
                 "treat the tree as evidence to preserve and investigate before anything "
                 "resumes."
             )
-    # Acts, not records. One act held by the Designator and reviewed as held by
-    # the Recensor is two rows below and one act to resolve; counting rows
-    # reported two acts held on a run that had one.
+    # Distinct acts, not hold records: one act can appear as two rows below.
     held_acts = len({hold["act_id"] for hold in holds})
     if holds:
         summary += (
@@ -1518,8 +1368,6 @@ def _image_row(
         "record_ref": export_ref,
     }
     if row.get("outcome") != "sealed":
-        # An unsealed page stays visible with its reason; only a sealed page
-        # claims an immutable image reference to verify.
         return {**projected, "image_path": None, "image_sha256": None}
     image_digest = _verified_export_blob_digest(
         tree,
@@ -1548,15 +1396,11 @@ def _act_row(
 ) -> dict[str, Any]:
     """One act as the export accounts for it, plus what only the run tree holds.
 
-    A delivered act is described entirely by its export row. A non-delivered one
-    is not: the Armarium attaches `source_regions` and a witness basis only to
-    an act it delivered, so a held act -- the one thing this screen exists to
-    let a person review against the ink -- carried its crops and its witnesses
-    before the export and neither after it. They are read here from the same
-    sealed Designator and Attestatores records the pre-export path reads, so the
-    screen says the same thing about the same act on both sides of the export.
-    Nothing is taken from the export that the export did not record, and nothing
-    the run tree holds is dropped because the export did not repeat it.
+    A delivered act is described entirely by its export row. A non-delivered
+    one is not: the Armarium attaches `source_regions` and a witness basis
+    only to an act it delivered, so a held act's crops and witnesses are read
+    here from the sealed Designator and Attestatores records instead, the same
+    ones the pre-export path reads.
     """
     budget = _ImageBudget() if budget is None else budget
     if not isinstance(row, dict):
@@ -1567,13 +1411,11 @@ def _act_row(
                 "not an object"
             ),
         )
-    # No `[]` default for a delivered act. One whose export row omits
-    # `source_regions` would then reach the console as an act with an empty
-    # crop list, and the operator could not tell "this act records no crop"
-    # from "the crop list went missing" — they would be approving text they
-    # never saw against the ink (principle 2, goal 2). Absent is refused
-    # exactly like malformed. A non-delivered act is the one shape whose
-    # writer never records the field, so only there absent means absent.
+    # No `[]` default for a delivered act: that would make a missing
+    # `source_regions` indistinguishable from a genuinely empty crop list, and
+    # an operator would approve text against ink they never saw. Absent is
+    # refused like malformed, except on a non-delivered act, the one shape
+    # whose writer never records the field.
     source_regions = row.get("source_regions")
     if source_regions is None and not requires_crops:
         source_regions = []
@@ -1634,8 +1476,6 @@ def _act_row(
         "reason": row.get("reason"),
         "crops": crops,
         "crops_note": crops_note,
-        # `requires_crops` is the delivered/non-delivered distinction this
-        # function is called with; the normalisation needs the same fact.
         "row": _normalised_act_row(row, export_ref, stage_records, delivered=requires_crops),
         "record_ref": export_ref,
     }
@@ -1650,28 +1490,19 @@ def _normalised_act_row(
 ) -> dict[str, Any]:
     """One field vocabulary for both act shapes, so no witness vanishes at export.
 
-    The pre-export row carries `testimonia`; a *delivered* act's export row
-    carries the same facts under `witnesses`, with the Recensor review named by
-    reference rather than quoted, so those are mapped onto the one spelling the
-    renderer reads. A renderer reading one vocabulary showed every witness
-    before export and none after it -- the same screen, the same run, fewer
-    facts once it finished.
-
-    A non-delivered act's export row carries no witness basis and no reading at
-    all, because the Armarium writes both only for what it delivered. Mapping cannot recover
-    what is not there, so those are read from the sealed Attestatores records
-    instead, exactly as before the export. Each witness row therefore carries an
-    attempt ordinal when it came from the run tree and none when it came from
-    the export basis, which names one Testimonium per chair -- absent is left
-    absent rather than filled with a number nothing said.
+    The pre-export row carries `testimonia`; a delivered act's export row
+    carries the same facts under `witnesses`, mapped onto the one spelling the
+    renderer reads. A non-delivered act's export row carries no witness basis
+    and no reading at all, since the Armarium writes both only for what it
+    delivered, so those are read instead from the sealed Attestatores records,
+    exactly as before export.
     """
     witnesses = row.get("witnesses")
     if witnesses is None and delivered:
-        # Recovery is for the rows the Armarium deliberately writes thin. A
-        # DELIVERED row is described entirely by its export record, so one
-        # without a witness basis is a damaged record, and reading its witnesses
-        # and its reading out of the run tree instead would paper over that and
-        # show the delivered text beside a reading the export never named.
+        # A delivered row is described entirely by its export record, so one
+        # without a witness basis is damaged, not thin; recovering it from the
+        # run tree would show the delivered text beside a reading the export
+        # never named.
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=(
@@ -1685,11 +1516,8 @@ def _normalised_act_row(
         testimonia = _testimonia_rows(stage_records, row["act_id"])
         if testimonia:
             attached["testimonia"] = testimonia
-        # And the reading, for the same reason and from the same place. The
-        # Armarium writes no text and no uncertainty layer for an act it did not
-        # deliver, so a held act -- the one this screen exists for -- showed its
-        # doubt report before the export and nothing after it. The same
-        # asymmetry, one field further on.
+        # Same asymmetry for the reading: the Armarium writes no text or
+        # uncertainty layer for an act it did not deliver.
         reading = _reading_row(stage_records, row["act_id"])
         if reading is not None:
             attached["reading"] = reading
@@ -1718,9 +1546,8 @@ def _normalised_act_row(
             {
                 "chair": witness.get("chair"),
                 "outcome": witness.get("outcome"),
-                # The export carries the evidence-backed witness basis, which
-                # names one Testimonium per chair and no attempt ordinal. Absent
-                # is left absent rather than filled with a number nothing said.
+                # The export's witness basis names one Testimonium per chair
+                # and no attempt ordinal, so absent stays absent here too.
                 "attempt_ordinal": witness.get("attempt_ordinal"),
                 "record_ref": witness.get("testimonium_ref"),
             }
@@ -1733,28 +1560,21 @@ def _advance_records(
 ) -> tuple[dict[str, Any], ...]:
     """Every advance decision on record, in stable content-addressed path order.
 
-    ``receipts/sha256/`` is content-addressed, so two advance records for the
-    same stage boundary — an append, never an overwrite — are two distinct
-    files that both land here. Nothing here picks between them or shows only
-    the latest; a stage advanced twice is a fact for the reader of the
-    console to notice and act on, not one this projection resolves for them.
+    ``receipts/sha256/`` is content-addressed and append-only, so two advance
+    records for the same stage boundary are two distinct files that both land
+    here; nothing here picks between them, a stage advanced twice is left for
+    the reader to notice.
 
-    The receipt directory also holds non-approval receipts (a chair's serving
-    receipt shares the same content-addressed path scheme). Only a record
-    that declares the approval schema is treated as an approval at all; a
-    record that declares it and then fails full validation is a governance
-    fact — a tampered or hand-written approval — and is refused loudly rather
-    than skipped, matching every other read this projection performs.
+    The directory also holds non-approval receipts, so only a record that
+    declares the approval schema is treated as an approval; one that declares
+    it and then fails full validation is a governance fact (a tampered or
+    hand-written approval) and is refused loudly.
 
-    ``receipts/sha256`` itself is walked directly rather than through a
-    ``build_manifest``-style inventory, because a receipt is not a stage
-    artifact. That means it does not inherit the manifest walk's own refusal
-    of a symlinked producer directory (``RunTree._inventory_directory``), so
-    the same containment has to be asserted here: a symlink standing in for
-    this directory could point anywhere content-addressed self-consistency
-    can be satisfied by an attacker who names their own file, which a
-    directory *outside* `inventory_scope()` always can. Refused by identity,
-    not followed and trusted.
+    Walked directly rather than through a manifest-style inventory, since a
+    receipt is not a stage artifact and so does not inherit the manifest
+    walk's refusal of a symlinked producer directory; that containment is
+    asserted here instead, refusing a symlink by identity rather than
+    following it.
     """
 
     receipts_relative = "receipts/sha256"
@@ -1823,18 +1643,16 @@ def _advance_records(
 
 
 def _still_binds(record: dict[str, Any], boundaries: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Say, on the surface a person reads, whether this advance still binds its boundary.
+    """Say whether this advance still binds its boundary.
 
-    `advance.verify_advance` already refuses a record whose seal changed after
-    it was written, but nothing on the read path called it, so the console
-    displayed "this boundary was advanced" as a present-tense fact however far
-    the boundary had moved since. Detectable only by a function nobody calls is
-    not detectable (principle 2), and the digest binding is the whole reason
-    the record carries a `target_version_hash`.
+    `advance.verify_advance` checks the same binding at advance time; this
+    is the review-side check for a boundary that may have moved since.
 
-    This reports; it does not choose. A stale record is still shown, still
-    named, and still the operator's to act on — hiding it would be the picker
-    principle 1 forbids, wearing a tidier face.
+    The digest binding is the reason the record carries a
+    `target_version_hash`; this checks it against the boundary's current
+    seal digest so the console never shows "this boundary was advanced" as
+    present tense once the boundary has moved on. A stale record is still
+    shown and still the operator's to act on.
     """
 
     subjects = record["subject_ids"]
@@ -1925,10 +1743,8 @@ def _review_items(
             ),
         )
     try:
-        # The same shape the image allowance exists for: the bundle zip is read
-        # whole to verify its digest, in the same projection pass that already
-        # holds every page and crop, so it spends from the same allowance and an
-        # oversized run refuses by name instead of by exhaustion (principle 2).
+        # Spends from the same allowance as pages and crops, so an oversized
+        # bundle refuses by name instead of by exhaustion.
         bundle_bytes = _budgeted_image_bytes(tree, path, budget, "the Armarium export bundle")
         actual_digest = digest_bytes(bundle_bytes)
         if actual_digest != expected_digest:
@@ -1952,13 +1768,9 @@ def _review_items(
                 )
             member = members[0]
             if member.compress_type != zipfile.ZIP_STORED:
-                # `build_armarium_bundle` writes every member stored, never
-                # compressed (armarium_export.py), for exactly this reason: a
-                # stored member's extracted size is bounded by its own physical
+                # Every member is written stored, never compressed: a stored
+                # member's extracted size is bounded by its own physical
                 # bytes, while a compressed one can decompress far past them.
-                # `verify_export_bundle` already refuses this for the sealed
-                # package; the review surface reads the same bundle format and
-                # must refuse it here too, before decompressing anything.
                 raise OperatorError(
                     ErrorCode.CONSOLE_TREE_UNREADABLE,
                     detail=(
@@ -1967,13 +1779,9 @@ def _review_items(
                         "review bundle is only ever written stored"
                     ),
                 )
-            # Two faults, two sentences. Joined, a directory entry answered with
-            # "exceeds the operator review limit" -- `file_size` is 0 for one --
-            # and sent the operator looking for an oversized queue that does not
-            # exist. The branch is in fact unreachable through the member filter
-            # above, since `is_dir()` needs a trailing separator this name cannot
-            # have; it stays as a defensive check, but a defensive check that
-            # names the wrong fault is worse than none.
+            # Unreachable through the member filter above, since `is_dir()`
+            # needs a trailing separator this name cannot have; kept as a
+            # defensive check with its own message rather than none.
             if member.is_dir():  # pragma: no cover - unconstructible; see the test by this name
                 raise OperatorError(
                     ErrorCode.CONSOLE_TREE_UNREADABLE,
@@ -1992,12 +1800,8 @@ def _review_items(
                 )
             with archive.open(member) as source:
                 review_bytes = source.read(MAX_REVIEW_ITEMS_BYTES + 1)
-            # Kept, and unreachable while the check above holds. `zipfile`
-            # bounds a member read by the `file_size` the central directory
-            # declares, so a header that lies small cannot decompress past it —
-            # measured, not assumed, and what a falsified header actually
-            # produces is a CRC failure caught below. This stays as the bound
-            # that does not depend on the archive library's own accounting.
+            # Unreachable while the check above holds, but kept as a bound
+            # that does not depend on zipfile's own `file_size` accounting.
             if len(review_bytes) > MAX_REVIEW_ITEMS_BYTES:
                 raise OperatorError(
                     ErrorCode.CONSOLE_TREE_UNREADABLE,
@@ -2015,11 +1819,8 @@ def _review_items(
                         f"{MAX_REVIEW_ITEMS} records"
                     ),
                 )
-            # Parsed row by row rather than in one comprehension: the queue may
-            # hold up to MAX_REVIEW_ITEMS rows, and a refusal that names only
-            # the bundle leaves the operator to find the bad row by hand. The
-            # one-based number each item already carries is now in both
-            # refusals.
+            # Parsed row by row so a bad row's refusal names its own
+            # one-based line number rather than just the bundle.
             parsed: list[dict[str, Any]] = []
             for number, line in enumerate(lines, start=1):
                 try:

@@ -8,7 +8,7 @@ learns which vendor's volume it is reading. Same split, and the same reason, as
 resume journal and refusal-to-overwrite all stay in `ChecksummedTransfer`,
 which already does them for every target.
 
-**Sources, fetched and read on 2026-08-09** — `https://docs.runpod.io/storage/s3-api`,
+**RunPod's documented S3 API** (`https://docs.runpod.io/storage/s3-api`),
 quoted rather than paraphrased where the detail is load-bearing:
 
 - endpoint: one per datacenter, `https://s3api-DATACENTER.runpod.io/`, with the
@@ -44,14 +44,14 @@ quoted rather than paraphrased where the detail is load-bearing:
    whole-file MD5 even on AWS, the sealed manifest carries SHA-256 rather than
    MD5, and an integrity check built on a value whose definition is unclear is not
    an integrity check.
-3. The original upload path ran against the authenticated RunPod endpoint on
-   2026-09-15: the image bytes arrived, both `HeadObject` and `GetObject` omitted
-   the supplied custom metadata, and an independent hash of the returned bytes
-   matched the source. The target-byte fallback added from that observation is
-   covered by injected-client tests and has not yet been rerun against RunPod.
-   `S3VolumeObjectReader` listing/fetch remains untested against the real endpoint.
-   boto3 is imported lazily, so `upload` without `--network-volume` does not
-   construct a client or read storage credentials.
+3. Against the authenticated RunPod endpoint, the image bytes arrived, both
+   `HeadObject` and `GetObject` omitted the supplied custom metadata, and an
+   independent hash of the returned bytes matched the source. The target-byte
+   fallback added from that observation is covered by injected-client tests
+   and has not been rerun against RunPod; `S3VolumeObjectReader` listing/fetch
+   remains untested against the real endpoint. boto3 is imported lazily, so
+   `upload` without `--network-volume` does not construct a client or read
+   storage credentials.
 """
 
 from __future__ import annotations
@@ -231,13 +231,10 @@ class S3VolumeTarget:
             raise VolumeTransferRefusal(
                 f"the network volume refused or could not answer a check for {key!r}: {error}"
             ) from error
-        # Checked for being a mapping, not merely truthy — the same reasoning as
-        # `_means_absent` below, applied to the *same server's* response. `or {}`
-        # substitutes for `None` and passes a string or a list straight through to
-        # `.get`, and this line sits outside the `try` above, so the resulting
-        # `AttributeError` escapes as a traceback rather than as this module's own
-        # `VolumeTransferRefusal`. Hardened in one of the two readers when it was
-        # found; this is the other. Found by the Opus read of this branch.
+        # Checked for being a mapping, not merely truthy: `or {}` would pass a
+        # string or list straight through to `.get`, and this line sits
+        # outside the `try` above, so the resulting `AttributeError` would
+        # escape as a traceback rather than this module's own refusal.
         metadata = head.get("Metadata")
         metadata = metadata if isinstance(metadata, Mapping) else {}
         normalized_metadata = {
@@ -275,7 +272,7 @@ class S3VolumeTarget:
                     # unmake the bytes already read and digested. Left to the
                     # outer handler it became a `VolumeTransferRefusal`, so a
                     # verified transfer was recorded as partial on a cleanup
-                    # error. `S3VolumeObjectReader.read` already
+                    # error. `S3VolumeReadChannel.read` already
                     # suppresses this for the same reason.
                     try:
                         closer()
@@ -306,8 +303,8 @@ class S3VolumeTarget:
 
         `upload_fileobj` takes the same `ExtraArgs`/`Config` as `upload_file` and
         needs only a binary-mode, readable file object — no path, no seekability
-        requirement beyond what this handle already gives it. Confirmed 2026-08-11
-        against `https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/upload_fileobj.html`.
+        requirement beyond what this handle already gives it (see
+        `https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/upload_fileobj.html`).
         """
 
         try:
@@ -390,8 +387,7 @@ class S3VolumeReadChannel:
     written its report yet" and would poll a broken credential to its bound and
     then close a pod that was fine.
 
-    Note 3 of this module's docstring applies here in full: nothing in this
-    class has ever run against a real endpoint.
+    Nothing in this class has ever run against a real endpoint.
     """
 
     def __init__(
@@ -469,13 +465,12 @@ class S3VolumeObjectReader:
     body reached EOF inside the caller's bound, so a dropped connection never
     leaves a short file wearing a real name.
 
-    `ListObjects` "may take a long time" past 10,000 objects or 10 GB
-    (RunPod's documented limit, module docstring); a run tree of a few pages
-    is far inside that, and `MAX_LISTED_KEYS` together with `MAX_LISTED_PAGES`
-    refuses one that is not -- by key count, and by page count so a listing
-    that answers truncated pages with no new keys is refused instead of
-    walked forever -- rather than walking it forever. Note 3 of the module
-    docstring applies: nothing here has run against a real endpoint.
+    `ListObjects` "may take a long time" past 10,000 objects or 10 GB; a run
+    tree of a few pages is far inside that, and `MAX_LISTED_KEYS` together
+    with `MAX_LISTED_PAGES` refuses one that is not, by key count and by
+    page count so a listing that answers truncated pages with no new keys
+    is refused instead of walked forever. Nothing here has run against a
+    real endpoint.
     """
 
     def __init__(
@@ -540,11 +535,12 @@ class S3VolumeObjectReader:
                     )
             truncated = page.get("IsTruncated")
             if not isinstance(truncated, bool):
-                # A page with no usable `IsTruncated` used to read exactly like
-                # `False` -- complete -- so a client answer missing or
-                # malforming the one field this reader trusts to know it has
-                # seen everything could end the walk early and let `fetch-run`
-                # record "verified" over a listing that was never proven whole.
+                # A page with no usable `IsTruncated` would otherwise read
+                # exactly like `False` -- complete -- so a client answer
+                # missing or malforming the one field this reader trusts to
+                # know it has seen everything could end the walk early and let
+                # `fetch-run` record "verified" over a listing that was never
+                # proven whole.
                 raise VolumeTransferRefusal(
                     f"the network volume answered a listing of {prefix!r} with no usable "
                     "IsTruncated flag; a listing this reader cannot tell complete from "
@@ -722,13 +718,10 @@ def _means_absent(error: BaseException) -> bool:
     response = getattr(error, "response", None)
     if not isinstance(response, Mapping):
         return False
-    # Each nested value checked for being a mapping, not merely truthy. `or {}`
-    # substitutes for `None` and for anything falsey, and passes a *string* or a
-    # list straight through to `.get`, which raises `AttributeError` — out of the
-    # one function whose whole job is to classify an exception. A classifier that
-    # raises while classifying fails in the direction this docstring says it must
-    # not: the caller never reaches its fail-closed answer at all. The response
-    # comes from a remote server, so its shape is not ours to assume.
+    # Each nested value checked for being a mapping, not merely truthy: `or
+    # {}` would pass a string or list straight through to `.get`, and an
+    # `AttributeError` here would escape this classifier instead of
+    # reaching its fail-closed answer.
     error_detail = response.get("Error")
     metadata = response.get("ResponseMetadata")
     code = str((error_detail if isinstance(error_detail, Mapping) else {}).get("Code", ""))

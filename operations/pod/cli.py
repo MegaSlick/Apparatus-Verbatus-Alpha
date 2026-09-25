@@ -130,12 +130,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         provider = _provider(args.provider_factory)
     except Exception as error:  # noqa: BLE001 -- every factory failure is named, never a traceback
-        # `_provider` raises far more than the two types this once caught: an
-        # unimportable module raises `ModuleNotFoundError`, a name the module
-        # does not carry raises `AttributeError`, and the factory itself raises
-        # whatever it likes when it is called. Each of those used to leave the
-        # `close` path with a traceback, no close, and no durable record, for a
-        # lease whose pod may be billing at that moment.
+        # `_provider` can raise far more than one type: an unimportable module
+        # raises `ModuleNotFoundError`, a name the module does not carry
+        # raises `AttributeError`, and the factory itself raises whatever it
+        # likes when called. A traceback here would leave `close` with no
+        # close and no durable record for a lease whose pod may be billing.
         detail = (
             f"--provider-factory {args.provider_factory!r} could not be loaded and called: "
             f"{type(error).__name__}: {error}"

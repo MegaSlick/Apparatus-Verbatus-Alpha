@@ -1,14 +1,10 @@
 """Vendor resize rules, ported as pure dimension arithmetic.
 
-Two witnesses resize the page before it reaches the engine, and each does it
-its own way.  The vendor systems ruling adopts those recipes verbatim, so the
-arithmetic has to be *ours* — reproduced here rather than imported — for the
-reason the vendor systems design gives: no vendor package is installed in
-alpha, and every fidelity claim has to be provable in the laptop gate.  What
-lives here is only the geometry decision.  The pixels themselves still move
-through ``common/imaging.py``'s sealed ``resize_png_lanczos`` recipe, which is
-what makes the presented image reproducible from the Exemplar plus the record
-(ARCHITECTURE invariant 3).
+Two witnesses resize the page before it reaches the engine, each its own way.
+Reproduced here rather than imported, because no vendor package is installed
+in alpha and every fidelity claim has to be provable in the laptop gate. Only
+the geometry decision lives here; the pixels move through
+``common/imaging.py``'s sealed ``resize_png_lanczos``.
 
 Both functions are **carried third-party logic**, named as carried under
 `cleanroom/README.md`'s citation rule, and both sources permit it:
@@ -29,16 +25,14 @@ Both functions are **carried third-party logic**, named as carried under
 dimensions, and its network-gated arm re-fetches the two files and runs the
 vendor's own functions against these ports over that table.
 
-**Departures, deliberate and recorded.** Each vendor function takes and returns
-a Pillow image; these take and return dimensions, because the resampling is
-``imaging.resize_png_lanczos``'s job here and only the arithmetic is the
-vendor's.  Each vendor function also has an early return that is not a scaling
-decision — Chandra returns the image untouched when a side is not positive,
-Churro's caller never reaches it with one — and rather than reproduce a silent
-pass-through of an impossible page, both ports refuse a non-positive side.  A
-sealed page always has two positive sides, so no admitted input takes a
-different path than the vendor's; the refusal only replaces returning nonsense
-unchanged with saying so.
+**Departures, deliberate.** Each vendor function takes and returns a Pillow
+image; these take and return dimensions, since resampling is
+``imaging.resize_png_lanczos``'s job. Each vendor function also has an early
+return that is not a scaling decision -- Chandra returns the image untouched
+when a side is not positive, Churro's caller never reaches it with one -- and
+rather than reproduce a silent pass-through of an impossible page, both ports
+refuse a non-positive side instead; a sealed page always has two positive
+sides, so no admitted input takes a different path than the vendor's.
 """
 
 from __future__ import annotations
@@ -96,18 +90,15 @@ def scale_to_fit_chandra(
     max_pixels = max_size[0] * max_size[1]
     min_pixels = min_size[0] * min_size[1]
 
-    # 1. Determine ideal float scale based on pixel bounds
     scale = 1.0
     if current_pixels > max_pixels:
         scale = (max_pixels / current_pixels) ** 0.5
     elif current_pixels < min_pixels:
         scale = (min_pixels / current_pixels) ** 0.5
 
-    # 2. Convert dimensions to integer "grid blocks"
     w_blocks = max(1, round((width * scale) / grid_size))
     h_blocks = max(1, round((height * scale) / grid_size))
 
-    # 3. Refinement Loop: Ensure we are under the max limit
     while (w_blocks * h_blocks * grid_size * grid_size) > max_pixels:
         if w_blocks == 1 and h_blocks == 1:
             break
@@ -124,7 +115,6 @@ def scale_to_fit_chandra(
         else:
             h_blocks -= 1
 
-    # 4. Calculate final pixel dimensions
     return w_blocks * grid_size, h_blocks * grid_size
 
 

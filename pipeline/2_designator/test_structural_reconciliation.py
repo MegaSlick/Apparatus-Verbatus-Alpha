@@ -15,22 +15,16 @@ def _load_designator():
     return load_designator("designator_structural_reconciliation_under_test")
 
 
-# `grouping.group_page` no longer carries module defaults for these -- `run.py`
-# resolves them per page from the sealed grouping policy and hands them in.
-# These four are the retired constants at the 200-wide page every test below
-# builds on (margin 0.15 * 200 = 30px, and the three pixel counts unchanged),
-# spelled out here so these tests keep exercising the geometry they always
-# exercised rather than a policy that could be edited out from under them: what
-# is under test is `_match_structural_group`, not the thresholds.
+# grouping.group_page takes these as resolved keywords, not module defaults;
+# spelled out here so these tests keep exercising the fixed geometry they were
+# written for regardless of policy changes elsewhere.
 _THRESHOLDS = {
     "margin_px": 30,
     "chain_gap_px": 6,
     "anchor_reach_px": 2,
     "brace_min_height_px": 30,
-    # The sealed value, so these two-component pages are grouped under the same
-    # bound a real page is. Both of them build components well under it -- 120x40
-    # on a 200x300 page is 800 basis points against 5000 -- so nothing here is
-    # withheld and both tests still test what they were written to test.
+    # Sealed value; both test pages' components sit well under it (800bp of
+    # 5000) so nothing here is withheld.
     "page_spanning_area_bp": 5000,
 }
 
@@ -90,10 +84,8 @@ def test_match_accepts_a_group_covering_exactly_half_the_declared_area():
 
 
 def test_match_breaks_a_tied_full_bounds_overlap_by_the_groups_own_body_members():
-    """The brace-linked case: a shared tall anchor makes both groups' union
-    bounds identical, so full-bounds overlap alone cannot tell them apart.
-    Each group's own body text -- not the anchor both groups carry -- must
-    decide which group actually corresponds to which declared act."""
+    """A shared tall anchor makes both groups' union bounds identical, so
+    each group's own body text, not the shared anchor, must break the tie."""
     designator = _load_designator()
     shared_bounds = {"x": 0, "y": 0, "w": 20, "h": 20}  # both groups tie here
     group_a = _group(shared_bounds, [{"bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}])
@@ -102,8 +94,7 @@ def test_match_breaks_a_tied_full_bounds_overlap_by_the_groups_own_body_members(
     declared_b = {"x": 0, "y": 10, "w": 10, "h": 10}
     assert designator._match_structural_group([group_a, group_b], declared_a, "act a") is group_a
     assert designator._match_structural_group([group_a, group_b], declared_b, "act b") is group_b
-    # Order must not matter -- the tie-break is a property of the geometry, not
-    # of which group happened to be checked first.
+    # Order must not matter.
     assert designator._match_structural_group([group_b, group_a], declared_a, "act a") is group_a
     assert designator._match_structural_group([group_b, group_a], declared_b, "act b") is group_b
 
@@ -111,12 +102,9 @@ def test_match_breaks_a_tied_full_bounds_overlap_by_the_groups_own_body_members(
 def test_two_declared_acts_cannot_both_claim_one_detected_group():
     """Detection merged a boundary it did not find; it corroborates neither act.
 
-    Built on real `grouping.group_page` output rather than a hand-written group:
-    two register entries with no margin anchor and three blank rows between them
-    (under the resolved chain gap of 6px) are one detected run, and each declared
-    act's own rectangle lies wholly inside it, so `_match_structural_group`
-    returns the same group for both. Recording it as each act's own
-    `detected_bounds` would claim a corroboration that was never measured.
+    Built on real `grouping.group_page` output: two register entries with no
+    margin anchor and a gap under the resolved chain gap merge into one run,
+    so both declared acts match the same group.
     """
     import grouping
 

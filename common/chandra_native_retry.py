@@ -23,13 +23,9 @@ CHANDRA_MAX_OUTPUT_TOKENS: Final = 12_384
 CHANDRA_MAX_RETRIES: Final = 6
 CHANDRA_MAX_ATTEMPTS: Final = CHANDRA_MAX_RETRIES + 1
 
-# Decimal text is the provenance form.  Derive it through the pinned vendor's
-# own Python-float arithmetic rather than a hand-normalized decimal table:
-# ``min(temperature + 0.2 * (retries + 1), 0.8)``.  The distinction is visible
-# on the fourth physical request, whose JSON number is
-# ``0.6000000000000001``, not ``0.6``.  The serving boundary converts these
-# exact texts back to the same floats while building the wire body, then records
-# their serialized numbers through ``wire-decimal.v1``.
+# Decimal text is the provenance form, derived through the pinned vendor's own
+# Python-float arithmetic rather than a hand-normalized decimal table: the
+# fourth physical request's JSON number is `0.6000000000000001`, not `0.6`.
 CHANDRA_INITIAL_TEMPERATURE: Final = 0.0
 CHANDRA_RETRY_TEMPERATURE_STEP: Final = 0.2
 CHANDRA_MAX_TEMPERATURE: Final = 0.8

@@ -158,10 +158,12 @@ def test_the_sealed_bundle_is_published_and_verifies_outside_the_run_tree(tmp_pa
 def test_publication_reports_which_checks_the_clean_pass_actually_made(tmp_path, happy_run):
     """A verification that ran and one that declined to run must not read alike.
 
-    `verify_delivered_bundle` returns both answers and `publish` used to drop them:
-    the search-fold recomputation honestly declines under a different Unicode
-    database, and an operator told only "published: complete" could not tell that
-    from a fold that was recomputed and matched.
+    This covers the successful case only, where both checks come back
+    verified; `publish` must carry that through so an operator told only
+    "published: complete" could still tell it from a fold that was
+    recomputed and matched. The declined case, where a different Unicode
+    database makes `publish` refuse with `ContractError` instead of
+    publishing, is covered separately below.
     """
     out = tmp_path / "delivery"
     result = _publish(happy_run, "r", out)
@@ -810,14 +812,10 @@ def test_a_published_bundle_directory_carries_the_operators_umask_not_mkdtemps(h
     rename, the way `mkdir` would have done it.
     """
     # **The umask is set here rather than read.** Computing the expectation the
-    # same way the code does made this test conditional on the machine running
-    # it: `mkdtemp` always creates at 0o700, so an operator whose umask is 0o077
-    # expects exactly 0o700 and the test passes against the *unfixed* code. It
-    # only ever failed correctly at a permissive umask. Measured on the branch:
-    # umask 022 and 002 catch the defect, umask 077 does not. Pinning 0o022 makes
-    # the expected 0o755 a fact about the fix rather than about the machine.
-    # A prior version of this test passed for a reason other than its own
-    # title, at a permissive umask.
+    # same way the code does would make this test conditional on the machine
+    # running it: at a permissive umask like 0o077, `mkdtemp`'s fixed 0o700
+    # already equals the expectation, so a broken publish would pass. Pinning
+    # 0o022 makes the expected 0o755 a fact about the fix rather than the machine.
     previous = os.umask(0o022)
     try:
         out = tmp_path / "bundle-out"

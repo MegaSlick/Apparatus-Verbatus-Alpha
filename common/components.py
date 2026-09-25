@@ -1,32 +1,21 @@
 """Connected-component labelling over an ink pixel set, shared by three readers.
 
-**This module is the Designator's own labeller, moved.** It lived in
-`pipeline/2_designator/structure.py` and is re-exported from
-there, so every caller in that stage still reaches for it where it has always
-been. It moved for the same reason `common/background.py` moved, and by
-the same rule: a second stage needs it, and `common/` may not import a stage.
-The second reader is `common/residual_ink.py`, whose outside-coverage audit has
-to be able to name this page's page-spanning component -- the one the
-Designator withholds from detected grouping while keeping its pixels in
-conservation -- so that it does not report that separately accounted pixel
-population as ordinary outside-coverage ink. Declared or fallback coverage may
-claim those pixels; conservation holds any unclaimed remainder.
+This is the Designator's own labeller, moved to `common/` because a second
+stage needs it: `common/residual_ink.py`'s outside-coverage audit has to name
+this page's page-spanning component (the one the Designator withholds from
+detected grouping while keeping its pixels in conservation), so it does not
+report that pixel population as ordinary outside-coverage ink.
 
-**The audit re-derives that component; it does not read the Designator's
-record.** It labels the same page at the same derived margin under the same
-sealed `gap_tolerance_px` and the same sealed `page_spanning_area_bp`, so it
-reaches the identical component from the identical bytes without trusting the
-stage it audits. What stays the audit's own is the contrast it *counts* ink at
-(`residual_ink.MINIMUM_CONTRAST_BELOW_BACKGROUND`), which is the half of the
-instrument that makes it a second opinion rather than a restatement.
-
-Why the margin is not the audit's own here, when the contrast is: measured on 44
-real pages, labelling the audit's own looser ink set merges the writing into the
-page-spanning component and hides 3,367 to 1,480,349 outside-coverage ink pixels
-on 41 of the 44 -- it makes the audit report clean pages. A component is a
-property of the page's structure, found at the level the page derives for
-itself; how much ink there is, is the audit's own question. The measurement is
-in the session's `AUDIT_GATES_REPORT.md`.
+The audit re-derives that component rather than reading the Designator's
+record: it labels the same page at the same derived margin under the same
+sealed `gap_tolerance_px` and `page_spanning_area_bp`, so it reaches the
+identical component from the identical bytes without trusting the stage it
+audits. What stays the audit's
+own is the contrast it *counts* ink at, which is the half of the instrument
+that makes it a second opinion rather than a restatement -- measured on 44 real
+pages, using the audit's own looser ink set for the margin instead merges the
+writing into the page-spanning component and hides outside-coverage ink on 41
+of the 44.
 """
 
 import heapq
@@ -45,25 +34,16 @@ class Component(TypedDict):
 def label_components_reference(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     """The retired per-pixel set/union-find labeller, kept as the oracle.
 
-    This is the implementation `label_components` had until the row-run
-    substitution below replaced it. It is retained, not deleted, for two
-    reasons that are both about what would otherwise stop being checked.
+    Retained, not deleted, because `test_structure.py` compares the two
+    implementations directly to re-prove the substitution's equality claim on
+    every run, and `test_conservation.py`'s independent pixel-set oracle now
+    calls this rather than the row-oriented `label_components`, so the
+    cross-check stays a cross-check instead of comparing row runs to
+    themselves.
 
-    First, `test_structure.py` compares the two implementations directly on
-    every page shape this module's tests build and on a randomised page with
-    known components, so the equality claim the substitution rests on is
-    re-proved on every run rather than asserted once at the commit that made
-    it. Second — and this is the one that would have gone quiet —
-    `test_conservation.py`'s `_legacy_reference` used `label_components` as
-    the *independent* pixel-set oracle that holds `conservation._components`'
-    row-oriented notion of "connected" to the same meaning. Once
-    `label_components` became row-oriented too, that oracle would have been
-    comparing row runs against row runs and proving nothing. It now calls this
-    function, so the cross-check stays a cross-check.
-
-    Its cost is the reason it is no longer the shipped path: measured 383 s and
-    2.17 GB of peak RSS for one 8.7-megapixel photographed page at the sealed
-    `gap_tolerance_px = 3`. Nothing on the live path calls it.
+    No longer the shipped path because of its cost: 383 s and 2.17 GB peak RSS
+    for one 8.7-megapixel photographed page at the sealed `gap_tolerance_px =
+    3`. Nothing on the live path calls it.
     """
     if gap_tolerance_px < 0:
         raise ContractError(f"gap tolerance {gap_tolerance_px} is negative")
@@ -120,16 +100,9 @@ def label_components_reference(pixels: set, *, gap_tolerance_px: int) -> list[Co
                     "bounds": {"x": x0, "y": y0, "w": x1 - x0 + 1, "h": y1 - y0 + 1},
                     "pixel_count": len(group),
                 },
-                # Two disjoint components can share a (top, left) origin -- the
-                # sort key below -- while differing everywhere else; a pixel
-                # belongs to exactly one component, so no two components can
-                # ever share the same sorted member-pixel tuple. Carried only
-                # to break that tie, never returned: two components with the
-                # same origin still need *some* deterministic order, and
-                # falling back to `members.values()`'s own iteration order
-                # (a dict keyed by union-find root, itself pixel hash order)
-                # would make that order depend on set/dict construction rather
-                # than on the ink itself.
+                # Breaks a tie between two components sharing the same
+                # (top, left) origin, deterministically, by the ink itself
+                # rather than by set/dict construction order.
                 tuple(sorted(group)),
             )
         )
@@ -147,7 +120,7 @@ def ink_runs_by_row(pixels) -> dict[int, list[tuple[int, int]]]:
     `>` rather than `!=`, because the declared input is a set but a caller is
     not owed a crash for handing the same pixel twice, and because the tests
     drive orderings other than a set's through here. Both halves are pinned:
-    `test_component_order_is_total_not_merely_by_origin` drives every
+    `test_two_components_sharing_a_top_left_origin_still_sort_deterministically` drives every
     permutation of one page's pixels as an ordered `dict.keys()` view, and
     `test_a_repeated_pixel_is_tolerated_rather_than_split_into_two_runs` hands
     this function a list with duplicates in it.
@@ -177,44 +150,28 @@ def ink_runs_by_row(pixels) -> dict[int, list[tuple[int, int]]]:
 def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     """Connected-component labeling over an arbitrary set of (x, y) pixels.
 
-    The component geometry alone. `label_component_runs` below is the same
-    labelling with each component's own horizontal runs kept, for the one
-    caller that needs the pixels back rather than the rectangle.
+    The component geometry alone; `label_component_runs` below keeps each
+    component's own runs, for the one caller that needs pixels back rather
+    than a rectangle. `scan_ink_components` labels every ink pixel through
+    here.
 
-    `scan_ink_components` labels every ink pixel through here.
+    A row-run substitution over the retired per-pixel union-find
+    (`label_components_reference`, kept above as this one's oracle), made on
+    measurement: the per-pixel version cost `ink_pixels x radius^2` dictionary
+    operations, measured at 383 s and 2.17 GB for one photographed page at the
+    sealed `gap_tolerance_px = 3`. Real ink is horizontally contiguous, so a
+    page of millions of pixels is a few hundred thousand runs, turning the
+    per-pixel neighbourhood probe into an interval overlap test.
 
-    **This is the row-run substitution `structure.py`'s module docstring
-    instructs, made on measurement.** The retired implementation
-    (`label_components_reference`, kept above as this one's oracle) held a
-    union-find over every ink *pixel* and probed a Chebyshev neighbourhood of
-    `(gap_tolerance_px + 1)` around each one, so its cost was `ink_pixels x
-    radius^2` dictionary operations. On a real photographed register page at
-    300-DPI-equivalent size that measured **383 s and 2.17 GB** for one page at
-    the sealed `gap_tolerance_px = 3`, paid by `run.py`'s `_analyze_page` for
-    every sealed page before the first chair is called. The union-find
-    here is over ink *runs* instead: real ink is horizontally contiguous, so a
-    page of 5.7 million ink pixels is a few hundred thousand runs, and the
-    per-pixel neighbourhood probe becomes an interval overlap test between two
-    scanlines' run lists.
+    The contract is unchanged and proved, not asserted: same components, same
+    bounds, same `gap_tolerance_px` semantics, and the same total order (origin
+    `(top, left)`, ties broken by sorted `(x, y)` ink), with `test_structure.py`
+    comparing the two implementations directly on every page shape.
 
-    **The contract is unchanged and that is proved, not asserted.** Same
-    components, same bounds, same `gap_tolerance_px` semantics (it still counts
-    blank pixels *between* two ink pixels, so a tolerance of 0 still reaches an
-    immediately adjacent pixel and the Chebyshev radius is still one more than
-    the gap), and the same total order: by component origin `(top, left)`, ties
-    broken by the component's own ink compared as the sorted `(x, y)` sequence
-    the retired implementation compared. `test_structure.py` compares the two
-    implementations directly on every page these tests build and on randomised
-    pages.
-
-    **The technique is `conservation._components`', written beside it rather
-    than imported.** `conservation.py` imports `SECONDARY_MARGIN` and
-    `_ink_threshold` from this module, so this module cannot import from
-    `conservation` -- the import would be circular. The two therefore stay two
-    implementations of one rule, held together the way they already were:
-    `test_conservation.py` compares `conservation._components` against
-    `label_components_reference` above, which is the pixel-set definition both
-    of them are answerable to.
+    The technique is `conservation._components`', written beside it rather
+    than imported, since `common/` may not import a stage; `test_conservation.py`
+    compares both against `label_components_reference`, the pixel-set
+    definition they answer to.
     """
     return [
         component
@@ -286,13 +243,8 @@ def label_component_runs(
             if run_x0[right] - run_x1[left] <= gap_tolerance_px:
                 union(left, right)
         # Earlier scanlines within the Chebyshev radius. Runs on one scanline
-        # are disjoint and ascending in both x0 and x1, so one forward pointer
-        # per row pair replaces the full cross product: a previous-row run
-        # wholly left of this `left` is wholly left of every later `left` too,
-        # and past that dropped prefix the scan only needs to stop at the first
-        # run wholly right of `left`. Two half-open segments hold ink pixels
-        # within the horizontal Chebyshev radius exactly under the
-        # dropped/stopped inequalities. This is `conservation._components`'
+        # ascend in both x0 and x1, so one forward pointer per row pair
+        # replaces the full cross product. This is `conservation._components`'
         # sweep; see this function's docstring for why it is not imported.
         for previous_y in range(y - radius, y):
             previous = indices_by_row.get(previous_y)
@@ -335,14 +287,9 @@ def label_component_runs(
             )
         )
 
-    # Two disjoint components can share a (top, left) origin while differing
-    # everywhere else, so the origin alone is not a total order. The retired
-    # implementation broke that tie on `tuple(sorted(group))` -- the component's
-    # own ink in sorted (x, y) order. Reproduced here without materialising
-    # either side's pixels: a heap merge of a group's runs yields exactly that
-    # sequence, and two distinct components cannot hold identical ink, so the
-    # comparison is decided at the first difference or by the shorter stream
-    # running out (the tuple-prefix rule, which is `pixel_count` order).
+    # Origin alone is not a total order: two components can share (top, left).
+    # The retired implementation broke the tie on sorted (x, y) ink;
+    # reproduced here without materialising pixels via a heap merge of runs.
     def origin(entry: tuple[Component, list[int]]) -> tuple[int, int]:
         return (entry[0]["bounds"]["y"], entry[0]["bounds"]["x"])
 

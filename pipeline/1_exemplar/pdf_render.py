@@ -143,11 +143,11 @@ def open_document(source: bytes | str | Path | BinaryIO) -> OpenPdf:
     return OpenPdf(document, pages)
 
 
-# `/Pages` nodes may share one child across several `/Kids`, so PDFium's page count
-# trusts a compounding `/Count` rather than the distinct page objects on disk: a ~2KB
-# file of self-sharing nodes opens cleanly and reports 500,000+ pages. This floor is
-# not the page cap ruling 17 retired — a reel's count stays the document's to declare.
-# It is also not a corruption test; see `_refuse_implausible_page_count`.
+# /Pages nodes may share one child across several /Kids, so PDFium's page count
+# trusts a compounding /Count rather than the distinct page objects on disk: a
+# ~2KB file of self-sharing nodes opens cleanly and reports 500,000+ pages. This
+# floor bounds that; it is not a page cap (a reel's count is the document's to
+# declare) nor a corruption test — see _refuse_implausible_page_count.
 MIN_BYTES_PER_DECLARED_PAGE: Final = 32
 
 
@@ -244,18 +244,16 @@ LOCKED_NOT_BROKEN: Final = frozenset(
 def _open_failure_code(error: Exception) -> RefusalReason:
     """An encrypted PDF is a gap we own; anything else PDFium refuses is damage.
 
-    Lane B's distinction, kept — nothing in this pipeline can prompt for or supply
-    a password, so a password-protected scan is a real, named thing this project
-    cannot yet read, the same shape as a format with no reader. Calling it `CORRUPT`
-    would tell the operator their original was damaged when it is intact and merely
-    locked, which is a different fact entirely.
+    Nothing in this pipeline can prompt for or supply a password, so a
+    password-protected scan is a real, named thing this project cannot yet read,
+    the same shape as a format with no reader. Calling it `CORRUPT` would tell
+    the operator their original was damaged when it is intact and merely locked,
+    which is a different fact entirely.
 
-    **Read from the error code, not from the error text.** Lane B matched the words
-    "password" or "encrypt" in the message. PDFium has two locked-document codes and
-    only one of them says "password": the other renders as "Unsupported security
-    scheme error", which contains neither word, so an AES-256 or otherwise
-    unimplemented handler — an intact file — was being reported as damaged. The code
-    is on the exception and says which case it is without a guess.
+    **Read from the error code, not the error text.** PDFium has two
+    locked-document codes and only one says "password": the other renders as
+    "Unsupported security scheme error", so matching message text would report
+    an AES-256 handler as damage instead. The code says which case it is.
     """
     code = getattr(error, "err_code", None)
     if code in LOCKED_NOT_BROKEN:
@@ -382,9 +380,9 @@ def _render_dimensions(
     """Choose the whole DPI for one page and the pixel size it will produce.
 
     Capped downward from the target, never upward, and refusing only a page so
-    degenerate that even `MIN_RENDER_DPI` would still exceed the bounds. Lane B
-    found the two reasons the budget is not simply `MAX_PIXELS`, and both are real:
-    PDFium rounds width and height independently, so a scale chosen to land exactly
+    degenerate that even `MIN_RENDER_DPI` would still exceed the bounds. The
+    budget is not simply `MAX_PIXELS`, for two real reasons: PDFium rounds width
+    and height independently, so a scale chosen to land exactly
     on the analytic limit can still produce a bitmap a pixel over it; and the render
     is always RGB, so the PNG it becomes is bound by `MAX_PNG_DECODED_BYTES` at
     three bytes a pixel, which is tighter. `admission.inspect_source` re-checks
