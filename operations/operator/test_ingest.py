@@ -241,20 +241,12 @@ def test_ingest_commit_failure_shows_the_workers_own_reason_not_a_raw_json_dict(
     assert "What happened:" in rendered and "What it means:" in rendered
     assert '"status"' not in rendered
     assert '"reason"' not in rendered
-    # Phrases this test owns, not `ERRORS[...]` lookups. The rendered message is
-    # built from that same registry, so asserting against it compared the copy
-    # with itself: an edit that gave the uncertain-commit case the wrong words
-    # would have changed both sides together and kept this green. Spelling the
-    # expectation out here means such an edit has to come and change it on
-    # purpose, which is the right cost for operator-facing text.
-    #
-    # The ingest worker's own refusal, not the console failing to open. Without
-    # this the console never had to reach the folder at all.
+    # Phrases this test owns, not `ERRORS[...]` lookups, so an edit that gave
+    # the uncertain-commit case the wrong words has to change this too.
     assert "Ingest did not return a checked ready-folder record." in rendered
     assert "could not complete inside its OS boundary" not in rendered
-    # Nor a refused *preview*. That copy promises the output folder is untouched,
-    # which is the one thing an uncertain commit may not say: this test's whole
-    # subject is a failure that may already have written records.
+    # Nor a refused preview, which promises the output folder is untouched:
+    # this test's subject is a failure that may already have written records.
     assert "could not show you the plan" not in rendered
     assert "the preview runs with no write rights at all" not in rendered
 
@@ -802,7 +794,7 @@ def test_ingest_refuses_a_submitted_file_larger_than_the_retained_byte_ceiling(
     The producer's API takes whole frames, so the bytes are held either way; what
     the bound changes is that an oversized submission becomes a named refusal
     instead of an OOM kill of the confined child, which returns no JSON and
-    reaches the operator with an empty detail (principle 2). The ceiling is
+    reaches the operator with an empty detail. The ceiling is
     `inventory.MAX_SUBMITTED_BYTES` — this repository's own declared limit on
     retained submitted bytes — not a second hand-kept copy of the Door's.
     """

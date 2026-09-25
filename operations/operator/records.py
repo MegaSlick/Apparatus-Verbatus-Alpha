@@ -30,12 +30,9 @@ RECEIPTS_DIRECTORY: Final = "receipts"
 
 Named once because two things resolve it: the store that writes receipts and
 the descriptor that indexes them by name. A descriptor entry is a receipt's
-basename, never a path -- a receipt is content-addressed, so its name is its
-identity and the directory it lives in is wherever the state root is *now*.
-Recording the absolute path bound every intact receipt to the machine and
-directory it was written on: a state directory copied to another computer,
-restored from a backup, or moved read every receipt as "outside the receipt
-directory" and told the operator to repair evidence that was sound.
+basename, never a path, since a receipt is content-addressed and its
+directory is wherever the state root is now; an absolute path would bind
+every receipt to the machine it was written on.
 """
 
 BLOCK_BYTES: Final = 1024 * 1024
@@ -43,12 +40,11 @@ BLOCK_BYTES: Final = 1024 * 1024
 MAX_RECORD_BYTES: Final = 4 * 1024 * 1024
 """How large one of these files may be before reading it is itself the failure.
 
-Both readers below load a whole file before they can check anything about it,
-and `status` calls them once per recorded action. Measured: a 600 MiB file at
-either path costs 1.8 GiB resident, and a larger one ends as a kill — the one
-failure that prints nothing at all, against principle 2. The largest receipt
-written here is a few kilobytes and the descriptor grows by one path per
-action, so only a file this tool did not write can reach four mebibytes.
+Both readers below load a whole file before they can check anything about
+it: measured, a 600 MiB file costs 1.8 GiB resident, and a larger one ends
+as an OOM kill that prints nothing. The largest receipt written here is a
+few kilobytes, so only a file this tool did not write can reach four
+mebibytes.
 """
 
 
@@ -59,13 +55,10 @@ class RecordError(RuntimeError):
 def canonical_bytes(value: object) -> bytes:
     """The stable bytes used for an immutable operator receipt.
 
-    The pipeline's one canonical serialization, not a second reimplementation:
-    same key order, same UTF-8 text rather than \\u-escapes, and the same
-    refusal of a raw float (a float reaching a receipt would be exactly the
-    "silent determinism defect" that serialization exists to make loud
-    instead). A trailing newline is added so a receipt reads as an ordinary
-    text file when opened directly — this module's own concern, not the
-    shared one's.
+    The pipeline's one canonical serialization, not a second
+    reimplementation: same key order, same UTF-8 text, and the same refusal
+    of a raw float. A trailing newline is added so a receipt reads as an
+    ordinary text file when opened directly.
     """
 
     return _pipeline_canonical_bytes(value) + b"\n"
@@ -82,13 +75,13 @@ def utc_stamp(value: datetime) -> str:
 def sha256_file(path: Path) -> str:
     """The one spelling of a file digest, read in blocks rather than whole.
 
-    Opened non-blocking, no-follow, and refused unless the *open descriptor*
-    says it is a regular file — not the name, which can change between the
-    check and the open. A FIFO left at a path a receipt records would
-    otherwise block on the open itself, and `status` would hang forever having
-    printed nothing; a planted symlink would be read through to bytes this
-    store never wrote and cannot vouch for (`operations/pod/transfer.py`
-    closes the same gap the same way).
+    Opened non-blocking, no-follow, and refused unless the open descriptor
+    says it is a regular file, not the name, which can change between the
+    check and the open. A FIFO left at a recorded path would otherwise
+    block the open, and `status` would hang having printed nothing; a
+    planted symlink would be read through to bytes this store never wrote
+    and cannot vouch for (`operations/pod/transfer.py` closes the same gap
+    the same way).
     """
 
     descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
@@ -104,20 +97,10 @@ def sha256_file(path: Path) -> str:
 def bounded_bytes(path: str | Path, subject: str, *, dir_fd: int | None = None) -> bytes:
     """Read a whole record, or refuse a file too large to be one of ours.
 
-    Opened the same way `sha256_file` above opens one, and for the reason its
-    docstring already gives: non-blocking, and refused unless the *open
-    descriptor* says it is a regular file rather than the name, which can change
-    between the check and the open. A FIFO left at a path a receipt records
-    blocks on the open itself, and `status` hangs forever having printed nothing.
-
-    That protection was written once and applied to one of the two readers. This
-    is the other one.
-
-    ``dir_fd`` resolves ``path`` as a single entry name relative to an already
-    open directory rather than by walking the name again. The store's
-    enumeration passes the descriptor it validated, so the guarantees above are
-    the same ones and the directory they apply to cannot be swapped underneath
-    them.
+    Opened the same way `sha256_file` opens one, and for the same reason.
+    ``dir_fd`` resolves ``path`` as a single entry relative to an already
+    open directory, so the directory it applies to cannot be swapped
+    underneath it.
     """
 
     descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=dir_fd)
@@ -199,10 +182,9 @@ class ReceiptStore:
     def _read_at(self, directory: int, name: str) -> dict[str, Any]:
         """Read one receipt as an entry of the directory already open as ``directory``.
 
-        The same reader as `read`, minus the part that resolves a name a second
-        time: containment is established by the descriptor rather than argued
-        about afterwards, so there is no window in which the directory the
-        entry belongs to can become a different directory.
+        The same reader as `read`, minus the part that resolves a name a
+        second time: containment is established by the descriptor, so there
+        is no window in which the entry's directory can change underneath it.
         """
 
         try:
@@ -215,28 +197,22 @@ class ReceiptStore:
     def _bound_receipts(self) -> Iterator[int | None]:
         """Open the receipt directory once and hold it open for the whole read.
 
-        Checking `self.receipts` and then globbing and opening through the same
-        name asks the filesystem to resolve it three times. A local process that
-        replaces the directory with a link between the check and the glob gets
-        its own files read as this store's history, or hides the real ones. The
-        descriptor is the directory — not a name that resolved to it once — so
-        every entry below is enumerated and opened relative to the object that
-        passed the check.
+        The descriptor is the directory, not a name resolved to it once, so
+        every entry below is enumerated relative to the object that passed
+        the check, and a process replacing the directory in between cannot
+        substitute its own files for this store's history.
 
         ``None`` means there is nothing recorded yet, which stays an empty
-        history rather than a failure. Every other refusal to open it — a link
-        live or dangling, a plain file, a permission — is the unsafe location
-        the caller must hear about instead.
+        history rather than a failure; every other refusal to open it is
+        the unsafe location the caller must hear about instead.
         """
 
         try:
             descriptor = os.open(self.receipts, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except FileNotFoundError as error:
-            # A dangling link answers `O_NOFOLLOW` with ELOOP or ENOTDIR rather
-            # than ENOENT, so this branch is the truly absent directory. The
-            # lstat confirms that, and refuses anything that is merely
-            # unresolvable — the "no observations recorded" report this whole
-            # method exists to stop being told in place of a warning.
+            # A dangling link answers `O_NOFOLLOW` with ELOOP or ENOTDIR
+            # rather than ENOENT, so this branch is the truly absent
+            # directory; the lstat confirms that.
             try:
                 os.lstat(self.receipts)
             except OSError:
@@ -284,18 +260,15 @@ class ReceiptStore:
                         os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode
                     )
                 except OSError:
-                    # The entry was listed and is now gone or unstattable. It is
-                    # not silently dropped: rule 7 wants the gap named.
+                    # The entry was listed and is now gone or unstattable;
+                    # named rather than silently dropped.
                     unreadable.append(f"{name}: it could not be examined")
                     continue
                 if linked:
-                    # `read` validates the *resolved* name against the bytes it
-                    # hashed, so a link may carry any name at all: one named for a
-                    # digest it does not hold passes, and a caller that reads the
-                    # digest out of the name it was handed then publishes a digest
-                    # nothing verified — beside a second, duplicate copy of the same
-                    # record, since the link and its target are both listed. A
-                    # receipt is a file this store created, not a name pointing at one.
+                    # `read` validates the resolved name against the bytes
+                    # it hashed, so a link may carry any name at all. A
+                    # receipt is a file this store created, not a name
+                    # pointing at one.
                     unreadable.append(
                         f"{name}: it is a link rather than a receipt this store wrote"
                     )
@@ -311,11 +284,9 @@ class ReceiptStore:
 
 
 def _entries(directory: int, prefix: str) -> list[str]:
-    """The receipt filenames of an open directory, in the order the readers used.
+    """The receipt filenames of an open directory, sorted, dot names excluded.
 
-    `Path.glob` skipped a leading-dot name and sorted what it returned; both are
-    kept, because a dot name here is one of `_sealed_temporary`'s partial files
-    and the callers' output order is asserted by their tests.
+    A dot name here is one of `_sealed_temporary`'s partial files.
     """
 
     try:
@@ -337,10 +308,10 @@ def _validated(name: str, data: bytes) -> dict[str, Any]:
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RecordError(f"operator receipt cannot be read: {name}") from error
     try:
-        # The shared serializer refuses what it cannot hash stably (a float,
-        # a non-string key). A saved file can contain one; that has to arrive
-        # as this module's RecordError, because `status` reports an unreadable
-        # record beside the intact ones only for RecordError.
+        # A saved file can contain a raw float or a non-string key, which the
+        # shared serializer refuses; this must arrive as RecordError, since
+        # `status` only reports an unreadable record beside intact ones for
+        # that type.
         canonical = canonical_bytes(record)
     except TypeError as error:
         raise RecordError(f"operator receipt is not canonical: {name}") from error
@@ -390,11 +361,10 @@ class DescriptorStore:
     def receipt_path(self, entry: str) -> Path:
         """Where a recorded receipt lives now, whatever the entry was written as.
 
-        Entries are receipt basenames (see `RECEIPTS_DIRECTORY`). A descriptor
-        written before that change recorded absolute paths; only the name is
-        taken from those too, so a state directory that has since been copied
-        or moved reads through the same index. The name is never a claim: the
-        reader still checks the bytes against the digest in that name.
+        Only the basename is taken (see `RECEIPTS_DIRECTORY`), even from an
+        older descriptor that recorded absolute paths, so a state directory
+        that has since been copied or moved still reads through this index;
+        the reader still checks the bytes against the digest in that name.
         """
 
         if not isinstance(entry, str) or not entry:
@@ -409,9 +379,6 @@ class DescriptorStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             handle = self.lock_path.open("a+b")
         except OSError as error:
-            # Named as what it is: a descriptor that cannot be locked cannot be
-            # safely written, and a bare OSError here would escape record() as
-            # an unclassified traceback on the money path.
             raise RecordError("the operator descriptor lock could not be opened") from error
         try:
             import fcntl
@@ -479,17 +446,13 @@ class DescriptorStore:
         except OSError as error:
             raise RecordError("operator receipt path cannot be resolved") from error
         if not inside:
-            # The index names receipts by basename and resolves them against
-            # this state root's receipt directory, so a receipt anywhere else
-            # would be indexed under a name that resolves to nothing.
             raise RecordError("operator descriptor indexes only receipts in its receipt directory")
         receipt_text = resolved.name
         actions[action] = receipt_text
         entries = history.setdefault(action, [])
-        # Move-to-end, never skip-if-present. Receipts are content-addressed,
-        # so an idempotent retry reproduces an earlier path exactly; skipping it
-        # leaves history[-1] naming something else, and every later load() and
-        # record() then refuses the descriptor as invalid.
+        # Move-to-end, never skip-if-present: an idempotent retry reproduces
+        # an earlier path exactly, and skipping it would leave history[-1]
+        # naming something else.
         if receipt_text in entries:
             entries.remove(receipt_text)
         entries.append(receipt_text)
@@ -588,9 +551,8 @@ def _atomic_replace(target: Path, payload: bytes) -> None:
     try:
         sync_directory(target.parent, strict=True)
     except OSError as error:
-        # The replace already succeeded: the index on disk names the new
-        # receipt and is merely not proven durable. Saying "not written" here
-        # would contradict what status then shows.
+        # The replace already succeeded, so "not written" here would
+        # contradict what status then shows.
         raise RecordError(
             "the operator descriptor was written but its directory entry could not be made durable"
         ) from error

@@ -74,11 +74,9 @@ class LocalFixtureObjectStore(TransferTarget):
 
     def __init__(self, root: str | Path, *, fail_once_for: str | None = None) -> None:
         self.root = Path(root)
-        # Owner-only, at creation: the store moves real submitted material, and
-        # a private root is what makes the per-key O_NOFOLLOW checks sufficient
-        # — no other local account can plant a link between a validation and an
-        # open. (Descriptor-relative walking of every component would defend
-        # against the owner racing themselves, which is not this seam's threat.)
+        # Owner-only, at creation: a private root is what makes the per-key
+        # O_NOFOLLOW checks sufficient, since no other local account can
+        # plant a link between a validation and an open.
         if self.root.is_symlink():
             raise RuntimeError("fixture object store root is not a safe directory")
         self.root.mkdir(parents=True, exist_ok=True)
@@ -136,10 +134,9 @@ class LocalFixtureObjectStore(TransferTarget):
                 handle.flush()
                 os.fsync(handle.fileno())
             try:
-                # Claiming the name and comparing has to be one step. Ask
-                # `exists()` and replace afterwards and two racing writers each
-                # see it absent and each replace the other: 90 times in 400,
-                # with the refusal below never firing.
+                # Claiming the name and comparing has to be one step: `exists()`
+                # then replace would let two racing writers each see it absent
+                # and each replace the other, with the refusal below never firing.
                 os.link(temporary, target)
                 sync_directory(target.parent, strict=True)
             except FileExistsError:

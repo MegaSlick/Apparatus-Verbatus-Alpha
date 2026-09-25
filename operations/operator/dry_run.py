@@ -30,7 +30,11 @@ START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 
 
 def _scratch_root() -> Path:
-    """Return a temporary root that is provably outside the checkout."""
+    """Return a temporary root that is provably outside the checkout.
+
+    Uses `cli._is_within` rather than a second copy of its containment
+    check, so the two never drift apart on what "inside the checkout" means.
+    """
 
     checkout = ROOT.resolve()
     configured = Path(tempfile.gettempdir()).resolve()
@@ -43,28 +47,11 @@ def _scratch_root() -> Path:
     # false. This operator already supports POSIX only (cli.py uses pwd).
     fallback = Path("/tmp").resolve()
     if _is_within(fallback, checkout):
-        # Every other failure in this module leaves through the three-part
-        # operator contract. `OperatorError` derives from `RuntimeError`, not the
-        # reverse, so a plain one was caught by nothing here and reached the
-        # operator as a bare traceback. The refusal was right; only its shape was.
         raise OperatorError(
             ErrorCode.UNEXPECTED,
             detail="no temporary directory outside the checkout is available",
         )
     return fallback
-
-
-# One containment rule, not two. This decides whether the rehearsal's scratch
-# folder lands in the checkout; the same question decides where operator records
-# go, and `cli._is_within` was already the identical algorithm. Two copies drift:
-# correcting one -- for a mount point, or a missing ancestor -- would leave the
-# other answering the old way, and the two decisions would disagree in silence.
-#
-# Used under its own name, not aliased: `_is_within(path, directory)` answers
-# "is path inside directory", and reading an alias called `_contains_directory`
-# as the opposite relation invites swapping the arguments -- which would pass the
-# guard for a TMPDIR inside the checkout and write the rehearsal's scratch
-# workspace into the repository, the one placement this exists to prevent.
 
 
 def make_transcript(output: str | Path) -> Path:
@@ -234,13 +221,9 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(argv)
         make_transcript(args.output)
     except KeyboardInterrupt:
-        # The same contract every other operator entry keeps for Ctrl+C.
         print(OperatorError(ErrorCode.INTERRUPTED).render())
         return 1
     except OperatorError as error:
-        # The same three-part contract every other operator entry keeps: a
-        # failed rehearsal transcript names what happened and what did not,
-        # instead of exiting on a raw traceback.
         print(error.render())
         return 1
     except OSError as error:
