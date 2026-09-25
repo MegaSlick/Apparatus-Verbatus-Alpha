@@ -91,7 +91,6 @@ def happy_run(tmp_path_factory):
 
 
 def test_a_captured_page_reading_parses_and_keeps_its_raw_bytes(native_run):
-    """Parsed text may derive from, but never replace, retained response bytes."""
     record = _page_testimonia(native_run)[(1, "attestator_3")]
     payload = record["payload"]
     capture = payload["native_capture"]
@@ -114,7 +113,6 @@ def test_a_captured_page_reading_parses_and_keeps_its_raw_bytes(native_run):
 
 
 def test_each_act_lands_on_its_own_words_across_page_furniture(native_run):
-    """Page furniture must not shift an act span onto neighbouring text."""
     page_text = _page_testimonia(native_run)[(1, "attestator_3")]["payload"]["payload"]
     attachments = _attachments(native_run)
 
@@ -138,7 +136,6 @@ def test_each_act_lands_on_its_own_words_across_page_furniture(native_run):
 
 
 def test_page_text_no_act_accounts_for_holds_rather_than_disappearing(native_run):
-    """Unattributed page text must hold the acts rather than disappear."""
     reviews = [
         native_run.read_artifact(RECENSOR, "review", entry["artifact_id"])
         for entry in native_run.build_manifest(RECENSOR)["artifacts"]
@@ -152,7 +149,6 @@ def test_page_text_no_act_accounts_for_holds_rather_than_disappearing(native_run
 
 
 def test_a_truncated_capture_is_visible_and_is_never_completed_or_retried(truncation_run):
-    """Transport truncation retains partial text without completing or retrying it."""
     record = _page_testimonia(truncation_run)[(2, "attestator_3")]
     payload = record["payload"]
     health = payload["content_health"]
@@ -167,7 +163,6 @@ def test_a_truncated_capture_is_visible_and_is_never_completed_or_retried(trunca
 
 
 def test_a_captured_response_that_cannot_be_parsed_keeps_its_bytes_and_names_the_cut(native_run):
-    """An unrecordable response names a transport cut in its reason and basis."""
     record = _page_testimonia(native_run)[(2, "attestator_3")]
     payload = record["payload"]
     health = payload["content_health"]
@@ -196,7 +191,6 @@ def test_a_captured_response_that_cannot_be_parsed_keeps_its_bytes_and_names_the
 
 
 def test_a_failed_page_capture_does_not_claim_a_missing_anchor(native_run):
-    """A failed response must not be misreported as a missing page anchor."""
     entry = next(
         item
         for item in _attachments(native_run)["a2"]
@@ -209,7 +203,6 @@ def test_a_failed_page_capture_does_not_claim_a_missing_anchor(native_run):
 
 
 def test_the_pinned_happy_run_captures_through_churro_without_moving_a_reading(happy_run):
-    """The pinned run must exercise capture without changing its reading text."""
     records = _page_testimonia(happy_run)
     assert set(records) == {
         (1, "attestator_1"),
@@ -243,7 +236,6 @@ def test_the_pinned_happy_run_captures_through_churro_without_moving_a_reading(h
 
 
 def test_a_page_testimonium_read_verifies_its_retained_raw_response(tmp_path):
-    """A nested raw reference must also be a digest-verified envelope input."""
     root = tmp_path / "runs"
     result = _orchestrate(root, "happy")
     assert result.returncode == 0, result.stderr
@@ -265,7 +257,6 @@ def test_a_page_testimonium_read_verifies_its_retained_raw_response(tmp_path):
 
 
 def test_a_witness_reading_order_that_departs_from_the_anchor_degrades_visibly():
-    """Monotonic alignment exposes reordered text as uncovered, never misattached."""
     from common.alignment import align_to_anchor, load_alignment_limits
 
     limits, _ = load_alignment_limits(ROOT / "config/alignment.toml")

@@ -189,7 +189,6 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
 
 
 def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_path):
-    """Named bytes remain evidence, but an unread schema is not a reading."""
     attestatores = _load_stage_module("run")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     context = SimpleNamespace(
@@ -222,7 +221,6 @@ def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_pa
 
 
 def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_path):
-    """A fixture row cannot declare two readings for the same response."""
     attestatores = _load_stage_module("run")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     tree = RunTree(tmp_path / "runs", "r")
@@ -313,7 +311,6 @@ def test_chandra_conflicting_text_fields_and_huge_coordinates_are_named():
 
 
 def test_chandra_bounds_native_json_before_decode_and_geometry_expansion(monkeypatch):
-    """One native response cannot crash or amplify past the adapter boundary."""
     chandra = _load_stage_module("chandra")
 
     monkeypatch.setattr(chandra, "MAX_RESPONSE_BYTES", 8)
@@ -375,7 +372,6 @@ def test_chandra_never_lets_a_huge_json_integer_literal_escape():
 
 
 def test_chandra_never_lets_a_deep_document_or_a_non_byte_input_escape():
-    """Whichever branch the real interpreter takes, neither is a crash."""
     chandra = _load_stage_module("chandra")
     nested = (
         b'{"schema":"fixture-chandra-response.v1","markdown":"x","blocks":[],"extra":'
@@ -399,7 +395,6 @@ def test_chandra_never_lets_a_deep_document_or_a_non_byte_input_escape():
 
 
 def test_an_unverified_chandra_wire_shape_cannot_acquire_fixture_geometry():
-    """Only explicitly synthetic bytes use the placeholder page-pixel rule."""
     chandra = _load_stage_module("chandra")
     raw = b'{"markdown":"plausible live response","blocks":[{"bbox":[0,0,100,100]}]}'
     assert chandra.parse_fixture_placeholder(raw) == {"parse_outcome": "unverified-response-schema"}
@@ -861,7 +856,6 @@ def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot
     ],
 )
 def test_an_overshoot_cannot_hide_malformed_observation_facts(field, value, message):
-    """Removing a bad box must not sanitize fields the finding does not retain."""
     chandra = _load_stage_module("chandra")
     attestatores = _load_stage_module("run")
     observed = chandra.observe(
@@ -879,7 +873,6 @@ def test_an_overshoot_cannot_hide_malformed_observation_facts(field, value, mess
 
 
 def test_an_in_page_observation_keeps_its_supported_text_span():
-    """Only converting an overshoot loses the span; an in-page box survives intact."""
     attestatores = _load_stage_module("run")
     observed = [
         {
@@ -901,7 +894,6 @@ def test_an_in_page_observation_keeps_its_supported_text_span():
 
 
 def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record(tmp_path):
-    """A written shape refusal must retain both its name and referenced bytes."""
     feeding = _load_stage_module("feeding")
     attestatores = _load_stage_module("run")
 
@@ -948,7 +940,6 @@ def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record
 
 
 def test_an_unknown_quantization_rule_is_refused_by_name(tmp_path):
-    """Admissible rules derive from bindings, not from one adapter's literal."""
     attestatores = _load_stage_module("run")
 
     chandra_rule = _load_stage_module("chandra").QUANTIZATION_RULE
@@ -1023,7 +1014,6 @@ def test_act_tally_rechecks_retained_response_bytes(tmp_path):
 
 
 def test_resume_collision_compares_native_response_digest_not_only_parsed_text():
-    """Same text with different native geometry is a different attempt."""
     attestatores = _load_stage_module("run")
     sealed_ref = {
         "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
@@ -1134,7 +1124,6 @@ def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp
 
 
 def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp_path):
-    """A pass held before publication must leave no boundary seal to consume."""
     complete_root = tmp_path / "complete"
     complete = subprocess.run(
         [
@@ -1544,7 +1533,6 @@ def test_a_layout_answer_reads_as_page_text_with_one_box_per_placed_block():
 
 
 def test_a_layout_answer_carrying_page_geometry_is_refused_without_the_sealed_page_size():
-    """The denominator is the sealed page, and it is never guessed at."""
     chandra = _load_stage_module("chandra")
     body = b'<div data-bbox="100 77 900 385" data-label="Text">ACT ONE</div>'
 
@@ -1760,11 +1748,11 @@ def test_the_placeholder_posture_is_scanned_for_repetition_too():
 def test_the_committed_fixture_placeholder_can_never_be_retained_from_a_served_chair():
     """Retained history, and no route by which it becomes a live reading.
 
-    The fixture's `fixture-chandra-response.v1` rows keep their reader until
-    U16 re-declares them in the vendor grammar, and the offline posture still
-    parses them. A served chair cannot reach that reader at all: the parser name
-    is what the record would carry, and a live capture written under it could
-    never be re-derived as the grammar the chair was actually asked in.
+    The fixture's `fixture-chandra-response.v1` rows keep their own reader,
+    which the offline posture still parses. A served chair cannot reach that
+    reader at all: the parser name is what the record would carry, and a live
+    capture written under it could never be re-derived as the grammar the
+    chair was actually asked in.
     """
     chandra = _load_stage_module("chandra")
     feeding = _load_stage_module("feeding")

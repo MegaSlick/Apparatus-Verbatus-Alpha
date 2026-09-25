@@ -68,7 +68,6 @@ def _scope_context(chairs=None, *, scopes=None, **fields):
     ([], {}, [[]], {"nested": []}, {"a": {"b": [1, 2]}}, [[[]]], [{"a": [{}]}]),
 )
 def test_declared_page_witness_chairs_refuses_unhashable_json_values(bad_chair):
-    """Roster values must be type-checked before set-based handling."""
     context = _scope_context([bad_chair])
 
     with pytest.raises(SchemaRefusal, match="unique list of chair names"):
@@ -76,7 +75,6 @@ def test_declared_page_witness_chairs_refuses_unhashable_json_values(bad_chair):
 
 
 def test_an_unknown_page_witness_chair_is_refused_not_dropped_from_the_join():
-    """A sealed-roster typo is a mismatch, not an empty intersection."""
     context = _scope_context(["attestator_33"])
 
     with pytest.raises(SchemaRefusal, match="absent from the current models configuration"):
@@ -99,7 +97,6 @@ def test_an_unknown_page_witness_chair_is_refused_by_the_shared_accessor_itself(
 
 
 def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
-    """The operator needs both mismatched sets to distinguish drift from a typo."""
     context = _scope_context(["attestator_33"])
 
     with pytest.raises(SchemaRefusal) as caught:
@@ -126,7 +123,6 @@ def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
     ),
 )
 def test_declared_page_witness_chairs_refuses_values_no_chair_name_could_be(bad_chair):
-    """Type validation must precede hashing, traversal, and value rendering."""
     if bad_chair == "recursive":
         recursive: list = []
         recursive.append(recursive)
@@ -145,7 +141,6 @@ def test_declared_page_witness_chairs_refuses_values_no_chair_name_could_be(bad_
     ),
 )
 def test_a_chair_name_string_subclass_is_refused_before_set_or_rendering(chair):
-    """The roster is a list, so only the exact-type rule can refuse it."""
     context = _scope_context([chair])
 
     with pytest.raises(SchemaRefusal, match="unique list of chair names"):
@@ -309,7 +304,6 @@ def _testimonium_write_scan(source: str):
 
 
 def test_the_write_scan_detects_a_third_path_even_when_its_syntax_changes():
-    """The source pin must reject unclassified writes, aliases, and hidden validation."""
     literal = """
 def third(context):
     declared_page_witness_chairs(context)

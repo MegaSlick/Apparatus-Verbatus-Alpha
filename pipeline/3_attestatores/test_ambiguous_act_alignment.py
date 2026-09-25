@@ -78,7 +78,6 @@ def _entry(
 
 
 def test_two_overlapping_act_spans_are_both_refused_and_neither_is_preferred():
-    """Overlap makes both claims unusable; nothing chooses between them."""
     first = _entry(span={"start": 0, "end": 40})
     second = _entry(span={"start": 30, "end": 200})
 
@@ -104,7 +103,7 @@ def test_an_anchor_line_pair_loses_the_attachment_the_alignment_was():
     it `attached: true` published a row both readers refuse -- each re-derives
     attachment through `common/contracts/outcomes.py::page_attachment_basis`,
     which answers `unattached` for a witness with no geometry and no located
-    line. Unreachable before Unit 12, when nothing attached on text alone.
+    line.
     """
     first = _entry(span={"start": 0, "end": 40}, basis="anchor-line")
     second = _entry(span={"start": 30, "end": 200}, basis="anchor-line")
@@ -120,7 +119,6 @@ def test_an_anchor_line_pair_loses_the_attachment_the_alignment_was():
 
 
 def test_a_third_act_that_overlaps_neither_keeps_its_alignment():
-    """Ambiguity is a property of the pair, not of the page."""
     first = _entry(span={"start": 0, "end": 40})
     second = _entry(span={"start": 30, "end": 200})
     untouched = _entry(span={"start": 400, "end": 450})

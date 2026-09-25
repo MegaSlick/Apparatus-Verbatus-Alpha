@@ -192,7 +192,6 @@ class _DaiContext:
 
 
 def test_dai_crop_resize_is_a_rederivable_adapter_crop_and_preserves_uncertainty_tokens():
-    """The shown pixels come from the sealed page recipe, not an opaque resize blob."""
     page = encode_grayscale_png_deterministic(3_000, 2, [bytearray(3_000), bytearray(3_000)])
     context = _DaiContext(page)
     source = _dai_region(3_000, 2)
@@ -303,7 +302,6 @@ def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
 
 
 def test_the_registry_binds_the_native_intake_contract_seams():
-    """Every adapter exposes the closed native and derived intake seams."""
     adapters = _load_local_adapters()
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
     # Quantization is data beside the five operations; `takes_page_size` says
@@ -436,7 +434,6 @@ def test_the_registry_binds_the_native_intake_contract_seams():
 
 
 def test_a_callable_binding_that_raises_at_import_fails_loudly_without_fallback(monkeypatch):
-    """A broken eager binding must propagate before a run opens, with no fallback."""
 
     exploding = ModuleType("feeding")
 
@@ -540,12 +537,9 @@ def _dai_region(width, height, x=0, y=0):
             "crop-resize-preserve-aspect",
             id="one-past-the-width-ceiling",
         ),
-        # `v3` recorded this as bound by the width ceiling alone (1,536 > 1,500)
-        # and left it at (1,500, 1,500) -- 2,250,000px. Under U15's raised
-        # `DAI_MAX_TOTAL_PIXELS` (2,359,296, the shipped catalogue's own
-        # max_pixels at every tier now the ladder is retired) that no longer
-        # exceeds the total-pixel ceiling, so the width pass alone is what
-        # the second pass agrees with: no further scale-down.
+        # Bound by the width ceiling alone (1,536 > 1,500) to (1,500, 1,500) --
+        # 2,250,000px, under `DAI_MAX_TOTAL_PIXELS` (2,359,296), so the second
+        # pass agrees: no further scale-down.
         pytest.param(
             1_536,
             1_536,
@@ -554,11 +548,9 @@ def _dai_region(width, height, x=0, y=0):
             "crop-resize-preserve-aspect",
             id="square-crop-also-bound-by-the-total-pixel-ceiling",
         ),
-        # `v3`'s bug: a width this far under 1,500 was recorded as an identity
-        # view "however tall the crop or however many total pixels it
-        # carries" -- but 576x4,097 is 2,359,872px, over U15's own
-        # `DAI_MAX_TOTAL_PIXELS` (2,359,296) by 576px, so the engine would have
-        # resized it again with nothing here to say so. `v4`'s second pass
+        # A width this far under 1,500 must not become an identity view
+        # regardless of total pixels: 576x4,097 is 2,359,872px, over
+        # `DAI_MAX_TOTAL_PIXELS` (2,359,296) by 576px, so the second pass
         # catches it: beta = sqrt(2,359,872 / 2,359,296) ~= 1.000122, floored.
         pytest.param(
             576,
@@ -594,7 +586,6 @@ def _dai_region(width, height, x=0, y=0):
 def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
     width, height, mode, target, operation
 ):
-    """Recorded transforms, not derivation arithmetic, must reproduce boundary views."""
     page = _dai_page(width, height, mode)
     context = _DaiContext(page)
     adapters = _load_local_adapters()
@@ -638,7 +629,6 @@ def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
     ],
 )
 def test_a_proposal_box_past_the_page_edge_is_refused_by_name(width, height, x, y):
-    """Bounds failures must be schema refusals, with no adapter blob published."""
     page = _dai_page(2_000, 1_000)
     adapters = _load_local_adapters()
     context = _DaiContext(page)
@@ -805,8 +795,8 @@ def test_a_churro_presentation_the_vendors_fit_rule_cannot_produce_is_refused_at
         adapters.validate_adapter_presentation("churro.v1", source, forged)
 
     # And an adapter that did nothing at all -- the presentation returned
-    # unchanged, which is exactly what this adapter did before U10 -- is refused
-    # by the seam's own sentence rather than passing as "no crop of its own".
+    # unchanged -- is refused by the seam's own sentence rather than passing
+    # as "no crop of its own".
     with pytest.raises(SchemaRefusal, match="prepare_ocr_image rule"):
         adapters.validate_adapter_presentation("churro.v1", source, source)
 
