@@ -25,21 +25,15 @@ from common.contracts.errors import ContractError
 
 PAGE_W, PAGE_H = 200, 300
 
-# Explicit ints equal to the retired module defaults (grouping.py used to
-# declare these as DEFAULT_MARGIN_FRACTION == 0.15 (0.15 * PAGE_W == 30px),
-# DEFAULT_CHAIN_GAP_PX == 6, DEFAULT_ANCHOR_REACH_PX == 2,
-# DEFAULT_BRACE_MIN_HEIGHT_PX == 30, DEFAULT_PAGE_EDGE_REACH_PX == 4;
-# structure.py's DEFAULT_GAP_TOLERANCE_PX == 3). Every test below passes
-# these explicitly so the behaviour the old defaults produced is proven
-# identical, never merely assumed.
+# Passed explicitly by every test below, since group_page no longer carries
+# these as module defaults.
 MARGIN_PX = 30  # 0.15 * PAGE_W
 CHAIN_GAP_PX = 6
 ANCHOR_REACH_PX = 2
 BRACE_MIN_HEIGHT_PX = 30
 PAGE_EDGE_REACH_PX = 4
-# The sealed `[grouping.page_area_bp]` value, spelled here rather than loaded so
-# these tests stay a test of the module and not of the config. `test_grouping_
-# config.py` is what holds the two to the same number.
+# The sealed [grouping.page_area_bp] value, spelled here rather than loaded so
+# these tests stay a test of the module, not the config.
 PAGE_SPANNING_AREA_BP = 5000
 GAP_TOLERANCE_PX = 3
 
@@ -126,11 +120,9 @@ def test_assign_columns_refuses_a_non_integer_margin_px():
 def test_assign_columns_pins_margin_px_at_its_own_boundary():
     """MARGIN_PX must actually decide the partition, not just describe it.
 
-    Every other fixture in this file puts margin components at centre-x 9.5
-    and body components at centre-x 100, so any boundary in (10, 100] gives
-    the identical split -- MARGIN_PX == 30 could silently drift and every
-    other test would still pass. This pins it directly: one component sits
-    just inside the 30px boundary, one just outside.
+    Every other fixture in this file puts components far enough from the
+    boundary that MARGIN_PX could silently drift and still pass; this pins it
+    directly, one component just inside the 30px boundary, one just outside.
     """
     inside = component(MARGIN_PX - 11, 0, 20, 5)  # centre 29, < MARGIN_PX
     outside = component(MARGIN_PX - 9, 0, 20, 5)  # centre 31, >= MARGIN_PX
@@ -148,13 +140,9 @@ def test_no_components_groups_to_nothing():
 
 @pytest.mark.parametrize("margin_px", [0, PAGE_W, -5, 1.5])
 def test_group_page_refuses_a_bad_margin_even_with_no_components(margin_px):
-    """The margin threshold is validated whether or not there is ink to sort.
-
-    `group_page` short-circuits to `[]` on an empty page, and before this fix
-    that short-circuit sat ahead of the margin check -- a sealed policy that
-    resolved to an out-of-range or non-integer margin_px produced no refusal
-    at all on an ink-free page, only a resolved_thresholds record naming a
-    margin nothing had actually validated.
+    """The margin threshold is validated whether or not there is ink to sort:
+    `group_page` used to short-circuit to `[]` on an empty page ahead of the
+    margin check, so a bad sealed margin passed silently on an ink-free page.
     """
     with pytest.raises(
         ContractError,
@@ -201,11 +189,9 @@ def test_a_body_run_with_no_preceding_anchor_is_a_leading_fragment():
 
 
 def test_a_component_contained_in_a_taller_predecessor_does_not_shorten_the_active_run():
-    """The active run reaches the greatest bottom edge seen, not merely the last one.
-
-    The middle component is wholly contained by the first.  Replacing the run's
-    bottom with that smaller component's bottom makes the third component appear
-    seven pixels away and falsely splits it at the six-pixel chain-gap limit.
+    """The active run reaches the greatest bottom edge seen, not merely the
+    last one: replacing it with the wholly-contained middle component's
+    bottom would falsely split the third component at the chain-gap limit.
     """
     tall = body_component(10, 30)  # reaches row 40
     contained = body_component(20, 5)  # reaches only row 25
@@ -256,12 +242,11 @@ def test_an_isolated_anchor_with_no_body_run_is_its_own_marginal_note_act():
 
 
 def test_a_tall_brace_anchor_links_two_acts_without_merging_their_body_text():
-    """`B. 43 } ... S. 26 }`: one physical marginal glyph, two real acts.
+    """One physical marginal glyph, two real acts.
 
-    A single anchor tall enough to span both body runs must not fold them into
-    one act (that would lose the second act's own identity) and must not be
-    claimed by only one of them (that would leave the other with no evidence
-    at all). Both groups carry the brace; their body text stays separate.
+    A single anchor tall enough to span both body runs must not fold them
+    into one act, nor be claimed by only one of them, leaving the other with
+    no evidence. Both groups carry the brace; their body text stays separate.
     """
     brace = margin_component(20, h=BRACE_MIN_HEIGHT_PX + 10)
     body_a = body_component(20, 20)  # first entry: y in [20, 40)
@@ -277,22 +262,14 @@ def test_a_tall_brace_anchor_links_two_acts_without_merging_their_body_text():
 
 
 def test_a_real_decoded_brace_page_drives_primary_scan_into_group_page():
-    """The brace fixture above, but through decoded pixels rather than hand-built
-    component dicts.
+    """The brace fixture above, but through decoded pixels rather than
+    hand-built component dicts.
 
-    Every other test in this file states its geometry directly and never calls
-    `structure.primary_scan` at all -- true of every grouping test in the diff,
-    per spec 06 test 3's own "brace-linked acts fixture" requirement and
-    `run.py::_analyze_page`'s real chain (`primary_scan` -> `group_page`). This
-    is the one place that chain runs over real decoded pixels: a solid margin
-    brace and two solid body blocks, painted onto a page, ink-scanned at
-    PRIMARY_MARGIN sensitivity with the explicit gap tolerance and grouping
-    thresholds equal to the retired defaults -- the same values
-    run.py::_analyze_page will resolve per page from
-    config/designator_grouping.toml. If `primary_scan` ever produced components `group_page` did not read as
-    a brace (a scan that over-merges the anchor into a body run, or splits the
-    brace itself into two pieces below `BRACE_MIN_HEIGHT_PX`), this is
-    the test that would catch it; hand-built component dicts cannot.
+    Every other test in this file states its geometry directly and never
+    calls `structure.primary_scan`. This is the one place `run.py`'s real
+    chain (`primary_scan` -> `group_page`) runs over real decoded pixels, so
+    it is the one test that would catch `primary_scan` merging the anchor
+    into a body run or splitting the brace below `BRACE_MIN_HEIGHT_PX`.
     """
     width, height = PAGE_W, 100
     background = 230
@@ -305,8 +282,6 @@ def test_a_real_decoded_brace_page_drives_primary_scan_into_group_page():
             for col_offset in range(w):
                 row[x + col_offset] = ink
 
-    # Same geometry as the hand-built brace test above: a margin anchor tall
-    # enough to be a brace, and two body runs it links without merging.
     brace_bounds = {"x": 2, "y": 20, "w": 15, "h": BRACE_MIN_HEIGHT_PX + 10}
     body_a_bounds = {"x": 40, "y": 20, "w": 120, "h": 20}
     body_b_bounds = {"x": 40, "y": 45, "w": 120, "h": 20}
@@ -326,10 +301,8 @@ def test_a_real_decoded_brace_page_drives_primary_scan_into_group_page():
         ),
     )
     background_value = evidence["background"]
-    # The margin the run would scan this page at, taken from the same evidence
-    # object `run.py::_analyze_page` takes it from rather than written out as a
-    # literal -- a hand-copied threshold is how this chain and the real one
-    # would quietly stop being the same scan.
+    # Taken from the same evidence object run.py::_analyze_page takes it
+    # from, not a hand-copied literal, so this stays the same scan as the real one.
     ink_margin = evidence["ink_margin"]
     assert background_value == background, "ink must stay the numeric minority for this test"
     components = primary_scan(
@@ -340,8 +313,6 @@ def test_a_real_decoded_brace_page_drives_primary_scan_into_group_page():
         margin=ink_margin,
         gap_tolerance_px=GAP_TOLERANCE_PX,
     )
-    # Three real, independently-scanned ink components -- not the three dicts
-    # a hand-built test would have started from.
     assert len(components) == 3
     assert {
         (c["bounds"]["x"], c["bounds"]["y"], c["bounds"]["w"], c["bounds"]["h"]) for c in components
@@ -374,9 +345,8 @@ def test_a_short_anchor_below_the_brace_threshold_seeds_only_one_act():
 def test_two_acts_with_no_body_gap_still_split_at_the_margin_anchor():
     """Two acts whose body text touches with zero blank rows between them.
 
-    A gap-only chainer would fuse this into one run; the margin anchor
-    starting mid-run is what a real page would show, and grouping must use it
-    even though there is no whitespace to find.
+    A gap-only chainer would fuse this into one run; grouping must use the
+    margin anchor starting mid-run even though there is no whitespace to find.
     """
     anchor_a = margin_component(20)
     anchor_b = margin_component(60)
@@ -391,13 +361,9 @@ def test_two_acts_with_no_body_gap_still_split_at_the_margin_anchor():
 def test_a_body_run_starting_slightly_above_its_own_anchor_still_splits():
     """Ordinary detection jitter, not evidence the second act starts earlier.
 
-    A second act's first body line can land a pixel or two above its own
-    margin anchor's own top edge (scan noise, not an interleaved-margins
-    zero-gap page). A strict, zero-tolerance boundary comparison would count
-    that line as still belonging to the previous zone and silently merge the
-    two acts into one -- the same `anchor_reach_px` slack the anchor
-    attachment test already gives this geometry must also apply to the
-    partition itself.
+    A strict, zero-tolerance boundary comparison would count a body line
+    starting a pixel above its own anchor as belonging to the previous zone
+    and silently merge the two acts; `anchor_reach_px` slack must apply here too.
     """
     anchor_a = margin_component(0, h=8)
     anchor_b = margin_component(50, h=8)
@@ -530,11 +496,8 @@ def test_group_page_refuses_a_non_positive_page(page_w, page_h):
     ],
 )
 def test_group_page_refuses_a_missing_required_keyword(missing):
-    """Every geometric parameter is required now that the module default is gone.
-
-    A caller that forgets one of the five resolved ints fails loudly with
-    `TypeError` at the call, rather than silently running under a value
-    nobody reviewed for this page.
+    """No module default: a caller that forgets one fails loudly with
+    `TypeError` rather than silently running under an unreviewed value.
     """
     kwargs = {
         "margin_px": MARGIN_PX,
@@ -584,11 +547,9 @@ def test_group_page_refuses_a_negative_or_non_integer_threshold(name, bad_value)
     ],
 )
 def test_find_continuation_candidate_refuses_a_negative_or_non_integer_reach(name, bad_value):
-    """The one geometric decision here whose failure is an act cut in half.
-
-    `group_page` refuses its four thresholds by name; these two decide
-    whether an act is judged to run on across a page break, and a float or a
-    negative reach silently changes that answer rather than failing.
+    """The one geometric decision here whose failure is an act cut in half: a
+    float or negative reach would silently change whether an act runs on
+    across a page break.
     """
     trailing = body_component(280, 20)
     leading = body_component(0, 30)
@@ -614,13 +575,9 @@ def test_find_continuation_candidate_refuses_a_missing_edge_reach_keyword():
 
 
 def test_find_continuation_candidate_uses_each_page_s_own_edge_reach():
-    """A real corpus's pages need not share a height -- and thus not an edge reach.
-
-    Page A's trailing group sits 3px from its bottom; page B's leading group
-    sits 5px from its top. A single shared `edge_reach_px` of 4 would have
-    admitted the first and refused the second identically on both sides; the
-    per-page values below prove each page's own reach is what is actually
-    consulted.
+    """A real corpus's pages need not share a height, and thus not an edge
+    reach: a single shared `edge_reach_px` couldn't distinguish page A's 3px
+    gap from page B's 5px one, so the per-page values must each be consulted.
     """
     page_a_h = 300
     trailing = body_component(page_a_h - 3 - 20, 20)  # bottom sits 3px above the edge
@@ -650,10 +607,9 @@ def test_find_continuation_candidate_uses_each_page_s_own_edge_reach():
     assert candidate["page_a_group"]["body_members"] == [trailing]
     assert candidate["page_b_group"]["body_members"] == [leading]
 
-    # Page A must be checked against its *own* reach, not page B's. Page A's
-    # 3px gap exceeds a 2px reach of its own even though page B's 5px gap
-    # passes at edge_reach_b_px=5 -- a mutant that used edge_reach_b_px for
-    # both pages would wrongly return a candidate here.
+    # Page A's 3px gap exceeds its own 2px reach even though page B's 5px gap
+    # passes; a mutant using edge_reach_b_px for both pages would wrongly
+    # return a candidate here.
     assert (
         find_continuation_candidate(
             page_a_groups,
@@ -667,23 +623,15 @@ def test_find_continuation_candidate_uses_each_page_s_own_edge_reach():
 
 
 def test_find_continuation_candidate_shares_a_column_with_no_slack_at_all():
-    """The column-share test is plain intersection: no tolerance, in either direction.
-
-    `find_continuation_candidate` used to take a `column_overlap_px` slack
-    defaulting to zero that no caller ever passed -- a geometric policy in
-    force on every page of every real run, sealed in no config and named in no
-    inventory, under a module comment claiming no default was left in the file.
-    It is gone rather than sealed, so what is asserted here is that zero means
-    *no length in the test at all* rather than a length set to zero: the
-    keyword itself is no longer accepted.
+    """The column-share test is plain intersection: no tolerance, in either
+    direction. `column_overlap_px` no longer exists as a keyword at all
+    (rather than defaulting to zero), which this test asserts by passing it
+    and expecting `TypeError`.
 
     `_x_range` reports the half-open pixel span `[x, x+w)`, so two ranges that
     only touch (one ends exactly where the other starts) share no pixel
     column and must not corroborate a continuation; a one-pixel real overlap
-    must. Both are stated in physical pixel columns below, not endpoint
-    arithmetic, so the fixture reads the same way the bug did: at pixel 99,
-    the trailing group's last column, does the leading group also start
-    there or one column later?
+    must.
     """
     trailing = component(40, 280, 60, 20)  # x-range [40, 100): pixel columns 40..99
     page_a_groups = group([trailing], PAGE_W, PAGE_H)
@@ -703,14 +651,9 @@ def test_find_continuation_candidate_shares_a_column_with_no_slack_at_all():
 
 # --- the page-spanning bound ------------------------------------------------
 #
-# What these pin is the property the module docstring states: a component whose
-# bounding box covers the sealed fraction of the page is withheld from column
-# assignment and body chaining, so it cannot weld two acts together -- and it is
-# withheld from *grouping* only, never removed from anything that counts ink.
-# The measurement behind the bound is in `config/designator_grouping.toml`'s
-# `[grouping.page_area_bp.provenance]`: on all fourteen real photographed pages
-# this project has measured, exactly one component's bounding box was the whole
-# leaf and it held 69.5 to 95.2 percent of every ink pixel the scan counted.
+# What these pin: a component covering the sealed fraction of the page is
+# withheld from column assignment and body chaining, so it cannot weld two
+# acts together -- withheld from grouping only, never removed from ink counts.
 
 
 def _bezel(page_w: int = PAGE_W, page_h: int = PAGE_H) -> dict:
@@ -731,12 +674,9 @@ def test_a_page_spanning_component_is_withheld_and_a_small_one_is_not():
 def test_the_bound_is_inclusive_at_its_own_value_and_exclusive_just_below():
     """A box exactly on the line is withheld; one basis point under it is not.
 
-    Both halves, because the bound is only meaningful as a pair: the area is
-    floor-divided and the comparison is `>=`, so the rounding can only ever move
-    a box *down*, toward being grouped, and the bound still holds inclusively at
-    its own stated value. `grouping._bbox_area_bp`'s docstring carries the same
-    sentence and this test is what makes it a check; two spellings of one
-    rationale is how they come to disagree.
+    The area is floor-divided and the comparison is `>=`, so rounding only
+    ever moves a box down, toward being grouped, and the bound still holds
+    inclusively at its own stated value.
     """
     # PAGE_W x PAGE_H is 200x300 == 60,000 px. Half of it is 30,000: a
     # 200x150 box is exactly 5000bp, a 200x149 box is 4966bp.
@@ -752,15 +692,10 @@ def test_the_bound_is_inclusive_at_its_own_value_and_exclusive_just_below():
 def test_a_page_spanning_component_stops_claiming_two_acts_at_the_bound():
     """The measured failure, reproduced at fixture scale on both sides of the bound.
 
-    A wide band across two anchored acts is what a photographed bezel labels as:
-    it lands in the body column, its y-range covers both acts, and every anchor
-    on the page overlaps it. Just under the bound (200x149 on a 200x300 page,
-    4966bp) it comes back as a group of its own whose bounds swallow both acts
-    and which claims BOTH anchors -- the shape the real pages produced at scale,
-    where one group held 440 body components and 14 anchors and its bounds were
-    the leaf. At the bound (200x150, exactly 5000bp) it is withheld and the two
-    acts are all that come back, identical to grouping them with no band there
-    at all.
+    A wide band across two anchored acts lands in the body column and overlaps
+    both anchors. Just under the bound (4966bp) it comes back as its own group
+    swallowing both acts and claiming both anchors; at the bound (exactly
+    5000bp) it is withheld and the two acts are all that come back.
     """
     acts = [
         margin_component(20),
@@ -782,13 +717,9 @@ def test_a_page_spanning_component_stops_claiming_two_acts_at_the_bound():
 
 
 def test_the_bound_cannot_be_switched_off_by_setting_it_to_a_whole_page():
-    """10000 is the largest legal value and it still withholds a whole-page box.
-
-    The comparison is `>=`, so a component whose bounding box IS the page
-    reaches even the top of the range. There is therefore no value of this
-    policy under which a page-spanning component is connective tissue again --
-    which is deliberate: the bound may be tightened or loosened, never disarmed
-    by a config edit that looks like widening it.
+    """10000 is the largest legal value and it still withholds a whole-page
+    box: the comparison is `>=`, so no config edit that looks like widening
+    the bound can ever disarm it.
     """
     assert (
         group_page(
@@ -806,13 +737,9 @@ def test_the_bound_cannot_be_switched_off_by_setting_it_to_a_whole_page():
 
 
 def test_a_withheld_component_is_returned_rather_than_dropped():
-    """Withheld is not excluded: both halves come back, and their union is the input.
-
-    This is the property `run.py` publishes the record from, and the reason the
-    word in this module is *withheld*. Nothing here may quietly become a filter
-    -- a component the grouping pass sets aside is still ink, still inside
-    `conservation.reconcile`'s own rescan of the page, and still minted as a
-    held act when no group claims it.
+    """Withheld is not excluded: both halves come back, and their union is the
+    input. A component set aside here is still ink: still inside
+    `conservation.reconcile`'s rescan, still mintable as a held act.
     """
     parts = [_bezel(), body_component(20, 30), margin_component(20)]
     grouped, withheld = partition_page_spanning(
@@ -824,18 +751,11 @@ def test_a_withheld_component_is_returned_rather_than_dropped():
 def test_a_page_of_nothing_but_bezel_groups_to_nothing_so_the_fallback_grid_fires():
     """The guaranteed fallback grid is re-armed by this bound.
 
-    On real pages `group_page` used to return bezel-welded groups, so the page
-    read as `detected` and the four-band fallback grid never ran. A page whose
-    only component spans it now returns no groups at all, which is the condition
-    `run.py` reads as `fallback-tiles`.
-
-    Both halves are asserted, because the first alone would not earn this test's
-    name: the empty result is the trigger, and `fallback_tiles` -- this module's
-    own -- is what that trigger reaches. Every pixel of the page ends up inside a
-    tile, so the page is cut and sent downstream to be read rather than being
-    called blank on the strength of one threshold. What this cannot check from
-    here is `run.py` making that call; `test_structure_failure.py` is where the
-    live path's `structure_evidence` is pinned.
+    Before it, `group_page` returned bezel-welded groups, so the page read as
+    `detected` and the fallback grid never ran. A page whose only component
+    spans it now returns no groups, which `run.py` reads as `fallback-tiles`;
+    both halves (the empty result and `fallback_tiles` covering the page) are
+    asserted since either alone wouldn't prove the point.
     """
     assert group([_bezel()]) == []
 
@@ -868,11 +788,8 @@ def test_the_partition_is_invariant_under_input_order():
 
 
 def test_partitioning_an_already_partitioned_page_withholds_nothing_further():
-    """Idempotent, which is what lets `run.py` call it beside `group_page`.
-
-    `run.py` takes the partition itself to publish the withheld half on the
-    page's conservation record, and `group_page` takes it again internally. The
-    two cannot disagree only because a second application is a no-op.
+    """Idempotent, which is what lets `run.py` call it beside `group_page`
+    (which takes the partition again internally) without the two disagreeing.
     """
     parts = [_bezel(), body_component(20, 30)]
     grouped, withheld = partition_page_spanning(
@@ -888,14 +805,8 @@ def test_partitioning_an_already_partitioned_page_withholds_nothing_further():
 
 @pytest.mark.parametrize("bad_value", [0, -1, 10001, 1.5, True, "5000", None])
 def test_a_page_spanning_bound_outside_one_to_ten_thousand_is_refused(bad_value):
-    """Refused at both ends, and refused on an empty page too.
-
-    At or below zero every component on every page spans the bound and the pass
-    would withhold the whole page while returning a well-formed empty result;
-    past a whole page nothing can reach it, so the policy would read as being in
-    force while doing nothing. The empty-page call is the same reason
-    `_check_margin` runs before the empty short-circuit: a sealed policy nobody
-    validated must not pass merely because the page had no ink on it.
+    """Refused at both ends, and refused on an empty page too: a sealed
+    policy nobody validated must not pass merely because the page had no ink.
     """
     kwargs = {
         "margin_px": MARGIN_PX,
@@ -912,13 +823,10 @@ def test_a_page_spanning_bound_outside_one_to_ten_thousand_is_refused(bad_value)
 
 
 def test_the_bound_is_a_fraction_of_area_so_it_means_the_same_thing_at_two_scales():
-    """The same component shape is withheld on a fixture page and on a scan.
-
-    A box covering half of a 200x300 page and the same box scaled to a
-    2000x3000 one are one decision, which is the whole reason the value is a
-    basis point of the page's own area rather than a pixel count. A pixel count
-    here would withhold every act on a large page and nothing at all on a small
-    one.
+    """The same component shape is withheld on a fixture page and on a scan,
+    because the bound is a basis point of the page's own area, not a pixel
+    count -- a pixel count would withhold every act on a large page and
+    nothing on a small one.
     """
     for scale in (1, 10):
         w, h = PAGE_W * scale, PAGE_H * scale
