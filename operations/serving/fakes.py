@@ -1,25 +1,16 @@
 """A shared fake serving endpoint for stage tests built against :class:`ChairClient`.
 
-Mirrors of :mod:`operations.serving.test_manager`'s own fakes (``FakeHttp``,
-``FakeLauncher``, ``FakeProcess``, ``FakePackages``, ``FakeRegistry``) — not
-moved from there, so that 4,500-line manager-lifecycle suite stays untouched.
-Attestatores and Perlector stage tests both need one scripted endpoint that
-speaks the reading contract; deduplicating the two families of fakes is a
-named follow-on, not a job this module does.
+Mirrors :mod:`operations.serving.test_manager`'s own fakes without being
+moved there, since Attestatores and Perlector stage tests both need one
+scripted endpoint speaking the reading contract.
 
-Beside the reading answers, the builders under "the structure chair's answers"
-script what the Designator's `designator_structure` chair returns: a page's
-acts given in page pixels, a body the layout grammar refuses by a named
-outcome, or a real answer the engine cut off mid-block. They live here rather
-than in a suite because knowing which normalized box lands on a given page
-rectangle means inverting `common.structure_answer.to_page_bounds`, and a
-second copy of that inversion could agree with a converter that had changed
-underneath it.
-
-**Those builders speak Chandra's layout HTML**, which is what that chair is
-asked for since `verbatus-structure-prompt.v3` carried the vendor's own prompt
-bytes. They do not know the retired `verbatus-structure-answer.v1` JSON
-envelope, and a suite still scripting it fails in the builder.
+The builders under "the structure chair's answers" script what the
+Designator's `designator_structure` chair returns (acts in page pixels, a
+grammar-refused body, or an engine cut-off mid-block) once, here, rather than
+in each suite: they invert `common.structure_answer.to_page_bounds`, and a
+second copy of that inversion could drift from the converter it inverts.
+They speak Chandra's layout HTML, the format that chair is actually asked
+for.
 """
 
 from __future__ import annotations
@@ -159,17 +150,12 @@ class FakeEndpoint:
     ) -> None:
         self.served_model_id = served_model_id
         self.blob_store = blob_store
-        # A stopped process whose endpoint keeps answering — the exact
-        # ambiguity `ServingManager._assert_endpoint_absent` exists to catch
-        # (mirrors test_manager.py's own fake). Set true only where a test
-        # needs `ChairClient.__enter__`'s own `handle.stop()` to fail.
+        # A stopped process whose endpoint keeps answering: the exact ambiguity
+        # `ServingManager._assert_endpoint_absent` exists to catch. Set true
+        # only where a test needs `handle.stop()` to fail.
         self.sticky_after_stop = sticky_after_stop
-        # Deliberately opt-in rather than a blanket invariant, because a test
-        # may drive this endpoint through a seam that never reaches
-        # `ChairClient.read` at all. Every reading that does reach it retains,
-        # including a non-200 or wrong-model one: retention now runs before the
-        # wrong-source refusal, so vLLM's own account of why it refused is on
-        # disk before the refusal is raised.
+        # Opt-in, not a blanket invariant: a test may drive this endpoint
+        # through a seam that never reaches `ChairClient.read` at all.
         self.assert_retained_before_next_request = assert_retained_before_next_request
         self._answers: list[ScriptedAnswer] = []
         self.requests: list[dict[str, object]] = []
@@ -449,18 +435,11 @@ def scripted_structure_answer(
     return ScriptedAnswer(content=content, finish_reason=finish_reason, **fields)
 
 
-# One body per named refusal, each the smallest answer that reaches that
-# outcome and nothing else. Keyed by the `PARSE_OUTCOMES` code so a test names
-# the outcome it is scripting rather than a body it has to be read to decode.
-#
-# **Two of the grammar's six, and the other four are not scriptable here.**
-# `raw-response-not-bytes`, `response-too-large` and `invalid-utf8` are
-# properties of the wire bytes, and a `ScriptedAnswer` carries a `str`;
-# `too-many-layout-blocks` needs `MAX_LAYOUT_BLOCKS` divs, which is a ten-
-# thousand-block fixture to prove a ceiling that `common/test_chandra_layout.py`
-# already measures at the grammar itself. Those four are covered there, over the
-# bytes, which is where they happen. Named rather than left as a gap: the two
-# here are the two an answer's *shape* can reach.
+# One body per named refusal, keyed by its `PARSE_OUTCOMES` code so a test
+# names the outcome rather than a body it has to be read to decode. Only two
+# of the grammar's six outcomes: the other four are properties of the wire
+# bytes or need a ten-thousand-block fixture, and are covered instead in
+# `common/test_chandra_layout.py`, over the bytes, where they happen.
 _STRUCTURE_REFUSALS: Mapping[str, str] = {
     "no-layout-blocks": (
         "# Page one\n\nMarkdown the chair wrote instead of the answer it was asked for."
@@ -576,12 +555,9 @@ def scripted_structure_cut_off(
 
     **This is the answer-side truncation, and it is real** -- an engine that
     admits a request and then runs out of room to finish it stops exactly like
-    this. It is *not* the failure SPEC_D §7 names as the likely first real one:
-    a `max_model_len` too small for a page is refused before generation with an
-    HTTP 400 and no choices at all, which is `scripted_prompt_too_long`. This
-    docstring used to claim to script that one, and scripting it in the wrong
-    shape is what let "proven offline against a fake endpoint" mean a claim
-    about wire shape rather than about admissibility.
+    this. It is *not* SPEC_D §7's likely first real failure: a `max_model_len`
+    too small for a page is refused before generation with an HTTP 400 and no
+    choices at all, which is `scripted_prompt_too_long` instead.
     """
     whole = structure_answer_body(acts, page_w, page_h)
     cut = whole[: whole.index("</div>")]
