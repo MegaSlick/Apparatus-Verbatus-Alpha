@@ -474,8 +474,6 @@ class OperatorSurface:
 
         self._present(strip_control_bytes(line))
 
-    # -- launch ---------------------------------------------------------------
-
     def prepare_launch(
         self,
         request: PodCreateRequest,
@@ -647,8 +645,6 @@ class OperatorSurface:
         self.present("This rehearsal contacted no cloud provider and created no bill.")
         return result
 
-    # -- upload ---------------------------------------------------------------
-
     def submit_and_upload(
         self,
         source: str | Path,
@@ -801,7 +797,6 @@ class OperatorSurface:
                 },
                 descriptor_action="upload",
             )
-            # Show the cause, not just the receipt path.
             raise OperatorError(
                 ErrorCode.UPLOAD_PARTIAL, detail=f"{error} Saved receipt: {receipt}"
             ) from error
@@ -838,8 +833,6 @@ class OperatorSurface:
         )
         self.present(f"Saved receipt: {receipt}")
         return receipt
-
-    # -- boot -----------------------------------------------------------------
 
     def boot(self) -> Path:
         """Run the real bootstrap journal with explicit fixture-only effects."""
@@ -882,8 +875,6 @@ class OperatorSurface:
             self.present("No upload record was present; no transfer was assumed complete.")
         self.present(f"Saved report: {receipt}")
         return receipt
-
-    # -- fetch-run ------------------------------------------------------------
 
     def fetch_run(
         self,
@@ -1114,8 +1105,6 @@ class OperatorSurface:
             )
         self.present(f"Saved receipt: {receipt}")
         return receipt
-
-    # -- run ------------------------------------------------------------------
 
     def run(
         self,
@@ -1519,8 +1508,6 @@ class OperatorSurface:
 
         self.present(f"Review it read-only with: {review_command(run_root, run_id)}")
 
-    # -- export ---------------------------------------------------------------
-
     def export(self, *, run_id: str | None = None, run_root: Path | None = None) -> Path:
         """Make a local evidence bundle from the base-tree Armarium artifact.
 
@@ -1582,8 +1569,6 @@ class OperatorSurface:
             run_root = self._state_path(str(run_record["run_root"]))
             self.present(f"Exporting run {recorded_id} from run root {run_root}.")
             export_payload = self._armarium_export(run_root, recorded_id)
-            # The same reconciliation `run()` requires before calling a record
-            # complete.
             aggregate = export_payload["aggregate"]
             if aggregate.get("status") == "complete":
                 self._require_reconciled_act_partition(export_payload)
@@ -1675,8 +1660,6 @@ class OperatorSurface:
                 f"reason. Saved export receipt: {receipt}"
             ),
         )
-
-    # -- close ---------------------------------------------------------------
 
     def prepare_close(self, *, pod_id: str | None = None) -> PreparedClose:
         """Resolve the recorded pod and show the close notice before any confirmation."""
@@ -1827,8 +1810,6 @@ class OperatorSurface:
             )
         return report
 
-    # -- status ---------------------------------------------------------------
-
     def status(self) -> list[str]:
         """Read descriptors, receipts, and leases without writes or provider calls."""
 
@@ -1914,8 +1895,6 @@ class OperatorSurface:
             unreadable.append(f"{label}: {failure}")
             lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
         return lines
-
-    # -- internal -------------------------------------------------------------
 
     def _runtime(self, policy: SpendPolicy) -> PodRuntime:
         return PodRuntime(
@@ -2421,7 +2400,6 @@ class OperatorSurface:
                     ),
                 ) from error
             except OSError as error:
-                # Any other error means exclusion could not be established.
                 raise OperatorError(
                     ErrorCode.SAFETY_CHECK_FAILED,
                     detail=(
@@ -2638,9 +2616,6 @@ class OperatorSurface:
     def _write_base_armarium_bundle(self, run_root: Path, run_id: str, destination: Path) -> None:
         tree = RunTree(run_root, run_id)
         source = tree.root
-        # Each member must exist and be the expected kind (file or directory);
-        # otherwise a bundle missing its evidence would still be called
-        # complete.
         temporary = destination.with_name(f".{destination.name}.tmp-{secrets.token_hex(16)}")
         root_descriptor: int | None = None
         run_descriptor: int | None = None
@@ -2765,7 +2740,6 @@ class OperatorSurface:
         # reasons from artifacts may contain newlines.
         one_line = " ".join(message.split()) or "no detail recorded"
         if len(one_line) > MAX_NOTIFY_MESSAGE_CHARACTERS:
-            # The suffix counts toward the limit.
             suffix = "... (truncated; see the run receipt for the full text)"
             one_line = one_line[: MAX_NOTIFY_MESSAGE_CHARACTERS - len(suffix)] + suffix
         try:
