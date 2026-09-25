@@ -394,10 +394,8 @@ def test_backup_invalid_run_id_uses_the_named_backup_refusal(tmp_path: Path) -> 
     assert "run id is invalid" in failure.value.render()
 
 
-# Each case names the refusal it must produce. Asserting only the shared
-# phrase "backup worker report" let one surviving check answer for all five:
-# delete the integer test, or the ceiling test, and the suite stayed green
-# while the CLI accepted a report it cannot prove.
+# Each case names the refusal it must produce, since a shared phrase like
+# "backup worker report" would let one surviving check answer for all five.
 @pytest.mark.parametrize(
     ("report", "expected_detail"),
     (

@@ -2642,8 +2642,9 @@ class OperatorSurface:
     def _require_reconciled_act_partition(self, export_payload: dict[str, Any]) -> None:
         """Refuse a `complete` export unless every expected act appears exactly once.
 
-        Shared by `run()` and `export()` so both judge "complete" alike. A record
-        from other code could pad or drop acts in ways a raw count misses. Uses `.get` because some callers bypass `_armarium_export`.
+        Shared by `run()` and `export()` so both judge "complete" alike. A
+        record from other code could pad or drop acts in ways a raw count
+        misses. Uses `.get` because some callers bypass `_armarium_export`.
         """
 
         expected_acts = export_payload.get("expected_acts")
@@ -4087,7 +4088,8 @@ def _is_serving_log(relative: str) -> bool:
 class FetchEvidenceOutcome:
     """What the evidence pass brought home, and what it did not.
 
-    Preflight evidence is provenance on a volume that will be destroyed; what did not arrive is named.
+    Preflight evidence is provenance on a volume that will be destroyed;
+    what did not arrive is named.
     """
 
     fetched: int

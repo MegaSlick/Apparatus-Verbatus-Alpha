@@ -36,9 +36,10 @@ MAX_REVIEW_ITEMS = 50_000
 _REVIEW_ITEMS_MEMBER = "review-items.jsonl"
 
 # Every sealed page and crop is read whole, in one pass, to verify its digest,
-# so an unbounded run met no limit here, only the memory of the machine. This
-# bounds that pass by name instead; a console that streams images one at a
-# time as fetched would need no such limit.
+# so an unbounded run met no limit here, only the memory of the machine. The
+# number is the largest that still passes through this pipe with room for the
+# JSON copy on both sides; a console that streamed one image at a time as
+# fetched would need no such limit.
 MAX_PROJECTED_IMAGE_BYTES = 256 * 1024 * 1024
 
 

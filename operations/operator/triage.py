@@ -352,6 +352,8 @@ _QUEUE_FIELDS = frozenset({"schema", "mode_declaration", "manifest_sha256", "ite
 def _checked_queue(queue: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]]:
     """The fixed-point queue form whose digest the journal actually persists."""
     data, persisted = _persisted_form(queue, "queue")
+    # Checked before the closed-schema refusal below: a preference field is
+    # not merely an extra key, it is an attempted picker.
     _refuse_preference_named(persisted, "queue")
     if (
         set(persisted) != _QUEUE_FIELDS

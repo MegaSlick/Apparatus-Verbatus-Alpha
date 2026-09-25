@@ -30,7 +30,11 @@ START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 
 
 def _scratch_root() -> Path:
-    """Return a temporary root that is provably outside the checkout."""
+    """Return a temporary root that is provably outside the checkout.
+
+    Uses `cli._is_within` rather than a second copy of its containment
+    check, so the two never drift apart on what "inside the checkout" means.
+    """
 
     checkout = ROOT.resolve()
     configured = Path(tempfile.gettempdir()).resolve()

@@ -326,10 +326,11 @@ class SeatbeltConfinement(Confinement):
     Starts from ``deny default`` and grants only global file reads, exec of
     the exact Python binary being launched, and (for the worker) one
     writable subtree; network, Mach service lookup, process inspection and
-    process creation are not granted. The profile is applied before
-    ``execvp`` and remains attached across exec, but `verify_confinement`
-    still runs before every launch: a past pass on one host is not
-    permission to assume a later host enforces the same profile.
+    process creation are not granted, rather than relying on disputed SBPL
+    rule-precedence to punch an allow through a blanket deny. The profile is
+    applied before ``execvp`` and remains attached across exec, but
+    `verify_confinement` still runs before every launch: a past pass on one
+    host is not permission to assume a later host enforces the same profile.
     """
 
     name = "macOS Seatbelt (sandbox-exec)"
@@ -633,6 +634,8 @@ def _seccomp_filter_bytes() -> bytes:
     audit_arch, refused_syscalls = facts
     instructions = [
         (_BPF_LD_W_ABS, 0, 0, 4),  # seccomp_data.arch
+        # A mismatched architecture kills the process outright, rather than
+        # interpreting its syscall numbers under the native map.
         (_BPF_JMP_JEQ_K, 1, 0, audit_arch),
         (_BPF_RET_K, 0, 0, _SECCOMP_RET_KILL_PROCESS),
         (_BPF_LD_W_ABS, 0, 0, 0),  # seccomp_data.nr

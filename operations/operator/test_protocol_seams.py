@@ -96,9 +96,7 @@ SEAMS = (
 def _missing_concrete_methods(protocol: type, implementation: type) -> list[str]:
     missing: list[str] = []
     # The Protocol's whole method set, not just the class body: `vars(protocol)`
-    # misses anything a base Protocol declares, so the first seam that inherits
-    # would let an implementation drop an inherited method and still pass here.
-    # Every pair in SEAMS is flat today; this closes the gap before one is not.
+    # misses anything a base Protocol declares.
     declared: dict[str, object] = {}
     for base in reversed(protocol.__mro__):
         if not getattr(base, "_is_protocol", False):
@@ -107,11 +105,9 @@ def _missing_concrete_methods(protocol: type, implementation: type) -> list[str]
     for name, member in declared.items():
         if name.startswith("_"):
             continue
-        # `inspect.isfunction` alone sees only plain `def`s, so a protocol that
-        # declared a member as a `staticmethod`, `classmethod` or `property`
-        # would be skipped entirely and an implementation could omit it while
-        # this matrix stayed green. No seam declares one today; the walker is
-        # widened before one does rather than after.
+        # `inspect.isfunction` alone sees only plain `def`s, so a protocol
+        # member declared as a `staticmethod`, `classmethod` or `property`
+        # would otherwise be skipped entirely.
         descriptor = isinstance(member, (staticmethod, classmethod, property))
         if not descriptor and not inspect.isfunction(member):
             continue
@@ -132,13 +128,11 @@ def _missing_concrete_methods(protocol: type, implementation: type) -> list[str]
             missing.append(name)
             continue
         if isinstance(member, property):
-            # Reading a property off the class returns the descriptor, so the
-            # `callable` check below cannot be applied here -- but presence
-            # alone is not the obligation either. A protocol property is an
-            # attribute a caller reads; answering it with a plain `def` gives
-            # every caller a bound method where a value was promised, and
-            # accepting that would let exactly the drift this matrix exists to
-            # catch through under the name of a defined member.
+            # Read off `vars(owner)`, not `getattr`, since reading a property
+            # off the class returns the descriptor, not its value, so the
+            # `callable` check below cannot tell a property from a method
+            # here: a plain `def` answering it gives every caller a bound
+            # method where a value was promised.
             concrete = vars(owner)[name]
             if inspect.isfunction(concrete) or isinstance(concrete, (staticmethod, classmethod)):
                 missing.append(name)
@@ -151,9 +145,8 @@ def _missing_concrete_methods(protocol: type, implementation: type) -> list[str]
 class _DescriptorSeam(Protocol):
     """Not a real seam: the shapes `_missing_concrete_methods` must judge.
 
-    No pair in `SEAMS` declares a descriptor member today, so the walker's
-    handling of one is exercised nowhere else and could be wrong -- or could be
-    broken later -- without a single test noticing.
+    No pair in `SEAMS` declares a descriptor member today, so this exercises
+    the walker's handling of one nowhere else would catch.
     """
 
     @property
@@ -217,9 +210,6 @@ class _DefinesOnlyTheOrdinaryMethod:
         (_AnswersEveryShape, []),
         (_AnswersThePropertyWithAProperty, []),
         (_AnswersThePropertyWithASlot, []),
-        # The one this walker used to accept: a defined member of the wrong
-        # shape, which reads as present to any check that only asks whether the
-        # name resolves.
         (_AnswersThePropertyWithAMethod, ["label"]),
         (_DefinesOnlyTheOrdinaryMethod, ["build", "label", "make"]),
     ],
