@@ -1115,9 +1115,8 @@ def _checked_page_attachment(
     )
     page_payload = testimonium.get("payload")
     validate_page_testimonium_record(context, testimonium, all_proposal_regions)
-    # Collected for the caller's run-wide routing sweep: a page Testimonium
-    # belongs to a (page, chair) pair, not to this act. This is the Perlector's
-    # only digest-checked read of these records.
+    # For the caller's run-wide routing sweep: a page Testimonium belongs to a (page,
+    # chair) pair, not to this act, and this is the only digest-checked read of it.
     if page_testimonia_seen is not None and isinstance(page_payload, dict):
         page_testimonia_seen[testimonium["artifact_id"]] = testimonium
     native_capture = page_payload.get("native_capture")
@@ -1133,9 +1132,8 @@ def _checked_page_attachment(
                 "native capture to an adapter other than that chair's configured boundary"
             )
         verify_native_capture_blob(context.tree, native_capture)
-    # Sealed proposal geometry only, as the writer used. A recovery crop
-    # postdates testimony, so it may not enlarge the denominator that attached
-    # it after the fact.
+    # Sealed proposal geometry only, as the writer used: a recovery crop postdates
+    # testimony, so it may not enlarge the denominator that attached it.
     page_bases = [
         basis
         for basis in bases
@@ -1147,10 +1145,9 @@ def _checked_page_attachment(
     attachment_outcome = (
         testimonium["outcome"] if native_capture is not None else chair_testimonium["outcome"]
     )
-    # Re-derived through the producer's shared rule: a page witness attaches on
-    # its own ink over this act's sealed proposal or, only where it reported
-    # none, on an anchor line located in its page text. Both `attached` and the
-    # basis are recomputed, so a resealed record cannot claim either.
+    # The producer's shared rule, recomputed so a resealed record cannot claim either
+    # `attached` or its basis: a page witness attaches on its own ink over this act's
+    # sealed proposal or, only where it reported none, on an anchor line in its text.
     derived_basis = page_attachment_basis(
         reading=attachment_outcome in WITNESS_READING_OUTCOMES,
         geometry_overlaps=any(
@@ -1203,9 +1200,8 @@ def _checked_page_attachment(
             f"{role!r} its own primary-page fact contradicts; the page relationship "
             "is false; rebuild the page Testimonium from the attachment denominator"
         )
-    # Only the alignment is fixed on a continuation page, not `attached`: a page
-    # witness can honestly report geometry there. What the page lacks is an
-    # anchor, which comes from the act's primary page.
+    # Only the alignment is fixed on a continuation page, not `attached`: a page witness
+    # can honestly report geometry there, but the act's anchor is on its primary page.
     if not is_act_primary_page and attachment["alignment"] != {
         "status": "unaligned",
         "reason": "continuation-page-no-act-anchor",
@@ -1220,22 +1216,19 @@ def _checked_page_attachment(
         raise SchemaRefusal(
             f"act {act_id} appears more than once in a page Testimonium's unjoined-attempt record"
         )
-    # An omitted act is disclosed with the attempt outcome that explains it, and
-    # a reading outcome may still be omitted (a structured native object cannot
-    # be joined). No row means the act joined.
+    # No row means the act joined. An omitted act is disclosed with the outcome that
+    # explains it; a reading may still be omitted (a structured native object cannot join).
     row = current_unjoined[0] if current_unjoined else None
     disclosed = row["outcome"] in WITNESS_READING_OUTCOMES if row is not None else True
-    # Joining only proves the bytes arrived. A joined response may still be
-    # unaligned (an empty response has no span), but an omitted one can never
-    # attach.
+    # Joining only proves the bytes arrived: a joined response may still be unaligned,
+    # but an omitted one can never attach.
     if not disclosed and attachment["attached"]:
         raise SchemaRefusal(
             f"act {act_id} attachment disagrees with its page Testimonium's unjoined-attempt record"
         )
     alignment = attachment["alignment"]
-    # The exact label: `anchor-line` says the chair counts only because another
-    # chair's anchor located its text, so the label is evidence about
-    # independence.
+    # The exact label is evidence about independence: `anchor-line` says the chair
+    # counts only because another chair's anchor located its text.
     if attachment["attached"] and attachment["attachment_basis"] != derived_basis:
         raise SchemaRefusal(
             f"act {act_id} page attachment for chair {chair!r} names basis "
@@ -1270,8 +1263,7 @@ def _checked_page_attachment(
                 and alignment.get("anchor_chair") is not None
             )
             or span != alignment.get("witness_span")
-            # Whether the alignment's SIGALRM backstop was armed, not only
-            # whether it finished.
+            # Whether the SIGALRM backstop was armed, not only whether it finished.
             or not isinstance(alignment.get("deadline_in_force"), bool)
         ):
             raise SchemaRefusal("an attached page witness has no computed alignment")
@@ -1295,8 +1287,7 @@ def _checked_page_attachment(
         and isinstance(alignment, dict)
         and alignment.get("status") == "aligned"
     ):
-        # Text alignment survives independently but cannot authorize a
-        # geometric attachment or comparison view.
+        # Text alignment cannot authorize a geometric attachment or comparison view.
         if span is not None:
             raise SchemaRefusal("an unattached page witness claims a comparison span")
     elif not attachment["attached"] and (
@@ -1305,12 +1296,10 @@ def _checked_page_attachment(
         or alignment.get("status") != "unaligned"
         or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
     ):
-        # The producer emits exactly {status, reason}; without a reason the
-        # operator cannot tell why comparison failed.
+        # Without a reason the operator cannot tell why comparison failed.
         raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
-    # Geometry alone cannot satisfy the witness floor: this act must also
-    # have an aligned slice of retained page text. Re-derive the boolean
-    # so a resealed attachment cannot claim comparability by assertion.
+    # Geometry alone cannot satisfy the witness floor: the act also needs an aligned
+    # slice of retained page text, re-derived so it cannot be claimed by assertion.
     if attachment["comparable"] != (
         attachment["attached"]
         and isinstance(alignment, dict)
@@ -1348,8 +1337,7 @@ def _checked_act_scoped_attachment(
     )
     if testimonium.get("payload", {}).get("chair") != chair:
         raise SchemaRefusal(f"act {act_id} attachment points to another chair's Testimonium")
-    # Act-scoped comparability comes from the referenced Testimonium's
-    # own text; structured reports stay retained but uncountable.
+    # Structured reports stay retained but uncountable.
     if attachment["comparable"] != (
         attachment["attached"] and isinstance(testimonium.get("payload", {}).get("payload"), str)
     ):
@@ -3686,8 +3674,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)
     decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
-    # Resolved before anything is published or started, so a live row without a tier
-    # refuses on an untouched tree.
+    # Resolved before anything is published or started, so they refuse on an untouched tree.
     chair = perlector_chair(context)
     serving_mode = perlector_serving_mode(context, args, chair)
     reader = fixture_reader_for(context, chair, serving_mode)
@@ -3719,6 +3706,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
 
     expected = expected_acts(context)
     declared_order = {act["act_id"]: order for order, act in enumerate(expected)}
+    # An attempt nobody requested would make the attempt tally meaningless.
     wanted = [act for act in expected if args.act in (None, act["act_id"])]
     if args.act and not wanted:
         raise ContractError(f"asked to read {args.act}, which the proposal seal does not name")
@@ -3735,9 +3723,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     acknowledged = 0
     resumed = 0
     pending: list[dict[str, Any]] = []
-    # Walked once for the whole run: the routing denominator is every sealed
-    # proposal, and `reported_unrouted` keeps one observation's finding from being
-    # restated by every act that reaches the same page Testimonium.
+    # The routing denominator is every sealed proposal; `reported_unrouted` keeps one
+    # finding from being restated by every act reaching the same page Testimonium.
     all_proposal_regions = sealed_proposal_regions(context)
     reported_unrouted: set[tuple[str, int]] = set()
 
@@ -3767,9 +3754,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     for act in wanted:
         act_id = act["act_id"]
         if act["outcome"] == "held":
-            # A held act's proposal is incomplete, and reading part of an act would
-            # deliver a truncation as output. It is acknowledged with an explicit
-            # outcome, never skipped, so no unit goes unaccounted.
+            # Reading part of an act would deliver a truncation as output; acknowledged
+            # explicitly, never skipped, so no unit goes unaccounted.
             _publish_not_run(
                 context,
                 act_id=act_id,
@@ -3795,9 +3781,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         regions, proposal_regions = act_regions(context, act_id)
         ordinal = _next_attempt(context, act_id, regions)
         if isinstance(chair, AbsentChair):
-            # No chair to read with. Every act still gets an explicit record
-            # naming the absence: a stage that simply produced nothing would
-            # leave the Recensor to infer a gap it cannot see.
+            # An explicit record of the absence: producing nothing would leave the Recensor
+            # to infer a gap it cannot see.
             _publish_not_run(
                 context,
                 act_id=act_id,
@@ -3818,9 +3803,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         if serving_mode == "live" and _reading_already_sealed(
             context, act_id, ordinal, act_key=act["act_key"]
         ):
-            # A live act sealed at this ordinal is never asked again: a second reading
-            # would differ and the store refuses it (principle 4). Counted apart from
-            # `read`: this invocation did not read it.
+            # Never asked again: a second live reading would differ and the store refuses
+            # it (principle 4).
             resumed += 1
             continue
 
@@ -3835,9 +3819,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 "declared stand-in cannot override an engine that reported"
             )
 
-        # Every region of the act is verified and read, including a continuation
-        # on the next page: an act that ran over the page break and was read only
-        # up to the fold would be truncated, which is a failure and not an output.
+        # Every region is read, including a continuation on the next page: an act read
+        # only up to the fold would be truncated, a failure and not an output.
         bases = [verify_region(context, region) for region in regions]
         testimonia = testimonia_of(context, act_id, proposal_regions)
         page_testimonia: dict[str, dict] = {}
@@ -3859,9 +3842,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
         for finding in unrouted:
             reported_unrouted.add((finding["testimonium_id"], finding["ordinal"]))
-            # Named on stderr, never normalized into the nearest act. The Recensor
-            # re-derives the same finding independently from the geometry and the sealed
-            # denominator.
+            # Never normalized into the nearest act; the Recensor re-derives it independently.
             print(f"non-fatal finding: {finding}", file=sys.stderr)
 
         # Ink uncovered only by a recovery recrop was never shown to a witness;
@@ -3917,8 +3898,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
         unread -= 1
         if reader is None:
-            # One chair for the whole run, started by the first act that needs a
-            # reading.
             reader, receipt_ref = _live_reader(
                 context,
                 args,
@@ -3957,6 +3936,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             protocol_sha256=protocol_sha256,
             receipt_ref=receipt_ref,
         )
+        # Runs before the establishing arm, which embeds the prior reference it returns.
         publish_prior = partial(_publish_lectio_prior, context, attempt)
 
         # Every arm receives the complete presentation in one reader call.
@@ -4029,9 +4009,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
         read += 1
 
-    # The page flag pass receives these immutable Pass-B semi-finals together,
-    # before any re-proof result exists.  Its output is therefore one
-    # deterministic cross-act computation per page, with no cascade.
+    # All Pass-B semi-finals together, before any re-proof exists: one deterministic
+    # cross-act computation per page, with no cascade.
     semi_finals = [
         semi_final
         for row in pending
@@ -4065,9 +4044,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # is compared with the semi-final: a cut-off re-proof that returned the
         # established text verbatim must not pass as complete.
         reproof_truncation: dict[str, Any] | None = None
-        # Computed once by the function `validate_chain` re-derives it with and
-        # `audit_request` builds from, so the sealed, delivered and recomputed plans are
-        # one computation.
+        # The one function `validate_chain` and `audit_request` also use, so the sealed,
+        # delivered and recomputed plans are one computation.
         reproofs = audit.reproof_plan(
             flags, text_length=len(final_text), policy_schema=audit_policy["schema"]
         )
@@ -4079,22 +4057,19 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # bound as an input; `engine_call` names it only when its text is published.
         reproof_inputs: list[dict[str, str]] = []
         reproof_call_record: dict[str, Any] | None = None
-        # The same predicate `validate_chain` re-derives from the frozen draft:
-        # one spelling of "a re-proof request exists for this act".
+        # The predicate `validate_chain` re-derives from the frozen draft.
         if audit.reproof_delivery_due(flags, audit_policy["round_cap"]):
             base_prompt_record = copy.deepcopy(payload["prompt"])
             base_prompt_text = prompts.build_prompt(
                 chair.serving_recipe, chair.role, payload["dossier"], protocol_config
             )
-            # Exactly one reader call per act and audit round, over the establishing
-            # pass's complete atomic presentation; a flagged-page subset would be a
-            # capture-local call.
+            # One reader call per act and round over the complete atomic presentation; a
+            # flagged-page subset would be a capture-local call.
             reproof_pixels = atomic_delivered_pixels(
                 row["autopsia"], read_bytes=context.tree.read_bytes, max_images=max_images
             )
-            # Read before the re-proof result overwrites the final text: the request
-            # carries the frozen semi-final its locations index into, bound by the
-            # published draft's digest. The dossier goes through untouched so its
+            # The request carries the frozen semi-final its locations index into, bound by
+            # the published draft's digest; the dossier goes through untouched so its
             # `dossier_digest` still covers it.
             audit_request = audit.audit_request(
                 act_key=row["act"]["act_key"],
@@ -4135,16 +4110,14 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     provenance=payload["provenance"],
                 )
                 continue
-            # A Pass-C reply is a set of exact draft-anchored edits, never a second
-            # whole reading; assembly validates every edit before it can touch the
-            # established text.
+            # A Pass-C reply is exact draft-anchored edits, never a second whole reading;
+            # assembly validates every edit before it touches the established text.
             try:
                 final_text, reproof_response = audit.assemble_reproof_response(
                     reproof["text"], audit_request
                 )
-                # Publishing whitespace as the canonical empty reading would
-                # remove characters outside a narrow edit.  That projection is
-                # not one of the exact edits the response accounted for.
+                # Publishing whitespace as the empty reading would remove characters
+                # outside the exact edits the response accounted for.
                 if _publishes_empty(final_text) and final_text not in {"", payload["text"]}:
                     raise audit.ReproofResponseRefusal(
                         "an audit re-proof response becomes a whole-act empty projection outside "
@@ -4183,8 +4156,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             if final_text != payload["text"]:
                 payload["text"] = final_text
                 # The doubt report travels with the call whose text is published, so
-                # nothing is re-anchored by guesswork. Replacing both layers also drops
-                # a Pass-B whole-act gap, which a re-proof's own report can never carry.
+                # nothing is re-anchored by guesswork; this also drops a Pass-B whole-act gap.
                 reproof_assessment = _assessed(reproof, text=final_text)
                 if "[[" in final_text or "]]" in final_text:
                     reproof_assessment = annotations.malformed_assessment(
@@ -4231,9 +4203,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     # the whole-act gap carrying the witness evidence.
                     final_text = ""
                     payload["text"] = ""
-                    # Re-measured over the emptied text: `validate_finding` binds the
-                    # sealed termination to the published text. An empty reading is
-                    # never length-suspicious or abrupt.
+                    # `validate_finding` binds the sealed termination to the published
+                    # text, so it is re-measured over the emptied text.
                     reproof_truncation = _row_truncation(
                         row,
                         final_text,
@@ -4263,10 +4234,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # Record the exact validated edits; downstream validation replays
             # them against the frozen draft and the published text.
             changes = audit.change_records_from_edits(reproof_edits)
-        # One shared derivation of the examination and whether the flags stay
-        # unresolved. Only an exhausted cap mints spans; an incomplete re-proof is
-        # recorded as an incomplete examination for the Recensor to route, never as a
-        # span or a truncation.
+        # Only an exhausted cap mints spans; an incomplete re-proof is recorded as an
+        # incomplete examination for the Recensor to route, never as a span or truncation.
         examination = audit.examination_state(
             flags,
             audit_policy["round_cap"],
@@ -4289,9 +4258,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "examination": examination,
             "reproof_truncation": reproof_truncation,
             "reproof_edits": reproof_edits,
-            # The re-proof's retained response (none for the fixture reader), named here
-            # because the Perlectio's `engine_call` stays Pass B's when the text is
-            # unchanged.
+            # Named here because the Perlectio's `engine_call` stays Pass B's when the
+            # text is unchanged.
             "reproof_call": reproof_call_record if reproof_truncation is not None else None,
         }
         audit.validate_finding(
@@ -4309,10 +4277,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             payload=finding_payload,
         )
         finding_ref = context.input_ref(finding.relative_path)
-        # An unresolved flag never stays a clean `read`: it becomes an explicit span on
-        # the Perlectio layer, and the Recensor consumes the `unresolved` fact. The
-        # projected spans carry no instrument label; only `payload["audit"]` and the
-        # finding say which are the audit's.
+        # An unresolved flag never stays a clean `read`: it becomes an explicit span,
+        # unlabelled; only `payload["audit"]` and the finding say which are the audit's.
         payload["uncertain_spans"] = _union_with_projection(
             [
                 {
@@ -4350,9 +4316,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 finding_ref,
             ]
         )
-        # The producer and every later consumer use the same cross-record
-        # validation. Run it before the Perlectio is published so a drifted
-        # draft/finding relationship never becomes an unreadable artifact.
+        # The consumers' own cross-record validation, run before publication so a
+        # drifted draft/finding relationship never becomes an unreadable artifact.
         audit.validate_chain(
             context.tree,
             {"payload": payload, "inputs": reading_inputs},
