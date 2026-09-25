@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any, Final, Mapping
 
-from common.contracts.canonical import is_sha256
+from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 
 CHANDRA_SOURCE_REPOSITORY: Final = "https://github.com/datalab-to/chandra"
@@ -241,15 +241,7 @@ def validate_trace(value: Any) -> dict[str, Any]:
                 "a Chandra native retry trace claims an inference-error trigger without an error"
             )
         for field in ("intent_ref", "attempt_ref"):
-            ref = row[field]
-            if (
-                not isinstance(ref, dict)
-                or set(ref) != {"relative_path", "sha256"}
-                or not isinstance(ref["relative_path"], str)
-                or not ref["relative_path"].strip()
-                or not is_sha256(ref["sha256"])
-            ):
-                raise SchemaRefusal(f"a Chandra native retry trace has an invalid {field}")
+            ref = digest_ref(row[field], f"a Chandra native retry trace {field}")
             if ref["relative_path"] in reference_paths:
                 raise SchemaRefusal(
                     "a Chandra native retry trace reuses one retained artifact as more than one "

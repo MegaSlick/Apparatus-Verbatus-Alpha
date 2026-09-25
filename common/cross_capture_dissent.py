@@ -18,6 +18,7 @@ from common.contracts.canonical import (
     verify_self_hash,
     walk_dicts,
 )
+from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import is_well_formed
 from common.corpus_register import _FORBIDDEN_PREFERENCE_FIELDS, refuse_capture_preference
@@ -168,11 +169,7 @@ def _sha(value: Any, label: str) -> str:
 
 
 def _ref(value: Any, label: str) -> dict[str, str]:
-    if not isinstance(value, dict) or set(value) != _REF_FIELDS:
-        raise SchemaRefusal(f"cross-capture dissent: {label} is not a digest-bound reference")
-    if not isinstance(value["relative_path"], str) or not value["relative_path"]:
-        raise SchemaRefusal(f"cross-capture dissent: {label} has no path")
-    return {"relative_path": value["relative_path"], "sha256": _sha(value["sha256"], label)}
+    return digest_ref(value, f"cross-capture dissent: {label}")
 
 
 def _refs(value: Any, label: str) -> list[dict[str, str]]:

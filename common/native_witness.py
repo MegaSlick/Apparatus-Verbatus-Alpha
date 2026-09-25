@@ -16,6 +16,7 @@ from common import churro_document
 from common.chairs.models import is_hf_revision
 from common.chandra_native_retry import validate_trace as validate_chandra_native_trace
 from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256
+from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import STOP_REASON_UNREPORTED
 from common.contracts.stages import ATTESTATORES, writing_directory
@@ -777,14 +778,8 @@ def validate_retained_response_refs(
         if not isinstance(refs, list) or not refs:
             raise SchemaRefusal("a page Testimonium raw_response_refs is not a non-empty list")
         for reference in refs:
-            if (
-                not isinstance(reference, dict)
-                or set(reference) != {"relative_path", "sha256"}
-                or not isinstance(reference["relative_path"], str)
-                or not reference["relative_path"]
-                or not is_sha256(reference["sha256"])
-                or reference["relative_path"] != _attestatores_blob_path(reference["sha256"])
-            ):
+            digest_ref(reference, "a page Testimonium retained-response reference")
+            if reference["relative_path"] != _attestatores_blob_path(reference["sha256"]):
                 raise SchemaRefusal(
                     "a page Testimonium retained-response reference is not a closed blob reference"
                 )
@@ -1482,17 +1477,9 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         )
     if not isinstance(value["view"], dict):
         raise SchemaRefusal("a page Testimonium native capture view is not an object")
-    reference = value["raw_response_ref"]
-    if not isinstance(reference, dict) or set(reference) != {"relative_path", "sha256"}:
-        raise SchemaRefusal("a page Testimonium native capture has no raw-response reference")
-    if (
-        not isinstance(reference["relative_path"], str)
-        or not reference["relative_path"]
-        or not is_sha256(reference["sha256"])
-    ):
-        raise SchemaRefusal(
-            "a page Testimonium native capture has an invalid raw-response reference"
-        )
+    reference = digest_ref(
+        value["raw_response_ref"], "a page Testimonium native capture raw-response reference"
+    )
     if reference["relative_path"] != _attestatores_blob_path(reference["sha256"]):
         raise SchemaRefusal(
             "a page Testimonium native capture raw-response reference is not its "

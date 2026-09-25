@@ -24,6 +24,7 @@ from typing import Any, Final
 from .canonical import (
     SCHEMA_LABEL,
     digest_bytes,
+    is_sha256,
     self_hash,
     self_hash_refusal,
     verify_self_hash,
@@ -233,8 +234,7 @@ def validate_input_refs(inputs: Any) -> None:
             raise SchemaRefusal("an input reference has no relative_path")
         if "\0" in path:
             raise SchemaRefusal("an input reference relative_path contains a NUL byte")
-        segments = path.split("/")
-        if any(segment in ("", ".", "..") for segment in segments):
+        if not _is_run_relative(path):
             raise SchemaRefusal(
                 f"input reference {path!r} is not a canonical run-relative path; empty, "
                 "current-directory, and parent-directory segments are refused so one file "
@@ -259,6 +259,28 @@ def validate_input_refs(inputs: Any) -> None:
             )
         seen[path] = sha
         portable_spellings[portable] = path
+
+
+def _is_run_relative(path: str) -> bool:
+    return "\0" not in path and all(segment not in ("", ".", "..") for segment in path.split("/"))
+
+
+def digest_ref(value: Any, what: str) -> dict[str, str]:
+    """A closed `{relative_path, sha256}` reference to bytes inside the run tree.
+
+    Empty, `.` and `..` segments are refused, and so is a leading `/`, so a
+    reference sealed here can never name bytes outside the run root.
+    """
+    if not isinstance(value, dict) or set(value) != {"relative_path", "sha256"}:
+        raise SchemaRefusal(f"{what} is not a closed {{relative_path, sha256}} reference")
+    path, sha = value["relative_path"], value["sha256"]
+    if type(path) is not str or not path:
+        raise SchemaRefusal(f"{what} has no relative_path")
+    if not _is_run_relative(path):
+        raise SchemaRefusal(f"{what} relative_path {path!r} escapes the run tree")
+    if not is_sha256(sha):
+        raise SchemaRefusal(f"{what} sha256 is not a lowercase sha256")
+    return {"relative_path": path, "sha256": sha}
 
 
 def _portable_spelling(path: str) -> str:

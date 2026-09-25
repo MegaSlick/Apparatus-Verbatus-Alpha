@@ -23,6 +23,7 @@ from common.contracts.canonical import (
     verify_self_hash,
     walk_dicts,
 )
+from common.contracts.envelope import digest_ref
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import (
     act_id as local_act_id,
@@ -133,16 +134,6 @@ def _sha(value: Any, what: str) -> str:
 def _is_derived_id(value: Any, prefix: str) -> bool:
     """A derived identity of one kind: `is_well_formed` accepts every prefix."""
     return is_well_formed(value) and value.startswith(prefix)
-
-
-def _path(value: Any, what: str) -> str:
-    # A sealed reference is relative to the run root, as in
-    # `common/contracts/envelope.py::validate_input_refs`.
-    if not isinstance(value, str) or not value:
-        raise SchemaRefusal(f"physical-act partition: {what} path is not a non-empty string")
-    if value.startswith("/") or ".." in value.split("/"):
-        raise SchemaRefusal(f"physical-act partition: {what} path {value!r} escapes the run tree")
-    return value
 
 
 def _act(row: Any, *, require_bindings: bool = False) -> dict[str, Any]:
@@ -339,13 +330,7 @@ def build_physical_act_partition(
             "physical-act partition: register_digest is not the digest of the register bytes "
             "this partition was built from; the register moved while it was being built"
         )
-    if not isinstance(proposal_seal_ref, dict) or set(proposal_seal_ref) != {
-        "relative_path",
-        "sha256",
-    }:
-        raise SchemaRefusal("physical-act partition: proposal seal reference is not digest-bound")
-    _path(proposal_seal_ref["relative_path"], "proposal seal")
-    _sha(proposal_seal_ref["sha256"], "proposal seal sha256")
+    digest_ref(proposal_seal_ref, "physical-act partition: proposal seal reference")
     if not isinstance(local_acts, list) or not local_acts:
         raise SchemaRefusal("physical-act partition: no local expected acts are not a denominator")
     if not isinstance(capture_alignments, list):
@@ -569,16 +554,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
     if set(payload) != required:
         raise SchemaRefusal("physical-act partition: record is not closed")
     _sha(payload["register_digest"], "register_digest")
-    seal = payload["proposal_seal_ref"]
-    if (
-        not isinstance(seal, dict)
-        or set(seal) != {"relative_path", "sha256"}
-        or not isinstance(seal["relative_path"], str)
-        or not seal["relative_path"]
-    ):
-        raise SchemaRefusal("physical-act partition: proposal seal reference is not closed")
-    _path(seal["relative_path"], "proposal seal")
-    _sha(seal["sha256"], "proposal seal sha256")
+    digest_ref(payload["proposal_seal_ref"], "physical-act partition: proposal seal reference")
     if any(
         not is_plain_int(payload[name]) or payload[name] < 0
         for name in ("local_expected_count", "logical_expected_count")

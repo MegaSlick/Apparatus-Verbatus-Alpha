@@ -12,6 +12,7 @@ import unicodedata
 from typing import Any, Callable, Final
 
 from common.contracts.canonical import digest_bytes, digest_of, is_sha256, walk_dicts
+from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 from common.physical_act_partition import source_ledger_from_run
 
@@ -55,20 +56,7 @@ def _is_printable_nfc(value: str) -> bool:
 
 
 def _ref(value: Any, what: str) -> dict[str, str]:
-    if not isinstance(value, dict) or set(value) != {"relative_path", "sha256"}:
-        raise SchemaRefusal(f"cross-capture autopsia: {what} is not a digest-bound reference")
-    path = value["relative_path"]
-    if not isinstance(path, str) or not path:
-        raise SchemaRefusal(f"cross-capture autopsia: {what} has no path")
-    # Same containment idiom as `common/contracts/envelope.py::validate_input_refs`
-    # and `common/runtree/store.py::RunTree.resolve`: a reference is relative to
-    # the run root, and this schema is the boundary that seals it -- a caller
-    # downstream trusting this shape as already-checked must not be the first
-    # place a traversal path is actually refused.
-    if path.startswith("/") or ".." in path.split("/"):
-        raise SchemaRefusal(f"cross-capture autopsia: {what} path {path!r} escapes the run tree")
-    _sha(value["sha256"], f"{what} sha256")
-    return dict(value)
+    return digest_ref(value, f"cross-capture autopsia: {what}")
 
 
 def _ref_list(value: Any, what: str) -> list[dict[str, str]]:

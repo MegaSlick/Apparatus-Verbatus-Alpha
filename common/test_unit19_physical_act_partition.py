@@ -2185,7 +2185,7 @@ def test_the_builder_refuses_a_non_string_proposal_seal_path_by_name(path_value)
     at the validator this case never reaches the check it is about.
     """
     register = empty_register()
-    with pytest.raises(SchemaRefusal, match="path is not a non-empty string"):
+    with pytest.raises(SchemaRefusal, match="has no relative_path"):
         build_physical_act_partition(
             register=register,
             register_digest=register_digest(register),

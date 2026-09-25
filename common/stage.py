@@ -42,7 +42,7 @@ from common.contracts.canonical import (
     is_plain_int,
     verify_self_hash,
 )
-from common.contracts.envelope import build_envelope, verify_input_bytes
+from common.contracts.envelope import build_envelope, digest_ref, verify_input_bytes
 from common.contracts.errors import (
     ContractError,
     FatalAccounting,
@@ -1300,26 +1300,9 @@ def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> lis
 
 
 def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[str, str]:
-    """Validate a content-addressed reference before sealing it into evidence.
-
-    A string-shape check only; containment (including symlinks) is
-    ``RunTree.resolve()``'s job when the path is read.
-    """
-
-    if not isinstance(value, Mapping) or set(value) != {"relative_path", "sha256"}:
-        raise SchemaRefusal(f"serving evidence {label} reference has unknown or missing fields")
-    relative_path = value["relative_path"]
-    digest = value["sha256"]
-    if (
-        not isinstance(relative_path, str)
-        or not relative_path
-        or relative_path.startswith("/")
-        or ".." in relative_path.split("/")
-        or not isinstance(digest, str)
-        or not is_sha256(digest)
-    ):
-        raise SchemaRefusal(f"serving evidence {label} reference is malformed")
-    return {"relative_path": relative_path, "sha256": digest}
+    """A string-shape check only; containment (including symlinks) is
+    ``RunTree.resolve()``'s job when the path is read."""
+    return digest_ref(value, f"serving evidence {label} reference")
 
 
 def _serving_config_inputs(value: object, label: str) -> dict[str, str]:

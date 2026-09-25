@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Final
 
-from common.contracts.envelope import validate_input_refs
+from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 
 _FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment"})
@@ -21,7 +21,6 @@ GAP_POSITIONS: Final = frozenset({"leading", "internal", "trailing", "whole-act"
 # Teklia/DAI-CReTDHI-RecordGold-ATR's two uncertainty markers (MIT licence).
 UNCERTAINTY_TOKENS: Final = ("[UNCERTAIN]", "[CROSSED_OUT]")
 _GAP_EVIDENCE_FIELDS = frozenset({"chair", "testimonium_id", "reference", "variant"})
-_REFERENCE_FIELDS = frozenset({"relative_path", "sha256"})
 _SOURCE_REVISION_FIELDS = frozenset({"reading_span", "testimonium_span"})
 
 
@@ -149,7 +148,6 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
             whole_act_rows += 1
         for evidence_index, evidence in enumerate(gap["witness_evidence"]):
             label = f"gaps[{index}].witness_evidence[{evidence_index}]"
-            reference = evidence.get("reference") if isinstance(evidence, dict) else None
             if (
                 not isinstance(evidence, dict)
                 or set(evidence) != _GAP_EVIDENCE_FIELDS
@@ -158,12 +156,9 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
                 or not isinstance(evidence.get("testimonium_id"), str)
                 or not evidence["testimonium_id"]
                 or not isinstance(evidence.get("variant"), str)
-                or not isinstance(reference, dict)
-                or set(reference) != _REFERENCE_FIELDS
-                or not all(isinstance(value, str) and value for value in reference.values())
             ):
                 raise SchemaRefusal(f"{label} is not the canonical witness-evidence record")
-            validate_input_refs([reference])
+            digest_ref(evidence["reference"], f"{label}.reference")
     if whole_act_rows and (whole_act_rows != 1 or len(gaps) != 1):
         raise SchemaRefusal(
             "a whole-act gap must be the only gap in canonical uncertainty; a reading "
