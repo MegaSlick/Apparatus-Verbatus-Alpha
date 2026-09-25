@@ -676,8 +676,6 @@ def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -
                     os.close(parent_fd)
 
 
-# --- What this run did not measure ------------------------------------------
-#
 # A run can be `DELIVERED` and `complete` over instruments that never measured.
 # Every bundle names them (principle 8), with each status derived from the run's
 # own records so a run that measured reads differently from one that did not.
@@ -729,7 +727,6 @@ _NOT_MEASURED_DETAIL_FIELDS: Final = {
 _GEOMETRY_CALIBRATION_ROW_FIELDS: Final = frozenset(
     {"configuration", "calibrated_for_this_corpus", "sample_count"}
 )
-# Where a reader checks each row against the evidence.
 _NOT_MEASURED_RECORDED_IN: Final = {
     _TESTIMONY_COVERAGE: (
         "each act's Recensor review, fields `testimony_content_coverage` and "
@@ -2398,7 +2395,6 @@ def _mark_retained_references(value: Any) -> Any:
     """Recursively make opaque run-tree evidence honest in a product projection."""
     if isinstance(value, dict):
         if "relative_path" in value:
-            # Keep any extra metadata, but always relabel the path and digest.
             marked = {
                 key: _mark_retained_references(item)
                 for key, item in value.items()
