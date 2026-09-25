@@ -722,22 +722,7 @@ class OperatorSurface:
             self.present(f"Upload will send the sealed submission record to {subject}.")
             self.present("Nothing outside that sealed record is read or sent.")
         self.present("No pod needs to be running. This step uses zero GPU-hours.")
-        store: TransferTarget
-        if target is not None:
-            store = target
-        elif volume is not None:
-            try:
-                store = S3VolumeTarget(volume)
-            except Exception as error:
-                self._record_failure("upload", "volume-unavailable", str(error))
-                raise OperatorError(
-                    ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=str(error)
-                ) from error
-        else:
-            store = LocalFixtureObjectStore(
-                self.state_root / "fixture-volume",
-                fail_once_for=self._fault_upload_key(manifest_path, prefix),
-            )
+        store = target if target is not None else self._upload_target(volume, manifest_path, prefix)
         try:
             snapshot_root = self.state_root / "transfer" / ".manifest-snapshots"
             snapshot_root.mkdir(parents=True, exist_ok=True)
@@ -751,33 +736,19 @@ class OperatorSurface:
                 claim_key = f"{prefix}-manifest.sha256"
                 claim_bytes = f"{manifest_sha256}\n".encode("ascii")
                 claim_sha256 = hashlib.sha256(claim_bytes).hexdigest()
-                remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
-                if remote_manifest is not None and (
-                    remote_manifest.sha256 != manifest_sha256
-                    or remote_manifest.size != len(manifest_bytes)
-                ):
-                    raise _UploadManifestConflict(
-                        f"target {manifest_key!r} exists but differs from the sealed submission "
-                        "manifest; it was not overwritten"
-                    )
-                remote_claim = store.inspect(claim_key, expected_size=len(claim_bytes))
-                if remote_claim is not None and (
-                    remote_claim.sha256 != claim_sha256 or remote_claim.size != len(claim_bytes)
-                ):
+                occupied = (
+                    f"target {manifest_key!r} exists but differs from the sealed submission "
+                    "manifest; it was not overwritten"
+                )
+                if _remote_state(store, manifest_key, manifest_bytes, manifest_sha256) == "other":
+                    raise _UploadManifestConflict(occupied)
+                claim = _remote_state(store, claim_key, claim_bytes, claim_sha256)
+                if claim == "other":
                     raise _UploadManifestConflict(
                         f"target {claim_key!r} is permanently claimed by a different sealed "
                         "submission manifest; no image was written"
                     )
-                if remote_claim is None:
-                    store.create_file(
-                        claim_key,
-                        io.BytesIO(claim_bytes),
-                        expected_sha=claim_sha256,
-                    )
-                    remote_claim = store.inspect(claim_key, expected_size=len(claim_bytes))
-                if remote_claim is None or (
-                    remote_claim.sha256 != claim_sha256 or remote_claim.size != len(claim_bytes)
-                ):
+                if _publish_if_absent(store, claim_key, claim_bytes, claim_sha256, claim) != "ours":
                     raise _UploadManifestConflict(
                         f"target {claim_key!r} was concurrently claimed by a different sealed "
                         "submission manifest; no image was written"
@@ -790,23 +761,14 @@ class OperatorSurface:
                     journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
                 ).resume()
                 # Recheck: a manifest that appeared concurrently owns the prefix.
-                remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
-                if remote_manifest is not None and (
-                    remote_manifest.sha256 != manifest_sha256
-                    or remote_manifest.size != len(manifest_bytes)
-                ):
-                    raise TransferFailure(
-                        f"target {manifest_key!r} exists but differs from the sealed submission "
-                        "manifest; it was not overwritten"
+                published = _remote_state(store, manifest_key, manifest_bytes, manifest_sha256)
+                if published == "other":
+                    raise TransferFailure(occupied)
+                if (
+                    _publish_if_absent(
+                        store, manifest_key, manifest_bytes, manifest_sha256, published
                     )
-                if remote_manifest is None:
-                    store.create_file(
-                        manifest_key, io.BytesIO(manifest_bytes), expected_sha=manifest_sha256
-                    )
-                    remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
-                if remote_manifest is None or (
-                    remote_manifest.sha256 != manifest_sha256
-                    or remote_manifest.size != len(manifest_bytes)
+                    != "ours"
                 ):
                     raise TransferFailure(
                         f"target {manifest_key!r} did not verify after publication"
@@ -2168,6 +2130,20 @@ class OperatorSurface:
             self.faults.provider_error = False
             self.provider.inject_failure("estimate", ProviderFailure("injected provider failure"))
 
+    def _upload_target(
+        self, volume: VolumeSpec | None, manifest_path: Path, prefix: str
+    ) -> TransferTarget:
+        if volume is None:
+            return LocalFixtureObjectStore(
+                self.state_root / "fixture-volume",
+                fail_once_for=self._fault_upload_key(manifest_path, prefix),
+            )
+        try:
+            return S3VolumeTarget(volume)
+        except Exception as error:
+            self._record_failure("upload", "volume-unavailable", str(error))
+            raise OperatorError(ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=str(error)) from error
+
     def _fault_upload_key(self, manifest_path: Path, prefix: str) -> str | None:
         if not self.faults.partial_upload:
             return None
@@ -3143,6 +3119,26 @@ def _read_sealed_manifest(path: Path) -> bytes:
     if len(data) > MAX_SEALED_MANIFEST_BYTES:
         raise OSError(f"the sealed submission record exceeds {MAX_SEALED_MANIFEST_BYTES} bytes")
     return data
+
+
+def _remote_state(store: TransferTarget, key: str, data: bytes, sha256: str) -> str:
+    """What `key` holds against these exact bytes: "absent", "ours" or "other"."""
+
+    remote = store.inspect(key, expected_size=len(data))
+    if remote is None:
+        return "absent"
+    return "ours" if remote.sha256 == sha256 and remote.size == len(data) else "other"
+
+
+def _publish_if_absent(
+    store: TransferTarget, key: str, data: bytes, sha256: str, state: str
+) -> str:
+    """Write `data` at `key` if nothing is there yet; the state read back afterwards."""
+
+    if state != "absent":
+        return state
+    store.create_file(key, io.BytesIO(data), expected_sha=sha256)
+    return _remote_state(store, key, data, sha256)
 
 
 def _load_policy(path: str | Path) -> SpendPolicy:
