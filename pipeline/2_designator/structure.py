@@ -41,7 +41,6 @@ from common.background import (  # noqa: F401  (re-exported: see the note above)
     _derived_ink_margin,
     _ink_threshold,
     _settle_background_evidence,
-    infer_background,
     infer_background_evidence,
 )
 from common.components import (  # noqa: F401  (re-exported: see the note above)

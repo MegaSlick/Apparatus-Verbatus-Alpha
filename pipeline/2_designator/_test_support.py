@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+from common.background import BackgroundPolicy, infer_background_evidence
 from common.components import Component
 from common.contracts.errors import ContractError
 
@@ -86,3 +87,10 @@ def label_components_reference(pixels: set, *, gap_tolerance_px: int) -> list[Co
         )
     components.sort(key=lambda entry: (entry[0]["bounds"]["y"], entry[0]["bounds"]["x"], entry[1]))
     return [component for component, _members in components]
+
+
+def infer_background(
+    width: int, height: int, rows: list, *, background_policy: BackgroundPolicy
+) -> int:
+    evidence = infer_background_evidence(width, height, rows, background_policy=background_policy)
+    return evidence["background"]

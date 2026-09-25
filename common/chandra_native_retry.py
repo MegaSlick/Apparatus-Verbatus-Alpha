@@ -9,7 +9,7 @@ may derive the vendor's retry trigger from the result of that attempt.
 from __future__ import annotations
 
 import json
-from typing import Any, Final, Mapping
+from typing import Any, Final, Mapping, NoReturn
 
 from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
@@ -159,13 +159,8 @@ def retry_trigger(raw: str, *, inference_error: bool, attempt_ordinal: int) -> s
     """
 
     attempt_parameters(attempt_ordinal)
-    has_repeat = detect_repeat_token(raw) or (
-        len(raw) > 50 and detect_repeat_token(raw, cut_from_end=50)
-    )
-    if attempt_ordinal < CHANDRA_MAX_ATTEMPTS and has_repeat:
-        return "repeat-token"
-    if attempt_ordinal < CHANDRA_MAX_ATTEMPTS and inference_error:
-        return "inference-error"
+    if attempt_ordinal < CHANDRA_MAX_ATTEMPTS:
+        return exhausted_condition(raw, inference_error=inference_error)
     return None
 
 
@@ -285,12 +280,11 @@ def named_trace_summary(trace: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def refuse_orphan_intent(intent_reused: bool) -> None:
+def refuse_orphan_intent() -> NoReturn:
     """Never replay an ordinal whose durable intent lacks terminal evidence."""
 
-    if intent_reused:
-        raise SchemaRefusal(
-            "a Chandra native attempt intent exists without terminal evidence. Request "
-            "delivery is unknown; this ordinal will not be replayed and requires manual "
-            "intervention"
-        )
+    raise SchemaRefusal(
+        "a Chandra native attempt intent exists without terminal evidence. Request "
+        "delivery is unknown; this ordinal will not be replayed and requires manual "
+        "intervention"
+    )

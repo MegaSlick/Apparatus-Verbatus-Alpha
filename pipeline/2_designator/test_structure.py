@@ -11,14 +11,13 @@ from pathlib import Path
 
 import grouping_config
 import pytest
-from _test_support import label_components_reference
+from _test_support import infer_background, label_components_reference
 from structure import (
     PRIMARY_MARGIN,
     SECONDARY_MARGIN,
     BackgroundInferenceRefusal,
     _derived_ink_margin,
     _ink_threshold,
-    infer_background,
     infer_background_evidence,
     ink_pixels,
     label_components,

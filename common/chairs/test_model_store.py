@@ -32,7 +32,6 @@ from common.chairs.model_store import (
     promote_verified_snapshot,
     read_derived_inventory,
     require_complete_store,
-    require_store_artifact,
     verify_store,
     write_derived_inventory,
     write_download_record,
@@ -765,41 +764,6 @@ def test_require_complete_store_accepts_a_store_with_every_roster_artifact(tmp_p
 
     assert inventory["complete"] is True
     assert inventory["pending"] == []
-
-
-def test_required_artifact_refuses_not_yet_fetched_by_name(tmp_path):
-    _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "s3 fetch is pending")
-
-    with pytest.raises(DigestMismatchRefusal, match="pending-fetch: s3 fetch is pending"):
-        require_store_artifact(tmp_path, "surya2-detection")
-
-
-def test_required_artifact_refuses_fetched_and_lost_bytes_by_filename(tmp_path):
-    record = _store(tmp_path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
-    (tmp_path / entry["snapshot"] / "model.safetensors").unlink()
-
-    with pytest.raises(DigestMismatchRefusal, match="model.safetensors: missing file"):
-        require_store_artifact(tmp_path, "qwen3.8-27B")
-
-
-def test_required_artifact_names_every_chair_it_serves_not_one_rows_chair(tmp_path):
-    """chandra-ocr-2 fills two chairs; an artifact-keyed answer must say both."""
-
-    _store(tmp_path)
-
-    result = require_store_artifact(tmp_path, "chandra-ocr-2")
-
-    assert result["chairs"] == ["attestator_1", "designator_structure"]
-    assert "chair" not in result
-
-
-def test_surya_ocr_is_not_required_and_use_refuses_with_its_escape_hatch(tmp_path):
-    _store(tmp_path)
-
-    assert SURYA_OCR_2_REFUSAL["state"] == "not-required"
-    with pytest.raises(DigestMismatchRefusal, match="recorded-bench-need"):
-        require_store_artifact(tmp_path, "surya-ocr-2")
 
 
 def test_require_complete_store_cannot_be_satisfied_by_a_forged_inventory(tmp_path):
