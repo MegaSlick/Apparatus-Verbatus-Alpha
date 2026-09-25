@@ -130,16 +130,10 @@ SECONDARY_ENUMERATION_WITHHELD = "withheld-page-held"
 # on a code and a new cause must be declared here.
 HOLD_REASON_CODES = frozenset(
     {
-        # The act's own page never sealed at the Exemplar door.
         "exemplar-page-not-sealed",
-        # The act runs onto a page that never sealed, so it cannot be cut whole.
         "exemplar-continuation-not-sealed",
-        # The page sealed, but the structure pass could not mark it out.
         "structure-pass-held",
-        # The act's continuation page sealed, but its structure pass could not.
         "structure-pass-held-on-continuation",
-        # Below-threshold residuals, kept individually on the linked
-        # conservation record and presented as one page hold.
         PAGE_RESIDUAL_AGGREGATE_REASON_CODE,
     }
 )
@@ -192,61 +186,45 @@ ACT_GROUP_EVIDENCE = frozenset(
 # Which of the five carry a measured rectangle, and which say nothing measured.
 _EVIDENCE_WITH_DETECTED_BOUNDS = frozenset({"detected", structure_pass.EVIDENCE_SHARED_DETECTION})
 
-_FALLBACK_REASON_NO_INK = (
-    "the structure pass found no ink to group on this page, so the page is cut into "
-    "predetermined overlapping crops and sent downstream to be read rather than being "
-    "called blank here; blankness is proved by the witnesses and the Perlector, which "
-    "only get a say if the crops reach them"
-)
-_FALLBACK_RATIONALE_NO_INK = (
-    "the structure pass found no ink to group on this page, so no detected region "
-    "corroborates this act; the page's predetermined fallback crops are separate "
-    "evidence and are not a detection"
-)
-_FALLBACK_REASON_BACKGROUND_NOT_INFERABLE = (
-    "the page's background could not be inferred, so no ink threshold or structural "
-    "groups were measured; the page is cut into predetermined overlapping crops and "
-    "sent downstream to be read rather than being called blank here"
-)
-_FALLBACK_RATIONALE_BACKGROUND_NOT_INFERABLE = (
-    "the page's background could not be inferred, so no ink threshold or detected "
-    "region corroborates this act; the page's predetermined fallback crops are "
-    "separate evidence and are not a detection"
-)
-_FALLBACK_REASON_ALL_PAGE_SPANNING = (
-    "the structure pass found ink, but every connected component met the sealed "
-    "page-spanning bound and was withheld from grouping; the page is cut into "
-    "predetermined overlapping crops and sent downstream to be read"
-)
-_FALLBACK_RATIONALE_ALL_PAGE_SPANNING = (
-    "the structure pass found ink, but every connected component met the sealed "
-    "page-spanning bound, so no eligible detected region corroborates this act; the "
-    "page's predetermined fallback crops are separate evidence and are not a detection"
-)
-_FALLBACK_REASON_NO_ELIGIBLE_GROUP = (
-    "the structure pass found ink components but assembled no eligible detected group, "
-    "so the page is cut into predetermined overlapping crops and sent downstream to be read"
-)
-_FALLBACK_RATIONALE_NO_ELIGIBLE_GROUP = (
-    "the structure pass found ink components but assembled no eligible detected group "
-    "that corroborates this act; the page's predetermined fallback crops are separate "
-    "evidence and are not a detection"
-)
-
 
 def _fixture_fallback_explanation(analysis: dict) -> tuple[str, str]:
-    """Return the recorded fallback reason and act rationale for measured cause."""
+    """The recorded fallback reason and act rationale for the measured cause."""
     if analysis["background"] is None:
         return (
-            _FALLBACK_REASON_BACKGROUND_NOT_INFERABLE,
-            _FALLBACK_RATIONALE_BACKGROUND_NOT_INFERABLE,
+            "the page's background could not be inferred, so no ink threshold or structural "
+            "groups were measured; the page is cut into predetermined overlapping crops and "
+            "sent downstream to be read rather than being called blank here",
+            "the page's background could not be inferred, so no ink threshold or detected "
+            "region corroborates this act; the page's predetermined fallback crops are "
+            "separate evidence and are not a detection",
         )
     components = analysis["components"]
     if not components:
-        return _FALLBACK_REASON_NO_INK, _FALLBACK_RATIONALE_NO_INK
+        return (
+            "the structure pass found no ink to group on this page, so the page is cut into "
+            "predetermined overlapping crops and sent downstream to be read rather than being "
+            "called blank here; blankness is proved by the witnesses and the Perlector, which "
+            "only get a say if the crops reach them",
+            "the structure pass found no ink to group on this page, so no detected region "
+            "corroborates this act; the page's predetermined fallback crops are separate "
+            "evidence and are not a detection",
+        )
     if len(analysis["page_spanning"]) == len(components):
-        return _FALLBACK_REASON_ALL_PAGE_SPANNING, _FALLBACK_RATIONALE_ALL_PAGE_SPANNING
-    return _FALLBACK_REASON_NO_ELIGIBLE_GROUP, _FALLBACK_RATIONALE_NO_ELIGIBLE_GROUP
+        return (
+            "the structure pass found ink, but every connected component met the sealed "
+            "page-spanning bound and was withheld from grouping; the page is cut into "
+            "predetermined overlapping crops and sent downstream to be read",
+            "the structure pass found ink, but every connected component met the sealed "
+            "page-spanning bound, so no eligible detected region corroborates this act; the "
+            "page's predetermined fallback crops are separate evidence and are not a detection",
+        )
+    return (
+        "the structure pass found ink components but assembled no eligible detected group, "
+        "so the page is cut into predetermined overlapping crops and sent downstream to be read",
+        "the structure pass found ink components but assembled no eligible detected group "
+        "that corroborates this act; the page's predetermined fallback crops are separate "
+        "evidence and are not a detection",
+    )
 
 
 def _require_evidence_block(block: dict, what: str) -> None:
@@ -1200,7 +1178,6 @@ def _analyze_page(
             "background_source": evidence["source"],
             # None where the interior-mode branch did not run.
             "dark_distribution": evidence["dark_distribution"],
-            # None where the background could not be inferred and no scan ran.
             "ink_margin": ink_margin,
             "dark_mode": evidence["dark_mode"],
             "groups": groups,
@@ -1376,7 +1353,6 @@ def _publish_secondary_proposals(
     candidate" apart from "counted, not cut".
     """
     if secondary["chair_state"] != "configured":
-        # Absent proposer: no recall pass to run.
         return False
     validate_serving_provenance(
         context,
