@@ -11,35 +11,34 @@ skeleton's synthetic proposer does not yet support (see CONTRACT.md).
 """
 
 import random
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from residual_ink import (  # noqa: E402
-    MINIMUM_CONTRAST_BELOW_BACKGROUND,
-    MINIMUM_FRACTION_OUTSIDE_COVERAGE,
-    MINIMUM_INK_PIXELS,
-    page_residual_ink,
-    residual_ink,
-)
-
-from common.background import (  # noqa: E402
+from common.background import (
+    BASIS_POINTS,
     BackgroundInferenceRefusal,
     infer_background_evidence,
     load_background_config,
     resolve_background_policy,
 )
-from common.imaging import dimensions, encode_grayscale_png, grayscale_rows  # noqa: E402
-from common.residual_ink import (  # noqa: E402
+from common.imaging import dimensions, encode_grayscale_png, grayscale_rows
+from common.residual_ink import (
+    MINIMUM_CONTRAST_BELOW_BACKGROUND,
+    MINIMUM_FRACTION_OUTSIDE_BP_FIELD,
+    MINIMUM_INK_PIXELS_FIELD,
     edge_ink,
     edge_ink_from_runs,
     ink_runs,
+    load_coverage_audit_config,
+    page_residual_ink,
     page_spanning_components,
+    residual_ink,
 )
-from proof.synthetic_pages import PAGES, page_bytes  # noqa: E402
+from proof.synthetic_pages import PAGES, page_bytes
+
+_NOISE_FLOOR = load_coverage_audit_config()["coverage_audit"]
+MINIMUM_INK_PIXELS = _NOISE_FLOOR[MINIMUM_INK_PIXELS_FIELD]
+MINIMUM_FRACTION_OUTSIDE_COVERAGE = _NOISE_FLOOR[MINIMUM_FRACTION_OUTSIDE_BP_FIELD] / BASIS_POINTS
 
 
 def _policy(width: int, height: int):
