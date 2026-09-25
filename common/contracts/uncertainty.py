@@ -6,18 +6,20 @@ They are never byte offsets and never refer to a normalized or display string.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 
 _FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment"})
-# So an empty list is never read as confidence. These three vocabularies mirror
-# pipeline/4_perlector/annotations.py, which common/ may not import.
-_ASSESSMENT_STATES = frozenset({"assessed", "not-assessed", "malformed"})
+# So an empty list is never read as confidence. The Perlector's annotations
+# produce under these same vocabularies.
+ASSESSMENT_STATES: Final = frozenset({"assessed", "not-assessed", "malformed"})
 _ASSESSMENT_FIELDS = frozenset({"state", "problem"})
-_CONFIDENCE = frozenset({"low", "medium", "high"})
-_GAP_POSITIONS = frozenset({"leading", "internal", "trailing", "whole-act"})
+CONFIDENCE_LEVELS: Final = frozenset({"low", "medium", "high"})
+GAP_POSITIONS: Final = frozenset({"leading", "internal", "trailing", "whole-act"})
+# Teklia/DAI-CReTDHI-RecordGold-ATR's two uncertainty markers (MIT licence).
+UNCERTAINTY_TOKENS: Final = ("[UNCERTAIN]", "[CROSSED_OUT]")
 _GAP_EVIDENCE_FIELDS = frozenset({"chair", "testimonium_id", "reference", "variant"})
 _REFERENCE_FIELDS = frozenset({"relative_path", "sha256"})
 _SOURCE_REVISION_FIELDS = frozenset({"reading_span", "testimonium_span"})
@@ -72,7 +74,7 @@ def validate_assessment_record(assessment: Any, subject: str = "canonical uncert
     if not isinstance(assessment, dict) or set(assessment) != _ASSESSMENT_FIELDS:
         raise SchemaRefusal(f"{subject} has no closed assessment record")
     # Typed first: `in` raises TypeError on an unhashable value.
-    if type(assessment["state"]) is not str or assessment["state"] not in _ASSESSMENT_STATES:
+    if type(assessment["state"]) is not str or assessment["state"] not in ASSESSMENT_STATES:
         raise SchemaRefusal(f"{subject} names an unknown assessment state {assessment['state']!r}")
     if assessment["problem"] is not None and (
         not isinstance(assessment["problem"], str) or not assessment["problem"]
@@ -111,7 +113,7 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
             raise SchemaRefusal(f"uncertain_spans[{index}] is not the canonical span schema")
         _range(span, text, f"uncertain_spans[{index}]", nonempty=True)
         if (
-            span["confidence"] not in _CONFIDENCE
+            span["confidence"] not in CONFIDENCE_LEVELS
             or not isinstance(span["alternatives"], list)
             or not all(isinstance(value, str) for value in span["alternatives"])
         ):
@@ -129,9 +131,9 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
         if gap["start"] != gap["end"] or not isinstance(gap["witness_evidence"], list):
             raise SchemaRefusal(f"gaps[{index}] is not a zero-width canonical gap")
         position = gap["position"]
-        if position not in _GAP_POSITIONS:
+        if position not in GAP_POSITIONS:
             raise SchemaRefusal(
-                f"gaps[{index}] position {position!r} is not one of {sorted(_GAP_POSITIONS)}"
+                f"gaps[{index}] position {position!r} is not one of {sorted(GAP_POSITIONS)}"
             )
         if position == "leading" and gap["start"] != 0:
             raise SchemaRefusal(f"gaps[{index}] is declared leading but does not start at 0")

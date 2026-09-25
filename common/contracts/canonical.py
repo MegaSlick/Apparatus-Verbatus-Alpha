@@ -220,6 +220,11 @@ def digest_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def is_plain_int(value: Any) -> bool:
+    """An `int` that is not a `bool`, which `isinstance` alone would admit."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def is_sha256(value: Any) -> bool:
     """Whether a value is the lowercase hex shape every digest in this system uses."""
     return (

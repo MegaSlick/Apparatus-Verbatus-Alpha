@@ -11,6 +11,7 @@ account for them. Giving it a name here is what lets "door -> Exemplar" be one o
 the eight tested handoffs rather than an unexamined edge.
 """
 
+from enum import Enum
 from typing import Final
 
 DOOR: Final = "door"
@@ -104,3 +105,41 @@ TRIAGE_MODES: Final = ("manual", "semi", "auto")
 # Bounds quadratic pairwise overlap checks on untrusted input; one spelling for
 # both validators, or the looser would decide.
 MAX_TRIAGE_SPLIT_PARTS: Final = 64
+
+# The triage decision-manifest row, closed; the pre-door manifest and the
+# Exemplar boundary both hold rows to these sets. A deterministic offline
+# producer is its own actor kind because it makes no model call.
+TRIAGE_ACTOR_KINDS: Final = ("human", "model", "scantailor", "producer")
+TRIAGE_ACTOR_FIELDS: Final = frozenset({"kind", "identity", "revision"})
+TRIAGE_PART_FIELDS: Final = frozenset({"region", "crop_box", "rotation", "colour_mode"})
+TRIAGE_ROW_FIELDS: Final = frozenset(
+    {
+        "corpus_id",
+        "source_frame_sha256",
+        "frame",
+        "split",
+        "re_shoot_cluster_id",
+        "confidence",
+        "mode",
+        "actor",
+        "human_override",
+        "manifest_row_sha256",
+    }
+)
+
+
+class RefusalReason(str, Enum):
+    """The door's closed alarm vocabulary for damage and decoder failures.
+
+    A format-policy refusal deliberately does not exist.  `UNSUPPORTED_VARIANT`
+    names a real decoder gap so it is visible work for the pipeline, rather than a
+    routine reason to abandon a submitted page.
+    """
+
+    EMPTY = "empty"
+    UNREADABLE = "unreadable"
+    TOO_LARGE = "too-large"
+    UNRECOGNIZED_FORMAT = "unrecognized-format"
+    CORRUPT = "corrupt"
+    UNSUPPORTED_VARIANT = "unsupported-variant"
+    DIGEST_MISMATCH = "digest-mismatch"

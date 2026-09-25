@@ -15,7 +15,13 @@ import unicodedata
 from collections import defaultdict
 from typing import Any, Final
 
-from common.contracts.canonical import is_sha256, self_hash, self_hash_refusal, verify_self_hash
+from common.contracts.canonical import (
+    is_plain_int,
+    is_sha256,
+    self_hash,
+    self_hash_refusal,
+    verify_self_hash,
+)
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import (
     act_id as local_act_id,
@@ -98,10 +104,6 @@ def _refuse_textual(value: Any) -> None:
 
 def _findings(code: str, acts: list[dict[str, Any]]) -> list[dict[str, str]]:
     return [{"code": code, "act_id": row["act_id"]} for row in acts]
-
-
-def _integer(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _refuse_unverified_self_hash(payload: dict[str, Any], subject: str, noun: str) -> None:
@@ -202,7 +204,7 @@ def _act(row: Any, *, require_bindings: bool = False) -> dict[str, Any]:
                 "physical-act partition: local act_id does not derive from its own "
                 "page, class, and minted bounds"
             )
-    if not _integer(row["page_ordinal"]) or row["page_ordinal"] < 0:
+    if not is_plain_int(row["page_ordinal"]) or row["page_ordinal"] < 0:
         raise SchemaRefusal(
             "physical-act partition: local act page ordinal is negative, boolean, or not an "
             "integer; the partition is refused because source-page attribution must be a "
@@ -599,7 +601,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
     _path(seal["relative_path"], "proposal seal")
     _sha(seal["sha256"], "proposal seal sha256")
     if any(
-        not _integer(payload[name]) or payload[name] < 0
+        not is_plain_int(payload[name]) or payload[name] < 0
         for name in ("local_expected_count", "logical_expected_count")
     ):
         raise SchemaRefusal("physical-act partition: expected counts are invalid")

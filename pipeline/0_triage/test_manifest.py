@@ -26,7 +26,7 @@ from manifest import (
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.stages import TRIAGE_MODES
+from common.contracts.stages import TRIAGE_MODES, TRIAGE_ROW_FIELDS
 
 DIGEST_A = "a" * 64
 DIGEST_B = "b" * 64
@@ -831,31 +831,22 @@ def test_the_mode_triple_is_the_shared_vocabulary_not_a_private_one():
 
 
 def test_the_row_vocabulary_still_covers_unit_20s_comparability_facts():
-    """The drift pin for `common/capture_comparability.py`, owned by this stage.
-
-    The comparability derivation reads `mode`, `actor` (kind/identity/revision),
-    and `human_override` off this stage's rows. The pin lives here rather than
-    under common/ because common/ knows nothing about stages: a stage author
-    renaming a row field must meet the failure at the edit site, and nothing in
-    common/ may import a stage to find out.
-    """
-    import manifest as _manifest_module  # noqa: PLC0415
-
+    """The comparability derivation reads `mode`, `actor` and `human_override`
+    off this stage's rows; a new row field must be read there or named here."""
     from common.capture_comparability import (  # noqa: PLC0415
         ACTOR_FACT_FIELDS,
-        TRIAGE_ACTOR_KINDS,
         TRIAGE_FACT_FIELDS,
         comparability_from_triage,
     )
 
-    assert set(TRIAGE_FACT_FIELDS) <= _manifest_module._ROW_FIELDS
+    assert set(TRIAGE_FACT_FIELDS) <= TRIAGE_ROW_FIELDS
     # Fail closed on schema growth: every row field is either a capture-
     # condition fact the comparability derivation reads, or a member of this
     # explicit non-condition allowlist (identity, geometry, provenance-of-row).
     # A new row field forces a decision here -- read it in the derivation, or
     # name it below as not describing the capture condition -- instead of two
     # differently-captured rows quietly comparing equal (principle 8).
-    assert _manifest_module._ROW_FIELDS - set(TRIAGE_FACT_FIELDS) == {
+    assert TRIAGE_ROW_FIELDS - set(TRIAGE_FACT_FIELDS) == {
         "corpus_id",
         "source_frame_sha256",
         "frame",
@@ -864,7 +855,6 @@ def test_the_row_vocabulary_still_covers_unit_20s_comparability_facts():
         "confidence",
         "manifest_row_sha256",
     }
-    assert TRIAGE_ACTOR_KINDS == _manifest_module.ACTOR_KINDS
     sealed = make_row(
         corpus_id="montebello",
         source_frame_sha256="a" * 64,

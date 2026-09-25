@@ -27,9 +27,7 @@ import re
 from typing import Any, Final
 
 from common.contracts.errors import SchemaRefusal
-
-CONFIDENCE_LEVELS: Final = frozenset({"low", "medium", "high"})
-GAP_POSITIONS: Final = frozenset({"leading", "internal", "trailing", "whole-act"})
+from common.contracts.uncertainty import ASSESSMENT_STATES, CONFIDENCE_LEVELS, GAP_POSITIONS
 
 _SPAN_FIELDS: Final = frozenset({"start", "end", "alternatives", "confidence"})
 _GAP_FIELDS: Final = frozenset({"position", "start", "end", "witness_evidence"})
@@ -232,9 +230,6 @@ def validate_annotations(payload: dict[str, Any], *, outcome: str | None = None)
 ASSESSMENT_ASSESSED: Final = "assessed"
 ASSESSMENT_NOT_ASSESSED: Final = "not-assessed"
 ASSESSMENT_MALFORMED: Final = "malformed"
-ASSESSMENT_STATES: Final = frozenset(
-    {ASSESSMENT_ASSESSED, ASSESSMENT_NOT_ASSESSED, ASSESSMENT_MALFORMED}
-)
 _ASSESSMENT_FIELDS: Final = frozenset({"state", "uncertain_spans", "gaps", "problem"})
 NOT_ASSESSED_REASON: Final = (
     "the reader reports no doubt assessment; this chair has no channel for one"

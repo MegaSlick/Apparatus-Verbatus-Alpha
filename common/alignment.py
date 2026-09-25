@@ -19,6 +19,7 @@ from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 
 DEFAULT_ALIGNMENT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "alignment.toml"
 
@@ -41,13 +42,6 @@ class _TimedOut(Exception):
 # semicolon anywhere later in the document -- tags included -- and handed them
 # back as "stripped" text. See `markup_text_view`.
 _MAX_ENTITY_CHARACTERS: Final = 40
-
-# Teklia/DAI-CReTDHI-RecordGold-ATR's two uncertainty markers (MIT licence).
-# Kept as a private constant rather than imported from
-# `pipeline/3_attestatores/feeding.py`, since `common/` is the lower layer and
-# an import the other way would be circular; `test_alignment.py` pins this
-# tuple byte-identical to `feeding._UNCERTAINTY_TOKENS`.
-_UNCERTAINTY_TOKENS: Final = ("[UNCERTAIN]", "[CROSSED_OUT]")
 
 
 def _alarm(signum: int, frame: Any) -> None:
@@ -239,7 +233,7 @@ def bracket_marker_view(raw: str) -> dict[str, Any]:
     n = len(raw)
     while i < n:
         matched_length = 0
-        for token in _UNCERTAINTY_TOKENS:
+        for token in UNCERTAINTY_TOKENS:
             if raw.startswith(token, i):
                 matched_length = len(token)
                 break

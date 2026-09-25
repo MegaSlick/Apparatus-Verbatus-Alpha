@@ -15,7 +15,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify
-from common.contracts.stages import DOOR, PERLECTOR, STAGES
+from common.contracts.stages import DOOR, PERLECTOR, STAGES, RefusalReason
 
 DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "hard_failure.toml"
@@ -33,21 +33,7 @@ MAX_HARD_FAILURE_KINDS: Final = 128
 PERLECTOR_INSTRUMENT_KINDS: Final = frozenset(
     {"lectio-nuda", "lectio-prior", "primed-without-prior"}
 )
-# Duplicated in miniature rather than importing `pipeline/1_exemplar/
-# admission.RefusalReason`, since `common/` may not import `pipeline/`. Checked
-# so a mistyped door reason is refused at config load, not matched against
-# nothing forever with no error to say the cap had gone quiet.
-DOOR_REFUSAL_REASONS: Final = frozenset(
-    {
-        "empty",
-        "unreadable",
-        "too-large",
-        "unrecognized-format",
-        "corrupt",
-        "unsupported-variant",
-        "digest-mismatch",
-    }
-)
+DOOR_REFUSAL_REASONS: Final = frozenset(reason.value for reason in RefusalReason)
 
 
 def _reason_code(text: Any) -> str | None:

@@ -24,7 +24,11 @@ from common.contracts.stages import (
     EXEMPLAR,
     MAX_TRIAGE_SPLIT_PARTS,
     RECENSOR,
+    TRIAGE_ACTOR_FIELDS,
+    TRIAGE_ACTOR_KINDS,
     TRIAGE_MODES,
+    TRIAGE_PART_FIELDS,
+    TRIAGE_ROW_FIELDS,
 )
 from common.imaging import (
     carries_only_image_chunks,
@@ -837,23 +841,10 @@ def _validate_embedded_triage_row(row: Any) -> None:
     """Validate the provenance fields the common boundary must not take on trust.
 
     Geometry is checked executable against every recorded operation and the master
-    itself. The common boundary cannot import the numbered triage pipeline, so it
-    must also close mode, actor, override, confidence, cluster identity, and every
-    row/split/part field set here.
+    itself. Mode, actor, override, confidence, cluster identity, and every
+    row/split/part field set are closed here too.
     """
-    required = {
-        "corpus_id",
-        "source_frame_sha256",
-        "frame",
-        "split",
-        "re_shoot_cluster_id",
-        "confidence",
-        "mode",
-        "actor",
-        "human_override",
-        "manifest_row_sha256",
-    }
-    if not isinstance(row, dict) or set(row) != required:
+    if not isinstance(row, dict) or set(row) != TRIAGE_ROW_FIELDS:
         raise ContractError("a sealed derivative page carries no complete triage manifest row")
     if not isinstance(row["corpus_id"], str) or not row["corpus_id"].strip():
         raise ContractError("a sealed derivative page's triage row has no corpus identity")
@@ -874,8 +865,8 @@ def _validate_embedded_triage_row(row: Any) -> None:
     actor = row["actor"]
     if (
         not isinstance(actor, dict)
-        or set(actor) != {"kind", "identity", "revision"}
-        or actor.get("kind") not in {"human", "model", "scantailor", "producer"}
+        or set(actor) != TRIAGE_ACTOR_FIELDS
+        or actor.get("kind") not in TRIAGE_ACTOR_KINDS
         or not isinstance(actor.get("identity"), str)
         or not actor["identity"].strip()
         or (actor["kind"] == "human" and actor.get("revision") is not None)
@@ -893,9 +884,7 @@ def _validate_embedded_triage_row(row: Any) -> None:
         or not isinstance(split.get("parts"), list)
         or not split["parts"]
         or any(
-            not isinstance(part, dict)
-            or set(part) != {"region", "crop_box", "rotation", "colour_mode"}
-            for part in split["parts"]
+            not isinstance(part, dict) or set(part) != TRIAGE_PART_FIELDS for part in split["parts"]
         )
     ):
         raise ContractError("a sealed derivative page's triage row has no closed split record")

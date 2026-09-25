@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, Iterable, Mapping, Sequence
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, is_plain_int
 from common.contracts.errors import SchemaRefusal
 from common.imaging import dimensions
 
@@ -151,7 +151,7 @@ def _resize(
 
 
 def _is_positive_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+    return is_plain_int(value) and value > 0
 
 
 def _positive(value: object, field: str) -> int:
