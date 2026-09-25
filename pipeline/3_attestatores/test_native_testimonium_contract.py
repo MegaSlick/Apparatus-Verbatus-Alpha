@@ -446,10 +446,10 @@ def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tm
 def test_page_native_geometry_stays_with_page_witnesses_and_inside_witness_views(tmp_path):
     """Native page-space geometry may ride only records owned by a page witness.
 
-    Unit 10C's coverage design lets a page witness's act view restate its
-    page-space geometry (boxes may exceed that record's one-crop presentation);
-    every other record's observed boxes must stay inside the exact presentation
-    the witness was shown, and no act-scoped chair may carry native geometry.
+    A page witness's act view may restate its page-space geometry (boxes may
+    exceed that record's one-crop presentation); every other record's observed
+    boxes must stay inside the exact presentation the witness was shown, and
+    no act-scoped chair may carry native geometry.
     """
     tree = _happy_run(tmp_path, "native-page-scope")
     native = []

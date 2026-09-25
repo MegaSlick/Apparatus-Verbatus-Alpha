@@ -990,13 +990,9 @@ def test_every_dai_ceiling_seals_where_it_came_from():
         generation_config_ref=_ref("models/dai/generation_config.json"),
     )
     limits = view["image_limits"]
-    # v4: the height ceiling stays retired (neither reads off anything the
-    # model states); the width ceiling is sourced to the model card rather
-    # than "design v2.1 section 2", which named the same number without the
-    # model's own source for it. The total-pixel ceiling `v3` dropped is
-    # restored -- a hostile review (U11) showed the served row's own ceiling
-    # is not redundant with the width ceiling alone -- sourced to the shipped
-    # serving catalogue rather than the retired `v2` constant it replaces.
+    # No height ceiling: nothing states one. The width ceiling is sourced to
+    # the model card, and the total-pixel ceiling to the shipped serving
+    # catalogue -- a served row's own ceiling is not redundant with width alone.
     assert limits["schema"] == "dai-image-limits.v4"
     ceilings = set(limits) - {"schema", "sources"}
     assert ceilings == {"max_width_px", "max_total_pixels"}
@@ -1036,13 +1032,10 @@ def test_dai_total_pixel_ceiling_is_the_smallest_shipped_rows_max_pixels():
 @pytest.mark.parametrize(
     ("width_px", "height_px", "expected", "resized"),
     [
-        # `v3`'s bug, kept as the regression case: a width already under 1,500
-        # is not by itself an identity view -- this crop's 5,000,000px is
-        # over the smallest shipped row's `max_pixels` (2,359,296, U15), so
-        # `v3` recorded "identity" for a crop the engine would have resized
-        # again on the laptop-tier row, with that second resize captured
-        # nowhere (the hostile review's own finding). `v4`'s second pass
-        # catches it: beta = sqrt(5_000_000 / 2_359_296) ~= 1.45577, floored.
+        # A width already under 1,500 is not by itself an identity view:
+        # this crop's 5,000,000px is over the smallest shipped row's
+        # `max_pixels` (2,359,296), so the second pass catches it:
+        # beta = sqrt(5_000_000 / 2_359_296) ~= 1.45577, floored.
         (500, 10_000, (343, 6_869), True),
         # Also over the total-pixel ceiling alone (4,500,000px), even though
         # its width sits exactly at the width ceiling and neither `v2` nor

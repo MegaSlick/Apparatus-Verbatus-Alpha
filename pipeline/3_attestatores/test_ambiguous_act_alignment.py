@@ -103,7 +103,7 @@ def test_an_anchor_line_pair_loses_the_attachment_the_alignment_was():
     it `attached: true` published a row both readers refuse -- each re-derives
     attachment through `common/contracts/outcomes.py::page_attachment_basis`,
     which answers `unattached` for a witness with no geometry and no located
-    line. Unreachable before Unit 12, when nothing attached on text alone.
+    line.
     """
     first = _entry(span={"start": 0, "end": 40}, basis="anchor-line")
     second = _entry(span={"start": 30, "end": 200}, basis="anchor-line")

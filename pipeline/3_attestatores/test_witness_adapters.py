@@ -537,12 +537,9 @@ def _dai_region(width, height, x=0, y=0):
             "crop-resize-preserve-aspect",
             id="one-past-the-width-ceiling",
         ),
-        # `v3` recorded this as bound by the width ceiling alone (1,536 > 1,500)
-        # and left it at (1,500, 1,500) -- 2,250,000px. Under U15's raised
-        # `DAI_MAX_TOTAL_PIXELS` (2,359,296, the shipped catalogue's own
-        # max_pixels at every tier now the ladder is retired) that no longer
-        # exceeds the total-pixel ceiling, so the width pass alone is what
-        # the second pass agrees with: no further scale-down.
+        # Bound by the width ceiling alone (1,536 > 1,500) to (1,500, 1,500) --
+        # 2,250,000px, under `DAI_MAX_TOTAL_PIXELS` (2,359,296), so the second
+        # pass agrees: no further scale-down.
         pytest.param(
             1_536,
             1_536,
@@ -551,11 +548,9 @@ def _dai_region(width, height, x=0, y=0):
             "crop-resize-preserve-aspect",
             id="square-crop-also-bound-by-the-total-pixel-ceiling",
         ),
-        # `v3`'s bug: a width this far under 1,500 was recorded as an identity
-        # view "however tall the crop or however many total pixels it
-        # carries" -- but 576x4,097 is 2,359,872px, over U15's own
-        # `DAI_MAX_TOTAL_PIXELS` (2,359,296) by 576px, so the engine would have
-        # resized it again with nothing here to say so. `v4`'s second pass
+        # A width this far under 1,500 must not become an identity view
+        # regardless of total pixels: 576x4,097 is 2,359,872px, over
+        # `DAI_MAX_TOTAL_PIXELS` (2,359,296) by 576px, so the second pass
         # catches it: beta = sqrt(2,359,872 / 2,359,296) ~= 1.000122, floored.
         pytest.param(
             576,

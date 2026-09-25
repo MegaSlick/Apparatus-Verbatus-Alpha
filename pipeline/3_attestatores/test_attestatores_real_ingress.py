@@ -306,20 +306,19 @@ class _RealDesignator:
     def scan(self, ordinal: int, rectangles: list[dict[str, int]]) -> None:
         """One page's served-chair records: its retained answer, then its status.
 
-        D3 (892b1f951f) closed the route this stand-in used to take. A real
-        submission's structural proposal is now checked back through the page's
-        own `structure-status` to the `structure-answer` the chair returned, and
-        a seal whose provenance names no `engine_call` is refused by name before
-        any rectangle is recomputed -- so a hand-built real tree that proposes
-        anything owes those records too.
+        A real submission's structural proposal is checked back through the
+        page's own `structure-status` to the `structure-answer` the chair
+        returned, and a seal whose provenance names no `engine_call` is
+        refused by name before any rectangle is recomputed -- so a hand-built
+        real tree that proposes anything owes those records too.
 
-        Composed from `test_stage_structure_proposals._StructureDesignator`, the
-        same builder `common/test_stage_real_ingress.py` was repaired onto
-        (327eb24c98), rather than re-deriving the answer/status/call-record
-        chain here: one description of the served route, in one place. Only the
-        chain is borrowed. The regions stay `propose`'s own, because this
-        stage's witnesses read the crop bytes it cuts from the sealed page, and
-        the act keys stay `ACTS`' own structural keys.
+        Composed from `test_stage_structure_proposals._StructureDesignator`,
+        the same builder `common/test_stage_real_ingress.py` uses, rather than
+        re-deriving the answer/status/call-record chain here: one description
+        of the served route, in one place. Only the chain is borrowed. The
+        regions stay `propose`'s own, because this stage's witnesses read the
+        crop bytes it cuts from the sealed page, and the act keys stay
+        `ACTS`' own structural keys.
         """
         if self._served is None:
             self._served = _StructureDesignator(

@@ -1,23 +1,15 @@
 """A Designator page-fallback act is witnessed like any other act, or not at all.
 
-This stage used to recognize the minted fallback identity and hand every
-configured chair a completed `genuinely-empty` outcome from it -- before
-`testimony_for`, before any provider or fixture response boundary, before
-anything was asked. The writer then gave each of those records the proposal
-regions, marked it attempted, minted a serving receipt, and recorded
-trusted-boundary health, so three chairs stood on disk as having independently
-read a page none of them had been shown. The conclusion happened to be true on
-the synthetic white page; the evidence for it did not exist (Sol-S1).
+A minted `genuinely-empty` outcome for every configured chair, with no
+provider or fixture response ever asked for, would let three chairs stand on
+disk as having independently read a page none of them had been shown -- true
+on a synthetic white page, but evidence that did not exist.
 
-The predecessor of this file guarded the *selector* for that branch -- that it
-matched the derived identity rather than the `page-fallback:` label a fixture
-act or a hand-edited seal could also wear. An unforgeable selector for a branch
-that must not exist is still the branch, so the branch is gone and this pins the
-absence: `resolve_attempt` reads the act's key to look up a response and nothing
-else about it, so a fallback act and an ordinary act with the same declarations
-resolve identically, and a fallback act with no declaration resolves to
-`not-run` and holds. The end-to-end halves live in
-`pipeline/orchestrator/test_orchestrator_acceptance.py`
+This pins the absence of any such branch: `resolve_attempt` reads the act's
+key to look up a response and nothing else about it, so a fallback act and an
+ordinary act with the same declarations resolve identically, and a fallback
+act with no declaration resolves to `not-run` and holds. The end-to-end
+halves live in `pipeline/orchestrator/test_orchestrator_acceptance.py`
 (`ink-free-page` and `ink-free-page-unwitnessed`).
 """
 
