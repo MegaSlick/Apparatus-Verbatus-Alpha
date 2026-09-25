@@ -2514,17 +2514,8 @@ def continuation_unmeasured_reason(
     )
 
 
-def testimony_content_findings(context) -> dict[int, dict]:
-    """Compare each page witness's text to its own aligned act attachments.
-
-    Testimony to testimony; no Perlectio text participates. A non-whitespace page
-    character outside the union of the aligned spans is a visible coverage shortfall,
-    never a verdict about which witness is right.
-    """
-    attachments = current_act_attachments(context)
-    page_testimonia = current_page_testimonia(context)
-    # Read once: `expected_acts` re-verifies the seal on every call, and this stage
-    # never writes it.
+def _proposal_pages_of_acts(context) -> tuple[dict[int, list[dict]], dict[int, list[dict]]]:
+    """Each page's expected acts and sealed proposal regions, from one seal read."""
     acts_by_page: dict[int, list[dict]] = {}
     proposal_regions_by_page: dict[int, list[dict]] = {}
     for act in expected_acts(context):
@@ -2544,10 +2535,8 @@ def testimony_content_findings(context) -> dict[int, dict]:
             if act not in page_acts:
                 page_acts.append(act)
             bounds = transform.get("bounds")
-            # The rectangle `_proposal_geometry_by_page` requires: a partial one would
-            # fail as a bare KeyError, and a degenerate one would overlap nothing and
-            # manufacture an unrouted-observation finding that drives recovery
-            # (principles 7, 8).
+            # A degenerate rectangle would overlap nothing and manufacture an
+            # unrouted-observation finding that drives recovery.
             if not _page_rect(bounds):
                 raise FatalAccounting(
                     f"Designator proposal region of {act['act_id']} has no page-pixel bounds"
@@ -2558,6 +2547,16 @@ def testimony_content_findings(context) -> dict[int, dict]:
         # regions; its primary page remains a known one-page denominator.
         if not found_page:
             acts_by_page.setdefault(act["page_ordinal"], []).append(act)
+    return acts_by_page, proposal_regions_by_page
+
+
+def _page_rows_by_chair(
+    context,
+    acts_by_page: dict[int, list[dict]],
+    attachments: dict[str, dict],
+    page_testimonia: dict[tuple[int, str], dict],
+) -> dict[tuple[int, str], list[tuple[str, dict]]]:
+    """Every page-witness attachment row, by page and chair, bound to its current record."""
     rows_by_page_chair: dict[tuple[int, str], list[tuple[str, dict]]] = {}
     for ordinal, acts in acts_by_page.items():
         for act in acts:
@@ -2587,18 +2586,55 @@ def testimony_content_findings(context) -> dict[int, dict]:
                         "or stale; restore the referenced Attestatores record"
                     )
                 rows_by_page_chair.setdefault((ordinal, chair), []).append((act["act_id"], row))
-    # Reference every page row first, so a missing record names the act whose
-    # evidence was lost. The whole-page role reconciliation then catches the
+    return rows_by_page_chair
+
+
+def _aligned_spans(rows: list[tuple[str, dict]]) -> tuple[list[tuple[int, int, str]], list[str]]:
+    """The aligned witness spans of these rows, and the acts declared unanchored."""
+    spans = []
+    declared_unanchored: list[str] = []
+    for act_id, row in rows:
+        alignment = row.get("alignment")
+        if (
+            row.get("attached")
+            and isinstance(alignment, dict)
+            and alignment.get("status") == "aligned"
+        ):
+            span = alignment.get("witness_span")
+            if not isinstance(span, dict) or not all(
+                _plain_int(span.get(k)) for k in ("start", "end")
+            ):
+                raise FatalAccounting("attached page witness has malformed alignment span")
+            spans.append((span["start"], span["end"], act_id))
+        elif (
+            isinstance(alignment, dict)
+            and alignment.get("status") == "unaligned"
+            and alignment.get("reason") == CONTINUATION_NO_ACT_ANCHOR
+        ):
+            # Not conditional on `attached`: unattached continuation rows would
+            # otherwise read as a measured shortfall.
+            declared_unanchored.append(act_id)
+    return spans, declared_unanchored
+
+
+def testimony_content_findings(context) -> dict[int, dict]:
+    """Compare each page witness's text to its own aligned act attachments.
+
+    Testimony to testimony; no Perlectio text participates. A non-whitespace page
+    character outside the union of the aligned spans is a visible coverage shortfall,
+    never a verdict about which witness is right.
+    """
+    attachments = current_act_attachments(context)
+    page_testimonia = current_page_testimonia(context)
+    acts_by_page, proposal_regions_by_page = _proposal_pages_of_acts(context)
+    rows_by_page_chair = _page_rows_by_chair(context, acts_by_page, attachments, page_testimonia)
+    # After the rows, so a missing record names the act that lost it; this catches the
     # converse orphan (a page record no act owns) before any finding is built.
     reconcile_page_roles(context, attachments, page_testimonia)
     findings: dict[int, dict] = {}
-    # Page ordinal -> the (chair, uncovered count, declared-unanchored acts) rows
-    # whose uncovered text no attachment on this page could ever have covered.
     unanchored_by_page: dict[int, list[tuple[str, int, list[str]]]] = {}
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
-        # The observed rows are untrusted and `unrouted_observations` indexes them by
-        # name, so a malformed one is refused by name.
         try:
             validate_reportable_observations(payload.get("observed", []))
         except ContractError as error:
@@ -2628,9 +2664,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ) from error
         observed = payload.get("observed")
         if isinstance(presented, dict) and presented and isinstance(observed, list):
-            # From what the witness saw and the current proposal denominator; the
-            # optional retained partition is audit evidence and may not suppress a
-            # finding.
+            # The retained partition is audit evidence and may not suppress a finding.
             unclaimed = unrouted_observations([record], proposal_regions_by_page.get(ordinal, []))
         else:
             unclaimed = []
@@ -2646,8 +2680,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 observation["testimonium_ref"] = testimonium_ref
                 observation["observation_ordinal"] = observation.pop("ordinal")
             finding.setdefault("unclaimed_observations", []).extend(copy.deepcopy(unclaimed))
-            # An observation outside every proposal routes recovery on its own. It is
-            # not a text shortfall, which would keep every act on the page held over an
+            # Not a text shortfall: that would hold every act on the page over an
             # observation assigned to none of them.
         if "payload" not in payload:
             if record.get("outcome") in WITNESS_READING_OUTCOMES:
@@ -2656,40 +2689,13 @@ def testimony_content_findings(context) -> dict[int, dict]:
                     f"coverage: {record['artifact_id']} for page {ordinal}, chair {chair!r}; "
                     "restore the retained Attestatores record"
                 )
-            # A page witness that read nothing on this page legitimately has no text;
-            # its absence stays visible through its act-scoped Testimonia and the
-            # witness floor.
+            # Nothing read here; the absence stays visible through the witness floor.
             continue
         text = payload.get("payload")
         if not isinstance(text, str):
-            # Structured testimony has no comparable page text; its attachment is
-            # `comparable: false`, so it cannot meet the floor either.
+            # Structured testimony: no comparable text, so it cannot meet the floor either.
             continue
-        spans = []
-        declared_unanchored: list[str] = []
-        for act_id, row in rows_by_page_chair.get((ordinal, chair), []):
-            alignment = row.get("alignment")
-            if (
-                row.get("attached")
-                and isinstance(alignment, dict)
-                and alignment.get("status") == "aligned"
-            ):
-                span = alignment.get("witness_span")
-                if not isinstance(span, dict) or not all(
-                    _plain_int(span.get(k)) for k in ("start", "end")
-                ):
-                    raise FatalAccounting("attached page witness has malformed alignment span")
-                spans.append((span["start"], span["end"], act_id))
-            elif (
-                isinstance(alignment, dict)
-                and alignment.get("status") == "unaligned"
-                and alignment.get("reason") == CONTINUATION_NO_ACT_ANCHOR
-            ):
-                # Not conditional on `attached`: the declaration is on every
-                # continuation row and is what makes an aligned span unreachable;
-                # unattached continuation rows would otherwise read as a measured
-                # shortfall.
-                declared_unanchored.append(act_id)
+        spans, declared_unanchored = _aligned_spans(rows_by_page_chair.get((ordinal, chair), []))
         covered_intervals = _covered_intervals(spans, len(text))
         uncovered = uncovered_non_whitespace_ranges(text, covered_intervals)
         finding = findings.setdefault(ordinal, {"by_chair": {}, "shortfall": False})
@@ -2701,29 +2707,23 @@ def testimony_content_findings(context) -> dict[int, dict]:
             "uncovered_non_whitespace": uncovered,
         }
         if declared_unanchored and uncovered["count"]:
-            # Recorded either way; the settlement below decides whether it becomes the
-            # page's reason or rides beside a measured one.
             unanchored_by_page.setdefault(ordinal, []).append(
                 (chair, uncovered["count"], sorted(declared_unanchored))
             )
         if covered_intervals or not declared_unanchored:
-            # Only an empty covered union is unmeasured (a zero-width span covers
-            # nothing). Where this chair has covering spans its uncovered text is a real
-            # measurement, and a neighbour's unanchored declaration may not hide it.
+            # Only an empty covered union is unmeasured; a neighbour's unanchored
+            # declaration may not hide this chair's real measurement.
             finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
     for finding in findings.values():
         if finding["by_chair"]:
             continue
-        # No chair on this page reported text, so nothing was measured, and `shortfall:
-        # False` would publish a clean measurement nobody took (principle 8). The
-        # unclaimed observations stay and still route recovery.
+        # No chair reported text: `False` would publish a measurement nobody took.
         finding["shortfall"] = None
         finding.setdefault("reason", NO_PAGE_CONTENT_COVERAGE["reason"])
     for ordinal, observations in unanchored_by_page.items():
         finding = findings[ordinal]
         if finding["shortfall"]:
-            # A shortfall measured against a real union outranks the unmeasured verdict;
-            # the unmeasured reason is kept beside it (principle 2).
+            # A measured shortfall outranks the unmeasured verdict, which rides beside it.
             finding.setdefault(
                 "unmeasured_reason",
                 continuation_unmeasured_reason(
@@ -2731,9 +2731,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ),
             )
             continue
-        # Unmeasured by name: the diff was taken against a union the Perlector declared
-        # empty, so it is not a shortfall. The count stays in `by_chair`, and every act
-        # spanning the page restates the row.
+        # Measured against a union the Perlector declared empty: not a shortfall.
         finding["shortfall"] = None
         finding.setdefault("reason", continuation_unmeasured_reason(ordinal, observations))
     return findings
