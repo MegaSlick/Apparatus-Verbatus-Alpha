@@ -415,7 +415,7 @@ _JPEG_LOSSLESS_MARKERS: Final = frozenset({0xC3, 0xC7, 0xCB, 0xCF})
 def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> ImageGeometry:
     """Walk marker segments to an EOI, reading geometry off SOF.
 
-    Proven: SOI framing an EOI at the very end; every marker segment's declared
+    Proven: SOI framing an EOI marker somewhere in the file; every marker segment's declared
     length inside the file; exactly one start-of-frame whose component count agrees
     with its segment length; every DQT/DHT/DAC segment's internal lengths add up;
     and every quantization or Huffman table a scan selects was actually defined by a
@@ -683,8 +683,9 @@ def _validate_jpeg_scan(
     fixed shape: a sequential scan uses both DC and AC; a progressive first DC scan
     uses its DC table, a DC refinement scan (`Ah > 0`) is coded as raw bits and uses
     none, and an AC scan uses only its AC table; a lossless frame codes DC only and
-    legally defines no AC table at all. A quantization table, by contrast, is named
-    by every frame component in every frame type, so that check is unconditional.
+    legally defines no AC table at all. A quantization table is named by every
+    frame component in every non-lossless frame; a lossless frame does not
+    quantize, so that check is skipped for it too.
     """
     scan_components = payload[0] if payload else 0
     if (
@@ -817,7 +818,8 @@ def validate_tiff(data: bytes) -> ImageGeometry:
     know what the samples are (PhotometricInterpretation, Compression, BitsPerSample,
     SamplesPerPixel); and the strip or tile inventory reconciled against the declared
     geometry, so the segment count is what the image's own rows and tiles require.
-    For an uncompressed image the byte counts are checked exactly, row by row.
+    For an uncompressed image each segment must hold at least its required row
+    bytes.
 
     Not proven: a compressed image's stored byte counts cannot be reconciled without
     decompressing, which is pixel reconstruction, so only its segment count is
@@ -1049,9 +1051,9 @@ VALIDATORS: Final = {
 }
 
 # Derived from what this module can actually do, never hand-copied: the table
-# sniff() walks, plus HEIC/HEIF/AVIF/WebP, whose detection is a brand check
-# rather than a signature prefix. admission.py re-exports it for its policy-
-# coverage check.
+# sniff() walks (WebP included, by its RIFF/WEBP prefix), plus HEIC/HEIF/AVIF,
+# whose detection is a brand check rather than a signature prefix. admission.py
+# re-exports it for its policy-coverage check.
 SNIFFABLE_FORMATS: Final = frozenset(
     {name for name, _ in _SIGNATURES} | {"heic", "heif", "avif", "webp"}
 )
@@ -1269,7 +1271,12 @@ def missing_reader_detail(format_name: str) -> str:
 
 
 def count_raster_pages(data: bytes) -> int:
-    """Read a decoder-backed page count without creating output pixels."""
+    """A page count without creating output pixels.
+
+    For classic TIFF this is the structural directory-chain count, not Pillow's,
+    and does not confirm every directory decodes; every other format is
+    decoder-backed.
+    """
     if sniff(data) == "tiff":
         classic_pages = _validate_classic_tiff_page_chain(data)
         if classic_pages is not None:
@@ -1292,8 +1299,8 @@ def raster_renderer_recipe() -> dict[str, Any]:
     }
 
 
-# Pillow's PNG encoder cannot represent these unbounded signed-integer or float
-# modes; TIFF can, so render to TIFF rather than clip real samples to 8-bit RGB.
+# Pillow's PNG encoder cannot represent I (unbounded signed) or F (float); the
+# 16-bit modes just exceed PNG's 8-bit RGB. TIFF holds all four without clipping.
 # Pillow normalises a little-endian 16-bit TIFF to "I;16" when re-opened.
 _HIGH_PRECISION_TIFF_MODES: Final = {
     "I": "I",

@@ -119,8 +119,7 @@ _CATEGORY_STATUS: dict[str, OutputStatus] = {
 
 # One normalisation profile for both halves of the missed-inclusive fraction and
 # for `compare_page` itself, passed explicitly rather than left to two defaults
-# that could drift apart. The
-# report records which one ran.
+# that could drift apart. The report records which one ran.
 PROFILE = GRAPHEMIC_V1
 
 _MATCHED_SCOPE = (
@@ -414,8 +413,8 @@ def _code_ref_check(code_ref: str) -> dict[str, Any]:
         return {"state": "no-checkout-found", "checkout_head": None}
     # Any honest abbreviation of the head, not the three lengths this module
     # happened to think of: git abbreviates to whatever is unambiguous, and this
-    # repository's own commit tables use ten. Seven is git's own floor, below which a prefix names too
-    # much.
+    # repository's own commit tables use ten. Seven is git's own floor, below
+    # which a prefix names too much.
     matches = len(code_ref) >= 7 and head.startswith(code_ref)
     state = "matches-checkout" if matches else "differs-from-checkout"
     return {"state": state, "checkout_head": head}
@@ -523,9 +522,8 @@ def evaluate_run(
     sha_by_act = {act["act_id"]: act["page_sha256"] for act in pipeline_acts}
 
     # One page's bytes sealed at two ordinals would compare that page twice and
-    # count its reference acts twice, which surfaces later as a denominator that
-    # does not reconcile -- a correct outcome under a message that names nothing
-    # Name the digest instead.
+    # count its reference acts twice, surfacing later as a denominator that does
+    # not reconcile under a message that names nothing. Name the digest instead.
     repeated = sorted(
         {sha for sha in page_shas.values() if list(page_shas.values()).count(sha) > 1}
         & set(references)
@@ -708,7 +706,7 @@ def evaluate_run(
             "reference_page_self_hashes": sorted(page["self_hash"] for page in references.values()),
             # Which split was scored, and every split those pages carry records
             # from. A score against `train` or against held-out `test` must never
-            # read like a score against `val` (finding 12).
+            # read like a score against `val`.
             "splits": {"scored": splits, "present_on_pages": splits_present},
         },
         "denominators": {

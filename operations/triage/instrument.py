@@ -978,6 +978,8 @@ def _verdict_for_metrics(
     # only gate the negligible case; what is still refused is a large disagreement
     # scattered across many regions — two different pages agreeing in most cells.
     negligible = (overlapping - agreeing) * 1000 < config.blob_share_per_mille * overlapping
+    # components <= 2: a re-shoot differing in a couple of small spots still links,
+    # so it doesn't score as unrelated and enter the corpus a second time.
     near_duplicate = agreement_reaches_link and (negligible or components <= 2)
     complementary = (
         not agreement_reaches_link

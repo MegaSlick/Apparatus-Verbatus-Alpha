@@ -2120,7 +2120,10 @@ def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_complete
     written, so an Exemplar started directly over this same refused door still
     refuses by name here. `test_exemplar_seal.py::
     test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_complete`
-    pins the same check over a hand-built refused door.
+    pins the same check over a hand-built refused door, and
+    `test_exemplar_seal.py::
+    test_a_merged_page_is_refused_by_name_at_the_first_stage_that_would_read_it_twice`
+    covers the merged page itself.
     """
     data = png(4, 3)
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(

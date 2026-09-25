@@ -84,8 +84,9 @@ PREDECLARED_IOU_THRESHOLD = Fraction(1, 2)
 
 # A sanity bound on the assignment's size, not a state-space limit -- the matcher
 # is polynomial (O(size**3)). Set well above this corpus's own measured maximum:
-# `plan.py`'s `records_per_page_distribution` reports 1,165 pages at a mean of
-# 6.59 records/page and a maximum of 30. A page whose reference or
+# `plan.py`'s `records_per_page_distribution`, over the sealed row snapshot,
+# reports 1,165 pages at a mean of 6.59 records/page and a maximum of 30. A page
+# whose reference or
 # eligible-pipeline count exceeds this cap is refused by name rather than
 # scored, on the working assumption that a page this crowded is malformed
 # input, not a real page of this corpus.

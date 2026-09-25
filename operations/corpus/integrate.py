@@ -1,14 +1,14 @@
-"""Closes the U2/U3 seam: a sealed fetch log becomes `submission.FetchedPage` objects.
+"""Closes the seam: a sealed fetch log becomes `submission.FetchedPage` objects.
 
 `submission.py`'s `FetchedPage` docstring keeps a boundary on purpose: nothing
 there reads `private/corpora/recordgold/cache/` directly, so `build_submission`
 takes `fetched_pages: dict[str, FetchedPage]` as a plain argument and never opens
 `cache/` itself. Reading the cache is exactly what this module exists to do
-instead: `fetched_pages_from_log` is the one place U2's on-disk layout
-(`cache.body_path` — `cache/<response-sha256>.jpg`) and U3's `FetchedPage`
-contract meet. Keeping that coupling in its own module, rather than folding it
-into `submission.py`, keeps this seam small enough that a change to either U2's
-log shape or U3's `FetchedPage` shape touches one file, not both of theirs.
+instead: `fetched_pages_from_log` is the one place `fetch.py`'s on-disk layout
+(`cache.body_path` — `cache/<response-sha256>.jpg`) and `submission.py`'s
+`FetchedPage` contract meet. Keeping that coupling in its own module, rather
+than folding it into `submission.py`, keeps this seam small enough that a
+change to either side's shape touches one file, not both.
 
 A fetch log is revalidated here via `fetch.validate_fetch_log`, which also
 refuses a malformed `"fetched"` entry by name rather than letting a caller hit a
