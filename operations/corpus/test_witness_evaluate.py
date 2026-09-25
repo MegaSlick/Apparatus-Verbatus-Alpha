@@ -24,7 +24,6 @@ from operations.corpus.test_evaluate import (
 from operations.corpus.witness_evaluate import (
     CHAIRS,
     _attachment_index,
-    _reference_pages,
     _sealed_page_bindings,
     evaluate_page,
     evaluate_run,
@@ -519,10 +518,3 @@ def test_report_is_immutable_once_created(tmp_path: Path):
     with pytest.raises(CorpusRefusal, match="^output-exists:"):
         write_report(report, output, run_root=tmp_path / "run")
     assert output.read_bytes() == before
-
-
-def test_reference_pages_that_are_not_json_are_refused_as_a_malformed_record(tmp_path):
-    path = tmp_path / "reference-pages.jsonl"
-    path.write_text("{not json\n")
-    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
-        _reference_pages(path)

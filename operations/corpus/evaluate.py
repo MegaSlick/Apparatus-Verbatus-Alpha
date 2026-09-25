@@ -64,7 +64,8 @@ from operations.spike_perlector.normalization import (
     word_units,
 )
 
-from . import CorpusRefusal, write_new
+from . import CorpusRefusal
+from .cache import write_new_file
 from .compare import (
     ReadOnlyRunTree,
     compare_page,
@@ -971,7 +972,8 @@ def write_report(report: Mapping[str, Any], path: str | Path) -> Path:
     """Write a validated report, refusing to overwrite and refusing an off-shape one."""
     validate_evaluation(dict(report))
     path = Path(path)
-    write_new(path, canonical_bytes(dict(report)), Refusal)
+    if not write_new_file(path, canonical_bytes(dict(report))):
+        raise Refusal(f"output-exists: {path} already exists; a report is never overwritten")
     return path
 
 
@@ -994,7 +996,9 @@ def load_reference_pages(path: str | Path) -> list[dict[str, Any]]:
             try:
                 pages.append(json.loads(line))
             except ValueError as error:
-                raise Refusal(f"malformed-record: line {number} of {path} is not JSON") from error
+                raise Refusal(
+                    f"malformed-record: line {number} of {path} is not JSON: {error}"
+                ) from error
     return pages
 
 

@@ -35,7 +35,8 @@ from typing import Any
 
 from common.contracts.canonical import canonical_bytes, is_sha256, self_hash, verify_self_hash
 
-from . import CorpusRefusal, write_new
+from . import CorpusRefusal
+from .cache import write_new_file
 from .plan import parse_record_url
 from .rows import CORPUS_ID, validate_snapshot
 
@@ -206,7 +207,8 @@ def main(snapshot_path: str | Path, output_path: str | Path) -> dict[str, Any]:
     """
     snapshot = validate_snapshot(json.loads(Path(snapshot_path).read_bytes()))
     holdout = build_holdout(snapshot["rows"], snapshot["self_hash"])
-    write_new(Path(output_path), canonical_bytes(holdout), Refusal)
+    if not write_new_file(Path(output_path), canonical_bytes(holdout)):
+        raise Refusal(f"output-exists: {output_path} already exists")
     return holdout
 
 

@@ -838,10 +838,7 @@ _REFUSED_OR_HALTED_ENTRY_FIELDS = frozenset(
 _ENTRY_STATUSES = frozenset({"fetched", "refused", "halted"})
 
 
-def _closed_entry(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise Refusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
-    return value
+_closed_entry = Refusal.closed
 
 
 def _seal_fetch_log(

@@ -47,7 +47,6 @@ pipeline read, and drops nothing from either side of a pairing. All of it
 refuses; none of it chooses.
 """
 
-from pathlib import Path
 from typing import Any
 
 from common.contracts.errors import ContractError
@@ -80,14 +79,4 @@ class CorpusRefusal(ContractError):
         return value
 
 
-def write_new(path: Path, data: bytes, refusal: type[CorpusRefusal]) -> None:
-    """Create `path` holding `data`; an existing file is refused `output-exists`, never replaced."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with path.open("xb") as stream:
-            stream.write(data)
-    except FileExistsError:
-        raise refusal(f"output-exists: {path} already exists") from None
-
-
-__all__ = ["CorpusRefusal", "write_new"]
+__all__ = ["CorpusRefusal"]

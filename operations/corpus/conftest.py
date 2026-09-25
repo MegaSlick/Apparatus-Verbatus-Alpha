@@ -5,14 +5,26 @@ import pytest
 
 @pytest.fixture
 def exercised_reasons(request) -> set[str]:
-    """Every refusal reason the requesting test file asserts, read from its syntax tree.
+    return asserted_reasons(request.path.read_text(encoding="utf-8"))
+
+
+def _parameter_names(node: ast.expr) -> list[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [name.strip() for name in node.value.split(",")]
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return [elt.value for elt in node.elts if isinstance(elt, ast.Constant)]
+    return []
+
+
+def asserted_reasons(source: str) -> set[str]:
+    """Every refusal reason a test source asserts, read from its syntax tree.
 
     A reason counts when it is the anchored `match="^reason:"` of a `pytest.raises`,
     the last column of a `parametrize` table whose last parameter is `reason`, or
     the second argument of an `_only_reason` call. Comments never count.
     """
     found: set[str] = set()
-    for node in ast.walk(ast.parse(request.path.read_text(encoding="utf-8"))):
+    for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
@@ -29,11 +41,8 @@ def exercised_reasons(request) -> set[str]:
                         found.add(value.value[1:-1])
         if func.attr == "parametrize" and len(node.args) > 1:
             names, cases = node.args[0], node.args[1]
-            if (
-                isinstance(names, (ast.Tuple, ast.List))
-                and isinstance(names.elts[-1], ast.Constant)
-                and names.elts[-1].value == "reason"
-                and isinstance(cases, (ast.List, ast.Tuple))
+            if _parameter_names(names)[-1:] == ["reason"] and isinstance(
+                cases, (ast.List, ast.Tuple)
             ):
                 for case in cases.elts:
                     if isinstance(case, (ast.Tuple, ast.List)) and isinstance(

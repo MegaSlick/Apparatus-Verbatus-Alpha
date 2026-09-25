@@ -65,7 +65,8 @@ from common.contracts.canonical import canonical_bytes, is_sha256, self_hash, ve
 from common.contracts.errors import IdentityRefusal
 from common.contracts.identities import physical_act_id, physical_page_id
 
-from . import CorpusRefusal, write_new
+from . import CorpusRefusal
+from .cache import write_new_file
 from .rows import CORPUS_ID, SPLITS, validate_snapshot
 
 SCHEMA = "recordgold-fetch-plan.v1"
@@ -516,7 +517,8 @@ def main(snapshot_path: str | Path, output_path: str | Path) -> dict[str, Any]:
     """
     snapshot = validate_snapshot(json.loads(Path(snapshot_path).read_bytes()))
     plan = build_fetch_plan(snapshot["rows"], snapshot["self_hash"])
-    write_new(Path(output_path), canonical_bytes(plan), Refusal)
+    if not write_new_file(Path(output_path), canonical_bytes(plan)):
+        raise Refusal(f"output-exists: {output_path} already exists")
     return plan
 
 

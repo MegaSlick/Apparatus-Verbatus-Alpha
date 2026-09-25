@@ -15,6 +15,7 @@ import pytest
 from common.contracts.canonical import digest_bytes
 from common.contracts.canonical import self_hash as _self_hash
 from operations.corpus import CorpusRefusal
+from operations.corpus.conftest import asserted_reasons
 from operations.corpus.rows import (
     CORPUS_ID,
     ROW_REFUSAL_REASONS,
@@ -128,6 +129,14 @@ def test_validate_row_refuses_a_text_sha256_mismatch():
 
 def test_every_declared_row_refusal_reason_is_exercised_here(exercised_reasons):
     assert exercised_reasons == ROW_REFUSAL_REASONS
+
+
+@pytest.mark.parametrize(
+    "names", ['"value,reason"', '" value , reason "', '("value", "reason")', '["value", "reason"]']
+)
+def test_asserted_reasons_reads_every_spelling_of_parametrize_names(names):
+    source = f"@pytest.mark.parametrize({names}, [(1, 'empty-rows')])\ndef test(): pass\n"
+    assert asserted_reasons(source) == {"empty-rows"}
 
 
 def test_a_refusal_carries_its_reason_and_refuses_an_undeclared_one():
