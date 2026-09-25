@@ -89,13 +89,11 @@ def test_an_oversized_source_keeps_its_exact_digest_and_drops_only_its_bytes(tmp
 
 
 def test_aggregate_bytes_read_are_bounded_even_when_nothing_is_retained(tmp_path, monkeypatch):
-    """F026: `max_bytes=0` (every production caller) must not defeat this bound.
+    """`max_bytes=0` (every production caller) must not defeat this bound.
 
     `_read_once` streams every source whole to its digest regardless of
-    `max_bytes`; only whether the bytes are *kept* depends on it. Before this
-    fix, `_Budget.admit` summed only the retained bytes, which are always zero
-    at `max_bytes=0`, so an unbounded total could stream through the hasher
-    with nothing to stop it until the file-count bound tripped.
+    `max_bytes`; only whether the bytes are kept depends on it, so the
+    aggregate must be checked against bytes read, not only bytes retained.
     """
     monkeypatch.setattr(inventory, "MAX_SUBMITTED_READ_BYTES", 10)
     folder = tmp_path / "batch"

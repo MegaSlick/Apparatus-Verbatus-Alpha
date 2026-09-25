@@ -61,8 +61,8 @@ def test_a_second_render_never_writes_over_a_different_golden_page(tmp_path: Pat
     """Evidence is added, never replaced (principle 4).
 
     The preflight receipts beside the page are content-addressed and refuse
-    differing bytes at one address; the page they all point at used to be the
-    one artefact a repeated or resumed PREFLIGHT could silently overwrite.
+    differing bytes at one address, so a repeated or resumed preflight cannot
+    silently overwrite the page they point at.
     """
 
     page = tmp_path / "preflight" / "golden-page.png"
@@ -206,9 +206,7 @@ def test_an_unmeasurable_card_yields_no_sample_rather_than_a_number(runner) -> N
 
 
 def test_the_sampler_averages_every_visible_card_not_only_the_first() -> None:
-    """F064: `nvidia-smi` prints one line per visible GPU; taking `splitlines()[0]`
-    silently reported only the first card's load on a multi-GPU machine.
-    """
+    """`nvidia-smi` prints one line per visible GPU, and all must be averaged."""
 
     sampler = NvidiaSmiUtilization(
         runner=lambda argv: _completed("60\n40\n"),
