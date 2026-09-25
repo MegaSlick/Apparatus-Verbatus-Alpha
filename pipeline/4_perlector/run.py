@@ -1819,13 +1819,24 @@ def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
     artifacts; a resume that simply read again would republish them from a second live
     answer and be refused on every retry.
     """
-    return frozenset(
-        kind
-        for kind, operation in PRE_PERLECTIO_ARTIFACTS
-        if context.tree.has_artifact(
-            PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
-        )
-    )
+    return frozenset(kind for kind, _identifier in _present_arms(context, act_id, ordinal))
+
+
+def _present_arms(context, act_id: str, ordinal: int):
+    """The kind and identifier of each pre-Perlectio artifact of this attempt on disk."""
+    for kind, operation in PRE_PERLECTIO_ARTIFACTS:
+        identifier = _attempt_artifact_id(act_id, kind, operation, ordinal)
+        if context.tree.has_artifact(PERLECTOR, kind, identifier):
+            yield kind, identifier
+
+
+def _published_arm_refs(context, act_id: str, ordinal: int) -> list[dict[str, str]]:
+    """Arms published before a failed call, named so a resume and the Recensor can inspect
+    what completed without re-asking the chair."""
+    return [
+        context.artifact_ref(PERLECTOR, kind, identifier)
+        for kind, identifier in _present_arms(context, act_id, ordinal)
+    ]
 
 
 # The slowest live call observed (441 answer tokens beside ~6,500 prompt tokens, 80 GB
@@ -2157,6 +2168,26 @@ def _reported_call_evidence(error: Exception) -> dict[str, Any]:
     }
 
 
+def _publish_not_run(
+    context,
+    *,
+    act_id: str,
+    ordinal: int,
+    fields: frozenset,
+    payload: dict[str, Any],
+    inputs: list[dict[str, str]] | None = None,
+) -> None:
+    validate_not_run_payload(payload, fields=fields)
+    context.publish(
+        kind="perlectio",
+        subject_id=act_id,
+        outcome="not-run",
+        attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
+        inputs=inputs,
+        payload=payload,
+    )
+
+
 def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
     """Translate only observed engine and transport failures into retained facts.
 
@@ -2274,6 +2305,32 @@ def _publish_failed_perlectio(
     identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
     validate_failed_perlectio(
         context, context.tree.read_artifact(PERLECTOR, "perlectio", identifier), act_id
+    )
+
+
+def _publish_reading_failure(
+    context,
+    *,
+    act_id: str,
+    act_key: str,
+    ordinal: int,
+    inputs: list[dict[str, str]],
+    failure: dict[str, Any],
+    reason: str,
+    provenance: dict[str, Any],
+) -> None:
+    _publish_failed_perlectio(
+        context,
+        act_id=act_id,
+        ordinal=ordinal,
+        inputs=inputs + _failure_evidence_inputs(failure),
+        payload={
+            "act_key": act_key,
+            "attempt_ordinal": ordinal,
+            "reason": reason,
+            "failure": failure,
+            "provenance": provenance,
+        },
     )
 
 
@@ -3542,23 +3599,21 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # A held act's proposal is incomplete, and reading part of an act would
             # deliver a truncation as output. It is acknowledged with an explicit
             # outcome, never skipped, so no unit goes unaccounted.
-            payload = {
-                "act_key": act["act_key"],
-                "attempt_ordinal": 1,
-                "reason": (
-                    "the Designator held this act; an incomplete proposal is "
-                    "not read, because a reading of part of an act would be a "
-                    "truncation delivered as an output"
-                ),
-                "provenance": provenance_for(context, chair, attempted=False),
-            }
-            validate_not_run_payload(payload, fields=_NOT_RUN_HELD_FIELDS)
-            context.publish(
-                kind="perlectio",
-                subject_id=act_id,
-                outcome="not-run",
-                attempt=perlector_attempt_id(act_id, "perlegere", 1),
-                payload=payload,
+            _publish_not_run(
+                context,
+                act_id=act_id,
+                ordinal=1,
+                fields=_NOT_RUN_HELD_FIELDS,
+                payload={
+                    "act_key": act["act_key"],
+                    "attempt_ordinal": 1,
+                    "reason": (
+                        "the Designator held this act; an incomplete proposal is "
+                        "not read, because a reading of part of an act would be a "
+                        "truncation delivered as an output"
+                    ),
+                    "provenance": provenance_for(context, chair, attempted=False),
+                },
             )
             acknowledged += 1
             continue
@@ -3572,21 +3627,19 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # No chair to read with. Every act still gets an explicit record
             # naming the absence: a stage that simply produced nothing would
             # leave the Recensor to infer a gap it cannot see.
-            payload = {
-                "act_key": act["act_key"],
-                "attempt_ordinal": ordinal,
-                "reason": f"the Perlector chair is explicitly absent: {chair.reason}",
-                "basis": {"regions": [], "testimonia": []},
-                "dissent": [],
-                "provenance": provenance_for(context, chair, attempted=False),
-            }
-            validate_not_run_payload(payload, fields=_NOT_RUN_ABSENT_FIELDS)
-            context.publish(
-                kind="perlectio",
-                subject_id=act_id,
-                outcome="not-run",
-                attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
-                payload=payload,
+            _publish_not_run(
+                context,
+                act_id=act_id,
+                ordinal=ordinal,
+                fields=_NOT_RUN_ABSENT_FIELDS,
+                payload={
+                    "act_key": act["act_key"],
+                    "attempt_ordinal": ordinal,
+                    "reason": f"the Perlector chair is explicitly absent: {chair.reason}",
+                    "basis": {"regions": [], "testimonia": []},
+                    "dissent": [],
+                    "provenance": provenance_for(context, chair, attempted=False),
+                },
             )
             acknowledged += 1
             continue
@@ -3665,25 +3718,22 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # without killing other acts or allowing the transport to chunk views.
         capacity_finding = over_capacity_reason(autopsia, max_images)
         if capacity_finding is not None:
-            capacity_inputs = _reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
-            payload = {
-                "act_key": act["act_key"],
-                "attempt_ordinal": ordinal,
-                "reason": capacity_finding,
-                "basis": {"regions": [], "testimonia": []},
-                "dissent": [],
-                "provenance": provenance_for(context, chair, attempted=False),
-                "logical_act_id": logical_act_id,
-                "cross_capture_autopsia": autopsia,
-            }
-            validate_not_run_payload(payload, fields=_NOT_RUN_CAPACITY_FIELDS)
-            context.publish(
-                kind="perlectio",
-                subject_id=act_id,
-                outcome="not-run",
-                attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
-                inputs=capacity_inputs,
-                payload=payload,
+            _publish_not_run(
+                context,
+                act_id=act_id,
+                ordinal=ordinal,
+                fields=_NOT_RUN_CAPACITY_FIELDS,
+                inputs=_reading_image_inputs(context, bases, page_renders, autopsia=autopsia),
+                payload={
+                    "act_key": act["act_key"],
+                    "attempt_ordinal": ordinal,
+                    "reason": capacity_finding,
+                    "basis": {"regions": [], "testimonia": []},
+                    "dissent": [],
+                    "provenance": provenance_for(context, chair, attempted=False),
+                    "logical_act_id": logical_act_id,
+                    "cross_capture_autopsia": autopsia,
+                },
             )
             unread -= 1
             acknowledged += 1
@@ -3759,37 +3809,21 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         except _ACT_LOCAL_READING_FAILURES as error:
             failure = _failure_record(error, phase="establishing")
             assert failure is not None  # narrowed by the exception tuple above
-            failure_inputs = (
-                _reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
+            _publish_reading_failure(
+                context,
+                act_id=act_id,
+                act_key=act["act_key"],
+                ordinal=ordinal,
+                inputs=_reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
                 + [
                     context.artifact_ref(ATTESTATORES, "testimonium", record["artifact_id"])
                     for record in testimonia
                 ]
                 + [attachment_view["reference"]]
-            )
-            # Arms published before the failed call are immutable evidence of
-            # this same attempt.  Naming them makes a resume and the Recensor
-            # able to inspect what completed without re-asking the chair.
-            for kind, operation in PRE_PERLECTIO_ARTIFACTS:
-                identifier = _attempt_artifact_id(act_id, kind, operation, ordinal)
-                if context.tree.has_artifact(PERLECTOR, kind, identifier):
-                    failure_inputs.append(context.artifact_ref(PERLECTOR, kind, identifier))
-            failure_inputs.extend(_failure_evidence_inputs(failure))
-            failure_payload = {
-                "act_key": act["act_key"],
-                "attempt_ordinal": ordinal,
-                "reason": f"live Perlector {failure['kind']} failure: {failure['code']}",
-                "failure": failure,
-                "provenance": provenance_for(
-                    context, chair, attempted=True, receipt_ref=receipt_ref
-                ),
-            }
-            _publish_failed_perlectio(
-                context,
-                act_id=act_id,
-                ordinal=ordinal,
-                inputs=failure_inputs,
-                payload=failure_payload,
+                + _published_arm_refs(context, act_id, ordinal),
+                failure=failure,
+                reason=f"live Perlector {failure['kind']} failure: {failure['code']}",
+                provenance=provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
             )
             acknowledged += 1
             continue
@@ -4061,27 +4095,17 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             except _ACT_LOCAL_READING_FAILURES as error:
                 failure = _failure_record(error, phase="audit-reproof")
                 assert failure is not None
-                failure_inputs = row["inputs"] + [draft_ref]
-                for kind, operation in PRE_PERLECTIO_ARTIFACTS:
-                    identifier = _attempt_artifact_id(
-                        act_id, kind, operation, payload["attempt_ordinal"]
-                    )
-                    if context.tree.has_artifact(PERLECTOR, kind, identifier):
-                        failure_inputs.append(context.artifact_ref(PERLECTOR, kind, identifier))
-                failure_inputs.extend(_failure_evidence_inputs(failure))
-                failure_payload = {
-                    "act_key": row["act"]["act_key"],
-                    "attempt_ordinal": payload["attempt_ordinal"],
-                    "reason": f"live Perlector {failure['kind']} failure during audit re-proof: {failure['code']}",
-                    "failure": failure,
-                    "provenance": payload["provenance"],
-                }
-                _publish_failed_perlectio(
+                _publish_reading_failure(
                     context,
                     act_id=act_id,
+                    act_key=row["act"]["act_key"],
                     ordinal=payload["attempt_ordinal"],
-                    inputs=failure_inputs,
-                    payload=failure_payload,
+                    inputs=row["inputs"]
+                    + [draft_ref]
+                    + _published_arm_refs(context, act_id, payload["attempt_ordinal"]),
+                    failure=failure,
+                    reason=f"live Perlector {failure['kind']} failure during audit re-proof: {failure['code']}",
+                    provenance=payload["provenance"],
                 )
                 continue
             # A Pass-C reply is a set of exact draft-anchored edits, never a second
@@ -4107,33 +4131,20 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     request=audit_request,
                 )
             except audit.ReproofResponseRefusal as error:
-                failure_inputs = (
-                    row["inputs"]
-                    + [draft_ref]
-                    + engine_call_inputs(context, reproof.get("engine_call"))
-                )
-                for kind, operation in PRE_PERLECTIO_ARTIFACTS:
-                    identifier = _attempt_artifact_id(
-                        act_id, kind, operation, payload["attempt_ordinal"]
-                    )
-                    if context.tree.has_artifact(PERLECTOR, kind, identifier):
-                        failure_inputs.append(context.artifact_ref(PERLECTOR, kind, identifier))
-                failure_payload = {
-                    "act_key": row["act"]["act_key"],
-                    "attempt_ordinal": payload["attempt_ordinal"],
-                    "reason": "the delivered audit re-proof response could not be assembled safely",
-                    "failure": _failure_from_engine_call(
-                        context, reproof.get("engine_call"), detail=str(error)
-                    ),
-                    "provenance": payload["provenance"],
-                }
-                failure_inputs.extend(_failure_evidence_inputs(failure_payload["failure"]))
-                _publish_failed_perlectio(
+                _publish_reading_failure(
                     context,
                     act_id=act_id,
+                    act_key=row["act"]["act_key"],
                     ordinal=payload["attempt_ordinal"],
-                    inputs=failure_inputs,
-                    payload=failure_payload,
+                    inputs=row["inputs"]
+                    + [draft_ref]
+                    + engine_call_inputs(context, reproof.get("engine_call"))
+                    + _published_arm_refs(context, act_id, payload["attempt_ordinal"]),
+                    failure=_failure_from_engine_call(
+                        context, reproof.get("engine_call"), detail=str(error)
+                    ),
+                    reason="the delivered audit re-proof response could not be assembled safely",
+                    provenance=payload["provenance"],
                 )
                 continue
             pre_audit_text = payload["text"]
