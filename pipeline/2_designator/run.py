@@ -1273,6 +1273,87 @@ def _publish_act_group(
     )
 
 
+def _act_over(acts: list[dict], group_bounds: dict, *, trailing: bool) -> dict | None:
+    """The act a page-edge group belongs to: of the acts over it, the one nearest that edge."""
+    over = [act for act in acts if _overlap_area(act["bounds"], group_bounds)]
+    if not over:
+        return None
+    if trailing:
+        return max(over, key=lambda act: (act["bounds"]["y"] + act["bounds"]["h"], act["act_key"]))
+    return min(over, key=lambda act: (act["bounds"]["y"], act["act_key"]))
+
+
+def _publish_continuation_candidates(
+    context,
+    pages: dict[int, dict],
+    page_cache: dict[int, dict],
+    status_refs: dict[int, dict[str, str]],
+    acts_by_page: dict[int, list[dict]],
+    grouping_policy: dict,
+) -> None:
+    """Name each adjacent page pair whose geometry says an act may cross the break.
+
+    `acts_by_page` holds each page's proposed acts that no declared continuation
+    already links. The record is not authoritative: it enters no act and no
+    seal, and the Recensor holds both acts it names, since the head alone is
+    truncated and the tail alone has no heading. Whether they are one act stays
+    unmade here.
+    """
+    for ordinal_a in sorted(acts_by_page):
+        ordinal_b = ordinal_a + 1
+        if ordinal_b not in acts_by_page:
+            continue
+        analysis_a, analysis_b = page_cache[ordinal_a], page_cache[ordinal_b]
+        # Fallback tiles touch both edges by construction and would pair any two pages.
+        if "fallback-tiles" in (analysis_a["structure_evidence"], analysis_b["structure_evidence"]):
+            continue
+        edge_reach_a = analysis_a["thresholds"].page_edge_reach_px
+        edge_reach_b = analysis_b["thresholds"].page_edge_reach_px
+        found = grouping.find_continuation_candidate(
+            analysis_a["groups"],
+            analysis_a["height"],
+            analysis_b["groups"],
+            edge_reach_a_px=edge_reach_a,
+            edge_reach_b_px=edge_reach_b,
+        )
+        if found is None:
+            continue
+        group_a, group_b = found["page_a_group"]["bounds"], found["page_b_group"]["bounds"]
+        act_a = _act_over(acts_by_page[ordinal_a], group_a, trailing=True)
+        act_b = _act_over(acts_by_page[ordinal_b], group_b, trailing=False)
+        if act_a is None or act_b is None:
+            continue
+        payload = {
+            "authoritative": False,
+            "page_a": {"page_id": pages[ordinal_a]["subject_id"], "page_ordinal": ordinal_a},
+            "page_b": {"page_id": pages[ordinal_b]["subject_id"], "page_ordinal": ordinal_b},
+            "act_a": {"act_id": act_a["act_id"], "act_key": act_a["act_key"]},
+            "act_b": {"act_id": act_b["act_id"], "act_key": act_b["act_key"]},
+            "group_a_bounds": group_a,
+            "group_b_bounds": group_b,
+            "edge_reach_a_px": edge_reach_a,
+            "edge_reach_b_px": edge_reach_b,
+            "grouping_config_sha256": grouping_policy["config_sha256"],
+        }
+        _refuse_text_fields(payload)
+        context.publish(
+            kind="continuation-candidate",
+            subject_id=act_a["act_id"],
+            outcome="proposed",
+            inputs=[
+                status_refs[ordinal_a],
+                status_refs[ordinal_b],
+                *(
+                    context.artifact_ref(
+                        DESIGNATOR, "act-group", artifact_id(DESIGNATOR, "act-group", act_id)
+                    )
+                    for act_id in (act_a["act_id"], act_b["act_id"])
+                ),
+            ],
+            payload=payload,
+        )
+
+
 def _claimed_regions_by_page(context) -> dict[int, list[dict]]:
     """Every proposal region's final (capture) bounds cut so far, by page ordinal.
 
@@ -2249,6 +2330,7 @@ def initial_pass(context) -> bool:
     _refuse_duplicate_proposal_bounds(context)
     expected = []
     seal_inputs = []
+    unlinked_acts: dict[int, list[dict]] = {}
     for act in context.fixture["act"]:
         row, evidence = _account_for_declared_act(
             context,
@@ -2263,6 +2345,13 @@ def initial_pass(context) -> bool:
         )
         expected.append(row)
         seal_inputs.extend(evidence)
+        if row["outcome"] == "proposed" and continuation_for(context.fixture, act["key"]) is None:
+            unlinked_acts.setdefault(act["page_ordinal"], []).append(
+                {"act_id": row["act_id"], "act_key": act["key"], "bounds": act_bounds(act)}
+            )
+    _publish_continuation_candidates(
+        context, pages, page_cache, status_refs, unlinked_acts, grouping_policy
+    )
 
     # Fallback tiles are cut before conservation, which must see them as claims
     # or would report their ink as residual. Structure-held pages are not tiled.
@@ -2560,9 +2649,11 @@ def _publish_live_proposals(
     answers: dict[int, structure_pass.PageAnswer],
     padding: dict,
     provenance_by_page: dict[int, dict],
-) -> list[dict]:
-    """Cut and group every rectangle the chair proposed; return their seal rows."""
+) -> tuple[list[dict], dict[int, list[dict]]]:
+    """Cut and group every rectangle the chair proposed; return the seal rows and each
+    page's acts."""
     rows = []
+    acts_by_page: dict[int, list[dict]] = {}
     for ordinal, answer in answers.items():
         if answer.disposition != structure_pass.DISPOSITION_DETECTED:
             continue
@@ -2590,8 +2681,11 @@ def _publish_live_proposals(
                 _seal_row(act_id, act_key, page_record["subject_id"], ordinal, "proposed", evidence)
             )
             minted.append((act_id, act_key, bounds))
+            acts_by_page.setdefault(ordinal, []).append(
+                {"act_id": act_id, "act_key": act_key, "bounds": bounds}
+            )
         _publish_live_act_groups(context, page_record, analysis, minted)
-    return rows
+    return rows, acts_by_page
 
 
 def _publish_live_fallbacks(
@@ -2755,8 +2849,11 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
         provenance_by_page=provenance_by_page,
     )
 
-    expected = _publish_live_proposals(
+    expected, acts_by_page = _publish_live_proposals(
         context, pages, page_cache, answers, padding, provenance_by_page
+    )
+    _publish_continuation_candidates(
+        context, pages, page_cache, status_refs, acts_by_page, grouping_policy
     )
     expected.extend(
         _publish_live_fallbacks(

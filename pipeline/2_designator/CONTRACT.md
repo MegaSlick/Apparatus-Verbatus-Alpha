@@ -147,7 +147,8 @@ continuation = {declared_bounds, structure_evidence, detected_bounds | null,
 
 On the live path `declared_bounds` means declared by the structure chair, the
 field set does not change, and `continuation` is always `null` (a per-page call
-has no cross-page knowledge; the relation is the Recensor's). The three extra
+has no cross-page knowledge; the relation is the Recensor's). An act the chair
+drew on each side of a page break is named by `continuation-candidate` below. The three extra
 evidence values exist only there (`structure_pass.model_evidence_blocks`, which
 never raises): `shared-detection` carries a real scanned region and its counts,
 like `detected`, but says the same region covers at least half of another
@@ -208,6 +209,34 @@ continuation whose crops do not happen to touch either page's edge (as in this
 stage's own synthetic fixture) is still a genuine continuation. **Continuation
 ownership is settled and is the Recensor's** — see "Continuation ownership"
 below; this record is corroboration, never the relation itself.
+
+## `kind="continuation-candidate"`
+
+One record per adjacent page pair whose geometry says an act may cross the page
+break, on both paths, published after the proposals and before the seal. Its
+subject is the head act's identity, with no attempt binding.
+`grouping.find_continuation_candidate` runs over the two pages' scanned groups:
+page A's trailing group reaches its bottom edge, page B's leading group reaches
+its top edge, carries no anchor and shares a column with it. Each group is then
+mapped to the proposed act over it, the one nearest that edge. A page cut into
+fallback tiles never forms a pair, since the grid touches both edges on every
+page; nor does a structure-held page, a page with no proposed act, or an act
+whose continuation the fixture declares (that pair is already linked).
+
+```text
+authoritative (always false)
+page_a = {page_id, page_ordinal}, page_b = {page_id, page_ordinal}
+act_a = {act_id, act_key}, act_b = {act_id, act_key}
+group_a_bounds, group_b_bounds          the scanned groups that met the edges
+edge_reach_a_px, edge_reach_b_px        each page's own resolved edge reach
+grouping_config_sha256
+```
+
+Inputs cite both pages' `structure-status` and both acts' `act-group` records.
+The payload passes `_refuse_text_fields`. It enters no act and no seal, and the
+Designator's exit code ignores it: both acts stay `proposed`, are witnessed and
+read, and the Recensor holds both for review (see its contract). The link stays
+unmade; a candidate is a flag for review, never the relation.
 
 ## `kind="page-fallback"`
 
@@ -1255,6 +1284,7 @@ The fixture Perlector separately decodes every delivered tile and returns
 below the page's inferred background. The Recensor confirms the blank only after
 those declared witness reports and the Perlector's observed-empty reading exist.
 
+`continuation-candidate` is read by the Recensor, which holds both acts it names.
 `act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop` and
 `structure-status` have no consumer downstream of this stage today.
 `structure-status` is the exception in one direction only: it is not *read* by a
@@ -1371,7 +1401,9 @@ recorded `continuation_shortfall` that holds the act rather than establishing it
 This stage's proposal-seal `has_continuation` flag is therefore a proposal, and
 `grouping.find_continuation_candidate`'s independent geometric check is recorded
 on `act-group` as `continuation.geometric_corroboration` — evidence for whoever
-reads the act, never a gate here.
+reads the act, never a gate here. The same check over undeclared adjacent pages
+publishes `continuation-candidate`, which proposes nothing: it names two acts for
+review.
 
 ## What this contract does not settle
 
@@ -1445,30 +1477,16 @@ of which call site produced it. `grouping.py` is not this unit's owned path.
 Whoever owns it should give `fallback_tiles` (or its caller) the same
 live/fixture distinction this unit gave `_publish_page_fallback`'s `reason`.
 
-**An unproposed cross-page half act — an ACCEPTED EVIDENCE DEFECT, not a benign
-limitation.** The Recensor reconciles only continuations this stage *proposed*, so
-an act split across a page break that was never declared produces no finding in
-any stage: grouping's geometric detector only corroborates declared
-continuations, residual ink misses it whenever the cut covers the visible half,
-and truncation signals are single-act.
-
-**State the consequence plainly, because a consumer of this contract must not
-read it as acceptable.** Such an act is lost with **no hold and no review item**,
-which means a downstream reader cannot distinguish "this act was not there" from
-"this act was missed" — the exact discrimination `PRINCIPLES.md`'s "a missed act is
-worse than a poorly read one" exists to preserve, and the one failure mode
-`PRINCIPLES.md` 2 refuses by name. Nothing in this stage's output marks the page
-as suspect, so no recovery loop can be aimed at it either.
-
-**This stage did not create the defect and does not close it here.** Unit 9's
-Ink Map now records bounded `unclaimed-edge-ink` evidence before proposals, but
-does not hold an act: **Unit 14 owns the explicit hold or review outcome** for
-the unproposed cross-page half act. The Designator must retain that evidence
-path rather than treating an absent proposal as a clean page.
-
-**Until it is closed, no run over real material may be described as having
-accounted for every act on a page.** The accounting is honest about what it
-measured; it does not measure this.
+**An act crossing a page break is held, not linked.** The structure chair
+answers one page at a time, so an act that crosses a page break comes back as
+two acts: a head with no tail and a tail with no heading. When the geometry
+shows it (see `kind="continuation-candidate"`), both acts are read and then held
+for review, and the export is partial rather than complete. Nothing joins them
+yet. What this does not catch: a break the scan's groups do not show, such as a
+tail that opens beside a margin anchor, a page whose last group stops short of
+the edge reach, or a page cut into fallback tiles. Such an act is still
+delivered as two whole acts without a finding, so no run over real material may
+yet be described as having accounted for every page-crossing act.
 
 **Recovery from a structural hold.** Spec 06's test 4 asks for three things: the
 page held with a named reason, no silent gap downstream, and "the recovery
