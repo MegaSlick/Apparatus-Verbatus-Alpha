@@ -183,12 +183,13 @@ def test_pdf_is_a_page_container_not_a_single_image_refusal():
 
 
 def test_a_single_page_tiff_is_admitted_as_one_image_and_never_re_encoded():
-    """The common TIFF is one image, and its own bytes are what gets sealed.
+    """The common TIFF is admitted as one image, not routed through page fan-out.
 
     A PDF is *always* a container, but a TIFF usually is not, and an ordinary
     flatbed scan should not be decoded and re-encoded on its way in.
-    `inspect_source` decides it here, which is what makes the sealed bytes the
-    submitted bytes.
+    `inspect_source` makes that admission decision here; whether the
+    published bytes still match `data` is a publication-path assertion, not
+    this one.
     """
     data = tiff(4, 5)
     assert classify_detected_format("tiff", POLICY) == ADMIT_OR_FAN_OUT

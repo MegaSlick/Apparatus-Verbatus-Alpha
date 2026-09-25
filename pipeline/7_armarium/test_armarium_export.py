@@ -4903,11 +4903,11 @@ def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_aske
     """Who was asked decides this instrument's status; the sealed cap is reported beside it.
 
     The reader's own doubt report is the measurement, not the cap alone: the
-    cap is only one of the two ways a span reaches the layer. So the
-    instrument is produced exactly when every delivered reading was assessed
-    for doubt: none assessed is an instrument that never ran, whatever the cap
-    says, and some assessed is a partial measurement that may not be reported
-    as a whole one (principle 8).
+    cap is only one of the two ways a span reaches the layer. `declared-unproduced`
+    needs both zero assessed readings and zero uncertain spans -- an exhausted
+    cap that minted uncertain spans still counts as something measured, even
+    with no assessed reading, and some assessed is a partial measurement that
+    may not be reported as a whole one (principle 8).
     """
     silenced = _entry(_block(_projection()), "perlector-uncertain-spans")
     assert silenced["status"] == "declared-unproduced"

@@ -158,10 +158,12 @@ def test_the_sealed_bundle_is_published_and_verifies_outside_the_run_tree(tmp_pa
 def test_publication_reports_which_checks_the_clean_pass_actually_made(tmp_path, happy_run):
     """A verification that ran and one that declined to run must not read alike.
 
-    `verify_delivered_bundle` returns both answers, and `publish` must carry
-    them through: the search-fold recomputation honestly declines under a
-    different Unicode database, and an operator told only "published:
-    complete" could not tell that from a fold that was recomputed and matched.
+    This covers the successful case only, where both checks come back
+    verified; `publish` must carry that through so an operator told only
+    "published: complete" could still tell it from a fold that was
+    recomputed and matched. The declined case, where a different Unicode
+    database makes `publish` refuse with `ContractError` instead of
+    publishing, is covered separately below.
     """
     out = tmp_path / "delivery"
     result = _publish(happy_run, "r", out)

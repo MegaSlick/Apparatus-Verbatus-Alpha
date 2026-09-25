@@ -520,8 +520,9 @@ def test_a_chain_of_empty_directories_cannot_declare_more_pages_than_bytes_allow
 
     This is the TIFF half of the page-tree amplification already refused in
     `pdf_render`. It is deliberately not a page cap: a real reel's page count is
-    the document's to declare, and the test below proves a genuine thousand-page
-    TIFF still passes with room to spare.
+    the document's to declare, and the test below shows `count_raster_pages` sets
+    no nearby ceiling on that count -- it does not exercise a genuine TIFF's
+    admission or decoding.
     """
     pages = 10_000
     stride = 6
