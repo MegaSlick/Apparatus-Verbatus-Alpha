@@ -2820,6 +2820,7 @@ def review_route_from_findings(
     audit_reproof_truncation: dict | None = None,
     assessment_malformed: bool = False,
     assessment_problem: str | None = None,
+    continuation_candidate: bool = False,
 ) -> tuple[str, str] | None:
     """Compose every independent review cause in stable priority order.
 
@@ -2841,6 +2842,7 @@ def review_route_from_findings(
             "assessment_problem": assessment_problem,
             "under_witnessed": under_witnessed,
             "unreconciled": unreconciled,
+            "continuation_candidate": continuation_candidate,
         },
         what="a Recensor review route",
     )
@@ -2920,9 +2922,28 @@ def review_route_from_findings(
         )
     if unreconciled:
         reasons.append("the act did not reconcile and needs a human")
+    if continuation_candidate:
+        reasons.append(
+            "the Designator's geometry names this act in a continuation candidate: one act "
+            "reaches a page's bottom edge and the next page opens on an unanchored act at its "
+            "top edge; whether they are one act is a review decision, so neither half is "
+            "delivered as a whole act"
+        )
     if not reasons:
         return None
     return "held-for-review", "; ".join(reasons)
+
+
+def continuation_candidate_refs(context) -> dict[str, dict]:
+    """Each act a Designator continuation candidate names, with that candidate's reference."""
+    named = {}
+    for record in _records_of_kind(context, DESIGNATOR, "continuation-candidate"):
+        reference = context.artifact_ref(
+            DESIGNATOR, "continuation-candidate", record["artifact_id"]
+        )
+        for side in ("act_a", "act_b"):
+            named[record["payload"][side]["act_id"]] = reference
+    return named
 
 
 def current_review(context, act_id: str) -> dict | None:
@@ -3260,6 +3281,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     proposal_geometry: dict[str, dict] = {}
     # Counted from the tree: an in-memory counter would reset after the requested recrop.
     funded_pages = observation_funded_pages(context, expected_acts(context))
+    candidate_refs = continuation_candidate_refs(context)
 
     held = 0
     for act in expected_acts(context):
@@ -3330,6 +3352,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             audit_reproof_truncation=audit_facts.get("reproof_truncation"),
             assessment_malformed=(assessment_record or {}).get("state") == "malformed",
             assessment_problem=(assessment_record or {}).get("problem"),
+            continuation_candidate=act_id in candidate_refs,
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
@@ -3659,7 +3682,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             prior=current_review(context, act_id),
             # `latest`, not `readings[0]`: manifest order is a hash.
             inputs=[reading_ref]
-            + [context.input_ref(reference["image_path"]) for reference in basis_regions],
+            + [context.input_ref(reference["image_path"]) for reference in basis_regions]
+            + ([candidate_refs[act_id]] if act_id in candidate_refs else []),
             payload={
                 "act_key": act_key,
                 "reason": reason,

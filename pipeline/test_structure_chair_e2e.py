@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -94,6 +95,7 @@ from test_live_reading_seam_e2e import (  # noqa: E402
     published_readings,
     run_in_process,
 )
+from test_structure_pass import _real_submission as real_submission  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
@@ -132,6 +134,7 @@ from operations.serving.fakes import (  # noqa: E402
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
 from operations.serving.residency import FileResidencyLease  # noqa: E402
+from proof.synthetic_pages import PAGE_BREAK_PAGES, render_page  # noqa: E402
 
 designator = _load_stage(DESIGNATOR_DIR, "structure_chair_e2e_designator")
 structure_pass = designator.structure_pass
@@ -1334,3 +1337,133 @@ def test_a_resumed_live_pass_keeps_the_page_it_held(designated, tmp_path):
     assert exit_code == EXIT_HELD
     assert world.endpoint is None, "a resumed pass re-asked a page it had already held"
     assert designator_state(run_root) == before
+
+
+# ============================== an act across a page break ==============================
+
+# `proof/synthetic_pages.PAGE_BREAK_PAGES`: page 1's second act reaches the
+# bottom edge and page 2 opens on its tail, unanchored, at the top edge. The
+# chair answers one page at a time, so it draws the tail as an act of its own.
+PAGE_BREAK_ACTS = {
+    page["ordinal"]: tuple(
+        (act["bounds"], f"PAGE BREAK {page['ordinal']} ACT {index}")
+        for index, act in enumerate(page["acts"])
+    )
+    for page in PAGE_BREAK_PAGES
+}
+PAGE_BREAK_HEAD, PAGE_BREAK_TAIL = "proposal:1:1", "proposal:2:0"
+
+
+def _real_argv(run_root: Path, catalogue: Path) -> list[str]:
+    """A real submission's flags: the roster, the catalogue and the tier, nothing fixture."""
+    return [
+        "--run-root",
+        str(run_root),
+        "--run-id",
+        RUN_ID,
+        "--models-config",
+        str(ROOT / "config" / "models.toml"),
+        "--serving-recipes-config",
+        str(catalogue),
+        "--placement-tier",
+        TIER,
+    ]
+
+
+def _run_real_in_process(module, run_root: Path, catalogue: Path, serving_factory) -> int:
+    original = sys.argv
+    sys.argv = [module.__file__, *_real_argv(run_root, catalogue)]
+    try:
+        return module.main(serving_factory=serving_factory)
+    finally:
+        sys.argv = original
+
+
+def page_break_run(work: Path) -> SimpleNamespace:
+    """The page-break pair, submitted for real, marked out live and read to the export."""
+    registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
+    catalogue = write_catalogue(work / "serving_recipes_live.toml", registry)
+    pages = {f"page-{page['ordinal']}.png": render_page(page) for page in PAGE_BREAK_PAGES}
+    run_root = real_submission(
+        work,
+        pages,
+        "--models-config",
+        str(ROOT / "config" / "models.toml"),
+        "--serving-recipes-config",
+        str(catalogue),
+    )
+    answers = [
+        scripted_structure_answer(PAGE_BREAK_ACTS[ordinal], PAGE_WIDTH, PAGE_HEIGHT)
+        for ordinal in sorted(PAGE_BREAK_ACTS)
+    ]
+    structure = StructureWorld(catalogue, work / "structure-world", answers)
+    designator_exit = _run_real_in_process(designator, run_root, catalogue, structure.factory)
+
+    _policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
+    page_acts = [PAGE_BREAK_ACTS[ordinal] for ordinal in sorted(PAGE_BREAK_ACTS)]
+    witnesses = WitnessWorld(
+        catalogue,
+        decoding_sha256,
+        work / "witness-world",
+        {
+            "attestator_1": [
+                ScriptedAnswer(content=chandra_page(acts), finish_reason="stop")
+                for acts in page_acts
+            ],
+            "attestator_2": [
+                ScriptedAnswer(content=text, finish_reason="stop")
+                for acts in page_acts
+                for _bounds, text in acts
+            ],
+            "attestator_3": [
+                ScriptedAnswer(
+                    content="<output>" + "\n".join(text for _b, text in acts) + "</output>",
+                    finish_reason="stop",
+                )
+                for acts in page_acts
+            ],
+        },
+    )
+    witness_exit = _run_real_in_process(attestatores, run_root, catalogue, witnesses.factory)
+    reader = ReaderWorld(catalogue, work / "reader", finish_reason="stop")
+    reader_exit = _run_real_in_process(perlector, run_root, catalogue, reader.factory)
+    tail = {}
+    for program in TAIL_FROM_RECENSOR:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / program), *_real_argv(run_root, catalogue)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
+        tail[program] = result.returncode
+    return SimpleNamespace(
+        run_root=run_root,
+        exits=(designator_exit, witness_exit, reader_exit),
+        tail=tail,
+    )
+
+
+def test_an_act_split_across_a_page_break_is_held_not_delivered_complete(tmp_path):
+    """Two acts the chair drew for one act are read, held for review, and never delivered.
+
+    Before the Designator recorded the pair, the head (no tail) and the tail
+    (no heading) were each delivered as a whole act and the run reported
+    complete. The link itself stays unmade: both acts remain their own records.
+    """
+    run = page_break_run(tmp_path)
+    assert run.exits == (EXIT_COMPLETE, EXIT_COMPLETE, EXIT_COMPLETE)
+
+    rows = seal_rows(run.run_root)
+    assert sorted(rows) == ["proposal:1:0", "proposal:1:1", "proposal:2:0", "proposal:2:1"]
+    (candidate,) = artifacts(run.run_root, DESIGNATOR, "continuation-candidate")
+    assert candidate["payload"]["act_a"]["act_key"] == PAGE_BREAK_HEAD
+    assert candidate["payload"]["act_b"]["act_key"] == PAGE_BREAK_TAIL
+
+    assert run.tail["pipeline/5_recensor/run.py"] == EXIT_HELD
+    export = verify_final_seal(RunTree(run.run_root, RUN_ID))
+    assert export["outcome"] != ArmariumCategory.DELIVERED.value
+    aggregate = export["payload"]["aggregate"]
+    assert aggregate["status"] == "partial"
+    assert aggregate["by_category"][ArmariumCategory.DELIVERED.value] == 2
+    assert sum(aggregate["by_category"].values()) == 4

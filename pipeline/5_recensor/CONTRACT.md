@@ -158,6 +158,16 @@ region ids. Reporting the second shape as empty was a defect that dropped a flag
 only evidence whenever the held act was the one act touching it; it is fixed
 now.
 
+**A continuation candidate holds both acts it names.** The Designator publishes
+`continuation-candidate` (not authoritative) when one act reaches a page's
+bottom edge and the next page opens on an unanchored act at its top edge, with
+no declared continuation between them. `continuation_candidate_refs` reads every
+such record, and `review_route_from_findings(continuation_candidate=True)` holds
+each named act for review after it is read: the head alone is a truncation and
+the tail alone has no heading. The review cites the candidate as an input. The
+link stays unmade and neither act is merged; the export is partial until a
+review decides.
+
 ## `kind="review"`
 
 Every readable-act review payload has `act_key`, `attempt_ordinal`, coverage,
