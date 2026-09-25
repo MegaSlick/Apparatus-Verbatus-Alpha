@@ -182,8 +182,7 @@ would not preserve the reserve. The documented `$50.00` floor is an unverified p
 value, not a balance observation, until checked against RunPod before a live run. The
 loader refuses any key it does not know and any policy missing one of these.
 It does not authorize retaining or deleting a volume after close: that is a separately
-named decision, and every close report states the volume's own ongoing price. The file
-itself carries the full key list as comments, so filling it in needs no code reading.
+named decision, and every close report states the volume's own ongoing price.
 
 `pod_placement.toml` is planning, not permission. Serving is **sequential** — one model
 at a time, as much of the card as stays stable, next model after — so every tier is

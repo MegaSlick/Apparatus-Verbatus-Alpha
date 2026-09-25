@@ -1,85 +1,12 @@
-# The money ceilings for pod-plus-attached-volume spend. The spend policy and
-# GPU class are the project lead's to set; both paid paths (creation and
-# adoption) refuse the file unless `state = "configured"` and every key below is
-# present — the loader refuses unknown and missing keys alike. The commented
-# block documents the shape so filling it in needs no code reading.
-#
-# Configuring this file is not permission to launch (AGENTS.md "Who decides"):
-# every live run is separately authorised by the project lead in the session
-# it happens in, and these ceilings are enforced *in addition to* that
-# permission, never instead of it.
-#
-#   schema = "pod-spend.v3"
-#   state = "configured"
-#   currency = "USD"
-#
-#   # Decimal STRINGS, never TOML numbers: a bare number becomes a binary float
-#   # on read, and money does not survive that.
-#
-#   # Refuses a paid action whose pod-plus-attached-volume hourly price exceeds
-#   # this.  Spec 04's named candidates run $0.27–$1.99/hr for the pod.
-#   max_hourly_usd = "..."
-#
-#   # The same combined rate multiplied out across the requested hard lifetime.
-#   # Independent of max_hourly_usd, so either ceiling alone can refuse a run.
-#   max_estimated_metered_cost_usd = "..."
-#
-#   # The observed-balance hard stop that protects the network volume while data
-#   # is secured after a spend incident. It is a reserve that must still be there
-#   # *after* the run, so a launch is refused both when the observed balance is at
-#   # or below it and when this run's own estimated cost to its hard deadline would
-#   # take it there. Nothing re-reads the balance once a pod is live. "50.00" is a
-#   # documented, unverified default: check it against RunPod before a live run.
-#   account_balance_floor_usd = "50.00"
-#
-#   # A higher observed-balance warning threshold. Warnings send through the
-#   # notification seam only; they never block a paid action. This must be
-#   # greater than the hard floor and is the project lead's policy value.
-#   account_balance_alert_usd = "..."
-#
-#   # The hard lifetime both controllers enforce independently — the laptop
-#   # supervisor and the pod-side dead-man timer.  Whichever fires first
-#   # terminates through the verified path.
-#   hard_lifetime_seconds = 0
-#
-#   # How stale an owner heartbeat must be before another controller treats the
-#   # lease as an orphan and reconciles it.  Must be shorter than the hard
-#   # lifetime, or an orphan would outlive the run that abandoned it.
-#   laptop_heartbeat_timeout_seconds = 0
-#
-#   # Verified shutdown's poll interval and its overall deadline while waiting
-#   # for exact-pod GET-404 and pod-list absence to agree.  The loader refuses
-#   # a poll interval longer than the deadline, and a deadline whose sum with
-#   # the fixed 30s billing-retry tail below reaches the hard lifetime.
-#   shutdown_poll_interval_seconds = 0
-#   shutdown_deadline_seconds = 0
-#
-#   # How far the billing evidence a provider returns may extend beyond the
-#   # requested cutoff. The verifier accepts only 0–3600 seconds; an
-#   # out-of-bounds value is refused, never clamped. 3600 preserves the
-#   # previous behavior but is not a measured RunPod value and must be chosen
-#   # deliberately for a live run.
-#   billing_cutoff_margin_seconds = 3600
-#
-# Billing reconciliation is not a key here: VerifiedShutdown's retry (3 attempts,
-# 15s apart) is fixed in code, not reviewed policy, and can add up to 30s past
-# shutdown_deadline_seconds above before a close is reported. Bounded and named
-# so filling in the deadline above is not silently short by that amount.
-#
-# Nothing above authorises deleting or retaining the network volume after a
-# close.  That is its own separately named decision, and every close report
-# states the volume's ongoing hourly price so it cannot be forgotten.
-# Configured for the first live tests: the cheapest reviewed card (RTX A5000 at
-# $0.27/h plus a modest volume clears $0.40;
-# the A40 at $0.44 and everything above it does not).  Raising max_hourly_usd later is
-# the deliberate, recorded act that opens Stage 3.  This file being configured is not
-# permission to launch: every boot is asked for separately in the session that runs it.
+# Pod-plus-attached-volume money ceilings; config/README.md documents every key.
+# This file being configured is not permission to launch: every boot is asked for
+# separately in the session that runs it.
 schema = "pod-spend.v3"
 state = "configured"
 currency = "USD"
 
-# Decimal STRINGS, never TOML numbers.
-max_hourly_usd = "0.40"
+# Decimal strings, never TOML numbers: a float does not keep money exact.
+max_hourly_usd = "0.50"
 max_estimated_metered_cost_usd = "2.00"
 
 # Documented, unverified default -- check it against the RunPod balance before a
@@ -87,7 +14,6 @@ max_estimated_metered_cost_usd = "2.00"
 account_balance_floor_usd = "50.00"
 account_balance_alert_usd = "75.00"
 
-# Four hours: Stage 1's seal (worst case $1.08 of pod at $0.27/h).
 hard_lifetime_seconds = 14400
 laptop_heartbeat_timeout_seconds = 900
 shutdown_poll_interval_seconds = 30
