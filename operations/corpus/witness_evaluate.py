@@ -44,6 +44,8 @@ from .compare import (
 from .local_admission import validate_local_admission_ledger
 from .reference import validate_reference_page
 
+DESCRIPTION = "Read-only per-witness RecordGold scoring over sealed act attachments."
+
 SCHEMA = "recordgold-witness-evaluation.v1"
 CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
 
@@ -685,7 +687,7 @@ def write_report(report: Mapping[str, Any], output: Path, *, run_root: Path) -> 
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--ledger", required=True)

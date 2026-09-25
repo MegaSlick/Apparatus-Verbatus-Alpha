@@ -1,10 +1,3 @@
-"""CPU-only two-step handoff for prescribed RecordGold spread splits.
-
-Step one writes a declared-midpoint ScanTailor project.  The operator imports it
-with ``verbatus scantailor``.  Step two consumes that immutable import and writes
-standard triage rows plus their binding sidecar.  No source image is changed.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -16,6 +9,13 @@ from common.imaging import render_triage_derivative
 from operations.triage import producer
 from operations.triage.scantailor_bridge import transcribe_imported_geometry
 from operations.triage.scantailor_project import PrescribedSpread, prescribed_midpoint_project
+
+DESCRIPTION = """CPU-only two-step handoff for prescribed RecordGold spread splits.
+
+Step one writes a declared-midpoint ScanTailor project.  The operator imports it
+with ``verbatus scantailor``.  Step two consumes that immutable import and writes
+standard triage rows plus their binding sidecar.  No source image is changed.
+"""
 
 
 def _new(path: Path, data: bytes) -> None:
@@ -44,7 +44,7 @@ def _page(value: str) -> tuple[str, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(

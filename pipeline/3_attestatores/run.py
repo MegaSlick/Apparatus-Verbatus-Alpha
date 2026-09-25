@@ -141,6 +141,8 @@ from operations.serving.residency import (  # noqa: E402
     FileResidencyLease,
 )
 
+DESCRIPTION = "Attestatores: retain every witness attempt without changing its history."
+
 # Self-assessments a witness may report. They are retained as testimony, never used
 # to rank or choose a witness. `uncertain` and `unsure` are both admitted because
 # real adapters emit both spellings.
@@ -5618,7 +5620,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     ``serving_factory`` is an in-process test seam like ``registry_factory``, used
     only when the sealed catalogue says the witnesses are live.
     """
-    parser = stage_parser(__doc__.splitlines()[0], accepts_chair=True)
+    parser = stage_parser(DESCRIPTION, accepts_chair=True)
     parser.add_argument(
         "--attempt-ordinal",
         type=_positive_ordinal,

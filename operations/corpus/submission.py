@@ -1,4 +1,20 @@
-"""The submission builder: cached page bytes, hard-linked, sealed, and admitted.
+import argparse
+import json
+import os
+from pathlib import Path
+from typing import Any, NamedTuple
+
+from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
+from operations.submit import gate, submit
+
+from . import CorpusRefusal
+from .fetch import validate_fetch_log
+from .holdout import load_holdout, refuse_held_out_page, validate_holdout
+from .plan import load_plan, unsafe_segment, validate_plan
+from .rows import validate_snapshot
+from .sidecar import build_sidecar, write_sidecar
+
+DESCRIPTION = """The submission builder: cached page bytes, hard-linked, sealed, and admitted.
 
 `SPEC.md` §5.2 fixes the shape a Door admission needs and what must never appear
 in it. This module builds that shape from three already-validated artifacts (a
@@ -58,22 +74,6 @@ the sorted list into shards of at most `max_pages_per_shard` — simple, exact f
 this corpus's page counts (§5.6: val ≈ 225-315 pages, comfortably under the cap
 in one shard), and it never invents a triage manifest to get there.
 """
-
-import argparse
-import json
-import os
-from pathlib import Path
-from typing import Any, NamedTuple
-
-from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
-from operations.submit import gate, submit
-
-from . import CorpusRefusal
-from .fetch import validate_fetch_log
-from .holdout import load_holdout, refuse_held_out_page, validate_holdout
-from .plan import load_plan, unsafe_segment, validate_plan
-from .rows import validate_snapshot
-from .sidecar import build_sidecar, write_sidecar
 
 SUBMISSION_REFUSAL_REASONS = frozenset(
     {
@@ -580,7 +580,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     (`canonical_bytes`, so it is a stable function of its content) and also
     printed, so an operator sees the outcome without opening a file.
     """
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--snapshot", required=True, help="Path to a recordgold-rows.v1 file.")
     parser.add_argument("--plan", required=True, help="Path to a recordgold-fetch-plan.v1 file.")
     parser.add_argument("--holdout", required=True, help="Path to a recordgold-holdout.v1 file.")

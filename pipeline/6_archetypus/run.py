@@ -88,6 +88,8 @@ from common.stage import (  # noqa: E402
 )
 from common.witness_regime import witness_label  # noqa: E402
 
+DESCRIPTION = "Archetypus: exactly one established reading per act, written once."
+
 # The three silences and their derivation live in `common/contracts/outcomes.py`,
 # not here, because the Armarium recomputes the same status from the layers
 # beside the text at export and stages talk only through `common/`
@@ -1820,7 +1822,7 @@ def validate_index(context, index, *, on_disk=None, accepted=None) -> dict:
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
-    args = stage_parser(__doc__.splitlines()[0]).parse_args()
+    args = stage_parser(DESCRIPTION).parse_args()
     # Either ingress route, decided from one read of the run authority. This
     # stage reads no fixture declaration at all: its one denominator is
     # `expected_acts`, which on a real run recomputes every row from the

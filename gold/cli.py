@@ -32,6 +32,8 @@ from .core import (
     write_append_only,
 )
 
+DESCRIPTION = "Create and validate append-only R7a gold records."
+
 
 @dataclass(frozen=True)
 class _CorpusDirectory:
@@ -206,7 +208,7 @@ def _reconcile_and_publish(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     commands = parser.add_subparsers(dest="command", required=True)
     sample = commands.add_parser("sample")
     sample.add_argument("--run", required=True)

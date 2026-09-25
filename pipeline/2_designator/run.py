@@ -93,6 +93,8 @@ from common.stage import (  # noqa: E402
     verify_structure_attempt_call,
 )
 
+DESCRIPTION = "Designator: marks out the acts and cuts the crops. It establishes no text."
+
 # Total attempts, first included, for a whole-page structure call; retries only
 # recover a structural loop or invalid layout, never sample for quality. Kept
 # equal to common/recovery.py's RULED_ABSOLUTE_CAP by hand: recovery restores
@@ -3192,7 +3194,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     tests inject a fake, production gets `structure_pass.default_serving_factory`.
     The sealed catalogue, not this seam, decides which pass runs.
     """
-    args = stage_parser(__doc__.splitlines()[0]).parse_args()
+    args = stage_parser(DESCRIPTION).parse_args()
     context, real_input = _open(args, registry_factory)
 
     if args.operation == "recover":

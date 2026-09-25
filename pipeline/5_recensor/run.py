@@ -132,6 +132,8 @@ from common.testimony_content_coverage import (  # noqa: E402
     validate_testimony_content_coverage_continuation,
 )
 
+DESCRIPTION = "Recensor: establishes that the text is complete. It establishes no text."
+
 
 def designator_hold(context, act_id: str) -> tuple[dict, str]:
     """The Designator's hold record for a seal-held act, and its path.
@@ -3230,7 +3232,7 @@ def _publish_designator_hold_review(
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
-    args = stage_parser(__doc__.splitlines()[0]).parse_args()
+    args = stage_parser(DESCRIPTION).parse_args()
     context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
     # The policy parsed when the run's binding was checked, never re-read: a rewrite in
     # between would publish an allowance the run never sealed.

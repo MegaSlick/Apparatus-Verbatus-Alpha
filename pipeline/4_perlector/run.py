@@ -130,6 +130,8 @@ from operations.serving.residency import (  # noqa: E402
     FileResidencyLease,
 )
 
+DESCRIPTION = "Perlector: reads the ink, with the testimonia as fallible clues."
+
 _ACT_LOCAL_READING_FAILURES: Final = (
     EngineSignalRefusal,
     ChairResponseRefusal,
@@ -3649,7 +3651,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
 
 def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) -> int:
     """One Perlector pass: every requested act read once and published once."""
-    parser = stage_parser(__doc__.splitlines()[0])
+    parser = stage_parser(DESCRIPTION)
     parser.add_argument(
         "--reading-deadline",
         type=_utc,

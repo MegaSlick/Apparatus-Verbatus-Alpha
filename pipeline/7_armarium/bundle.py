@@ -49,6 +49,8 @@ from common.stage import (  # noqa: E402
     submission_identity,
 )
 
+DESCRIPTION = "Take the sealed export bundle out of the run tree and put it where it was asked for."
+
 EXTRACTION_NAME = "bundle"
 
 
@@ -306,7 +308,7 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
 
 
 def main() -> int:
-    parser = stage_parser(__doc__.splitlines()[0])
+    parser = stage_parser(DESCRIPTION)
     parser.add_argument("--out", required=True, help="the destination for the export bundle")
     args = parser.parse_args()
     # Publication is a reader of a completed run, not a stage resuming under the
