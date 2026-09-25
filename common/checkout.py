@@ -1,31 +1,13 @@
 """Where this code expects to be run from, checked once before any work starts.
 
-**Verbatus runs from a source checkout. There is no wheel installation, and this
-module is the place that says so out loud.**
+Verbatus runs from a source checkout, never an installed wheel: a built wheel
+carries no `pipeline/`, `config/` or `proof/`, while stage code resolves its
+defaults as siblings of those directories -- the checkout's shape, not an
+installed package's. Refusing early states that in one sentence, before a run
+begins, instead of meeting a missing-file error part way through.
 
-The evidence, from the tree rather than from intention.  `operations/pod/
-bootstrap.py` puts the code on a pod by `git fetch` and `git checkout --detach`
-at a pinned commit and then runs `uv sync --locked --group pod`; nothing builds,
-ships, or installs a distribution.  The repository's own CI test asserts the
-workflow does not `pip install .`.  And `pyproject.toml`'s discovery is
-`include = ["common", "common.*", "operations", "operations.*"]` with namespaces
-off, so a built wheel would carry no `pipeline/`, `config/`, `proof/` or `gold/`
-at all — while `common/stage.py` and `operations/submit/gate.py` resolve their
-defaults as siblings of those packages, which is the checkout's shape and not an
-installed package's.
-
-An outside review built that wheel and found what follows from it: installed
-outside a checkout, loading the default data-handling policy failed on an absent
-`config/data_handling_policy.json`.  The repair is *not* to package the private
-material to make the import succeed.  It is to state the contract and refuse
-early, so an operator who has somehow started outside a checkout is told that in
-one sentence, before a run begins, instead of meeting a missing-file error part
-way through.
-
-The three directories named below are the ones runtime code reads by
-checkout-relative path.  `gold/` is deliberately not among them: it is real
-comparison material, it is not required to start, and demanding it would turn a
-legitimate run into a refusal.
+`gold/` is deliberately not among the directories checked below: it is real
+comparison material, not required to start.
 """
 
 from __future__ import annotations
