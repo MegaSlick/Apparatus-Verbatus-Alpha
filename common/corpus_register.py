@@ -1,44 +1,30 @@
 """The corpus-scoped, append-only declaration register.
 
-It is intentionally not a run-tree artifact.  Triage declares physical pages
-and the later correspondence step mints physical acts here; a run receives only
-an immutable content-addressed snapshot of the register bytes.
+Not a run-tree artifact: triage declares physical pages and correspondence
+mints physical acts here, and a run receives only an immutable
+content-addressed snapshot of the register bytes.
 
-**Every record is immutable, so nothing that can grow lives inside one.** A
-physical page's declaration is its `{corpus_id, volume_id, designation}` and
-nothing else; the captures known to show it are carried by separate
-``membership`` records, each naming the digest of the membership record it
-succeeds. A fourth capture found next month appends a fifth record rather than
-editing the first — which is what "append-only" has to mean if `physical_page_id`
-is not to be re-derived under everything beneath it, and what principle 4 means
-one level above the run tree.
+Every record is immutable, so nothing that can grow lives inside one. A
+physical page's declaration is fixed; the captures known to show it are
+separate `membership` records, each naming the digest of the one it succeeds,
+so a fourth capture appends a fifth record rather than editing the first.
 
-A wrong link is corrected the same way — by appending, never by editing. A
-``retraction`` may name the *current head* of a page's chain, which restores the
-predecessor it grew from and leaves the withdrawn link in place as evidence of
-what was once declared. Only the head, because every link contains its
-predecessor's members: withdrawing one from the middle would leave every
-successor asserting the captures it withdrew. This is the answer to a human
-confirming two frames as one physical page and being wrong, which no
-deterministic instrument can catch — two blank forms agree everywhere.
+A wrong link is corrected only by appending. A `retraction` may name the
+*current head* of a page's membership chain (never the middle, since every
+link contains its predecessor's members, so withdrawing a middle link would
+leave every successor still asserting what it withdrew) -- this is the answer
+to a human wrongly confirming two frames as one physical page, which no
+deterministic instrument can catch. A correspondence retraction names the link
+itself, since correspondence has no chain, and a later run may re-declare that
+same link as a new act; without that, a mistaken retraction would strand a
+physical act forever. The geometry-only resolver may not reassert one:
+undoing a person's correction is a person's act.
 
-A correspondence is corrected the same way and reasserted the same way. Its
-retraction names the link itself rather than a chain head, because a
-correspondence has no chain; and a later run may declare that same link again,
-which is a new operator act with its own appending run and not the resurrection
-of the withdrawn record. Without that, a retraction made in error would be a
-corpus-lifetime fact: the act could never rejoin the physical act it belongs to,
-and the only way round would be minting a second physical act for it — the exact
-duplication the correspondence step exists to prevent. What may not reassert one
-is the geometry-only resolver, which holds any component with a retracted member
-rather than proposing it again; undoing a person's correction is a person's act.
-
-The chain is verified on read, not merely written: a reader replays it, so a
-membership record removed or reordered from the middle of the register breaks
-every successor's predecessor digest. What replay cannot see is truncation of
-the newest link, because the register carries no external head; the run tree's
-`register_digest` is that anchor, and comparing a fresh register against an
-earlier run's is therefore required to detect tail loss between runs.
+The chain is verified on read: a reader replays it, so a membership record
+removed or reordered mid-register breaks every successor's predecessor
+digest. Replay alone cannot see truncation of the newest link, since the
+register carries no external head; `run.json`'s `register_digest` is that
+anchor.
 """
 
 import json
@@ -149,16 +135,13 @@ def append_records(
 ) -> str:
     """Append immutable records with optimistic concurrency and atomic durability.
 
-    The register is one canonical JSON value, so an OS-level append would expose
-    a torn document to readers after a crash.  Instead, the writer locks a stable
-    sibling, validates the complete predecessor, proves the caller observed that
-    exact digest, validates the complete successor, and atomically replaces the
-    pathname with flushed same-directory bytes.  A crash can leave the old value
-    or the new value (and possibly an unreferenced temporary), never a torn value.
-
-    ``expected_digest`` is the external head a writer observed.  It prevents two
-    concurrent resolvers from both extending one predecessor and silently losing
-    whichever append publishes first.
+    The register is one canonical JSON value, so an OS-level append would
+    expose a torn document after a crash. Instead the writer locks, validates
+    the predecessor, proves the caller observed its exact digest, validates
+    the successor, and atomically replaces the pathname with flushed bytes: a
+    crash leaves the old value or the new one, never a torn value.
+    `expected_digest` prevents two concurrent resolvers from both extending
+    one predecessor and silently losing whichever publishes first.
     """
     path = _resolved_register_path(register_path, expected_digest)
     if (
@@ -191,13 +174,10 @@ def append_records(
 def confirm_unchanged_head(register_path: str | Path, *, expected_digest: str) -> str:
     """Prove, under the writer lock, that the register is still the head a caller read.
 
-    An append of no records is still a compare-and-swap. A writer that computes "there
-    is nothing new to append" from bytes it read earlier has read them outside the
-    lock, and a retraction published in between moves the head without changing what
-    that writer would have appended — so returning its own stale digest reports a head
-    that no longer exists, and whatever the caller publishes beside it names memberships
-    the register has since withdrawn. This performs the same locked read-and-compare
-    `append_records` performs, and returns the digest it proved.
+    An append of no records is still a compare-and-swap: a writer that decided
+    "nothing to append" from bytes read outside the lock could otherwise
+    publish beside a head that a concurrent retraction already moved. Performs
+    the same locked read-and-compare `append_records` does.
     """
     path = _resolved_register_path(register_path, expected_digest)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,22 +193,12 @@ def confirm_unchanged_head(register_path: str | Path, *, expected_digest: str) -
 def _register_lock(path: Path) -> Iterator[None]:
     """Serialize pathname replacement across writers; a crash releases the lock.
 
-    The lock is load-bearing rather than advisory comfort. The append it guards is
-    a read-compare-replace against `expected_digest`, and that compare-and-swap is
-    only sound while one writer at a time holds the section: two writers that both
-    read digest D both satisfy the check, and the second `os.replace` discards the
-    first one's records with nothing anywhere recording that it happened. So every
-    way this function could fail to serialize refuses instead of proceeding — a
-    register append that was silently not serialized is exactly the append-only
-    evidence loss principle 2 and principle 4 forbid.
-
-    The lock name is predictable -- ``.<register name>.lock`` beside the register
-    it guards -- so it is opened with ``O_NOFOLLOW``. Without that, anything able
-    to place a symlink at that name before the first writer arrives would redirect
-    every future writer's exclusion lock onto a file of its choosing: two corpora
-    serialized against each other instead of themselves, or a file created at a
-    path this process never named. A predictable name is safe only if the open
-    refuses to follow it.
+    Load-bearing, not advisory: the compare-and-swap it guards is only sound
+    while one writer at a time holds the section, so every way this could fail
+    to serialize refuses instead of proceeding. The lock name is predictable
+    (`.<register name>.lock`), so it is opened with `O_NOFOLLOW` -- otherwise a
+    symlink placed at that name first could redirect every future writer's
+    lock onto a file of its choosing.
     """
     lock_path = path.with_name(f".{path.name}.lock")
     no_follow = getattr(os, "O_NOFOLLOW", None)
@@ -531,15 +501,12 @@ def _read(data: bytes) -> tuple[dict[str, Any], _Reading]:
 def members_of(data: bytes, physical_page: str) -> list[str]:
     """The captures currently declared to show one physical page.
 
-    The head of that page's membership chain, never a member list read out of
-    the declaration itself — the declaration has none. An undeclared page and a
-    declared page with no capture yet are both the empty list on purpose: this
-    reads membership, it does not assert that a page exists.
-
-    A retracted head is not the head. The surviving link is the answer, and a
-    page whose every link has been retracted reads as the same empty list as one
-    that never had a capture — both mean "nothing currently shows this page",
-    and the register still carries every retracted link and its reason.
+    The head of that page's membership chain, since the declaration itself
+    carries no member list. An undeclared page and a declared page with no
+    capture yet are both the empty list, deliberately: this reads membership,
+    it does not assert that a page exists. A page whose every link has been
+    retracted reads the same way, though the register still carries the
+    retracted links and their reasons.
     """
     reading = _read(data)[1]
     _identity(physical_page, "ppg", "membership lookup physical page")
@@ -577,19 +544,12 @@ def physical_act_page(data: bytes, physical_act: str) -> str | None:
 def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
     """Resolve an image-local proposal through declared correspondence.
 
-    This is intentionally lookup, not derivation: only an appended
-    correspondence record can resolve a proposal. An unresolved proposal is a
-    named finding, never a silently new physical act.
-
-    A retracted correspondence is not read back. Retraction is the register's
-    only correction mechanism, and a correction that the reader ignores is not
-    one: the retracted declaration stays in the register as evidence (principle 4) and stops resolving anything (principle 2). A proposal whose every
-    correspondence has been retracted is a named finding, distinct from one that
-    never had a correspondence at all, because the two ask a caller for
-    different things. A resolved row retains both the rendered page declared by
-    the correspondence and the physical page declared by its physical act, so a
-    consumer can prove both sides of the local act's lineage instead of dropping
-    the former during lookup.
+    Lookup, not derivation: only an appended correspondence record can
+    resolve a proposal, and an unresolved one is a named finding, never a
+    silently new physical act. A retracted correspondence is not read back,
+    and a proposal whose every correspondence was retracted is a distinct
+    finding from one that never had a correspondence, since a caller must
+    respond to them differently.
     """
     _identity(act_id, "act", "proposal resolution act_id")
     reading = _read(data)[1]
@@ -626,27 +586,14 @@ def _correspondence_identity(record: dict[str, Any]) -> str:
 def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> None:
     """Refuse a nested capture-preference claim, naming the record it was in.
 
-    Public because the rule is not the corpus register's alone: a Testimonium
-    must not express preference either (ARCHITECTURE, principle 1), and it was
-    reaching this through the private name -- which also told an operator
-    reading a witness record that the *corpus register* was at fault.
-
-    Iterative on purpose: the value is untrusted input, and a deeply nested
-    payload must exhaust the walk's own list, never the interpreter stack.
-
-    A cycle is refused rather than looped on, by the same enter/exit bookkeeping
-    `dossier.assert_no_order_bearing_field` carries. The recursive form this
-    replaced ended a self-referential payload by exhausting itself; a worklist
-    has no stack to exhaust, so without this a value that is its own ancestor
-    hangs the caller and reports nothing at all -- strictly less than the
-    `RecursionError` the conversion removed. Reachable because most callers hand
-    this an in-memory structure rather than something it parsed from bytes: a
-    Testimonium payload, an audit draft, a partition proposal, a triage queue.
-
-    Only the containers *open on the current path* are tracked, so a value
-    shared between siblings -- the ordinary shape of a record assembled by
-    reference -- is still walked wherever it appears. What is refused is an
-    ancestor reached again, which is the only shape that cannot terminate.
+    Public because a Testimonium must not express preference either
+    (ARCHITECTURE, principle 1). Iterative, since the value is untrusted input
+    and a deeply nested payload must exhaust the walk's own list, never the
+    interpreter stack; a cycle is refused rather than looped on, since a
+    worklist has no stack to exhaust and would otherwise hang on a
+    self-referential value. Only containers *open on the current path* are
+    tracked, so a value shared between siblings is still walked wherever it
+    appears; what is refused is an ancestor reached again.
     """
     pending: list[tuple[str, Any]] = [("value", value)]
     open_path: set[int] = set()
@@ -866,24 +813,13 @@ def _validate_record(record: Any, reading: _Reading) -> None:
 def _retract_membership(row: dict[str, Any], reading: _Reading) -> None:
     """Withdraw the newest link of one physical page's membership chain.
 
-    This is the correction path for the case the instrument is blind to: two
-    frames a human confirmed as one physical page when they are not — two blank
-    forms that agree everywhere because neither carries ink. Memberships grow and
-    are never edited, so without this a wrong confirmation is a corpus-lifetime
-    fact nobody can answer, and principle 2 does not allow a result that can
-    only be wrong in silence.
-
-    Only the current head may be retracted, and that restriction is the whole
-    design rather than a convenience. Each link's members contain its
-    predecessor's, so retracting a link from the middle would leave every
-    successor still asserting the captures it withdrew — a correction the reader
-    would have to ignore, which principle 4 says is not a correction. Unwinding
-    from the head is the only order in which the surviving head is the honest
-    answer; a page corrected two links deep is corrected by two retractions.
-
-    Nothing is deleted. The retracted link stays in the register as evidence of
-    what was once declared and of the appending run that declared it; it simply
-    stops being the answer to "what shows this page".
+    The correction path for a human wrongly confirming two frames as one
+    physical page -- a case no deterministic instrument can catch. Only the
+    current head may be retracted: each link's members contain its
+    predecessor's, so retracting from the middle would leave every successor
+    still asserting the captures it withdrew. A page corrected two links deep
+    needs two retractions. Nothing is deleted; the retracted link stays as
+    evidence and simply stops being the answer to "what shows this page".
     """
     target = row["retracts"].removeprefix("membership:")
     page = next(
