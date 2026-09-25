@@ -3,18 +3,17 @@
 Steps run through :class:`~operations.pod.bootstrap.Bootstrapper`.  On green this
 process does **not** exit: it holds until the pod is destroyed, re-journaling a
 liveness line at the monitoring interval.  Exiting after a green bootstrap is
-exactly what ``pod_timer.run_with_bootstrap`` calls ``completed-early``
-(``pod_timer.py:150-158``) and punishes with an immediate close -- see that
-function before changing the hold loop here.  A red bootstrap step exits
-non-zero at once, which is the correct immediate close for pod_timer to act on.
+exactly what ``pod_timer.run_with_bootstrap`` calls ``completed-early`` and
+punishes with an immediate close -- see that function before changing the
+hold loop here.  A red bootstrap step exits non-zero at once, which is the
+correct immediate close for pod_timer to act on.
 
 Composition is deliberately **tracked**: every pinned input this process needs
 is an explicit flag, never an inferred default, so a request file that built
 this command names exactly what ran.  ``ChairCacheBootstrapAction`` is
-constructed here for the first time in the tracked tree, closing the
-"constructed nowhere" half of deferral 04-8.  The other half stays open: it is
-wired with ``refetch_same_pin=None`` (see the comment beside that call below),
-so the at-most-one same-pin re-fetch itself still does not ship.
+constructed here in the tracked tree, wired with ``refetch_same_pin=None``
+(see the comment beside that call below), so the at-most-one same-pin
+re-fetch itself still does not ship.
 
 **What ``PREFLIGHT`` measures, and through what.**  The chair-cache half is
 :class:`RegistryChairCacheVerifier`: ``ChairRegistry.ensure`` over the plan's
@@ -40,12 +39,11 @@ row.  Only this smoke-preflight assembly receives the private qualification
 purpose that permits such a row to launch while retaining every snapshot,
 runtime, request, shutdown, and evidence check.  A green report can then be
 verified offline by ``operations.serving.qualify`` to render the identity and
-profile digests for review; the verifier edits no catalogue.  The stack itself
-was re-planned onto
-``vllm 0.27.1`` / ``transformers 5.14.1``, which lock beside the project's
-``huggingface_hub==1.26.0``, and ``bootstrap.py``'s ``uv sync`` now carries
-``--group pod``.  That the wheels install and the weights load on real silicon
-is still unproven; only a boot proves it.
+profile digests for review; the verifier edits no catalogue.  The stack pins
+``vllm 0.27.1`` / ``transformers 5.14.1`` beside the project's
+``huggingface_hub==1.26.0``, and ``bootstrap.py``'s ``uv sync`` carries
+``--group pod``.  That the wheels install and the weights load on real
+silicon is still unproven; only a boot proves it.
 
 **TRANSFER's direction is named, not defaulted.**  A pod that is *consuming* a
 submission already on its volume passes neither ``--submission-manifest`` nor
@@ -729,17 +727,13 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         base_label="the checked-out repository",
         report_path=report_path,
     )
-    # TRANSFER's direction, stated rather than assumed. This flag used to
-    # default to `<volume>/submission/manifest.json` -- exactly where `verbatus
-    # upload` puts a real submission and exactly what `pod_run` then requires to
-    # exist on the volume -- so the default configuration of a real run made
-    # TRANSFER a refusal ("present but no transfer target was configured") that
-    # landed *after* UV_ENVIRONMENT had paid for the ten-gigabyte download. The
-    # step's purpose is also inverted on a pod: it would re-upload the
-    # submission the pod already has. A consuming pod names no manifest and
-    # TRANSFER is a vacuous success; a producing pod names both halves. Half a
-    # pair is a plan-time refusal, before anything is spent, whichever half is
-    # missing.
+    # TRANSFER's direction, stated rather than assumed: `<volume>/submission/
+    # manifest.json` is where `verbatus upload` puts a real submission, so
+    # defaulting to it would make TRANSFER re-upload a submission the pod
+    # already has. A consuming pod names no manifest and TRANSFER is a
+    # vacuous success; a producing pod names both halves. Half a pair is a
+    # plan-time refusal after pod creation, before the environment sync,
+    # whichever half is missing.
     submission_manifest = args.submission_manifest
     if submission_manifest is not None:
         submission_manifest = _require_contained(
@@ -1092,8 +1086,8 @@ def _build_cache(plan: Plan) -> ChairCacheBootstrapAction:
 PREFLIGHT_DTYPE = "bfloat16"
 """The dtype preflight measures the card for.  Every vLLM row in both shipped
 catalogues is ``dtype = "bfloat16"`` and ``ServingSmokeReader`` refuses a
-profile whose dtype is not exactly the measured one, so ``float16`` here --
-what this file used to pass -- made every real smoke red before it launched."""
+profile whose dtype is not exactly the measured one, so any other value here
+would make every real smoke red before it launched."""
 
 
 def _golden_page(plan: Plan, seams: PreflightSeams) -> tuple[Path, str, bytes]:

@@ -615,11 +615,9 @@ def test_hold_only_refuses_a_zero_interval_with_a_durable_report(
 def test_a_refusal_report_write_failure_is_named_not_swallowed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``_write_refusal_report`` used to return ``None`` whether it wrote the
-    report or hit an ``OSError`` -- ``refuse`` could not tell, so a refusal
-    that also failed to leave its durable reason exited exactly like a clean
-    one. Principle 2 binds the write failure too: it must be named on
-    stderr, and the refusal exit code stays exactly what it was.
+    """A refusal that also fails to leave its durable reason must not exit
+    like a clean one. Principle 2 binds the write failure too: it must be
+    named on stderr, and the refusal exit code stays exactly what it was.
     """
 
     ws = _workspace(tmp_path)
@@ -707,13 +705,13 @@ def test_resolve_plan_refusal_names_are_distinct(tmp_path: Path) -> None:
 
 # --- containment survives a symlink, not just a lexical prefix -------------
 #
-# ``_require_contained`` used to be purely lexical: it built ``PurePosixPath``
-# from the argument string and never touched the filesystem, so a symlinked
-# directory component (or a symlinked leaf) under the volume could point the
-# actual write at container-local disk while the lexical check still called
-# it contained. A green run would then report success and leave nothing on
-# the retained volume. These drills point ``--report-path`` and ``--journal``
-# through such a symlink and confirm the write is refused before it happens.
+# A lexical-only ``_require_contained`` -- one that builds ``PurePosixPath``
+# from the argument string and never touches the filesystem -- would let a
+# symlinked directory component (or a symlinked leaf) under the volume point
+# the actual write at container-local disk while the lexical check still
+# called it contained, reporting success and leaving nothing on the retained
+# volume. These drills point ``--report-path`` and ``--journal`` through such
+# a symlink and confirm the write is refused before it happens.
 
 
 def test_report_path_through_a_symlinked_directory_component_is_refused(
@@ -751,7 +749,7 @@ def test_journal_through_a_symlinked_leaf_is_refused(tmp_path: Path) -> None:
 def test_a_symlink_escape_through_main_exits_refused_with_nothing_off_the_volume(
     tmp_path: Path,
 ) -> None:
-    """The end-to-end shape: a green exit here used to leave the volume empty."""
+    """The end-to-end shape: a green exit here must not leave the volume empty."""
 
     ws = _workspace(tmp_path)
     container_local = tmp_path / "container-local"
@@ -894,14 +892,11 @@ def test_holds_when_the_report_path_carries_the_launch_token(tmp_path: Path) -> 
 
 
 def test_hold_only_reaches_the_hold_through_the_real_launch_binding(tmp_path: Path) -> None:
-    """The regression this unit closes.
-
-    ``boot_a_request.pod_request`` renders a ``bootstrap_main --hold-only``
+    """``boot_a_request.pod_request`` renders a ``bootstrap_main --hold-only``
     argv nested inside ``--bootstrap-command-json``, with no launch token in
-    either report path -- ``launch._bind_report_path_to_launch`` folds the
-    token in at sealing time. Before this unit, that helper bound only the
-    outer timer's ``--report-path``: the nested one reached the pod still
-    unbound, and ``resolve_plan`` refused it (this module's own
+    either report path -- ``launch._bind_report_path_to_launch`` must fold the
+    token into both the outer timer's and the nested ``--report-path``, or
+    ``resolve_plan`` refuses it (this module's own
     ``test_refuses_a_report_path_missing_the_launch_token`` proves that
     refusal in isolation). This test drives the real templates and the real
     binding helper end to end -- not a hand-written argv standing in for
@@ -1156,14 +1151,13 @@ def test_build_actions_does_not_read_models_config_before_configuration_runs(
 def test_a_plan_with_no_submission_manifest_makes_transfer_a_vacuous_success() -> None:
     """A consuming pod names no manifest, and TRANSFER says so rather than refusing.
 
-    ``--submission-manifest`` used to default to
-    ``<volume>/submission/manifest.json`` -- where ``verbatus upload`` puts a
-    real submission and what ``pod_run`` then requires to exist -- so the
-    default configuration of a real run made TRANSFER a red step *after*
-    UV_ENVIRONMENT had paid for the whole wheel download. ``None`` is now the
-    ordinary shape for a pod that is reading a submission already on its
-    volume, and the step records "nothing to transfer" instead of a refusal or
-    an ``AttributeError``.
+    ``None`` is the ordinary shape for a pod that is reading a submission
+    already on its volume: the step must record "nothing to transfer" rather
+    than a refusal or an ``AttributeError``, and never default
+    ``--submission-manifest`` to ``<volume>/submission/manifest.json`` --
+    where ``verbatus upload`` puts a real submission -- which would make
+    TRANSFER a red step only after UV_ENVIRONMENT had paid for the whole
+    wheel download.
     """
 
     from .bootstrap_main import Plan, build_actions
@@ -1823,11 +1817,10 @@ def _preflight_seams_swapping_the_page_on_call(  # type: ignore[no-untyped-def]
 def test_a_page_swap_after_the_last_smoke_leaves_the_digest_naming_the_smoked_bytes(
     tmp_path: Path,
 ) -> None:
-    """The regression this unit closes: the sealed digest used to be a fourth,
-
-    unbound read of the page, taken after every chair had already smoked it.
-    A swap on the volume in that window used to seal a digest naming bytes no
-    chair ever read, while every smoke receipt still carried the real one.
+    """The sealed digest must not be a fourth, unbound read of the page taken
+    after every chair has already smoked it: a swap on the volume in that
+    window would then seal a digest naming bytes no chair ever read, while
+    every smoke receipt still carried the real one.
     """
 
     from .bootstrap_main import _build_preflight, build_parser, resolve_plan

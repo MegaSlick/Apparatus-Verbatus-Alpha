@@ -237,10 +237,10 @@ def validate_pod_report_identity(
 DEFAULT_CONTAINER_DISK_GB = 60
 """How much container-local disk every request asks for, in gigabytes.
 
-The bootstrap spends this disk twice over and the request used to name none, so
-the pod took whatever the image or the account defaulted to -- commonly 20 GB,
-under which ``uv sync --group pod`` fills the disk and fails with ENOSPC after
-paying for the whole download. The arithmetic behind the number:
+The bootstrap spends this disk twice over, and leaving it to the image or
+account default -- commonly 20 GB -- lets ``uv sync --group pod`` fill the
+disk and fail with ENOSPC after paying for the whole download. The
+arithmetic behind the number:
 ``uv sync --locked --group pod`` downloads the serving stack into the
 container-local ``UV_CACHE_DIR`` (``bootstrap.py`` sizes that at "on the order
 of ten gigabytes of wheels"), then installs an unpacked copy of the same
@@ -463,13 +463,11 @@ def rebind_nested_flag(argv: list[str], flag: str, transform) -> list[str]:
     """Rewrite a flag's value in a decoded nested argv, in either spelling.
 
     Shares its reading of ``argv`` with :func:`_nested_flag_values` on
-    purpose -- a binder and its validator that each parsed the flag their
-    own way is exactly how ``--report-path=value`` was left unbound while
-    ``--report-path value`` was bound (the binder recognized only the
-    separate-value spelling). The flag's absence is left alone rather than
-    invented: a nested argv naming no ``--report-path`` at all -- the
-    library-module placeholder the tests use -- is not this function's to
-    fill in.
+    purpose: a binder and its validator that each parsed the flag their own
+    way could recognise different spellings and bind one while leaving the
+    other unbound. The flag's absence is left alone rather than invented: a
+    nested argv naming no ``--report-path`` at all -- the library-module
+    placeholder the tests use -- is not this function's to fill in.
     """
 
     bound = list(argv)

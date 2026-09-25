@@ -978,11 +978,11 @@ class SubprocessBootstrapActions:
         # downloaded on the billing card into the container-local `UV_CACHE_DIR`
         # above, paid once per pod because that cache does not survive one.
         # `--locked` alone: uv's own CLI refuses `--locked` and `--frozen`
-        # together (`conflicts_with_all` on `--locked` in uv-cli, present in the
-        # pinned uv 0.12.1), so the pair this step used to pass was a usage error
-        # that would have failed the sync -- billing the pod for the failure --
-        # before a single wheel downloaded. `--locked` still gets the property
-        # this step wants: uv refuses to run if uv.lock is out of date.
+        # together (`conflicts_with_all` on `--locked` in the pinned uv
+        # 0.12.1), so passing both would fail the sync -- billing the pod for
+        # the failure -- before a single wheel downloaded. `--locked` still
+        # gets the property this step wants: uv refuses to run if uv.lock is
+        # out of date.
         self._command(
             ["uv", "sync", "--locked", "--group", "pod"],
             BootstrapStep.UV_ENVIRONMENT,
