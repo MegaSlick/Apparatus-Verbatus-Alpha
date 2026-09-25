@@ -1,21 +1,11 @@
 """The one checked reader for the run-level hard-failure cap, and its tally.
 
-Distinct from `common/recovery.py`: that module bounds how often ONE ACT may ask
-for bounded rework. This module answers a different question -- is this RUN
-going wrong -- and the two are not the same mechanism wearing two names. Both
-stand as designed: the per-act recovery budget stays exactly as built, and
-this cap sits beside it.
-
-The tally is recomputed from the artifacts already on disk every time it is
-asked for, never from a running counter or an event stream: a count kept only in
-memory reads zero exactly when the process that was tallying it dies before
-anything asks it a second time, which is precisely backwards for a mechanism
-whose entire job is noticing that something died. Every stage's outcome
-artifacts are already the sealed, self-hashed, append-only evidence this
-pipeline keeps for every other accounting purpose; this reuses that evidence
-rather than inventing a parallel ledger for it. A shard is one capped 1,000-page
-run, so the tally is deliberately per shard; a cross-shard condition is held for
-Recensor review, never smuggled into another run tree's tally.
+Distinct from `common/recovery.py`, which bounds rework for one act: this
+answers whether the RUN itself is going wrong. The tally is recomputed from
+the sealed, self-hashed artifacts already on disk every time it is asked for
+rather than kept as a running counter, so a process dying mid-run cannot make
+it read zero. A shard is one capped 1,000-page run, so the tally is per shard;
+a cross-shard condition is held for Recensor review instead.
 """
 
 import tomllib
@@ -31,28 +21,20 @@ DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "hard_failure.toml"
 )
 
-# The project lead's ruled boundary: two continues as an early warning and the
-# third stops. Unlike the recovery budget, the hard-failure threshold was not
-# delegated for downward tuning, so configuration cannot move it either way.
+# Two continues as an early warning, the third stops; not tunable by config.
 RULED_THRESHOLD: Final = 2
-# A policy is a small operator declaration, not a corpus payload. Bound both the
-# bytes parsed and the entries that each drive a pass over stage evidence, so a
-# caller-selected file cannot turn one checkpoint into unbounded memory or
-# policy-length-times-corpus work. The shipped policy is under 8 KiB and six
-# entries; these ceilings leave ample configuration headroom without making the
-# boundary nominal.
+# A policy is bounded operator declaration, not a corpus payload: a
+# caller-selected file must not turn one checkpoint into unbounded memory or
+# policy-length-times-corpus work.
 MAX_HARD_FAILURE_CONFIG_BYTES: Final = 1 << 20
 MAX_HARD_FAILURE_KINDS: Final = 128
 PERLECTOR_INSTRUMENT_KINDS: Final = frozenset(
     {"lectio-nuda", "lectio-prior", "primed-without-prior"}
 )
 # Duplicated in miniature rather than importing `pipeline/1_exemplar/
-# admission.RefusalReason` (`common/` may not import `pipeline/`, enforced the
-# same way `_reason_code`'s own docstring explains). A door-scoped `[[kind]]`
-# entry's `reason` is checked against this closed set so a mistyped code is
-# refused loudly at config load, not accepted silently and matched against
-# nothing forever -- the exact failure mode a mistyped `reason` here would
-# otherwise cause, with no error anywhere to say the cap had gone quiet.
+# admission.RefusalReason`, since `common/` may not import `pipeline/`. Checked
+# so a mistyped door reason is refused at config load, not matched against
+# nothing forever with no error to say the cap had gone quiet.
 DOOR_REFUSAL_REASONS: Final = frozenset(
     {
         "empty",
@@ -67,16 +49,11 @@ DOOR_REFUSAL_REASONS: Final = frozenset(
 
 
 def _reason_code(text: Any) -> str | None:
-    """The closed-set code prefix of a `"{code}: {detail}"` refusal reason.
+    """The code prefix of a `"{code}: {detail}"` refusal reason, or None.
 
-    Duplicated in miniature rather than importing `pipeline/1_exemplar/
-    admission.reason_code`: `common/` may not import `pipeline/` (the import-
-    boundary test in `common/chairs/` enforces that), and this module does not
-    need the full `RefusalReason` enum -- only the same colon-split convention
-    every reason-coded payload in this pipeline already uses. A payload with no
-    reason, or a reason that is not a string, has no code rather than an error:
-    absence of a reason is common (most FAILED outcomes carry none at all) and
-    is not itself a defect this function exists to catch.
+    A payload with no reason, or a non-string reason, has no code rather than
+    an error: most FAILED outcomes carry no reason, and that absence is not
+    itself a defect this function exists to catch.
     """
     if not isinstance(text, str) or ":" not in text:
         return None
@@ -86,27 +63,16 @@ def _reason_code(text: Any) -> str | None:
 def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH) -> dict[str, Any]:
     """Read one policy, validate its closed kind list, and return its resolved record.
 
-    Every configured `(stage, outcome)` pair must already be a real member of
-    that stage's closed outcome vocabulary, classified FAILED. This is what
-    keeps the list "configuration, not literals" honest in the other direction
-    too: a typo'd stage or outcome name is refused here rather than silently
-    never matching anything, and a pair that classifies UNRESOLVED or COMPLETED
-    (an ordinary hold, an ordinary acceptance) can never be configured into a
-    mechanism that is supposed to name systemic breakage.
-
-    A `[[kind]]` entry may additionally carry `reason`, narrowing it to only
-    the artifacts of that (stage, outcome) whose payload's `reason` field opens
-    with that exact code (`common/hard_failure._reason_code`). This is what
-    lets the policy count `(door, refused)` only for `corrupt`/`unreadable` --
-    the old pipeline's own "corrupt or unrenderable image" -- without counting
-    every door refusal, most of which are routine bulk-corpus noise (an
-    unsupported format, an oversized file) rather than evidence the run itself
-    is going wrong. Reason-scoped entries are tracked separately from bare
-    (stage, outcome) ones precisely so a bare entry is never accidentally
-    widened by a reason-scoped sibling, or vice versa. A door-scoped `reason`
-    is additionally checked against `DOOR_REFUSAL_REASONS`, the Door's own
-    closed refusal vocabulary duplicated here, so a typo'd code is refused
-    loudly at load rather than silently matching nothing forever.
+    Every configured `(stage, outcome)` pair must classify FAILED for that
+    stage, so a typo'd name is refused at load and an ordinary hold or
+    acceptance can never be configured into a mechanism meant to name systemic
+    breakage. A `[[kind]]` entry may additionally carry `reason`, narrowing it
+    to artifacts whose payload `reason` opens with that exact code -- letting
+    the policy count `(door, refused)` only for `corrupt`/`unreadable` rather
+    than routine bulk-corpus noise. Reason-scoped entries are tracked
+    separately from bare ones so neither widens the other, and a door-scoped
+    `reason` is checked against `DOOR_REFUSAL_REASONS` so a typo is refused
+    loudly rather than silently matching nothing.
     """
     path = Path(path)
     try:
@@ -164,14 +130,10 @@ def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH
         try:
             failed = classify(stage, outcome) is OutcomeClass.FAILED
         except FatalAccounting as error:
-            # `classify` raises `FatalAccounting` for an outcome outside its
-            # stage's closed vocabulary at all -- deliberately not catchable
-            # as an ordinary refusal, because during a live run "in no
-            # terminal set" is invariant #10's fatal imbalance. This is
-            # config validation before any run exists: a misspelled outcome
-            # here is a typo in a file, exactly like this loader's other
-            # `[[kind]]` refusals a few lines either side of it, and should
-            # surface the same way they do.
+            # No run exists yet, so an outcome outside the closed vocabulary
+            # here is a config typo, not the live-run fatal imbalance
+            # FatalAccounting means elsewhere -- surface it like this
+            # loader's other `[[kind]]` refusals.
             raise ContractError(str(error)) from error
         if not failed:
             raise ContractError(
@@ -202,10 +164,8 @@ def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH
         else:
             kinds.add((stage, outcome))
 
-    # Sorted tuples rather than frozensets: this resolved record is sealed into
-    # `run.json`'s config digest exactly as the recovery policy is, and a run
-    # binding has to be canonically serializable. Sorting is what makes it a
-    # deterministic binding rather than a set whose iteration order is incidental.
+    # Sorted, not a frozenset: this is sealed into run.json's config digest and
+    # must be a deterministic binding, not one with incidental iteration order.
     return {
         "config_sha256": digest_bytes(data),
         "threshold": threshold,
@@ -219,27 +179,17 @@ def tally_hard_failures(
 ) -> dict[str, Any]:
     """Recompute the run's hard-failure tally from the sealed partition on disk.
 
-    Counted as `(stage, subject_id)` pairs, not as raw artifact counts: an act
-    that failed and was later recovered still contributes one hard-failure
-    incident (the event happened; recovering the coverage does not erase that
-    it happened), while a stage retrying the identical failing outcome twice
-    for the same subject is one incident, not two. The manifest a stage's own
-    `build_manifest` derives is verified evidence -- every entry comes from an
-    artifact that passed its envelope, run-binding, and path checks on the way
-    into that manifest -- so reading its `outcome` and `subject_id` fields
-    directly does not trust unchecked tally data. Callers that own a whole-run
-    boundary also verify each artifact's input bytes. A directly invoked stage
-    disables that recursive check: its own consumer boundary must diagnose
-    stale lineage, while the cap remains responsible for whether its tally
-    records can be read.
+    Counted as `(stage, subject_id)` pairs, not raw artifact counts: a failed
+    act that was later recovered still contributes one incident, and a stage
+    retrying the same failing outcome twice for one subject is one incident,
+    not two. `build_manifest`'s entries are already verified evidence, so
+    reading `outcome`/`subject_id` off them trusts nothing unchecked; a
+    directly invoked stage skips the recursive input check, leaving its own
+    consumer boundary responsible for stale lineage.
     """
-    # One manifest per stage, however many kinds the policy names on it. Building
-    # a manifest revalidates every artifact of that stage and re-verifies every
-    # byte it references, so walking it once per configured kind would make the
-    # cost of this tally the policy's LENGTH times the corpus size — and the
-    # orchestrator recomputes it at every stage boundary and every recovery
-    # round. Two entries already share the door today. Caching also gives every
-    # kind in one tally the same snapshot of the tree.
+    # One manifest per stage regardless of how many kinds name it: building a
+    # manifest re-verifies every byte of that stage, so caching keeps the cost
+    # from scaling with policy length, and gives every kind the same snapshot.
     manifests: dict[str, list[dict[str, Any]]] = {}
     reasons_seen: dict[tuple[str, str, str], str | None] = {}
 
@@ -249,12 +199,8 @@ def tally_hard_failures(
         return manifests[stage]
 
     def reason_of(stage: str, entry: dict[str, Any]) -> str | None:
-        # A reason-scoped policy can name several reasons on the same
-        # (stage, outcome) pair (`door:refused:corrupt` and `:unreadable`
-        # today), and each pass over `artifacts(stage)` would otherwise
-        # re-read every one of that stage's artifacts from disk once per
-        # reason. Cached per artifact instead, so each is read at most once
-        # regardless of how many reason_kinds entries name its stage.
+        # Cached per artifact so several reason_kinds entries on one stage
+        # (e.g. door:refused:corrupt and :unreadable) don't each re-read disk.
         key = (stage, entry["kind"], entry["artifact_id"])
         if key not in reasons_seen:
             record = tree.read_artifact(stage, entry["kind"], entry["artifact_id"])
@@ -268,11 +214,8 @@ def tally_hard_failures(
     def record(key: str, stage: str, candidates: list[dict[str, Any]]) -> None:
         """Split one policy entry's matches into production and instrument arms.
 
-        Stated once for both loops below: the two entry shapes differ only in
-        how they select candidates, and a partition rule written twice is a
-        partition rule that can come to mean two things. A subject with both a
-        production and an instrument failure appears in both lists, which is
-        the honest answer -- the instrument arm neither excuses nor doubles the
+        A subject with both a production and an instrument failure appears in
+        both lists: the instrument arm neither excuses nor doubles the
         production incident.
         """
         production: set[str] = set()
