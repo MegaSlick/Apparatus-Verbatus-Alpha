@@ -324,6 +324,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # environment, so only the upload-only verb can ever see them.
     started = _clock()
     started_at = _stamp()
+    # Bound before the try: set inside it, an interrupted stage would leave it
+    # unbound and `finally` would raise a NameError that hides the real error.
     exit_code: int | None = None
     try:
         completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
@@ -557,7 +559,8 @@ def main() -> int:
         help="the sealed decoding posture for record readings and variance experiments",
     )
     # The roster's other half, forwarded with `--models-config`: without it the
-    # real roster would resolve against the fixture-only catalogue.
+    # real roster would resolve against the fixture-only catalogue. Declared here
+    # because this is the only program that invokes the stages.
     parser.add_argument(
         "--serving-recipes-config",
         default=str(DEFAULT_SERVING_RECIPES_CONFIG_PATH),
@@ -1024,7 +1027,8 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
             # A refusal, not a per-act hold: `recovery-requested` maps to no
             # terminal Armarium category (`common/contracts/outcomes.py`), so
             # skipping would only move the same dead end a stage later and lose
-            # its named cause.
+            # its named cause. Making it terminal instead would let a run whose
+            # recovery never ran report itself partial.
             report_undispatchable_recoveries(args, refused)
             first_act, _first_request, _first_kind, first_reason = refused[0]
             raise ContractError(f"act {first_act}'s outstanding recovery request {first_reason}")
