@@ -729,17 +729,12 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         base_label="the checked-out repository",
         report_path=report_path,
     )
-    # TRANSFER's direction, stated rather than assumed. This flag used to
-    # default to `<volume>/submission/manifest.json` -- exactly where `verbatus
-    # upload` puts a real submission and exactly what `pod_run` then requires to
-    # exist on the volume -- so the default configuration of a real run made
-    # TRANSFER a refusal ("present but no transfer target was configured") that
-    # landed *after* UV_ENVIRONMENT had paid for the ten-gigabyte download. The
-    # step's purpose is also inverted on a pod: it would re-upload the
-    # submission the pod already has. A consuming pod names no manifest and
-    # TRANSFER is a vacuous success; a producing pod names both halves. Half a
-    # pair is a plan-time refusal, before anything is spent, whichever half is
-    # missing.
+    # TRANSFER's direction, stated rather than assumed: `<volume>/submission/
+    # manifest.json` is where `verbatus upload` puts a real submission, so
+    # defaulting to it would make TRANSFER re-upload a submission the pod
+    # already has. A consuming pod names no manifest and TRANSFER is a
+    # vacuous success; a producing pod names both halves. Half a pair is a
+    # plan-time refusal, before anything is spent, whichever half is missing.
     submission_manifest = args.submission_manifest
     if submission_manifest is not None:
         submission_manifest = _require_contained(
@@ -1092,8 +1087,8 @@ def _build_cache(plan: Plan) -> ChairCacheBootstrapAction:
 PREFLIGHT_DTYPE = "bfloat16"
 """The dtype preflight measures the card for.  Every vLLM row in both shipped
 catalogues is ``dtype = "bfloat16"`` and ``ServingSmokeReader`` refuses a
-profile whose dtype is not exactly the measured one, so ``float16`` here --
-what this file used to pass -- made every real smoke red before it launched."""
+profile whose dtype is not exactly the measured one, so any other value here
+would make every real smoke red before it launched."""
 
 
 def _golden_page(plan: Plan, seams: PreflightSeams) -> tuple[Path, str, bytes]:
