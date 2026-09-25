@@ -1,8 +1,8 @@
 """Closed ScanTailor Advanced v4 project parser and its sole document writer.
 
-The shape below is read from ScanTailor Advanced's ProjectWriter (GPL-3.0-only,
-source inspected 2026-08-25): ``project`` v4, its image table, and the
-``filters/page-split`` outline/cutter records.  We carry no upstream code.
+The shape below is read from ScanTailor Advanced's ProjectWriter (GPL-3.0-only):
+``project`` v4, its image table, and the ``filters/page-split`` outline/cutter
+records. We carry no upstream code.
 """
 
 from __future__ import annotations
@@ -51,15 +51,12 @@ def _refuse(message: str) -> ValueError:
 
 
 def _safe_relative_component(value: str, what: str) -> str:
-    """Refuse an absolute path, a `..`/`.` component, or an embedded NUL (F025).
+    """Refuse an absolute path, a `..`/`.` component, or an embedded NUL.
 
-    `directory`'s `path` and `file`'s `name` are attacker-chosen (a project file
-    is untrusted input, per this module's own docstring), and `Path.__truediv__`
-    silently discards everything to its left when the right side is absolute --
-    joining an absolute `name` onto a `path` therefore ignores `path` entirely
-    and neither string was checked for `..` traversal at all before this. Mirrors
-    `operations/pod/transfer.py::_under`'s established check for the same class
-    of untrusted relative path.
+    `directory`'s `path` and `file`'s `name` are attacker-chosen, untrusted
+    input, and `Path.__truediv__` silently discards everything to its left
+    when the right side is absolute, so joining an absolute `name` onto a
+    `path` would ignore `path` entirely.
     """
 
     if (
@@ -154,11 +151,9 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
             raise _refuse("images repeat an id or name an unknown file")
         source_path = (project_path.parent / file_paths[image.attrib["fileId"]]).resolve()
         if not source_path.is_relative_to(project_path.parent.resolve()):
-            # F025: every component was already checked as a safe relative
-            # path above; this is the defense-in-depth close of the same rule
-            # `operations/pod/transfer.py::_under` already applies to an
-            # untrusted relative path -- a symlink crossed during `.resolve()`
-            # is the one way an all-safe-looking join can still land outside.
+            # Every component was already checked as a safe relative path
+            # above; a symlink crossed during `.resolve()` is the one way an
+            # all-safe-looking join can still land outside.
             raise _refuse("image source path escapes the project directory")
         image_paths[identifier] = {
             "source_path": str(source_path),
@@ -186,7 +181,6 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         if entry.attrib["id"] not in image_paths:
             raise _refuse("page-split geometry names an unknown image")
         if entry.attrib["id"] in claimed_images:
-            # Principle 1 forbids selecting among competing geometries for one image.
             raise _refuse("page-split offers more than one geometry for the same image")
         claimed_images.add(entry.attrib["id"])
         image = image_paths[entry.attrib["id"]]
@@ -250,15 +244,10 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
 def _physical_page_key(source_path: str, file_image: int) -> tuple[str, int]:
     """Identify one physical page for the duplicate-geometry refusal.
 
-    macOS's default filesystem, APFS, is case-insensitive but case-preserving:
-    ``masters/spread.tif`` and ``masters/SPREAD.tif`` name one file on disk even
-    though they are two different strings. Comparing `source_path` by spelling
-    alone would let two `<file>` rows that differ only in case each carry a
-    saved geometry, which the parser would treat as two physical pages instead
-    of the one the refusal above exists to catch -- a picker rebuilt by
-    accident. Folded only for this identity check; the record's own
-    ``source_path`` is the resolved target with symlinks followed, not the
-    project file's own ``<directory>``/``<file>`` spelling.
+    macOS's default filesystem is case-insensitive but case-preserving, so
+    two `<file>` rows differing only in case name one file on disk; comparing
+    `source_path` by spelling alone would let both carry a saved geometry as
+    though they were two physical pages. Folded only for this identity check.
     """
     key = source_path.casefold() if sys.platform == "darwin" else source_path
     return (key, file_image)
@@ -278,14 +267,11 @@ def _removed_half(value: str | None) -> str | None:
 def _open_output_dir(output_dir: Path) -> int:
     """Open the operator-approved output folder once, and keep it as the folder.
 
-    A name is not an object. Checking `output_dir` and then writing through the
-    same spelling asks the filesystem to resolve it twice, and a local process
-    that swaps the folder for a link in between gets the document delivered
-    somewhere the operator never approved -- `run_confined` re-checks identity
-    only after the child has exited, so it cannot take that write back. The
-    descriptor opened here is the folder that passes the identity check and the
-    folder the document is created in, with nothing in between that resolves a
-    name again.
+    A name is not an object: checking `output_dir` and then writing through
+    the same spelling would resolve it twice, and a swap in between could
+    deliver the document somewhere never approved. The descriptor opened
+    here is both the folder the identity check passes and the folder the
+    document is created in.
     """
 
     try:
@@ -300,12 +286,11 @@ def _open_output_dir(output_dir: Path) -> int:
 def _publish(directory: int, name: str, payload: bytes) -> None:
     """Create ``name`` in the pinned folder, durably, or refuse because it exists.
 
-    This is `operations/pod/durable.exclusive_write`'s contract, expressed
-    against an open directory rather than a path: the bytes land in a temporary
-    entry that is fsynced before it is published, the publication is a hard link
-    so no reader ever sees a partial document, `O_EXCL` is the exclusion, and the
-    directory entry is fsynced before the caller may say the document was
-    written. What it does not do is re-open the parent by name.
+    The same contract as `operations/pod/durable.exclusive_write`, expressed
+    against an open directory instead of a path so the parent is never
+    re-opened by name: the bytes land in an fsynced temporary, publication is
+    a hard link so no reader sees a partial document, and the directory entry
+    is fsynced before the caller may say it was written.
     """
 
     temporary = f".scantailor-geometry.{os.getpid()}.{os.urandom(8).hex()}"
@@ -342,15 +327,12 @@ def _bounded_bytes(
 ) -> bytes:
     """Bound untrusted reads and refuse non-regular files without blocking.
 
-    `O_NONBLOCK` keeps a planted FIFO from hanging the confined child before it can
-    report a refusal. The descriptor's mode closes the name-to-open race.
-    Existing-document comparisons also use `O_NOFOLLOW` so an idempotence check
-    cannot escape the write allowance through a symlink; operator-selected project
-    paths may legitimately be symlinks and have no earlier link check to race.
-
-    ``dir_fd`` reads ``path`` as one entry of an already open directory, so the
-    existing-document comparison looks at the folder the identity check passed
-    rather than at whatever the folder's name resolves to by then.
+    `O_NONBLOCK` keeps a planted FIFO from hanging the confined child.
+    Existing-document comparisons also use `O_NOFOLLOW` so an idempotence
+    check cannot escape the write allowance through a symlink; operator-
+    selected project paths may legitimately be symlinks and skip that flag.
+    ``dir_fd`` reads ``path`` as an entry of an already open directory, so
+    the comparison looks at the folder the identity check passed.
     """
     flags = os.O_RDONLY | os.O_NONBLOCK | (0 if follow else os.O_NOFOLLOW)
     try:
@@ -412,19 +394,14 @@ def main() -> int:
             raise _refuse("a commit request must carry the previewed output folder's identity")
         project = Path(request["project"])
         output_dir = Path(request["output_dir"])
-        # Preview must refuse an unusable folder before promising a pinned commit;
-        # repeating the check on commit catches replacement between launches. The
-        # open is the check: a missing folder, a plain file and a symbolic link
-        # all fail it, and what survives is a descriptor rather than a name that
-        # was true once.
+        # The open is the check: a missing folder, a plain file and a
+        # symbolic link all fail it, leaving a descriptor rather than a
+        # name that was only true once.
         output_fd = _open_output_dir(output_dir)
         try:
-            # The commit repeats only the path spelling unless this identity is also
-            # pinned: if the approved folder is replaced by another directory between
-            # the two launches, the path spelling alone cannot tell the two apart, and
-            # a document would land in a folder the operator never saw approved. The
-            # identity is read from the held descriptor, so it describes the folder
-            # the document is written into and not a namesake of it.
+            # Read from the held descriptor, not the path spelling, so a
+            # folder replaced between preview and commit is caught even
+            # though the path alone cannot tell the two apart.
             output_status = os.fstat(output_fd)
             output_identity = (output_status.st_dev, output_status.st_ino)
             if request["operation"] == "commit" and output_identity != (
@@ -445,8 +422,6 @@ def main() -> int:
             document_name = f"scantailor-geometry-{document_digest}.json"
             if request["operation"] == "commit":
                 try:
-                    # A committed reply requires a durable directory entry and must
-                    # never recreate the operator-approved parent folder.
                     _publish(output_fd, document_name, encoded)
                 except FileExistsError as error:
                     existing = _bounded_bytes(

@@ -395,12 +395,9 @@ def _paths(prepared: PreparedIngest) -> list[str]:
         values.append(f"candidate-evidence-{left}-{right}.json")
     values.extend(("triage-decision-manifest.json", "triage-clusters.json"))
     if prepared.confirmation is not None:
-        # `.corpus-register.json.lock` is `common/corpus_register._register_lock`'s
-        # deliberate, persistent sibling — it serializes writers and a crash
-        # releases it by closing the handle, so it is never removed afterwards.
-        # It is listed because the commit really does create it: an operator who
-        # approved fifteen names and found sixteen files was shown a plan that
-        # was not the write, however harmless the extra one is.
+        # `.corpus-register.json.lock` is never removed after a crash, but the
+        # commit really does create it, so it is listed rather than shown as
+        # a plan that understates what gets written.
         values.extend(
             (
                 "corpus-register.json",
@@ -446,11 +443,10 @@ def _summary(prepared: PreparedIngest) -> dict[str, Any]:
 
 
 def _cluster_lines(confirmation: Mapping[str, Any] | None) -> list[str]:
-    # The preview's digest pins the confirmation's bytes, not what the operator
-    # believes those bytes say: a file rewritten before the preview would commit
-    # verbatim under an honestly-shown digest. Showing each cluster's page
-    # designations and member digest prefixes puts the membership itself in
-    # front of the operator, so what they approve is the content, not a number.
+    # The preview's digest pins the confirmation's bytes, not what the
+    # operator believes they say, so each cluster's page designations and
+    # member digest prefixes are shown to put the membership itself in
+    # front of them, not just a number.
     if confirmation is None:
         return []
     return [
@@ -544,10 +540,8 @@ def _ready_record(prepared: PreparedIngest) -> dict[str, Any]:
     return {
         "schema": "operator-ingest-ready-v1",
         "submission_manifest_sha256": digest_of(prepared.manifest),
-        # The ledger identity every admitted page in the eventual run tree carries.
-        # Both are recorded: the canonical digest is what this console pinned its
-        # own commit to, and the self-hash is what a later reader can reconcile a
-        # run against.
+        # Both recorded: the canonical digest is what this commit pinned to,
+        # and the self-hash is what a later reader reconciles a run against.
         "submission_ledger_self_hash": prepared.manifest["self_hash"],
         "data_handling_policy_sha256": prepared.data_handling_policy_sha256,
         "triage_manifest_sha256": digest_of(prepared.produced.manifest),

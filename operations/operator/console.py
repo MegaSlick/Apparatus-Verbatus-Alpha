@@ -11,10 +11,7 @@ import sys
 from typing import Sequence
 
 # A distinct status, so the parent never reports this process's own broken
-# input pipe as a claim about the run tree. Exit 2 was indistinguishable from
-# "the console read the tree and could not make sense of it", and the operator
-# was told to freeze a parish run tree and open an evidence investigation
-# because two of this tool's own processes had mishandled a pipe.
+# input pipe as a claim about the run tree.
 PROJECTION_UNREADABLE_EXIT = 3
 
 
@@ -26,22 +23,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     try:
         projection = json.load(sys.stdin)
-    # Every way the input pipe can fail, not only the one. `json.load` on
-    # `sys.stdin` raises `JSONDecodeError` for malformed text, `UnicodeDecodeError`
-    # when the pipe delivers bytes that are not UTF-8, and `OSError` when the read
-    # itself fails -- and the last two used to leave this process dying on a
-    # traceback with status 1, which is the exact outcome the status above exists
-    # to prevent: the parent reporting a pipe fault as a claim about the run tree.
+    # `json.load` on `sys.stdin` raises `JSONDecodeError` for malformed text,
+    # `UnicodeDecodeError` for non-UTF-8 bytes, and `OSError` when the read
+    # itself fails. This is deliberately not an OperatorError: the custody
+    # parent only hands the child bytes it just serialized, and a malformed
+    # pipe cannot be a claim about the run tree; the parent turns a nonzero
+    # exit into the ordinary three-part failure contract instead.
     except (ValueError, OSError) as error:
-        # This is deliberately not an OperatorError: the custody parent only
-        # hands the child bytes it just serialized, and a malformed pipe cannot
-        # be a claim about the run tree.  The parent turns a nonzero child exit
-        # into the ordinary three-part operator failure contract.
-        #
-        # It still has to say which of the two happened. Exiting silently left
-        # the parent with an empty detail, so the operator read "investigate
-        # the named evidence problem" with no problem named, and was sent to
-        # preserve and investigate register evidence that was never touched.
         print(
             "the projection on standard input could not be read as complete JSON "
             f"({type(error).__name__}); the run tree itself was never read by this process",

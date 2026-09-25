@@ -22,12 +22,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run Verbatus without letting an import failure become a traceback."""
 
     try:
-        # Before the application, and before any verb: this code reads its
-        # configuration, stage programs and proof material from the checkout it
-        # sits in (`common/checkout.py`), and a wheel carries none of them. An
-        # operator who has somehow started outside one is told so in one screen
-        # here, rather than meeting an absent `config/…json` part way through a
-        # run that had already begun.
+        # Before the application, and before any verb: everything downstream
+        # reads its configuration, stage programs and proof material from
+        # the checkout, so an operator who started outside one is told here
+        # rather than meeting an absent config file mid-run.
         require_checkout()
         return _load_application()(argv)
     except NotACheckoutRefusal as error:

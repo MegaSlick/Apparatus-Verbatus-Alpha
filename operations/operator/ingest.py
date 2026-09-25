@@ -111,26 +111,20 @@ def _call_worker(
     request: dict[str, Any], operation: str, *, writable: Path | None
 ) -> dict[str, Any]:
     # Which stage failed decides what the operator is told about their output
-    # folder, and the two facts are not the same. The commit child may have
-    # created immutable records before an interruption, so its copy says to
-    # preserve the folder and retry into a new one. The preview child is launched
-    # with no write allowance at all, so the same copy applied to a preview
-    # failure asserts records that provably cannot exist and costs the operator a
-    # usable empty folder they were told not to reuse (principle 8).
+    # folder: the commit child may have created records before an
+    # interruption, so its message says to preserve the folder, while the
+    # preview child has no write allowance at all and must not make the same
+    # claim.
     unresolved = (
         ErrorCode.INGEST_PREVIEW_UNRESOLVED
         if operation == "preview"
         else ErrorCode.INGEST_UNRESOLVED
     )
     # `--workspace` selects project data; it is not authority to replace this
-    # custody worker's code or its working directory. Every path the worker
-    # acts on arrives absolute in the JSON request, the import root is pinned
-    # by `python_module_command` to the checkout that loaded this module, and
-    # the cwd stays that same pinned root (the backup worker's precedent) so
-    # no caller-nominated tree is in play at all. This function therefore takes
-    # no workspace at all: it used to accept one and never read it, which left
-    # the next reader a parameter that looks like the authority this comment
-    # spends six lines denying.
+    # custody worker's code or its working directory, so this function takes
+    # no workspace at all. Every path the worker acts on arrives absolute in
+    # the JSON request, and the import root and cwd are pinned to the
+    # checkout that loaded this module.
     worker_root = Path(__file__).resolve().parents[2]
     command = python_module_command("operations.operator.ingest_worker")
     payload = json.dumps({"operation": operation, **request}, sort_keys=True)
@@ -148,8 +142,6 @@ def _call_worker(
         if response is not None and response.get("status") == "refusal":
             raise OperatorError(ErrorCode.INGEST_REFUSED, detail=str(response.get("reason", "")))
         if response is not None and response.get("status") == "uncertain":
-            # Preserve the worker's actionable reason; raw protocol JSON would
-            # obscure a failure that may have happened after immutable writes began.
             raise OperatorError(unresolved, detail=str(response.get("reason", "")))
         detail = (
             completed.stderr or completed.stdout or "the confined ingest worker returned no result"

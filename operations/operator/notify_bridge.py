@@ -1,22 +1,18 @@
 """The two notification event classes this surface is allowed to send.
 
-Spec 12: "the four standing moments only (`operations/notify` exists);
-`run`/`export` completion is a `milestone`, a decision-needed hold is a
-`decision`." A spend warning is also a `milestone`: it reports an observed
-threshold crossing and never asks for a decision or changes a launch result.
-`start` and `done` belong to a working session's own hooks and are never a
-shipped tool's to send, so the allowed event set here remains exactly two and is
-enforced in code rather than left to a caller's habit.
+`run`/`export` completion and a spend-threshold crossing are both a
+`milestone`; a decision-needed hold is a `decision`. `start` and `done`
+belong to a working session's own hooks, never a shipped tool's to send, so
+the allowed event set here stays exactly two, enforced in code.
 
-**A failed ping never fails the verb that triggered it.**
-`operations/notify/README.md` names the same principle for a session, and here
-the operator is already looking at the terminal that printed the real result. So
-this returns a verdict rather than raising, and the caller says on stdout whether
-the phone got it — CLAUDE.md's "if a send fails, say so".
+A failed ping never fails the verb that triggered it: the operator is
+already looking at the terminal that printed the real result, so this
+returns a verdict rather than raising, and the caller says on stdout
+whether the phone got it.
 
-Nothing in this module reads or handles the ntfy topic. `notify.sh` owns that
-secret and keeps it off the command line; this only chooses an event name and a
-one-line message.
+Nothing in this module reads or handles the ntfy topic. `notify.sh` owns
+that secret and keeps it off the command line; this only chooses an event
+name and a one-line message.
 """
 
 from __future__ import annotations
@@ -37,12 +33,9 @@ NOTIFY_SUPPRESSED_MARKER: Final = "NOTIFY_SUPPRESSED"
 """`notify.sh` prints this word, then the reserved topic, on stdout and exits 0
 when the test sink swallowed the notification instead of posting it.
 
-Mapping that exit 0 to `delivered` was the defect this constant closes: under the
-sink the record said "Phone notification: sent." for a notification that never
-left the machine. The exit code stays 0 on purpose -- suites assert on delivered
-versus NOT DELIVERED outcomes and a guard must not change what its subject
-measures -- so the marker is what separates the two, on the one stream this
-script writes nothing else to. The word is matched, not the topic: the topic is
+The exit code stays 0 on purpose, since a guard must not change what its
+subject measures, so this marker is what separates a swallowed notification
+from a delivered one. The word is matched, not the topic: the topic is
 normally a bearer secret and no bridge carries it."""
 
 
@@ -68,9 +61,9 @@ class NotifyOutcome:
     suppressed: bool = False
     """The test sink swallowed it: attempted, not delivered, and not a failure.
 
-    A third state rather than a reworded failure. `delivered=False` alone would
-    report the sink as a delivery problem in a record an operator reads for real
-    ones, and `delivered=True` is the lie this field exists to stop."""
+    A third state rather than a reworded failure, since `delivered=False`
+    alone would report the sink as a delivery problem an operator reads
+    for real ones."""
 
     def line(self) -> str:
         if not self.attempted:

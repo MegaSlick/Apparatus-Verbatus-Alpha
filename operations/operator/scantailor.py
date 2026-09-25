@@ -79,10 +79,8 @@ def import_in_custody(
         expected_project_sha256=summary["project_sha256"],
     )
     if _output_identity(committed, operation="commit") != preview_output_identity:
-        # Belt-and-braces: the confined worker checks this pin itself before
-        # answering "committed"; re-check rather than trust that internal
-        # refusal blindly, the same way every other field of the response is
-        # re-validated instead of taken on faith.
+        # Re-checked rather than trusted, like every other field of the
+        # response, even though the confined worker checks this pin itself.
         raise OperatorError(
             ErrorCode.SCANTAILOR_UNRESOLVED,
             detail="the confined importer reported a different output folder identity",
@@ -109,8 +107,6 @@ def _call(
         input_text=json.dumps({"operation": operation, **request}),
     )
     if completed.returncode:
-        # A failed custody launcher never read the project, so its recovery path
-        # must not tell the operator to repair ScanTailor input.
         launcher = backend.launcher_failure(completed)
         if launcher is not None:
             raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
@@ -165,10 +161,6 @@ def _summary(
     ):
         raise OperatorError(error_code, detail="the confined importer returned an invalid summary")
     if expected_project_sha256 is not None and value["project_sha256"] != expected_project_sha256:
-        # The confined child checks this pin itself before it may answer
-        # "committed"; the parent re-checks the same link rather than trust
-        # that internal refusal blindly, the same way it re-validates every
-        # other field this response carries instead of taking the child's word.
         raise OperatorError(
             error_code,
             detail="the confined importer committed a project digest other than the one it was pinned to",

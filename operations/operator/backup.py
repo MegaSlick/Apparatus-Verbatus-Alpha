@@ -39,12 +39,9 @@ MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 # hard-link errors must name that filesystem constraint without weakening the
 # temp-then-link publication guarantee.
 _NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
-# F104: OS-generated residue, never written by any stage and never part of what
-# a stage seals -- admitting it as an ordinary run-tree file let a folder a Mac
-# had merely been opened in back a backup snapshot that read as evidence.
-# Recognized by exact name or, for AppleDouble sidecars, by prefix; matched
-# against the bare filename only, since Finder/Explorer drop these at every
-# depth they visit, not only at a run tree's root.
+# OS-generated residue, never written by any stage or part of what a stage
+# seals; matched against the bare filename only, since Finder/Explorer drop
+# these at every depth they visit, not only at a run tree's root.
 _OS_RESIDUE_NAMES: Final = frozenset(
     {
         ".DS_Store",
@@ -105,11 +102,8 @@ class BackupReport:
         counts: dict[str, int] = {}
         for field in ("copied", "reused"):
             count = value[field]
-            # Two clauses, two messages. Folded into one condition they also
-            # shared one refusal, so a test could not tell which clause had
-            # fired — and removing either left the other answering for both,
-            # green. The operator gains by it too: "is not an integer" says
-            # more about a report carrying "2" than a sentence about bounds.
+            # Two clauses, two messages: "is not an integer" says more about
+            # a report carrying "2" than a shared sentence about bounds would.
             if not isinstance(count, int) or isinstance(count, bool):
                 raise BackupRefusal(f"backup worker report field {field!r} is not an integer")
             if count < 0 or count > MAX_BACKUP_FILES:
@@ -180,9 +174,9 @@ def sync_run_tree(
                     {"relative_path": relative, "sha256": digest}
                     for relative, digest in sorted(before.items())
                 ],
-                # RunTree publishes through same-directory `.<target>.tmp-*` names.
-                # They are in-flight or crash residue, never published evidence. Their
-                # names remain in the snapshot so excluding them cannot become silent.
+                # In-flight or crash residue from RunTree's same-directory
+                # `.<target>.tmp-*` publication names, listed so their
+                # exclusion cannot become silent.
                 "excluded_publication_temporaries": list(before_temporaries),
             }
             data = canonical_bytes(record)
@@ -457,12 +451,10 @@ def _identity(path: Path) -> tuple[int, int] | None:
 def _contains(ancestor: Path, descendant: Path) -> bool:
     """Whether one path is the other, or holds it, by filesystem identity.
 
-    Not `is_relative_to`, which compares spellings.  The Mac target is a
-    case-insensitive filesystem -- APFS is case-insensitive by default -- so
-    `/Volumes/Vol/runs` and `/Volumes/vol/runs` are one directory that compares
-    unequal as text, and `Path.resolve` does not correct case on macOS.  Device
-    and inode are what decide whether two names are the same directory, and they
-    also settle aliases such as bind mounts.
+    Not `is_relative_to`, which compares spellings: on the default
+    case-insensitive Mac filesystem, two differently-cased spellings are one
+    directory that compares unequal as text. Device and inode settle both
+    that and aliases such as bind mounts.
     """
     target = _identity(ancestor)
     if target is None:
@@ -479,15 +471,11 @@ def _inventory_descriptor(
     publication_temporaries: list[str] = []
     mac_spellings: dict[str, str] = {}
     encountered = 0
-    # A fresh open file description, not `os.dup`. `sync_run_tree` scans the
-    # same anchored root twice and compares the two views, and `dup` shares the
-    # directory offset with the caller's descriptor: on Linux `getdents64`
-    # advances that shared offset, so the second pass would start at end of
-    # directory, see an empty tree, and refuse a backup that had in fact just
-    # been copied. macOS does not advance it, which is why this was invisible
-    # here. `openat` on "." re-anchors the same directory the caller already
-    # inspected -- "." cannot be a symlink -- at offset zero, so neither pass
-    # depends on unspecified `fdopendir` positioning.
+    # A fresh open file description, not `os.dup`: `sync_run_tree` scans the
+    # same anchored root twice, and `dup` shares the directory offset with
+    # the caller's descriptor, so on Linux the second pass would start at
+    # end of directory and see an empty tree. `openat` on "." re-anchors at
+    # offset zero instead.
     root_descriptor = _open_directory_descriptor(
         ".", parent_descriptor=source_descriptor, what="source run tree"
     )
@@ -531,17 +519,11 @@ def _inventory_descriptor(
             if stat.S_ISLNK(details.st_mode):
                 raise BackupRefusal(f"run tree member {relative!r} is a symbolic link")
             if _is_os_residue(name):
-                # Neither copied nor inventoried: this member was never a run-tree
-                # member to begin with, so excluding it needs no entry in the
-                # snapshot the way a publication temporary's exclusion does --
-                # recording every OS's residue names in a versioned, worker-to-
-                # parent schema is a larger change than this fix makes (F103
-                # already names that same schema as due a version bump). Checked
-                # before the directory branch below, not only the file branch:
-                # `.Trashes`, `.fseventsd` and `.Spotlight-V100` are directories
-                # on macOS, and a check reached only after `stat.S_ISREG` would
-                # never see them -- they would be walked and their contents
-                # hashed into the snapshot like any other run-tree directory.
+                # Neither copied nor inventoried: this was never a run-tree
+                # member. Checked before the directory branch below, since
+                # `.Trashes`, `.fseventsd` and `.Spotlight-V100` are
+                # directories on macOS and would otherwise be walked and
+                # hashed into the snapshot like any other directory.
                 continue
             if stat.S_ISDIR(details.st_mode):
                 if len(stack) >= MAX_DIRECTORY_DEPTH:
@@ -726,14 +708,10 @@ def _temporary_regular(directory_descriptor: int, *, prefix: str) -> tuple[int, 
 def _publication_temporary(name: str, directory_descriptor: int, *, what: str) -> Iterator[None]:
     """Discard a publication temporary without displacing a refusal in flight.
 
-    The removal can only run as the block unwinds, and an ``OSError`` raised
-    there -- ``EACCES`` or ``EIO`` on a sync folder or a network share -- would
-    leave the block carrying an errno about a ``.backup-`` temporary in place of
-    "backup object ... already exists but does not verify". The refusal names
-    the fault the operator has to act on, so it is the one that survives. The
-    cleanup failure is said beside it rather than instead of it, and on the path
-    where nothing else went wrong it is itself the refusal: a temporary left in
-    a content-addressed store is not a finished backup.
+    A cleanup ``OSError`` here must not replace the fault the operator has
+    to act on, so it is appended beside it instead; on the path where
+    nothing else went wrong it is itself the refusal, since a temporary
+    left in a content-addressed store is not a finished backup.
     """
 
     def _remove() -> str | None:
@@ -800,12 +778,9 @@ def _copy_verified(
             after = _stable_file_metadata(os.fstat(origin.fileno()))
             destination.flush()
             os.fsync(destination.fileno())
-        # Two faults, two sentences, for the same reason `from_record` splits
-        # its clauses. One shared message let an operator read "changed while
-        # it was being copied", conclude a stage was still writing, wait and
-        # retry — when the second case is identical metadata over different
-        # bytes, which is a storage or memory fault silently returning wrong
-        # content for a register page, and no amount of retrying informs them.
+        # Two faults, two sentences: identical metadata over different bytes
+        # is a storage or memory fault, not a writer still active, and
+        # retrying would not fix it.
         if before != after:
             raise BackupRefusal(
                 f"source {relative!r} changed on disk while it was being copied; a writer "
@@ -836,9 +811,8 @@ def _link_or_refuse(
 ) -> None:
     """Publish atomically while translating unsupported hard links for the operator.
 
-    `FileExistsError` must reach the caller so it can verify the bytes that won
-    the name. A direct exclusive write would expose the final name before its
-    content was complete.
+    `FileExistsError` reaches the caller so it can verify the bytes that won
+    the name.
     """
     try:
         os.link(
@@ -885,10 +859,8 @@ def _read_regular_bytes(
 def _refuse_a_different_snapshot(snapshots_descriptor: int, name: str, data: bytes) -> bool:
     """Refuse a taken snapshot name unless it is already exactly these bytes.
 
-    A symlink or a non-regular file is refused rather than followed, matching
-    `_copy_verified`.  A published snapshot is an immutable index into the
-    store; a link whose destination can change afterwards is not that, even on
-    the pass where the bytes it points at happen to agree.
+    A symlink or a non-regular file is refused rather than followed, since
+    a published snapshot must be an immutable index into the store.
     """
     existing = _read_regular_bytes(
         snapshots_descriptor,
@@ -983,10 +955,8 @@ def _verify_backup_snapshot(
     if value["schema"] != SCHEMA or value["run_id"] != run_id:
         raise BackupRefusal("backup snapshot does not name this schema and requested run id")
     files = value["files"]
-    # Three faults, three sentences, for the reason `from_record` splits its
-    # clauses: an operator who backed up a very large run and is told the
-    # snapshot "has no file inventory" is being told something that did not
-    # happen, and each surviving clause would silently answer for the others.
+    # Three faults, three sentences: "has no file inventory" must not be
+    # told to an operator whose run simply exceeded the file limit.
     if not isinstance(files, list):
         raise BackupRefusal("backup snapshot's file inventory is not a list")
     if not files:

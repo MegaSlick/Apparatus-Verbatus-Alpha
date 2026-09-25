@@ -32,13 +32,9 @@ class SpendSurface:
 
         source = Path(policy_path)
         try:
-            # One read, one byte sequence: the digest printed beside every
-            # ceiling below is the digest of the very bytes those ceilings were
-            # parsed from. Hashing the file and then parsing it separately left
-            # a window in which a policy could be widened, read, and restored
-            # before the confirming hash, so the screen showed one file's limits
-            # under another file's digest. Re-reading to confirm cannot close
-            # that; not re-reading does.
+            # One read, one byte sequence, so the digest printed beside every
+            # ceiling is the digest of the exact bytes it was parsed from,
+            # never a second read that could see a widened-then-restored file.
             policy_bytes = bounded_bytes(source, "the spend policy")
             policy_digest = hashlib.sha256(policy_bytes).hexdigest()
             policy = load_spend_policy_bytes(policy_bytes, source=source)
@@ -125,18 +121,14 @@ class SpendSurface:
         for path, record in sorted(
             records, key=lambda item: (_recorded_instant(item[1]), item[0].name)
         ):
-            # `readable_records_of_kind` hands back only files it opened by the
-            # name it was given, and `ReceiptStore.read` matched that name's
-            # digest to the canonical bytes. A link would break both halves.
             digest = path.name.rsplit("-", 1)[-1].removesuffix(".json")
             preview = record["payload"].get("preview")
             spend = preview.get("spend") if isinstance(preview, dict) else None
             ceilings = spend.get("ceilings") if isinstance(spend, dict) else None
             if not isinstance(ceilings, dict):
-                # Every confirmation represents a paid action even when its saved
-                # preview or ceilings are absent or malformed. A missing preview
-                # is the same lost spend fact as an unreadable one, because this
-                # tool writes a preview into every confirmation it records.
+                # Every confirmation represents a paid action even when its
+                # saved preview or ceilings are absent or malformed, so this
+                # is the same lost spend fact as an unreadable receipt.
                 unreadable.append(
                     f"{path.name}: its saved preview carries no readable spend ceilings, "
                     "so no number from this confirmed paid action is shown below"
@@ -247,13 +239,10 @@ MAX_ALERT_ENTRIES_SHOWN = 64
 """How many saved alert or delivery entries one receipt may put on this screen.
 
 A launch confirmation records one episode per crossed warning threshold, so a
-genuine receipt holds one or two. `records.MAX_RECORD_BYTES` bounds one *file*,
-not this projection: measured here, one lawful four-mebibyte receipt holding a
-million one-character alerts rendered 1,000,009 lines at 504 MiB resident, and
-this screen accumulates every receipt in an append-only store — so a handful of
-them reaches exactly the kill that printed nothing at all, which is the failure
-that bound was chosen to prevent. The overflow is counted and shown against the
-receipt's own digest, so it is bounded on screen and not lost.
+genuine receipt holds one or two; `records.MAX_RECORD_BYTES` bounds one file,
+not this projection, which accumulates every receipt in an append-only
+store. The overflow is counted and shown against the receipt's own digest,
+so it is bounded on screen and not lost.
 """
 
 
