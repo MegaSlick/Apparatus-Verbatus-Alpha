@@ -744,6 +744,7 @@ def expand_sources(
                 # never handed a reopenable pathname.
                 detected = None
             if detected != "pdf":
+                # Rasters are read into memory under the size bound; only PDFs stream.
                 if declared_size is not None and declared_size > MAX_SOURCE_BYTES:
                     append_declared_pages(detected)
                     continue
@@ -993,6 +994,7 @@ def process_sources(
                     # not a page refusal.
                     raise ContractError(str(error)) from error
         finally:
+            # The stream closes after the document, even if that close failed.
             if context_stack is not None:
                 context_stack.close()
 
@@ -1986,6 +1988,8 @@ def _config_digest(path: str | Path, label: str) -> str:
         ) from error
 
 
+# The Designator rechecks padding and geometry at point of use, so a real run
+# that never sealed them would refuse there.
 def _padding_config_digest(path: str) -> str:
     return _config_digest(path, "Designator padding")
 
@@ -2038,6 +2042,7 @@ def _real_bindings(
     approval.
     """
     validate_witness_adapter_bindings(models)
+    # Bound as on the fixture path, so a changed serving catalogue changes `config_digest`.
     serving_recipes_config_digest = _config_digest(serving_recipes_config_path, "serving recipes")
     pod_placement_config_digest = _config_digest(pod_placement_config_path, "pod placement")
     witness_context_declaration_sha256 = validate_witness_context_bindings(
@@ -2192,7 +2197,8 @@ def _create_run(
         render_settings={"pdf": pdf_settings.to_record()},
         sealed_config_digests=bindings["sealed_config_digests"],
         register_bytes=_read_corpus_register(args.corpus_register),
-        # None when the orchestrator could not measure the commit.
+        # Only the Door creates the run authority, so only it can seal the commit;
+        # None when the orchestrator could not measure it.
         repository_commit=args.repository_commit,
     )
 
