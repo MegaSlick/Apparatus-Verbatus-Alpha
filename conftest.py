@@ -70,7 +70,7 @@ def tree_snapshot(root: Path) -> dict[str, str]:
     # A descendant the walk cannot read is not an absent descendant: `os.walk`'s
     # default `onerror=None` drops the subtree in silence, and a refusal probe
     # would then report "no tree change" over entries it never examined. The
-    # snapshot fails loudly instead (CodeRabbit round 3 on PR #91).
+    # snapshot fails loudly instead.
     for parent, directory_names, file_names in os.walk(root, onerror=_raise_walk_error):
         for name in (*directory_names, *file_names):
             path = Path(parent) / name

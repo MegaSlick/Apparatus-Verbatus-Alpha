@@ -51,12 +51,10 @@ def identity(
     return ResolvedIdentity(
         candidate_key=key,
         public_slot=slot,
-        # `is None`, not `or` — the same defect fixed two lines below in
-        # `evaluation_act`, and it survived that fix. An explicitly supplied
-        # empty `source_ref` is exactly what a test probing the source-comparison
-        # rules wants, and `or` silently replaced it with a well-formed synthetic
-        # one, so the test would have proved nothing about the empty case. Found
-        # by the Opus read of this branch.
+        # `is None`, not `or`: an explicitly supplied empty `source_ref` is
+        # exactly what a test probing the source-comparison rules wants, and
+        # `or` would silently replace it with a well-formed synthetic one, so
+        # the test would prove nothing about the empty case.
         source_ref=f"synthetic/{key}" if source_ref is None else source_ref,
         revision=f"revision-{key}",
         artifact_digest=digest(f"artifact-{key}"),
@@ -108,11 +106,9 @@ def evaluation_act(
             adjudication_digest=digest(f"adjudication:{opaque_act_id}"),
             reference_revision="synthetic-reference-v1",
             # Overridable, and `is None` so an explicit empty tuple survives:
-            # every fixture act carried exactly two drafts, so no test in this
-            # cohort could reach the runner's refusal of a checked reference
-            # adjudicated from any other number. That refusal is what stops one
-            # person's guess becoming an established reading, and it could have
-            # been deleted with the suite still green.
+            # the default of two drafts matches every fixture act, and
+            # overriding it is how a test reaches the runner's refusal of a
+            # checked reference adjudicated from any other number.
             independent_draft_sha256s=(
                 (
                     digest(f"draft-a:{opaque_act_id}"),

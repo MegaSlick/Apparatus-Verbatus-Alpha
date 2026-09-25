@@ -221,7 +221,7 @@ def test_ground_truth_refuses_a_reference_python_cannot_encode():
 def test_a_stack_of_combining_marks_is_bounded_where_segmentation_is_quadratic():
     """uniseg segments one long grapheme cluster in time quadratic in its length.
 
-    Measured against uniseg 0.10.1 on 2026-08-09: 4,000 marks on one base
+    Measured against uniseg 0.10.1: 4,000 marks on one base
     character take 5.9s and 8,000 take 23.5s, so the 20,000-character bound
     alone would admit minutes of CPU per scored cell from one response. The cap
     is UAX #15's stream-safe limit; three marks is already unusual in polytonic
@@ -387,7 +387,7 @@ def test_a_perlectio_testimonia_count_must_be_a_count_before_it_is_read_as_a_fla
     So `-1` and `True` both passed as "saw Testimonia" and were then retained as
     evidence — and the number travels into the dissent and parroting measures,
     where a count that is not a count is a measurement claim about something that
-    never happened (principle 8).
+    never happened.
     """
 
     for wrong in (True, -1, 2.0, "3"):

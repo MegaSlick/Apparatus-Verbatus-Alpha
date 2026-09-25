@@ -145,9 +145,8 @@ def project_public_finding(run: MeasurementRun) -> dict[str, Any]:
     except MeasurementRefusal as error:
         # Only the instrument's own refusals. `MatrixRefusal` and
         # `CandidateRosterRefusal` both inherit from it, so the eligibility
-        # checks are still covered — while catching `Exception` turned an
-        # `AttributeError` in the publish path into a confident-sounding
-        # "not eligible for public evidence" and hid the defect.
+        # checks are still covered; catching `Exception` would mask an
+        # unrelated defect as a confident "not eligible for public evidence".
         raise PublicSafetyRefusal(f"run is not eligible for public evidence: {error}") from error
     if run.manifest is None:  # pragma: no cover - protected by require_publishable
         raise PublicSafetyRefusal("public finding has no sealed manifest")
@@ -176,6 +175,15 @@ def _require_exact_keys(value: Any, allowed: set[str], label: str) -> dict[str, 
 def _require_nonnegative_int(value: Any, label: str) -> None:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise PublicSafetyRefusal(f"public {label} must be a non-negative integer")
+
+
+def _require_ratio(
+    record: dict[str, Any], field: str, numerator: str, denominator: str, message: str
+) -> None:
+    if not math.isclose(
+        record[field], record[numerator] / record[denominator], rel_tol=0, abs_tol=1e-12
+    ):
+        raise PublicSafetyRefusal(message)
 
 
 def _require_rate(value: Any, label: str, *, nullable: bool = False, signed: bool = False) -> None:
@@ -228,36 +236,32 @@ def _validate_metric_fields(record: dict[str, Any], *, baseline: bool) -> None:
         raise PublicSafetyRefusal("public response states do not cover planned cells")
     for field in ("cer", "wer", "completeness"):
         _require_rate(record[field], field)
-    if not math.isclose(
-        record["cer"],
-        record["cer_errors"] / record["cer_reference_units"],
-        rel_tol=0,
-        abs_tol=1e-12,
-    ):
-        raise PublicSafetyRefusal(
-            "public CER does not equal its retained numerator and denominator"
-        )
-    if not math.isclose(
-        record["wer"],
-        record["wer_errors"] / record["wer_reference_units"],
-        rel_tol=0,
-        abs_tol=1e-12,
-    ):
-        raise PublicSafetyRefusal(
-            "public WER does not equal its retained numerator and denominator"
-        )
+    _require_ratio(
+        record,
+        "cer",
+        "cer_errors",
+        "cer_reference_units",
+        "public CER does not equal its retained numerator and denominator",
+    )
+    _require_ratio(
+        record,
+        "wer",
+        "wer_errors",
+        "wer_reference_units",
+        "public WER does not equal its retained numerator and denominator",
+    )
     if (
         record["cer_matches"] > record["cer_reference_units"]
         or record["wer_matches"] > record["wer_reference_units"]
     ):
         raise PublicSafetyRefusal("public match count exceeds its checked denominator")
-    if not math.isclose(
-        record["completeness"],
-        record["cer_matches"] / record["cer_reference_units"],
-        rel_tol=0,
-        abs_tol=1e-12,
-    ):
-        raise PublicSafetyRefusal("public completeness does not equal its retained match count")
+    _require_ratio(
+        record,
+        "completeness",
+        "cer_matches",
+        "cer_reference_units",
+        "public completeness does not equal its retained match count",
+    )
     _require_rate(record["dissent_rate"], "dissent_rate", nullable=True)
     _require_rate(record["mean_elapsed_ms"], "mean_elapsed_ms", nullable=True)
     _require_rate(record["mean_cost_usd"], "mean_cost_usd", nullable=True)
@@ -273,9 +277,8 @@ def _validate_metric_fields(record: dict[str, Any], *, baseline: bool) -> None:
         raise PublicSafetyRefusal("public cost mean nullness does not match its observation count")
     # Malformed cells are excluded from the denominator, exactly as
     # `runner.require_publishable` excludes them: a `malformed` response is a
-    # predeclared state with no measurable response to time. Without this the two
-    # checks disagreed, and a run the runner had already declared publishable was
-    # refused here for the cells it had just been told not to count.
+    # predeclared state with no measurable response to time. Staying in step
+    # with the runner keeps this check and `require_publishable` agreeing.
     measurable_cells = record["cell_count"] - record["malformed_cells"]
     if not baseline and (
         record["elapsed_observed_cells"] != measurable_cells
