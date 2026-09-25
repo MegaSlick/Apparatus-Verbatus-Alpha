@@ -138,3 +138,31 @@ def test_another_hold_cause_still_names_the_candidate():
     assert "continuation candidate" in reason
     assert recensor.with_candidate_reason(reason, True) == reason
     assert recensor.with_candidate_reason("coverage reconciles", False) == "coverage reconciles"
+
+
+def test_a_hold_review_of_a_named_act_cites_its_candidates(monkeypatch):
+    """A re-shoot hold once reached review without the page-break candidate naming the act."""
+    published = {}
+    monkeypatch.setattr(recensor, "current_review", lambda *_args: None)
+    monkeypatch.setattr(recensor, "publish_review", lambda _context, **kw: published.update(kw))
+    context = _Context()
+    reading = context.artifact_ref(PERLECTOR, "perlectio", "reading")
+    refs = [context.artifact_ref(DESIGNATOR, "continuation-candidate", "first")]
+    recensor._publish_hold_review(
+        context,
+        {"act_id": "a", "act_key": "a", "page_ordinal": 1},
+        reason="cross-capture-read-not-built: held",
+        candidate_refs=refs,
+        regions=[],
+        perlectio_ref=reading,
+        budget={"allowed": 0, "absolute_cap": 0},
+        coverage={},
+        geometry_coverage={},
+        content_coverage={},
+        content_findings={},
+        page_findings={},
+    )
+    assert published["inputs"] == [reading, *refs]
+    assert published["payload"]["continuation_candidate_refs"] == refs
+    assert published["payload"]["reason"].startswith("cross-capture-read-not-built")
+    assert "continuation candidate" in published["payload"]["reason"]

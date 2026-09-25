@@ -3262,6 +3262,7 @@ def _publish_hold_review(
     act: dict,
     *,
     reason: str,
+    candidate_refs: list[dict],
     regions: list[dict],
     budget: dict,
     coverage: dict,
@@ -3289,10 +3290,11 @@ def _publish_hold_review(
         + [
             context.input_ref(path)
             for path in dict.fromkeys(region["payload"]["image_path"] for region in regions)
-        ],
+        ]
+        + candidate_refs,
         payload={
             "act_key": act["act_key"],
-            "reason": reason,
+            "reason": with_candidate_reason(reason, bool(candidate_refs)),
             "coverage": coverage,
             "geometry_coverage": geometry_coverage,
             "testimony_content_coverage": content_coverage,
@@ -3312,6 +3314,7 @@ def _publish_hold_review(
             "uncertainty_assessment": None,
             "cross_capture_coverage": None,
             **({"perlectio_ref": perlectio_ref} if perlectio_ref is not None else {}),
+            **({"continuation_candidate_refs": candidate_refs} if candidate_refs else {}),
         },
     )
 
@@ -3367,6 +3370,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 context,
                 act,
                 reason=f"the Designator held this act: {hold['payload']['reason']}",
+                candidate_refs=candidate_refs.get(act_id, []),
                 regions=artifacts_for(context, DESIGNATOR, "region", act_id),
                 hold_path=hold_path,
                 budget=budget,
@@ -3406,6 +3410,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "read exists, review the act against every capture the register names "
                     "for its page"
                 ),
+                candidate_refs=candidate_refs.get(act_id, []),
                 regions=state["regions"],
                 perlectio_ref=context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"]),
                 budget=budget,
