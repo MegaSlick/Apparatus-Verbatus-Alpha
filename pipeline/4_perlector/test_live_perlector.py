@@ -1372,7 +1372,7 @@ def test_default_serving_factory_logs_under_the_run_tree_and_leases_off_it(live_
             TIER,
         ],
     )
-    args = perlector.stage_parser(perlector.__doc__.splitlines()[0]).parse_args()
+    args = perlector.stage_parser(perlector.DESCRIPTION).parse_args()
     context = perlector.open_stage_context(
         args, PERLECTOR, registry_factory=ChairRegistry.from_toml
     )
@@ -1424,7 +1424,7 @@ def _page_context(root: Path, catalogue: Path, monkeypatch):
             TIER,
         ],
     )
-    args = perlector.stage_parser(perlector.__doc__.splitlines()[0]).parse_args()
+    args = perlector.stage_parser(perlector.DESCRIPTION).parse_args()
     return perlector.open_stage_context(args, PERLECTOR, registry_factory=ChairRegistry.from_toml)
 
 

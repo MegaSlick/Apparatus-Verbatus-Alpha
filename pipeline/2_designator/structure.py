@@ -28,13 +28,12 @@ before labelling.
 this module's and `conservation.py`'s labelling are checked against.
 """
 
-from typing import Final
-
 from common.background import (  # noqa: F401  (re-exported: see the note above)
     BACKGROUND_SOURCE_INTERIOR_MODE,
     BACKGROUND_SOURCE_MODAL,
     BASIS_POINTS,
     PRIMARY_MARGIN,
+    SECONDARY_MARGIN,
     BackgroundEvidence,
     BackgroundInferenceRefusal,
     BackgroundPolicy,
@@ -54,14 +53,6 @@ from common.components import (  # noqa: F401  (re-exported: see the note above)
     label_components_reference,
 )
 from common.contracts.errors import ContractError
-
-# Deliberately not derived or configured: a fixed 2 below background is
-# smaller than any derived margin, so `secondary_scan` is guaranteed strictly
-# more sensitive than `primary_scan` on every page, never the reverse. A
-# derived value could invert that on some page, trading a visible over-count
-# for a possible silent loss. Read as a literal by an AST test, so it must
-# stay one.
-SECONDARY_MARGIN: Final = 2
 
 # No module default: this is the one threshold that cannot honestly scale by
 # page dimension, so `run.py` must resolve it from the sealed config field and

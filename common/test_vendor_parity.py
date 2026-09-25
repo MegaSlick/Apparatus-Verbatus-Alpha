@@ -90,6 +90,7 @@ from common.chandra_native_retry import (
     recipe_record as chandra_recipe_record,
 )
 from common.chandra_native_retry import wire_parameters as chandra_wire_parameters
+from common.contracts.canonical import ast_digest
 from common.imaging import encode_grayscale_png
 from common.imaging_ports import (
     CHANDRA_GRID_SIZE,
@@ -200,25 +201,6 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _canonical_ast(value: object) -> object:
-    """Represent AST semantics without ``ast.dump``'s version-specific defaults."""
-    if isinstance(value, ast.AST):
-        return [
-            type(value).__name__,
-            [(name, _canonical_ast(field)) for name, field in ast.iter_fields(value)],
-        ]
-    if isinstance(value, list):
-        return [_canonical_ast(item) for item in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    raise TypeError(f"unsupported AST value {type(value).__name__}")
-
-
-def _canonical_ast_digest(value: ast.AST) -> str:
-    normalized = json.dumps(_canonical_ast(value), ensure_ascii=True, separators=(",", ":"))
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
 def _function_body_digest(source: str, *, filename: str, function_name: str) -> str:
     """Digest one function's normalized AST body, excluding its docstring."""
     tree = ast.parse(source, filename=filename)
@@ -234,7 +216,7 @@ def _function_body_digest(source: str, *, filename: str, function_name: str) -> 
     body = (
         function.body[1:] if ast.get_docstring(function, clean=False) is not None else function.body
     )
-    return _canonical_ast_digest(ast.Module(body=body, type_ignores=[]))
+    return ast_digest(ast.Module(body=body, type_ignores=[]))
 
 
 # How deep into a module-level container the string walk below goes.  Six is
@@ -316,13 +298,8 @@ def test_the_carried_chandra_prompt_is_the_vendors_own_rendered_bytes():
         assert "normalized 0-1000" in value
         assert "data-bbox" in value and "data-label" in value
 
-    source = (ROOT / "common/chandra_layout.py").read_text(encoding="utf-8")
-    assert CHANDRA_OCR_LAYOUT_PROMPT_SHA256 in source, (
-        "the carried Chandra prompt's digest is not recorded beside it in common/chandra_layout.py"
-    )
-    assert CHANDRA_CODE_COMMIT in source, (
-        "the carried Chandra prompt does not name the vendor commit it was taken from"
-    )
+    assert module.OCR_LAYOUT_PROMPT_SHA256 == CHANDRA_OCR_LAYOUT_PROMPT_SHA256
+    assert module.VENDOR_COMMIT == CHANDRA_CODE_COMMIT
 
 
 @pytest.mark.xfail(condition=_CHURRO_DOCUMENT_PENDING, reason=_PENDING_REASON, strict=False)
@@ -342,15 +319,12 @@ def test_the_carried_churro_system_messages_are_the_vendors_own_bytes_per_varian
         )
         assert _digest(CHURRO_SYSTEM_MESSAGES[variant]) == expected
 
-    source = (ROOT / "common/churro_document.py").read_text(encoding="utf-8")
-    for variant, expected in CHURRO_SYSTEM_MESSAGE_SHA256.items():
-        assert expected in source, (
-            f"the {variant!r} Churro system message's digest is not recorded beside it"
-        )
-    assert CHURRO_CODE_COMMIT in source and CHURRO_PAPER_COMMIT in source, (
-        "the two carried Churro system messages do not both name the vendor commit "
-        "they were taken from"
+    variants = module.CHURRO_PROMPT_VARIANTS
+    assert {name: row["system_sha256"] for name, row in variants.items()} == dict(
+        CHURRO_SYSTEM_MESSAGE_SHA256
     )
+    assert variants["registry-v0.3.0"]["commit"] == CHURRO_CODE_COMMIT
+    assert variants["paper-harness-ed09bc7"]["commit"] == CHURRO_PAPER_COMMIT
 
 
 def _feeding_literal(function_name: str) -> Any:
@@ -371,12 +345,12 @@ def _feeding_literal(function_name: str) -> Any:
     raise AssertionError(f"feeding.py no longer defines {function_name}")
 
 
-def _feeding_docstring(function_name: str) -> str:
+def _feeding_constant(name: str) -> Any:
     tree = ast.parse(FEEDING_SOURCE.read_text(encoding="utf-8"), filename=str(FEEDING_SOURCE))
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == function_name:
-            return ast.get_docstring(node) or ""
-    raise AssertionError(f"feeding.py no longer defines {function_name}")
+        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == name:
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"feeding.py no longer defines {name}")
 
 
 def test_the_carried_dai_prompt_bytes_digest_to_the_pinned_revisions_files():
@@ -396,16 +370,14 @@ def test_the_carried_dai_prompt_bytes_digest_to_the_pinned_revisions_files():
             f"{DAI_WEIGHTS_REPOSITORY}@{DAI_WEIGHTS_REVISION}"
         )
 
-    docstring = _feeding_docstring("dai_prompt")
-    assert DAI_WEIGHTS_REVISION in docstring
-    for filename in ("system.txt", "query.txt"):
-        assert DAI_CARRIED_FILE_SHA256[filename] in docstring, (
-            f"DAI's {filename} digest is not recorded beside the bytes it describes"
-        )
+    assert _feeding_constant("DAI_WEIGHTS_REPOSITORY") == DAI_WEIGHTS_REPOSITORY
+    assert _feeding_constant("DAI_WEIGHTS_REVISION") == DAI_WEIGHTS_REVISION
+    assert _feeding_constant("DAI_CARRIED_FILE_SHA256") == dict(DAI_CARRIED_FILE_SHA256)
+    assert _feeding_constant("DAI_CARRIED_FILE_BYTES") == dict(DAI_CARRIED_FILE_BYTES)
 
 
 def test_the_carried_dai_generation_values_are_the_shipped_configuration():
-    """The nine shipped values, and the source file's digest recorded beside them."""
+    """The nine shipped values."""
     generation = _feeding_literal("dai_generation")
 
     assert generation == dict(DAI_GENERATION_CONFIG), (
@@ -418,17 +390,6 @@ def test_the_carried_dai_generation_values_are_the_shipped_configuration():
     # `top_k: 1` makes 0.1 argmax-equivalent; that equivalence is what lets the
     # reading of record stay at temperature 0 without departing from the vendor.
     assert generation["top_k"] == 1
-
-    docstring = _feeding_docstring("dai_generation")
-    assert DAI_CARRIED_FILE_SHA256["generation_config.json"] in docstring, (
-        "the shipped generation_config.json's digest is not recorded beside the "
-        "values lifted out of it"
-    )
-    # The revision itself is recorded once, on `dai_prompt`, and this docstring
-    # cites that citation rather than repeating it. Both halves are asserted so
-    # the reference cannot be left dangling by an edit to either.
-    assert "dai_prompt" in docstring
-    assert DAI_WEIGHTS_REVISION in _feeding_docstring("dai_prompt")
 
 
 def test_the_vendor_pins_this_file_states_are_internally_consistent():
@@ -480,7 +441,7 @@ def test_chandra_native_retry_arithmetic_and_detector_match_the_pinned_source_of
         if isinstance(node, ast.FunctionDef) and node.name == "detect_repeat_token"
     )
     body = function.body[1:]  # discard the local docstring, absent upstream
-    assert _canonical_ast_digest(ast.Module(body=body, type_ignores=[])) == (
+    assert ast_digest(ast.Module(body=body, type_ignores=[])) == (
         "a76c8f2bc96316cedf7ed3ba820f5cfae71663b98410bdeedb080499d9378345"
     )
 

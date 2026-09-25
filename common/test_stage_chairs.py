@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -256,26 +257,26 @@ def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_pa
         "receipt_reference": receipt_reference,
         "launch_audit_reference": audit_reference,
     }
-    with pytest.raises(SchemaRefusal, match="malformed"):
+    with pytest.raises(SchemaRefusal, match="is not a canonical run-relative path"):
         context.write_serving_evidence_manifest(
             {"relative_path": "/absolute", "sha256": "c" * 64}, audit_reference
         )
-    with pytest.raises(SchemaRefusal, match="malformed"):
+    with pytest.raises(SchemaRefusal, match="is not a canonical run-relative path"):
         context.write_serving_evidence_manifest(
             {"relative_path": "stages/preflight/../../escape", "sha256": "c" * 64}, audit_reference
         )
-    with pytest.raises(SchemaRefusal, match="malformed"):
+    with pytest.raises(SchemaRefusal, match="not a lowercase sha256"):
         context.write_serving_evidence_manifest(
             {"relative_path": "stages/preflight/blobs/sha256/x", "sha256": "not-a-digest"},
             audit_reference,
         )
-    with pytest.raises(SchemaRefusal, match="unknown or missing fields"):
+    with pytest.raises(SchemaRefusal, match="is not a closed"):
         context.write_serving_evidence_manifest({"relative_path": "x"}, audit_reference)
-    with pytest.raises(SchemaRefusal, match="unknown or missing fields"):
+    with pytest.raises(SchemaRefusal, match="is not a closed"):
         context.write_serving_evidence_manifest(
             {"relative_path": "x", "sha256": "c" * 64, "extra": "field"}, audit_reference
         )
-    with pytest.raises(SchemaRefusal, match="unknown or missing fields"):
+    with pytest.raises(SchemaRefusal, match="is not a closed"):
         context.write_serving_evidence_manifest("not-a-mapping", audit_reference)
 
     missing_digest = "c" * 64
@@ -325,6 +326,27 @@ def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_pa
     )
     with pytest.raises(SchemaRefusal, match="different chairs"):
         context.write_serving_evidence_manifest(receipt_reference, other_chair_audit_reference)
+
+
+def test_serving_evidence_manifest_accepts_a_mapping_proxy_reference(tmp_path):
+    """The signature promises ``Mapping``; a ``MappingProxyType`` must work, not just ``dict``."""
+    context, identity = _context(tmp_path)
+    details = fixture_serving_details(identity)
+    receipt_reference = context.write_serving_receipt(identity, details)
+    audit_reference = context.write_serving_launch_audit(
+        {
+            "schema": "serving-launch-audit.v1",
+            "chair": identity.role,
+            "started_at": details.started_at,
+            "configuration_inputs": dict(context.serving_config_inputs),
+        }
+    )
+    evidence_reference = context.write_serving_evidence_manifest(
+        MappingProxyType(receipt_reference), MappingProxyType(audit_reference)
+    )
+    evidence = json.loads(context.tree.read_bytes(evidence_reference["relative_path"]))
+    assert evidence["receipt_reference"] == receipt_reference
+    assert evidence["launch_audit_reference"] == audit_reference
 
 
 def test_serving_evidence_manifest_refuses_different_serving_start_moments(tmp_path):

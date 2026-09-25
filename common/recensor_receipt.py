@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Final
 
-from common.contracts.canonical import is_sha256, self_hash, verify_self_hash
+from common.contracts.canonical import is_plain_int, is_sha256, self_hash, verify_self_hash
+from common.contracts.envelope import digest_ref
 from common.contracts.errors import FatalAccounting, ReceiptVersionMismatch, SchemaRefusal
 from common.contracts.outcomes import (
     INTERIM_GRANULARITY_BASIS,
@@ -110,7 +111,7 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
 
 
 def _is_count(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return is_plain_int(value) and value >= 0
 
 
 def _partition_counts(items: list[dict[str, Any]]) -> dict[str, int]:
@@ -329,16 +330,7 @@ def _validate_coverage(
 
 
 def _validate_reference(reference: Any, what: str) -> None:
-    if (
-        not isinstance(reference, dict)
-        or set(reference) != {"relative_path", "sha256"}
-        or not isinstance(reference["relative_path"], str)
-        or not reference["relative_path"]
-        or reference["relative_path"].startswith("/")
-        or ".." in reference["relative_path"].split("/")
-        or not is_sha256(reference["sha256"])
-    ):
-        raise SchemaRefusal(f"Recensor partition receipt has malformed {what}")
+    digest_ref(reference, f"Recensor partition receipt {what}")
 
 
 EMPTY_DENOMINATOR_REASON: Final = (

@@ -15,7 +15,15 @@ import unicodedata
 from collections import defaultdict
 from typing import Any, Final
 
-from common.contracts.canonical import is_sha256, self_hash, self_hash_refusal, verify_self_hash
+from common.contracts.canonical import (
+    is_plain_int,
+    is_sha256,
+    self_hash,
+    self_hash_refusal,
+    verify_self_hash,
+    walk_dicts,
+)
+from common.contracts.envelope import digest_ref
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import (
     act_id as local_act_id,
@@ -60,48 +68,22 @@ def _refuse_preference(value: Any) -> None:
 
 
 def _refuse_textual(value: Any) -> None:
-    """Refuse textual evidence anywhere in an untrusted proposal payload.
-
-    Iterative, so a deep payload is a named refusal rather than a
-    `RecursionError`, and a self-containing one is refused rather than looped
-    on. Only containers open on the current path are tracked, so a component
-    shared between siblings is still walked wherever it appears.
-    """
-    pending: list[tuple[str, Any]] = [("value", value)]
-    open_path: set[int] = set()
-    while pending:
-        kind, current = pending.pop()
-        if kind == "exit":
-            open_path.discard(current)
-            continue
-        if isinstance(current, (dict, list, tuple)):
-            marker = id(current)
-            if marker in open_path:
-                raise SchemaRefusal(
-                    "correspondence proposal: a proposal contains itself, so no sweep of "
-                    "it can terminate and textual evidence below the loop could never be "
-                    "found. Rebuild the proposal from values that are not their own "
-                    "ancestors."
-                )
-            open_path.add(marker)
-            pending.append(("exit", marker))
-        if isinstance(current, dict):
-            if set(current) & _TEXTUAL_FIELDS:
-                raise SchemaRefusal(
-                    "correspondence proposal: textual evidence cannot match physical acts"
-                )
-            pending.extend(("value", item) for item in current.values())
-        elif isinstance(current, (list, tuple)):
-            # A tuple serializes exactly like a list through `canonical_bytes`.
-            pending.extend(("value", item) for item in current)
+    """Refuse textual evidence anywhere in an untrusted proposal payload."""
+    cycle = (
+        "correspondence proposal: a proposal contains itself, so no sweep of "
+        "it can terminate and textual evidence below the loop could never be "
+        "found. Rebuild the proposal from values that are not their own "
+        "ancestors."
+    )
+    for record in walk_dicts(value, cycle):
+        if set(record) & _TEXTUAL_FIELDS:
+            raise SchemaRefusal(
+                "correspondence proposal: textual evidence cannot match physical acts"
+            )
 
 
 def _findings(code: str, acts: list[dict[str, Any]]) -> list[dict[str, str]]:
     return [{"code": code, "act_id": row["act_id"]} for row in acts]
-
-
-def _integer(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _refuse_unverified_self_hash(payload: dict[str, Any], subject: str, noun: str) -> None:
@@ -154,16 +136,6 @@ def _is_derived_id(value: Any, prefix: str) -> bool:
     return is_well_formed(value) and value.startswith(prefix)
 
 
-def _path(value: Any, what: str) -> str:
-    # A sealed reference is relative to the run root, as in
-    # `common/contracts/envelope.py::validate_input_refs`.
-    if not isinstance(value, str) or not value:
-        raise SchemaRefusal(f"physical-act partition: {what} path is not a non-empty string")
-    if value.startswith("/") or ".." in value.split("/"):
-        raise SchemaRefusal(f"physical-act partition: {what} path {value!r} escapes the run tree")
-    return value
-
-
 def _act(row: Any, *, require_bindings: bool = False) -> dict[str, Any]:
     base = {"act_id", "act_key", "page_id", "page_ordinal", "source_sha256", "proposal_refs"}
     bindings = {"act_class", "act_bounds"}
@@ -202,7 +174,7 @@ def _act(row: Any, *, require_bindings: bool = False) -> dict[str, Any]:
                 "physical-act partition: local act_id does not derive from its own "
                 "page, class, and minted bounds"
             )
-    if not _integer(row["page_ordinal"]) or row["page_ordinal"] < 0:
+    if not is_plain_int(row["page_ordinal"]) or row["page_ordinal"] < 0:
         raise SchemaRefusal(
             "physical-act partition: local act page ordinal is negative, boolean, or not an "
             "integer; the partition is refused because source-page attribution must be a "
@@ -358,13 +330,7 @@ def build_physical_act_partition(
             "physical-act partition: register_digest is not the digest of the register bytes "
             "this partition was built from; the register moved while it was being built"
         )
-    if not isinstance(proposal_seal_ref, dict) or set(proposal_seal_ref) != {
-        "relative_path",
-        "sha256",
-    }:
-        raise SchemaRefusal("physical-act partition: proposal seal reference is not digest-bound")
-    _path(proposal_seal_ref["relative_path"], "proposal seal")
-    _sha(proposal_seal_ref["sha256"], "proposal seal sha256")
+    digest_ref(proposal_seal_ref, "physical-act partition: proposal seal reference")
     if not isinstance(local_acts, list) or not local_acts:
         raise SchemaRefusal("physical-act partition: no local expected acts are not a denominator")
     if not isinstance(capture_alignments, list):
@@ -588,18 +554,9 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
     if set(payload) != required:
         raise SchemaRefusal("physical-act partition: record is not closed")
     _sha(payload["register_digest"], "register_digest")
-    seal = payload["proposal_seal_ref"]
-    if (
-        not isinstance(seal, dict)
-        or set(seal) != {"relative_path", "sha256"}
-        or not isinstance(seal["relative_path"], str)
-        or not seal["relative_path"]
-    ):
-        raise SchemaRefusal("physical-act partition: proposal seal reference is not closed")
-    _path(seal["relative_path"], "proposal seal")
-    _sha(seal["sha256"], "proposal seal sha256")
+    digest_ref(payload["proposal_seal_ref"], "physical-act partition: proposal seal reference")
     if any(
-        not _integer(payload[name]) or payload[name] < 0
+        not is_plain_int(payload[name]) or payload[name] < 0
         for name in ("local_expected_count", "logical_expected_count")
     ):
         raise SchemaRefusal("physical-act partition: expected counts are invalid")

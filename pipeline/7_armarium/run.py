@@ -108,6 +108,8 @@ from common.testimony_content_coverage import (  # noqa: E402
     validate_testimony_content_coverage_continuation,
 )
 
+DESCRIPTION = "Armarium: where the output is written, and where the totals must reconcile."
+
 _SOURCE_CITATION_FIELDS = frozenset(
     {
         "declared_path",
@@ -1780,7 +1782,7 @@ def export_run_identity(context) -> tuple[str | None, str | None, dict[str, str]
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
-    args = stage_parser(__doc__.splitlines()[0]).parse_args()
+    args = stage_parser(DESCRIPTION).parse_args()
     context = open_stage_context(args, ARMARIUM, registry_factory=registry_factory)
     submission_id, fixture_id, run_identity = export_run_identity(context)
     formats = context.armarium_formats

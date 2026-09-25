@@ -17,6 +17,7 @@ from common.alignment import (
 )
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 
 
 def test_markup_view_strips_tags_with_offsets_and_explicit_loss():
@@ -688,7 +689,7 @@ def test_bracket_marker_view_does_not_match_a_partial_or_unclosed_marker():
     view = bracket_marker_view(raw)
 
     # Neither the unterminated left bracket text nor a token with a trailing
-    # suffix is `_UNCERTAINTY_TOKENS` verbatim, so nothing is removed: only an
+    # suffix is `UNCERTAINTY_TOKENS` verbatim, so nothing is removed: only an
     # exact substring match counts, never a prefix or a loose bracket scan.
     assert view["text"] == raw
     assert view["loss"]["marker_characters"] == 0
@@ -708,15 +709,7 @@ def test_bracket_marker_view_refuses_non_text_input():
         bracket_marker_view(b"[UNCERTAIN] not a str")
 
 
-def test_bracket_marker_view_agrees_with_feedings_own_uncertainty_tokens():
-    """The RecordGold markers are carried in two places -- `feeding.py`'s
-    retained-response contract and this alignment view -- because `common/`
-    cannot import from `pipeline/3_attestatores/feeding.py` without a
-    circular import (`feeding.py` already imports from `common`). `3_` makes
-    the directory an invalid dotted package name, so this loads the module by
-    file path, exactly as `pipeline/3_attestatores/test_feeding.py` already
-    does for its own sibling files. This test is the seam that keeps the two
-    tuples from drifting apart silently."""
+def test_feedings_uncertainty_tokens_are_the_contracts():
     import importlib.util
 
     feeding_path = (
@@ -726,4 +719,4 @@ def test_bracket_marker_view_agrees_with_feedings_own_uncertainty_tokens():
     feeding_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(feeding_module)
 
-    assert alignment_module._UNCERTAINTY_TOKENS == feeding_module._UNCERTAINTY_TOKENS
+    assert UNCERTAINTY_TOKENS == feeding_module._UNCERTAINTY_TOKENS

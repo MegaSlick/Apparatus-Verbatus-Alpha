@@ -87,6 +87,8 @@ from common.stage import (  # noqa: E402
     verify_predecessor_seal,
 )
 
+DESCRIPTION = "The orchestrator: sequencing, resume, and recovery dispatch. It is not a stage."
+
 ROOT = Path(__file__).resolve().parents[2]
 _TRIAGE_PATHS = ("triage_decision_manifest", "triage_clusters", "triage_producer_recipe")
 
@@ -506,7 +508,7 @@ def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, 
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--fixture", required=True)
     parser.add_argument("--submission-folder")
     parser.add_argument("--submission-manifest")

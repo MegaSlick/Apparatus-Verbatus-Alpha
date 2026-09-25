@@ -76,6 +76,10 @@ from .compare import (
 from .local_admission import load_local_admission_ledger, validate_local_admission_ledger
 from .reference import validate_reference_page
 
+DESCRIPTION = (
+    "Score what a sealed run actually exported against reference truth, denominator whole."
+)
+
 SCHEMA = "recordgold-evaluation.v1"
 FIXTURE_LABEL = (
     "fixture result: scored over synthetic fixture pages and fixture model answers; "
@@ -1022,7 +1026,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     import sys
 
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--reference-pages", required=True, help="reference-pages.jsonl")

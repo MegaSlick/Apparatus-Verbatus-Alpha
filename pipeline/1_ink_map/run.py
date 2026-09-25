@@ -49,6 +49,8 @@ from common.stage import (  # noqa: E402
     stage_parser,
 )
 
+DESCRIPTION = "Ink map: measure every sealed page before the Designator proposes acts."
+
 
 def sealed_pages(context):
     """Every sealed page once, with its Exemplar boundary proved.
@@ -151,7 +153,7 @@ def artifact_finding(finding: dict) -> dict:
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
-    args = stage_parser(__doc__.splitlines()[0]).parse_args()
+    args = stage_parser(DESCRIPTION).parse_args()
     # Both ingress routes open through the shared constructor, which keeps every
     # direct-entry guard -- register drift, the sealed snapshot, the Exemplar's
     # completion seal, the run-level cap -- on the real route as well.

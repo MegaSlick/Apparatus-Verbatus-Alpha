@@ -263,10 +263,10 @@ the run's total — and `fallback_bands` is how many horizontal bands the
 predetermined fallback grid cuts a page into, a cardinality rather than a length
 (a taller page gets taller bands, not more of them; its `fallback_overlap_bp`
 scales instead). Two more values do not enter the file at all.
-`structure.PRIMARY_MARGIN` and `SECONDARY_MARGIN` stay Python
-constants: they are *absolute* 8-bit ink-intensity offsets, not geometry, and
-`common/test_designator_recensor_ink_calibration.py` pins `SECONDARY_MARGIN` as a
-source literal against the Recensor's own contrast constant. A per-run value for either
+`PRIMARY_MARGIN` and `SECONDARY_MARGIN` stay Python constants in
+`common/background.py`: they are *absolute* 8-bit ink-intensity offsets, not geometry, and
+`common/test_designator_recensor_ink_calibration.py` pins `SECONDARY_MARGIN` against the
+Recensor's own contrast constant. A per-run value for either
 would make that cross-stage invariant unenforceable statically, so the file's closed
 schema refuses both names outright. `[grouping.background] ink_margin_bp` is not one of
 them: it is the fraction of the distance between a page's own two grey-level population

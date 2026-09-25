@@ -62,12 +62,14 @@ from common.stage import (  # noqa: E402
     stage_parser,
 )
 
+DESCRIPTION = "Exemplar: the sealed source. Nothing downstream may alter it."
+
 SEAL_SUBJECT = "corpus-seal"
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
-    args = stage_parser(__doc__.splitlines()[0]).parse_args()
+    args = stage_parser(DESCRIPTION).parse_args()
     # One constructor for both ingress routes, so both ask for the Door's
     # completion seal in the same order before anything writes.
     context = open_stage_context(args, EXEMPLAR, registry_factory=registry_factory)

@@ -17,6 +17,7 @@ import pytest
 from common.contracts.canonical import SCHEMA_LABEL, digest_bytes, self_hash
 from common.contracts.envelope import (
     build_envelope,
+    digest_ref,
     validate_envelope,
     verify_input_bytes,
 )
@@ -491,3 +492,35 @@ def test_an_excluded_artifact_with_an_approval_reference_validates():
 def test_a_payload_that_is_not_an_object_is_refused():
     with pytest.raises(SchemaRefusal):
         validate_envelope(sound_envelope(payload=["proposals"]))
+
+
+def _reference_screens():
+    from common import chandra_custody, cross_capture_dissent
+    from common.runtree import store
+
+    return {
+        "digest_ref": lambda ref: digest_ref(ref, "reference"),
+        "run receipt": store._receipt_reference,
+        "chandra custody": lambda ref: chandra_custody.custody_reference(ref, "", "custody"),
+        "cross-capture dissent": lambda ref: cross_capture_dissent._ref(ref, "anchor"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "match"),
+    [
+        ("../escape", "is not a canonical run-relative path"),
+        ("a/../../escape", "is not a canonical run-relative path"),
+        ("/absolute", "is not a canonical run-relative path"),
+        ("a//b", "is not a canonical run-relative path"),
+        ("./a", "is not a canonical run-relative path"),
+        ("a\0b", "is not a canonical run-relative path"),
+        ("   ", "has no relative_path"),
+    ],
+)
+@pytest.mark.parametrize(
+    "screen", ["digest_ref", "run receipt", "chandra custody", "cross-capture dissent"]
+)
+def test_every_reference_screen_refuses_a_path_outside_the_run_tree(screen, path, match):
+    with pytest.raises(SchemaRefusal, match=match):
+        _reference_screens()[screen]({"relative_path": path, "sha256": "a" * 64})

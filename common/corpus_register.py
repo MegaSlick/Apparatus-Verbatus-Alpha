@@ -36,7 +36,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final, Iterator
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
+from common.contracts.canonical import (
+    canonical_bytes,
+    digest_bytes,
+    digest_of,
+    is_sha256,
+    walk_dicts,
+)
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import (
     act_id as local_act_id,
@@ -88,8 +94,8 @@ def register_digest(data: bytes) -> str:
     return digest_bytes(data)
 
 
-def read_register_file(register_path: str | Path) -> bytes:
-    """Read one bounded regular register without following its final name.
+def read_register_path(register_path: str | Path) -> bytes:
+    """Read one bounded, unaliased regular register without following its final name.
 
     A corpus register is mutable evidence outside the run tree.  Opening it by
     pathname through ``Path.read_bytes`` lets a symlink substitution redirect a
@@ -97,7 +103,7 @@ def read_register_file(register_path: str | Path) -> bytes:
     the object checked and read, and a platform without ``O_NOFOLLOW`` refuses
     rather than silently weakening that boundary.
     """
-    return _read_register_path(Path(register_path), missing_ok=False)
+    return _read_register_path_with_identity(Path(register_path))[0]
 
 
 def _resolved_register_path(register_path: str | Path, expected_digest: str) -> Path:
@@ -184,7 +190,7 @@ def confirm_unchanged_head(register_path: str | Path, *, expected_digest: str) -
     path.parent.mkdir(parents=True, exist_ok=True)
     with _register_lock(path):
         try:
-            current = _read_register_path(path, missing_ok=False)
+            current = read_register_path(path)
         except FileNotFoundError:
             current = empty_register()
         return _require_observed_head(current, expected_digest)
@@ -231,21 +237,6 @@ def _register_lock(path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
-def _read_register_path(path: Path, *, missing_ok: bool) -> bytes:
-    """Read the register's bytes: bounded, with an absent register optional."""
-    try:
-        return _read_register_path_with_identity(path)[0]
-    except FileNotFoundError:
-        if missing_ok:
-            return empty_register()
-        raise
-
-
-def read_register_path(register_path: str | Path) -> bytes:
-    """Read one direct, unaliased register file without following its final name."""
-    return _read_register_path_with_identity(Path(register_path))[0]
 
 
 def _read_register_path_with_identity(path: Path) -> tuple[bytes, tuple[int, int]]:
@@ -588,44 +579,17 @@ def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> N
     """Refuse a nested capture-preference claim, naming the record it was in.
 
     Public because a Testimonium must not express preference either
-    (ARCHITECTURE, principle 1). Iterative, since the value is untrusted input
-    and a deeply nested payload must exhaust the walk's own list, never the
-    interpreter stack; a cycle is refused rather than looped on, since a
-    worklist has no stack to exhaust and would otherwise hang on a
-    self-referential value. Only containers *open on the current path* are
-    tracked, so a value shared between siblings is still walked wherever it
-    appears; what is refused is an ancestor reached again.
+    (ARCHITECTURE, principle 1).
     """
-    pending: list[tuple[str, Any]] = [("value", value)]
-    open_path: set[int] = set()
-    while pending:
-        kind, current = pending.pop()
-        if kind == "exit":
-            open_path.discard(current)
-            continue
-        if isinstance(current, (dict, list, tuple)):
-            marker = id(current)
-            if marker in open_path:
-                raise SchemaRefusal(
-                    f"{what} contains itself, so no sweep of it can terminate and a "
-                    "preference field below the loop could never be found. Rebuild the "
-                    "record from values that are not their own ancestors."
-                )
-            open_path.add(marker)
-            pending.append(("exit", marker))
-        if isinstance(current, dict):
-            forbidden = set(current) & _FORBIDDEN_PREFERENCE_FIELDS
-            if forbidden:
-                raise SchemaRefusal(
-                    f"{what} may not express capture preference: {sorted(forbidden)}"
-                )
-            pending.extend(("value", item) for item in current.values())
-        elif isinstance(current, (list, tuple)):
-            # `canonical_bytes` serializes a tuple exactly like a list, so a
-            # preference field wrapped in one reached a sealed artifact looking
-            # like an ordinary array member unless this walk also descends
-            # into it.
-            pending.extend(("value", item) for item in current)
+    cycle = (
+        f"{what} contains itself, so no sweep of it can terminate and a "
+        "preference field below the loop could never be found. Rebuild the "
+        "record from values that are not their own ancestors."
+    )
+    for record in walk_dicts(value, cycle):
+        forbidden = set(record) & _FORBIDDEN_PREFERENCE_FIELDS
+        if forbidden:
+            raise SchemaRefusal(f"{what} may not express capture preference: {sorted(forbidden)}")
 
 
 def _closed(record: Any, fields: set[str], what: str) -> dict[str, Any]:

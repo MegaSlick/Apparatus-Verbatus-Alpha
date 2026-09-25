@@ -24,9 +24,13 @@ A float that reached an artifact would be a silent determinism defect, so it is 
 loud one instead.
 """
 
+import ast
 import hashlib
 import json
+from collections.abc import Iterator
 from typing import Any
+
+from .errors import SchemaRefusal
 
 # v1 envelopes carry the attempt binding and a self-hash, so a v0 run is not
 # reusable under them.
@@ -220,6 +224,39 @@ def digest_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def walk_dicts(value: Any, cycle_refusal: str) -> Iterator[dict]:
+    """Yield every dict nested in `value` through dicts, lists and tuples.
+
+    Iterative, so depth costs this worklist and never the interpreter stack.
+    Only containers open on the current path are tracked: a value shared
+    between siblings is walked at each position, and an ancestor reached again
+    is refused with `cycle_refusal` rather than walked forever.
+    """
+    pending: list[tuple[bool, Any]] = [(False, value)]
+    open_path: set[int] = set()
+    while pending:
+        exiting, current = pending.pop()
+        if exiting:
+            open_path.discard(current)
+            continue
+        if not isinstance(current, (dict, list, tuple)):
+            continue
+        marker = id(current)
+        if marker in open_path:
+            raise SchemaRefusal(cycle_refusal)
+        open_path.add(marker)
+        pending.append((True, marker))
+        if isinstance(current, dict):
+            yield current
+            current = current.values()
+        pending.extend((False, item) for item in current)
+
+
+def is_plain_int(value: Any) -> bool:
+    """An `int` that is not a `bool`, which `isinstance` alone would admit."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def is_sha256(value: Any) -> bool:
     """Whether a value is the lowercase hex shape every digest in this system uses."""
     return (
@@ -263,3 +300,30 @@ def self_hash_refusal(record: dict[str, Any], field: str = "self_hash") -> str |
             "never recomputable here and nothing can be checked against it"
         )
     return None
+
+
+def _ast_value(value: Any) -> Any:
+    if isinstance(value, ast.AST):
+        fields = [(name, _ast_value(field)) for name, field in ast.iter_fields(value)]
+        return [type(value).__name__, fields]
+    if isinstance(value, list):
+        return [_ast_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"no canonical form for a {type(value).__name__} constant")
+
+
+def ast_digest(node: ast.AST) -> str:
+    """The digest of a syntax tree's fields, free of `ast.dump`'s per-version defaults."""
+    normalized = json.dumps(_ast_value(node), ensure_ascii=True, separators=(",", ":"))
+    return digest_bytes(normalized.encode("utf-8"))
+
+
+def code_digest(source: str) -> str:
+    """The digest of Python source as code: comments, docstrings and layout never move it."""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        docstring_owner = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        if isinstance(node, docstring_owner) and ast.get_docstring(node, clean=False) is not None:
+            node.body = node.body[1:]
+    return ast_digest(tree)

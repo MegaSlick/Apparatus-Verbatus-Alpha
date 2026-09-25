@@ -46,6 +46,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final
 
+from common.chairs.models import is_hf_revision
 from common.chairs.receipts import receipt_record, validate_receipt
 from common.contracts.approval import ApprovalRecordReference, validate_approval_record
 from common.contracts.canonical import (
@@ -57,7 +58,12 @@ from common.contracts.canonical import (
     self_hash_refusal,
     verify_self_hash,
 )
-from common.contracts.envelope import validate_envelope, validate_input_refs, verify_input_bytes
+from common.contracts.envelope import (
+    digest_ref,
+    validate_envelope,
+    validate_input_refs,
+    verify_input_bytes,
+)
 from common.contracts.errors import (
     ApprovalRefusal,
     ContractError,
@@ -279,7 +285,7 @@ class RunTree:
                 )
             authority[_SEALED_CONFIG_DIGESTS_FIELD] = dict(sorted(sealed_config_digests.items()))
         if repository_commit is not None:
-            if not _is_full_commit(repository_commit):
+            if not is_hf_revision(repository_commit):
                 raise SchemaRefusal(
                     "a run's repository_commit must be forty lowercase hexadecimal "
                     "characters; a short or decorated revision names a commit only against "
@@ -508,10 +514,7 @@ class RunTree:
         from common.recensor_receipt import validate_recensor_partition_receipt
 
         path = self.resolve(self.recensor_partition_receipt_path())
-        try:
-            record = _read_json(path)
-        except OSError as error:  # pragma: no cover - _read_json already refuses
-            raise SchemaRefusal(f"Recensor partition receipt could not be read: {error}") from error
+        record = _read_json(path)
         checked = validate_recensor_partition_receipt(record)
         if checked["run_id"] != self.run_id or checked["config_digest"] != self._run_authority():
             raise SchemaRefusal("Recensor partition receipt does not belong to this run authority")
@@ -1373,14 +1376,6 @@ def _run_creation_lock(parent: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def _is_full_commit(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 40
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
 def _existing_partition_receipt(target: Path, relative: str) -> dict[str, Any] | None:
     """The stored partition receipt, or `None` when it is unreadable or invalid.
 
@@ -1641,14 +1636,8 @@ def _validate_corpus_frame_membership(membership: Any) -> None:
 def _receipt_reference(value: RunReceiptReference | dict[str, str]) -> RunReceiptReference:
     if isinstance(value, RunReceiptReference):
         return value
-    if not isinstance(value, dict) or set(value) != {"relative_path", "sha256"}:
-        raise SchemaRefusal("run receipt reference must contain exactly relative_path and sha256")
-    relative, digest = value["relative_path"], value["sha256"]
-    if not isinstance(relative, str) or not relative:
-        raise SchemaRefusal("run receipt reference has no relative_path")
-    if not is_sha256(digest):
-        raise SchemaRefusal("run receipt reference has no lowercase sha256")
-    return RunReceiptReference(relative, digest)
+    reference = digest_ref(value, "run receipt reference")
+    return RunReceiptReference(reference["relative_path"], reference["sha256"])
 
 
 def _approval_record_reference(value: ApprovalRecordReference) -> ApprovalRecordReference:

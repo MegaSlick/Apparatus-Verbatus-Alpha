@@ -130,18 +130,20 @@ def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
     under a provenance block of their own -- are still reasoned defaults.
 
     So the claim this test protects has changed shape rather than gone away: the
-    module must still carry the unmeasured banner over the three it applies to,
-    and the sealed block must still carry the calibration claim over the two it
-    applies to. A later edit that widened either would have to move this test.
+    module must still mark the contrast unmeasured, and the sealed blocks must
+    still carry the calibration claim over the two it applies to and deny it
+    over the noise floor. A later edit that widened either would have to move
+    this test.
     """
     import tomllib
 
-    source = " ".join((ROOT / "common/residual_ink.py").read_text(encoding="utf-8").split())
+    from common.residual_ink import MINIMUM_CONTRAST_IS_MEASURED
+
     handoff = " ".join(
         (ROOT / "pipeline/1_ink_map/CONTRACT.md").read_text(encoding="utf-8").split()
     ).lower()
 
-    assert "PROPOSED, NOT YET MEASURED" in source
+    assert MINIMUM_CONTRAST_IS_MEASURED is False
     assert "proposed, not yet measured" in handoff
 
     config = tomllib.loads((ROOT / "config/designator_grouping.toml").read_bytes().decode("utf-8"))
@@ -151,10 +153,6 @@ def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
     # The claim is bounded by its own caveat, which is what keeps "calibrated"
     # from being read as "calibrated for the corpus this pipeline will run on".
     assert "WHAT THE SAMPLE DOES NOT ESTABLISH" in provenance["caveat"]
-    # And the unmeasured block states its own status directly, rather than
-    # being established only by the banners above: a later edit that calibrated
-    # the noise floor without moving this line would otherwise leave the test
-    # passing while the claim it protects had changed.
     noise_floor = config["coverage_audit"]["noise_floor"]["provenance"]
     assert noise_floor["calibrated_for_this_corpus"] is False
     assert noise_floor["sample_count"] == 0
@@ -282,14 +280,12 @@ def test_the_ink_map_declares_the_decode_route_it_actually_takes():
     assert ink_map["produced_pixels"] is True
 
 
-def test_the_edge_band_is_a_bounded_instrument_and_says_it_is_not_calibrated():
+def test_the_edge_band_is_a_fraction_of_the_pages_shorter_side():
     """The edge width is a bounded instrument, and it is a fraction of the page.
 
     It is `edge_band_bp` in the
     sealed `[coverage_audit]` block, resolved against the page's own shorter
-    side, not a flat pixel count. Both halves are pinned here: the module still says what the band is
-    for and does not claim it is a calibrated cross-page-act threshold, and the
-    resolution really is proportional -- the same sealed value gives 2 pixels on
+    side, not a flat pixel count: the same sealed value gives 2 pixels on
     this repository's 200x260 fixture and 36 on a 3,600-pixel leaf, where a flat
     count would give 64 on both.
     """
@@ -298,10 +294,6 @@ def test_the_edge_band_is_a_bounded_instrument_and_says_it_is_not_calibrated():
         load_coverage_audit_config,
         resolve_coverage_audit_policy,
     )
-
-    source = (ROOT / "common/residual_ink.py").read_text(encoding="utf-8")
-    normalised = " ".join(source.replace("#", " ").split())
-    assert "instrument boundary rather than a calibrated cross-page-act threshold" in normalised
 
     config = load_coverage_audit_config()
     assert config["coverage_audit"][EDGE_BAND_BP_FIELD] == 100

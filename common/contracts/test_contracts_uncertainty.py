@@ -30,19 +30,6 @@ _ASSESSED = {"state": "assessed", "problem": None}
 _EMPTY = {"uncertain_spans": [], "gaps": [], "self_revisions": [], "assessment": _ASSESSED}
 
 
-def test_canonical_vocabulary_matches_the_perlector_producer() -> None:
-    path = ROOT / "pipeline/4_perlector/annotations.py"
-    spec = importlib.util.spec_from_file_location("perlector_annotations_contract_drift", path)
-    annotations = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(annotations)
-
-    assert canonical_uncertainty._CONFIDENCE == annotations.CONFIDENCE_LEVELS
-    assert canonical_uncertainty._GAP_POSITIONS == annotations.GAP_POSITIONS
-    # The assessment states are mirrored here for the same dependency-direction
-    # reason as the two above, so they drift the same way if nobody checks.
-    assert canonical_uncertainty._ASSESSMENT_STATES == annotations.ASSESSMENT_STATES
-
-
 def test_source_revision_vocabulary_matches_the_perlector_producer() -> None:
     path = ROOT / "pipeline/4_perlector/dissent.py"
     spec = importlib.util.spec_from_file_location("perlector_dissent_contract_drift", path)

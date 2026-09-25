@@ -120,6 +120,7 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any, Final
 
+from common.contracts.canonical import is_plain_int
 from common.contracts.errors import SchemaRefusal
 
 
@@ -696,7 +697,7 @@ _SECTION_FIELDS: Final = frozenset({"page_ordinal", "section", "span", "lines"})
 
 
 def _positive_int(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return is_plain_int(value) and value >= 0
 
 
 def validate_churro_document_parse(value: Any) -> dict[str, Any]:

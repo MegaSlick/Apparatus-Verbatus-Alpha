@@ -428,8 +428,8 @@ def test_change_record_returns_nothing_for_identical_text():
     assert change_record("same", "same", [_flag("testimony-diff", 0, 4)]) == []
 
 
-@pytest.mark.parametrize("change_renderer", [False, True])
-def test_renderer_identity_survives_unrelated_module_edits(tmp_path, change_renderer):
+@pytest.mark.parametrize("change_renderer", ["unrelated", "prose", "text"])
+def test_renderer_identity_moves_only_with_renderer_code(tmp_path, change_renderer):
     request = _request("alpha βeta")
     base_text = "base prompt"
     evidence = audit_prompt_evidence(
@@ -441,10 +441,14 @@ def test_renderer_identity_survives_unrelated_module_edits(tmp_path, change_rend
     )
     assert validate_audit_prompt_evidence(evidence, request=request) == evidence
     source = Path(perlector_audit.__file__).read_text()
-    if change_renderer:
+    if change_renderer == "text":
         original = "Re-examine only the requested character locations against the ink."
         assert source.count(original) == 1
         source = source.replace(original, "Re-examine the requested locations against the ink.")
+    elif change_renderer == "prose":
+        docstring = '"""Render the complete live instruction for one frozen exact-edit request."""'
+        assert source.count(docstring) == 1
+        source = source.replace(docstring, '"""Reworded."""\n    # a comment inside the renderer')
     else:
         source += "\n# An unrelated maintenance edit outside the renderer.\n"
     changed_path = tmp_path / "changed_perlector_audit.py"
@@ -453,7 +457,7 @@ def test_renderer_identity_survives_unrelated_module_edits(tmp_path, change_rend
     assert spec is not None and spec.loader is not None
     changed = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(changed)
-    if change_renderer:
+    if change_renderer == "text":
         assert changed.AUDIT_PROMPT_RENDERER_SHA256 != evidence["renderer_sha256"]
         with pytest.raises(SchemaRefusal, match="another renderer revision"):
             changed.validate_audit_prompt_evidence(evidence, request=request)

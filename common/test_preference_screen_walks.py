@@ -358,10 +358,14 @@ def test_every_preference_screen_names_a_payload_that_contains_itself(
     """
     looped: dict = {"nested": []}
     looped["nested"].append(looped)
+    # A tuple cannot hold itself, but a list inside one can close the loop.
+    through_tuple: list = []
+    through_tuple.append({"nested": (through_tuple,)})
 
-    with _within(CYCLE_TIME_LIMIT_SECONDS, label):
-        with pytest.raises(cycle_refusal, match=re.escape(cycle_match)):
-            screen(looped)
+    for payload in (looped, through_tuple):
+        with _within(CYCLE_TIME_LIMIT_SECONDS, label):
+            with pytest.raises(cycle_refusal, match=re.escape(cycle_match)):
+                screen(payload)
 
 
 @pytest.mark.parametrize(

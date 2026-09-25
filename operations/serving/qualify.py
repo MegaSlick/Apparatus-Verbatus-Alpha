@@ -1,11 +1,3 @@
-"""Verify a real-silicon preflight and render profile proof candidates.
-
-This command never edits the serving catalogue.  It turns durable runtime
-evidence into the exact identity and profile digests a reviewer may stamp on
-the one tier that was measured.  Normal serving remains unable to launch an
-unproven row.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -29,6 +21,14 @@ from .config import (
     profile_preflight_digest,
 )
 from .errors import ServingConfigurationError
+
+DESCRIPTION = """Verify a real-silicon preflight and render profile proof candidates.
+
+This command never edits the serving catalogue.  It turns durable runtime
+evidence into the exact identity and profile digests a reviewer may stamp on
+the one tier that was measured.  Normal serving remains unable to launch an
+unproven row.
+"""
 
 SCHEMA = "serving-qualification-candidates.v1"
 QUALIFICATION_PURPOSE = "preflight-qualification"
@@ -486,7 +486,7 @@ def _write_output(path: Path, record: Mapping[str, object]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser = argparse.ArgumentParser(description=DESCRIPTION, allow_abbrev=False)
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--evidence-root", required=True, type=Path)
     parser.add_argument("--models-config", required=True, type=Path)

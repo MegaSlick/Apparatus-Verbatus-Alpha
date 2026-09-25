@@ -10,13 +10,12 @@ from __future__ import annotations
 from typing import Any, Final
 
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import TRIAGE_MODES
+from common.contracts.stages import TRIAGE_ACTOR_KINDS, TRIAGE_MODES
 
 # These names must remain reconciled with Unit 5's closed row schema.  Schema
 # drift must fail the pin instead of silently making every pair comparable.
 TRIAGE_FACT_FIELDS: Final = ("mode", "actor", "human_override")
 ACTOR_FACT_FIELDS: Final = ("kind", "identity", "revision")
-TRIAGE_ACTOR_KINDS: Final = ("human", "model", "scantailor", "producer")
 
 MODE_DIFFERS: Final = "triage-mode-differs"
 ACTOR_KIND_DIFFERS: Final = "triage-actor-kind-differs"

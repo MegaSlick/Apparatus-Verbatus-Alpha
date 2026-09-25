@@ -15,7 +15,8 @@ from typing import Any, Final
 from common import churro_document
 from common.chairs.models import is_hf_revision
 from common.chandra_native_retry import validate_trace as validate_chandra_native_trace
-from common.contracts.canonical import digest_bytes, is_sha256
+from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256
+from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import STOP_REASON_UNREPORTED
 from common.contracts.stages import ATTESTATORES, writing_directory
@@ -141,10 +142,6 @@ _REPETITION_WINDOW: Final = 24
 _REPETITION_MIN_REPEATS: Final = 3
 
 
-def _integer(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 def _refuse_float(value: Any, what: str) -> None:
     if isinstance(value, float):
         raise SchemaRefusal(f"{what} carries a float; derived witness geometry is integer pixels")
@@ -161,7 +158,7 @@ def _bounds(value: Any, what: str, *, page_size: tuple[int, int] | None) -> dict
         raise SchemaRefusal(f"{what} is not the closed {{x, y, w, h}} page-pixel box")
     if any(isinstance(value[key], float) for key in _BOUNDS_FIELDS):
         raise SchemaRefusal(f"{what} carries a float; derived witness geometry is integer pixels")
-    if not all(_integer(value[key]) for key in _BOUNDS_FIELDS):
+    if not all(is_plain_int(value[key]) for key in _BOUNDS_FIELDS):
         raise SchemaRefusal(f"{what} has non-integer page-pixel coordinates")
     if value["x"] < 0 or value["y"] < 0 or value["w"] <= 0 or value["h"] <= 0:
         raise SchemaRefusal(f"{what} is not a non-empty non-negative page-pixel box")
@@ -223,7 +220,7 @@ def _validate_resize_recipe(transform: dict[str, Any]) -> None:
     # Malformed schema values must become a named refusal before any of the
     # identities below perform arithmetic on them.
     if not all(
-        _integer(resize[field]) and resize[field] > 0
+        is_plain_int(resize[field]) and resize[field] > 0
         for field in (
             "source_width_px",
             "source_height_px",
@@ -292,7 +289,7 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
     if (
         not isinstance(value["source_page_id"], str)
         or not value["source_page_id"]
-        or not _integer(value["source_page_ordinal"])
+        or not is_plain_int(value["source_page_ordinal"])
         or value["source_page_ordinal"] < 1
         or not isinstance(value["image_path"], str)
         or not value["image_path"]
@@ -393,7 +390,7 @@ def validate_observed(
     for index, item in enumerate(value):
         if not isinstance(item, dict) or set(item) != _OBSERVED_ENTRY_FIELDS:
             raise SchemaRefusal("a Testimonium observed entry is not its closed schema")
-        if not _integer(item["ordinal"]) or item["ordinal"] != index:
+        if not is_plain_int(item["ordinal"]) or item["ordinal"] != index:
             raise SchemaRefusal("a Testimonium observed ordinals are not dense, unique, 0-based")
         if (
             not isinstance(item["bounds_source"], str)
@@ -422,8 +419,8 @@ def validate_observed(
             if (
                 not isinstance(span, dict)
                 or set(span) != {"start", "end"}
-                or not _integer(span["start"])
-                or not _integer(span["end"])
+                or not is_plain_int(span["start"])
+                or not is_plain_int(span["end"])
                 or span["start"] < 0
                 or span["end"] < span["start"]
             ):
@@ -643,7 +640,7 @@ def validate_page_testimonium_payload(
     page_role = payload["page_role"]
     if (
         payload["scope"] != "page"
-        or not _integer(payload["page_ordinal"])
+        or not is_plain_int(payload["page_ordinal"])
         or payload["page_ordinal"] < 1
         or not isinstance(page_role, str)
         or page_role not in PAGE_ROLES
@@ -781,14 +778,8 @@ def validate_retained_response_refs(
         if not isinstance(refs, list) or not refs:
             raise SchemaRefusal("a page Testimonium raw_response_refs is not a non-empty list")
         for reference in refs:
-            if (
-                not isinstance(reference, dict)
-                or set(reference) != {"relative_path", "sha256"}
-                or not isinstance(reference["relative_path"], str)
-                or not reference["relative_path"]
-                or not is_sha256(reference["sha256"])
-                or reference["relative_path"] != _attestatores_blob_path(reference["sha256"])
-            ):
+            digest_ref(reference, "a page Testimonium retained-response reference")
+            if reference["relative_path"] != _attestatores_blob_path(reference["sha256"]):
                 raise SchemaRefusal(
                     "a page Testimonium retained-response reference is not a closed blob reference"
                 )
@@ -847,7 +838,7 @@ def validate_reportable_observations(observed: Any) -> list[dict[str, Any]]:
     for item in observed:
         if not isinstance(item, dict):
             raise SchemaRefusal("a Testimonium observed entry is not an object")
-        if not _integer(item.get("ordinal")):
+        if not is_plain_int(item.get("ordinal")):
             raise SchemaRefusal("a Testimonium observed entry has no integer ordinal")
         if item.get("bounds_source") not in BOUNDS_SOURCES:
             raise SchemaRefusal("a Testimonium observed box has an unknown bounds_source")
@@ -878,7 +869,7 @@ def split_page_edge_overshoots(
     if (
         not isinstance(page_size, tuple)
         or len(page_size) != 2
-        or not all(_integer(value) and value > 0 for value in page_size)
+        or not all(is_plain_int(value) and value > 0 for value in page_size)
     ):
         raise SchemaRefusal(
             "the sealed page edge has no positive integer dimensions. "
@@ -895,7 +886,7 @@ def split_page_edge_overshoots(
                 "The rejected box could lose facts when converted into a finding. "
                 "Restore the complete observed entry and run the page-edge derivation again."
             )
-        if not _integer(item["ordinal"]) or item["ordinal"] != source_ordinal:
+        if not is_plain_int(item["ordinal"]) or item["ordinal"] != source_ordinal:
             raise SchemaRefusal(
                 "the page-edge check received observed ordinals that are not dense, unique, "
                 "and 0-based. The response order of a rejected box is therefore ambiguous. "
@@ -1378,7 +1369,7 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
     if (
         not isinstance(generation, dict)
         or set(generation) != {"max_new_tokens"}
-        or not _integer(generation["max_new_tokens"])
+        or not is_plain_int(generation["max_new_tokens"])
         or generation["max_new_tokens"] != CHURRO_OUTPUT_TOKENS
     ):
         raise SchemaRefusal(
@@ -1400,7 +1391,7 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
             continue
         if kind == "post-hoc-repetition":
             if set(finding) != {"kind", "unit_characters", "repeats", "inspected"} or any(
-                not _integer(finding[field]) or finding[field] <= 0
+                not is_plain_int(finding[field]) or finding[field] <= 0
                 for field in ("unit_characters", "repeats")
             ):
                 raise SchemaRefusal(
@@ -1486,17 +1477,9 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         )
     if not isinstance(value["view"], dict):
         raise SchemaRefusal("a page Testimonium native capture view is not an object")
-    reference = value["raw_response_ref"]
-    if not isinstance(reference, dict) or set(reference) != {"relative_path", "sha256"}:
-        raise SchemaRefusal("a page Testimonium native capture has no raw-response reference")
-    if (
-        not isinstance(reference["relative_path"], str)
-        or not reference["relative_path"]
-        or not is_sha256(reference["sha256"])
-    ):
-        raise SchemaRefusal(
-            "a page Testimonium native capture has an invalid raw-response reference"
-        )
+    reference = digest_ref(
+        value["raw_response_ref"], "a page Testimonium native capture raw-response reference"
+    )
     if reference["relative_path"] != _attestatores_blob_path(reference["sha256"]):
         raise SchemaRefusal(
             "a page Testimonium native capture raw-response reference is not its "
@@ -1598,7 +1581,7 @@ def validate_partition_disagreement(
         }:
             raise SchemaRefusal("a page Testimonium partition observed box is malformed")
         if (
-            not _integer(observation["ordinal"])
+            not is_plain_int(observation["ordinal"])
             or observation["bounds_source"] not in REPORTED_BOUNDS_SOURCES
         ):
             raise SchemaRefusal(
@@ -1648,7 +1631,7 @@ def validate_partition_disagreement(
             finding["kind"] != "page-edge-overshoot"
             or not isinstance(finding["response_sha256"], str)
             or len(finding["response_sha256"]) != 64
-            or not _integer(finding["ordinal"])
+            or not is_plain_int(finding["ordinal"])
             or finding["ordinal"] < 0
         ):
             raise SchemaRefusal(

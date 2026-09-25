@@ -20,7 +20,7 @@ normalized equality is a refusal waiting for the first real annotation.
 
 from __future__ import annotations
 
-from .envelope import validate_input_refs
+from .envelope import digest_ref
 from .errors import SchemaRefusal
 
 ANNOTATION_KINDS = frozenset({"uncertain", "illegible"})
@@ -32,10 +32,8 @@ _MAX_PLAUSIBLE_OFFSET = 10**15
 
 
 def _is_ref_shaped(value) -> bool:
-    if not isinstance(value, dict) or set(value) != {"relative_path", "sha256"}:
-        return False
     try:
-        validate_input_refs([value])
+        digest_ref(value, "witness_ref")
     except SchemaRefusal:
         return False
     return True

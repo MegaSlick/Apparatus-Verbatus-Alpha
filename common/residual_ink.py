@@ -17,11 +17,11 @@ The page-spanning component the Designator withholds from grouping
 (`pipeline/2_designator/grouping.partition_page_spanning`) held 35 to 87 per
 cent of audited ink on 44 real pages, and counting it flagged every page. It is
 re-derived here from the same bytes at the page's own derived margin (the
-Designator's record carries only whole-page boxes, which mask nothing), not at
-this module's looser contrast: there the writing merges into the component, and
-on 41 of the 44 pages the audit hid 3,367 to 1,480,349 outside-coverage ink
-pixels and reported the pages clean (goal 2). It is taken out of `total_ink_pixels` and `outside_ink_pixels`; `page_ink_pixels`
-and `page_spanning_ink_pixels` keep the whole-page figure on the record.
+Designator's record carries only whole-page boxes, which mask nothing). At this
+module's looser contrast the writing merged into it and hid missed ink on 41 of
+44 real pages, so the two passes use two contrasts; unifying them is open. It is taken
+out of `total_ink_pixels` and `outside_ink_pixels`; `page_ink_pixels` and
+`page_spanning_ink_pixels` keep the whole-page figure on the record.
 
 A page whose background the shared inference refuses raises
 `BackgroundInferenceRefusal` here too; the caller records it rather than
@@ -46,10 +46,6 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.imaging import Bounds, grayscale_rows
 
-# PROPOSED, NOT YET MEASURED: the contrast below and the two values sealed in
-# `[coverage_audit.noise_floor]` are reasoned defaults; change them only when
-# real-corpus calibration supplies a measured value.
-
 #: Sealed, not a constant, so it is inside every run's config digest.
 MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 
@@ -61,6 +57,8 @@ MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 #: photographed page's derived margin (median 66), so there it counts more ink
 #: than the Designator's primary scan does; that is why the gates are fractions.
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
+#: A reasoned default, like the sealed noise floor; flip it with a real-corpus measurement.
+MINIMUM_CONTRAST_IS_MEASURED: Final = False
 
 #: Fraction of the page's own ink outside every region that flags it, in basis
 #: points; sealed beside the noise floor, integer because artifacts carry no floats.

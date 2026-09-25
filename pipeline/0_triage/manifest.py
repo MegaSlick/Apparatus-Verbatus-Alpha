@@ -22,15 +22,19 @@ from typing import Any, Final
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import MAX_TRIAGE_SPLIT_PARTS, TRIAGE_MODES
+from common.contracts.stages import (
+    MAX_TRIAGE_SPLIT_PARTS,
+    TRIAGE_ACTOR_FIELDS,
+    TRIAGE_ACTOR_KINDS,
+    TRIAGE_MODES,
+    TRIAGE_PART_FIELDS,
+    TRIAGE_ROW_FIELDS,
+)
 
 MANIFEST_SCHEMA: Final = "triage-decision-manifest-v1"
 CLUSTER_SCHEMA: Final = "triage-re-shoot-cluster-v1"
 CONFIDENCE_ORDINALS: Final = range(0, 5)
 COLOUR_MODES: Final = ("keep", "grayscale", "rgb", "bitonal")
-# A deterministic offline producer is a distinct provenance role because it makes no
-# model call. Like other non-human actors, it carries a resolved identity and revision.
-ACTOR_KINDS: Final = ("human", "model", "scantailor", "producer")
 SCANTAILOR_IDENTITY: Final = "ScanTailor Advanced"
 SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"
 MAX_MANIFEST_ROWS: Final = 1_000
@@ -41,25 +45,10 @@ MAX_CLUSTER_MEMBERS: Final = 4_096
 # bound at or below that keeps every ingestible frame provable. The 64-part
 # value is the security pass's ceiling on the quadratic pairwise-disjointness
 # proof; a real frame with more parts is a triage-policy conversation, not a
-# bigger loop. Derived from the shared cap, not declared a second time: the
-# Exemplar boundary restates this module's row schema and bounds the same
-# split before its own pairwise check.
+# bigger loop. The Exemplar boundary bounds the same split with the shared cap.
 MAX_SPLIT_PARTS: Final = MAX_TRIAGE_SPLIT_PARTS
 MAX_SCANTAILOR_PROJECT_BYTES: Final = 4 * 1024 * 1024
 
-_ROW_FIELDS: Final = {
-    "corpus_id",
-    "source_frame_sha256",
-    "frame",
-    "split",
-    "re_shoot_cluster_id",
-    "confidence",
-    "mode",
-    "actor",
-    "human_override",
-    "manifest_row_sha256",
-}
-_PART_FIELDS: Final = {"region", "crop_box", "rotation", "colour_mode"}
 _RECTANGLE_FIELDS: Final = {"space", "x", "y", "w", "h"}
 _ROTATION_FIELDS: Final = {"rotation_millidegrees", "direction", "origin", "canvas"}
 _CLUSTER_FIELDS: Final = {
@@ -170,7 +159,7 @@ def _validate_split(split: Any, frame: Mapping[str, int]) -> None:
     whole = {"x": 0, "y": 0, "w": frame["width"], "h": frame["height"]}
     regions = []
     for part in split["parts"]:
-        if not isinstance(part, dict) or set(part) != _PART_FIELDS:
+        if not isinstance(part, dict) or set(part) != TRIAGE_PART_FIELDS:
             raise SchemaRefusal(
                 "triage split part must be a closed region/crop_box/rotation/colour_mode record"
             )
@@ -209,10 +198,10 @@ def _validate_split(split: Any, frame: Mapping[str, int]) -> None:
 
 
 def _validate_actor(actor: Any) -> None:
-    if not isinstance(actor, dict) or set(actor) != {"kind", "identity", "revision"}:
+    if not isinstance(actor, dict) or set(actor) != TRIAGE_ACTOR_FIELDS:
         raise SchemaRefusal("triage actor must be a closed kind/identity/revision record")
-    if actor["kind"] not in ACTOR_KINDS:
-        raise SchemaRefusal(f"triage actor kind must be one of {ACTOR_KINDS}")
+    if actor["kind"] not in TRIAGE_ACTOR_KINDS:
+        raise SchemaRefusal(f"triage actor kind must be one of {TRIAGE_ACTOR_KINDS}")
     if not isinstance(actor["identity"], str) or not actor["identity"].strip():
         raise SchemaRefusal("triage actor identity must be a non-blank resolved name")
     if actor["kind"] == "human":
@@ -231,7 +220,7 @@ def _validate_actor(actor: Any) -> None:
 
 def validate_row(row: Any) -> dict[str, Any]:
     """Return a row only when its closed fields and derived digest agree."""
-    if not isinstance(row, dict) or set(row) != _ROW_FIELDS:
+    if not isinstance(row, dict) or set(row) != TRIAGE_ROW_FIELDS:
         raise SchemaRefusal(
             "triage row must use the closed decision-manifest schema (no winner field)"
         )

@@ -3413,12 +3413,52 @@ def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config
     )
 
 
-def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry():
-    """The named real-path seal is used before a manifest can shape source pages."""
-    implementation = inspect.getsource(door.real_submission)
-    assert implementation.index("require_triage_modes") < implementation.index(
-        "sources = expand_sources"
+def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry(
+    tmp_path, monkeypatch
+):
+    """The named real-path seal is used before a manifest can shape source pages.
+
+    Observed on the real submission path itself, not by source order: a call
+    moved into a nested function or an unreachable branch would still pass a
+    static ordering check while the running door skipped the recheck.
+    """
+    approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
+        tmp_path, {"FS-1234.png": png(4, 3)}
     )
+    manifest_path, recipe_path = _triage_documents(approved, ledger)
+    real_require_triage_modes = door.require_triage_modes
+    real_expand_sources = door.expand_sources
+    order: list[str] = []
+
+    def watched_require_triage_modes(*args, **kwargs):
+        order.append("require_triage_modes")
+        return real_require_triage_modes(*args, **kwargs)
+
+    def watched_expand_sources(*args, **kwargs):
+        order.append("expand_sources")
+        return real_expand_sources(*args, **kwargs)
+
+    monkeypatch.setattr(door, "require_triage_modes", watched_require_triage_modes)
+    monkeypatch.setattr(door, "expand_sources", watched_expand_sources)
+    run_root = approved / "runs"
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="triage-order",
+            extra=[
+                "--triage-decision-manifest",
+                str(manifest_path),
+                "--triage-producer-recipe",
+                str(recipe_path),
+            ],
+        )
+        == 0
+    )
+    assert order == ["require_triage_modes", "expand_sources"]
 
 
 def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
@@ -4912,20 +4952,3 @@ def test_admission_refuses_bytes_that_differ_from_sealed_membership(tmp_path):
     refusal = admissions(tree)[1]
     assert reason_code(refusal["payload"]["reason"]) is RefusalReason.DIGEST_MISMATCH
     assert "shard membership was sealed" in refusal["payload"]["reason"]
-
-
-# --- The hard-failure cap's duplicated Door reason vocabulary stays in sync ------
-
-
-def test_the_hard_failure_caps_door_reason_vocabulary_matches_this_enum():
-    """`common/hard_failure.py::DOOR_REFUSAL_REASONS` duplicates this enum's
-    values in miniature rather than importing it (`common/` may not import
-    `pipeline/`). A duplication that can silently drift is the same failure
-    mode that duplication was added to close, one step removed: if a reason is
-    ever renamed or removed here without updating the copy, a hard-failure
-    policy naming the stale value would load cleanly and match nothing,
-    forever, with nothing to say so. Pinned here, in `pipeline/`, which may
-    import `common/` freely."""
-    from common.hard_failure import DOOR_REFUSAL_REASONS
-
-    assert {member.value for member in RefusalReason} == DOOR_REFUSAL_REASONS

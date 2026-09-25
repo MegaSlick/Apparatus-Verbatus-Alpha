@@ -71,7 +71,7 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
-from common.corpus_register import read_register_file  # noqa: E402
+from common.corpus_register import read_register_path  # noqa: E402
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
@@ -105,6 +105,8 @@ from common.stage import (  # noqa: E402
 from common.witness_adapters import validate_witness_adapter_bindings  # noqa: E402
 from operations.submit import gate, inventory  # noqa: E402
 from operations.submit import submit as submission_ledger  # noqa: E402
+
+DESCRIPTION = "The door: what may enter at all, decided by bytes alone."
 
 
 class SourceEntry(NamedTuple):
@@ -1585,7 +1587,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     Tests inject a deterministic registry through this seam; no command-line
     option chooses among implementations, chairs, revisions, recipes or caches.
     """
-    parser = stage_parser(__doc__.splitlines()[0])
+    parser = stage_parser(DESCRIPTION)
     parser.add_argument(
         "--submission-folder",
         help="a real local submission; must live inside an approved storage root",
@@ -1942,7 +1944,7 @@ def _read_corpus_register(register_path: str | None) -> bytes | None:
     if register_path is None:
         return None
     try:
-        return read_register_file(register_path)
+        return read_register_path(register_path)
     except (OSError, ContractError) as error:
         raise ContractError(
             "the corpus register could not be read before run creation; no run or admission "
