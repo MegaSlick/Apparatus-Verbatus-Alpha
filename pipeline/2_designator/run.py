@@ -1292,10 +1292,7 @@ def _claimed_regions_by_page(context) -> dict[int, list[dict]]:
     One pass over the artifacts; a pass per page would be quadratic.
     """
     claimed: dict[int, list[dict]] = {}
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "region":
-            continue
-        record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+    for record in _regions_of(context):
         payload = record["payload"]
         if payload.get("origin") != "proposal":
             continue
@@ -2841,17 +2838,6 @@ def _refuse_duplicate_proposal_bounds(context) -> None:
         seen[key] = act["key"]
 
 
-def _all_cut_bounds_on_page(context, page_ordinal: int, page_id: str) -> list[dict]:
-    """Every proposal or recovery rectangle already cut on one sealed page."""
-    records = []
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "region":
-            continue
-        record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        records.append(record)
-    return _coverage_on_page(records, page_ordinal, page_id)
-
-
 def _ink_outside_cut_union(evidence: dict, bounds: dict, covered: list[dict]) -> int:
     """Recompute ink in a requested rectangle outside the prior crop union."""
     width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
@@ -3008,7 +2994,7 @@ def _verify_coverage_recovery_evidence(
     grouping_policy = grouping_config.load_grouping_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", grouping_policy["config_sha256"])
     minimum = grouping_policy["coverage_audit"]["minimum_ink_pixels"]
-    covered = _all_cut_bounds_on_page(context, page_ordinal, page_id)
+    covered = _coverage_on_page(_regions_of(context), page_ordinal, page_id)
     measured = _ink_outside_cut_union(evidence, bounds, covered)
     if (
         request_payload.get("minimum_ink_pixels") != minimum
@@ -3192,12 +3178,13 @@ def _next_region_ordinal(context, act_id: str) -> int:
     return max(ordinals, default=0) + 1
 
 
-def _regions_of(context, act_id: str) -> list[dict]:
-    records = []
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
-        if entry["kind"] == "region" and entry["subject_id"] == act_id:
-            records.append(context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"]))
-    return records
+def _regions_of(context, act_id: str | None = None) -> list[dict]:
+    """Every region record cut so far, or only one act's."""
+    return [
+        context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == "region" and (act_id is None or entry["subject_id"] == act_id)
+    ]
 
 
 def _open(args, registry_factory) -> tuple[StageContext, bool]:
