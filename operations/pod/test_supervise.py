@@ -1,4 +1,4 @@
-"""Offline drills for the durable laptop-supervisor driver (Stage 04 deferral 04-1).
+"""Offline drills for the durable laptop-supervisor driver.
 
 Every drill runs against `FakeProvider` and an injected `Clock`, exactly as
 `test_pod_runtime.py` drives the controllers it is built on. Each test breaks
@@ -773,10 +773,8 @@ def test_main_writes_a_crashed_final_record_and_exits_three_on_an_unexpected_err
 def test_a_final_record_write_failure_on_the_crash_path_is_named_not_swallowed(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    """A write failure on top of a crash used to vanish -- exit 3, no record,
-
-    and a printed detail that named only the original fault. Both faults
-    must now be visible.
+    """A write failure on top of a crash must not vanish: both faults, the
+    original one and the write failure, must be visible in the record.
     """
 
     spend_path = tmp_path / "spend.toml"
@@ -835,10 +833,8 @@ def test_a_final_record_write_failure_on_the_crash_path_is_named_not_swallowed(
 def test_a_final_record_write_failure_on_the_refusal_path_is_named_not_raised(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    """The refusal handler used to wrap its write in nothing at all, so a
-
-    failed write escaped ``main()`` as a bare traceback instead of returning
-    the refusal's own exit code.
+    """A failed write here must not escape ``main()`` as a bare traceback; it
+    must still return the refusal's own exit code.
     """
 
     spend_path = tmp_path / "spend.toml"
@@ -1152,10 +1148,9 @@ def test_identity_telemetry_never_carries_a_credential_shaped_field(tmp_path: Pa
 
 
 def test_a_reused_pid_after_reboot_does_not_block_a_legitimate_restart(tmp_path: Path) -> None:
-    """The old pid-liveness check would refuse forever here: pid 1000 really
-
-    is alive -- it just belongs to an unrelated process the reboot handed
-    that number to, not to the supervisor that used to hold it.
+    """A bare pid-liveness check would refuse forever here: pid 1000 really is
+    alive -- it just belongs to an unrelated process the reboot handed that
+    number to.
     """
 
     clock = Clock()

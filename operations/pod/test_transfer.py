@@ -191,7 +191,7 @@ def test_submission_path_cannot_traverse_a_source_symlink(tmp_path: Path) -> Non
 
 @pytest.mark.parametrize("declared", ["page\x00.bin", "./page.bin", "sub//page.bin", "."])
 def test_every_unsafe_declared_path_becomes_a_named_refusal(declared: str) -> None:
-    """Spec 03 stops at non-empty, not-absolute, no dot-dot, so these all arrive here.
+    """The manifest's own check stops at non-empty/not-absolute/no-dot-dot, so these all arrive here.
 
     Left to `os.lstat`, the NUL is a bare ValueError rather than a named
     refusal, and the un-normalized spellings resolve to a real file whose object

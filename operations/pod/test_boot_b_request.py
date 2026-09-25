@@ -135,13 +135,13 @@ def test_a_card_the_placement_table_has_not_reviewed_is_refused() -> None:
 
 
 def test_the_rendered_request_carries_no_transfer_half() -> None:
-    """Boot B consumes a submission already on the volume (the TRANSFER finding).
+    """Boot B consumes a submission already on the volume.
 
     A bootstrap ``--submission-manifest`` with no ``--transfer-target-factory``
-    is exactly the pair that used to turn a real run red after the ~10 GB
-    environment sync had been paid for. The run half's own
-    ``--submission-manifest`` -- a different flag, read rather than sent -- is
-    still there, because that is the submission the run reads.
+    would turn a real run red only after the ~10 GB environment sync had
+    already been paid for. The run half's own ``--submission-manifest`` -- a
+    different flag, read rather than sent -- is still there, because that is
+    the submission the run reads.
     """
 
     nested = _nested_argv(filled_request())
