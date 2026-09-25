@@ -1,60 +1,32 @@
-"""Independent, row-oriented residual-ink reconciliation (U13).
+"""Independent, row-oriented residual-ink reconciliation.
 
 Conservation: claimed ink plus residual ink equals every ink pixel found.
 
-**The denominator is the page's own pixels, never the structure pass's own
-output.** The old pipeline's conservation logic proved coverage of units the
-structure model had already emitted -- a chunk not claimed by a crop was
-accounted for, but a mark the model never emitted as a chunk at all had no
-denominator to be missing from. An independent second read
-(`/stage/70_gpt_review/ASSESSMENT.md:172-173`) named it precisely: "the present
-conservation logic proves coverage of units already emitted by a structural
-model. It cannot prove that the model did not miss ink entirely." This module
-rescans the page's actual pixels and classifies every one it finds as claimed
-(inside some cut crop) or residual (not inside any), so a mark the grouping pass
-never produced a region for still appears -- as a residual component, never as
-an absence.
+The denominator is a fresh scan of the page's own pixels, never the structure
+pass's proposals: a mark the grouping pass never emitted a region for still has
+somewhere to be counted, as a residual component, rather than vanishing with no
+denominator to be missing from.
 
-**Every residual region is accounted regardless of size.** `review_priority`
-below orders which residual a reviewer looks at first; it never decides whether
-a residual exists in the accounting. Deleting the priority threshold entirely
-would only reorder review, never drop a region -- which is the property
-principle 8 requires of any threshold in an instrument: the instrument may not
-constrain what it measures.
+`review_priority` only orders which residual a reviewer sees first; every
+residual is accounted for regardless of size, and removing the priority
+threshold would reorder review, never drop a region.
 
-**Two ink calibrations exist in this pipeline, by decision rather than drift.**
-This stage conserves a pixel as ink at `background - SECONDARY_MARGIN` (2
-levels), the most sensitive declared structural threshold available to it; the
-Recensor's independent page-coverage check
-(`pipeline/5_recensor/residual_ink.py`) requires
-`MINIMUM_CONTRAST_BELOW_BACKGROUND` (40 levels). They are different instruments:
-this one is the Designator reconciling its own cut and errs sensitive, because a
-faint mark it dismisses here is goal 2's worst failure; the Recensor's is an
-after-the-fact audit of the same pages and errs confident, because it exists to
-catch whole missed regions rather than to re-litigate faint pixels a held act
-already accounts for. The asymmetry is safe in exactly one direction, and that
-direction is the invariant: every pixel the Recensor calls ink is ink to this
-stage too, so the audit can never flag ink this accounting silently ignored --
-while ink only this stage sees ends as a held residual act, which is visible,
-never lost. The containment is pinned where the two stages legitimately meet,
-`common/test_designator_recensor_ink_calibration.py`; narrowing this stage's
-margin past the Recensor's contrast would break the safe direction and must be a
+This stage conserves ink at `background - SECONDARY_MARGIN` (2 levels), far
+more sensitive than the Recensor's independent page-coverage audit
+(`MINIMUM_CONTRAST_BELOW_BACKGROUND`, 40 levels). The asymmetry is safe in one
+direction only, and that direction is the invariant: every pixel the Recensor
+calls ink is ink to this stage too, so its audit can never flag ink this
+accounting silently missed. `common/test_designator_recensor_ink_calibration.py`
+pins the containment; narrowing this margin past the Recensor's must be a
 deliberate two-sided change.
 
-**How it is computed, and why that changed.** The original skeleton built three
-Python ``set[(x, y)]`` values. That made the proof easy to read, but a dense
-600dpi parish page turns every ink pixel into several Python objects. This
-implementation keeps the same threshold and gap-connectivity semantics while
-retaining only ink *runs* and the currently active claimed rectangles, so its
-memory is O(page pixels + ink runs) rather than O(ink pixels). Equivalence to
-the retired pixel-set algorithm is not asserted, it is exercised: the retired
-implementation is kept in `test_conservation.py` as an oracle and compared
-against on randomized, fully-inked, and exhaustive claim-edge pages.
-
-Connectivity labelling is this module's own (`_components`) rather than
-`structure.label_components`, because the two now work over different objects --
-runs here, pixels there. `test_conservation.py`'s oracle is what holds the two
-to one meaning of "connected".
+Ink is tracked as runs and active claimed rectangles rather than per-pixel
+sets, keeping memory O(page pixels + ink runs) instead of O(ink pixels); the
+retired pixel-set implementation is kept in `test_conservation.py` as the
+oracle this one is checked against. Connectivity labelling here (`_components`)
+is separate from `structure.label_components` because the two work over
+different objects -- runs here, pixels there -- and that same oracle holds
+both to one meaning of "connected".
 """
 
 from __future__ import annotations
@@ -77,24 +49,16 @@ class ReconciliationResult(TypedDict):
     residual_components: list[dict]
 
 
-# A residual component at or above `review_priority_min_dimension_px`, on
-# either axis, is reviewed first -- a priority ordering, not a filter. See the
-# module docstring: nothing here may become an inclusion test. The threshold
-# used to carry a module default here; it no longer does, for the same reason
-# as every other geometric default this module and its siblings lost (SPEC_C
-# section 2): `run.py` resolves it per page from a sealed basis-point config
-# and passes the integer in, and a caller that forgets fails loudly.
+# No module default for review_priority_min_dimension_px: run.py resolves it
+# per page from sealed config and must pass it explicitly.
 
 
 class _Run(TypedDict):
-    """One horizontal stretch of ink on scanline `y`, half-open at `x1`.
+    """One horizontal stretch of contiguous ink on scanline `y`, half-open at `x1`.
 
-    Every run this module builds is contiguous ink: `_unit_ink_runs` splits on
-    the first blank pixel, and `_subtract_claims` only ever cuts a run shorter.
-    So `x1 - x0 == ink_count` for every run, and the two are carried separately
-    only because `_components` reads the span while the accounting reads the
-    count. Tolerated blank gaps are bridged in `_components`' connectivity, never
-    inside a run.
+    `x1 - x0 == ink_count` always; the two are carried separately because
+    `_components` reads the span while the accounting reads the count. Tolerated
+    blank gaps are bridged in `_components`' connectivity, never inside a run.
     """
 
     x0: int
@@ -108,13 +72,10 @@ def _plain_int(value: object) -> bool:
 
 
 def _unit_ink_runs(row: object, threshold: int, y: int) -> list[_Run]:
-    """Exact contiguous ink runs: one run per unbroken stretch of ink.
-
-    A single blank pixel ends a run. Gap tolerance is not applied here on
-    purpose: it belongs to `_components`, which decides what is *connected*,
-    while this decides what is *ink*. Bridging a tolerated gap into the run
-    itself would put blank pixels inside `ink_count` and make `_subtract_claims`
-    charge a crop for paper it covers.
+    """Exact contiguous ink runs: one run per unbroken stretch, a single blank
+    pixel ends it. Gap tolerance is deliberately not applied here -- it belongs
+    to `_components`, which decides *connected*, not *ink* -- or a tolerated
+    gap would count as ink `_subtract_claims` charges a crop for.
     """
     if not isinstance(row, (bytes, bytearray)):
         raise ContractError(f"scanline {y} is not grayscale bytes")
@@ -147,11 +108,8 @@ def _merged_claim_intervals(active: list[geometry.Bounds]) -> list[tuple[int, in
 def _subtract_claims(run: _Run, claims: list[tuple[int, int]]) -> tuple[int, list[_Run]]:
     """Split an ink run around claims, counting actual ink rather than area.
 
-    Every x in `run` is ink -- `_unit_ink_runs` guarantees it -- so an interval
-    width here *is* an ink count, and neither the claimed total nor a residual
-    piece has to re-read the scanline to know how much ink it covers. `claims`
-    must arrive merged and sorted (`_merged_claim_intervals`); overlapping claims
-    would otherwise be counted twice.
+    `claims` must arrive merged and sorted (`_merged_claim_intervals`); overlapping
+    claims would otherwise be counted twice.
     """
     residual: list[_Run] = []
     claimed = 0
@@ -204,9 +162,8 @@ def _components(runs: list[_Run], gap: int) -> list[dict]:
     radius = gap + 1
     for y in sorted(by_row):
         current = by_row[y]
-        # Exact residual runs on the same scanline are separately stored so
-        # claimed intervals can split one original ink run.  Rejoin only the
-        # legacy-permitted blank gap before looking at earlier scanlines.
+        # Claim-splitting can leave several residual runs on one scanline;
+        # rejoin adjacent ones within the tolerated gap before looking back.
         for left, right in (
             (current[index], current[index + 1]) for index in range(len(current) - 1)
         ):
@@ -216,18 +173,10 @@ def _components(runs: list[_Run], gap: int) -> list[dict]:
             previous = by_row.get(previous_y)
             if not previous:
                 continue
-            # Runs on one scanline are disjoint and left-to-right --
-            # `_unit_ink_runs` scans each row in x order and `_subtract_claims`
-            # only cuts a run into left-to-right pieces -- so both x0 and x1 are
-            # strictly increasing along a row (the same-row rejoin above already
-            # leans on this order). That monotonicity is what makes one forward
-            # pointer per row pair replace the full cross product: a previous-row
-            # run wholly left of this `left` is wholly left of every later `left`
-            # too, and past that dropped prefix every remaining run passes the
-            # left-side test, so the scan only needs to stop at the first run
-            # wholly right of `left`. Two half-open segments have ink pixels
-            # within the required horizontal Chebyshev radius exactly under the
-            # dropped/stopped inequalities.
+            # Runs on a row are disjoint and strictly left-to-right, so one
+            # forward pointer per row pair replaces the full cross product:
+            # once a previous-row run passes `left`'s right edge (+radius), no
+            # later `left` needs to look further back than that point either.
             start = 0
             for left in current:
                 while (
@@ -259,12 +208,9 @@ def _components(runs: list[_Run], gap: int) -> list[dict]:
             )
         )
 
-    # Residual identity binds class and bounds, but published evidence must still
-    # reproduce independently of union-find insertion order. Components sharing
-    # a (top, left) origin are ordered by their ink, not by a count
-    # that the oracle ignores or by union-find insertion order. Tied components
-    # are compared over a lazily merged run stream: memory stays proportional to
-    # the runs, which already exist, never to the pixels they cover.
+    # Published order must not depend on union-find insertion order: components
+    # sharing a (top, left) origin are broken by comparing their ink itself,
+    # over a lazily merged run stream so memory stays proportional to runs.
     def origin(entry: tuple[dict, list[_Run]]) -> tuple[int, int]:
         return (entry[0]["bounds"]["y"], entry[0]["bounds"]["x"])
 
@@ -282,22 +228,14 @@ def _components(runs: list[_Run], gap: int) -> list[dict]:
 
 
 def _pixel_stream(group: list[_Run]) -> Iterator[tuple[int, int]]:
-    """A tied component's ink in the oracle's sorted (x, y) order, lazily.
-
-    Each run yields (x0, y), (x0 + 1, y), ... — ascending in (x, y) because y is
-    fixed — so a heap merge of the runs is exactly the sorted pixel sequence the
-    retired implementation compared, produced one pixel at a time.
+    """A tied component's ink in sorted (x, y) order, lazily, via a heap merge
+    of its runs (each run already yields ascending x for a fixed y).
     """
     return heapq.merge(*(((x, run["y"]) for x in range(run["x0"], run["x1"])) for run in group))
 
 
 def _compare_ink_streams(left: tuple[dict, list[_Run]], right: tuple[dict, list[_Run]]) -> int:
-    """Lexicographic sorted-pixel comparison without materialising either side.
-
-    Two distinct components cannot hold identical ink (a pixel belongs to exactly
-    one), so after the first difference — or the shorter stream running out, the
-    tuple-prefix rule — the comparison is decided.
-    """
+    """Lexicographic sorted-pixel comparison without materialising either side."""
     for left_pixel, right_pixel in zip(
         _pixel_stream(left[1]), _pixel_stream(right[1]), strict=False
     ):
@@ -319,16 +257,12 @@ def reconcile(
 ) -> ReconciliationResult:
     """Reconcile one page's ink against the crops actually cut on it.
 
-    `claimed_bounds` is the final, padded crop rectangles this stage actually
-    cut -- not the structure pass's raw proposals -- because a crop's padding is
-    exactly what may already cover ink the raw proposal's own rectangle did not.
-    Every ink pixel is classified once; `claimed_pixel_count +
-    residual_pixel_count == total_ink_pixel_count` always, by construction,
-    because every pixel in the denominator is examined exactly once. The final
-    check below is not that identity (which holds by arithmetic) but the
-    independent one: that the residual *components* published for review sum back
-    to the residual ink counted, so no residual pixel is left out of a region a
-    reviewer can be shown.
+    `claimed_bounds` must be the final, padded crop rectangles -- not the
+    structure pass's raw proposals -- since padding may already cover ink the
+    raw rectangle didn't. The final check is not
+    `claimed + residual == total` (true by construction) but the independent
+    one: that the published residual components sum back to the residual ink
+    counted, so no residual pixel is missing from a region a reviewer can see.
     """
     if not _plain_int(width) or not _plain_int(height) or width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to scan")
@@ -349,10 +283,6 @@ def reconcile(
         starts[bounds["y"]].append(bounds)
         ends[bounds["y"] + bounds["h"]].append(bounds)
     active: list[geometry.Bounds] = []
-    # The merged claim intervals are a function of the active set alone, and the
-    # active set only changes on a row where some crop starts or ends. Reading
-    # `starts`/`ends` with `.get` rather than `[y]` also keeps the sweep from
-    # inserting an empty list for every scanline on the page.
     intervals: list[tuple[int, int]] = []
     total = claimed = 0
     residual_runs: list[_Run] = []
