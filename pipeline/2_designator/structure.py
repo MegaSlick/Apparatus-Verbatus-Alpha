@@ -10,11 +10,13 @@ There is no model here: this is a real, deterministic, visual connected-componen
 pass over the decoded page, not the textual structural classification a model
 would add.
 
-`PRIMARY_MARGIN` and `SECONDARY_MARGIN` back `primary_scan` and `secondary_scan`
-so a real secondary detector has a principled difference to report: the
-secondary scan is strictly more sensitive, so it adds recall without ever
-missing what the primary catches, and `conservation.reconcile` uses it as the
-residual-ink denominator.
+`primary_scan` runs at each page's own derived `ink_margin`, not at
+`PRIMARY_MARGIN` -- that constant is only the floor under the derivation
+(`structure_pass.py:810`). `SECONDARY_MARGIN` backs `secondary_scan` at a
+fixed, lower margin so a real secondary detector has a principled difference
+to report: the secondary scan is strictly more sensitive, so it adds recall
+without ever missing what the primary catches, and `conservation.reconcile`
+uses it as the residual-ink denominator.
 
 Connectivity tolerates a small gap rather than requiring strict pixel adjacency:
 real ink is not a solid fill, so two ink pixels within `gap_tolerance_px` of each
@@ -28,7 +30,7 @@ this module's and `conservation.py`'s labelling are checked against.
 
 from typing import Final
 
-from common.background import (  # noqa: F401  (re-exported: see the note below)
+from common.background import (  # noqa: F401  (re-exported: see the note above)
     BACKGROUND_SOURCE_INTERIOR_MODE,
     BACKGROUND_SOURCE_MODAL,
     BASIS_POINTS,
@@ -44,7 +46,7 @@ from common.background import (  # noqa: F401  (re-exported: see the note below)
     infer_background,
     infer_background_evidence,
 )
-from common.components import (  # noqa: F401  (re-exported: see the note below)
+from common.components import (  # noqa: F401  (re-exported: see the note above)
     Component,
     ink_runs_by_row,
     label_component_runs,
@@ -53,9 +55,12 @@ from common.components import (  # noqa: F401  (re-exported: see the note below)
 )
 from common.contracts.errors import ContractError
 
-# Deliberately not derived: a fixed 2 below background is smaller than any
-# derived margin, so `secondary_scan` is guaranteed strictly more sensitive
-# than `primary_scan` on every page, never the reverse.
+# Deliberately not derived or configured: a fixed 2 below background is
+# smaller than any derived margin, so `secondary_scan` is guaranteed strictly
+# more sensitive than `primary_scan` on every page, never the reverse. A
+# derived value could invert that on some page, trading a visible over-count
+# for a possible silent loss. Read as a literal by an AST test, so it must
+# stay one.
 SECONDARY_MARGIN: Final = 2
 
 # No module default: this is the one threshold that cannot honestly scale by
@@ -68,6 +73,10 @@ def ink_pixels(width: int, height: int, rows: list, *, background: int, margin: 
 
     Split out from `scan_ink_components` for callers that need the raw ink set
     rather than whole components, which may straddle a crop's edge.
+
+    Still materialises one tuple per ink pixel, the remaining share of the
+    383s/2.17GB measured before the run-based labeller replaced the rest
+    (`common/components.py:186`, `test_page_residual_bound.py:397-400`).
     """
     if width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to scan")

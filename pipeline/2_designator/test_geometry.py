@@ -141,7 +141,8 @@ def test_a_round_trip_grows_a_rectangle_by_at_most_a_pixel_per_edge(page, model)
     projected = to_model_space(bounds, page_w, page_h, model_w, model_h)
     recovered = from_model_space(projected["bounds"], projected["scale"], page_w, page_h)
     # One model-space pixel of outward rounding each way, per edge, converted
-    # to source pixels; two edges per axis.
+    # to source pixels (the ceiling division), plus 1 for the inverse's own
+    # rounding back to source space; two edges per axis.
     slack_x = 2 * (-(-page_w // model_w) + 1)
     slack_y = 2 * (-(-page_h // model_h) + 1)
     assert recovered["w"] - bounds["w"] <= slack_x, (recovered, bounds, slack_x)

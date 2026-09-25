@@ -352,7 +352,8 @@ def find_continuation_candidate(
     The column-share test takes no slack: two x-ranges share a column only
     when they actually meet, since this check is recorded rather than gating
     (`run.py::_publish_act_group`), so a miss under-corroborates rather than
-    losing a continuation outright.
+    losing a continuation outright. Any future slack goes into config in
+    basis points, never as a default here.
     """
     for name, value in (
         ("page A edge reach", edge_reach_a_px),
@@ -416,6 +417,9 @@ def fallback_tiles(
 
     tiles: list[ActGroup] = []
     for index in range(bands):
+        # Computed from the index, not a rounded band height: a rounded
+        # height accumulated over `bands` iterations would leave a strip
+        # covered by no crop, and any act inside it would be lost.
         top = (page_h * index) // bands
         bottom = (page_h * (index + 1)) // bands
         grown_top = max(0, top - overlap_px)

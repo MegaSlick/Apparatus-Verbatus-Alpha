@@ -9,15 +9,17 @@ constant so both Chandra chairs send identical bytes.
 The prompt is sealed by digest, not configuration: `common/chandra_layout.py`
 refuses to import if the carried bytes no longer hash to the pinned vendor
 commit's sha256, so an edited byte fails loudly at import rather than quietly
-changing what the chair is asked. This also means the prompt cannot be tuned
-(principle 8's ban on an instrument that argues one way does not apply -- it is
-the vendor's wording, not ours).
+changing what the chair is asked. This also means the prompt cannot be tuned.
+Principle 8's ban on a steering instrument still binds; the vendor prompt
+meets it by asking for no preference, severity floor or confidence budget
+(`test_structure_prompt.py`).
 
 Chandra's own inference code sends a single `user` message and never a system
-one, and its chat template does not accept an image there -- so this module
-sends one `user` turn, image first. Coordinates are normalized 0-1000 (the
-vendor's own convention, resolution-independent); `to_page_bounds` converts to
-page pixels once, at the edge.
+one, and its chat template does not accept an image there -- so this module's
+`messages()` returns that one `user` turn; `structure_pass.page_request` puts
+the image block before it. Coordinates are normalized 0-1000 (the vendor's own
+convention, resolution-independent); `to_page_bounds` converts to page pixels
+once, at the edge.
 """
 
 from __future__ import annotations

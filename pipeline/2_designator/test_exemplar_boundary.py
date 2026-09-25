@@ -1,6 +1,9 @@
-"""The Designator reconciles the Exemplar before cutting ink: each test runs
-the real orchestrator, damages only the Exemplar's written evidence, and
-checks the Designator stops before publishing any new proposal.
+"""The Designator reconciles the Exemplar before cutting ink: most tests run
+the real orchestrator, damage only the Exemplar's written evidence, and check
+the Designator stops before publishing any new proposal. The missing-outcome
+test also damages the Ink Map's own accounting so the run reaches census
+reconciliation; the TOCTOU test below calls the Designator's internals
+directly, on pixels tampered after the upfront check.
 """
 
 import json

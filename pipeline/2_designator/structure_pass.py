@@ -7,10 +7,13 @@ geometry the answer mints. Nothing here cuts a crop or writes a stage artifact
 pass uses, so a crop has exactly one author and a page exactly one status
 record whichever pass marked it out.
 
-**What is sent.** One `chat-completions` request per sealed page, the whole
-page's exact sealed PNG bytes as a `data:image/png;base64` block bound to the
-Exemplar by `image_sha256s`, sent as a single `user` turn with the image block
-before the instruction -- the shape Chandra's own inference code expects. The
+**What is sent.** One `chat-completions` request per sealed page, the rendered
+and resized RGB PNG `prepare_page_request_image` produces as a
+`data:image/png;base64` block, bound back to the sealed page by a
+transformation artifact -- `image_sha256s` records that rendered image's own
+digest, not the sealed page's. Sent as a single `user` turn with the image
+block before the instruction -- the shape Chandra's own inference code
+expects. The
 instruction is the vendor's own prompt (`structure_prompt.py`), not one this
 project wrote. No tiling: the chair this pass serves is page-level. The
 generation bound is `min(Chandra's 12,384-token MAX_OUTPUT_TOKENS,
@@ -31,9 +34,14 @@ implemented by `ask_page`: a parsed, complete answer with at least one
 proposal marks the page `detected`; one that proposes nothing marks it
 `fallback-tiles` and cuts the page into predetermined crops; a cut-off, an
 unparseable answer, an unusable call, or rectangles that touch none of the
-scan's own ink holds the page under `STRUCTURE_HELD_CODES`. A transport or
-serving refusal is fatal, with nothing published for the page. Nothing is
-repaired, retried, or re-asked.
+scan's own ink holds the page under `STRUCTURE_HELD_CODES`. A refusal before
+the chair was reached (`ServingError`/`EndpointUnavailable`) is fatal, with
+nothing published for the page; a capacity refusal or a dispatched call that
+came back unusable, with the durable call facts recorded, instead holds the
+page under `HELD_CALL_UNUSABLE` -- a terminal outcome, not a pending one. A
+bad reading is never repaired or re-rolled; the bounded call retry
+(`ABSOLUTE_STRUCTURE_ATTEMPT_CEILING`) only recovers a structural loop or an
+invalid layout.
 
 **A page whose blocks all failed to place is tiled, not held**: the
 difference from a `Blank-Page` answer is only in the record
@@ -1386,6 +1394,9 @@ def model_evidence_blocks(
     the mirror case: two or more regions each cover half of one rectangle, so
     no single region corroborates it and picking the largest would be a picker.
     """
+    # A fallback-tiled page's "groups" are the predetermined grid bands, not
+    # ink components: they would corroborate any rectangle drawn on the page,
+    # so every proposal there is recorded `model-only` instead.
     if analysis["structure_evidence"] != DISPOSITION_DETECTED:
         return [_model_only_block() for _ in proposals]
     groups = analysis["groups"]

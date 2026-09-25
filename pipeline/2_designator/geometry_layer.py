@@ -781,11 +781,10 @@ def _derive_resolution(
                         "state": "ambiguous-overlap",
                     }
                 )
-    # Deliberately over-broad: ANY occlusion on the page marks EVERY proposal
-    # "review", not only those whose AABB geometrically intersects it, since a
-    # tight filter could let a misjudged occlusion silently clear a proposal
-    # it should have flagged. A geometric narrowing is future work, not a default.
     occlusion_ids = sorted(payload["occlusion_id"] for _envelope, payload in occlusions)
+    # An id claimed twice would make `occlusion_refs` and `occlusion_ids` fall
+    # out of correspondence, and a reviewer could not tell which occlusion a
+    # partition entry actually names.
     if len(occlusion_ids) != len(set(occlusion_ids)):
         raise SchemaRefusal("resolver received duplicate occlusion identities")
     return {
@@ -809,6 +808,11 @@ def _derive_resolution(
         "partition": [
             {
                 "proposal_id": proposal_id,
+                # Deliberately over-broad: ANY occlusion on the page marks EVERY
+                # proposal "review", not only those whose AABB geometrically
+                # intersects it, since a tight filter could let a misjudged
+                # occlusion silently clear a proposal it should have flagged. A
+                # geometric narrowing is future work, not a default.
                 "disposition": "review" if occlusion_ids else "accepted-coverage",
                 "occlusion_ids": occlusion_ids,
             }

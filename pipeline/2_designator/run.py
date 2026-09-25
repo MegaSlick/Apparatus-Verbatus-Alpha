@@ -95,7 +95,8 @@ from common.stage import (  # noqa: E402
 
 # Total attempts, first included, for a whole-page structure call; retries only
 # recover a structural loop or invalid layout, never sample for quality. Kept
-# equal to common/recovery.py's RULED_ABSOLUTE_CAP by hand.
+# equal to common/recovery.py's RULED_ABSOLUTE_CAP by hand: recovery restores
+# coverage, never quality, so the attempt ceiling must equal the absolute cap.
 ABSOLUTE_STRUCTURE_ATTEMPT_CEILING = 3
 STRUCTURE_ATTEMPT_KIND = "structure-attempt"
 

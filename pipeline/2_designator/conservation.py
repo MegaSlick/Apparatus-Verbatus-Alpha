@@ -175,8 +175,9 @@ def _components(runs: list[_Run], gap: int) -> list[dict]:
                 continue
             # Runs on a row are disjoint and strictly left-to-right, so one
             # forward pointer per row pair replaces the full cross product:
-            # once a previous-row run passes `left`'s right edge (+radius), no
-            # later `left` needs to look further back than that point either.
+            # once a previous-row run is wholly left of `left` (its right edge
+            # plus radius still short of `left`'s start), it is behind every
+            # later `left` too and `start` never revisits it.
             start = 0
             for left in current:
                 while (

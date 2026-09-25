@@ -420,8 +420,10 @@ def _load_page_area_bp(table: Any) -> dict[str, Any]:
 def _load_background(table: Any) -> dict[str, Any]:
     """Read `[grouping.background]` and its own provenance.
 
-    Its own provenance block because these four values (unlike the rest of
-    this file) are measured on 127 real pages. The values themselves are
+    Its own provenance block because these four values are measured on 127
+    real pages, one of several such blocks in this file (continuation is
+    measured on 44, and page-area and the coverage audit carry their own
+    too). The values themselves are
     validated by `common.background.validate_background_table`, shared with
     the Ink Map and the Recensor's residual-ink audit so all three refuse the
     same malformed value; this function adds only the forbidden-name refusal,
@@ -497,5 +499,8 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
         fallback_bands=config["fallback_bands"],
         residual_aggregate_max_pixel_count=config["residual_aggregate_max_pixel_count"],
         residual_aggregate_max_area_px=config["residual_aggregate_max_area_px"],
+        # Carried on the published thresholds, not just used internally by
+        # `group_page`, so `run.py` can repeat the same page-spanning
+        # partition later and check the withheld components it recorded.
         page_spanning_area_bp=config["page_area_bp"]["page_spanning_area_bp"],
     )
