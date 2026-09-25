@@ -3415,10 +3415,13 @@ def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config
 
 def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry():
     """The named real-path seal is used before a manifest can shape source pages."""
-    implementation = inspect.getsource(door.real_submission)
-    assert implementation.index("require_triage_modes") < implementation.index(
-        "sources = expand_sources"
-    )
+    tree = ast.parse(dedent(inspect.getsource(door.real_submission)))
+
+    def first_call(name):
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        return min(node.lineno for node in calls if getattr(node.func, "id", None) == name)
+
+    assert first_call("require_triage_modes") < first_call("expand_sources")
 
 
 def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():

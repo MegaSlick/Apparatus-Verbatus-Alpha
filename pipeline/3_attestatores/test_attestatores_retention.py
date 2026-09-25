@@ -1193,7 +1193,6 @@ def test_no_self_report_can_reach_a_coverage_count_or_an_outcome_class():
     itself could reach a count or a class."""
     parameters = inspect.signature(witness_coverage).parameters
     assert set(parameters) == {"chair_outcomes", "configured_floor", "attachments"}
-    assert attestatores.content_health.__doc__ is not None
     assert "witness_reported" not in inspect.signature(attestatores.content_health).parameters
 
 

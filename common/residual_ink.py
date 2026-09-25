@@ -46,10 +46,6 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.imaging import Bounds, grayscale_rows
 
-# PROPOSED, NOT YET MEASURED: the contrast below and the two values sealed in
-# `[coverage_audit.noise_floor]` are reasoned defaults; change them only when
-# real-corpus calibration supplies a measured value.
-
 #: Sealed, not a constant, so it is inside every run's config digest.
 MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 
@@ -61,6 +57,8 @@ MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 #: photographed page's derived margin (median 66), so there it counts more ink
 #: than the Designator's primary scan does; that is why the gates are fractions.
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
+#: A reasoned default, like the sealed noise floor; flip it with a real-corpus measurement.
+MINIMUM_CONTRAST_IS_MEASURED: Final = False
 
 #: Fraction of the page's own ink outside every region that flags it, in basis
 #: points; sealed beside the noise floor, integer because artifacts carry no floats.

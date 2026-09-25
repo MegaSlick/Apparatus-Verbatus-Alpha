@@ -1,5 +1,6 @@
 """The PDF target is run configuration; safety bounds remain renderer code."""
 
+import ast
 import importlib.util
 import sys
 from io import BytesIO
@@ -48,7 +49,10 @@ def test_the_target_is_configuration_rather_than_a_constant_in_code(tmp_path):
     to notice — and a config naming a different target really does change the run.
     """
     source = (Path(__file__).resolve().parent / "render_config.py").read_text(encoding="utf-8")
-    assert "300" not in source, "the shipped target leaked into the loader as a constant"
+    constants = {
+        node.value for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Constant)
+    }
+    assert {300, "300"}.isdisjoint(constants), "the shipped target leaked into the loader"
 
     for chosen in (150, 300, 600):
         configured = tmp_path / f"render-{chosen}.toml"
