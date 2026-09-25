@@ -1730,12 +1730,12 @@ def fixture_submission(args, registry) -> int:
     )
     require_corpus_frame_shard(len(pages), bindings["sealed_config_digests"])
 
-    # The door creates the run because it first knows what arrived. The manifest
-    # carries declared digests, so a refusal matches what it was refused against.
-    tree = RunTree.create(
+    # The manifest carries declared digests, so a refusal matches what it was
+    # refused against.
+    tree = _create_run(
+        args,
         Path(args.run_root),
-        args.run_id,
-        source_manifest=[
+        [
             {
                 "relative_path": page["path"],
                 "sha256": declared[page["ordinal"]],
@@ -1746,27 +1746,13 @@ def fixture_submission(args, registry) -> int:
             }
             for page in pages
         ],
-        config_digest=bindings["config_digest"],
-        adapter_recipes=bindings["adapter_recipes"],
-        witness_chairs=bindings["witness_chairs"],
-        ingress=synthetic_fixture_ingress_record(),
-        render_settings={"pdf": pdf_settings.to_record()},
-        sealed_config_digests=bindings["sealed_config_digests"],
-        register_bytes=_read_corpus_register(args.corpus_register),
-        # Only the Door creates the run authority, so only it can seal the
-        # commit; None when the orchestrator could not measure it.
-        repository_commit=args.repository_commit,
+        bindings,
+        synthetic_fixture_ingress_record(),
+        pdf_settings,
     )
     context = _door_context(
-        tree,
-        fixture,
-        args.scenario,
-        args,
-        registry,
-        sealed_config_digests=bindings["sealed_config_digests"],
+        tree, fixture, args.scenario, args, registry, bindings, pdf_render_binding
     )
-    # The settings rendered with must be the bytes this run sealed.
-    context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
     sources = [
         SourceEntry(page["ordinal"], page["path"], declared[page["ordinal"]]) for page in pages
     ]
@@ -1932,10 +1918,10 @@ def real_submission(args, registry) -> int:
     )
     # Real ingress binds the same bounded shard policy before its RunTree exists.
     require_corpus_frame_shard(len(sources), bindings["sealed_config_digests"])
-    tree = RunTree.create(
+    tree = _create_run(
+        args,
         run_root,
-        args.run_id,
-        source_manifest=[
+        [
             {
                 "relative_path": source.declared_path,
                 "sha256": source.declared_sha256,
@@ -1948,27 +1934,11 @@ def real_submission(args, registry) -> int:
             }
             for source in sources
         ],
-        config_digest=bindings["config_digest"],
-        adapter_recipes=bindings["adapter_recipes"],
-        witness_chairs=bindings["witness_chairs"],
-        ingress=real_ingress_record(),
-        render_settings={"pdf": pdf_settings.to_record()},
-        sealed_config_digests=bindings["sealed_config_digests"],
-        register_bytes=_read_corpus_register(args.corpus_register),
-        # Only the Door creates the run authority, so only it can seal the
-        # commit; None when the orchestrator could not measure it.
-        repository_commit=args.repository_commit,
+        bindings,
+        real_ingress_record(),
+        pdf_settings,
     )
-
-    context = _door_context(
-        tree,
-        None,
-        REAL_SCENARIO,
-        args,
-        registry,
-        sealed_config_digests=bindings["sealed_config_digests"],
-    )
-    context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
+    context = _door_context(tree, None, REAL_SCENARIO, args, registry, bindings, pdf_render_binding)
     # Bind the data-handling policy that decided where this material may live,
     # so a reader can tell which policy admitted the corpus.
     context.require_sealed_config("data-handling", data_policy_binding.config_sha256)
@@ -2221,22 +2191,43 @@ def _door_execution_recipe(pdf_settings) -> dict[str, Any]:
     }
 
 
+def _create_run(
+    args,
+    run_root: Path,
+    source_manifest: list[dict[str, Any]],
+    bindings: dict[str, Any],
+    ingress: dict[str, Any],
+    pdf_settings: render_config.PdfRenderSettings,
+) -> RunTree:
+    """The Door creates the run because it is the first to know what arrived."""
+    return RunTree.create(
+        run_root,
+        args.run_id,
+        source_manifest=source_manifest,
+        config_digest=bindings["config_digest"],
+        adapter_recipes=bindings["adapter_recipes"],
+        witness_chairs=bindings["witness_chairs"],
+        ingress=ingress,
+        render_settings={"pdf": pdf_settings.to_record()},
+        sealed_config_digests=bindings["sealed_config_digests"],
+        register_bytes=_read_corpus_register(args.corpus_register),
+        # None when the orchestrator could not measure the commit.
+        repository_commit=args.repository_commit,
+    )
+
+
 def _door_context(
     tree: RunTree,
     fixture: dict | None,
     scenario: str,
     args,
     registry,
-    *,
-    sealed_config_digests: dict[str, str] | None = None,
+    bindings: dict[str, Any],
+    pdf_render_binding: render_config.PdfRenderBinding,
 ) -> StageContext:
-    """The door's own context.
-
-    It carries the sealed digests because the door also uses the PDF render and
-    data-handling policies and must prove they are what the run recorded.
-    """
+    """The door's context, proven to render with the PDF settings the run sealed."""
     run = tree.read_run()
-    return StageContext(
+    context = StageContext(
         tree=tree,
         run=run,
         fixture=fixture,
@@ -2245,8 +2236,10 @@ def _door_context(
         adapter_revision=adapter_recipe_for(run, DOOR),
         args=args,
         registry=registry,
-        sealed_config_digests=sealed_config_digests,
+        sealed_config_digests=bindings["sealed_config_digests"],
     )
+    context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
+    return context
 
 
 if __name__ == "__main__":
