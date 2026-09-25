@@ -656,11 +656,10 @@ class WitnessConfiguration:
 
         **Compared on the normalized repository name.** This is the same structural
         rule `roster.validate_perlector_candidate` enforces against one hardcoded
-        Attestator, applied here against the *actually configured* witnesses — which
-        makes it the one that matters more, and it was still an exact string match
-        after the other was fixed. A trailing space, a capital letter or a
-        `@revision` pin let a configured witness sit in the candidate roster, and
-        self-witness agreement is not evidence.
+        Attestator, applied here against the *actually configured* witnesses, which
+        makes it the one that matters more: a trailing space, a capital letter, or a
+        `@revision` pin must not let a configured witness sit in the candidate
+        roster — self-witness agreement is not evidence.
         """
 
         witness_artifacts = {source.artifact_digest for source in self.sources}

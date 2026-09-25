@@ -480,7 +480,8 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     assert by_name["churro-native"]["hold_acts"] == []
     # Churro-truncation's whole point is that a visibly cut but parseable
     # response is retained as it came. A recovery route or a hold here would
-    # re-ask or withhold it, which is the thing the scenario exists to refuse.
+    # re-ask or withhold it, which is the thing the scenario exists to refuse
+    # (recovery recovers coverage, never content quality).
     assert by_name["churro-truncation"]["recover_acts"] == []
     assert by_name["churro-truncation"]["hold_acts"] == []
     assert [

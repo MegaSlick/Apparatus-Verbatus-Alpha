@@ -615,12 +615,9 @@ def test_a_record_whose_action_is_not_the_recorded_one_refuses():
 def test_a_sibling_scope_digest_cannot_satisfy_the_data_gate(sibling):
     """A sibling scope's digest cannot satisfy this gate.
 
-    The docstring used to say the schema tag is what separates the four scopes
-    and that this proves it. It does not: each scope record carries different
-    field names, so the digests differ whether or not the tag is there, and the
-    assertion below passes with every `"schema"` key deleted. The tag is pinned
-    separately by the test underneath. The refusal exercised here is real; only
-    the stated reason was wrong.
+    Each scope record carries different field names, so the digests differ
+    whether or not the `"schema"` tag is there; the tag alone is pinned
+    separately by the test underneath.
     """
 
     assert sibling != DataGateAuthority.scope_digest(policy_content=POLICY)
@@ -633,7 +630,7 @@ def test_a_sibling_scope_digest_cannot_satisfy_the_data_gate(sibling):
 
 
 def test_the_schema_tag_alone_separates_two_otherwise_identical_scopes():
-    """Pins the claim the test above used to make and could not support.
+    """Pins the claim the test above depends on.
 
     Two scope records identical but for their `"schema"` value must digest
     differently, or the tag is decoration and two scopes with the same fields

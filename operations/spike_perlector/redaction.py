@@ -145,9 +145,8 @@ def project_public_finding(run: MeasurementRun) -> dict[str, Any]:
     except MeasurementRefusal as error:
         # Only the instrument's own refusals. `MatrixRefusal` and
         # `CandidateRosterRefusal` both inherit from it, so the eligibility
-        # checks are still covered — while catching `Exception` turned an
-        # `AttributeError` in the publish path into a confident-sounding
-        # "not eligible for public evidence" and hid the defect.
+        # checks are still covered; catching `Exception` would mask an
+        # unrelated defect as a confident "not eligible for public evidence".
         raise PublicSafetyRefusal(f"run is not eligible for public evidence: {error}") from error
     if run.manifest is None:  # pragma: no cover - protected by require_publishable
         raise PublicSafetyRefusal("public finding has no sealed manifest")
@@ -278,9 +277,8 @@ def _validate_metric_fields(record: dict[str, Any], *, baseline: bool) -> None:
         raise PublicSafetyRefusal("public cost mean nullness does not match its observation count")
     # Malformed cells are excluded from the denominator, exactly as
     # `runner.require_publishable` excludes them: a `malformed` response is a
-    # predeclared state with no measurable response to time. Without this the two
-    # checks disagreed, and a run the runner had already declared publishable was
-    # refused here for the cells it had just been told not to count.
+    # predeclared state with no measurable response to time. Staying in step
+    # with the runner keeps this check and `require_publishable` agreeing.
     measurable_cells = record["cell_count"] - record["malformed_cells"]
     if not baseline and (
         record["elapsed_observed_cells"] != measurable_cells

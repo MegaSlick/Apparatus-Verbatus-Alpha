@@ -91,8 +91,7 @@ def _approval_digest(record: Mapping[str, object]) -> str:
     for an approval, because an approval scope is a *claim about exactly what was
     approved*.  Under the permissive encoder ``{1: x}`` and ``{"1": x}`` digest
     identically, so a policy could change underneath a live approval without making it
-    stale — and the retired ``data_gate_policy_hash`` these scopes replaced refused
-    both cases outright.
+    stale.
 
     ``digest_of`` refuses floats and non-string keys recursively, which restores that
     guarantee.  The sibling scopes carry only strings and pinned digests, so this is a
@@ -119,12 +118,10 @@ def _require_content_addressed_reference(
 ) -> str:
     """Refuse a reference before anything opens the path it names.
 
-    Every ``load()`` hands ``relative_path`` to a caller-supplied ``read_bytes``.
-    The shape check used to happen afterwards, inside the record verification, so
-    a reference naming ``../`` was *read* first and only then refused. A reader
-    that is not itself confined to the approved root would have opened a file
-    outside it before this gate had an opinion. The digest comparison would still
-    have refused the content — but the read had already happened.
+    Every ``load()`` hands ``relative_path`` to a caller-supplied ``read_bytes``,
+    which is not itself guaranteed to be confined to the approved root. Checking
+    the shape here, before any read, keeps a reference naming ``../`` from ever
+    reaching that reader.
     """
 
     if not isinstance(reference, ApprovalRecordReference):
@@ -159,12 +156,11 @@ class DataGateAuthority:
     """A data-gate record that has been checked through its approval reference.
 
     Binds its own content-addressed scope, the same way
-    ``ThirdPartyTransmissionApproval`` and ``RunPlanApproval`` below do: the shared
-    approval-record contract's own ``data-gate`` action existed for a different
-    question (whether real images ever reach git) and was retired for it;
-    this module's question — whether private-register material may be
-    disclosed under a checked, current, content-addressed policy — is unrelated and
-    still stands, now carried entirely by this class rather than by a shared action.
+    ``ThirdPartyTransmissionApproval`` and ``RunPlanApproval`` below do. This
+    module's question — whether private-register material may be disclosed
+    under a checked, current, content-addressed policy — is unrelated to the
+    shared approval-record contract's own ``data-gate`` action, so it is
+    carried entirely by this class rather than by a shared action.
 
     The immutable object retains the exact checked record rather than a
     caller-provided digest string.

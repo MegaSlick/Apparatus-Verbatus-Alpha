@@ -105,10 +105,9 @@ def _records_in(directory: str | Path | _CorpusDirectory) -> list[dict[str, obje
                 directory_descriptor=corpus.descriptor,
                 display_path=corpus.path / name,
             )
-            # `read_json` returns any JSON value. Every caller then reads
-            # `schema` off these, so a file holding a list, a string or null
-            # reached `.get` and raised AttributeError -- a traceback where the
-            # contract is a named refusal. One guard here covers every reader.
+            # `read_json` returns any JSON value, but every caller reads
+            # `schema` off a dict. This guard turns a non-dict record into
+            # a named refusal instead of an AttributeError deep in a reader.
             if not isinstance(record, dict):
                 raise SchemaRefusal(
                     f"the gold record {corpus.path / name} is not a JSON object, so it "
@@ -198,8 +197,8 @@ def _reconcile_and_publish(
 ) -> None:
     """Validate the record against its corpus, closure waived, then publish it.
 
-    An open custody chain is the normal state for every command that calls this,
-    so closure stays the collection gate's own rule rather than one waived here.
+    Closure is waived because an open custody chain is normal here;
+    `validate-corpus` enforces it.
     """
     existing = _records_in(corpus)
     validate_corpus([*existing, record], run_path, require_closure=False)

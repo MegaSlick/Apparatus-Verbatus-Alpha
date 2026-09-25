@@ -382,7 +382,7 @@ def test_a_tampered_sampling_seed_is_refused_as_an_edited_run_authority(tmp_path
 def test_sampling_draw_refuses_unhashable_catalog_identity_fields_by_name(tmp_path):
     """The retained catalog is untrusted record input. Its identity fields must be
     checked before they become tuple members in a set; JSON arrays and objects are
-    legal values but unhashable Python objects, and used to escape as TypeError."""
+    legal values but unhashable Python objects."""
     path, frame, pages = run_file(tmp_path)
     rows = catalog(pages)
     draw, _selected = build_sampling_draw(path, rows, plan_for(frame, rows))
@@ -783,9 +783,9 @@ def test_illegible_is_the_one_spelling_and_a_transcription_is_never_blank(tmp_pa
 
 def test_a_reserved_token_between_two_words_is_not_mistaken_for_a_bad_spelling(tmp_path):
     """The reserved token is carved out by position, not deleted before rescanning:
-    deleting it used to let unrelated fragments on either side splice back together
-    into "illegible" by accident, refusing a perfectly correct use of the token
-    (`peril` + `[ILLEGIBLE]` + `legible` used to read as `perillegible`)."""
+    deleting it would let unrelated fragments on either side splice back together
+    into "illegible" by accident (`peril` + `[ILLEGIBLE]` + `legible` reading as
+    `perillegible`), refusing a perfectly correct use of the token."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     spliced = "peril" + ILLEGIBLE + "legible"
@@ -1574,10 +1574,10 @@ def test_the_corpus_api_refuses_an_empty_collection():
 
 
 def test_corpus_refuses_a_started_reading_chain_without_its_adjudication(tmp_path):
-    """Deleting the established record used to leave one or both independent
-    transcriptions in a corpus that still validated. A partial chain is legitimate
-    while people work, but collection validation must name it as partial rather than
-    let absence wear the same success as completed custody."""
+    """Deleting the established record can leave one or both independent
+    transcriptions in a corpus. A partial chain is legitimate while people work,
+    but collection validation must name it as partial rather than let absence
+    wear the same success as completed custody."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     first, second = _pair(sample, "Marie Anne", "Marie Jeanne", path)
@@ -1814,12 +1814,12 @@ def test_corpus_refuses_two_established_readings_for_one_act(tmp_path):
 
 
 def test_corpus_refuses_a_drawn_page_re_minted_under_another_method(tmp_path):
-    """The membership check used to run one way only: every `stratified-seed`
-    sample had to be a draw member, but nothing required every draw member to
-    still be present as one. A page the seed genuinely chose could be re-minted
-    as `manual` (with the matching page-derived `set` as its `claimed_set`, so it
-    is individually well-formed) and disappear from the seeded accounting while
-    `validate_corpus` kept reporting success -- a silent loss."""
+    """The membership check must run both ways: every `stratified-seed` sample
+    must be a draw member, and every draw member must still be present as one.
+    A page the seed genuinely chose could otherwise be re-minted as `manual`
+    (with the matching page-derived `set` as its `claimed_set`, so it is
+    individually well-formed) and disappear from the seeded accounting while
+    `validate_corpus` keeps reporting success -- a silent loss."""
     path, frame, pages = run_file(tmp_path)
     rows = catalog(pages)
     plan = plan_for(frame, rows)

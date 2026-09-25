@@ -15,11 +15,11 @@ FORBIDDEN_ATTESTATOR_SOURCE = "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR"
 def validate_perlector_candidate(identity: ResolvedIdentity) -> None:
     """Apply the structural no-self-witness rule at every execution boundary.
 
-    The comparison is normalized, because this is a structural rule and not a
-    string match: a witness sitting in the candidate roster breaks the rule at
-    the root. Compared exactly, a trailing space, a capital letter, or a
-    `@revision` pin walked the Attestator straight through the one check
-    standing in its way — and the refusal that did not fire is invisible.
+    The Perlector reads and never picks among witnesses, so a witness sitting
+    in the candidate roster breaks that rule at the root. The comparison is
+    normalized because this is a structural rule and not a string match: a
+    trailing space, a capital letter, or a `@revision` pin must not walk the
+    Attestator past the one check standing in its way.
     """
 
     if repository_of(identity.source_ref) == repository_of(FORBIDDEN_ATTESTATOR_SOURCE):
@@ -63,10 +63,9 @@ class CandidateRoster:
         identities = self.identities()
         # Normalized, like every other source comparison in this method and for
         # the reason `repository_of` gives: a `source_ref` is typed by hand, so
-        # the settled stock base arrives as `"Qwen/Qwen3.8-27B "`,
-        # `"qwen/qwen3.8-27b"` or `"Qwen/Qwen3.8-27B@main"`. A raw compare refused
-        # the correct model for a trailing space while the checks below it, on
-        # the same field, accepted it.
+        # the settled stock base can arrive as `"Qwen/Qwen3.8-27B "`,
+        # `"qwen/qwen3.8-27b"` or `"Qwen/Qwen3.8-27B@main"`, and a raw compare
+        # must not refuse the correct model for spelling alone.
         if repository_of(self.stock_base.source_ref) != repository_of(STOCK_BASE_SOURCE):
             raise CandidateRosterRefusal(
                 f"stock base must be the settled {STOCK_BASE_SOURCE!r} candidate"

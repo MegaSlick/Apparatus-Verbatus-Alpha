@@ -106,11 +106,9 @@ def evaluation_act(
             adjudication_digest=digest(f"adjudication:{opaque_act_id}"),
             reference_revision="synthetic-reference-v1",
             # Overridable, and `is None` so an explicit empty tuple survives:
-            # every fixture act carried exactly two drafts, so no test in this
-            # cohort could reach the runner's refusal of a checked reference
-            # adjudicated from any other number. That refusal is what stops one
-            # person's guess becoming an established reading, and it could have
-            # been deleted with the suite still green.
+            # the default of two drafts matches every fixture act, and
+            # overriding it is how a test reaches the runner's refusal of a
+            # checked reference adjudicated from any other number.
             independent_draft_sha256s=(
                 (
                     digest(f"draft-a:{opaque_act_id}"),

@@ -649,9 +649,9 @@ def test_the_no_self_witness_refusal_survives_a_differently_spelled_source_ref()
     A source reference is written by hand into configuration, and the same model
     arrives spelled several ways. Compared exactly, each of these walked the
     Attestator straight past the one check standing in its way — and a refusal
-    that does not fire leaves no trace. Principle 1: the
-    Perlector reads and never picks among witnesses, so a witness in the
-    candidate roster is that rule broken at the root.
+    that does not fire leaves no trace. The Perlector reads and never picks
+    among witnesses, so a witness in the candidate roster is that rule broken
+    at the root.
     """
 
     for spelling in (
@@ -683,8 +683,7 @@ def test_a_configured_witness_cannot_be_a_candidate_under_any_spelling():
     *actually configured* witnesses rather than one hardcoded constant — which
     makes this the one that matters more. It stayed an exact string match after
     the other was normalized, so all four spellings walked a live witness into
-    the candidate roster. Principle 1: self-witness agreement is
-    not evidence.
+    the candidate roster. Self-witness agreement is not evidence.
     """
 
     act = evaluation_act()
