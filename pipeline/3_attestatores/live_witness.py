@@ -424,6 +424,8 @@ def page_chair_request(
     prompt = _framed_prompt(adapter, framing)
     image_sha256s = (presented["image_sha256"],)
     messages = _page_messages(adapter_name, prompt, image_bytes)
+    # After the prompt shape is recognized, so an unrecognized framing keeps
+    # its own clear refusal instead of surfacing as a capacity refusal.
     capacity = request_capacity_or_refuse(
         profile,
         adapter_name,
@@ -633,7 +635,10 @@ def _live_attempt_from_capture(
     unconfirmed empty response, and ``failed`` for a parse failure -- and
     differ only in ``kind`` (used in the unconfirmed-blank reason),
     ``parse_failure_reason`` (dai.v1's own reason vs `native_parse_refusal`
-    for a page chair), and whether an ``observation_payload`` is carried.
+    for a page chair -- shared with `common/native_witness.py`'s page
+    validator, which re-derives and compares this same reason, so the two
+    must never drift apart), and whether an ``observation_payload`` is
+    carried.
     """
     base = {
         "witness_reported": None,
@@ -831,8 +836,13 @@ def captured_page_attempt(
         cut_off=cut_off,
         transport_stop_reason=transport_stop_reason,
         parse_failure_reason=native_parse_refusal,
-        # Both page-scoped adapters derive their block geometry in `run.py`
-        # from these same bytes rather than from the parsed text (Churro
-        # reports none, but the bytes travel the same way as Chandra's).
+        # Unconditional, on purpose: this dispatch has already refused every
+        # adapter but the two page-scoped ones, so a membership test here
+        # would only be a second, quieter copy of that list -- and a third
+        # page chair added above and forgotten here would then silently
+        # derive no geometry (principle 2). Both page-scoped adapters derive
+        # their block geometry in `run.py` from these same bytes rather than
+        # from the parsed text (Churro reports none, but the bytes still
+        # travel the same way as Chandra's).
         observation_payload=response.content.encode("utf-8"),
     )

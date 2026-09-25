@@ -257,6 +257,10 @@ def observe(presentation: dict[str, Any], native_payload: Any) -> list[dict[str,
     excluded from routing and coverage, so the record says which image this
     reading speaks for without fabricating geometry from it.
 
+    Takes no ``page_size``: this adapter's `witness_adapters.RunnableAdapter.
+    takes_page_size` is `False`, so callers never pass one -- a flag callers
+    read rather than an adapter-name comparison.
+
     `native_payload` is part of the common adapter interface and deliberately
     unread: no property of a response turns a presentation echo into ink.
     """

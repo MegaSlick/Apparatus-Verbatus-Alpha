@@ -1,16 +1,14 @@
 """Attestatores: retain every witness attempt without changing its history.
 
-``payload`` is the witness's native response, unshaped. ``witness_reported`` is the
-witness's own confidence or status claim, kept as a claim and never used for channel
-health, which is computed here from the response and the transport boundary.
+``payload`` is the witness's native response, unshaped. ``witness_reported`` is
+the witness's own confidence or status claim, never used for channel health,
+which is computed here from the response and the transport boundary.
 
-Attempts are append-only: a re-read gets a new ordinal and artifact identity, and
-consumers take the newest contiguous ordinal as current.
-
-`--attempt-ordinal N` runs every chair on every expected act at that ordinal; running
-it again is a byte-identical resume. `--operation reread --act <id> --chair <role>` moves one chair on one
-act to its next ordinal, so a single failed reading is retried without re-reading
-ink nobody doubted.
+Attempts are append-only: a re-read gets a new ordinal, and consumers take the
+newest contiguous ordinal as current. `--attempt-ordinal N` runs every chair on
+every expected act at that ordinal, byte-identically resumable.
+`--operation reread --act <id> --chair <role>` retries one chair's one act at
+its next ordinal without re-reading ink nobody doubted.
 
     python pipeline/3_attestatores/run.py --run-root <dir> --run-id <id>
     python pipeline/3_attestatores/run.py ... --operation reread --act <id> --chair <role>

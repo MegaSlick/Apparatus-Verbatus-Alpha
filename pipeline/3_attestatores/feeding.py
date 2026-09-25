@@ -163,7 +163,9 @@ def dai_wire_stop_token_ids() -> dict[str, list[int]]:
     Derived from the carried ``eos_token_id`` (:func:`dai_generation`),
     ``[151645, 151643]``, never re-typed. Sent as redundant request evidence,
     not a claim that the engine actually applied its snapshot before a live
-    observation proves that.
+    observation proves that. Only the secondary id is added here: the primary
+    already matches `DAI_TOKENIZER_EOS_TOKEN_ID`, so resending it would be a
+    no-op that is not worth the seam on an unobserved engine.
     """
 
     declared = dai_generation()["eos_token_id"]
@@ -700,6 +702,8 @@ def stage_major_schedule(
     if any(not isinstance(chair, str) or not chair for chair in chair_rows):
         raise SchemaRefusal("schedule chair identity is blank")
     ordered_chairs = sorted(set(chair_rows))
+    # A repeated chair would look like normal scheduling once deduplicated
+    # here, so the duplicate is caught before the set absorbs it.
     if len(ordered_chairs) != len(chair_rows):
         raise SchemaRefusal("schedule repeats a chair")
     rows = list(acts)

@@ -1748,11 +1748,11 @@ def test_the_placeholder_posture_is_scanned_for_repetition_too():
 def test_the_committed_fixture_placeholder_can_never_be_retained_from_a_served_chair():
     """Retained history, and no route by which it becomes a live reading.
 
-    The fixture's `fixture-chandra-response.v1` rows keep their reader until
-    U16 re-declares them in the vendor grammar, and the offline posture still
-    parses them. A served chair cannot reach that reader at all: the parser name
-    is what the record would carry, and a live capture written under it could
-    never be re-derived as the grammar the chair was actually asked in.
+    The fixture's `fixture-chandra-response.v1` rows keep their own reader,
+    which the offline posture still parses. A served chair cannot reach that
+    reader at all: the parser name is what the record would carry, and a live
+    capture written under it could never be re-derived as the grammar the
+    chair was actually asked in.
     """
     chandra = _load_stage_module("chandra")
     feeding = _load_stage_module("feeding")
