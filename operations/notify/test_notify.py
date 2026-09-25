@@ -14,11 +14,8 @@ import pytest
 SOURCE = Path(__file__).with_name("notify.sh")
 GATE = SOURCE.parents[2] / ".githooks" / "check-all.sh"
 
-# The real topic is a bearer secret. notify.sh reads the topic and the server
-# from the ambient environment, and its encoder reads the four presentation
-# variables, so a suite that inherits any of them can write the live topic into
-# a temporary file. Every variable in this namespace is stripped, by prefix, so
-# one added to notify.sh later cannot quietly start leaking.
+# The real topic is a bearer secret and notify.sh reads these from the environment:
+# the fixture strips the whole prefix, so a variable added later cannot start leaking.
 PREFIX = "NTFY" + "_"
 NOTIFICATION_VARIABLES = tuple(
     PREFIX + name for name in ("TOPIC", "SERVER", "TITLE", "PRIORITY", "TAG", "MESSAGE")
@@ -52,9 +49,8 @@ exit "${FAKE_EXIT:-0}"
     env = {key: value for key, value in os.environ.items() if not key.startswith(PREFIX)}
     env.update(
         {
-            # The fake bin comes first so its curl always wins; the inherited
-            # PATH stays behind it because notify.sh also needs python3, which
-            # a venv, pyenv or Homebrew-only box does not keep under /usr/bin.
+            # The fake curl wins; the inherited PATH follows for python3, which a venv,
+            # pyenv or Homebrew-only box does not keep under /usr/bin.
             "PATH": f"{binary}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
             "FAKE_ARGS": str(tmp_path / "args"),
             "FAKE_BODY": str(tmp_path / "body"),
@@ -86,8 +82,7 @@ def test_success_sends_json_without_topic_in_curl_arguments(notify_repo):
 
 
 def test_the_checkouts_own_venv_python_is_preferred_over_paths(notify_repo, tmp_path):
-    """F109: a PATH `python3` that would fail must never be reached when the
-    checkout's own frozen interpreter is right there under `.venv`."""
+    """A failing PATH `python3` is never reached while `.venv` holds an interpreter."""
     script, env = notify_repo
 
     venv_python = tmp_path / ".venv" / "bin" / "python"
@@ -131,12 +126,7 @@ def test_waiting_event_fails_when_delivery_is_not_confirmed(notify_repo, status,
 @pytest.mark.full
 @pytest.mark.parametrize("event", ["start", "milestone", "decision", "done"])
 def test_every_event_reports_a_failed_delivery_honestly(notify_repo, event):
-    """`start` and `milestone` used to exit 0 after printing NOT DELIVERED.
-
-    Two reviewers found it independently. The reason it was 0 — a session must not
-    die because a ping did not land — is provided by `"async": true` on the
-    SessionStart hook, not by the exit status, so the status is free to be true.
-    """
+    """A session survives a lost ping through the async hook, not a false exit 0."""
     script, env = notify_repo
     env["FAKE_STATUS"] = "503"
     result = run(script, env, event)
@@ -146,8 +136,7 @@ def test_every_event_reports_a_failed_delivery_honestly(notify_repo, event):
 
 @pytest.mark.full
 def test_the_session_start_hook_is_declared_async_so_a_failure_cannot_block(tmp_path):
-    # The property that replaced the false success. If this ever stops being async,
-    # a failed start ping could fail the session, and the reasoning above lapses.
+    # If this stops being async, a failed start ping could fail the session.
     settings = json.loads(
         (Path(__file__).resolve().parents[2] / ".claude" / "settings.json").read_text(
             encoding="utf-8"
@@ -204,16 +193,8 @@ def test_invalid_topic_is_not_echoed(notify_repo):
 
 
 def test_the_test_sink_topic_echoes_the_message_and_spawns_no_curl(notify_repo):
-    """The reserved topic that stops a test session from paging his phone.
-
-    Its whole job is that the fake `curl` -- which stands where the real one
-    would be -- is never reached, so that is what is asserted: no arguments
-    file and no body file, the two things the fake writes the instant it runs.
-    Exit 0 and not a refusal, because the guard must not change what the suite
-    it is protecting measures; the swallowed message goes to stderr instead, so
-    a leak stays visible to anyone reading it.
-    """
-
+    """Exit 0, so the guard does not change what the suites measure; the swallowed
+    message stays visible on stderr."""
     script, env = notify_repo
     env["NTFY_TOPIC"] = "verbatus-test-sink"
     result = run(script, env, "milestone", "a message no phone should see")
@@ -224,23 +205,12 @@ def test_the_test_sink_topic_echoes_the_message_and_spawns_no_curl(notify_repo):
     assert "milestone" in result.stderr
     assert "a message no phone should see" in result.stderr
 
-    # Exit 0 alone was read by every Python bridge over this script as delivery,
-    # so the record said "Phone notification: sent." for a notification that
-    # never left the machine. The marker on stdout is what tells them apart, and
-    # the swallowed message never joins it there: stdout is machine-readable,
-    # the human reason stays on stderr.
+    # The bridges read exit 0 as delivered; this stdout marker is what tells them apart.
     assert result.stdout == "NOTIFY_SUPPRESSED verbatus-test-sink\n"
 
 
 def test_a_delivered_notification_writes_nothing_on_stdout(notify_repo):
-    """What makes the suppression marker unambiguous: stdout is otherwise unused.
-
-    A bridge reads a marker line out of stdout and calls that outcome
-    suppressed. That is only safe while nothing else in this script writes
-    there -- every reason, refusal and suppression note goes to stderr -- so
-    the emptiness is asserted rather than assumed.
-    """
-
+    """The suppression marker is unambiguous only while nothing else writes stdout."""
     script, env = notify_repo
     result = run(script, env)
     assert result.returncode == 0, result.stderr
@@ -250,23 +220,16 @@ def test_a_delivered_notification_writes_nothing_on_stdout(notify_repo):
 @pytest.mark.full
 @pytest.mark.parametrize("event", ["start", "milestone", "decision", "done"])
 def test_a_delivered_notification_prints_one_line_on_stderr(notify_repo, event):
-    """Silence on success used to let a session read a stalled prior
-    command as a lost ping and resend it -- three `done` pings for one close.
-    Every event that actually reaches the server now says so, on stderr, once."""
-
+    """Silence must never read as a lost ping: a session once resent three `done` pings."""
     script, env = notify_repo
     result = run(script, env, event)
     assert result.returncode == 0, result.stderr
-    # The whole stream, exactly: one event-specific line and nothing around it.
     assert result.stderr == f"notify: delivered ({event})\n"
     assert result.stdout == ""
 
 
 def test_a_closed_stderr_does_not_turn_a_delivery_into_a_failure(notify_repo):
-    """The script runs under `set -e`; if the diagnostic write could fail the
-    run, an accepted post would come back non-zero and be resent -- the very
-    duplicate the line exists to prevent."""
-
+    """Under `set -e` a failing diagnostic write would get an accepted post resent."""
     script, env = notify_repo
     result = subprocess.run(
         ["sh", "-c", 'exec "$1" "$2" "$3" 2>&-', "sh", str(script), "done", "finished"],
@@ -304,35 +267,24 @@ def test_a_suppressed_start_prints_no_delivered_line(notify_repo):
     result = run(script, env, "start")
     assert result.returncode == 0, result.stderr
     assert "suppressed" in result.stderr
-    # The suppression line itself says a start "was already delivered"; the
-    # claim under test is the delivery line, not the word.
+    # The suppression line says "already delivered"; only the delivery line is refused.
     assert "notify: delivered" not in result.stderr
 
 
 def test_the_test_sink_is_a_literal_not_a_prefix(notify_repo):
-    """A near-miss must still notify. A prefix or substring rule would make one
-    mistyped character in the real topic silently stop every notification, which
-    is the failure this whole file exists to prevent."""
-
+    """A prefix rule would let one mistyped character silently stop every notification."""
     script, env = notify_repo
     env["NTFY_TOPIC"] = "verbatus-test-sink-2"
     result = run(script, env)
     assert result.returncode == 0, result.stderr
     body = json.loads(Path(env["FAKE_BODY"]).read_text(encoding="utf-8"))
     assert body["topic"] == "verbatus-test-sink-2"
-    # A near miss must not carry the suppression marker either, or a bridge
-    # would report a delivered notification as swallowed.
+    # Nor the marker, or a bridge would report a delivered notification as swallowed.
     assert "NOTIFY_SUPPRESSED" not in result.stdout
 
 
 def test_the_conftest_sink_matches_the_topic_the_script_recognises():
-    """One typo apart, the guard is off and nothing says so.
-
-    The root `conftest.py` sets the value and `notify.sh` recognises it; they
-    are in different languages and neither can import the other, so the only
-    thing holding them together is this comparison.
-    """
-
+    """Two languages, neither importing the other: only this comparison holds them together."""
     import conftest
 
     source = SOURCE.read_text(encoding="utf-8")
@@ -340,35 +292,17 @@ def test_the_conftest_sink_matches_the_topic_the_script_recognises():
 
 
 def _gate_sink_block() -> str:
-    """`.githooks/check-all.sh`'s own lines, from reading the sink topic to running pytest.
+    """check-all.sh's lines from reading the sink topic through running pytest.
 
-    The gate is the one run that happens in the checkout holding the real
-    `private/ntfy.conf`, so it is the run that most needs the sink, and it
-    deliberately controls its own environment rather than inheriting one.
-
-    It *reads* the constant out of `conftest.py` instead of restating it, for two
-    reasons that point the same way: a fourth copy of a value whose whole job is
-    to be identical everywhere, and `.githooks/check_ingress.py`, which refuses a
-    literal ``NTFY_TOPIC=<topic-shaped value>`` anywhere in the tree under a
-    ruling that exempts no exact topic.
-
-    So the extraction has to be *run*, not read. Asserting on the script's text
-    said only that some line matching a pattern exists; it would have passed over
-    an extraction that yields the wrong value, an assignment that never reaches a
-    child, and a guard that prints its refusal and carries on into the suite. The
-    block below is lifted verbatim and executed, with `$root` and
-    `$frozen_python` supplied -- the two variables the gate has already set by
-    the time control reaches here.
+    Lifted verbatim to be executed, not read: a text match would pass a wrong value, an
+    assignment that never reaches the child, or a refusal that carries on.
     """
-
     lines = GATE.read_text(encoding="utf-8").splitlines()
     first = next((i for i, line in enumerate(lines) if line.startswith("NTFY_TOPIC=$(sed")), None)
     assert first is not None, "check-all.sh no longer reads the sink topic from conftest.py"
     last = next((i for i in range(first, len(lines)) if "-m pytest" in lines[i]), None)
     assert last is not None, "check-all.sh no longer runs pytest after reading the sink topic"
-    # The pytest line sits inside the `--parallel` switch (`if ... else ... fi`), so
-    # the lifted block must close that `if`: run through the `fi` that follows,
-    # and the child supplies `$parallel` beside `$root` and `$frozen_python`.
+    # The pytest line sits inside the `--parallel` if, so run through its closing `fi`.
     end = next((i for i in range(last, len(lines)) if lines[i].strip() == "fi"), last)
     return "\n".join(lines[first : end + 1])
 
@@ -376,15 +310,8 @@ def _gate_sink_block() -> str:
 def _run_gate_sink_block(
     tmp_path: Path, root: Path, *, parallel: str = "no"
 ) -> tuple[subprocess.CompletedProcess, Path]:
-    """Run that block with a sentinel standing where the frozen interpreter stands.
-
-    The sentinel records the `NTFY_TOPIC` it inherited and the arguments it was
-    invoked with, so "the child receives the topic" is observed in the child
-    rather than inferred from an `export` line. Nothing here runs pytest: the
-    gate reaches the suite only through `"$frozen_python"`, and that is exactly
-    what the sentinel replaces.
-    """
-
+    """Run that block with a sentinel as `$frozen_python`, recording the `NTFY_TOPIC` it
+    inherited and its arguments, so the child's view is observed, not inferred."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     record = tmp_path / "sentinel-record"
     sentinel = tmp_path / "sentinel-python"
@@ -425,10 +352,7 @@ def test_the_gate_hands_the_sink_topic_to_the_process_it_runs_the_suite_with(tmp
     assert record.exists(), "the gate never reached the process it runs the suite with"
     inherited, *arguments = record.read_text(encoding="utf-8").splitlines()
     assert inherited == conftest.NOTIFY_TEST_SINK_TOPIC
-    # The sentinel stands where pytest is invoked, not somewhere earlier.
     assert arguments == ["-m", "pytest"]
-    # And under `--parallel` the same block hands the same topic to the four-worker
-    # line, with the plugin, count and distribution on the command line.
     result, record = _run_gate_sink_block(tmp_path / "parallel", SOURCE.parents[2], parallel="yes")
     assert result.returncode == 0, result.stderr
     inherited, *arguments = record.read_text(encoding="utf-8").splitlines()
@@ -437,11 +361,8 @@ def test_the_gate_hands_the_sink_topic_to_the_process_it_runs_the_suite_with(tmp
 
 
 def test_the_gate_refuses_to_run_when_the_sink_topic_cannot_be_read(tmp_path):
-    """An empty `NTFY_TOPIC` is not "no sink" -- it is `private/ntfy.conf`, the
-    real topic, which is the precise failure the sink exists to prevent. So a
-    renamed or reshaped constant must stop the gate *before* the suite runs, not
-    print a complaint and run it unsinked. The sentinel proves the difference:
-    a file that was never written is a suite that was never reached."""
+    """An empty `NTFY_TOPIC` means the real topic, so the gate must stop before the suite;
+    an unwritten sentinel record is a suite never reached."""
 
     synthetic = tmp_path / "repo"
     synthetic.mkdir()
@@ -465,9 +386,7 @@ def test_server_override_is_refused(notify_repo):
 
 
 def test_ambient_topic_never_reaches_the_script_or_its_output(monkeypatch, request):
-    # The fixture is built after the ambient variable is set, which is the order
-    # a real machine presents: the operator exported the live topic long before
-    # pytest started.
+    # Set before the fixture is built, as on a machine that exported the live topic.
     leaked = "ambient" + "_bearer_topic"
     monkeypatch.setenv(PREFIX + "TOPIC", leaked)
     script, env = request.getfixturevalue("notify_repo")
@@ -494,15 +413,8 @@ def test_no_ambient_notification_variable_changes_the_run(monkeypatch, request, 
     assert "ambient" + "_value" not in Path(env["FAKE_ARGS"]).read_text(encoding="utf-8")
 
 
-# --- the start stamp is evidence, and is checked like evidence ---------------
-#
-# `start` fires from the SessionStart hook, and the desktop app opens several
-# sessions per launch, so an unsuppressed start is a burst of identical pings
-# every morning. Suppression is the one path in this script that deliberately
-# does not send, which makes it the one path that can lose a notification, so
-# every ambiguous stamp below must resolve to SENT. The old check asked
-# `find "$stamp" -mmin -15` — "did anything here change recently" — and each
-# object below answered yes without being a stamp this script ever wrote.
+# The start stamp: suppression is the one path that can lose a notification, so every
+# ambiguous stamp below must resolve to SENT.
 
 STAMP = "private/.notify-start-stamp"
 WINDOW_S = 900
@@ -518,12 +430,8 @@ def stamp_path(script: Path) -> Path:
 
 
 def seed_stamp(script: Path, *, seconds_ago: int) -> Path:
-    """Write a stamp the way the script writes one, aged by the given offset.
-
-    The window is driven by the recorded epoch second, never by sleeping: a
-    suite that waits fifteen minutes to prove a fifteen-minute window would not
-    be run, and one that shortens the window is not testing the shipped value.
-    """
+    """Write a stamp as the script does, aged by the recorded epoch second: never by
+    sleeping, and never by shortening the shipped window."""
     path = stamp_path(script)
     written = int(time.time()) - seconds_ago
     path.write_text(f"{written}\n", encoding="utf-8")
@@ -549,8 +457,7 @@ def test_a_start_inside_the_window_is_suppressed(notify_repo):
 
 
 def test_a_second_start_after_a_delivered_one_is_suppressed(notify_repo):
-    # End to end: the first ping writes the stamp, the second reads it. This is
-    # the burst the SessionStart hook actually produces.
+    # End to end, the burst the SessionStart hook produces.
     script, env = notify_repo
     first = run(script, env, "start")
     assert first.returncode == 0, first.stderr
@@ -576,8 +483,7 @@ def test_a_start_outside_the_window_is_sent(notify_repo):
 
 @pytest.mark.parametrize("event", ["milestone", "decision", "done"])
 def test_a_fresh_stamp_never_suppresses_a_deliberate_event(notify_repo, event):
-    # A rate limit on a deliberate event could swallow a real result, and a
-    # decision ping is what a blocked session is waiting on.
+    # A rate limit here could swallow a real result or a decision a session waits on.
     script, env = notify_repo
     seed_stamp(script, seconds_ago=1)
     result = run(script, env, event)
@@ -586,11 +492,8 @@ def test_a_fresh_stamp_never_suppresses_a_deliberate_event(notify_repo, event):
 
 
 def test_a_symlinked_stamp_is_not_trusted_and_is_not_written_through(notify_repo):
-    # The stamp is read AND written. A link aimed at a file the machine rewrites
-    # often would suppress every start ping; a link aimed anywhere at all would
-    # redirect this script's own write out of private/. There is no legitimate
-    # use for a symlinked suppression stamp, so both are refused — the opposite
-    # of the ruling on the config file above, on purpose.
+    # Read, a link to a busy file suppresses every start; written, any link redirects
+    # the write out of private/.
     script, env = notify_repo
     target = repo_root(script) / "busy-file"
     target.write_text("", encoding="utf-8")
@@ -604,8 +507,7 @@ def test_a_symlinked_stamp_is_not_trusted_and_is_not_written_through(notify_repo
 
 
 def test_a_fifo_at_the_stamp_path_does_not_suppress_a_start(notify_repo):
-    # Reading a FIFO blocks until something writes, and this runs from a hook:
-    # a blocking read is a session that never starts, with nothing to explain it.
+    # A blocking read from a hook is a session that never starts, and nothing says why.
     script, env = notify_repo
     os.mkfifo(stamp_path(script))
     result = run(script, env, "start")
@@ -625,7 +527,6 @@ def test_a_directory_at_the_stamp_path_does_not_suppress_a_start(notify_repo):
 
 @pytest.mark.parametrize("contents", ["", "\n", "not-a-timestamp\n", "-60\n", "12 34\n"])
 def test_a_stamp_without_a_readable_timestamp_does_not_suppress(notify_repo, contents):
-    # Includes every stamp the older touch-based version left behind: empty.
     script, env = notify_repo
     stamp_path(script).write_text(contents, encoding="utf-8")
     result = run(script, env, "start")
@@ -635,8 +536,7 @@ def test_a_stamp_without_a_readable_timestamp_does_not_suppress(notify_repo, con
 
 
 def test_a_future_dated_stamp_does_not_suppress_a_start(notify_repo):
-    # A negative age is still "less than fifteen minutes". One clock skew, or one
-    # stray `touch -t`, and every start is suppressed until the date passes.
+    # A negative age is still "less than fifteen minutes": skew would suppress every start.
     script, env = notify_repo
     seed_stamp(script, seconds_ago=-3600)
     result = run(script, env, "start")
@@ -649,8 +549,6 @@ def test_a_failed_start_writes_no_stamp_and_does_not_suppress_the_retry(notify_r
     script, env = notify_repo
     env["FAKE_STATUS"] = "503"
     first = run(script, env, "start")
-    # 1, not 0: a failed delivery now says so for every event. The subject of this
-    # test is the stamp and the retry, and neither depends on the exit status.
     assert first.returncode == 1
     assert "NOT DELIVERED" in first.stderr
     assert not stamp_path(script).exists(), "a failed post recorded itself as delivered"
@@ -665,8 +563,7 @@ def test_a_failed_start_writes_no_stamp_and_does_not_suppress_the_retry(notify_r
 
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes")
 def test_a_start_that_cannot_record_its_stamp_still_delivers_and_says_so(notify_repo):
-    # The stamp lives in private/, so the way it becomes unwritable in the field
-    # is a permission on that directory. The ping matters more than the stamp.
+    # In the field the stamp becomes unwritable through private/'s permissions.
     script, env = notify_repo
     private = repo_root(script) / "private"
     private.chmod(0o555)
@@ -680,9 +577,7 @@ def test_a_start_that_cannot_record_its_stamp_still_delivers_and_says_so(notify_
 
 
 def test_the_stamp_never_carries_the_topic(notify_repo):
-    # The stamp is a clock reading. It lives beside the config file and is the
-    # one thing this script writes, so it is the obvious place for the bearer
-    # topic to end up by accident.
+    # The one file this script writes, beside the config: where the topic would leak.
     script, env = notify_repo
     env["NTFY_TOPIC"] = "stamp_leak_topic"
     result = run(script, env, "start")

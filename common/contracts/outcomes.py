@@ -22,11 +22,6 @@ or `dead` still reaches the Perlector, which reads the ink; it may be delivered,
 carrying `under_witnessed`. Any rule that let chair outcomes promote or demote an
 act's text would be a picker wearing an accounting name, and principle 1 forbids
 it under every name.
-
-`failed` in the witness vocabulary closes a gap spec 07 left open: it required a
-failed re-read to derive `current=FAILED` while the stated vocabulary had no
-such member, so the supposedly closed algebra had a hole exactly where
-attempt retention bites.
 """
 
 from collections.abc import Mapping, Sequence
@@ -67,60 +62,28 @@ class ArmariumCategory(str, Enum):
 
 _C = OutcomeClass
 _A = ArmariumCategory
-# The witness outcomes that ARE a reading. Deliberately narrower than the
-# ATTESTATORES COMPLETED class, which also holds `excluded` — an approval-bound
-# exclusion is completed business, not a chair that looked at the ink. Defined
-# here, in the vocabulary module, and re-exported by `common/stage.py`: it is one
-# closed set, and a second literal spelling of it beside the floor arithmetic
-# that depends on it is a silent divergence waiting to happen.
+# The witness outcomes that ARE a reading: narrower than the ATTESTATORES
+# COMPLETED class, which also holds an approval-bound `excluded`.
 WITNESS_READING_OUTCOMES: Final = frozenset({"read", "genuinely-empty"})
 INTERIM_GRANULARITY_BASIS: Final = "computed-act-attachment-alignment"
-# Renamed from `native-observation-overlap`, which claimed a measurement the
-# field never made: an act-scoped chair attaches by `presented-region` with no
-# observation at all, and a page witness whose grammar carries no coordinates
-# attaches by `anchor-line`. What this word actually distinguishes is
-# act-granularity facts that each name their OWN basis from the older, weaker
-# interim derivation, so that is what it now says (principle 8). The string is a
-# receipt value and nothing in the tree or on disk carried the old spelling
-# outside its own constant and one assertion.
+# Act-granularity facts that each name their own attachment basis, as against
+# the weaker interim derivation.
 NATIVE_GRANULARITY_BASIS: Final = "native-per-chair-attachment-basis"
 LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
-# Which evidence decided one attachment. Producer and consumer must agree, and
-# the floor arithmetic below reads it to decide whether the native granularity
-# claim may be made at all -- so it belongs beside that arithmetic for the same
-# reason the reading outcomes do.
+# Which evidence decided one attachment; the floor arithmetic below reads it.
 ATTACHMENT_BASES: Final = frozenset(
     {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
 )
-# The shortest contiguous run of this act's anchor line a witness must have
-# matched before the alignment counts as having LOCATED that line.
-#
-# Measured, not guessed, against the tree's own `align_to_anchor` (the numbers
-# are reproduced by `common/contracts/test_contracts_algebra.py::
-# test_the_anchor_line_run_floor_sits_between_coincidence_and_a_real_reading`).
-# Against a 145-character register line, the longest run one chair's text
-# shares with an act's anchor range is:
-#
-#   * 1 for unrelated prose ("Lorem ipsum ..."), at 55 characters and at 1,784;
-#   * 3 to 5 for random text over the anchor's own alphabet, at 200, 1,000,
-#     4,000 and 12,000 characters -- the ceiling coincidence reached at all;
-#   * 7 for a DIFFERENT, unrelated act written in the same register formula;
-#   * 145, 25 and 14 for a genuine reading of this line at 0%, 10% and 20%
-#     synthetic character error, and 8 to 10 at 30% to 50% -- one sample per
-#     rate, so the last of those is the order of magnitude, not a bound.
-#
-# Total matched coverage does NOT separate those: `SequenceMatcher`'s recursive
-# longest-block search is not monotone in error rate, so a real reading at 20%
-# error covered 0.41 of the line while 12,000 characters of random text covered
-# 0.48. The longest run does separate them, so the run is what decides and the
-# coverage travels beside it as disclosure. `min(FLOOR, anchor_characters)`
-# keeps the rule reachable for an anchor line shorter than the floor: there,
-# nothing less than the whole line, matched contiguously, is enough.
-#
-# The bar is deliberately set where the instrument is decisive and no further.
-# It cannot tell a heavily misread line from another act's line in the same
-# formula, and nothing character-level can (principle 8); what it does refuse
-# is a coincidence.
+# The shortest contiguous run of the act's anchor line a witness must match for
+# the alignment to have LOCATED that line.  Measured against `align_to_anchor` on
+# a 145-character register line (reproduced by `test_contracts_algebra.py::
+# test_the_anchor_line_run_floor_sits_between_coincidence_and_a_real_reading`):
+# unrelated prose reaches 1, random text over the anchor's alphabet 3 to 5,
+# another act in the same formula 7, and a genuine reading 145, 25 and 14 at 0%,
+# 10% and 20% character error (8 to 10 at 30% to 50%, one sample each).  Total
+# matched coverage does not separate these; the longest run does.  It cannot
+# tell a misread line from another act's line in the same formula, and nothing
+# character-level can; it refuses coincidence.
 ANCHOR_LINE_RUN_FLOOR: Final = 8
 
 
@@ -148,17 +111,8 @@ def anchor_line_located(alignment: Any) -> bool:
       `ANCHOR_LINE_RUN_FLOOR` (or the whole anchor line, where the line is
       shorter than the floor).
 
-    **The fourth is what makes the third mean anything, and it was missing.**
-    A positive span is not evidence of a placement: `align_to_anchor` keeps
-    every matching block of size one (`common/alignment.py`), the producer's
-    clip keeps every fragment with `start < end`, and the hull across those
-    fragments is positive as soon as any two characters coincide. Fifty-five
-    characters of Lorem ipsum therefore aligned against this repository's own
-    fixture anchor, attached on `anchor-line`, and put a third chair on the
-    witness floor for having placed the two characters of "em" -- the exact
-    reading of "placed nothing" the bullet above says it refuses. The producer now measures how much of the act's own
-    anchor line the clipped fragments actually matched, records it, and this
-    reads the measurement.
+    The fourth gives the third its meaning: `align_to_anchor` keeps matching
+    blocks of size one, so any two coinciding characters make a positive span.
 
     Defensive about shape rather than validating it: this is read from
     untrusted retained evidence at three seams, and each of those seams
@@ -174,7 +128,7 @@ def anchor_line_located(alignment: Any) -> bool:
     if not isinstance(span, Mapping):
         return False
     start, end = span.get("start"), span.get("end")
-    if any(not isinstance(bound, int) or isinstance(bound, bool) for bound in (start, end)):
+    if not all(_is_int(bound) for bound in (start, end)):
         return False
     if end <= start:
         return False
@@ -184,63 +138,38 @@ def anchor_line_located(alignment: Any) -> bool:
     anchor_characters = match.get("anchor_characters")
     matched = match.get("matched_characters")
     longest = match.get("longest_matched_run")
-    if any(
-        not isinstance(value, int) or isinstance(value, bool)
-        for value in (anchor_characters, matched, longest)
-    ):
+    if not all(_is_int(value) for value in (anchor_characters, matched, longest)):
         return False
-    # An incoherent measurement is not a measurement. Nothing below the floor
-    # can be reached by relaxing these, so they refuse rather than clamp.
+    # An incoherent measurement refuses rather than clamps.
     if not 0 <= longest <= matched <= anchor_characters or anchor_characters <= 0:
         return False
     return longest >= min(ANCHOR_LINE_RUN_FLOOR, anchor_characters)
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def page_attachment_basis(*, reading: bool, geometry_overlaps: bool, alignment: Any) -> str:
     """Which evidence attaches one page witness's reading to one act.
 
-    The single derivation of a page-witness attachment, called by the producer
-    (`pipeline/3_attestatores/run.py`) and re-derived independently by both
-    readers (`pipeline/4_perlector/run.py::act_attachment_view` and
-    `pipeline/5_recensor/run.py::act_attachment_facts`). It lives here, beside
-    `ATTACHMENT_BASES` and the floor arithmetic, for the reason
-    `WITNESS_READING_OUTCOMES` does: three spellings of one rule is how a
-    widening lands in one place and refuses the record everywhere else.
+    The one derivation, called by the producer (`pipeline/3_attestatores/run.py`)
+    and re-derived by both readers (the Perlector's `act_attachment_view` and the
+    Recensor's `act_attachment_facts`), so one rule cannot drift into three.
 
-    Geometry first, then the anchor line, and the order is load-bearing rather
-    than cosmetic: a chair that reported ink over this act's sealed proposal
-    attached on its own evidence, and labelling that `anchor-line` because the
-    text also aligned would understate what the record proves.
+    Geometry first: a chair that reported ink over the act's proposal attached on
+    its own evidence, and `anchor-line` would understate that.
 
-    **Why the anchor line attaches at all.** A page witness whose grammar
-    carries no geometry -- Churro's `HistoricalDocument` is one by vendor
-    design -- reports real page text and can never overlap a proposal
-    rectangle. Deriving attachment from geometry alone left every such chair
-    permanently unattached, so every act sat one witness under a floor of
-    three, and the whole run held on a shortfall that never happened.
-    `anchor-line` is not a new vocabulary word invented to solve that: it has
-    been in `ATTACHMENT_BASES` since the set was closed, assigned by nothing.
-
-    **This is not a picker** (principle 1). Nothing here selects
-    among witnesses or prefers one chair's reading: the anchor is a
-    text-locating instrument derived from another chair's own response, and
-    what it decides is whether this chair's text was *placed* in this act --
-    never whose reading is right. What it does cost is independence, and the
-    live seam says so by name: a chair attached on this basis counts toward the
-    floor only because another chair located its text.
-
-    **What it also costs, named rather than discovered later.** Neither reader
-    re-runs `align_to_anchor`; both take the producer's recorded alignment as
-    evidence, as they already did for `comparable`. Before this basis existed, a
-    forged attachment at the witness floor needed BOTH a forged observation and
-    a forged alignment, because `attached` came from geometry and `comparable`
-    from the alignment. It now needs the alignment alone. Both still sit inside
-    a self-hashed, digest-bound artifact under the Attestatores stage seal, so
-    the forgery is a reseal rather than an edit -- which is exactly the attack
-    `pipeline/4_perlector/test_comparability_seam.py` models -- but the cost did
-    fall, and the honest close is a reader that re-derives the alignment (it
-    needs the anchor chair's page text and this act's anchor range, neither of
-    which either reader holds today), not a stricter shape check here.
+    The anchor line exists for page witnesses whose grammar carries no geometry
+    (Churro's `HistoricalDocument`), which could otherwise never attach.  Not a
+    picker (principle 1): the anchor, from another chair's response, decides only
+    whether this chair's text was placed in this act, never whose reading is
+    right.  It does cost independence, and the live seam says so.  It also costs
+    forgery resistance: the readers take the recorded alignment as evidence, so a
+    forged attachment needs only a forged alignment, still behind the
+    Attestatores seal (`pipeline/4_perlector/test_comparability_seam.py`).  The
+    fix is a reader that re-derives the alignment, which needs text neither
+    reader holds today.
     """
     if not reading:
         return "unattached"
@@ -262,15 +191,12 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
         "sealed": _C.COMPLETED,
         "refused": _C.FAILED,
     },
-    # The map is page evidence, not an act decision.  In particular, an
-    # unclaimed edge signal is deliberately carried onward: Unit 14 owns the
-    # explicit hold that will make that evidence terminal.
+    # Page evidence, not an act decision; Unit 14 owns the hold that makes an
+    # unclaimed edge terminal.
     INK_MAP: {
         "mapped": _C.COMPLETED,
         "unclaimed-edge-ink": _C.UNRESOLVED,
-        # An unavailable measurement is unresolved page evidence, not a failed
-        # act or a blank page. It flows onward with its named refusal so later
-        # readers and the export can disclose the missing instrument.
+        # A missing instrument, disclosed onward; not a failed act or a blank page.
         "ink-not-measurable": _C.UNRESOLVED,
     },
     DESIGNATOR: {
@@ -283,12 +209,9 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
     ATTESTATORES: {
         "read": _C.COMPLETED,
-        # The chair read the region and there was genuinely nothing to report.
-        # That is a reading, not an absence — the old stage could not tell the
-        # difference, and collapsed both into one empty file.
+        # A reading that found nothing, not an absence.
         "genuinely-empty": _C.COMPLETED,
-        # An attempt was made and produced no usable Testimonium. The failed
-        # attempt artifact is the evidence. This is blocker 4's member.
+        # An attempt that produced no usable Testimonium.
         "failed": _C.FAILED,
         # Configured but unavailable; no attempt reached the region.
         "dead": _C.FAILED,
@@ -298,12 +221,8 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
     PERLECTOR: {
         "read": _C.COMPLETED,
-        # An explicit status, never an empty string standing in for one. Silence
-        # does not prove a blank page or act, so it remains unresolved until a
-        # future Recensor blank-proof contract can establish confirmed-blank.
+        # Silence does not prove a blank, so it stays unresolved.
         "no-readable-text": _C.UNRESOLVED,
-        # ARCHITECTURE: it reads through to the end — truncation is a failure,
-        # not an output.
         "truncated": _C.FAILED,
         "failed": _C.FAILED,
         "not-run": _C.UNRESOLVED,
@@ -334,25 +253,15 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
 BOUNDARY_OUTCOMES: Final = {
     "stage-seal": "sealed",
     "decode-environment": "recorded",
-    # Durable call-intent and terminal-evidence records are accounting
-    # boundaries, not additional witness outcomes. Their payloads retain each
-    # physical Chandra request/error while the outer Testimonium remains the
+    # Accounting boundaries, not extra witness outcomes: the Testimonium stays the
     # one configured-chair denominator.
     "chandra-native-attempt-intent": "recorded",
     "chandra-native-attempt": "recorded",
 }
 
-# These two outcomes describe stage-boundary evidence, not an act's terminal
-# category. They use the ordinary envelope at every producer, including
-# Armarium; calling its boundary records ``delivered`` would falsely present
-# bookkeeping as exported text.
-#
-# The loop writes into a table declared by hand above, and Exemplar already
-# declares ``sealed`` itself -- with the same class, which is the only reason
-# the overwrite is invisible today. A declaration that disagreed would be
-# rewritten in silence, and a failed act would be accounted as completed while
-# the file above still read ``FAILED``. So a differing entry stops the import
-# rather than losing the declaration.
+# Boundary evidence, never an act's category (an Armarium boundary record is not
+# `delivered`).  A hand-declared entry that disagrees stops the import rather than
+# being overwritten in silence.
 for _stage in VOCABULARIES:
     for _outcome in BOUNDARY_OUTCOMES.values():
         _declared = VOCABULARIES[_stage].get(_outcome)
@@ -408,9 +317,6 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (ARMARIUM, _A.REFUSED_WITH_REASON.value): _A.REFUSED_WITH_REASON,
 }
 
-# The same overwrite, and the same guard: `(EXEMPLAR, "sealed")` is declared
-# above as transitive, and a declaration naming a category here would otherwise
-# be replaced by ``None`` without a word.
 for _stage in VOCABULARIES:
     for _outcome in BOUNDARY_OUTCOMES.values():
         if TERMINAL_CATEGORY.get((_stage, _outcome), None) is not None:
@@ -420,10 +326,8 @@ for _stage in VOCABULARIES:
             )
         TERMINAL_CATEGORY[(_stage, _outcome)] = None
 
-# The Perlector's failures are transitive on purpose: a truncated or failed reading
-# is the Recensor's to act on — it may request bounded recovery — and only the
-# Recensor's own outcome terminates the act. A Perlector failure that terminated
-# the act here would take the recovery loop out of the architecture by accident.
+# The Perlector's failures are transitive on purpose: the Recensor may request
+# bounded recovery, and only its outcome terminates the act.
 
 
 def classify(stage: str, outcome: Any) -> OutcomeClass:
@@ -460,11 +364,7 @@ def require_approval(stage: str, outcome: Any, approval_ref: Any) -> None:
     left the pipeline as `completed` without anyone reading its text. A claimed
     approval with no artifact is no approval.
     """
-    # Both spellings, because they are the same fact at two stages. A stage says
-    # `excluded`; the Armarium's terminal category for it is
-    # `excluded-with-approval`. Matching only the first left the category that
-    # *names* approval as the one place the check did not reach, so an export
-    # entry could carry it with no approval reference at all.
+    # The stage word and the Armarium category that names approval.
     if outcome not in ("excluded", ArmariumCategory.EXCLUDED_WITH_APPROVAL.value):
         return
     if not isinstance(approval_ref, str) or not approval_ref:
@@ -514,11 +414,9 @@ def check_algebra_is_total() -> None:
 # An act can be `delivered` and `partial` at once, and the whole point of keeping
 # the two words apart is that it can — many records are damaged.
 #
-# It lives here rather than in the Archetypus because two stages read it and
-# stages talk only through `common/` (`pipeline/test_stage_import_boundaries.py`):
-# the Archetypus derives it when it seals a record, and the Armarium *recomputes*
-# it from the layers travelling beside the text rather than believing the field.
-# One spelling, so the two cannot drift into disagreeing about the same record.
+# Here because two stages read it: the Archetypus derives it, and the Armarium
+# recomputes it rather than believing the field.
+
 
 TEXT_STATUSES: Final = frozenset({"established", "partial", "no_readable_text"})
 
@@ -560,15 +458,8 @@ def derive_record_text_status(text: Any, annotations: Any, uncertainty: Any) -> 
     two travelling together is honest even where they are not identical: this
     union is the one status both of them answer to.
 
-    The canonical gaps are read *before* the empty-text case rather than only
-    where the rest already said `established`. A whole-act gap over empty text is
-    "ink present, wholly unread", which is the middle silence and not the last
-    one; asking about it second returned `no_readable_text` for it and would have
-    let a record be sealed claiming nothing was there while carrying a gap saying
-    otherwise. `derive_text_status` has always ordered the older layer this way
-    (`pipeline/6_archetypus/test_text_status.py::
-    test_any_gap_forces_partial_even_with_empty_text`); this is the same ruling
-    applied to the layer that superseded it.
+    Gaps are read before the empty-text case: a gap over empty text is ink
+    present and unread, `partial`, never `no_readable_text`.
     """
     if not isinstance(uncertainty, Mapping) or not isinstance(
         uncertainty.get("gaps"), (list, tuple)
@@ -577,8 +468,7 @@ def derive_record_text_status(text: Any, annotations: Any, uncertainty: Any) -> 
             "a record text status requires the canonical uncertainty layer's own gap list"
         )
     if uncertainty["gaps"]:
-        # The text is still read for its type, so a malformed record cannot reach a
-        # status by way of the one branch that never looked at it.
+        # Still type-checks the text, so a malformed record cannot slip through here.
         derive_text_status(text, annotations)
         return "partial"
     return derive_text_status(text, annotations)
@@ -618,14 +508,8 @@ def witness_coverage(
     attached_chairs: set[str] = set()
     health_unrecorded = 0
     shortfalls = {"failed": 0, "truncated": 0, "unaligned": 0}
-    # Two different questions, and they were being answered by one test.
-    # *Whether* act-granularity facts were supplied decides the arithmetic below
-    # and is answered by `attachments is not None`. *How* those facts were
-    # decided is a claim that travels in the receipt, and the boolean shorthand
-    # accepted below carries no geometry at all: read from the argument's mere
-    # presence, it earned the native-overlap claim for free. A caller that does
-    # not say which basis decided its facts gets the older, weaker interim name
-    # rather than a measurement nothing performed (principle 8).
+    # Whether act-granularity facts were supplied decides the arithmetic; the
+    # native basis is claimed only when every fact names the basis that decided it.
     native_evidence = attachments is not None
     if attachments is not None:
         unknown = set(attachments) - set(chair_outcomes)
@@ -638,14 +522,7 @@ def witness_coverage(
             if fact is None:
                 fact = False
             if isinstance(fact, bool):
-                # `comparable: False`, never a copy of the geometry. The
-                # shorthand states attachment and nothing else -- it carries no
-                # alignment status and no retained text -- so copying `attached`
-                # into `comparable` let a caller that measured no comparison at
-                # all count one toward the witness floor for free, which is the
-                # same free claim the granularity basis above refuses it
-                # (principle 8). A caller with comparability evidence states
-                # it in the mapping form.
+                # The shorthand measured no comparison, so it earns none.
                 fact = {"attached": fact, "comparable": False}
             if (
                 not isinstance(fact, Mapping)
@@ -657,8 +534,6 @@ def witness_coverage(
                     "The act-level witness floor cannot be derived from an ambiguous attachment. "
                     "Rebuild the attachment from the retained Testimonia before retrying."
                 )
-            # A fact that names no basis was not decided by the native
-            # derivation, whatever else it carries.
             if fact.get("attachment_basis") not in ATTACHMENT_BASES:
                 native_evidence = False
             if fact.get("health_unrecorded") is True:
@@ -677,8 +552,7 @@ def witness_coverage(
             elif outcome in WITNESS_READING_OUTCOMES and truncated is not True:
                 attached_chairs.add(chair)
     else:
-        # Pre-R0 callers do not carry attachment facts. Preserve their established
-        # class-level arithmetic; R0 consumers opt into act-granularity facts.
+        # Callers without attachment facts keep the class-level arithmetic.
         attached_chairs = {
             chair
             for chair, outcome in chair_outcomes.items()
@@ -692,12 +566,9 @@ def witness_coverage(
         "by_outcome": by_outcome,
         "by_class": by_class,
         "under_witnessed": completed < configured_floor,
-        # An unresolved chair is a question nobody answered; it is not evidence of
-        # anything, so it cannot sit inside a run that calls itself complete.
+        # An unanswered chair cannot sit inside a complete run.
         "unresolved_chairs": by_class[OutcomeClass.UNRESOLVED.value],
-        # These facts are deliberately separate from the closed witness outcome
-        # vocabulary. A page-only report, a truncation and an unaligned span are
-        # coverage facts, not invented witness outcomes.
+        # Coverage facts, kept apart from the closed witness outcome vocabulary.
         "page_granularity_only": sum(
             1
             for chair, outcome in chair_outcomes.items()
@@ -705,19 +576,8 @@ def witness_coverage(
         ),
         "health_unrecorded": health_unrecorded,
         "shortfalls": shortfalls,
-        # Attachments are computed facts, never asserted ones, and the claim is
-        # made only when every fact says which basis decided it.
-        #
-        # This field names the GRANULARITY of the evidence, never which evidence
-        # attached one chair: act-granularity facts that each name their own
-        # basis, against the older, weaker interim derivation. The authoritative
-        # claim about one chair is that chair's own `attachment_basis` on the
-        # attachment record, re-derived by both readers.
-        #
-        # The old spelling, `native-observation-overlap`, asserted an
-        # observation overlap for acts whose chairs attached with no observation
-        # at all, so it was renamed rather than defended: a receipt string is a
-        # claim, and a claim is made only about what was measured (principle 8).
+        # The granularity of the evidence, never which evidence attached a chair:
+        # that is each chair's own `attachment_basis`.
         "granularity_basis": (
             NATIVE_GRANULARITY_BASIS
             if native_evidence
@@ -744,11 +604,8 @@ NO_TEXT_STATUS_REASON: Final = (
     "one reading is whole was never measured"
 )
 
-# Keyed on the closed vocabulary rather than tested for `!= "established"`, so a
-# status added to `TEXT_STATUSES` later has to be given its own sentence here
-# instead of inheriting a generic one — and an unknown status is fatal below
-# rather than silently reconciling. `established` is the only member with no
-# entry, because it is the only one that names no shortfall.
+# Keyed on the closed vocabulary, so a new status needs its own sentence; checked
+# at import below.  `established` alone names no shortfall.
 TEXT_STATUS_REASONS: Final[dict[str, str]] = {
     "partial": (
         "act {act} was delivered with partial text: its record carries ink the Perlector "
@@ -760,10 +617,6 @@ TEXT_STATUS_REASONS: Final[dict[str, str]] = {
     ),
 }
 
-# Enforced at import, so the comment above is a checked claim rather than an
-# intention: a status added to `TEXT_STATUSES` without its own sentence fails
-# the first time anything touches this module, not the first time a run
-# happens to deliver an act carrying it.
 if TEXT_STATUSES - {"established"} != set(TEXT_STATUS_REASONS):
     raise AssertionError(
         "every established-text status except 'established' must carry its own "
@@ -790,16 +643,13 @@ def _attributed_pages(
     caller that supplies nothing silently satisfy the silence check for every page.
     """
     if not page_census:
-        # There is no page denominator to check silence against, and the caller is
-        # already told so by the missing-census reason. Saying it twice would make
-        # one defect look like two.
+        # The missing-census reason already names this defect.
         return None
     if act_pages is None:
         if act_categories:
             reasons.append(NO_ATTRIBUTION_REASON)
             return None
-        # No acts and no attribution is not ignorance: every page is silent, and
-        # the loop below names each one.
+        # No acts and no attribution: every page is silent, and each is named.
         return set()
 
     unknown_acts = sorted(set(act_pages) - set(act_categories))
@@ -832,6 +682,26 @@ def _attributed_pages(
     return attributed
 
 
+def _attached_reading_count(act: str, record: Mapping[str, Any]) -> int:
+    """The attached-reading count `under_witnessed` was decided from.
+
+    Not the COMPLETED class count, which also holds `excluded` and page witnesses
+    that did not align into this act; derived as `common/recensor_receipt.py`
+    does, keyed on the recorded basis.  Raw indexing on purpose: a record
+    claiming `under_witnessed` without its fields is malformed, and the
+    Armarium's `_aggregate_from_basis` turns that `KeyError` into a refusal.
+    """
+    basis = record.get("granularity_basis", LEGACY_GRANULARITY_BASIS)
+    if basis in {INTERIM_GRANULARITY_BASIS, NATIVE_GRANULARITY_BASIS}:
+        reading_chairs = sum(
+            record["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
+        )
+        return reading_chairs - record["page_granularity_only"]
+    if basis == LEGACY_GRANULARITY_BASIS:
+        return record["by_class"]["completed"]
+    raise FatalAccounting(f"act {act} coverage names unknown granularity basis {basis!r}")
+
+
 def run_aggregate(
     act_categories: Mapping[str, ArmariumCategory],
     coverage_records: Mapping[str, Mapping[str, Any]] | None = None,
@@ -850,59 +720,30 @@ def run_aggregate(
     census was sealed. Every reason is named in `reasons`; a run is never partial
     without saying why.
 
-    The page census exists because acts are discovered but pages are given: the
-    proposal seal only ever names acts that were marked out, so a page the door
-    refused left no hole in the act-level conservation check at all. A run that
-    lost a whole page could report `status: complete, reasons: []` — the census,
-    keyed by ordinal with the Exemplar's own outcome for each page, is where that
-    loss becomes visible. A page outcome outside the Exemplar's vocabulary is
-    fatal, never routed around, and a refusal with no recorded reason still
-    forces `partial` — absent evidence never reads cleaner than damaged evidence.
+    Acts are discovered but pages are given, so the page census (the
+    Exemplar's outcome per ordinal) is where a lost page shows.  An unknown
+    page outcome is fatal, and a refusal with no recorded reason still forces
+    `partial`.
 
-    `act_pages` maps each act key to every page ordinal it was marked out on, and
-    it is what makes the blank-by-silence refusal reach a *page* rather than only
-    the whole run. Truly blank pages exist at the scale of tens of thousands of
-    archival scans and are not failures — but a
-    blank sheet and a page whose faint ink the Designator missed give the identical
-    zero-act signal. Blank is proved, never inferred. Checking only "did the run
-    produce any acts at all" left that proof obligation satisfied by any other page:
-    one silent page among ten thousand busy ones reconciled to `complete` with no
-    reason named at all. Attribution is what closes it, and a run that supplies none
-    is told so rather than believed.
+    `act_pages` maps each act to every page it was marked out on, so a silent
+    page is named rather than hidden by busy ones: a blank sheet and a missed
+    faint page give the same zero-act signal, and blank is proved, never
+    inferred.  A run that supplies no attribution is told so.
 
-    `act_text_status` maps each *delivered* act key to the `TEXT_STATUSES` word its
-    Archetypus record sealed, and it carries the half of principle 2 the category
-    vocabulary alone can never state. `delivered` is a fact about where the act
-    ended; it says nothing about whether the reading that left is whole. An act the
-    Perlector itself recorded a gap in — ink known to be present and unread — was
-    aggregating to `complete` with an empty reason list, which is "a partial result
-    is visibly partial" failing at the last boundary in the ordinary case of a
-    damaged record, not an exceptional one. A non-`established` status therefore
-    contributes its own named reason, exactly as an under-witnessed act or a refused
-    page does.
+    `act_text_status` maps each delivered act to its sealed `TEXT_STATUSES`
+    word: `delivered` says where an act ended, not whether its reading is
+    whole, so a non-`established` status is a reason.  A delivered act with no
+    status is named rather than assumed whole (principle 8); a status on an act
+    that was not delivered is fatal, since no record exists for it to describe.
 
     `edge_hold_pages` is page-scoped because no act can yet own the unclaimed
-    ink. A held page therefore keeps the aggregate partial even when every act
-    cut from that page was delivered; otherwise the aggregate and terminal
-    ledger would report different statuses for one export.
-
-    A delivered act with no status supplied is named too, rather than assumed whole:
-    that is the same "this run does not know" `NO_ATTRIBUTION_REASON` refuses to
-    round up, and an unmeasured metric is a failure rather than a pass
-    (principle 8). A status attached to an act that was *not* delivered is fatal
-    instead — no Archetypus record exists for it, so the claim describes a reading
-    that is not there.
+    ink, so a held page keeps the aggregate partial even if its acts were
+    delivered.
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
 
-    # A run that examined nothing is not a run in which everything reconciled.
-    # `reasons` starts empty and the loops below can each execute zero times, so
-    # an aggregate over no acts and no pages fell straight through to `complete`
-    # — a green verdict asserting that nothing had gone wrong with nothing.
-    # Principle 2 refuses "complete" unless everything reconciles, and an empty
-    # population reconciles vacuously rather than actually.
-    #
+    # An empty population reconciles vacuously, not actually.
     if not act_categories and not (page_census or {}):
         reasons.append("the run accounted for no acts and no pages, so nothing was reconciled")
 
@@ -929,30 +770,16 @@ def run_aggregate(
     if act_categories and not page_census:
         reasons.append("the run has acts but no page census, so page conservation was not checked")
 
-    # "Every configured chair reconciled against the configuration it was run
-    # under" was in this docstring before anything checked it. A configured chair
-    # whose role no stage addresses — a misspelt witness, most plainly — was
-    # resolved by nothing and named in no artifact, and the run still reported
-    # `complete`. It is named here instead, every time.
-    # Counted as a set, for the same reason the edge holds below are. The
-    # in-process producer walks `models.chairs`, so its roles are unique, but the
-    # clean-machine verifier rebuilds this list out of the retained aggregate
-    # basis and checks only that it is a list of non-empty strings. A repeated
-    # entry there would report one unaddressed chair as two in the reasons a
-    # person reads. The ink-map rows on that same path are refused for a
-    # repeated ordinal; this list had no such guard at either site.
+    # A configured role no stage addresses (a misspelt witness) was resolved by
+    # nothing.  A set, because the clean-machine verifier rebuilds this list from
+    # retained basis and a repeat would read as two chairs.
     for chair in sorted(set(unaddressed_chairs or ())):
         reasons.append(
             f"chair {chair} is configured and no stage addresses that role, so nothing "
             "resolved it and no artifact records it"
         )
 
-    # Reconciled against the census like every other denominator here, and for
-    # the same reason: a hold naming a page the run never counted would print a
-    # partial reason about a page that does not exist. Not reachable from
-    # today's Armarium callers, which validate ink-map ordinals against the
-    # sealed census first, but the rule belongs in the module that owns the
-    # denominator rather than in each caller that happens to observe it.
+    # A hold on a page the census never counted would describe a page that does not exist.
     unknown_holds = sorted(set(edge_hold_pages or ()) - set(page_census or {}))
     if unknown_holds:
         raise FatalAccounting(
@@ -960,10 +787,7 @@ def run_aggregate(
             "account for; edge holds and the page census must describe the same page denominator"
         )
 
-    # A page-scoped hold: the ink at its edge belongs to no act yet, so the page
-    # cannot reconcile even when every act cut from it was delivered. Counted as
-    # a set: a repeated ordinal is one held page, and listing it twice would
-    # report one page as two in the reasons a person reads.
+    # A set: a repeated ordinal is one held page.
     for ordinal in sorted(set(edge_hold_pages or ())):
         reasons.append(
             f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
@@ -977,9 +801,7 @@ def run_aggregate(
         by_category[category.value] = by_category.get(category.value, 0) + 1
         if VOCABULARIES[ARMARIUM][category.value] is not OutcomeClass.COMPLETED:
             reasons.append(f"act {act} is {category.value}")
-        # Asked here, where `category` is already proven to be a real category, so
-        # a status beside a malformed one is refused by the message about the
-        # malformed category rather than by this one.
+        # After the category check, so a malformed category is what gets named.
         if category is not ArmariumCategory.DELIVERED:
             if act in text_status:
                 raise FatalAccounting(
@@ -990,9 +812,7 @@ def run_aggregate(
         status = text_status.get(act)
         if status is None:
             reasons.append(NO_TEXT_STATUS_REASON.format(act=act))
-        # isinstance before membership: an unhashable value (a list, a dict)
-        # out of a hand-built basis would raise TypeError from the frozenset
-        # test, and this boundary owes a named fatal instead of a crash.
+        # isinstance first: an unhashable status would raise TypeError.
         elif not isinstance(status, str) or status not in TEXT_STATUSES:
             raise FatalAccounting(
                 f"act {act} carries established-text status {status!r}, which is not one of "
@@ -1004,46 +824,7 @@ def run_aggregate(
     for act in sorted(coverage):
         record = coverage[act]
         if record.get("under_witnessed"):
-            # Not unconditionally `record["by_class"]["completed"]`: that is the
-            # wider ATTESTATORES COMPLETED class (it also holds `excluded`, and --
-            # since R4 -- a page witness that read its page but did not align
-            # into this act), while `under_witnessed` above is decided from the
-            # narrower attached-reading count. The two were equal before per-act
-            # alignment existed, so this message could get away with the class
-            # count; they can now diverge, and printing the wider number produced
-            # a floor-satisfying count next to an under-witnessed verdict.
-            # Rederived from `by_outcome` and `page_granularity_only` exactly as
-            # `common/recensor_receipt.py` already does for the same reason
-            # (including its same v1/v2 branch: `page_granularity_only` is
-            # optional on a pre-R0 schema-v1 record, where `by_class['completed']`
-            # is the whole answer with no page-granularity distinction to draw).
-            # Deliberately raw indexing, not `.get(..., default)`: a record
-            # claiming `under_witnessed` without the fields that justify it is
-            # not a zero to report, it is malformed evidence, and
-            # `pipeline/7_armarium/armarium_export.py::_aggregate_from_basis` already
-            # converts exactly that `KeyError` into a named refusal rather than
-            # let a fabricated count stand in for one nothing measured.
-            # Keyed on the recorded basis, not on key presence: `witness_coverage`
-            # emits `page_granularity_only` on its legacy path too, where
-            # `under_witnessed` is decided from the COMPLETED class (which also
-            # holds `excluded`). Rederiving from reading outcomes there printed a
-            # number no rule in this file produced -- {read, excluded, dead}
-            # against a floor of 3 flags at 2 and reported 1 -- the same class of
-            # defect this branch exists to repair.
-            basis = record.get("granularity_basis", LEGACY_GRANULARITY_BASIS)
-            if basis in {INTERIM_GRANULARITY_BASIS, NATIVE_GRANULARITY_BASIS}:
-                reading_chairs = sum(
-                    record["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
-                )
-                completed = reading_chairs - record["page_granularity_only"]
-            elif basis == LEGACY_GRANULARITY_BASIS:
-                completed = record["by_class"]["completed"]
-            else:
-                # A closed vocabulary, closed here too: a basis this module never
-                # produced is malformed evidence, not a default to guess from.
-                raise FatalAccounting(
-                    f"act {act} coverage names unknown granularity basis {basis!r}"
-                )
+            completed = _attached_reading_count(act, record)
             reasons.append(
                 f"act {act} is under-witnessed ({completed} of a floor of {record['floor']})"
             )

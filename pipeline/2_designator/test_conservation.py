@@ -25,22 +25,17 @@ from common.contracts.errors import ContractError
 BACKGROUND = 230
 INK = 40
 
-# Explicit ints equal to conservation.py's retired module defaults
-# (DEFAULT_GAP_TOLERANCE_PX == 3 lived in structure.py;
-# DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX == 6 lived here). Every call below
-# that does not deliberately vary one of these passes it explicitly, so the
-# behaviour the old defaults produced is proven identical, never assumed.
+# Passed explicitly by every call below that doesn't deliberately vary it,
+# since reconcile no longer carries these as module defaults.
 GAP_TOLERANCE_PX = 3
 REVIEW_PRIORITY_MIN_DIMENSION_PX = 6
 
 
 def _load_designator_run():
-    """Load this directory's ``run.py`` by path, under a name of its own.
+    """Load this directory's ``run.py`` by path, under a unique module name.
 
-    Seven other stages ship a top-level module also called ``run``, so a bare
-    ``from run import ...`` here returns whichever one pytest imported first --
-    green alone, ImportError once an earlier stage's tests share the session.
-    The module name below is unique, so the collision cannot re-form.
+    A bare ``from run import ...`` would collide with other stages' own
+    top-level ``run`` modules once tests share a session.
     """
     path = Path(__file__).resolve().parent / "run.py"
     spec = importlib.util.spec_from_file_location("designator_run_under_test", path)
@@ -76,15 +71,12 @@ def paint_pixel(rows: list[bytearray], x: int, y: int, value: int = INK) -> None
 
 
 def _legacy_reference(width, height, rows, claimed_bounds, gap_tolerance_px):
-    """The old pixel-set algorithm, kept here solely as a U13 equivalence oracle.
+    """The old pixel-set algorithm, kept as an independent equivalence oracle.
 
-    It labels through `structure._label_components_reference`, not through
-    `structure.label_components`. Those were the same function until
-    `label_components` became row-oriented itself; had this oracle followed it,
-    it would have compared `conservation._components`' row runs against another
-    row-run labeller and stopped being the independent pixel-set definition
-    both of them are answerable to. The substitution in `structure.py` is
-    exactly why that function is retained.
+    Labels through `structure._label_components_reference`, not the current
+    row-oriented `structure.label_components` -- otherwise this would compare
+    `conservation._components`'s row runs against another row-run labeller
+    rather than the independent pixel-set definition both answer to.
     """
     pixels = ink_pixels(width, height, rows, background=BACKGROUND, margin=SECONDARY_MARGIN)
     claimed = {
@@ -219,9 +211,9 @@ def test_row_oriented_u13_reimplementation_is_equivalent_to_the_retired_pixel_se
 
 
 def test_row_oriented_reconciliation_matches_the_oracle_on_a_fully_inked_densely_claimed_page():
-    """S1 breaker case: a fully-inked page with many heavily overlapping claims is
-    the pathological input for _subtract_claims' run-splitting arithmetic -- every
-    row is one giant ink run split by many overlapping intervals at once."""
+    """The pathological input for `_subtract_claims`' run-splitting: every row
+    is one giant ink run split by many overlapping intervals at once.
+    """
     generator = random.Random(20260816)
     width, height = 25, 25
     rows = [bytearray([INK] * width) for _ in range(height)]
@@ -250,12 +242,11 @@ def test_row_oriented_reconciliation_matches_the_oracle_on_a_fully_inked_densely
 
 
 def test_row_oriented_reconciliation_matches_the_oracle_on_a_dense_wholly_unclaimed_page():
-    """A realistic-width page, densely speckled and never claimed, is the load
-    case for `_components`' cross-row union: every ink run on the page arrives as
-    residual at once (thousands of runs), and the forward-pointer row join must
-    still produce exactly the retired oracle's components -- the randomized suite
-    above never exceeds a few hundred runs, so it cannot distinguish the pointer
-    walk from the cross product it replaced."""
+    """The load case for `_components`' cross-row union: thousands of ink runs
+    arrive as residual at once, more than the randomized suite above ever
+    produces, so this is what distinguishes the forward-pointer walk from the
+    cross product it replaced.
+    """
     generator = random.Random(20260817)
     width, height = 800, 100
     rows = blank_rows(width, height)
@@ -280,20 +271,17 @@ def test_row_oriented_reconciliation_matches_the_oracle_on_a_dense_wholly_unclai
 
 
 def test_residual_components_sharing_an_origin_are_ordered_by_ink_like_the_oracle():
-    """Two disjoint residual components can share a (top, left) bounds origin,
-    and the published evidence order must remain deterministic even though it
-    does not enter identity. The oracle breaks that tie by sorted member pixels
-    and never consults pixel_count, so the row-oriented sort must do the same.
-    The block is deliberately the LARGER component with the
-    lexicographically earlier ink: a count-based or insertion-order tie-break
-    puts the diagonal first and diverges from the oracle."""
+    """Two disjoint residual components can share a (top, left) bounds origin;
+    the oracle breaks that tie by sorted member pixels, never pixel_count, so
+    the block here is deliberately the LARGER component with the
+    lexicographically earlier ink -- a count-based tie-break would diverge.
+    """
     width, height = 12, 12
     rows = blank_rows(width, height)
     # A 2x5 block hugging the corner: origin (0, 0), 10 pixels.
     paint_rect(rows, 0, 0, 2, 5, INK)
-    # A disjoint anti-diagonal from (8, 0) down to (0, 8): origin (0, 0) too --
-    # its bounding box shares the exact corner -- 9 pixels, and every pixel of
-    # it stays at Chebyshev distance >= 2 from the block.
+    # A disjoint anti-diagonal sharing that same (0, 0) bounding-box origin,
+    # 9 pixels, staying at Chebyshev distance >= 2 from the block.
     for step in range(9):
         paint_pixel(rows, 8 - step, step, INK)
     result = reconcile(
@@ -316,7 +304,7 @@ def test_residual_components_sharing_an_origin_are_ordered_by_ink_like_the_oracl
 
 
 def test_claim_boundaries_inside_tolerated_ink_gaps_match_the_pixel_oracle():
-    """V3: exhaust claim edges inside and across every gap the topology may merge."""
+    """Exhaust claim edges inside and across every gap the topology may merge."""
     width, height = 12, 1
     for gap_tolerance_px in (1, 2, 3):
         rows = blank_rows(width, height)
@@ -440,12 +428,11 @@ def test_a_one_pixel_mark_outside_every_claim_is_accounted_not_absent():
 
 
 def test_a_two_line_marginal_note_is_accounted_alongside_a_one_pixel_mark():
-    """Two named sub-threshold fixtures, both surviving accounting at once."""
     width, height = 40, 40
     rows = blank_rows(width, height)
     paint_pixel(rows, 2, 2, INK)  # the one-character mark
-    # A two-line note: two short painted rows close enough to merge into one
-    # component under the default gap tolerance.
+    # A two-line note: close enough to merge into one component under the
+    # default gap tolerance.
     paint_rect(rows, 20, 20, 4, 1, INK)
     paint_rect(rows, 20, 22, 4, 1, INK)
     result = reconcile(
@@ -558,8 +545,8 @@ def test_refuses_a_non_positive_claimed_rectangle():
 
 @pytest.mark.parametrize("missing", ["gap_tolerance_px", "review_priority_min_dimension_px"])
 def test_reconcile_refuses_a_missing_required_keyword(missing):
-    """Both thresholds lost their module default -- a caller that forgets one
-    now fails loudly with `TypeError`, never runs under an unreviewed value."""
+    """No module default: a caller that forgets one fails loudly with
+    `TypeError` rather than running under an unreviewed value."""
     kwargs = {
         "gap_tolerance_px": GAP_TOLERANCE_PX,
         "review_priority_min_dimension_px": REVIEW_PRIORITY_MIN_DIMENSION_PX,
@@ -577,10 +564,9 @@ def test_reconcile_refuses_a_missing_required_keyword(missing):
 
 
 def test_two_residual_components_sharing_a_bounding_box_are_refused_before_either_is_minted():
-    """A residual act binds its class and rectangle, never list position. Two
-    connected components can share a bounding box, and minting both would
-    account for two pieces of unclaimed ink as one act: a lost act, which GOAL 1
-    puts above every other cost. Refused by name, before any hold is published.
+    """A residual act binds its class and rectangle, never list position: two
+    components sharing a bounding box would mint as one act, losing the other.
+    Refused by name, before any hold is published.
     """
     _publish_residual_holds = _load_designator_run()._publish_residual_holds
 

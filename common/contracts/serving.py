@@ -39,22 +39,15 @@ CHAIR_CALL_RECORD_FIELDS_V1: Final = frozenset(
         "finish_reason",
         "usage",
         "parse_problem",
-        # The `verbatus-request-capacity.v1` record the caller checked this
-        # request against before it was built, or null where the caller
-        # supplied none (the readiness probe and the smoke path).  It sits on
-        # the call record because that is the retained record *of the request*:
-        # every stage that keeps a reading already names its call record, so
-        # the arithmetic a real run refused or admitted on is reachable from
-        # each of them without a second reference.
+        # The request-capacity record checked before the request was built, or
+        # null (readiness probe, smoke path).
         "capacity",
     }
 )
 CHAIR_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS_V1 | frozenset({"response_status"})
 
-# Only the revision-pinned Chandra native route writes these two shapes.  The
-# intent reference makes equal wire bodies at retry ordinals 5..7 distinguishable
-# after a crash; without it, recovery could not prove which physical request a
-# durable response belongs to and would have to guess or replay it.
+# Chandra native route only. The intent reference tells equal wire bodies at
+# retry ordinals 5..7 apart after a crash, so recovery never guesses.
 CHANDRA_NATIVE_CALL_RECORD_SCHEMA: Final = "chandra-native-call-record.v1"
 CHANDRA_NATIVE_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozenset(
     {"native_attempt_intent_ref"}
@@ -80,39 +73,22 @@ CHAIR_TRANSPORT_PROBLEM_FIELDS: Final = frozenset(
     }
 )
 
-# The engine's own stop-reason vocabulary, split by what it means for a
-# reading: `ENGINE_STOP_COMPLETE` is the engine's word for "the model chose to
-# stop"; `ENGINE_STOP_CUT_OFF` is its word for "a length bound ended
-# generation before the model did".  Anything else is an unrecognized engine
-# string, refused by name rather than folded into either bucket.
+# The engine's stop words: the model chose to stop, or a length bound cut it
+# off. Anything else is refused by name.
 ENGINE_STOP_COMPLETE: Final = frozenset({"stop"})
 ENGINE_STOP_CUT_OFF: Final = frozenset({"length"})
 
-# The transport word recorded when an engine's response carries no
-# `finish_reason` at all — never a default for a value that has meaning; a
-# label for its literal absence.
+# Recorded when a response carries no `finish_reason`: a label for absence.
 STOP_REASON_UNREPORTED: Final = "unreported"
 
-# A vendor's decoding value is sometimes a float: DAI's carried
-# `generation_config.json` names `repetition_penalty` 1.05 and `top_p` 0.001,
-# and those exact numbers go on the wire. The canonical writer refuses floats
-# outright, deliberately — their JSON form is not stable enough to hash
-# against — so a call record cannot carry the Python float and must not carry a
-# rounded stand-in for it either. What it carries instead is the *exact decimal
-# text the request body itself contains*, tagged so a reader can tell a number
-# recorded this way from a string the vendor really declared. `json.dumps`
-# emits the shortest text that reads back as the identical double, so nothing
-# is lost and nothing is invented: the record is a transcription of the bytes
-# sent, not a re-measurement of them.
+# A vendor float on the wire (DAI's `top_p` 0.001) is recorded as the exact
+# decimal text the request body contains, tagged, because canonical artifacts
+# refuse floats. `json.dumps` text reads back as the identical double.
 WIRE_DECIMAL_SCHEMA: Final = "wire-decimal.v1"
 WIRE_DECIMAL_FIELDS: Final = frozenset({"schema", "decimal"})
 
-# What kind of bytes a live Testimonium's `raw_response_ref` names. A live act
-# record reaches its retained blob by two different routes — the adapter's own
-# output bytes when a parser ran over them, and the whole transport body when
-# no adapter ever saw a reading — and the two are not interchangeable evidence.
-# The record names which one it holds rather than leaving a later reader to
-# infer it from which other fields happen to be present.
+# Which bytes a live Testimonium's `raw_response_ref` names: the adapter's output,
+# or the whole transport body when no adapter saw a reading. Not interchangeable.
 RAW_RESPONSE_MODEL_OUTPUT: Final = "model-output"
 RAW_RESPONSE_TRANSPORT_BODY: Final = "transport-response-body"
 RAW_RESPONSE_KINDS: Final = frozenset({RAW_RESPONSE_MODEL_OUTPUT, RAW_RESPONSE_TRANSPORT_BODY})

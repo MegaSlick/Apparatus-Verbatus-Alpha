@@ -89,11 +89,7 @@ def validate_receipt(record: Any) -> dict[str, Any]:
             "endpoint",
         ),
     )
-    # The only place these two are checked. `build_receipt` reaches here through
-    # `receipt_record`, so checking them in `_validate_details` as well was the same
-    # refusal raised twice from one call. This is also the door a receipt written by
-    # an older revision of this code comes back through — content addressing catches
-    # a *tampered* receipt long before this, but not one that was valid when written.
+    # The only check of these two, and the door an older receipt comes back through.
     _validate_tokenizer_revision(record["tokenizer_revision"], chair)
     _validate_started_at(record["started_at"], chair)
     source = record["source"]
@@ -142,18 +138,14 @@ def _validate_identity(identity: ChairIdentity) -> None:
     witness_adapter = identity.witness_adapter
     witness_scope = identity.witness_scope
     if witness_adapter is None and witness_scope is None:
-        # Older value-level chair fixtures do not cross the runnable witness
-        # boundary.  A real run separately requires both fields before pixels are
-        # fed; when either field is present in a receipt identity, however, this
-        # reader must validate the claim rather than merely require its key.
+        # Older fixtures carry neither; a real run requires both before pixels.
         return
     if not is_witness_role(identity.role):
         raise ReceiptRefusal(
             identity.role,
             "identity carries witness_adapter or witness_scope on a non-Attestator chair",
         )
-    # Imported at validation time to keep the generic chair value package from
-    # creating a module-import cycle with the shared adapter declarations.
+    # Imported here to avoid an import cycle.
     from common.witness_adapters import KNOWN_WITNESS_ADAPTER_NAMES
 
     if type(witness_adapter) is not str or witness_adapter not in KNOWN_WITNESS_ADAPTER_NAMES:
@@ -184,17 +176,12 @@ def _validate_details(identity: ChairIdentity, details: ServingDetails) -> None:
         value = getattr(details, field)
         if not isinstance(value, str) or not value.strip():
             raise ReceiptRefusal(chair, f"receipt field {field!r} must be a non-blank string")
-    # `tokenizer_revision` and `started_at` are deliberately absent here: every path
-    # into this function continues into `validate_receipt`, which owns them.
+    # `tokenizer_revision` and `started_at` belong to `validate_receipt`.
     for field in ("seed", "context_cap", "pixel_cap"):
         value = getattr(details, field)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ReceiptRefusal(chair, f"{field} must be a non-negative integer")
-    # **The adapter half is bound to the configuration, not merely well formed.**
-    # An adapter chair is an adapter *of* a named base, and the base artifact
-    # genuinely participates in the reading, so a receipt that omitted it or named
-    # some other chair lost the identity of a model that answered — principle 6
-    # applies to every model in the serving moment, not only the one in the role.
+    # The base of an adapter chair also answered, so it is bound too (principle 6).
     if details.adapter_identity is not None:
         _validate_identity(details.adapter_identity)
     if identity.adapter_of is None:

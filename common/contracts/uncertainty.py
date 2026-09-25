@@ -12,18 +12,11 @@ from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 
 _FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment"})
-# The reader's own report state, carried beside its layers so an empty list can
-# never be read as confidence (finding F2). Mirrors
-# pipeline/4_perlector/annotations.py's ASSESSMENT_STATES exactly, for the same
-# dependency-direction reason as `_CONFIDENCE` and `_GAP_POSITIONS` above.
+# So an empty list is never read as confidence. These three vocabularies mirror
+# pipeline/4_perlector/annotations.py, which common/ may not import.
 _ASSESSMENT_STATES = frozenset({"assessed", "not-assessed", "malformed"})
 _ASSESSMENT_FIELDS = frozenset({"state", "problem"})
 _CONFIDENCE = frozenset({"low", "medium", "high"})
-# Mirrors pipeline/4_perlector/annotations.py's GAP_POSITIONS exactly (as
-# `_CONFIDENCE` above already mirrors that module's CONFIDENCE_LEVELS): the
-# producer's vocabulary already excludes anything this canonical projection
-# layer would need to invent, and importing pipeline code from common/ would
-# invert the dependency direction.
 _GAP_POSITIONS = frozenset({"leading", "internal", "trailing", "whole-act"})
 _GAP_EVIDENCE_FIELDS = frozenset({"chair", "testimonium_id", "reference", "variant"})
 _REFERENCE_FIELDS = frozenset({"relative_path", "sha256"})
@@ -53,10 +46,7 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
             "doubt report was recorded cannot be projected -- re-read it in a run under the "
             "current contract"
         )
-    # Asked here, of the record as the producer wrote it, rather than only of
-    # the two keys projected out of it: `{"state": ..., "problem": ...}` built
-    # with `.get` turns a record carrying a third field into a well-formed one,
-    # and the projection would then be the first place that field went missing.
+    # Of the record as written: the projection below would drop a third field.
     validate_assessment_record(assessment, "the Perlectio's uncertainty_assessment")
     layer = {
         "uncertain_spans": payload.get("uncertain_spans"),
@@ -81,10 +71,7 @@ def validate_assessment_record(assessment: Any, subject: str = "canonical uncert
     """
     if not isinstance(assessment, dict) or set(assessment) != _ASSESSMENT_FIELDS:
         raise SchemaRefusal(f"{subject} has no closed assessment record")
-    # The string check leads the membership test, as the producer's own
-    # vocabulary check does: `in` against a frozenset raises `TypeError` on an
-    # unhashable value, so a resealed record carrying a list here would crash a
-    # consumer instead of being refused by name.
+    # Typed first: `in` raises TypeError on an unhashable value.
     if type(assessment["state"]) is not str or assessment["state"] not in _ASSESSMENT_STATES:
         raise SchemaRefusal(f"{subject} names an unknown assessment state {assessment['state']!r}")
     if assessment["problem"] is not None and (
@@ -180,15 +167,8 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
             "a whole-act gap must be the only gap in canonical uncertainty; a reading "
             "cannot be simultaneously wholly illegible and partly read"
         )
-    # The converse of the whole-act bounds rule above, and the reason exclusivity
-    # is not enough on its own. Over an empty text every position check passes
-    # vacuously -- `leading` starts at 0 and `trailing` ends at `len("")` whatever
-    # else is true -- so a record holding no characters could carry a partly-read
-    # position label, and be sealed as a proved blank with a declared gap beside
-    # the proof. With nothing to sit before, inside, or after, `whole-act` is the
-    # only position that says anything, and it is the one the producer binds to
-    # the `no-readable-text` outcome. Asked after exclusivity so a layer that
-    # breaks both is refused by the stronger statement.
+    # Over an empty text every position check passes vacuously, so only
+    # `whole-act` may appear. Asked after exclusivity, the stronger statement.
     if text.strip() == "":
         for index, gap in enumerate(gaps):
             if gap["position"] != "whole-act":

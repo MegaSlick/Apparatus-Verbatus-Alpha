@@ -20,18 +20,9 @@ DEFAULT_RECOVERY_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / 
 # may not turn three bounded recovery rounds into a larger one.
 RULED_ABSOLUTE_CAP: Final = 3
 
-# The two recovery operations ARCHITECTURE and spec 09 both name as distinct: a
-# fallback/expanded recrop (Designator-owned) and a page-level or
-# continuation-aware reread (Perlector-owned). `config/recovery.toml` already
-# budgets them separately; these are the closed vocabulary a `recovery-request`
-# payload's `recovery_kind` field is drawn from, so every consumer of that field
-# (the Recensor that writes it, the Designator and orchestrator that read it)
-# names the same two strings rather than each inventing its own spelling.
-#
-# These name a coverage OPERATION, never a reading's quality, and are
-# deliberately NOT the config field names they are budgeted under: a sealed
-# artifact's vocabulary must not move because somebody renamed a TOML key, so the
-# mapping below is the one place the two spellings meet.
+# The two recovery operations: a Designator recrop and a Perlector reread. They
+# name coverage operations, never reading quality, and deliberately not the
+# config keys that budget them, so a TOML rename cannot move sealed vocabulary.
 FALLBACK_RECROP: Final = "fallback-recrop"
 PAGE_LEVEL_REREAD: Final = "page-level-reread"
 RECOVERY_KINDS: Final = {
@@ -149,10 +140,7 @@ def reconcile_recovery_requests(
             raise FatalAccounting(
                 f"recovery request for {act_id} does not carry its bound recovery ordinal"
             )
-        # A request that does not say which of the two operations it means cannot
-        # be checked against the kind-specific budget or dispatched to the right
-        # owning stage, so it is refused here rather than left for the Designator
-        # or the orchestrator to guess at.
+        # Without a kind it can be neither budgeted nor dispatched.
         if payload.get("recovery_kind") not in RECOVERY_KINDS:
             raise FatalAccounting(
                 f"recovery request for {act_id} does not carry a recognized recovery_kind "

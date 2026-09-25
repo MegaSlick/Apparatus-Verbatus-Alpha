@@ -1,24 +1,15 @@
-"""A page the structure pass could not mark out is held, never skipped (spec 06 test 4).
+"""A page the structure pass could not mark out is held, never skipped.
 
-Spec 06's shape section states the requirement and the reason together: "A page
-the structure seat fails on is **held visibly** and recoverable ... never
-silently skipped — the old design made a missing witness fatal to the corpus;
-this one makes it a named, recoverable hold."
+Two levels: the pure failure-reading rule needs no run tree at all; everything
+after it is one real end-to-end orchestrator run, because what matters is not
+that this stage writes a hold but that it survives every later stage and
+arrives in the Armarium's review list as a named loss, not an absence.
 
-Two levels. The pure failure-reading rule needs no run tree at all. Everything
-after it is one real end-to-end orchestrator run of the `structure-failure`
-scenario, because the property that matters is not that this stage writes a
-hold — it is that a hold here survives every stage after it and arrives in the
-Armarium's review list as a named loss rather than as an absence.
-
-What this file does NOT prove, deliberately: spec 06 test 4 also asks that "the
-recovery operation proposes a replacement region on request" for such a page.
-It does not, and no change here makes it. `recovery_pass` refuses any act the
-seal holds ("a held act is terminal and may not be recropped back to life"),
-which is the landed cross-stage recovery contract shared with the Recensor
-(spec 09), not a Designator decision. Making a structural hold recoverable is a
-change to that contract and is named in this build's report rather than made
-quietly here.
+What this file does NOT prove: that recovery can propose a replacement region
+for such a page. CONTRACT.md's "What this contract does not settle" names this
+required and not yet met: `recovery_pass` refuses any act the seal holds -- a
+held act is terminal -- which is a cross-stage recovery contract shared with
+the Recensor, not a Designator decision.
 """
 
 import subprocess
@@ -41,9 +32,6 @@ from common.stage import EXIT_HELD
 ROOT = Path(__file__).resolve().parents[2]
 
 
-# The sealed background-inference policy, resolved for one page's own dimensions.
-# Loaded through the designator's own module rather than re-implemented here,
-# so a test page is inferred under exactly the policy a run would use.
 def _shipped_background_policy(width: int, height: int):
     grouping_config = _load_designator().grouping_config
     return grouping_config.resolve_background_policy(
@@ -66,20 +54,11 @@ class _Context:
 
 
 def test_the_designator_reads_its_ingress_route_off_the_context_it_was_handed(monkeypatch):
-    """`_open` keeps its `(context, real_input)` tuple; the flag comes from `context.run`.
-
-    Both routes open through `common.stage.open_stage_context` now. The stage
-    used to read `run.json` itself to choose a route and then hand-build the
-    real context, so the route `main` acted on and the context it acted with
-    came from two reads; now the constructor reads once, and the flag is read
-    back off the very authority the context carries. A run authority with no
-    closed ingress record refuses, as it did before, and nothing about the
-    route is decided for it.
-
-    Each case is set up so the two disagree: argv names one route, the opened
-    context's own `run` names the other, and the assertion follows the context.
-    A regression that went back to reading argv would pass a test that handed
-    both the same record.
+    """`_open` keeps its `(context, real_input)` tuple; the flag comes from
+    `context.run`, not argv, so each case here sets argv to name one route
+    and the opened context's own `run` to name the other, and the assertion
+    follows the context. A regression that read argv instead would pass a
+    test that handed both the same record.
     """
     designator = _load_designator()
     handed = []
@@ -88,11 +67,6 @@ def test_the_designator_reads_its_ingress_route_off_the_context_it_was_handed(mo
         def __init__(self, run):
             self.run = run
 
-    # Every case hands the constructor argv naming one route and gets back a
-    # context whose own authority names the other. A stage that read the route
-    # from `args` -- the second read this change removed -- therefore answers
-    # the opposite of what each assertion below expects, instead of agreeing
-    # with it by accident because the two records were the same object.
     opened = []
 
     def open_stage_context(args, stage, *, registry_factory):
@@ -145,10 +119,8 @@ def test_a_failure_for_this_scenario_is_read_by_page_ordinal():
 
 
 def test_a_failure_naming_a_page_this_run_never_sealed_is_not_counted_twice():
-    """The Exemplar's own refusal already accounts for an unsealed page.
-
-    Holding the act a second time for a structural reason would put two holds
-    on one loss and make the review list overstate what happened.
+    """The Exemplar's own refusal already accounts for an unsealed page;
+    holding it again would put two holds on one loss.
     """
     designator = _load_designator()
     fixture = {"structure_failure": [{"scenario": "s", "page_ordinal": 9, "reason_code": "why"}]}
@@ -170,15 +142,12 @@ def test_two_declared_failures_for_one_page_refuse_rather_than_pick_one():
 @pytest.mark.parametrize(
     ("row", "refusal"),
     [
-        # Four malformed rows, three different refusals. Unpinned, this test
-        # passed if *any* of them fired for *any* row -- so the closed-contract
-        # check and the page-ordinal check could have swapped places, or one
-        # could have stopped firing entirely, without the test noticing.
+        # Four malformed rows, three different refusals, each pinned by
+        # message so the checks can't swap places or silently stop firing.
         (
-            # A *missing* `reason_code` trips the closed-contract check, not the
-            # reason-code check: the contract is a key set, and an absent key
-            # makes the set differ just as a surplus one does. Pinning these
-            # caught me assuming the opposite.
+            # A missing reason_code trips the closed-contract check (a key
+            # set differs on an absent key just as on a surplus one), not
+            # the reason-code check.
             {"scenario": "s", "page_ordinal": 1},
             r"a declared structure failure has fields outside its closed contract",
         ),
@@ -226,8 +195,7 @@ def structure_failure_run(tmp_path_factory):
         text=True,
     )
     # Held, not complete and not fatal: a page nothing could mark out is an
-    # honest partial result, which is the whole distinction spec 06 draws
-    # against the old design's "missing witness is fatal to the corpus".
+    # honest partial result.
     assert result.returncode == EXIT_HELD, result.stderr
     return RunTree(root, "r")
 
@@ -245,9 +213,6 @@ def test_the_failing_page_carries_a_held_status_naming_the_reason(structure_fail
         record["payload"]["page_ordinal"]: record
         for record in _artifacts(structure_failure_run, DESIGNATOR, "structure-status")
     }
-    # Both sealed pages have a status. The one that succeeded says so; a page
-    # whose structural outcome could only be inferred from the absence of crops
-    # would be exactly the silent gap this record exists to close.
     assert set(statuses) == {1, 2}
     assert statuses[1]["outcome"] == "held"
     assert statuses[1]["payload"]["reason_code"] == "recorded-fixture-structure-failure"
@@ -258,9 +223,6 @@ def test_the_failing_page_carries_a_held_status_naming_the_reason(structure_fail
 def test_every_act_on_the_failing_page_is_held_with_the_structural_reason(structure_failure_run):
     seal = _artifacts(structure_failure_run, DESIGNATOR, "proposal-seal")[0]["payload"]
     rows = {row["act_key"]: row for row in seal["expected_acts"]}
-    # The fixture's own two acts both sit on page 1 and both survive as held
-    # rows. An act that vanished from the denominator is the exact failure the
-    # seal exists to make impossible.
     assert rows["a1"]["outcome"] == "held"
     assert rows["a2"]["outcome"] == "held"
     assert rows["a2"]["has_continuation"] is False
@@ -283,12 +245,9 @@ def test_no_crop_is_cut_on_the_page_the_structure_pass_could_not_mark_out(struct
 
 
 def test_the_unmarked_pages_ink_is_accounted_as_residual_not_as_absence(structure_failure_run):
-    """The page sealed, so its ink exists. Nothing claimed it, so all of it is residual.
-
-    This is the difference between "there was nothing
-    to read" and "we could not read it": a page the structure pass failed on is
-    not a blank page, and its ink has to appear somewhere. It appears here, as
-    conservation residual, and each residual becomes its own held act.
+    """The page sealed, so its ink exists. Nothing claimed it, so all of it is
+    residual: a page the structure pass failed on is not a blank page, and
+    its ink has to appear somewhere.
     """
     conservation = {
         record["payload"]["page_ordinal"]: record["payload"]
@@ -310,11 +269,8 @@ def test_the_unmarked_pages_ink_is_accounted_as_residual_not_as_absence(structur
         "the held structure pass did not infer a background; the independent "
         "conservation record above attributes the measurement that actually ran"
     )
-    # And the same for the geometry. The status record says null because the
-    # structure pass resolved and ran nothing on this page; the reconciliation
-    # that *did* run says what it ran under, on its own record. A null on one
-    # record beside a real computation recorded nowhere is the shape this pair
-    # exists to keep apart.
+    # Same for geometry: null here because the structure pass ran nothing on
+    # this page; conservation's own record says what it ran under.
     assert status["resolved_thresholds"] is None
     assert (status["page_width"], status["page_height"]) == (None, None)
 
@@ -348,8 +304,6 @@ def test_nothing_downstream_reports_the_lost_page_as_a_success(structure_failure
     assert {item["category"] for item in export["non_delivered"]} == {"held-for-review"}
 
     seal = _artifacts(structure_failure_run, DESIGNATOR, "proposal-seal")[0]["payload"]
-    # Conservation, act for act: every expected act ends in exactly one Armarium
-    # category, and here every one of them is held.
     entries = [
         entry
         for entry in structure_failure_run.build_manifest(ARMARIUM)["artifacts"]
@@ -382,33 +336,15 @@ def _run_program(program: str, root):
 def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     tmp_path, monkeypatch
 ):
-    """Two rulings, and the second overrides the first.
+    """A page whose modal pixel is not its paper is neither dropped, nor
+    called blank, nor held for a human: its crops are cut and sent downstream
+    for the witnesses and the Perlector to decide, since this stage's
+    threshold is the weakest instrument in the pipeline.
 
-    "I'd rather err on the side of sending a blank page downstream than pull a
-    page assuming it's blank and have it end up with text. Missing text is the
-    worst failure." Then, settling it: **"Everything gets read every time nothing
-    gets pulled out or held."**
-
-    So a page whose modal pixel is not its paper is neither dropped, nor called
-    blank, nor held for a human. Its crops are cut and sent downstream, and the
-    witnesses and the Perlector -- the strong instruments -- decide whether
-    there is text on it. This stage's one threshold is the weakest instrument in
-    the pipeline and it does not get to end a page's life.
-
-    **Two facts, and this test keeps them apart.** Nothing is pulled out and
-    nothing is held: no act is held, every declared act is still cut, and the
-    page's own predetermined crops are cut too. And the *run* does not claim to
-    have completed, because conservation could not run on this page and
-    principle 2 refuses "complete" "unless everything reconciles". Holding a
-    page out of reading is what the ruling forbids; withholding the run's
-    completeness claim over a measurement that did not happen is what
-    principle 2 and principle 8 require, and the two are different acts.
-
-    Previously the page's own mean was substituted as a divider so the
-    accounting "had something defensible". On the inverted scan
-    `test_structure.py` uses -- 80% at 30, 20% at 220 -- that divider is 68, and
-    every pixel of the dark paper counts as ink: four fifths of the page
-    reconciles as unclaimed ink and mints a held act over the background.
+    Two facts kept apart here: nothing is held (every act and the page's own
+    predetermined crops are still cut), but the *run* does not claim to have
+    completed, since conservation could not run on this page and completeness
+    requires everything to reconcile.
     """
 
     root = tmp_path / "runs"
@@ -423,11 +359,9 @@ def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     designator = _load_designator()
     context = _designator_context(root, designator)
 
-    # `infer_background_evidence`, not `infer_background`: the evidence
-    # function is what `run.py` calls, so patching the thin wrapper would
-    # leave the run untouched and this test would assert its way to green
-    # over a refusal that never happened. The `refused_pages` guard below is
-    # what would catch that, and it is why it is there.
+    # infer_background_evidence, not infer_background: that's what run.py
+    # calls; patching the thin wrapper would leave the run untouched.
+    # `refused_pages` below catches that regression.
     real_infer = designator.structure.infer_background_evidence
     refused_pages = []
 
@@ -482,28 +416,22 @@ def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
 
 
 def test_a_uniformly_dark_page_is_refused_rather_than_counted_as_zero_ink():
-    """The hole the majority-ink guard could not see: mode == mean, both wrong.
-
-    A page of solid black has `mode == mean == 0`, so `mode * count >= total`
-    holds exactly and the old check passed it. `_ink_threshold(0, 20)` is then
-    -20, no 8-bit sample is at or below it, and the page counts zero ink pixels
-    -- so with no declared act on it the run exits `complete` over a visibly
-    black page. That is the same silent loss the majority-ink guard exists to
-    stop, reached by the one route it did not cover.
+    """The hole the majority-ink guard alone could not see: a page of solid
+    black has mode == mean == 0, so `mode * count >= total` holds and a naive
+    check would pass it. `_ink_threshold(0, 20)` is then -20, no 8-bit sample
+    is at or below it, and the page would count zero ink pixels -- the same
+    silent loss the majority-ink guard exists to stop, by a route it doesn't cover.
     """
     from structure import PRIMARY_MARGIN, infer_background, primary_scan
 
     width, height = 12, 12
     rows = [bytearray([0] * width) for _ in range(height)]
 
-    # The arithmetic the old guard passed, shown rather than described.
     assert max(range(256), key=lambda v: sum(row.count(v) for row in rows)) == 0
     with pytest.raises(ContractError, match=r"darker than the 20-point ink margin"):
         infer_background(
             width, height, rows, background_policy=_shipped_background_policy(width, height)
         )
-    # Defence in depth: even a caller bypassing inference cannot turn the
-    # impossible threshold into an all-zero measurement.
     with pytest.raises(ContractError, match=r"below every 8-bit sample"):
         primary_scan(width, height, rows, background=0, margin=PRIMARY_MARGIN, gap_tolerance_px=3)
     assert PRIMARY_MARGIN == 20
@@ -543,8 +471,8 @@ def test_faint_ink_outside_primary_proposals_withholds_complete_exit(tmp_path, m
         row for row in _payloads(context, "conservation") if row["page_ordinal"] == 2
     )
     assert reconciliation["residual_pixel_count"] == 1
-    # A one-pixel faint residual is retained in the page-level accounting
-    # aggregate, rather than being presented as a fictitious individual act.
+    # A one-pixel residual is retained in the page-level aggregate, not
+    # presented as a fictitious individual act.
     assert reconciliation["residual_components"] == []
     assert reconciliation["aggregated_residual_components"] == [
         {
@@ -576,9 +504,8 @@ def test_a_page_of_int_lists_is_refused_by_name_inside_the_dark_distribution_tes
     module a list-of-lists page gets all the way to the surround test and then
     fails with an `AttributeError` naming neither the scanline nor the reason.
     `conservation._unit_ink_runs` guards the same assumption the same way, and
-    this is the test that says so -- the guard was added in the branch's audit
-    round with no test of its own, which is how a named refusal quietly becomes
-    an unnamed one again.
+    this is the test that says so -- without one a named refusal can quietly
+    become an unnamed one again.
 
     The page has to reach the surround test to reach the guard, so it is a
     framed one: a dark border around a lighter interior, in lists of ints.
@@ -607,8 +534,8 @@ def test_a_page_of_int_lists_is_refused_by_name_inside_the_dark_distribution_tes
         infer_background(
             width, height, rows, background_policy=_shipped_background_policy(width, height)
         )
-    # And a bytes page of the same shape gets through, so the refusal above is
-    # about the scanline type and not about the page.
+    # A bytes page of the same shape gets through: the refusal above is about
+    # the scanline type, not the page.
     as_bytes = [bytearray(row) for row in rows]
     assert (
         infer_background(
@@ -628,10 +555,8 @@ def test_a_background_exactly_at_the_margin_still_infers():
         8, 8, rows, background_policy=_shipped_background_policy(8, 8)
     )
     assert evidence["background"] == 20
-    # This page's two modes are 0 and 20, so a third of the distance between
-    # them is 6 and the floor is what the derivation returns. That is the shape
-    # the bound is claimed at: at a margin of 20 under a paper value of 20, pure
-    # black is exactly at the threshold and still counts.
+    # At a margin of 20 under a paper value of 20, pure black is exactly at
+    # the threshold and still counts.
     assert evidence["ink_margin"] == 20
     assert primary_scan(8, 8, rows, background=20, margin=20, gap_tolerance_px=3) == [
         {"bounds": {"x": 3, "y": 3, "w": 1, "h": 1}, "pixel_count": 1}
@@ -640,29 +565,16 @@ def test_a_background_exactly_at_the_margin_still_infers():
 
 # --- a page the structure pass finds no ink on is cut into crops that go on ------
 #
-# The ruling: "If the designator sees no text it should default to
-# predetermined crops with a small margin of overlap and send the crops down
-# stream to be read by everything. If all the witnesses and the perlector see no
-# text on any of the crops then it's likely a true blank."
-#
-# `grouping.fallback_tiles` computed that grid and `run.py` handed it to
-# `_match_structural_group` as match candidates. No tile was ever *cut*, so the
-# second half of the ruling -- send the crops downstream -- was not built, and a
-# sealed page with no ink and no declared act sent nothing at all. These tests
-# drive the mechanism over a page whose pixels really are blank, so
-# `structure.primary_scan` genuinely returns no component and the grid genuinely
+# A page with no ink and no declared act must still be cut into predetermined
+# crops and sent downstream. These tests drive that over a page whose pixels
+# really are blank, so the scan genuinely finds nothing and the grid genuinely
 # fires; nothing here monkeypatches the scan, the grouping, or the grid.
 #
-# The one substitution is the page's *pixels*: the door refuses any fixture root
-# but `proof/` (`door.declared_synthetic_fixture_root`),
-# and every shipped fixture page carries ink, so an ink-free page cannot be
-# sealed here without adding one to the shipped fixture and moving every digest
-# in the tree. Substituting the sealed page's own byte reader gives this stage a
-# genuinely blank page to scan, crop and reconcile end to end. What that cannot
-# reach is the *downstream* lineage check, which recomputes a crop from the
-# Exemplar's stored pixels; proving the fallback crops through a real
-# orchestrator run needs an ink-free fixture page, and that is named in this
-# build's report rather than faked here.
+# The one substitution is the page's own pixels: every shipped fixture page
+# carries ink, so an ink-free page can't be sealed without moving every
+# digest in the tree, and this substitutes the sealed page's own byte reader
+# instead. This cannot reach the downstream lineage check, which recomputes a
+# crop from the Exemplar's stored pixels; that needs a real ink-free fixture page.
 
 
 def _flat_page_png(width: int, height: int, value: int) -> bytes:
@@ -752,18 +664,13 @@ def blank_first_page_run(tmp_path, monkeypatch):
     context = _designator_context(root, designator)
     _substitute_page_pixels(designator, monkeypatch, 1, _flat_page_png(200, 260, 230))
 
-    # The premise, asserted rather than assumed: the real structure pass over
-    # these real pixels finds nothing. If a later threshold change made this page
-    # scan as inked, every assertion below would still pass for the wrong reason.
+    # The premise, asserted rather than assumed: if a later threshold change
+    # made this page scan as inked, everything below would pass for the wrong reason.
     width, height, rows = designator.grayscale_rows(_flat_page_png(200, 260, 230))
     evidence = designator.structure.infer_background_evidence(
         width, height, rows, background_policy=_shipped_background_policy(width, height)
     )
     background = evidence["background"]
-    # Resolved from the sealed policy the way the run resolves it, rather than
-    # written out as literals: this premise stands in for what `initial_pass`
-    # below actually does, and a hand-copied threshold is how the two would
-    # quietly stop being the same scan.
     thresholds = designator.grouping_config.resolve_thresholds(
         designator.grouping_config.load_grouping_config(), width, height
     )
@@ -824,9 +731,8 @@ def test_a_page_with_no_found_ink_is_cut_into_fallback_crops(blank_first_page_ru
     ] == tiles
     for row in regions:
         assert row["transform"]["source_page_ordinal"] == 1
-        # The tile is already the final rectangle, overlap built in: expanding it
-        # again by the capture padding would conflate a structural pad with a
-        # capture pad (`geometry.py`).
+        # The tile is already the final rectangle, overlap built in; expanding
+        # it by capture padding would conflate a structural pad with a capture one.
         assert row["padding"] is None
         assert row["image_sha256"], "a fallback crop is real cut pixels, not a rectangle on paper"
 
@@ -850,11 +756,8 @@ def test_the_fallback_crops_reach_the_downstream_denominator(blank_first_page_ru
     )
     assert len(row["evidence"]) == fallback["tile_count"]
 
-    # And the seal that carries it validates as the downstream expected-act
-    # denominator -- the actual cross-stage contract, not this stage's own idea
-    # of one. `_verify_page_fallback_act_row` recomputes the minted identity and
-    # reads page 1's structure-status through a digest-checked hop to confirm the
-    # premise that the structure pass really did fall back to tiles there.
+    # The seal validates as the downstream expected-act denominator, the
+    # actual cross-stage contract, not this stage's own idea of one.
     validated = {act["act_key"]: act for act in expected_acts(context)}
     assert validated[fallback["act_key"]]["act_id"] == row["act_id"]
 
@@ -973,13 +876,11 @@ def test_declared_acts_on_a_fallback_tiled_page_record_no_detected_bounds(
 
 
 def test_the_missed_act_refusal_still_fires_where_detection_actually_ran(tmp_path, monkeypatch):
-    """The other half of the same finding: a real detector that missed an act refuses.
-
-    A page with one small mark, nowhere near either declared act, is a page the
-    structure pass *did* find regions on. Nothing covers half of act a1's
-    declared bounds, so the structure pass missed it -- and a missed act is the
-    finding goal 2 cares about most. It must still be a refusal, not a fallback
-    band quietly standing in for the detection that did not happen.
+    """A page with one small mark, nowhere near either declared act, is a page
+    the structure pass *did* find regions on -- nothing covers half of act
+    a1's declared bounds, so it missed the act, and that must still refuse,
+    not have a fallback band quietly stand in for the detection that never
+    happened.
     """
     root = tmp_path / "runs"
     for program in (
@@ -1000,18 +901,13 @@ def test_the_missed_act_refusal_still_fires_where_detection_actually_ran(tmp_pat
 
 
 def test_fallback_tiles_cover_every_row_of_the_page_and_overlap_their_neighbours():
-    """The grid's two obligations, and a strip in no crop would break the first.
-
-    Coverage, because a band of the page inside no crop is text nothing will ever
-    be shown. And overlap, so a line sitting exactly on a boundary is whole
-    inside one of the two neighbours rather than halved by both.
+    """The grid's two obligations: coverage (a band of the page inside no crop
+    is text nothing will ever be shown) and overlap (a line on a boundary is
+    whole inside one neighbour rather than halved by both).
     """
     import grouping
 
     page_w, page_h = 100, 200
-    # The grid takes its band count and overlap in from the sealed policy now,
-    # like every other threshold this module resolves per page; the values here
-    # are the fixture-size resolution of `config/designator_grouping.toml`.
     tiles = grouping.fallback_tiles(page_w, page_h, bands=4, overlap_px=8)
 
     covered = set()
@@ -1030,9 +926,7 @@ def test_fallback_tiles_cover_every_row_of_the_page_and_overlap_their_neighbours
 
 
 def test_fallback_tiles_refuse_a_band_count_or_overlap_they_cannot_cut_under():
-    """The grid takes its two numbers in, so it refuses them by name.
-
-    A caller that forgets one fails on the keyword; one that resolves a bad
+    """A caller that forgets a keyword fails on it; one that resolves a bad
     value fails here, rather than cutting a real page's only crops under it.
     """
     import grouping
@@ -1048,13 +942,9 @@ def test_fallback_tiles_refuse_a_band_count_or_overlap_they_cannot_cut_under():
 
 
 def test_fallback_tiles_refuse_more_bands_than_the_page_is_tall():
-    """A sealed band count the page cannot honestly cut is refused, not clamped.
-
-    `structure-status` publishes the sealed policy's `fallback_bands` as the
-    geometry this page executed under (SPEC_C 4.2). A `min(bands, page_h)`
-    clamp here would silently cut fewer bands than that record claims, so a
-    page shorter than the sealed band count is refused by name instead of
-    being quietly given a smaller grid than its own record says it got.
+    """A sealed band count the page cannot honestly cut is refused, not
+    clamped: a `min(bands, page_h)` clamp would silently cut fewer bands than
+    the published record claims.
     """
     import grouping
 

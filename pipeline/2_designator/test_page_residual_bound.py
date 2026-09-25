@@ -28,15 +28,10 @@ from common.stage import (
 ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_GROUPING_CONFIG = ROOT / "config" / "designator_grouping.toml"
 
-# Where the specks go on page 1, and how far apart. Page 1 is 200x260 with two
-# declared acts at y 20-99 and y 120-219; their *padded* capture rectangles
-# reach y 238 at the furthest, so a band starting at 240 is ink no declared
-# crop can claim -- which is what makes each speck a conservation residual
-# rather than part of an act. The 10px pitch is comfortably wider than the
-# sealed 3px gap tolerance, so each speck labels as its own component instead
-# of chaining into its neighbour; nothing here depends on that arithmetic being
-# right, because `measured_scatter` counts what the reconciliation actually
-# found rather than what this comment predicts.
+# A band starting at y=240 is ink no declared crop's padded rectangle claims
+# (they reach y=238 at furthest), and the 10px pitch is wide enough that each
+# speck labels as its own component rather than chaining into a neighbour.
+# `measured_scatter` counts the actual reconciliation, not this arithmetic.
 _SCATTER_X = range(2, 198, 10)
 _SCATTER_Y = range(240, 259, 10)
 _SCATTER_INK = 40
@@ -60,23 +55,19 @@ def _grouping_config_with_bound(
 ) -> Path:
     """The shipped grouping policy with an isolated cardinality bound.
 
-    The six page-fraction thresholds are copied byte for byte, so every page in
-    these runs resolve to exactly the geometry the shipped policy resolves to.
-    Cardinality tests promote every component to isolate their legacy ceiling;
-    aggregate presentation cases keep the sealed floors.
+    The six page-fraction thresholds are copied byte for byte, so these runs
+    resolve to the same geometry the shipped policy resolves to. Cardinality tests
+    promote every component to isolate their legacy ceiling; aggregate
+    presentation cases keep the sealed floors.
     """
     source = SHIPPED_GROUPING_CONFIG.read_text(encoding="utf-8")
-    # Asserted against the literal rather than against "the text changed", so
-    # that asking for the shipped bound itself is a legitimate request rather
-    # than a silent no-op that reads as a missing field.
+    # Asserted against the literal so a shipped-value change fails loudly here
+    # rather than silently becoming a no-op edit.
     assert "max_residual_components = 2000" in source, (
         "the shipped grouping config no longer declares a bound of 2000"
     )
     edited = source.replace("max_residual_components = 2000", f"max_residual_components = {bound}")
     if promote_all_components:
-        # This file isolates the older cardinality boundary. Promote every
-        # component so its assertions do not accidentally test the separate
-        # aggregate-accounting policy.
         for declaration in (
             "residual_aggregate_max_pixel_count = 500",
             "residual_aggregate_max_area_px = 2000",
@@ -96,13 +87,7 @@ def _grouping_config_with_bound(
 
 
 def _scattered_page_png() -> bytes:
-    """The fixture's own page 1, plus a deterministic grid of unclaimed specks.
-
-    The page's real ink is left exactly as the fixture draws it, so both
-    declared acts still match the structural groups detection finds for them and
-    the run proceeds as an ordinary one. Only the band below every capture
-    rectangle changes.
-    """
+    """The fixture's own page 1, plus a deterministic grid of unclaimed specks."""
     from proof.synthetic_pages import page_bytes
 
     width, height, rows = grayscale_rows(page_bytes(1))
@@ -115,12 +100,10 @@ def _scattered_page_png() -> bytes:
 def _base_run(root: Path, grouping_config: Path) -> None:
     """Door, Exemplar and Ink Map, so a real sealed page is on disk to read.
 
-    Every one of the three is told which grouping policy this run uses, not only
-    the door that seals its digest: each stage re-derives the run's config
-    digest from its own loaded inputs and refuses to reuse a run whose sealed
-    inputs have moved (`IncompatibleReuse`, naming `designator-grouping`). That
-    refusal is the point-of-use recheck working, so the honest fix is to hand
-    every stage the same policy rather than to route around it.
+    Every stage is told the same grouping policy: each re-derives the run's
+    config digest from its own loaded inputs and refuses to reuse a run whose
+    sealed inputs moved, so giving them different policies would trip
+    IncompatibleReuse rather than test anything.
     """
     for program in (
         "pipeline/1_exemplar/door.py",
@@ -231,9 +214,8 @@ def measured_scatter(tmp_path_factory):
     """How many residual components the scatter band actually reconciles to.
 
     Measured through a real pass with a bound nothing can reach, rather than
-    predicted from the pitch arithmetic above. The two boundary tests are then
-    stated against a number the instrument produced, which is the only way
-    "exactly at the bound" and "one over it" can be the same pixels twice.
+    predicted from the pitch arithmetic above, so the boundary tests below are
+    stated against what the instrument actually produced.
     """
     with pytest.MonkeyPatch.context() as monkeypatch:
         root = tmp_path_factory.mktemp("probe") / "runs"
@@ -254,8 +236,7 @@ def test_a_page_exactly_at_the_bound_enumerates_every_component(
 ):
     """At the bound, nothing changes: one held act per residual, no page hold.
 
-    The bound is `>`, not `>=`, and which of the two it is decides the
-    disposition of a page. Pinned from the side that costs a reviewer nothing.
+    The bound is `>`, not `>=`; pinned from the side that costs a reviewer nothing.
     """
     _designator, context, held = _pass_over_scattered_page(
         tmp_path / "runs", monkeypatch, measured_scatter, _scattered_page_png(), 1
@@ -305,8 +286,6 @@ def test_small_residuals_are_retained_as_accounting_not_fictitious_acts(tmp_path
     page_rows = [row for row in rows if row["act_key"] == page_residual_act_key(1)]
     assert len(page_rows) == 1 and page_rows[0]["outcome"] == "held"
 
-    # The real consumer reads the producer's complete tree. This is the seam
-    # that previously rejected every aggregate page as an illegal page hold.
     finding = _load_recensor().geometry_coverage_inputs(context)[1]
     assert finding["residual_enumeration"] == RESIDUAL_ENUMERATION_AGGREGATED
     assert finding["residual_component_count"] == len(aggregate)
@@ -353,11 +332,9 @@ def test_component_count_never_suppresses_individual_significant_residuals(
 def test_the_shipped_bound_holds_no_fixture_page(tmp_path, monkeypatch):
     """A green fixture run stays green, and every page stays enumerated.
 
-    The shipped bound of 2000 is orders of magnitude above anything these pages
-    reconcile to, and that is load-bearing rather than incidental: the
-    acceptance pins are measured on this fixture, so a bound that began holding
-    a fixture page would change what a green run means as well as what it
-    contains.
+    The shipped bound of 2000 is orders of magnitude above anything these
+    pages reconcile to; if it ever began holding a fixture page, that would
+    change what a green run means, not just what it contains.
     """
     root = tmp_path / "runs"
     _base_run(root, SHIPPED_GROUPING_CONFIG)
@@ -379,44 +356,30 @@ def test_the_shipped_bound_holds_no_fixture_page(tmp_path, monkeypatch):
 
 @pytest.mark.full
 def test_an_a4_page_at_three_percent_scatter_is_held_as_one_item(tmp_path, monkeypatch):
-    """The measured regression, at the size it was measured at.
+    """The measured regression, at the size it was measured at: a synthetic A4
+    page at 300 dpi with 3% scattered ink, which reconciles to roughly sixty
+    thousand residual components.
 
-    `pipeline/2_designator/CONTRACT.md` records a synthetic A4 page at 300 dpi
-    with 3% scattered ink reconciling to roughly sixty thousand residual
-    components in about three seconds of labelling, and states plainly that the
-    Designator would mint that many held acts, hold records and seal rows for
-    it. This is that page, run through the pass that now bounds it.
+    Budget: ~104 seconds on this build's development machine, ~89 of which is
+    `grouping.group_page` over a quarter of a million components; `full` keeps
+    that cost out of the everyday leg. `live_initial_pass` calls the same
+    `_analyze_page` as this test exercises, so the live route is bounded too.
+    `structure.py`'s own docstring names what's still outstanding in
+    `ink_pixels`'s memory use.
 
-    Budget: measured at ~104 seconds on this build's development machine, of
-    which ~89 is `grouping.group_page` over a quarter of a million components
-    and ~4 each is the structure scan and the reconciliation. `full` is the
-    marker that keeps that cost out of the everyday leg; it is not a marker
-    waiting on a replacement. The live structural pass has landed and does not
-    replace this scan: `live_initial_pass` calls the same `_analyze_page` for
-    every sealed page, so the ink scan, the grouping and the residual holds this
-    test bounds are on the live route too. What `structure.py`'s docstring names
-    as outstanding is narrower -- `ink_pixels` still materialises one tuple per
-    ink pixel, which is the remaining share of the measured memory -- and it is
-    named there rather than deferred silently.
-
-    The scatter goes on page **2**, which carries one declared act rather than
-    two. At this scale the chain gap resolves to 81px, which is wider than the
-    gaps between scattered specks, so the structure pass chains them into a few
-    thousand large groups and the declared act's own ink joins one of them. Two
-    declared acts on one page would then both match a single group, which
-    `_claim_structural_group` refuses by design -- a different and already
-    tested property. Putting the scatter where that refusal cannot fire keeps
-    this test measuring the bound.
+    The scatter goes on page 2, which carries one declared act: with two, the
+    chain gap at this scale (81px, wider than the speck spacing) would chain
+    the scatter into large groups that both declared acts match, which
+    `_claim_structural_group` refuses by design -- a different property this
+    test does not mean to exercise.
     """
     from proof.synthetic_pages import PAGES, render_page
 
     width, height = 2480, 3508
     descriptor = dict(PAGES[1], width=width, height=height)
     _width, _height, rows = grayscale_rows(render_page(descriptor))
-    # ~3% of the page as scattered ink: one pixel every 33 columns, on every row
-    # below the declared act's padded rectangle, with the row's own start offset
-    # walked so the specks do not line up into columns. No randomness, seeded or
-    # otherwise -- a fixture that varies between machines cannot pin a count.
+    # Deterministic, not random: a fixture that varies between machines
+    # cannot pin a count. The row offset walks so specks don't line up in columns.
     marked = 0
     for y in range(120, height):
         row = rows[y]

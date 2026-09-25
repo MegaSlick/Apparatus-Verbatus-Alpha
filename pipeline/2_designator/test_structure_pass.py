@@ -1,19 +1,17 @@
-"""The Designator's live structure pass, proven offline end to end (SPEC_D §1, §2, §5).
+"""The Designator's live structure pass, proven offline end to end.
 
 Nothing here starts a pod, opens a socket, or loads a model. The run tree is
-built by the real Door, Exemplar and Ink Map programs as subprocesses, and then
-`run.py`'s own `main` is called in this process with the fake endpoint from
+built by the real Door, Exemplar and Ink Map programs as subprocesses, and
+`run.py`'s own `main` is called in-process with the fake endpoint from
 `operations/serving/fakes.py` behind it -- so what is proved is the stage's
 wiring: which pass the sealed catalogue selects, what is sent per page, what
-each answer does to the page, what the minted rows carry, and that the
-consumer-side verifier `common/stage.py::expected_acts` (D3) accepts what this
-producer wrote.
+each answer does to it, what the minted rows carry, and that
+`common/stage.py::expected_acts` accepts what this producer wrote.
 
-The selector is deliberately not a flag on this stage. A run is live because
-the serving-recipe row sealed into its `config_digest` says `kind = "vllm"` for
-the resolved structure chair, so these tests build a catalogue whose
-`designator_structure` rows are live and let the run bind it exactly as a real
-one would. Every other chair keeps its fixture row.
+The selector is deliberately not a flag: a run is live because the serving-
+recipe row sealed into `config_digest` says `kind = "vllm"` for the resolved
+structure chair, so these tests build a catalogue whose `designator_structure`
+rows are live and let the run bind it exactly as a real one would.
 """
 
 from __future__ import annotations
@@ -133,10 +131,9 @@ def _toml_value(value: Any) -> str:
 def _live_row(identity) -> dict[str, Any]:
     """One `kind = "vllm"` row for the fixture roster's own structure chair.
 
-    `preflight_state = "proven"` with the two real digests, because the manager
-    refuses to launch an unproven row and these tests exercise the manager the
-    production factory would build. The proof is a test fixture in a tmp
-    directory; no catalogue in the repository is edited.
+    `preflight_state = "proven"` with the two real digests, since the manager
+    refuses to launch an unproven row and these tests exercise the same
+    manager the production factory would build.
     """
     row: dict[str, Any] = {
         "kind": "vllm",
@@ -155,11 +152,8 @@ def _live_row(identity) -> dict[str, Any]:
         "gpu_memory_utilization": "0.58",
         "min_pixels": 3136,
         "max_pixels": 1806336,
-        # The chair's own vision-encoder geometry, as the shipped real
-        # catalogue states it for Chandra: without it nothing can say what one
-        # page image costs this chair in prompt tokens, and `ask_page` refuses
-        # by name rather than counting against a default
-        # (`common/request_capacity.py`).
+        # The chair's own vision-encoder geometry: without it nothing can say
+        # what one page image costs in prompt tokens.
         "patch_size": 16,
         "merge_size": 2,
         "enable_prefix_caching": True,
@@ -183,11 +177,9 @@ def _live_row(identity) -> dict[str, Any]:
 
 
 def _live_catalogue(destination: Path) -> Path:
-    """The committed fixture catalogue with its structure-chair rows made live.
-
-    The three `designator_structure` fixture rows come first in the committed
-    file; they are replaced by one live row at `TIER`, and every other chair's
-    rows follow unchanged. The committed file is never touched.
+    """The committed fixture catalogue with its structure-chair rows made
+    live: the three `designator_structure` fixture rows are replaced by one
+    live row at `TIER`; every other chair's rows follow unchanged.
     """
     source = FIXTURE_CATALOGUE.read_text(encoding="utf-8")
     marker = '[[profiles]]\nkind = "fixture"\nrecipe = "fake-designator-v0"'
@@ -245,8 +237,9 @@ def live_run(chained_run, tmp_path: Path) -> tuple[Path, Path]:
 
 @pytest.fixture(scope="module")
 def real_template(tmp_path_factory) -> Path:
-    """One real submission of the fixture pages, carried to the Ink Map's seal
-    under the committed fixture catalogue."""
+    """One real submission of the fixture pages, carried to the Ink Map's
+    seal under the committed fixture catalogue.
+    """
     base = tmp_path_factory.mktemp("real-designator-template")
     approved = base / "approved-storage"
     source = approved / "submitted-pages"
@@ -309,11 +302,9 @@ def _serving_factory(
 ):
     """The `(context, chair, tier) -> ChairClient` seam `main` injects against.
 
-    Deliberately close to `structure_pass.default_serving_factory`: the same
-    manager, the same real `StageContextReceiptPublisher`, the same
-    `retain_chair_bytes` into the stage's own blob area, the same receipt
-    re-read through the tree. Only the launcher, the transport and the package
-    inspector are fakes -- the three things that would otherwise need a card.
+    Deliberately close to `structure_pass.default_serving_factory`; only the
+    launcher, transport and package inspector are fakes, since those are the
+    only three things that would otherwise need a card.
     """
     policy, decoding_sha256 = load_decoding_policy(decoding)
     recipes = load_serving_recipes(catalogue)
@@ -392,14 +383,8 @@ def _answer(acts, page_w: int = 200, page_h: int = 260, **fields: Any) -> Script
 
     Built by the shared fake's own builder and read back through
     `common/chandra_layout.py` before this file sees it, so a fixture whose
-    rectangles do not survive the round trip fails in the builder rather than
-    as an unexplained hold three stages downstream. The normalized boxes come
-    from `operations/serving/fakes.py`'s `structure_box_1000`, which searches
-    the 0-1000 grid and checks every candidate through
-    `common.structure_answer.to_page_bounds` itself. This file used to carry a
-    second private copy of that search (`_box`), which is exactly the drift the
-    one shared builder exists to prevent -- two inverses of one converter,
-    either free to stop agreeing with it.
+    rectangles don't survive the round trip fails in the builder rather than
+    as an unexplained hold three stages downstream.
     """
     return scripted_structure_answer(acts, page_w, page_h, **fields)
 
@@ -407,10 +392,8 @@ def _answer(acts, page_w: int = 200, page_h: int = 260, **fields: Any) -> Script
 def _blank_page_answer(**fields: Any) -> ScriptedAnswer:
     """The chair's answer for a page it read as blank: one `Blank-Page` block.
 
-    Under the retired JSON contract this was `{"acts": []}`. The vendor grammar
-    has no empty-list shape -- an answer with no `<div>` in it is refused as
-    `no-layout-blocks` rather than read as an empty page -- and `Blank-Page` is
-    the label the carried prompt itself offers for exactly this.
+    The vendor grammar has no empty-list shape -- an answer with no `<div>`
+    in it is refused as `no-layout-blocks` rather than read as an empty page.
     """
     return scripted_structure_answer(
         (), 200, 260, body=structure_blank_page_body(), expect_proposals=(), **fields
@@ -521,10 +504,8 @@ def test_a_catalogue_that_is_not_the_sealed_one_is_refused(chained_run, tmp_path
 
 
 def test_every_sealed_fixture_page_subject_equals_the_fixture_derived_identity(chained_run):
-    """`pages[n]["subject_id"]` and `page_identity(fixture, n)` are one string.
-
-    The fixture act loop names a sealed page by the Exemplar's own subject now,
-    and this is the equality that keeps every fixture seal row byte-identical.
+    """`pages[n]["subject_id"]` and `page_identity(fixture, n)` are one string,
+    the equality that keeps every fixture seal row byte-identical.
     """
     root, _catalogue = chained_run
     fixture = load_fixture(str(ROOT / "proof"))
@@ -546,27 +527,18 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
     endpoint, exit_code = _run_designator(root, catalogue, tmp_path, monkeypatch, _happy_answers())
 
     assert exit_code == EXIT_COMPLETE
-    # One whole-page call per sealed page: one `user` turn and no system turn
-    # (v2, matching Chandra's own inference code), the native RGB/grid-28 image
-    # as the one image, and no generation knobs of the stage's own.
+    # One whole-page call per sealed page: one user turn, no system turn.
     assert len(endpoint.requests) == 2
     for request in endpoint.requests:
         messages = request["messages"]
         assert [message["role"] for message in messages] == ["user"]
-        # Image block first, then the instruction -- upstream Chandra's own
-        # trained order, and the token sequence the chat template emits.
+        # Image block first, then the instruction: Chandra's own trained order.
         assert messages[0]["content"][0]["type"] == "image_url"
         assert messages[0]["content"][1]["type"] == "text"
-        # Chandra's own 12,384-token bound against what this row leaves: the
-        # fixture pages are 200x260 and cost 48 image tokens, the prompt is the
-        # measured 593 (the carried vendor prompt, v3), and the live row states
-        # `max_model_len` 4,096. The row is what binds, so no bound goes on the
-        # wire and the engine's own budget -- the same quantity, measured by
-        # the component that holds the tokenizer -- governs, exactly as before.
+        # The row leaves more than Chandra's 12,384-token bound, so no bound
+        # goes on the wire and the engine's own budget governs.
         assert DECLARED_ANSWER_BOUND_TOKENS["designator_structure"] > 4096 - 48 - 593
         assert "max_tokens" not in request
-        # Thinking mode closed, whichever of the two shipped chat templates the
-        # engine resolves (`common/chair_wire.py`).
         assert request["chat_template_kwargs"] == {"enable_thinking": False}
         assert request["temperature"] == 1
     tree = RunTree(root, RUN_ID)
@@ -592,8 +564,6 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert payload["decoding"]["policy"] == "structure"
         assert payload["decoding"]["temperature"] == 1
         assert payload["prompt_version"] == "verbatus-structure-prompt.v3"
-        # Every block the answer carried became a proposal, so the record's own
-        # denominator reconciles with nothing left over.
         assert payload["block_count"] == len(expected)
         assert payload["blocks_without_proposal"] == []
         assert payload["answer_schema"] == "chandra-layout-html.v1"
@@ -625,16 +595,13 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         request_bytes = base64.b64decode(request_url.partition(",")[2])
         assert dimensions(request_bytes) == (196, 252)
         assert digest_bytes(request_bytes) == evidence["presented"]["image_sha256"]
-        # These fixtures declare no `data-label`, so the vendor parser's own
-        # `block` default is what the vocabulary field carries, `label_declared`
-        # is false, and the digest and length stay null -- "the chair offered no
-        # label", spelled honestly.
+        # These fixtures declare no data-label, so the vendor parser's own
+        # "block" default carries the vocabulary field, label_declared is
+        # false, and the digest/length stay null.
         assert [act["label_vocabulary"] for act in payload["acts"]] == ["block"] * len(expected)
         assert not any(act["label_declared"] for act in payload["acts"])
         assert all(act["label_digest"] is None for act in payload["acts"])
         assert all(act["nested_bbox_count"] == 0 for act in payload["acts"])
-        # The retained bytes, the custody binding and the call record all exist
-        # under the digests the record names.
         for name in ("raw_response_ref", "custody_ref", "call_record_ref"):
             reference = payload[name]
             data = tree.read_bytes(reference["relative_path"])
@@ -646,13 +613,10 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
             call_record["decoding_config_sha256"] == payload["decoding"]["decoding_config_sha256"]
         )
         assert call_record["image_sha256s"] == [evidence["presented"]["image_sha256"]]
-        # Response-as-arrival: the retained blob is the exact wire body.
         assert (
             json.loads(tree.read_bytes(payload["raw_response_ref"]["relative_path"]))["model"]
             == SERVED_MODEL_ID
         )
-        # The posture the consumer will check (D3): the same engine call on the
-        # answer, the status and the seal.
         assert payload["provenance"]["engine_call"]["decoding_policy"] == "structure"
 
     statuses = _by_page_ordinal(_artifacts(root, DESIGNATOR, "structure-status"))
@@ -692,8 +656,6 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
     for key, payload in groups.items():
         assert payload["declared_bounds"] == expected_bounds[key]
         assert payload["continuation"] is None
-    # The fixture's own ink lies under the scripted rectangles, so the scan
-    # corroborates every one of them independently.
     assert {payload["structure_evidence"] for payload in groups.values()} == {"detected"}
 
     seal = _seal(root)
@@ -702,13 +664,13 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
     assert {row["outcome"] for row in rows} == {"proposed"}
     assert seal["payload"]["provenance"]["engine_call"]["call_kind"] == "chat-completions"
 
-    # No `fixture://` receipt anywhere: the one receipt is the served chair's.
+    # No fixture:// receipt anywhere: the one receipt is the served chair's.
     receipts = _receipts(root)
     assert [receipt["chair"] for receipt in receipts] == ["designator_structure"]
     assert not receipts[0]["endpoint"].startswith("fixture://")
 
-    # No act text in any Designator artifact (SPEC_D §4); the custody blob is
-    # the one permitted home for it.
+    # No act text in any Designator artifact; the custody blob is the one
+    # permitted home for it.
     artifacts_text = _designator_artifact_text(root)
     for text in SCRIPTED_TEXTS:
         assert text not in artifacts_text
@@ -717,8 +679,6 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         for text in SCRIPTED_TEXTS[:2]
     )
 
-    # The consumer-side verifier (D3) accepts every row against the answer it
-    # came from, at the very boundary the Attestatores open the run under.
     acts = expected_acts(_open(root, catalogue, ATTESTATORES, "--placement-tier", TIER))
     assert [row["act_key"] for row in acts] == [row["act_key"] for row in rows]
 
@@ -726,13 +686,9 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
 def test_the_attestatores_read_a_live_seal_under_their_own_fixture_rows(
     live_run, tmp_path, monkeypatch
 ):
-    """Every witness keeps its own pass.
-
-    The Attestatores stage is untouched by this unit: it runs as the real
-    program over a tree the live Designator produced, under the same catalogue
-    (its own rows still fixture), and nothing in it reaches the structure
-    chair -- the fake endpoint saw exactly the Designator's two page calls and
-    no other, and no Attestatores record carries a structure-chair call.
+    """Every witness keeps its own pass: the Attestatores stage runs as the
+    real program over a tree the live Designator produced, and nothing in it
+    reaches the structure chair.
     """
     root, catalogue = live_run
     endpoint, exit_code = _run_designator(root, catalogue, tmp_path, monkeypatch, _happy_answers())
@@ -762,9 +718,8 @@ def test_the_attestatores_read_a_live_seal_under_their_own_fixture_rows(
         provenance = record["payload"]["provenance"]
         assert provenance["chair"] != "designator_structure"
         assert "engine_call" not in provenance
-    # The Attestatores' production client still binds `reading_of_record`, not
-    # the structure section -- pinned at the source, since this unit does not
-    # own that file and must not have moved it.
+    # The Attestatores' production client still binds reading_of_record, not
+    # the structure section, pinned at the source.
     source = ATTESTATORES_CLI.read_text(encoding="utf-8")
     assert 'record_temperature=policy["reading_of_record"]["temperature"]' in source
     assert '["structure"]' not in source
@@ -785,11 +740,9 @@ def test_a_blank_page_answer_cuts_the_page_into_fallback_tiles(live_run, tmp_pat
     answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
     assert answers[2]["payload"]["disposition"] == "fallback-tiles"
     assert answers[2]["payload"]["act_count"] == 0
-    # The `Blank-Page` block is *retained*, not dropped: it is the one block the
-    # answer carried, it proposed nothing for a named reason, and the grammar's
-    # own finding says the vendor would have discarded it here
-    # (`chandra_layout`'s second departure). A page the chair declared blank is
-    # therefore distinguishable in the record from a page it never answered.
+    # The Blank-Page block is retained, not dropped: it proposed nothing for a
+    # named reason, so a page the chair declared blank is distinguishable
+    # from a page it never answered.
     payload = answers[2]["payload"]
     assert payload["block_count"] == 1
     assert [block["reason"] for block in payload["blocks_without_proposal"]] == ["blank-page"]
@@ -799,10 +752,8 @@ def test_a_blank_page_answer_cuts_the_page_into_fallback_tiles(live_run, tmp_pat
     (fallback,) = _artifacts(root, DESIGNATOR, "page-fallback")
     assert fallback["payload"]["page_ordinal"] == 2
     assert fallback["payload"]["page_bounds"] == {"x": 0, "y": 0, "w": 200, "h": 260}
-    # Live wording, not the fixture sentence: page 2's own ink scan grouped
-    # ink (proven above by "detected" on the happy path), so the record must
-    # name what actually happened here -- the chair returned no act -- rather
-    # than claim the scan found nothing.
+    # Live wording, not the fixture sentence: page 2's scan does find ink, so
+    # the record must say the chair returned no act, not that the scan found nothing.
     assert fallback["payload"]["reason"] == designator._FALLBACK_REASON_LIVE
     rows = {row["act_key"]: row for row in _seal(root)["payload"]["expected_acts"]}
     assert rows["page-fallback:2"]["outcome"] == "proposed"
@@ -840,21 +791,13 @@ def _mixed_block_answer() -> ScriptedAnswer:
 
 
 def test_a_block_with_no_usable_box_is_recorded_and_never_minted(live_run, tmp_path, monkeypatch):
-    """The rule the vendor's own parser breaks, held to end to end.
+    """Unlike the vendor's own parser, which substitutes `[0, 0, 1, 1]` for a
+    bbox it cannot read, this keeps the block with its geometry unresolved,
+    the reason named, and no crop cut from it.
 
-    `chandra/output.py::parse_layout` prints "defaulting to full image" and
-    substitutes `[0, 0, 1, 1]` for a bbox it cannot read -- a rectangle a few
-    pixels wide in the page's corner, published as though the model had drawn
-    it, with the print going to a stdout nobody retains. Here the block is kept
-    with its geometry unresolved, the reason named, and **no crop cut from it**:
-    the run mints exactly the one rectangle that resolved, and the three that
-    did not are in the record with the reason each fell out for.
-
-    The blank block is in the same answer on purpose. `Blank-Page` and
-    `malformed-bbox` both reach `block_page_bounds` returning `None`, and this
-    is what says the record still tells them apart -- a page reported as blank
-    is a different fact from a box nobody could read, and folding either into
-    the other would be a reading substituted for a measurement.
+    The blank block is in the same answer on purpose: `Blank-Page` and
+    `malformed-bbox` both reach `block_page_bounds` returning `None`, and the
+    record must still tell them apart.
     """
     root, catalogue = live_run
     _endpoint, exit_code = _run_designator(
@@ -864,7 +807,6 @@ def test_a_block_with_no_usable_box_is_recorded_and_never_minted(live_run, tmp_p
     answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
     payload = answers[2]["payload"]
     assert payload["disposition"] == "detected"
-    # Four blocks came back; one proposed, and the other three are named.
     assert payload["block_count"] == 4
     assert payload["act_count"] == 1
     assert [act["ordinal"] for act in payload["acts"]] == [0]
@@ -873,17 +815,11 @@ def test_a_block_with_no_usable_box_is_recorded_and_never_minted(live_run, tmp_p
         (2, "no-bbox"),
         (3, "blank-page"),
     ]
-    # Each unminted block keeps its own text as a digest and a length, so what
-    # the chair wrote there is provable against the retained bytes without the
-    # record carrying a word of it.
     assert [b["text_length"] for b in payload["blocks_without_proposal"]] == [14, 13, 0]
     assert all(b["text_digest"] for b in payload["blocks_without_proposal"])
-    # The findings name the same ordinals, and the malformed box is published as
-    # a digest -- never as the bytes the chair wrote into the attribute. Both
-    # `malformed-bbox` findings are here: the grammar raises one for a box it
-    # could not read *and* one for a box that was never there, and a record
-    # keeping only the last would drop a block's whole account of itself while
-    # still counting the block.
+    # Both malformed-bbox findings are here: one for a box that couldn't be
+    # read, one for a box that was never there; keeping only the last would
+    # drop a block's whole account of itself while still counting the block.
     assert [(f["kind"], f["ordinal"]) for f in payload["findings"]] == [
         ("malformed-bbox", 1),
         ("malformed-bbox", 2),
@@ -893,12 +829,11 @@ def test_a_block_with_no_usable_box_is_recorded_and_never_minted(live_run, tmp_p
     assert unreadable["data_bbox_digest"] == structure_answer.text_digest("ten 20 30 40")
     assert unreadable["data_bbox_truncated"] is False
     assert unreadable["reason"] == "components are not plain decimal integers"
-    # A null digest is the structural signal for "the chair drew no box at all",
-    # told apart from "it drew one nobody could read" without reading the reason.
+    # A null digest is the structural signal for "drew no box at all", told
+    # apart from "drew one nobody could read" without reading the reason.
     assert absent["data_bbox_digest"] is None
     assert absent["reason"] == "no data-bbox attribute"
     assert "ten 20 30 40" not in json.dumps(payload)
-    # And exactly one crop was cut on the page: the block that placed.
     on_page_two = [
         record["payload"]
         for record in _artifacts(root, DESIGNATOR, "region")
@@ -912,15 +847,10 @@ def test_a_block_with_no_usable_box_is_recorded_and_never_minted(live_run, tmp_p
 def test_a_page_whose_every_block_failed_to_place_is_tiled_and_says_so(
     live_run, tmp_path, monkeypatch
 ):
-    """No rectangle proposed, so the page is covered by predetermined crops.
-
-    The alternative would be holding it, which costs every act on the page
-    until a reviewer looks (goal 2: a missed act is worse than a poorly read
-    one). What `fallback-tiles` claims is "no rectangle was proposed", and that
-    is true here -- so the disposition is honest and the record carries the
-    part it does not say: two blocks came back, both unplaceable, with their
-    reasons and their text digests beside them. A reader can tell this page
-    from a blank one without opening the blob.
+    """No rectangle proposed, so the page is covered by predetermined crops
+    rather than held, which would cost every act on the page until a reviewer
+    looks. Two blocks came back, both unplaceable, with reasons and text
+    digests beside them, so a reader can tell this page from a blank one.
     """
     root, catalogue = live_run
     unplaceable = "\n".join(
@@ -945,8 +875,6 @@ def test_a_page_whose_every_block_failed_to_place_is_tiled_and_says_so(
     assert payload["disposition"] == "fallback-tiles"
     assert (payload["block_count"], payload["act_count"]) == (2, 0)
     assert [b["reason"] for b in payload["blocks_without_proposal"]] == ["malformed-bbox"] * 2
-    # The two boxes failed for two different reasons, and the grammar's own
-    # refusal reason says which -- arity against ordering, not one word for both.
     reasons = [f["reason"] for f in payload["findings"] if f["kind"] == "malformed-bbox"]
     assert reasons == ["expected 4 space-separated components, found 2", "x1 <= x0 or y1 <= y0"]
     (fallback,) = _artifacts(root, DESIGNATOR, "page-fallback")
@@ -958,14 +886,9 @@ def test_a_page_whose_every_block_failed_to_place_is_tiled_and_says_so(
 def test_ink_the_answer_wrote_outside_every_block_is_counted_and_named(
     live_run, tmp_path, monkeypatch
 ):
-    """The finding that stops a missed act arriving under a successful status.
-
-    A model that answered one act as a top-level `<p>`, or wrote a line between
-    two divs, produces words that reach no block, no page text and no span --
-    and, without this, a page that parses clean, mints its other rectangles and
-    reports `findings == []`. goal 2 rates that worst and principle 2 forbids
-    it. The count travels, not the text: the words are in the retained bytes,
-    and a Designator artifact publishes no reading of them.
+    """The finding that stops a missed act arriving under a successful status:
+    without it, text outside every block would leave a page parsing clean
+    with `findings == []`. The count travels, not the text.
     """
     root, catalogue = live_run
     stray = "an act the chair wrote outside every block"
@@ -994,11 +917,10 @@ def test_ink_the_answer_wrote_outside_every_block_is_counted_and_named(
     payload = answers[2]["payload"]
     assert payload["disposition"] == "detected"
     (finding,) = [f for f in payload["findings"] if f["kind"] == "content-outside-blocks"]
-    # Non-whitespace characters, which is what the text view would have read.
     assert finding["characters"] == len(stray.replace(" ", ""))
     assert stray not in json.dumps(payload)
-    # The block that did place is unaffected: the finding names a gap, it does
-    # not repair one (principle 3).
+    # The block that did place is unaffected: the finding names a gap, it
+    # does not repair one.
     assert payload["act_count"] == 1
 
 
@@ -1015,8 +937,8 @@ def _assert_page_two_held(root: Path, reason_code: str) -> None:
     assert answers[2]["outcome"] == "held"
     assert answers[2]["payload"]["disposition"] == "held"
     assert answers[2]["payload"]["reason_code"] == reason_code
-    # A held page is not tiled and nothing is cut on it; its ink reconciles as
-    # conservation residual, held from the moment it exists.
+    # A held page is not tiled and nothing is cut on it; its ink reconciles
+    # as conservation residual.
     regions = _artifacts(root, DESIGNATOR, "region")
     assert {r["payload"]["transform"]["source_page_ordinal"] for r in regions} == {1}
     assert not _artifacts(root, DESIGNATOR, "page-fallback")
@@ -1026,13 +948,9 @@ def _assert_page_two_held(root: Path, reason_code: str) -> None:
 
 
 def test_the_repetition_measure_separates_the_live_runs_looping_pages():
-    """The floor is set from four real RecordGold pages from a live run.
-
-    Two completed and two spent their whole context on one repeated fragment.
-    The measured shares were 0.004 and 0.005 against 0.067 and 0.305, so the
-    floor sits an order of magnitude clear of both sides. These registers do
-    repeat their formulae, and a page of genuine repeated phrasing must keep
-    reading as a page.
+    """The floor sits an order of magnitude clear of both completed and
+    looped pages, since these registers do repeat their own formulae and a
+    page of genuine repeated phrasing must keep reading as a page.
     """
     healthy = (
         '<div data-bbox="1 2 3 4" data-label="Text"><p>'
@@ -1041,7 +959,7 @@ def test_the_repetition_measure_separates_the_live_runs_looping_pages():
     )
     assert structure_pass.repetition_share(healthy) < structure_pass.DEGENERATE_REPETITION_SHARE
 
-    # Page 1's actual shape: a fragment emitted until the context ran out.
+    # A fragment emitted until the context ran out.
     looped = (
         "<div><p>Le Septieme Aoust mil sept cens vingt deux a este inhume"
         + (". J" * 4000)
@@ -1049,31 +967,26 @@ def test_the_repetition_measure_separates_the_live_runs_looping_pages():
     )
     assert structure_pass.repetition_share(looped) >= structure_pass.DEGENERATE_REPETITION_SHARE
 
-    # Page 3's shape: a whole phrase rather than two characters.
+    # A whole phrase rather than two characters.
     phrase = "<div><p>" + ("de l'Eglise, " * 1600) + "</p></div>"
     assert structure_pass.repetition_share(phrase) >= structure_pass.DEGENERATE_REPETITION_SHARE
 
-    # A positive control at each end. One character repeated makes every window
-    # identical and scores exactly 1.0. A fifteen-character phrase repeated
-    # instead yields fifteen distinct windows and scores about 0.07 -- which is
-    # page 3's own magnitude, its `de l\'Église, ` being thirteen characters,
-    # and why the floor sits well under that rather than near 1.
+    # One character repeated scores 1.0; a fifteen-character phrase yields
+    # fifteen distinct windows and scores about 0.07, just above the floor.
     assert structure_pass.repetition_share("a" * 600) == 1.0
     phrase_share = structure_pass.repetition_share("abcdefghijklmno" * 40)
     assert structure_pass.DEGENERATE_REPETITION_SHARE < phrase_share < 0.1
 
-    # Too short to ask the question of. The floor is a count of windows, and
-    # an answer under it is not judged either way.
+    # Too short to ask the question of: an answer under the window-count
+    # floor is not judged either way.
     assert structure_pass.repetition_share("aaaa") == 0.0
     assert structure_pass.repetition_share("ab" * 20) == 0.0
 
 
 def test_a_looping_answer_is_held_as_degenerate_not_as_a_cut_off():
-    """A loop and a page too dense to finish want opposite repairs.
-
-    Reporting the loop as a cut-off sends a reader to the token budget, which
-    is the wrong place to look: the retained responses showed
-    `. J. J. J.` 5,376 times.
+    """A loop and a page too dense to finish want opposite repairs: reporting
+    the loop as a cut-off sends a reader to the token budget, the wrong place
+    to look.
     """
     looped = ". J" * 4000
     dense = "".join(
@@ -1086,9 +999,7 @@ def test_a_looping_answer_is_held_as_degenerate_not_as_a_cut_off():
     assert structure_pass._finish_reason_disposition("length", dense) == (
         structure_pass.HELD_CUT_OFF
     )
-    # No answer to read is still a cut-off, never a guess at degeneration.
     assert structure_pass._finish_reason_disposition("length", None) == structure_pass.HELD_CUT_OFF
-    # A completed answer is this chair's word for the page, whatever it repeats.
     assert structure_pass._finish_reason_disposition("stop", looped) is None
 
 
@@ -1108,7 +1019,6 @@ def test_a_cut_off_answer_holds_the_page_even_though_it_parsed(live_run, tmp_pat
     assert payload["parse_state"] == "parsed"
     assert payload["finish_reason"] == "length"
     assert payload["act_count"] == 1
-    # The bytes are retained under custody whatever the page's disposition.
     tree = RunTree(root, RUN_ID)
     retained = tree.read_bytes(payload["raw_response_ref"]["relative_path"])
     assert digest_bytes(retained) == payload["raw_response_ref"]["sha256"]
@@ -1756,19 +1666,10 @@ def test_downstream_consumer_verifies_every_attempt_including_nonproposal_pages(
 def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
     live_run, tmp_path, monkeypatch, outcome
 ):
-    """The two refusals an answer's *shape* can reach, and they are told apart.
-
-    `no-layout-blocks` is an answer with no `<div>` in it at all -- prose, most
-    likely. `blocks-not-at-top-level` is an answer that does have divs, every
-    one nested inside a wrapper the vendor's own `recursive=False` would find
-    nothing in either. Only the second is a model that answered in the right
-    grammar and the wrong envelope, and telling them apart is what lets a first
-    real reading say which happened without a person opening the blob.
-
-    The grammar's other four outcomes are properties of the wire bytes rather
-    than of a body a `ScriptedAnswer` can carry, and they are measured where
-    they happen, in `common/test_chandra_layout.py`
-    (`operations/serving/fakes.py::_STRUCTURE_REFUSALS` names the split).
+    """The two refusals an answer's *shape* can reach, told apart:
+    `no-layout-blocks` has no `<div>` at all (prose, most likely);
+    `blocks-not-at-top-level` has divs, but every one nested inside a wrapper
+    the vendor's own `recursive=False` would find nothing in.
     """
     root, catalogue = live_run
     code = f"structure-answer-{outcome}"
@@ -1791,8 +1692,6 @@ def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
     assert payload["parse_state"] == "refused"
     assert payload["parse_outcome"] == outcome
     assert payload["acts"] == [] and payload["act_count"] == 0
-    # A refused answer read no blocks, so both denominators are zero and
-    # neither list can be carrying a block the other one lost.
     assert payload["block_count"] == 0
     assert payload["blocks_without_proposal"] == []
     attempts = [
@@ -1815,21 +1714,13 @@ def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
 def test_a_truncated_body_holds_as_cut_off_even_though_the_grammar_reads_it(
     live_run, tmp_path, monkeypatch
 ):
-    """The cut-off stop word wins over the parse outcome: SPEC_D S1.4 places
-
-    the `finish_reason in ENGINE_STOP_CUT_OFF` row above the parse-refusal
-    rows, and it applies "parsed or not". A body the engine truncated
-    mid-block is exactly the failure this measurement exists to name --
-    the small `max_model_len` a whole-page transcription can overrun -- and
-    it must not be recorded as a refusal of the chair's shape, which would
-    blame the answer rather than the context window.
-
-    Under Chandra's layout grammar the truncated body *does* read: an unclosed
-    block is closed and its bytes kept, with an `unclosed-block` finding
-    (`chandra_layout`'s `finish`). So this now proves the stronger half of the
-    row -- the page is held on the stop word while its answer parsed cleanly
-    enough to have proposed a rectangle -- which the retired JSON contract
-    could not distinguish, since a cut object was also invalid JSON.
+    """The cut-off stop word wins over the parse outcome, whether the body
+    parsed or not: a body the engine truncated mid-block must not be recorded
+    as a refusal of the chair's shape, which would blame the answer rather
+    than the context window. Under Chandra's grammar the truncated body
+    *does* read (an unclosed block closes with an `unclosed-block` finding),
+    so this proves the page is held on the stop word while its answer parsed
+    cleanly enough to have proposed a rectangle.
     """
     root, catalogue = live_run
     truncated = structure_answer_body(PAGE_TWO_ACTS, 200, 260)
@@ -1847,7 +1738,6 @@ def test_a_truncated_body_holds_as_cut_off_even_though_the_grammar_reads_it(
     payload = answers[2]["payload"]
     assert payload["parse_state"] == "parsed"
     assert payload["finish_reason"] == "length"
-    # The block it did send is recorded in full, and nothing was minted from it.
     assert payload["act_count"] == 1
     assert [f["kind"] for f in payload["findings"]] == ["unclosed-block"]
     assert not _artifacts(root, DESIGNATOR, "page-fallback")
@@ -1856,10 +1746,9 @@ def test_a_truncated_body_holds_as_cut_off_even_though_the_grammar_reads_it(
 def test_an_unrecognized_stop_word_over_a_body_that_does_not_parse_is_still_refused_by_name(
     live_run, tmp_path, monkeypatch
 ):
-    """The unnameable stop word is fatal whether or not the body parsed --
-
-    not folded silently into `structure-answer-no-layout-blocks` just because
-    the body also happened to carry no block the grammar could read.
+    """The unnameable stop word is fatal whether or not the body parsed, not
+    folded silently into `structure-answer-no-layout-blocks` just because the
+    body also happened to carry no readable block.
     """
     root, catalogue = live_run
     with pytest.raises(ContractError, match="finish_reason 'abort'"):
@@ -1874,10 +1763,8 @@ def test_an_unrecognized_stop_word_over_a_body_that_does_not_parse_is_still_refu
             ],
         )
     # The refused page has no record at all: an unnameable stop word is the
-    # run's refusal, never that page's published outcome. Page 1 is a different
-    # page's fact and keeps the answer it got -- it is published as it arrives,
-    # so a call this run already paid for stays visible and a resume reuses it
-    # instead of asking again (principle 2, and the Designator's resume rule).
+    # run's refusal, never that page's published outcome. Page 1's answer is
+    # published as it arrives, so a resume can reuse it instead of asking again.
     assert sorted(_by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))) == [1]
 
 
@@ -1902,23 +1789,19 @@ def test_a_body_the_client_cannot_read_holds_the_page_as_unusable(live_run, tmp_
 
 def _photographed_page():
     """A page shaped like a photographed leaf: a dark surround, paper spread
-    over forty-five grey levels with its peak at the top of them, and one small
-    mark of real ink in the middle.
+    over forty-five grey levels, and one small mark of real ink in the middle.
 
-    Built here rather than taken from a fixture because every fixture page in
-    this repository has flat paper and a 140-level separation, which is exactly
-    the shape that hid this defect: at flat paper the floor margin and the
-    page's own margin select the identical pixels.
+    Built here rather than taken from a fixture, since every fixture page has
+    flat paper, which hides this defect: at flat paper the floor margin and
+    the page's own margin select the identical pixels.
     """
     width, height = 200, 160
     rows = [bytearray([0] * width) for _ in range(height)]
     for y in range(20, height - 20):
         row = rows[y]
         for x in range(20, width - 20):
-            # Paper over sixty grey levels with its peak at 220. The `min` is
-            # what gives the population a mode: a flat spread would leave the
-            # inferred paper decided by whichever value the argmax reached
-            # first, and this test would be about tie-breaking.
+            # The min() gives the paper population an actual mode, rather
+            # than a flat spread whose argmax is an arbitrary tie-break.
             row[x] = min(220, 175 + ((x * 7 + y * 11) % 65))
     for y in range(70, 80):
         for x in range(90, 110):
@@ -1955,17 +1838,10 @@ def _analysis_at(margin: int):
 
 
 def test_the_ink_tripwire_tests_a_rectangle_at_the_pages_own_threshold():
-    """The reader's finding, pinned.
-
-    At the floor margin the threshold sits inside this page's own paper
-    population, so a rectangle over blank paper touches "ink", every rectangle a
-    chair could draw touches ink, and the `model-only` signal cannot fire at all
-    -- it is true by construction rather than by measurement. At the margin the
-    page derives for itself the paper is paper: a rectangle over blank paper
-    returns False and one over the writing returns True.
-
-    The margin is taken from the shipped inference rather than written out, so
-    this is the threshold a run would actually use on a page of this shape.
+    """At the floor margin the threshold sits inside this page's own paper
+    population, so every rectangle touches "ink" by construction rather than
+    measurement. At the margin the page derives for itself, paper is paper:
+    blank returns False, writing returns True.
     """
     designator = load_designator("designator_touches_ink")
     blank = {"x": 30, "y": 30, "w": 40, "h": 20}
@@ -1984,8 +1860,9 @@ def test_the_ink_tripwire_tests_a_rectangle_at_the_pages_own_threshold():
 
 
 def test_the_ink_tripwire_returns_false_on_a_page_with_no_background():
-    """`ink_margin` is `None` exactly where `background` is, and the background
-    check above it is what stops the subtraction from ever seeing that `None`."""
+    """`ink_margin` is `None` exactly where `background` is; the background
+    check stops the subtraction from ever seeing that `None`.
+    """
     designator = load_designator("designator_touches_ink_unmeasured")
     analysis = {"background": None, "ink_margin": None, "rows": [], "components": []}
     assert (
@@ -2035,7 +1912,6 @@ def test_a_rectangle_that_touches_ink_is_not_tripped_by_one_that_does_not(
     }
     assert groups["proposal:1:0"] == "detected"
     assert groups["proposal:1:1"] == "model-only"
-    # Act two's ink is unclaimed, so it is a held residual, not a lost act.
     assert exit_code == EXIT_HELD
     rows = {row["act_key"] for row in _seal(root)["payload"]["expected_acts"]}
     assert any(key.startswith("residual:1:") for key in rows)
@@ -2107,18 +1983,11 @@ def test_an_unrecognized_engine_stop_word_is_refused_by_name(live_run, tmp_path,
 def test_a_prompt_too_long_400_is_refused_by_name_and_never_read_as_a_cut_off(
     live_run, tmp_path, monkeypatch
 ):
-    """The failure SPEC_D 7 names, in the shape vLLM actually gives it.
-
-    `scripted_structure_cut_off` scripts the *answer*-side truncation: HTTP 200,
-    `finish_reason="length"`, a body cut mid-object. A prompt too long for the
-    context is a different wire event -- HTTP 400, no choices at all -- and the
-    two must not be read as one thing: a 400 read as a length stop would hold
-    the page as `structure-answer-cut-off`, asserting that a chair answered and
-    was cut off when no chair answered at all.
-
-    The paid response becomes one immutable, terminal held attempt. It is not
-    retried: HTTP and source-integrity failures are evidence to retain, not
-    structural coverage variants to sample around.
+    """A prompt too long for the context is HTTP 400 with no choices at all,
+    a different wire event from an answer-side truncation (HTTP 200,
+    `finish_reason="length"`): a 400 read as a length stop would assert that
+    a chair answered and was cut off when no chair answered at all. The paid
+    response becomes one immutable, terminal held attempt; it is not retried.
     """
 
     root, catalogue = live_run
@@ -2145,9 +2014,6 @@ def test_a_prompt_too_long_400_is_refused_by_name_and_never_read_as_a_cut_off(
     assert payload["attempt_ordinal"] == len(payload["attempts"]) == 1
     assert payload["call_record_ref"] is not None
     assert payload["raw_response_ref"] is not None
-    # The bytes reached disk before the refusal was raised: the engine's own
-    # account of why it refused is the artefact a rented card exists to
-    # produce, and it used to be discarded here.
     tree = RunTree(root, RUN_ID)
     retained = tree.read_bytes(tree.blob_path(DESIGNATOR, digest_bytes(refusal.body)))
     assert b"maximum context length is 2048" in retained
@@ -2371,13 +2237,9 @@ def test_a_configured_secondary_proposer_is_refused_on_the_live_path(tmp_path, m
 def test_the_fixture_catalogue_runs_the_fixture_pass_with_no_answer_and_no_call(
     tmp_path, monkeypatch
 ):
-    """Under the committed catalogue nothing of the live path appears on disk.
-
-    Shape, not bytes: the acceptance pins are the byte measurement and are
-    re-pinned by the host (adding `[structure]` to `config/decoding.toml` moves
-    every fixture run's `config_digest`). What this pins is that the fixture
-    pass writes no structure-answer, no engine call, no answer reference, and
-    the one `fixture://` receipt it always wrote.
+    """Under the committed catalogue nothing of the live path appears on
+    disk: the fixture pass writes no structure-answer, no engine call, no
+    answer reference, and the one `fixture://` receipt it always wrote.
     """
     root = tmp_path / "runs"
     _chain(root, FIXTURE_CATALOGUE)
@@ -2404,12 +2266,9 @@ def test_the_fixture_catalogue_runs_the_fixture_pass_with_no_answer_and_no_call(
 
 
 def _minimal_answer_record() -> dict[str, Any]:
-    """A record with exactly the declared field names and nothing checked but names.
-
-    Built from the constant itself rather than written out again: the point of
-    this test is that a field *outside* the set refuses, and a hand-copied
-    second list of the set would drift from the one the validator uses and
-    start proving something else.
+    """A record with exactly the declared field names and nothing checked but
+    names. Built from the constant itself rather than a hand-copied list,
+    which would drift from what the validator actually uses.
     """
     record: dict[str, Any] = dict.fromkeys(designator._STRUCTURE_ANSWER_V1_FIELDS)
     record["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA
@@ -2497,16 +2356,10 @@ def _ask(client, width: int, height: int, monkeypatch):
 
 
 def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent(monkeypatch):
-    """The failure this check exists to move off a billing card.
-
-    An A4 300-dpi page is 2,480x3,508. Against the shipped 24 GB row it costs
-    1,715 image tokens; with the measured 593-token structure prompt and a
-    1,645-token dense-page answer that is 3,953 against a `max_model_len` of
-    2,048. Before this check the request went out and vLLM answered HTTP 400
-    with a body the client discarded; now the page is held by name, its record
-    is published with the whole arithmetic on it, and `_RefusingClient.read`
-    proves nothing was sent. Native presentation is never altered again merely
-    to make the request fit.
+    """The failure this check exists to move off a billing card: before it,
+    the request went out and vLLM answered HTTP 400 with a discarded body;
+    now the page is held by name with the whole arithmetic published, and
+    `_RefusingClient.read` proves nothing was sent.
     """
 
     answer = _ask(_RefusingClient(_capacity_row()), 2480, 3508, monkeypatch)
@@ -2527,10 +2380,8 @@ def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent(m
     assert capacity["need"] == 3953
     assert capacity["headroom"] == 2048 - 3953
     assert capacity["fits"] is False
-    # Nothing that describes a response is invented: there was none.
     for field in ("call_record_ref", "raw_response_ref", "custody_ref", "request_sha256"):
         assert answer.record[field] is None
-    # And the record is publishable exactly as any other answer is.
     designator._validate_structure_answer_payload(answer.record, terminal=False)
 
 
@@ -2544,19 +2395,13 @@ def test_the_same_page_is_admitted_once_the_row_states_a_larger_context(monkeypa
 
 def test_the_structure_prompts_measured_token_count_still_matches_the_prompt_that_is_sent():
     """The digest that expires the measured constant, checked where the prompt lives."""
-
     assert structure_pass.structure_prompt_tokens() == 593
 
 
 def test_every_live_page_record_carries_the_capacity_it_was_admitted_on(
     live_run, tmp_path, monkeypatch
 ):
-    """The admitted path over the real chain: the arithmetic is published too.
-
-    The fixture pages are 200x260 and cost 48 image tokens on this chair --
-    two orders of magnitude under the budget, which is itself why no fixture
-    run had ever exercised this arithmetic before it was written down.
-    """
+    """The admitted path over the real chain: the arithmetic is published too."""
 
     root, catalogue = live_run
     _endpoint, exit_code = _run_designator(root, catalogue, tmp_path, monkeypatch, _happy_answers())
@@ -2571,7 +2416,6 @@ def test_every_live_page_record_carries_the_capacity_it_was_admitted_on(
         assert capacity["prompt_tokens"] == 593
         assert capacity["answer_budget"] == 1645
         assert capacity["headroom"] == 4096 - (48 + 593 + 1645)
-        # The same record reached the retained call record, beside the request.
         tree = RunTree(root, RUN_ID)
         call_record = json.loads(
             tree.read_bytes(payload["call_record_ref"]["relative_path"]).decode("utf-8")
@@ -2581,14 +2425,10 @@ def test_every_live_page_record_carries_the_capacity_it_was_admitted_on(
 
 
 def test_a_field_outside_the_structure_answer_contract_refuses_by_name():
-    """A field nobody declared refuses at publication, naming itself.
-
-    `_refuse_text_fields` can only refuse the content names it already knows,
-    and `page_text` is not one of them -- the parser computes a whole page's
-    joined transcription under exactly that name, and a record that grew a
-    field for it would publish the page's reading past every text fence in this
-    stage. The closed set is what makes that a refusal on the run that adds the
-    field rather than a finding at some later review.
+    """A field nobody declared refuses at publication, naming itself:
+    `_refuse_text_fields` can only refuse content names it already knows, so
+    the closed field set is what catches a new field like `page_text` on the
+    run that adds it, not at some later review.
     """
     designator._validate_structure_answer_payload(_minimal_answer_record())
 
@@ -2603,14 +2443,13 @@ def test_a_field_outside_the_structure_answer_contract_refuses_by_name():
         designator._validate_structure_answer_payload(record)
 
 
-# One page written to raise every finding the layout grammar has: a top-level
-# `<div>` with a nested `data-bbox` a descendant carries, character data outside
-# every block, a `Blank-Page`, a malformed box, a div wrapped in a `<span>`
-# (which the block reader does not see as top level and the deliberately
-# different div counter does, so the two counts part), and a block left open at
-# the end. Hand-written rather than assembled by a builder: the point is to
-# reach the grammar's own edges, and a builder that could produce all of them
-# would be a second grammar.
+# One page written to raise every finding the layout grammar has: a nested
+# `data-bbox`, stray character data, a Blank-Page, a malformed box, a div
+# wrapped in a `<span>` (the block reader skips it but the deliberately
+# different div counter sees it, so the two counts part), and a block left
+# open at the end. Hand-written rather than assembled by a builder: the point
+# is to reach the grammar's own edges, and a builder that could produce all of
+# them would be a second grammar.
 _EVERY_FINDING_PAGE = (
     '<div data-bbox="0 0 100 100" data-label="Text">'
     '<p data-bbox="5 5 50 50">a nested box the vendor deletes</p></div>\n'
@@ -2625,21 +2464,16 @@ _EVERY_FINDING_PAGE = (
 def test_every_finding_the_grammar_raises_is_publishable_by_this_stage():
     """The seven declared kinds, produced for real and put through publication.
 
-    Two halves of one claim, and neither proves the other. `_designator_finding`
-    refuses a kind this stage has not declared, so a kind the grammar grows
-    fails at the page that produces it; and `run.py`'s closed field set refuses
-    a *field* nobody declared, independently, without importing this pass's
-    table. Four of the seven -- `nested-bbox-retained`, `unclosed-block`,
-    `block-count-mismatch` and `duplicate-rectangle` -- are reachable on a real
-    page but appear in no end-to-end fixture above, so without this a wrong
-    field set for one of them would first be found by a run refusing to publish
-    a page it had already paid a card to read.
+    Two halves of one claim, neither proving the other: `_designator_finding`
+    refuses an undeclared kind, and `run.py`'s closed field set refuses an
+    undeclared field, independently. Four of the seven kinds appear in no
+    end-to-end fixture above, so without this a wrong field set for one would
+    first be found by a run refusing to publish a page already paid for.
     """
     parsed = chandra_layout.parse_layout_html(_EVERY_FINDING_PAGE.encode())
     assert not chandra_layout.is_refusal(parsed)
     findings = [structure_pass._designator_finding(f) for f in parsed["findings"]]
-    # A duplicate rectangle is this pass's own finding, not the grammar's, so it
-    # is produced the way the pass produces it rather than written out here.
+    # A duplicate rectangle is this pass's own finding, not the grammar's.
     proposals, _without = structure_pass.blocks_to_proposals(parsed, 200, 260)
     _unique, duplicates = structure_pass.dedupe_rectangles(proposals + proposals[:1])
     findings += duplicates
@@ -2651,14 +2485,9 @@ def test_every_finding_the_grammar_raises_is_publishable_by_this_stage():
 
 
 def test_the_producers_finding_kinds_and_the_validators_agree():
-    """Two lists written out separately, and neither derived from the other.
-
-    `structure_pass.STRUCTURE_FINDING_KINDS` says what this stage will publish;
-    `run._STRUCTURE_ANSWER_FINDING_FIELDS` says what publication accepts. They
-    are enumerated in two files on purpose -- a validator that imported the
-    producer's table would agree with it by construction -- so this is what
-    catches a kind added to one and forgotten in the other, on the commit that
-    adds it rather than on the page that raises it.
+    """Two lists written out separately, neither derived from the other, so a
+    validator that imported the producer's table would agree with it by
+    construction: this catches a kind added to one and forgotten in the other.
     """
     assert (
         set(designator._STRUCTURE_ANSWER_FINDING_FIELDS) == structure_pass.STRUCTURE_FINDING_KINDS
@@ -2666,12 +2495,8 @@ def test_the_producers_finding_kinds_and_the_validators_agree():
 
 
 def test_the_grammars_finding_kinds_are_reconciled_at_import():
-    """The import-time seal, exercised rather than trusted.
-
-    `STRUCTURE_FINDING_KINDS` is written out rather than built from the
-    grammar's set, and `_reconcile_finding_kinds` is what makes that a check
-    instead of a copy that could drift. Run against a grammar that grew a kind:
-    it must refuse, and name both directions of the disagreement.
+    """The import-time seal, exercised rather than trusted: run against a
+    grammar that grew a kind, it must refuse and name both directions.
     """
     structure_pass._reconcile_finding_kinds()  # the real pair agrees
 
@@ -2683,11 +2508,8 @@ def test_the_grammars_finding_kinds_are_reconciled_at_import():
 
 
 def test_a_finding_kind_the_grammar_grows_refuses_at_the_page_that_produces_it():
-    """The other direction: an undeclared kind never reaches a record.
-
-    `chandra_layout` could add a finding kind without this pass noticing, and a
-    finding whose fields nothing here has closed would be published unchecked.
-    It refuses instead, naming the kind and the declared set.
+    """The other direction: an undeclared kind never reaches a record, since
+    a finding whose fields nothing here has closed would otherwise publish unchecked.
     """
     with pytest.raises(ContractError, match="not one of its declared kinds"):
         structure_pass._designator_finding({"kind": "a-kind-nobody-declared", "ordinal": 0})
@@ -2698,10 +2520,9 @@ def test_an_act_entry_that_grew_a_label_again_refuses_before_publication(
 ):
     """The regression the closed set exists for, over the real chain.
 
-    `label` was published in clear until this branch's review; the act entry's
-    field set is what makes putting it back a refusal rather than a quiet
-    return. Nothing is published for the run: the refusal is raised before the
-    first answer record reaches the tree.
+    The act entry's field set is what makes putting `label` back a refusal
+    rather than a quiet return. Nothing is published for the run: the refusal
+    is raised before the first answer record reaches the tree.
     """
     root, catalogue = live_run
     original = structure_pass._act_record
@@ -2735,23 +2556,10 @@ def _group(bounds: dict[str, int], rationale: str) -> dict[str, Any]:
 
 
 def test_two_regions_each_covering_half_one_rectangle_are_split_detection_not_model_only():
-    """The tie is its own fact: too many regions, not none.
-
-    `model_evidence_blocks` takes the single group covering at least half of a
-    rectangle, and two of them is a tie it must not resolve — naming one would
-    be a picker (principle 1). It used to record the tie as `model-only`,
-    whose rationale says "no region the ink scan found covers half of this
-    rectangle", which is the opposite of what happened: a reader of that record
-    would conclude the scan found nothing there. `split-detection` says what is
-    true, and carries the same null bounds and zero counts, because no single
-    measured region stands behind the rectangle either way.
-
-    The groups are built here rather than scanned because the arithmetic is
-    what is under test and the fixture page has no such page. The case it
-    stands for is ordinary: a group's bounds are the union of its body run and
-    its anchors, so a small isolated region can sit inside a larger group's
-    bounds, and a rectangle the chair drew around the small one is then covered
-    by both.
+    """The tie is its own fact: too many regions, not none. Two groups each
+    covering half of one rectangle must not resolve to one of them (a
+    picker), so this is `split-detection`, not `model-only` -- which would
+    wrongly read as "the scan found nothing there".
     """
     inner = {"x": 40, "y": 60, "w": 40, "h": 20}
     analysis = {
@@ -2774,20 +2582,15 @@ def test_two_regions_each_covering_half_one_rectangle_are_split_detection_not_mo
         }
     ]
     assert "no region the ink scan found" not in blocks[0]["rationale"]
-    # And the published act-group contract accepts it as a value that measured
-    # nothing, which is what `_require_evidence_block` refuses to combine with
-    # a region or a member count.
     designator._require_evidence_block(
         {**blocks[0], "declared_bounds": dict(inner)}, "payload under test"
     )
 
 
 def test_one_region_covering_half_two_rectangles_is_still_shared_detection():
-    """The mirror case, unchanged: one region where the chair drew two acts.
-
-    Asserted beside the split so the two ends of the same ambiguity cannot
-    drift into one value: `shared-detection` keeps the region it measured,
-    `split-detection` has no single region to keep.
+    """The mirror case: one region where the chair drew two acts.
+    `shared-detection` keeps the region it measured; `split-detection` has
+    no single region to keep.
     """
     band = {"x": 20, "y": 20, "w": 160, "h": 100}
     analysis = {"structure_evidence": "detected", "groups": [_group(band, "one run")]}
@@ -2809,23 +2612,14 @@ def test_one_region_covering_half_two_rectangles_is_still_shared_detection():
 def test_a_custody_refusal_holds_that_page_instead_of_aborting_the_run(
     live_run, tmp_path, monkeypatch
 ):
-    """`retain_chandra_response` refuses; the page is held and the run goes on.
+    """`retain_chandra_response` refuses; the page is held and the run goes
+    on, rather than one page's custody failure discarding every other page's
+    answer. The bytes themselves are not lost -- the client retained them
+    before custody was reached -- so the refusal costs only the binding.
 
-    Custody binds the response bytes to the chair's own serving receipt, and it
-    refuses by name for reasons that are reachable on a live path — a receipt
-    issued for another chair, a blob whose file is gone, a response that is
-    itself a binding record. Uncaught, that `SchemaRefusal` came out of
-    `ask_page` as the whole stage's crash: one page's receipt would have
-    discarded every other page's answer, which is the lost act goal 2 puts
-    above everything.
-
-    Held, not repaired and not silently minted. The bytes themselves are not
-    lost — the client retained them and the call record before custody was
-    reached — so what the refusal costs is the binding that proves which call
-    they came from, and a rectangle minted without it would be attributed to a
-    call nothing ties it to (principle 6). The record still publishes what the
-    body said, with `custody_problem` naming the refusal and both custody
-    references null, so nothing about the failure is inferred from an absence.
+    Held, not minted: a rectangle minted without the custody binding would be
+    attributed to a call nothing ties it to. `custody_problem` names the
+    refusal with both custody references left null.
     """
     root, catalogue = live_run
     original = structure_pass.retain_chandra_response
@@ -2849,13 +2643,11 @@ def test_a_custody_refusal_holds_that_page_instead_of_aborting_the_run(
     assert calls == [1, 2], "both pages were asked; the refusal did not stop the run"
     _assert_page_two_held(root, "structure-response-not-retained")
     payload = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["payload"]
-    # The body is recorded as what it was — a good answer — and held anyway.
     assert payload["parse_state"] == "parsed"
     assert payload["act_count"] == len(PAGE_TWO_ACTS)
     assert payload["custody_problem"] == "Chandra custody receipt was not issued for chair 'x'"
     assert payload["raw_response_ref"] is None
     assert payload["custody_ref"] is None
-    # Page one is untouched: its acts are minted and its own custody is intact.
     first = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[1]["payload"]
     assert first["custody_problem"] is None
     assert first["disposition"] == "detected"

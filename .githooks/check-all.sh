@@ -1,7 +1,5 @@
 #!/bin/sh
 # Full local/CI gate. CI supplies its own ref-aware history scan once.
-# `--parallel` hands the suite to four xdist workers, one file at a time per
-# worker. The local gate stays serial unless the caller asks.
 
 set -eu
 [ -x /usr/bin/git ] || {
@@ -17,9 +15,8 @@ check_all_usage() {
   exit 2
 }
 
-# Each flag at most once, in either order. Anything else is a usage error: a
-# gate that silently ignores a misspelled flag runs a different check than the
-# caller asked for and still reports green.
+# Each flag at most once: a gate that ignored a misspelled flag would report green
+# for a check it never ran.
 mode=local
 parallel=no
 for check_all_argument in "$@"; do
@@ -38,10 +35,8 @@ for check_all_argument in "$@"; do
   esac
 done
 
-# The gate defines its Python and uv environment. Inherited overrides can
-# remove assertions, inject import roots or pytest plugins, redirect uv to a
-# different environment, or turn its exact sync inexact while every command
-# below still names the checkout-local interpreter.
+# Inherited overrides could remove assertions, inject imports or pytest plugins, or
+# redirect or loosen uv's sync while every command still names the checkout interpreter.
 unset PYTHONHOME PYTHONOPTIMIZE PYTHONPATH PYTEST_ADDOPTS PYTEST_PLUGINS
 unset UV_CONFIG_FILE UV_INEXACT UV_PYTHON
 PYTHONNOUSERSITE=1
@@ -49,9 +44,8 @@ PYTHONSAFEPATH=1
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 export PYTHONNOUSERSITE PYTHONSAFEPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD
 
-# The interpreter must both import from `.venv` and match the current lock. The
-# offline sync runs before that interpreter executes anything; only then does
-# the prefix check reject a PATH shadow.
+# `.venv`'s interpreter runs once before the offline sync, to read the uv version with
+# stdlib tomllib only (no third-party import); the prefix check follows the sync.
 frozen_python="$root/.venv/bin/python"
 UV_PROJECT_ENVIRONMENT="$root/.venv"
 export UV_PROJECT_ENVIRONMENT
@@ -60,11 +54,7 @@ export UV_PROJECT_ENVIRONMENT
   exit 1
 }
 
-# The required uv version has exactly one declaration, pyproject.toml's
-# `[tool.uv] required-version` — read here with the frozen interpreter's
-# stdlib `tomllib` (no third-party package needed) rather than repeated as a
-# second literal in this script: a duplicated literal drifted before when a
-# version bump to one copy left the other two silently behind.
+# One declaration of the uv version, pyproject.toml's; a second literal here once drifted.
 required_uv_version=$("$frozen_python" -c '
 import tomllib
 with open("pyproject.toml", "rb") as handle:
@@ -75,11 +65,8 @@ print(project["tool"]["uv"]["required-version"].removeprefix("=="))
   exit 1
 }
 
-# `uv sync` is exact by default: it reconciles the selected groups to uv.lock
-# and removes undeclared packages. `--offline` keeps this verification from
-# turning the checks before the final advisory audit into network-dependent
-# steps. A stale environment is repaired when every needed artifact is already
-# cached; otherwise the refusal names the online recovery command.
+# The sync is exact (undeclared packages are removed) and offline, so the checks before
+# the final audit never need the network; a cache miss names the online recovery.
 uv_binary=$(command -v uv 2>/dev/null) || {
   echo "check-all: the frozen environment cannot be verified because uv is missing from PATH" >&2
   echo "check-all: recovery: install pinned uv==$required_uv_version, then run 'uv sync --frozen --group test --group audit'" >&2
@@ -151,14 +138,9 @@ case "$uv_version" in
     exit 1
     ;;
 esac
-# uv finds its cache through UV_CACHE_DIR, then XDG_CACHE_HOME, then HOME, and
-# `env -i` drops the first two deliberately. That is the decision, not an
-# oversight: this sync is the step that decides whether `.venv` may be trusted,
-# and a caller-named cache directory is a caller-supplied input to the verifier.
-# The cost is real and bounded -- someone whose populated cache lives outside
-# HOME gets "could not reconcile" and must re-run the recovery command with
-# network access. Losing that trade the other way would let the environment the
-# gate vouches for be reconciled from bytes the caller chose.
+# `env -i` drops UV_CACHE_DIR and XDG_CACHE_HOME on purpose: a caller-named cache would
+# be caller input to the step that decides whether `.venv` is trusted. The cost: a
+# cache outside HOME must be refilled by the online recovery command.
 /usr/bin/env -i HOME="$uv_home" PATH=/usr/bin:/bin \
   UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" \
   "$uv_binary" sync --frozen --offline --group test --group audit --no-config || {
@@ -167,20 +149,17 @@ esac
   exit 1
 }
 
-# `sys.executable` can report the symlink used to invoke a PATH interpreter;
-# `sys.prefix` identifies the environment supplying imports. Resolve both sides
-# so a `.venv` symlink to the same frozen environment remains valid. This is the
-# first execution through the checkout-local interpreter: uv has reconciled its
-# packages before any of them can import.
+# Compare the resolved sys.prefix, not sys.executable (possibly a PATH symlink), so a
+# `.venv` symlink to the same environment passes. Its first run past the stdlib-only
+# version read, so no package imports before uv reconciled them.
 [ "$("$frozen_python" -c 'import os, sys; print(os.path.realpath(sys.prefix))')" \
   = "$(CDPATH='' cd -- "$root/.venv" && pwd -P)" ] || {
   echo "check-all: $frozen_python does not import from the frozen environment at $root/.venv; run 'uv sync --frozen --group test --group audit'" >&2
   exit 1
 }
 
-# PATH may select only the verified environment and fixed system tool roots
-# after both checks. An inherited checkout-local or writable tools directory
-# must not supply a later shell, Python, Git, or scanner.
+# From here PATH holds only the verified environment and fixed system roots, so no
+# inherited directory can supply a later shell, Python, Git or scanner.
 PATH="$root/.venv/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 
@@ -192,33 +171,11 @@ if [ "$mode" = local ]; then
   "$frozen_python" .githooks/check_ingress.py --worktree
 fi
 
-# The gate is the one place the suites run inside the checkout that holds the
-# real `private/ntfy.conf`, and that is exactly where a test which forgot to
-# inject its notification seam sends a real phone notification: a run of
-# duplicate milestones once arrived from a single gate run.
-# `operations/notify/notify.sh` treats one
-# reserved topic as "under test" -- it prints what it would have sent and exits
-# 0 without posting -- and the root `conftest.py` sets that topic for any pytest
-# session. This is belt to those braces, and it is set here rather than
-# inherited, for the reason the environment block at the top of this file
-# exists.
-#
-# It sits beside the pytest line rather than in that block because the gate's
-# own tests run this script against synthetic repositories that have no
-# `conftest.py`, and every one of them stops before pytest. Refusing up there
-# would have failed seven of them for the absence of a file they have no reason
-# to carry. The variable is needed exactly where it is now used.
-#
-# The value is *read* from `conftest.py`, not written out again. Writing it
-# again would be a fourth copy of a constant whose whole job is to be identical
-# everywhere, and `.githooks/check_ingress.py` refuses a literal
-# `NTFY_TOPIC=<topic-shaped value>` anywhere in the tree -- correctly, and under
-# a ruling that deliberately exempts no exact topic. Reading it satisfies both:
-# one source of truth, and no topic-shaped assignment to exempt.
-#
-# It fails closed. An empty `NTFY_TOPIC` is not "no sink"; it is the real topic
-# from `private/ntfy.conf`, which is the precise failure this guards against. So
-# a renamed or reshaped constant stops the gate rather than quietly unsinking it.
+# The suites here run in the checkout holding the real private/ntfy.conf, so force the
+# test-sink topic notify.sh never posts (conftest.py sets it too). Set beside pytest,
+# not with the environment above, because the gate's own tests use repos without
+# conftest.py. Read, not written: check_ingress.py refuses any literal topic
+# assignment. Fails closed: an empty value would mean the real topic.
 NTFY_TOPIC=$(sed -n 's/^NOTIFY_TEST_SINK_TOPIC = "\([A-Za-z0-9_-]\{1,64\}\)"$/\1/p' \
   "$root/conftest.py" | head -n 1)
 [ -n "$NTFY_TOPIC" ] || {
@@ -228,49 +185,30 @@ NTFY_TOPIC=$(sed -n 's/^NOTIFY_TEST_SINK_TOPIC = "\([A-Za-z0-9_-]\{1,64\}\)"$/\1
 }
 export NTFY_TOPIC
 
-# The suite, serially by default. `--parallel` names the plugin, the worker
-# count, and the distribution on the command line and takes nothing from the
-# environment: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 is exported above and
-# PYTEST_ADDOPTS/PYTEST_PLUGINS are unset, so xdist is inert in every run that
-# does not ask for it here, and no caller can widen or narrow this one.
-# Four workers, fixed rather than derived from the machine: the census this
-# gate reports must not depend on how many cores the runner happens to have.
-# `--dist loadfile` keeps every test in a file on one worker, so a module-level
-# fixture is built once per file exactly as it is serially.
+# Nothing about `--parallel` comes from the environment. Four workers, fixed, so the
+# census never depends on core count; loadfile keeps each file's fixtures on one worker.
 if [ "$parallel" = yes ]; then
   "$frozen_python" -m pytest -p xdist -n 4 --dist loadfile
 else
   "$frozen_python" -m pytest
 fi
 
-# `--strict` makes an unreachable advisory service or unresolvable requirement
-# fail; an audit that could not run is not evidence of clean dependencies.
-# Audit the exact installed inventory, not requirements-dev.txt. That file pins
-# every direct dependency, but `pip_audit --requirement` asks pip to resolve the
-# transitive closure again. A later compatible transitive release can therefore
-# be audited even though uv.lock installed an older one. The helper projects the
-# distributions this already-proved interpreter imports into exact pins; the
-# project itself is omitted because it is an editable local distribution with no
-# PyPI advisory identity. `--no-deps --disable-pip` makes pip-audit consume those
-# pins without resolving or installing anything.
-# Keep this network-dependent step last so advisory-service availability cannot
-# prevent credential scans or the test suite from running; it still fails the gate.
+# Audit the exact installed inventory: `--requirement` on requirements-dev.txt would
+# re-resolve transitives and could audit a newer release than uv.lock installed. The
+# editable local project has no PyPI identity. `--strict`: an audit that could not run
+# is not evidence. `--no-deps --disable-pip`: consume the pins, resolve and install
+# nothing. Last, so network trouble never stops the scans or suites.
 audit_directory=$(mktemp -d "/tmp/verbatus-frozen-audit.XXXXXX") || {
   echo "check-all: could not create the private frozen audit directory" >&2
   exit 1
 }
 audit_inventory="${audit_directory}/requirements.txt"
 cleanup_audit_inventory() {
-  # The directory as a unit. `set -e` is in force, so `rmdir` returning non-zero
-  # over one unexpected file left the whole gate exiting non-zero after every
-  # check had already passed -- a directory-removal error the operator cannot
-  # tell from a real audit failure. Cleanup may not outvote the result.
+  # Not rmdir: under `set -e` a stray file would fail the gate after every check passed.
   rm -rf -- "$audit_directory"
 }
-# A POSIX sh trap for HUP/INT/TERM runs the handler and then *resumes* the
-# script. With one shared trap, Ctrl-C deleted the inventory and the gate carried
-# straight on to pip_audit, which then failed on a missing --requirement file:
-# the operator read a missing-file error instead of "the run was interrupted".
+# A POSIX trap on HUP/INT/TERM resumes the script, so the interrupt handler must exit
+# or pip_audit would run on a deleted inventory.
 interrupt_audit_inventory() {
   cleanup_audit_inventory
   echo "check-all: interrupted before the advisory audit finished" >&2

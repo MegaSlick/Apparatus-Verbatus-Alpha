@@ -1,28 +1,16 @@
 """Perlector Pass-C audit records, shared by their two stage-side halves.
 
-`pipeline/4_perlector/run.py` produces the audit draft and finding records
-(`pipeline/4_perlector/audit.py` holds the flag pass and the sealed policy
-loader, and re-exports these names); `pipeline/5_recensor/run.py`'s
-`audit_state` consumes them to decide review routing. The producer and the consumer must validate the exact same
-closed schema, or drift between the two would let a malformed record pass one
-side and fail the other silently. A stage may not import another stage's
-uniquely named module (`pipeline/test_stage_import_boundaries.py`), so the
-shared validation surface lives here; `pipeline/4_perlector/audit.py` keeps
-its producer-only logic (the flag pass and sealed policy loader) and re-exports
-these names so its own public API is unchanged.
+`pipeline/4_perlector/run.py` produces the audit draft and finding records;
+`pipeline/5_recensor/run.py`'s `audit_state` consumes them. Both must validate
+the same closed schema, and a stage may not import another stage's module, so
+the shared validation lives here (`pipeline/4_perlector/audit.py` re-exports it).
 
-**The audit request is the instrument, and it lives here too.** A re-proof plan
-computed, sealed under `payload.audit.reproofs`, and then not handed to the
-reader is an instrument misreporting itself (principle 8): the record would
-say a measured, neutral, span-scoped re-examination produced the published text
-while the reader was shown only the Pass-B dossier and a bare string. So one
-function (`reproof_plan`) defines the plan, `audit_request` wraps it into the
-closed object the reader is actually given, and `validate_chain` re-derives both
-from the frozen draft — the seal, the delivery and the check are the same
-computation over the same frozen flags rather than three that happen to agree.
-`payload.audit.request_digest` is what binds a response to the request that
-produced it; it is `None` exactly when no request was delivered, because "no
-re-proof ran" and "a re-proof ran" are different recorded facts.
+The audit request lives here too: `reproof_plan` defines the plan,
+`audit_request` wraps it into the object the reader is given, and
+`validate_chain` re-derives both from the frozen draft, so the seal, the
+delivery and the check are one computation (principle 8).
+`payload.audit.request_digest` binds a response to its request; it is `None`
+exactly when no request was delivered.
 """
 
 from __future__ import annotations
@@ -48,27 +36,16 @@ from common.corpus_register import refuse_capture_preference
 
 SCHEMA: Final = "perlector-audit.v3"
 LEGACY_SCHEMA: Final = "perlector-audit.v2"
-# Every sealed policy schema this module once accepted and now refuses by name.
-# A `perlector-audit.v1` record carried no fact about whether a delivered
-# re-proof completed: `unresolved` was defined as "flags and a zero cap", so a
-# re-proof cut off by its engine that returned the frozen text byte for byte was
-# sealed as a resolved audit and delivered as complete (finding F1). A v1 record cannot be read forward. The missing fact
-# was never measured, and inferring it from the record's silence would be the
-# exact claim the schema could not make, so consumers refuse it by name and the
-# act is re-read from its sealed evidence in a run under the current schema. The
-# old bytes are evidence and stay as written (principle 4).
+# Refused by name: a v1 record cannot say whether a delivered re-proof
+# completed, and inferring it from silence would be the claim it could not make.
+# Its act is re-read under the current schema; the old bytes stay (principle 4).
 RETIRED_SCHEMAS: Final = frozenset({"perlector-audit.v1"})
-# The rendered instrument's own label. Separate from `SCHEMA` because the two
-# are versioned by different things: `SCHEMA` names the sealed policy an audit
-# record was computed under, while this names the shape of the object a reader
-# is handed. A serving path that learns to render this into prompt bytes moves
-# this label without touching the policy seal.
+# Versioned apart from `SCHEMA`: this names the shape handed to the reader,
+# `SCHEMA` the sealed policy.
 REQUEST_SCHEMA: Final = "perlector-audit-request.v2"
 LEGACY_REQUEST_SCHEMA: Final = "perlector-audit-request.v1"
-# A re-proof does not return a replacement act.  It returns a closed set of
-# edits anchored to the frozen draft the instrument delivered.  Keeping this
-# separate from REQUEST_SCHEMA means older retained requests remain readable;
-# a new run seals the response form it asked for in its request digest.
+# A re-proof returns closed edits anchored to the frozen draft, not a
+# replacement act. Kept apart from REQUEST_SCHEMA so older requests stay readable.
 RESPONSE_SCHEMA: Final = "perlector-audit-response.v1"
 AUDIT_PROMPT_SCHEMA: Final = "perlector-audit-prompt.v1"
 _AUDIT_PROMPT_FIELDS: Final = frozenset(
@@ -82,34 +59,19 @@ _AUDIT_PROMPT_FIELDS: Final = frozenset(
         "request_sha256",
     }
 )
-# The pass this instrument belongs to, named on the consuming side so
-# `reader.py`'s delivery check and its closed pass vocabulary compare against
-# one spelling. The producer deliberately keeps its own literal at the call
-# site: `test_reader.py` reads every `pass_kind="..."` out of `run.py` and pins
-# `PASS_KINDS` to exactly that set, which is a stronger guard against a
-# misspelt pass than a shared constant would be, and it only works on literals.
+# The producer keeps its own literal: `test_reader.py` pins `PASS_KINDS` to the
+# `pass_kind="..."` literals it reads out of `run.py`.
 REPROOF_PASS_KIND: Final = "audit-reproof"
 AUDIT_CAP_EXHAUSTED: Final = "audit-round-cap-exhausted"
-# What became of the re-examination the frozen flags required. Five states,
-# each a different sentence a consumer may say about the act:
-#   not-due          no flag was raised, so nothing was there to re-prove
-#   cap-exhausted    flags were raised and the sealed cap left no round to spend
-#   complete         one re-proof was delivered, its call ran to completion, and
-#                    any text it changed stayed inside a flag that covers it
-#   incomplete       one re-proof was delivered and the truncation instrument did
-#                    not classify its call complete -- the engine said it ran out
-#                    of budget, gave no word at all, or the text it returned
-#                    carried all three of the instrument's own cut-off signals
-#   reproof-rejected one re-proof was delivered and completed, but the text it
-#                    changed reaches outside every flag that could have asked
-#                    for it -- a live reader's own rewrite, not a truncation,
-#                    so it is never dressed as one; the rewrite is refused,
-#                    never published, and the establishing reading stands
-# Text equality plays no part in `not-due`, `cap-exhausted` or `incomplete`. A
-# re-proof that returns the frozen text after being cut off has confirmed
-# nothing; `incomplete` is what it records, and `unresolved_state` below is
-# what makes that a hold. `reproof-rejected` is the one state text equality
-# (via the sealed `reproof_change_span`) does decide, and only that.
+# What became of the re-examination the frozen flags required:
+#   not-due          no flag was raised
+#   cap-exhausted    flags were raised and the sealed cap left no round
+#   complete         a delivered re-proof completed, any change inside a flag
+#   incomplete       a delivered re-proof was not classified complete
+#   reproof-rejected a delivered re-proof completed but changed text outside
+#                    every flag; the rewrite is refused and the reading stands
+# A re-proof cut off after returning the frozen text confirmed nothing, so text
+# equality decides only `reproof-rejected`.
 EXAMINATION_NOT_DUE: Final = "not-due"
 EXAMINATION_CAP_EXHAUSTED: Final = "cap-exhausted"
 EXAMINATION_COMPLETE: Final = "complete"
@@ -124,11 +86,8 @@ EXAMINATION_STATES: Final = frozenset(
         EXAMINATION_REPROOF_REJECTED,
     }
 )
-# The truncation instrument's closed vocabulary, restated here because a stage
-# module may not be imported across the stage boundary and the re-proof's own
-# termination record is validated on both sides of it.
-# `pipeline/4_perlector/truncation.py` owns the measurement; this owns only the
-# shape a sealed copy of it must have.
+# Restated from `pipeline/4_perlector/truncation.py`, which a consumer stage
+# may not import.
 TRUNCATION_COMPLETE: Final = "complete"
 TRUNCATION_TRUNCATED: Final = "truncated"
 TRUNCATION_UNKNOWN: Final = "unknown"
@@ -140,11 +99,8 @@ DECLARED_STOP_WORDS: Final = frozenset({"stop", "length"})
 _TRUNCATION_SIGNALS: Final = frozenset(
     {"stop_reason_declared", "unclosed_structure", "length_suspicious", "ends_abruptly"}
 )
-# What the length signal was judged from, on the record so a
-# reader can re-derive that signal rather than take the producer's word for it
-# (findings F082/F088). Every term of the predicate is here,
-# including the floor itself: the record protects the past on its own, without
-# the run's `config/perlector_protocol.toml` in hand (principle 6).
+# Every term of the length predicate, floor included, so a reader re-derives
+# the signal without the run's protocol file in hand (principle 6).
 _TRUNCATION_MEASURE: Final = frozenset(
     {"region_pixels", "page_pixels", "characters", "length_floor_characters_per_page"}
 )
@@ -154,16 +110,9 @@ _TRUNCATION_MEASURE_MAY_BE_ZERO: Final = frozenset({"characters"})
 FLAG_CLASSES: Final = frozenset(
     {"date-sequence", "numbering", "order", "testimony-diff", "repetition", "within-crop"}
 )
-# Kept exact, rather than widened from the current flag vocabulary: only a
-# text departure from retained testimony derives a witness location. Boundary
-# disagreement remains page evidence for the Recensor, and this declaration
-# deliberately settles neither the larger reproof question nor a new class.
-#
-# Declared here beside `validate_draft`, which requires a basis row for every
-# flag of one of these classes, and re-exported from `pipeline/4_perlector/
-# audit.py` for the producer that builds those rows. One declaration: a
-# producer filtering on a name the validator no longer agrees with would emit
-# no basis for a newly added class and have every such draft refused.
+# Only a text departure from retained testimony derives a witness location;
+# boundary disagreement stays page evidence for the Recensor. One declaration
+# for `validate_draft` and the producer that builds the basis rows.
 WITNESS_DERIVED_LOCATION_CLASSES: Final = frozenset({"testimony-diff"})
 _DRAFT_FIELDS: Final = frozenset(
     {
@@ -188,17 +137,9 @@ _FINDING_FIELDS_V2: Final = frozenset(
         "change_record",
         "uncertain_spans",
         "unresolved",
-        # v2: the re-examination's own fate, and the truncation instrument's
-        # record of the delivered re-proof call (`None` when none was delivered).
         "examination",
         "reproof_truncation",
         "reproof_call",
-        # The envelope `text_change_span` measured between the frozen semi-final
-        # and a delivered, completed re-proof's own text -- `None` whenever no
-        # such comparison exists (no reproof due, cap exhausted, or the
-        # delivered call did not complete). `examination_state` re-derives
-        # `complete` vs `reproof-rejected` from this span and `flags` alone, so
-        # containment is never taken on the producer's word.
         "reproof_change_span",
     }
 )
@@ -214,10 +155,7 @@ _PERLECTIO_AUDIT_FIELDS: Final = frozenset(
         "request_digest",
     }
 )
-# The closed shape of what the reader receives. `draft_ref` is both the frozen
-# draft's reference and its digest, so the request names the exact bytes the
-# locations index into without restating them; `semi_final_text` is those bytes'
-# text, delivered because a re-proof that is asked to "record confirmed
+# `semi_final_text` is delivered because a re-proof asked to "record confirmed
 # unchanged" must be shown what unchanged means.
 _AUDIT_REQUEST_FIELDS: Final = frozenset(
     {"schema", "act_key", "attempt_ordinal", "draft_ref", "semi_final_text", "reproofs"}
@@ -238,11 +176,7 @@ def _closed_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-# Module scope so tests can assert against the same closed list the runtime
-# screen uses. The screen below is unreachable over today's fixed literal, and
-# that is its job: it fires on every call the moment an editor softens the
-# wording (or a future variant is built through this function), which is a
-# stronger guard than a test that must remember to run.
+# Unreachable over today's fixed wording; it fires the moment an edit softens it.
 FORBIDDEN_PROMPT_FRAGMENTS: Final = (
     "wrong",
     "incorrect",
@@ -313,10 +247,8 @@ def render_reproof_instruction(request: dict[str, Any]) -> str:
     )
 
 
-# Bind only the renderer and its two protocol labels. Unrelated validator edits
-# must not invalidate retained readings. This is the first published prompt
-# evidence revision; a future renderer change needs an explicit legacy renderer
-# path, not automatic acceptance of a digest whose prompt we cannot reproduce.
+# Binds only the renderer and its two labels, so unrelated edits do not
+# invalidate retained readings. A renderer change needs an explicit legacy path.
 AUDIT_PROMPT_RENDERER_SHA256: Final = digest_of(
     {
         "source": inspect.getsource(render_reproof_instruction),
@@ -387,17 +319,9 @@ def reproof_plan(
 ) -> list[dict[str, Any]]:
     """One neutral, location-only re-proof per frozen flag, in the flags' own order.
 
-    The single definition of what Pass C intends to ask. Three callers need it:
-    two used to spell it out — the producer building the seal and
-    `validate_chain` re-deriving the expected seal — and the third, the reader's
-    delivered request, is new with this repair. Every extra spelling of one
-    plan is another chance for the sealed plan and
-    the delivered plan to differ while every local check still passes — which is
-    exactly the shape of the defect this function exists to close.
-
-    Locations are copied rather than aliased. The plan travels out to a reader,
-    and a caller that mutated a delivered row would otherwise reach back into
-    the frozen flag set the whole page pass was computed from.
+    The single definition of what Pass C asks: the producer's seal, the
+    delivered request and `validate_chain`'s re-derivation all use it. Locations
+    are copied so a reader mutating a delivered row cannot reach the frozen flags.
     """
     return [
         {
@@ -414,6 +338,19 @@ def reproof_plan(
     ]
 
 
+def _integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _valid_span(start: Any, end: Any, text_length: int | None) -> bool:
+    return (
+        _integer(start)
+        and _integer(end)
+        and 0 <= start <= end
+        and (text_length is None or end <= text_length)
+    )
+
+
 def _closed(payload: Any, fields: frozenset[str], label: str) -> dict[str, Any]:
     if not isinstance(payload, dict) or set(payload) != fields:
         raise SchemaRefusal(f"an {label} is not its closed schema")
@@ -423,15 +360,7 @@ def _closed(payload: Any, fields: frozenset[str], label: str) -> dict[str, Any]:
 def _location(value: Any, *, text_length: int | None, label: str) -> dict[str, int]:
     if not isinstance(value, dict) or set(value) != {"start", "end"}:
         raise SchemaRefusal(f"an {label} has no closed character location")
-    start, end = value["start"], value["end"]
-    if (
-        not isinstance(start, int)
-        or isinstance(start, bool)
-        or not isinstance(end, int)
-        or isinstance(end, bool)
-        or not 0 <= start <= end
-        or (text_length is not None and end > text_length)
-    ):
+    if not _valid_span(value["start"], value["end"], text_length):
         raise SchemaRefusal(f"an {label} lies outside the delivered text")
     return value
 
@@ -441,20 +370,10 @@ def _validate_reproof_rows(
 ) -> None:
     """The neutrality screen, applied identically wherever a re-proof row appears.
 
-    `text_length=None` is the pre-read pass's contract: shape and location
-    structure are held, and the prompt is checked against the location's own
-    end. `validate_chain` re-runs this with the frozen semi-final's real
-    length, so a location that only fits a longer text than the draft carries
-    is still refused where the draft is in hand.
-
-    The sealed copy on the Perlectio and the delivered copy in the audit request
-    are the same rows read by different halves of the same claim, so they get the
-    same screen: closed shape, a known flag class, a location inside the frozen
-    text, and a prompt that is *exactly* `neutral_prompt` for that location.
-    Equality against the generated prompt is the whole discipline — it leaves no
-    room for a sentence that tells the reader which way to argue (principle 8),
-    because anything but the generated string is refused rather than screened for
-    forbidden words.
+    `text_length=None` is the pre-read pass: the prompt is checked against the
+    location's own end, and `validate_chain` re-runs this with the real length.
+    A prompt must equal `neutral_prompt` for its location exactly, which leaves
+    no room for a sentence telling the reader which way to argue (principle 8).
     """
     for reproof in rows:
         if not isinstance(reproof, dict) or set(reproof) != {"class", "location", "prompt"}:
@@ -469,43 +388,22 @@ def _validate_reproof_rows(
             reproof["location"], text_length=text_length, label=f"{subject} re-proof"
         )
         prompt_length = text_length if text_length is not None else location["end"]
-        allowed = (
-            {
-                neutral_prompt(
-                    start=location["start"],
-                    end=location["end"],
-                    text_length=prompt_length,
-                    policy_schema=policy_schema,
-                )
-            }
-            if policy_schema is not None
-            else {
-                neutral_prompt(
-                    start=location["start"],
-                    end=location["end"],
-                    text_length=prompt_length,
-                    policy_schema=SCHEMA,
-                ),
-                neutral_prompt(
-                    start=location["start"],
-                    end=location["end"],
-                    text_length=prompt_length,
-                    policy_schema=LEGACY_SCHEMA,
-                ),
-            }
-        )
+        schemas = (policy_schema,) if policy_schema is not None else (SCHEMA, LEGACY_SCHEMA)
+        allowed = {
+            neutral_prompt(
+                start=location["start"],
+                end=location["end"],
+                text_length=prompt_length,
+                policy_schema=schema,
+            )
+            for schema in schemas
+        }
         if reproof["prompt"] not in allowed:
             raise SchemaRefusal(f"a {subject} re-proof is not a neutral location-only prompt")
 
 
 def reproof_delivery_due(flags: list[Any], round_cap: int) -> bool:
-    """One spelling of "this act's re-proof request exists": a plan and a round.
-
-    The producer decides delivery with it, and `validate_chain` re-derives the
-    same fact from the frozen draft with it. Two spellings of that condition
-    would be the exact drift this module repairs elsewhere: an act one side
-    thinks delivered and the other thinks had nothing to deliver.
-    """
+    """Whether this act's re-proof request exists: a plan and a round to spend."""
     return bool(flags) and round_cap > 0
 
 
@@ -517,28 +415,13 @@ def examination_state(
     reproof_change_span: tuple[int, int] | None = None,
     flag_text_length: int | None = None,
 ) -> str:
-    """One spelling of what became of the re-examination the flags required.
+    """What became of the re-examination the flags required; derived, never chosen.
 
-    Derived, never chosen. The producer records the value this returns and
-    `validate_finding` recomputes it from the same facts, so a finding cannot
-    call an examination `complete` over a re-proof the truncation instrument
-    classified otherwise, cannot record a re-proof where the plan and cap
-    delivered none, cannot omit the termination of one that was due, and
-    cannot call a rewrite that escaped every flag `complete`.
-
-    The third argument is the truncation instrument run over the re-proof's own
-    response -- its text and its engine's stop word -- and nothing else. The
-    published text is compared with the frozen semi-final elsewhere, for
-    provenance; it is deliberately not an input here, because equality of
-    characters was the thing that used to stand in for completion (F1).
-
-    `reproof_change_span` is the envelope `text_change_span` measured between
-    the frozen semi-final and a delivered, completed re-proof's own text --
-    `None` exactly when there is no such comparison to make (no reproof due,
-    cap exhausted, or the call itself did not complete) or the re-proof
-    returned the frozen text unchanged. `flag_text_length` is the frozen
-    semi-final's own length, required whenever a span is given because
-    `flag_contains_change`'s witness slack is measured against it.
+    `reproof_truncation` is the truncation instrument over the re-proof's own
+    response. Text equality is deliberately not an input: it once stood in for
+    completion (F1). `reproof_change_span` is the envelope between the frozen
+    semi-final and a completed re-proof's text, `None` when there is none;
+    `flag_text_length` is required with it for `flag_contains_change`'s slack.
     """
     if not flags:
         if reproof_truncation is not None:
@@ -577,15 +460,9 @@ def examination_state(
 def unresolved_state(examination: str) -> bool:
     """Flags stay unresolved unless a delivered re-proof actually completed.
 
-    `cap-exhausted` was the only unresolved state v1 could express. `incomplete`
-    joins it: a re-examination that did not finish discharged nothing, whatever
-    characters it emitted before it stopped. `reproof-rejected` joins both: a
-    re-examination that finished but rewrote text no flag asked it to discharges
-    nothing either -- its rewrite is refused, not published, so the flag it was
-    sent to settle is exactly as unsettled as if the round had never run.
-    `not-due` and `complete` are the two resolved states, and `complete` is
-    still not a per-flag claim -- one call answers every flag at once (Recensor
-    `audit_state`).
+    An incomplete re-proof discharged nothing, and a rejected one's rewrite was
+    never published. `complete` is not a per-flag claim: one call answers every
+    flag at once.
     """
     if type(examination) is not str or examination not in EXAMINATION_STATES:
         raise SchemaRefusal(f"{examination!r} is not an audit examination state")
@@ -599,38 +476,22 @@ def unresolved_state(examination: str) -> bool:
 def length_signal(*, characters: int, region_pixels: int, page_pixels: int, floor: int) -> bool:
     """The truncation length signal, as a pure function of its four terms.
 
-    `characters * page_pixels < floor * region_pixels`, in integers: the
-    reading's characters scaled from its own region to the whole page's area,
-    against the sealed floor. An empty reading is never suspicious --
-    `no-readable-text` is the honest outcome for that and it is decided
-    elsewhere, never smuggled in here as a truncation.
-
-    Declared here, on the shared surface, for the reason
-    `truncation_classification` is: the producer
-    (`pipeline/4_perlector/truncation.py::is_length_suspicious`) computes the
-    signal with this function and `validate_truncation_record` re-derives it
-    with the same one, so a record cannot carry a signal that disagrees with
-    the geometry it was supposedly judged from. Bounds are each caller's own
-    business -- the producer raises, the validator refuses -- because the
-    arithmetic is what must not drift, not the refusal wording.
+    The reading's characters, scaled from its region to the page's area, against
+    the sealed floor. An empty reading is never suspicious: that outcome is
+    `no-readable-text`, decided elsewhere. Producer and validator share this so
+    the arithmetic cannot drift.
     """
     return characters > 0 and characters * page_pixels < floor * region_pixels
 
 
 def truncation_classification(signals: dict[str, Any]) -> str:
-    """The truncation instrument's decision, as a pure function of its four signals.
+    """The truncation instrument's verdict, as a pure function of its four signals.
 
-    Declared here, on the shared surface, and used by
-    `pipeline/4_perlector/truncation.py::classify` to make its verdict, so the
-    producer's classification and every consumer's check are one rule rather
-    than two spellings that could drift. The engine's own `length` is
-    authoritative for `truncated`; three suspicious computed signals are
-    `truncated`; a unanimous clean vote under a declared `stop` is `complete`;
-    anything else -- a split vote, or no engine word at all -- is `unknown`,
-    which holds. The three computed signals themselves need the text and its
-    region's pixel count and are measured only by the producer; what this
-    function settles is that the recorded verdict follows from the recorded
-    signals (independent review of candidate 0934c057, blocking finding 1).
+    The engine's `length` is authoritative for `truncated`; three suspicious
+    computed signals are `truncated`; a clean vote under a declared `stop` is
+    `complete`; anything else is `unknown`, which holds. Shared with
+    `pipeline/4_perlector/truncation.py::classify` so the verdict and every check
+    are one rule.
     """
     declared = signals["stop_reason_declared"]
     if declared == "length":
@@ -654,36 +515,16 @@ def validate_truncation_record(
 ) -> dict[str, Any]:
     """The sealed shape of one raw truncation measurement, its verdict re-derived.
 
-    Two of the three computed signals are the producer's word: they need the
-    text, which is not on the record. The third, `length_suspicious`, is not:
-    the `measure` block carries every term of its predicate -- region and page
-    area, the character count, and the floor those were judged under -- so this
-    validator re-derives it with the producer's own function (`length_signal`)
-    and refuses a record whose signal disagrees with its own geometry, rather
-    than checking the block for shape. `text`, where the caller holds the
-    reading the record was measured over, binds `characters` to it as well,
-    because a re-derivation from a character count nobody checked is still the
-    producer's word in another form. `length_floor_characters_per_page` binds
-    the other term of the predicate the same way, for a caller that holds the
-    sealed `[truncation]` table: without it the derivation proves only that the
-    record agrees with itself, and a record judged under a floor nobody sealed
-    agrees with itself perfectly. The classification is not the producer's
-    word either: for the instrument's *raw* output it is a function of the four
-    sealed signals (`truncation_classification`), so a record whose verdict
-    contradicts its own signals is refused, and a declared stop word outside the
-    recognised vocabulary is refused with it. This holds for `reproof_truncation`, which is
-    always raw. It does NOT hold for the Perlectio's own `truncation` record:
-    `pipeline/4_perlector/run.py::_reconciled_truncation` raises `complete` to
-    `unknown` under a declared failure, and `_audited_truncation` floors an
-    audited `complete` back to Pass B's verdict, both on purpose and both with
-    the signals left as measured -- so that record is validated for shape and
-    vocabulary only, and must not be handed to this function.
+    `length_suspicious` and the classification are re-derived from the record's
+    own measure and signals. `text` binds `characters`, and
+    `length_floor_characters_per_page` binds the floor, for a caller that holds
+    them; without them the record only agrees with itself. Only for raw records
+    such as `reproof_truncation`: the Perlectio's own `truncation` is reconciled
+    on purpose in `pipeline/4_perlector/run.py` and must not be passed here.
     """
     if not isinstance(value, dict) or set(value) != {"classification", "signals", "measure"}:
         raise SchemaRefusal(f"{label} is not a closed truncation record")
-    # Type before membership everywhere a frozenset is consulted: an unhashable
-    # value (a list, an object) would otherwise leave as `TypeError`, which the
-    # stage boundary does not classify, instead of the named refusal it owes.
+    # Type before membership: an unhashable value would escape as TypeError.
     if type(value["classification"]) is not str or (
         value["classification"] not in TRUNCATION_CLASSIFICATIONS
     ):
@@ -710,23 +551,13 @@ def validate_truncation_record(
                 f"{label} measure {name} is not a {'non-negative' if floor == 0 else 'positive'} "
                 "integer"
             )
-    # The recomputation is only worth as much as `characters`, and `characters`
-    # was the producer's word until a caller that holds the measured text binds
-    # it here. `text is None` is the caller
-    # that does not hold it and says so, never a silent skip.
     if text is not None and measure["characters"] != len(text):
         raise SchemaRefusal(
             f"{label} measure counts {measure['characters']} characters but the text it was "
             f"measured over has {len(text)}"
         )
-    # The floor the record was judged under is the record's own word until a
-    # caller that holds the sealed policy binds it here, exactly as
-    # `characters` is bound by `text`. Re-deriving the signal from a floor the
-    # record chose for itself proves only internal consistency: a record naming
-    # floor 1 under a sealed floor of 50 derives `length_suspicious` false,
-    # classifies `complete`, and clears an audit hold the sealed policy would
-    # have held. Refused before the derivation, so the
-    # refusal names the floor rather than the signal it produced.
+    # A record naming floor 1 under a sealed 50 would derive `complete` and clear
+    # the hold; refused before the derivation, so the refusal names the floor.
     if (
         length_floor_characters_per_page is not None
         and measure["length_floor_characters_per_page"] != length_floor_characters_per_page
@@ -760,11 +591,7 @@ _LEGACY_REPROOF_CALL_FIELDS: Final = frozenset(
     {"call_record_ref", "raw_response_ref", "response_sha256", "finish_reason", "served_model_id"}
 )
 _REPROOF_CALL_FIELDS: Final = _LEGACY_REPROOF_CALL_FIELDS | {"request_sha256", "audit_prompt"}
-# The engine's finish reason and the instrument's declared stop word are one
-# fact in two vocabularies (`pipeline/4_perlector/live_reader.py::_mapped_stop_reason`,
-# `common/contracts/serving.py`): `stop` -> "stop", `length` -> "length", nothing
-# -> None. Restated here so the sealed call and the sealed verdict can be held
-# to each other without importing a stage module.
+# Restated from `pipeline/4_perlector/live_reader.py::_mapped_stop_reason`.
 _FINISH_REASON_TO_STOP_WORD: Final = {"stop": "stop", "length": "length", None: None}
 
 
@@ -773,12 +600,8 @@ def validate_reproof_call(
 ) -> dict[str, Any] | None:
     """The retained response the sealed re-proof termination was measured over.
 
-    `None` where the reader has no engine behind it (the fixture chamber) or
-    where no re-proof was delivered. Present, it names the same retained call
-    record and raw response the live reader binds on the Perlectio, so a later
-    reader can check the sealed classification against the response itself
-    rather than take it on the producer's word (independent review of
-    candidate 0934c057, finding 10).
+    `None` where no engine stands behind the reader (the fixture chamber) or no
+    re-proof was delivered.
     """
     if value is None:
         return None
@@ -791,17 +614,12 @@ def validate_reproof_call(
     validate_input_refs([value["raw_response_ref"]])
     if not is_sha256(value["response_sha256"]):
         raise SchemaRefusal(f"{label} has no response digest")
-    # The live client sets `response_sha256` to the retained raw response's own
-    # digest (`operations/serving/client.py`), so the two must agree here too: a
-    # record naming one response's bytes and another response's digest would
-    # bind the sealed verdict to a call nobody can check it against.
+    # The live client sets `response_sha256` to the raw response's own digest.
     if value["response_sha256"] != value["raw_response_ref"]["sha256"]:
         raise SchemaRefusal(
             f"{label} names response digest {value['response_sha256']} but its retained raw "
             f"response is {value['raw_response_ref']['sha256']}"
         )
-    if value["finish_reason"] is not None and not isinstance(value["finish_reason"], str):
-        raise SchemaRefusal(f"{label} has a malformed finish reason")
     if value["finish_reason"] is not None and type(value["finish_reason"]) is not str:
         raise SchemaRefusal(f"{label} has a malformed finish reason")
     if value["finish_reason"] not in _FINISH_REASON_TO_STOP_WORD:
@@ -821,11 +639,10 @@ def validate_reproof_call(
 
 
 def _refuse_call_verdict_disagreement(call: dict[str, Any], termination: dict[str, Any]) -> None:
-    """The retained call's finish reason and the sealed verdict's stop word agree, or refuse.
+    """Refuse a sealed stop word that disagrees with the retained call's finish reason.
 
-    Without this, a finding could seal `complete` over clean signals beside a
-    retained call whose engine said `length` -- F1's shape on the very field
-    added to close it (second independent read of candidate 95d0a176).
+    Otherwise a finding could seal `complete` beside a call whose engine said
+    `length`.
     """
     expected = _FINISH_REASON_TO_STOP_WORD[call["finish_reason"]]
     declared = termination["signals"]["stop_reason_declared"]
@@ -977,18 +794,9 @@ def audit_request(
 ) -> dict[str, Any]:
     """The closed instrument Pass C hands the reader, built from the frozen draft.
 
-    Everything here is derivable from the published audit draft plus its own
-    reference, which is what makes the delivery checkable: `validate_chain`
-    rebuilds this object from the draft it reads back and compares digests, so
-    the request the record names is the request the frozen flags imply. Nothing
-    in it is a Pass-C-only fact the producer could have chosen freely.
-
-    It carries no witness material, no ranking, and no wanted reading — only the
-    frozen text, the locations, and the generated neutral prompts. The field set
-    is closed rather than swept for preference-bearing names the way a dossier
-    is (`dossier.assert_no_order_bearing_field`): a closed set is the stronger
-    guard, because a new field cannot appear at all without an editor coming
-    through this validator first.
+    Everything in it derives from the draft and its reference, so
+    `validate_chain` can rebuild it and compare digests. It carries no witness
+    material, ranking or wanted reading, and its field set is closed.
     """
     request = {
         "schema": REQUEST_SCHEMA if policy_schema == SCHEMA else LEGACY_REQUEST_SCHEMA,
@@ -1004,13 +812,7 @@ def audit_request(
 
 
 def validate_audit_request(payload: Any) -> dict[str, Any]:
-    """Refuse an audit request at the seam, in the producer and in the reader alike.
-
-    A reader is entitled to refuse rather than guess: the pass label alone can
-    never tell it which span to re-examine or what task was delivered, and a
-    reader that read `pass_kind` and invented the rest is the failure this
-    request exists to end.
-    """
+    """Refuse an audit request at the seam, in the producer and in the reader alike."""
     value = _closed(payload, _AUDIT_REQUEST_FIELDS, "audit request")
     if value["schema"] == REQUEST_SCHEMA:
         policy_schema = SCHEMA
@@ -1020,17 +822,11 @@ def validate_audit_request(payload: Any) -> dict[str, Any]:
         raise SchemaRefusal("an audit request does not declare the audit-request schema")
     if not isinstance(value["act_key"], str) or not value["act_key"]:
         raise SchemaRefusal("an audit request has no act identity")
-    if (
-        not isinstance(value["attempt_ordinal"], int)
-        or isinstance(value["attempt_ordinal"], bool)
-        or value["attempt_ordinal"] < 1
-    ):
+    if not _integer(value["attempt_ordinal"]) or value["attempt_ordinal"] < 1:
         raise SchemaRefusal("an audit request has no integer attempt ordinal")
     validate_input_refs([value["draft_ref"]])
-    # `validate_input_refs` reads two keys and ignores the rest; an extra field
-    # here would ride to the reader, into the digest, and back out of
-    # `validate_chain`'s rebuild without ever meeting the neutrality screen. The
-    # closed-set claim above is only true if the nested shape is closed too.
+    # `validate_input_refs` ignores extra keys, which would ride into the digest
+    # unscreened.
     if set(value["draft_ref"]) != {"relative_path", "sha256"}:
         raise SchemaRefusal("an audit request's draft reference is not its closed shape")
     if not isinstance(value["semi_final_text"], str):
@@ -1086,17 +882,13 @@ def reproof_response_from_text(request: dict[str, Any], proposed_text: str) -> s
             None,
         )
         if matching is None:
-            # Preserve the model's proposed span verbatim for the refusal
-            # record; do not coerce it into the nearest flagged location.
+            # Keep the escaping span verbatim for the refusal record.
             matching = rows[0]
             matching["location"] = {"start": start, "end": end}
             matching["original"] = before[start:end]
         else:
             location = matching["location"]
-            # `end` indexes the frozen text.  The proposed text's matching
-            # suffix starts at this translated boundary, so an insertion or
-            # deletion inside a flagged span cannot make us slice it at a
-            # stale offset.
+            # `end` indexes the frozen text; translate it into the proposed text.
             proposed_end = len(proposed_text) - (len(before) - end)
             matching["replacement"] = (
                 before[location["start"] : start]
@@ -1171,11 +963,7 @@ def assemble_reproof_edits(
         if (
             not isinstance(location, dict)
             or set(location) != {"start", "end"}
-            or not isinstance(location["start"], int)
-            or isinstance(location["start"], bool)
-            or not isinstance(location["end"], int)
-            or isinstance(location["end"], bool)
-            or not 0 <= location["start"] <= location["end"] <= len(before)
+            or not _valid_span(location["start"], location["end"], len(before))
         ):
             raise ReproofResponseRefusal("an audit re-proof edit has invalid character bounds")
         if location != expected["location"]:
@@ -1248,17 +1036,9 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
         or value["page_ids"] != sorted(value["page_ids"])
     ):
         raise SchemaRefusal("an audit record has no act identity or canonical page set")
-    if (
-        not isinstance(value["attempt_ordinal"], int)
-        or isinstance(value["attempt_ordinal"], bool)
-        or value["attempt_ordinal"] < 1
-    ):
+    if not _integer(value["attempt_ordinal"]) or value["attempt_ordinal"] < 1:
         raise SchemaRefusal("an audit record has no integer attempt ordinal")
-    if (
-        not isinstance(value["round_cap"], int)
-        or isinstance(value["round_cap"], bool)
-        or value["round_cap"] < 0
-    ):
+    if not _integer(value["round_cap"]) or value["round_cap"] < 0:
         raise SchemaRefusal("an audit record has no integer round cap")
     if not isinstance(value["policy"], dict) or set(value["policy"]) != {
         "schema",
@@ -1307,14 +1087,10 @@ def validate_draft(payload: Any) -> dict[str, Any]:
     if not isinstance(basis, list) or any(
         not isinstance(row, dict)
         or set(row) != {"class", "chair", "derivation", "location"}
-        # Typed before membership for the same reason as `derivation` below.
         or not isinstance(row["class"], str)
         or row["class"] not in WITNESS_DERIVED_LOCATION_CLASSES
         or not isinstance(row["chair"], str)
         or not row["chair"]
-        # Typed before the membership test: an unhashable JSON value -- a list
-        # or an object at this field -- would otherwise escape `in` as a raw
-        # TypeError, and a traceback is not the named refusal this contract owes.
         or not isinstance(row["derivation"], str)
         or row["derivation"] not in {"own-report", "page-slice"}
         for row in basis
@@ -1326,12 +1102,8 @@ def validate_draft(payload: Any) -> dict[str, Any]:
         )
     for row in basis:
         _location(row["location"], text_length=len(value["semi_final_text"]), label="basis")
-    # The binding is by location, not by list position or list length. Equal
-    # lengths proved only that two lists were the same size: which chair
-    # located which flag was not expressible, so a row could sit against the
-    # wrong flag undetected. Keying on the span also lets one chair account for
-    # two different flags, and two chairs for one, both of which the earlier
-    # (class, chair, derivation) uniqueness wrongly refused.
+    # Bound by location, not list position: one chair may locate two flags, and
+    # two chairs one.
     identities = [
         (row["chair"], row["derivation"], row["location"]["start"], row["location"]["end"])
         for row in basis
@@ -1365,7 +1137,7 @@ def validate_finding(
     length_floor_characters_per_page: int | None = None,
 ) -> dict[str, Any]:
     policy_schema = (
-        payload.get("policy", {}).get("schema")
+        payload["policy"].get("schema")
         if isinstance(payload, dict) and isinstance(payload.get("policy"), dict)
         else None
     )
@@ -1379,7 +1151,8 @@ def validate_finding(
         raise SchemaRefusal("an audit finding was validated without its final text")
     if flag_text is not None and not isinstance(flag_text, str):
         raise SchemaRefusal("an audit finding was validated without its frozen flag text")
-    _validate_common(value, text_length=len(flag_text if flag_text is not None else text))
+    flag_text_length = len(flag_text) if flag_text is not None else len(text)
+    _validate_common(value, text_length=flag_text_length)
     if not isinstance(value["change_record"], list) or not isinstance(
         value["uncertain_spans"], list
     ):
@@ -1396,7 +1169,7 @@ def validate_finding(
             raise SchemaRefusal("an audit change record names an unknown triggering flag class")
         _location(
             {"start": change["start"], "end": change["end"]},
-            text_length=len(flag_text if flag_text is not None else text),
+            text_length=flag_text_length,
             label="audit change record",
         )
     for span in value["uncertain_spans"]:
@@ -1409,7 +1182,6 @@ def validate_finding(
         )
         if span["start"] == span["end"] or span["reason"] != AUDIT_CAP_EXHAUSTED:
             raise SchemaRefusal("an audit uncertainty span has no exhausted-cap reason or width")
-    flag_text_length = len(flag_text) if flag_text is not None else len(text)
     if policy_schema == SCHEMA:
         reproof_change_span = None
         edits = value["reproof_edits"]
@@ -1450,14 +1222,13 @@ def validate_finding(
             value["flags"], value["round_cap"], value["reproof_truncation"]
         )
     else:
+        reproof_change_span = None
         span = value["reproof_change_span"]
         if span is not None:
             _location(
                 span, text_length=flag_text_length, label="an audit finding's reproof change span"
             )
             reproof_change_span = (span["start"], span["end"])
-        else:
-            reproof_change_span = None
         examination = examination_state(
             value["flags"],
             value["round_cap"],
@@ -1466,21 +1237,8 @@ def validate_finding(
             flag_text_length=flag_text_length,
         )
     if value["reproof_truncation"] is not None:
-        # `text` is the re-proof's own returned text, which is what the
-        # termination record was measured over
-        # (`pipeline/4_perlector/run.py`: one `final_text` feeds
-        # `truncation.classify` and this validation), so the record's character
-        # count is bound to the reading rather than taken on the producer's
-        # word -- except where the re-proof's
-        # text was refused and never published. A sealed change span beside a
-        # published text equal to the frozen semi-final is exactly that case:
-        # the re-proof departed from the semi-final (or there would be no
-        # span), yet the semi-final is what the act published, so the response
-        # the termination measured is not the text in hand. Binding it anyway
-        # would refuse every honest refusal on a length mismatch naming nothing
-        # wrong. `text=None` is the documented "the caller does not hold it"
-        # case, never a silent skip -- and a re-proof that returned the frozen
-        # text unchanged seals no span, so it keeps the binding in full.
+        # A refused re-proof published the frozen text, not the response the
+        # termination measured, so its character count cannot be bound to `text`.
         refused = (
             policy_schema == LEGACY_SCHEMA
             and reproof_change_span is not None
@@ -1498,11 +1256,11 @@ def validate_finding(
         label="an audit finding's re-proof call",
         policy_schema=policy_schema,
     )
-    if value["reproof_call"] is not None and value["reproof_truncation"] is None:
-        raise SchemaRefusal(
-            "an audit finding names a re-proof call although no re-proof was delivered"
-        )
     if value["reproof_call"] is not None:
+        if value["reproof_truncation"] is None:
+            raise SchemaRefusal(
+                "an audit finding names a re-proof call although no re-proof was delivered"
+            )
         _refuse_call_verdict_disagreement(value["reproof_call"], value["reproof_truncation"])
     if value["examination"] != examination:
         raise SchemaRefusal(
@@ -1520,14 +1278,8 @@ def validate_finding(
             "exhausted; an incomplete re-proof is recorded as an incomplete examination, "
             "never as a span"
         )
-    # One direction only: a span requires a delivered re-proof, but a re-proof
-    # that returned the frozen text unchanged has nothing to measure a span
-    # over and correctly seals `None` (`text_change_span` only runs on
-    # `run.py`'s departed-text branch) -- a confirmed-unchanged finding is not
-    # a `reproof-rejected` one. The span is not restricted to a *completed*
-    # call: a cut-off re-proof can depart from the semi-final too, and the fact
-    # that it did is what tells a later reader its text was refused rather than
-    # returned as found.
+    # One direction only: an unchanged re-proof seals no span, but a cut-off one
+    # may depart and still carry one.
     if (
         policy_schema == LEGACY_SCHEMA
         and reproof_change_span is not None
@@ -1564,10 +1316,7 @@ def validate_perlectio_audit(record: Any, *, text_length: int | None) -> dict[st
             "run. The old bytes are evidence and stay as written"
         )
     value = _closed(record, _PERLECTIO_AUDIT_FIELDS, "Perlectio audit record")
-    # Validate each typed reference here. Whether the two paths accidentally
-    # alias is settled by `validate_chain`'s kind-specific reads, which then
-    # names the actual draft-vs-finding contract violation rather than the
-    # less useful generic duplicate-path refusal.
+    # Aliasing between the two is named by `validate_chain`'s kind-specific reads.
     validate_input_refs([value["draft_ref"]])
     validate_input_refs([value["finding_ref"]])
     if not is_sha256(value["finding_digest"]):
@@ -1580,10 +1329,6 @@ def validate_perlectio_audit(record: Any, *, text_length: int | None) -> dict[st
         raise SchemaRefusal(
             "a Perlectio audit record's unresolved state contradicts its examination state"
         )
-    # The examination must agree with the record's own delivery facts, so a
-    # standalone reader of the Perlectio -- not only `validate_chain` against
-    # the finding -- refuses a record that claims a completed re-proof it
-    # never requested (independent review of candidate 0934c057, finding 6).
     if (value["examination"] == EXAMINATION_NOT_DUE) != (value["reproofs"] == []):
         raise SchemaRefusal(
             "a Perlectio audit record's examination contradicts its re-proof plan: `not-due` "
@@ -1596,10 +1341,6 @@ def validate_perlectio_audit(record: Any, *, text_length: int | None) -> dict[st
             "a Perlectio audit record's examination contradicts its delivery: a request digest "
             "exists exactly when a re-proof was delivered"
         )
-    # `None` is a fact, not an absence: it says no audit request was delivered
-    # to the reader for this act, which is what a flagless act and an
-    # exhausted-cap act both record. Anything else must be a real digest, so a
-    # record cannot claim a delivery with a placeholder.
     if value["request_digest"] is not None and not is_sha256(value["request_digest"]):
         raise SchemaRefusal("a Perlectio audit record has no delivered audit-request digest")
     _validate_reproof_rows(value["reproofs"], text_length=text_length, subject="Perlectio audit")
@@ -1621,54 +1362,19 @@ def text_change_span(before: str, after: str) -> tuple[int, int]:
 
 
 def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Attribute the re-proof's change to the flag that actually located it.
+    """Attribute the re-proof's change to the narrowest flag that contains it.
 
-    The triggering class is the whole point of this record: spec 03's Pass C
-    keeps it so that "witness-diff-triggered changes that moved toward the
-    witness" — the soft-picker signature — is computable from the tree. So the
-    change must be attributed to the *narrowest* flag that contains it, not to
-    whichever flag the caller happened to list first. Flags reach here sorted by
-    `(location.start, class)`, and the cross-act classes (`date-sequence`,
-    `numbering`, `order`) all span the whole text from offset 0, so first-listed
-    meant "the widest flag on the act wins": a correction squarely inside a
-    narrow `testimony-diff` span was recorded as `date-sequence`, and the one
-    measurement this record exists to support silently lost it (principle 8).
+    The triggering class makes witness-diff-triggered changes computable from
+    the tree. Flags arrive sorted by start, and the cross-act classes span the
+    whole text, so first-listed would always credit the widest flag. Width ties
+    break on `(start, class)`, a function of the frozen flags alone, because
+    consumers re-derive this record exactly. An envelope escaping every single
+    flag is refused rather than decomposed by a diff heuristic.
 
-    Width ties break on `(start, class)` so the attribution is a function of the
-    frozen flag set alone. Consumers re-derive this record exactly
-    (`validate_chain`), so the rule may use nothing but the recorded facts.
-
-    One re-proof still yields at most one changed span: the span is the
-    prefix/suffix-trimmed envelope of an exact comparison, and a re-proof whose
-    envelope escapes every single flag is refused rather than attributed by
-    guesswork. Decomposing an envelope that covers two disjoint flags would need
-    a real alignment, and this record is recomputed byte-for-byte by every later
-    consumer — a diff heuristic here would make a sealed record's validity depend
-    on the differ. That decomposition belongs with the real reader in R6, which
-    is the first thing that can answer two locations in one pass.
-
-    **A witness-derived flag's own end is itself suffix-trimmed**, by this same
-    `text_change_span`, against the one testimony that located it (`audit.py`).
-    Suffix trimming can only ever fall short at the true end of the text — a
-    prefix mismatch is visible in `start`, never in `end` — so the one place this
-    envelope and that flag can legitimately disagree is exactly at
-    `len(before)`. When `before`'s last character coincidentally equals that
-    testimony's last character, the flag's recorded end lands one character
-    short of the true edit boundary: not because the flag under-covers the
-    disagreement, but because a *different* string's tail happened to share one
-    byte with `before`'s. A re-proof that rewrites straight through to the true
-    end of the text is real content inside that same disagreement, not an
-    escape from it, and refusing it would be refusing the coincidence rather
-    than the change. So a witness-derived flag whose end sits exactly one
-    character short of an envelope that reaches `len(before)` is still treated
-    as containing it — one byte of slack for one coincidental byte, nothing
-    wider. The envelope must still reach into the flag (`start < flag end`):
-    a change that starts at or past the flag's own end is disjoint from the
-    disagreement the flag located, not an extension through it, so the slack
-    never credits a re-proof no witness placed. A flag any other class, or
-    any wider gap, still refuses: this does not loosen the posture that a
-    change outside every flag is refused, it only stops the trimming
-    algorithm from refusing itself.
+    A witness-derived flag's end is itself suffix-trimmed against its testimony,
+    so it can land one character short of the text's true end when the two
+    strings share a last character. `flag_contains_change` allows exactly that
+    one character, and only for a change that starts inside the flag.
     """
     if before == after:
         return []
@@ -1694,21 +1400,14 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
 def flag_contains_change(flag: dict[str, Any], *, start: int, end: int, before_length: int) -> bool:
     """Whether one flag covers a `[start, end)` change envelope.
 
-    The exact predicate `change_record` refuses on when no flag satisfies it
-    for any flag in the frozen set -- factored out so `examination_state` and
-    `validate_finding` can re-derive the same verdict from a sealed
-    `reproof_change_span` instead of trusting a producer's claim that a
-    rewrite stayed in bounds (module docstring: "one derivation, shared with
-    every consumer").
+    Shared by `change_record`, `examination_state` and `validate_finding`.
     """
     location = flag["location"]
     if location["start"] > start:
         return False
     if end <= location["end"]:
         return True
-    # Only a witness-derived flag's end is suffix-trimmed against a string
-    # this function never sees, and only the true end of the text is where
-    # that trimming can fall short — see `change_record`'s docstring.
+    # The one-character slack `change_record` documents.
     return (
         flag["class"] in WITNESS_DERIVED_LOCATION_CLASSES
         and start < location["end"]
@@ -1726,30 +1425,14 @@ def validate_chain(
 ) -> dict[str, Any]:
     """Validate the exact draft/finding/Perlectio relationship once for every reader.
 
-    `length_floor_characters_per_page` is the sealed `[truncation]` floor this
-    run judges under, from a caller that holds the sealed protocol bytes. It is
-    what stops a re-proof termination re-deriving its own `length_suspicious`
-    under a floor nobody sealed: `validate_truncation_record` recomputes the
-    signal from the record's *own* measure, so a record naming floor 1 under a
-    sealed floor of 50 is internally consistent, classifies `complete`, and
-    clears an audit hold that the sealed policy would have held. Given the
-    floor, a record judged under any other is refused
-    before the signal is re-derived. `None` is the caller that does not hold
-    the sealed table -- the Recensor, which reads this chain across stages and
-    has no Perlector protocol of its own, and the fixture chamber, which runs
-    without a sealed protocol at all -- and it is a declared absence rather
-    than a silent skip, exactly as `validate_truncation_record`'s `text` is.
+    `length_floor_characters_per_page` is the sealed `[truncation]` floor, from a
+    caller that holds the protocol bytes; `None` is a caller that does not (the
+    Recensor, the fixture chamber), a declared absence.
 
-    **A known limit, stated rather than implied.** Where the sealed assessment
-    says `assessed`, this function proves the exhausted-cap projection leads the
-    published `uncertain_spans` and stops there: what follows is the reader's
-    own report, and no artifact in this run holds that report separately, so
-    nothing here can prove the tail is what a reader actually said. The
-    annotation layer proves those offsets anchor to the exact text; it cannot
-    prove their provenance. Binding the tail needs the doubt report sealed as
-    evidence of its own, which is not built. Under every other state the layers
-    are constrained exactly, because a reader with no channel -- or one whose
-    report was refused -- has nothing of its own to publish.
+    Known limit: under an `assessed` uncertainty state this proves only that the
+    exhausted-cap projection leads `uncertain_spans`. The tail is the reader's
+    own report, which no artifact holds separately, so its provenance is not
+    proven here.
     """
     payload = reading.get("payload")
     if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
@@ -1779,36 +1462,7 @@ def validate_chain(
     )
     if any(draft_payload[field] != finding_payload[field] for field in shared_fields):
         raise SchemaRefusal(f"audit draft and finding for {act_id} restate different frozen facts")
-    basis = payload.get("basis")
-    if not isinstance(basis, dict):
-        raise SchemaRefusal(
-            f"reading of {act_id} has no object basis; its completed reading cannot be "
-            "reconciled to evidence; restore the sealed basis before consuming it"
-        )
-    regions = basis.get("regions")
-    if not isinstance(regions, list) or not regions:
-        raise SchemaRefusal(
-            f"reading of {act_id} has no non-empty region basis; its completed text names "
-            "no ink; restore the contributing region records before consuming it"
-        )
-    pages_by_ordinal: dict[int, str] = {}
-    basis_page_ids: list[str] = []
-    for region in regions:
-        ordinal = region.get("source_page_ordinal") if isinstance(region, dict) else None
-        page_id = region.get("source_page_id") if isinstance(region, dict) else None
-        if (
-            not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
-            or not isinstance(page_id, str)
-            or not page_id
-            or (ordinal in pages_by_ordinal and pages_by_ordinal[ordinal] != page_id)
-        ):
-            raise SchemaRefusal(
-                f"reading of {act_id} has an unusable source page in its region basis; the "
-                "audit page set cannot be derived; restore one page id per integer ordinal"
-            )
-        pages_by_ordinal[ordinal] = page_id
-    basis_page_ids = sorted(set(pages_by_ordinal.values()))
+    basis_page_ids = _basis_page_ids(payload, act_id)
     if draft_payload["page_ids"] != basis_page_ids:
         raise SchemaRefusal(
             f"audit page set for {act_id} disagrees with the reading's sealed region basis; "
@@ -1834,10 +1488,7 @@ def validate_chain(
         raise SchemaRefusal(f"reading of {act_id} names an audit finding with a mismatched digest")
     if record["unresolved"] != finding_payload["unresolved"]:
         raise SchemaRefusal(f"reading of {act_id} contradicts its audit finding's unresolved state")
-    # Defence in depth rather than a live screen: every examination forgery that
-    # survives `validate_perlectio_audit`'s delivery rules is also caught by the
-    # `unresolved` comparison above, the shared-fields equality, or the plan and
-    # request re-derivations below. Kept because it names the exact fact.
+    # Defence in depth: kept because it names the exact fact.
     if record["examination"] != finding_payload["examination"]:
         raise SchemaRefusal(
             f"reading of {act_id} contradicts its audit finding's examination state"
@@ -1856,13 +1507,7 @@ def validate_chain(
     )
     if record["reproofs"] != expected_reproofs:
         raise SchemaRefusal(f"reading of {act_id} does not retain exactly its frozen re-proof plan")
-    # The delivery half of the same claim. A sealed plan says what Pass C
-    # *intended* to ask; `request_digest` says which closed request the reader
-    # was actually handed, and rebuilding that request here from the frozen
-    # draft is what stops the two drifting. Delivery is not the producer's word
-    # for it either: a request exists exactly when there was a plan to deliver
-    # and a round left to spend, so an act with no flags, or one whose cap was
-    # already exhausted, must name no request at all.
+    # A request exists exactly when there was a plan and a round to spend.
     if reproof_delivery_due(draft_payload["flags"], draft_payload["round_cap"]):
         expected_request = audit_request(
             act_key=draft_payload["act_key"],
@@ -1893,6 +1538,44 @@ def validate_chain(
             f"reading of {act_id} names a delivered audit request although its frozen plan "
             "and round cap left nothing to deliver"
         )
+    _validate_uncertainty_projection(payload, finding_payload, act_id)
+    return {"record": record, "draft": draft, "finding": finding}
+
+
+def _basis_page_ids(payload: dict[str, Any], act_id: str) -> list[str]:
+    basis = payload.get("basis")
+    if not isinstance(basis, dict):
+        raise SchemaRefusal(
+            f"reading of {act_id} has no object basis; its completed reading cannot be "
+            "reconciled to evidence; restore the sealed basis before consuming it"
+        )
+    regions = basis.get("regions")
+    if not isinstance(regions, list) or not regions:
+        raise SchemaRefusal(
+            f"reading of {act_id} has no non-empty region basis; its completed text names "
+            "no ink; restore the contributing region records before consuming it"
+        )
+    pages_by_ordinal: dict[int, str] = {}
+    for region in regions:
+        ordinal = region.get("source_page_ordinal") if isinstance(region, dict) else None
+        page_id = region.get("source_page_id") if isinstance(region, dict) else None
+        if (
+            not _integer(ordinal)
+            or not isinstance(page_id, str)
+            or not page_id
+            or (ordinal in pages_by_ordinal and pages_by_ordinal[ordinal] != page_id)
+        ):
+            raise SchemaRefusal(
+                f"reading of {act_id} has an unusable source page in its region basis; the "
+                "audit page set cannot be derived; restore one page id per integer ordinal"
+            )
+        pages_by_ordinal[ordinal] = page_id
+    return sorted(set(pages_by_ordinal.values()))
+
+
+def _validate_uncertainty_projection(
+    payload: dict[str, Any], finding_payload: dict[str, Any], act_id: str
+) -> None:
     expected_uncertainty = [
         {
             "start": span["start"],
@@ -1902,24 +1585,13 @@ def validate_chain(
         }
         for span in finding_payload["uncertain_spans"]
     ]
-    # The exhausted-cap spans lead the Perlectio's layer; the reader's own
-    # assessed doubts, if any, follow them. The projection must be present
-    # exactly, in order, at the head -- what follows is the reader's report and
-    # is validated against the text by the annotation layer, not here.
-    #
-    # What may follow it is decided by the sealed assessment, not left open: a
-    # reading whose reader was never asked, or whose report could not be
-    # anchored, has no doubts of its own to publish, so its layer must be the
-    # projection and nothing else. Without that, an act with no exhausted-cap
-    # finding -- the ordinary case, where the projection is empty -- would
-    # accept any invented span at all, because every list starts with the empty
-    # one.
+    # The exhausted-cap projection leads the layer; only an `assessed` reader may
+    # add spans of its own after it. Any other state must equal the projection
+    # exactly: every list starts with the empty one, so a prefix check would
+    # accept invented spans on an act with no exhausted-cap finding.
     published = payload.get("uncertain_spans")
-    # The record is validated before its state is read, by the one function the
-    # canonical layer uses. Reading `state` off an unvalidated record let a
-    # reading saying `assessed` while carrying a problem -- a contradiction the
-    # canonical layer refuses by name -- choose the relaxed prefix rule here and
-    # publish spans and gaps the reader's report never named.
+    # Validated before its state is read, or a contradictory `assessed` record
+    # could choose the relaxed prefix rule.
     assessment_record = uncertainty.validate_assessment_record(
         payload.get("uncertainty_assessment"), f"reading of {act_id}"
     )
@@ -1932,13 +1604,8 @@ def validate_chain(
         agrees = published == expected_uncertainty
     if not agrees:
         raise SchemaRefusal(f"reading of {act_id} disagrees with its audit uncertainty projection")
-    # The same state rule over the other layer, and the direction that matters
-    # is the one that loses ink: a gap is unread ink (goal 2), and an act whose
-    # gap went missing reads as wholly established. Under any state but
-    # `assessed` the only gap a reading may carry is the whole-act gap its
-    # `no-readable-text` outcome owes -- the producer mints no other, and an
-    # invented internal gap here would make a complete reading look partial with
-    # nothing behind it either way.
+    # A gap is unread ink (goal 2): outside `assessed`, only the whole-act gap of a
+    # `no-readable-text` outcome may appear.
     gaps = payload.get("gaps")
     if not isinstance(gaps, list):
         raise SchemaRefusal(f"reading of {act_id} has no gap list beside its audit projection")
@@ -1949,13 +1616,8 @@ def validate_chain(
             f"reading of {act_id} publishes a gap of its own although its sealed assessment "
             f"is {state!r}; only a reader that was asked reports where its sight failed"
         )
-    # What follows the projection under `assessed` is the reader's own report,
-    # and this is the last check before the Recensor publishes: the spans and
-    # gaps are bound to the text here by the canonical validator itself, so a
-    # span past the end of `text` never reaches a review record to be printed
-    # as offsets that do not anchor. Self-revisions are
-    # left out on purpose: their offsets index the prior draft, not this text,
-    # and the canonical projection at the Archetypus is where they are held.
+    # The last check before the Recensor publishes. Self-revisions index the prior
+    # draft, so they are held at the Archetypus instead.
     try:
         uncertainty.validate(
             {
@@ -1970,7 +1632,6 @@ def validate_chain(
         raise SchemaRefusal(
             f"reading of {act_id} carries an uncertainty layer its text cannot anchor: {error}"
         ) from error
-    return {"record": record, "draft": draft, "finding": finding}
 
 
 def audit_digest(payload: dict[str, Any]) -> str:

@@ -87,7 +87,6 @@ def invoke_stage(
 
 
 def test_page_testimonium_role_with_an_unhashable_value_is_a_named_refusal():
-    """Malformed JSON-shaped input must not escape as a set-membership TypeError."""
     payload = {field: None for field in attestatores.PAGE_TESTIMONIUM_FIELDS}
     payload.update(
         {
@@ -212,13 +211,12 @@ def test_an_unsealed_whole_pass_resumes_over_what_it_already_sealed(tmp_path, mo
     one: the sealed record is reused byte-for-byte, every pair ends at ordinal
     one with no gap, and `latest_attempt` resolves for all of them.
 
-    Unit 2's per-pair resume ordinal was tried here and is what this test now
-    forbids. A page-scoped chair has no act-scoped attempt to repeat -- the
-    targeted reread refuses to mint one by name -- so taking the crashed pair
-    to ordinal 2 while the page Testimonium and the act attachment stayed at
-    ordinal 1 published a `not-run` over that chair's good `read`, dropped it
-    out of the act's witness coverage, and held the whole run at the Recensor.
-    The stage's own tally reported KNOWN throughout, which is why the assertion
+    This test forbids a per-pair resume ordinal: a page-scoped chair has no
+    act-scoped attempt to repeat, so taking the crashed pair to ordinal 2
+    while the page Testimonium and the act attachment stayed at ordinal 1
+    would publish a `not-run` over that chair's good `read`, dropping it out
+    of the act's witness coverage and holding the whole run at the Recensor.
+    The stage's own tally reports KNOWN throughout, which is why the assertion
     below is the downstream one as well as the local one.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
@@ -291,7 +289,6 @@ def test_an_unsealed_whole_pass_resumes_over_what_it_already_sealed(tmp_path, mo
 
 
 def test_resume_does_not_ask_an_already_sealed_pair_to_decode_again(tmp_path, monkeypatch):
-    """A changed second answer cannot collide because the second call never happens."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     real_publish = attestatores.publish_attempt
     real_resolve = attestatores.resolve_attempt
@@ -386,10 +383,9 @@ def test_a_resume_over_a_lost_proposal_crop_refuses_by_name_not_an_indexerror(
     inventory, so the resume revalidates it through
     `validate_tallied_testimonium`. If that act's own proposal crop is gone by
     the time the resume runs, the *current* pass cannot verify a region for it
-    either, so preflight seeds an empty cache entry for the act. Seeding that
-    empty list -- rather than seeding nothing -- used to suppress the tally's
-    own re-derivation and its named refusal, and `regions[0]` died with a bare
-    `IndexError` instead.
+    either, so preflight seeds an empty cache entry for the act -- which must
+    still let the tally re-derive and name the refusal, not die on `regions[0]`
+    with a bare `IndexError`.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
     real_publish = attestatores.publish_attempt
@@ -444,13 +440,8 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
     """Preflight and publication share regions and exact resolved attempts.
 
     The append/collision history is indexed by one manifest walk, while the
-    closing tally remains an independent rebuild.
-
-    A per-pass page-fallback bounds index used to be counted here too. It fed
-    the identity branch that minted `genuinely-empty` for a fallback act's
-    chairs without asking anything (Sol-S1); the branch and the index went
-    together, and this stage no longer reads the Designator's `page-fallback`
-    records at all.
+    closing tally remains an independent rebuild. This stage reads no
+    Designator `page-fallback` records at all.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
     region_calls: list[str] = []
@@ -734,7 +725,6 @@ def test_a_whole_pass_may_not_skip_an_ordinal_over_any_seat(tmp_path):
 
 
 def test_a_targeted_reread_names_both_the_act_and_the_chair_or_is_refused(tmp_path):
-    """Without both, it is a whole second pass wearing a narrower name."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
         invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
@@ -1311,7 +1301,6 @@ def test_an_actual_testimonium_identity_refuses_replacement_at_the_store_boundar
 
 
 def test_every_testimonium_outcome_uses_one_identity_bearing_writer():
-    """A second constructor can drift without changing either constructor's tests."""
     module = ast.parse(inspect.getsource(attestatores))
     publishers = []
     for node in ast.walk(module):
@@ -1647,16 +1636,13 @@ def test_chandra_combined_unrecordable_metadata_fails_one_attempt_without_holdin
 
     `attestator_1` is the fixture's Chandra chair: its `raw_response` string
     takes a different path through `resolve_attempt` than every other chair's
-    declared `payload`, and that path used to call `format_capabilities_for`
-    unguarded and never checked `witness_reported` against the closed
-    confidence-ordinal set at all. A malformed declaration there raised
-    `SchemaRefusal` straight out of `resolve_attempt`, past the per-attempt
-    outcome vocabulary this stage otherwise guarantees, and held the *whole*
-    pass -- no Testimonium for any act or chair -- over one witness's bad
-    self-report, exactly the failure this stage's other untrusted-input guards
-    (e.g. `_MAX_NATIVE_DEPTH`) exist to prevent. This mirrors
+    declared `payload`, and a malformed `format_capabilities`/`witness_reported`
+    on that path must fail this one attempt, not raise `SchemaRefusal` past the
+    per-attempt outcome vocabulary and hold the *whole* pass over one witness's
+    bad self-report -- exactly what this stage's other untrusted-input guards
+    (e.g. `_MAX_NATIVE_DEPTH`) exist to prevent. Mirrors
     `test_combined_unrecordable_witness_metadata_fails_one_attempt_without_crashing`
-    for the chair that used to skip both checks entirely.
+    for this chair's own path.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
     real_testimony_for = attestatores.testimony_for
@@ -1856,13 +1842,12 @@ def test_a_reading_that_claims_its_own_channel_was_unrecordable_is_unknown(tmp_p
 
 
 def test_an_unrecordable_channel_may_not_assert_facts_nothing_measured(tmp_path):
-    """`content_health` is the one field spec 07 requires to be "computed here,
-    deterministically ... never self-reported". `recordable=False` used to be a
-    door out of every other check in this validator, so a resealed record could
-    take that branch and then claim a character count, a truncation state, a valid
-    encoding and a full native payload — all of them uncomputable by definition,
-    since the premise of the branch is that nothing could be kept. The tally
-    counted such a record as KNOWN.
+    """`content_health` is computed deterministically here, never self-reported.
+
+    A `recordable=False` record must not also claim a character count, a
+    truncation state, a valid encoding or a full native payload -- all
+    uncomputable by definition, since the premise of that branch is that
+    nothing could be kept.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
@@ -1993,12 +1978,11 @@ def test_a_resealed_native_payload_cannot_change_without_remeasuring_its_health(
 
 @pytest.mark.parametrize("damage", ("absent", "garbled", "truncated", "recursion"))
 def test_damaged_attempt_tally_is_unknown_and_refuses_to_add_a_replacement(tmp_path, damage):
-    """`recursion` pins the gap two blind audits both found: `attempt_tally`
-    reads the stored manifest through its own bare `json.loads`, the one JSON
-    reader in this stage that `common/runtree/store.py::_read_json`'s
-    `RecursionError` guard does not cover. A stored manifest replaced with deep
-    enough nesting used to escape as an uncaught traceback (exit 1) instead of
-    the UNKNOWN + hold #23 promises."""
+    """`recursion` pins the one JSON reader in this stage not covered by
+    `common/runtree/store.py::_read_json`'s `RecursionError` guard:
+    `attempt_tally` reads the stored manifest through its own bare
+    `json.loads`, so a manifest replaced with deep enough nesting must still
+    become UNKNOWN and hold, not an uncaught traceback."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     initial = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
     assert initial.returncode == 0, initial.stderr
@@ -2169,7 +2153,6 @@ def test_an_accounting_imbalance_is_fatal_and_never_becomes_a_hold(tmp_path, mon
 def test_an_outer_manifest_accounting_imbalance_is_fatal_and_never_becomes_a_hold(
     tmp_path, monkeypatch
 ):
-    """The tally's outer manifest read must preserve `FatalAccounting` too."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     result = invoke_stage(
         run_root,
@@ -2191,7 +2174,6 @@ def test_an_outer_manifest_accounting_imbalance_is_fatal_and_never_becomes_a_hol
 
 
 def test_a_fatal_closing_tally_does_not_publish_a_completion_seal(tmp_path, monkeypatch):
-    """A fatal close cannot leave the checkpoint that only a closed pass earns."""
     run_root, tree = run_to_designator(tmp_path, "happy")
 
     def imbalanced(*_args, **_kwargs):
@@ -2306,7 +2288,6 @@ def test_an_act_scoped_testimonium_cannot_wear_page_scope_to_skip_the_tally(tmp_
 
 
 def test_a_page_scope_claim_cannot_hide_an_act_scoped_attempt_from_the_history(tmp_path):
-    """One self-reported field may not remove an attempt from its own history."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
         invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
@@ -2336,13 +2317,13 @@ def test_a_page_scope_claim_cannot_hide_an_act_scoped_attempt_from_the_history(t
 def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(tmp_path, monkeypatch):
     """A synthesized separator is not a raw span at the normalized offset.
 
-    The caller used to publish `(start, start)` in raw coordinates when every
-    normalized character in the clipped match mapped to ``None``. That asserted
-    alignment to an empty raw slice the witness never supplied. Exercise the
-    caller, not only the translator: both page chairs must retain an explicit
-    unaligned fact, with no zero-length text alignment surviving.  Unit 10C's
-    separate geometric attachment basis may still attach the page Testimonium;
-    it must never turn that non-existent raw text span back into alignment.
+    When every normalized character in a clipped match maps to ``None``, the
+    caller must not publish `(start, start)` in raw coordinates -- that would
+    assert alignment to an empty raw slice the witness never supplied. Both
+    page chairs must retain an explicit unaligned fact, with no zero-length
+    text alignment surviving; a separate geometric attachment basis may still
+    attach the page Testimonium, but never by turning that non-existent raw
+    text span back into alignment.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
     loss = {

@@ -39,9 +39,7 @@ def _act(box=(0, 0, 500, 500), text="hello", label=None) -> dict:
     return act
 
 
-# ---------------------------------------------------------------------------
 # Every PARSE_OUTCOME, reached by its own input.
-# ---------------------------------------------------------------------------
 
 
 def test_raw_response_not_bytes_is_refused_by_name():
@@ -280,9 +278,7 @@ def test_no_outcome_can_be_added_to_the_contract_without_a_test_above():
     assert exercised == PARSE_OUTCOMES
 
 
-# ---------------------------------------------------------------------------
 # Empty acts, accepted rather than refused.
-# ---------------------------------------------------------------------------
 
 
 def test_empty_acts_list_is_accepted_not_refused():
@@ -295,9 +291,7 @@ def test_empty_acts_list_is_accepted_not_refused():
     }
 
 
-# ---------------------------------------------------------------------------
 # Float quantization: never refused, quantized by the declared rule.
-# ---------------------------------------------------------------------------
 
 
 def test_float_boxes_are_quantized_low_floor_far_ceil_not_refused():
@@ -326,9 +320,7 @@ def test_the_quantization_rule_is_pinned_exactly(raw, quantized):
     assert structure_answer._quantize(x0, y0, x1, y1) == quantized
 
 
-# ---------------------------------------------------------------------------
 # page_text / spans: newline only between non-empty texts.
-# ---------------------------------------------------------------------------
 
 
 def test_page_text_joins_only_non_empty_acts_with_a_single_newline():
@@ -397,12 +389,10 @@ def test_text_digest_is_sha256_over_the_utf8_bytes_and_nothing_else():
     )
 
 
-# ---------------------------------------------------------------------------
 # Page-pixel conversion equality against geometry_layer lives in the
 # designator-side test (SPEC_D §1.2: geometry_layer lives in
 # pipeline/2_designator, so the equality test does too):
 # pipeline/2_designator/test_structure_prompt.py.
-# ---------------------------------------------------------------------------
 
 
 def test_to_page_bounds_is_reachable_and_shaped_like_a_bounds_dict():
@@ -421,9 +411,7 @@ def test_to_page_bounds_reaches_exactly_the_last_page_pixel():
     assert bounds == {"x": 0, "y": 0, "w": 7, "h": 11}
 
 
-# ---------------------------------------------------------------------------
 # raw_bounds is always in-page: geometry.validate_bounds's own guarantee.
-# ---------------------------------------------------------------------------
 
 
 def test_raw_bounds_never_falls_outside_the_declared_page():
@@ -435,9 +423,7 @@ def test_raw_bounds_never_falls_outside_the_declared_page():
     assert bounds["y"] + bounds["h"] <= 53
 
 
-# ---------------------------------------------------------------------------
 # ordinal: reading order, unaltered.
-# ---------------------------------------------------------------------------
 
 
 def test_ordinal_is_response_order_and_nothing_reorders_it():
@@ -476,10 +462,8 @@ def test_label_is_returned_verbatim_to_the_caller_and_none_when_absent():
     assert result["acts"][0]["label"] is None
 
 
-# ---------------------------------------------------------------------------
 # Import boundary: common/structure_answer.py imports nothing from
 # pipeline/ or operations/.
-# ---------------------------------------------------------------------------
 
 
 def _imported_roots(path: Path) -> set[str]:

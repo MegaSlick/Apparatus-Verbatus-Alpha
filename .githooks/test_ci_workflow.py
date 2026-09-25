@@ -18,10 +18,7 @@ FROZEN_AUDIT_REQUIREMENTS = ROOT / ".githooks" / "frozen_audit_requirements.py"
 CHECK_ALL = ROOT / ".githooks" / "check-all.sh"
 BASH = ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c"]
 
-# The one declaration of the uv version the gate and CI both require
-# (F040, 2026-09-14): read here, not repeated as a literal, so a fixture below
-# that has to fabricate a matching `uv --version` output follows a version
-# bump automatically instead of silently drifting from it.
+# Read, not repeated, so the fabricated `uv --version` below follows a version bump.
 REQUIRED_UV_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["uv"][
     "required-version"
 ].removeprefix("==")
@@ -119,12 +116,7 @@ def test_ci_installs_the_frozen_project_environment_before_running_the_gate():
 
 
 def test_the_pinned_uv_version_has_one_source_of_truth():
-    """F040 (2026-09-14): a version bump to pyproject.toml's `[tool.uv]
-    required-version` must not leave a second, unreconciled copy in
-    check-all.sh or ci.yml to silently drift from it. Both must read the
-    version rather than repeat the literal -- checked here by asserting the
-    literal does not appear in either file at all, so a future hardcoded
-    reintroduction fails this test by name instead of drifting unnoticed."""
+    """check-all.sh and ci.yml read the uv version from pyproject.toml, never a literal."""
     check_all_text = CHECK_ALL.read_text()
     ci_text = workflow_text()
     assert REQUIRED_UV_VERSION not in check_all_text, (
@@ -137,13 +129,8 @@ def test_the_pinned_uv_version_has_one_source_of_truth():
     )
     assert "pyproject.toml" in check_all_text and "required-version" in check_all_text
     assert "pyproject.toml" in ci_text and "required-version" in ci_text
-    # The absence check above only proves the *current* version isn't
-    # duplicated -- a future bump could leave a stale literal behind in the
-    # actual install/compare command while some other line still mentions
-    # "pyproject.toml"/"required-version" in passing, and this test would not
-    # notice. Pin the check to the exact command shape instead: the extracted
-    # shell variable, not a literal, must be what `check-all.sh` compares
-    # `uv --version` against and what `ci.yml` installs.
+    # Absence proves only today's version: pin the command shape, so the extracted variable
+    # is what check-all.sh compares and ci.yml installs.
     assert 'case "$uv_version" in' in check_all_text
     assert '"uv $required_uv_version"|"uv $required_uv_version "*)' in check_all_text
     assert 'pip install "uv==$required_uv_version"' in ci_text
@@ -151,7 +138,6 @@ def test_the_pinned_uv_version_has_one_source_of_truth():
 
 def test_every_runtime_dependency_is_inside_the_everyday_environment():
     """Every runtime dependency must reach the everyday gate."""
-    import tomllib
 
     declared = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
     requirements = (ROOT / "requirements-dev.txt").read_text().splitlines()
@@ -169,12 +155,7 @@ def test_every_runtime_dependency_is_inside_the_everyday_environment():
 
 
 def _normalized(raw: str) -> str:
-    """PEP 503 name folding, the same rule `_pinned` applies.
-
-    The two files spell several distributions differently -- `huggingface_hub`
-    against `huggingface-hub` -- so comparing lower-cased text alone reported a
-    present dependency as absent and turned the build red over a spelling.
-    """
+    """PEP 503 name folding: the files spell some names differently (`huggingface_hub`)."""
 
     return re.sub(r"[-_.]+", "-", raw.strip()).lower()
 
@@ -189,27 +170,18 @@ def _pinned(requirements):
             continue
         distribution, separator, version = entry.partition("==")
         assert separator and version, f"{entry!r} is not an exact pin"
-        # PEP 503 normalization: `huggingface_hub` and `huggingface-hub` are the
-        # same distribution, and the two files spell several of them differently.
         pins[_normalized(distribution)] = version.strip()
     return pins
 
 
-# The frozen gate installs only these two groups (`.githooks/check-all.sh` names
-# them); `requirements-dev.txt` builds the everyday non-frozen environment, and this
-# file compares the two declarations against each other. `pod` is installed only by
-# `operations/pod/bootstrap.py`, on the pod itself, never on a laptop --
-# putting a ~10 GB CUDA stack into a laptop environment is not a gap
-# requirements-dev.txt should close. A future
-# laptop-side group has to earn its way into GATE_GROUPS explicitly; the
-# marker assertion below is the tripwire that catches one that tries to ride
-# along silently instead.
+# The frozen gate installs only these groups. `pod` goes only onto the pod (a ~10 GB CUDA
+# stack); any other group must earn its way in, and the marker assertion below catches one
+# riding along silently.
 GATE_GROUPS = ("test", "audit")
 
 
 def test_the_declared_requirements_match_the_projects_declared_direct_environment():
     """Both independently consumed declarations must pin the same direct environment."""
-    import tomllib
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     dependency_groups = project["dependency-groups"]
@@ -219,12 +191,8 @@ def test_the_declared_requirements_match_the_projects_declared_direct_environmen
         if name not in GATE_GROUPS
         for entry in group
     ]
-    # Two different problems, reported separately. A PEP 735
-    # `{include-group = "..."}` table here is a shape this test does not
-    # understand, not an entry missing a marker -- the comment further down
-    # explains that those tables are a real thing to expect -- and folding both
-    # into one assertion made a future group that used one fail with a message
-    # naming the wrong problem.
+    # Two problems, reported separately: an include-group table is a shape this test does
+    # not understand, not an entry missing a marker.
     excluded_tables = [entry for entry in excluded_entries if not isinstance(entry, str)]
     assert all(
         isinstance(entry, dict) and set(entry) == {"include-group"} for entry in excluded_tables
@@ -242,10 +210,7 @@ def test_the_declared_requirements_match_the_projects_declared_direct_environmen
     group_entries = [
         entry for name, group in dependency_groups.items() if name in GATE_GROUPS for entry in group
     ]
-    # PEP 735 lets a group hold `{include-group = "..."}` tables. `_pinned` would
-    # be handed the table and fail on `entry.strip()` with an AttributeError,
-    # reporting a type error where this test is meant to report environment
-    # drift. Those tables name no distribution, so they are not pins to compare.
+    # PEP 735 include-group tables name no distribution, and `_pinned` would crash on one.
     included = [entry for entry in group_entries if not isinstance(entry, str)]
     assert all(set(entry) == {"include-group"} for entry in included), (
         f"unrecognised non-string dependency-group entries {included}; this test "
@@ -267,18 +232,9 @@ def test_the_declared_requirements_match_the_projects_declared_direct_environmen
 
 
 def test_the_audit_is_invoked_from_the_frozen_interpreter_and_nothing_rescues_a_failure():
-    """What this proves, and what it does not.
-
-    It reads the script as text, so it establishes that the audit is written
-    with the frozen interpreter and its own inventory, and -- through the sweep
-    at the end, which is a real property over the whole file -- that `set -eu` is
-    in force and no rescue construct exists anywhere to swallow a non-zero exit.
-
-    It does not execute the audit. The executable gate tests below stop before
-    the suite on purpose, and the audit runs after `pytest`, so reaching it here
-    would mean running the whole suite inside one of its own tests. The previous
-    name claimed "fails closed" as tested behaviour; this one claims only what
-    the assertions below actually check.
+    """Reads the script as text: the frozen interpreter and inventory, `set -eu`, and no
+    rescue anywhere. The audit runs after pytest, so executing it here would run the suite
+    inside its own test.
     """
 
     gate = (ROOT / ".githooks" / "check-all.sh").read_text()
@@ -314,11 +270,8 @@ def test_the_frozen_audit_inventory_is_the_running_interpreters_exact_third_part
 
     from importlib.metadata import distributions
 
-    # Read from the helper rather than repeating the literal: a rename that
-    # updates only one copy would otherwise fail the full gate with pip-audit's
-    # "unresolvable requirement" instead of anything about the rename.
+    # Read from the helper: a rename in one copy would fail pip-audit obscurely.
     excluded = frozen_audit.PROJECT_DISTRIBUTION
-    import tomllib
 
     declared_name = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["name"]
     assert _normalized(declared_name) == excluded, (
@@ -358,9 +311,7 @@ def gate_repo(tmp_path):
     repo = new_repo(tmp_path / "gate")
     (repo / ".githooks").mkdir()
     shutil.copy(ROOT / ".githooks" / "check-all.sh", repo / ".githooks" / "check-all.sh")
-    # check-all.sh now reads its required uv version from pyproject.toml
-    # (F040) rather than carrying its own copy, so a synthetic repo needs one
-    # too, with the same pin the real repository declares.
+    # check-all.sh reads its uv version from pyproject.toml, with the real pin.
     (repo / "pyproject.toml").write_text(
         f'[tool.uv]\nrequired-version = "=={REQUIRED_UV_VERSION}"\n'
     )
@@ -551,13 +502,8 @@ def test_the_gate_refuses_when_uv_cannot_verify_the_venv_against_the_lock(tmp_pa
     result = run_gate(repo, env=environment)
 
     assert result.returncode == 1
-    # What the `unset|unset` here establishes: the sync runs under `/usr/bin/env
-    # -i`, so uv sees an emptied environment plus only the variables named on
-    # that line. It is *not* a check on the gate's own `unset UV_CONFIG_FILE
-    # UV_INEXACT UV_PYTHON`; deleting that line leaves this passing, because
-    # `env -i` already removed them. That line still matters for the later
-    # `frozen_python` steps, which do not run under `env -i`, so it is asserted
-    # as text below and its PYTHONPATH half is exercised by the next test.
+    # `unset|unset` shows the sync runs under `env -i`. It does not test the gate's own
+    # `unset UV_*` line, which later steps need and which is asserted as text below.
     assert calls.read_text().splitlines() == [
         f"{repo / '.venv'}|unset|unset",
         "sync --frozen --offline --group test --group audit --no-config",
@@ -593,9 +539,7 @@ def test_the_gate_does_not_import_from_an_inherited_pythonpath(tmp_path):
         f"{REQUIRED_UV_VERSION}'; exit 0; fi\nexit 0\n"
     )
     uv.chmod(0o755)
-    # The stub records that it ran. Asserting only `returncode == 1` proved
-    # nothing about contamination: the gate exits 1 for several earlier reasons,
-    # so a change that stopped before the static check would still pass here.
+    # Proves the static check was reached: the gate exits 1 for earlier reasons too.
     reached = tmp_path / "static-check-ran"
     (repo / ".githooks" / "check-static.sh").write_text(f"#!/bin/sh\n: > {reached}\nexit 1\n")
     environment = {
@@ -665,19 +609,9 @@ def test_ingress_step_on_branch_skips_tag_object_and_fails_closed(recorded_ingre
 
 
 def test_every_third_party_import_in_the_gate_suite_is_declared():
-    """The sibling above covers the project's runtime dependencies. This covers
-    the gate's own: a package these hook tests import, but nothing declares,
-    reaches the gate only as some other dependency's transitive -- unpinned,
-    unrecorded, and one upstream trim away from turning collection red with a
-    message about the wrong thing.
-
-    Found in audit (R0): `.githooks/test_r0_contract_ci_matrix.py` imports
-    `yaml`, which appeared in no requirements file, no pyproject entry and no
-    workflow step; it was present only because `huggingface_hub` requires
-    PyYAML.
-    """
+    """A package the gate's own tests import but nothing declares arrives only as an
+    unpinned transitive, as `yaml` once did through huggingface_hub."""
     import ast
-    import sys
 
     roots: set[str] = set()
     for path in sorted((ROOT / ".githooks").glob("*.py")):

@@ -56,12 +56,8 @@ def static_gate_scripts():
 
 
 def make_static_gate_repo(path, broken=None):
-    """A throwaway repo holding a stub for every script the gate names.
-
-    ruff, shellcheck and the document check are stubbed out so the only live
-    step is the syntax check under test. A fake `sh` records the operand of
-    every `sh -n` call, which is exactly the one file a real `sh -n` reads.
-    """
+    """A repo stubbing every named script, ruff and shellcheck; a fake `sh` logs each
+    `sh -n` operand, the one file a real `sh -n` reads."""
     repo = init_repo(path)
     listed = static_gate_scripts()
     for relative in listed:
@@ -69,8 +65,7 @@ def make_static_gate_repo(path, broken=None):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("#!/bin/sh\nexit 0\n")
     if broken is not None:
-        # Unterminated `if`: a syntax error for dash and for bash alike, so the
-        # fixture does not depend on which shell provides /bin/sh.
+        # Unterminated `if`: a syntax error for dash and bash alike.
         (repo / broken).write_text("#!/bin/sh\nif true; then\n")
     shutil.copy2(HOOKS / "check-static.sh", repo / ".githooks" / "check-static.sh")
 
@@ -80,9 +75,7 @@ def make_static_gate_repo(path, broken=None):
         stub = stubs / name
         stub.write_text("#!/bin/sh\nexit 0\n")
         stub.chmod(0o755)
-    # The gate picks its syntax shell — dash where it exists, sh otherwise — so
-    # both names are recorded. Stubbing only one meant the test broke the moment
-    # the gate's preference changed, rather than when its coverage did.
+    # Both recorded: the gate prefers dash where it exists, sh otherwise.
     for name in ("sh", "dash"):
         recorder = stubs / name
         recorder.write_text(
@@ -115,11 +108,8 @@ def test_static_gate_syntax_checks_every_script_it_names(tmp_path):
     assert checked == listed
 
 
-# These three run the whole static gate inside a fixture repo — the gate testing
-# itself, on every commit. A genuinely broken script is already caught by the real
-# `check-static.sh` run in the same gate; what these add is proof that the *list*
-# is walked, which changes about as often as the list does. Reserved for the full
-# gate so the everyday one stays worth running.
+# The gate testing itself: these prove the list is walked, which rarely changes, so
+# they are reserved for the full gate.
 @pytest.mark.full
 @pytest.mark.parametrize("position", [1, -1])
 def test_static_gate_fails_on_a_broken_script_that_is_not_first(tmp_path, position):
@@ -243,11 +233,7 @@ def make_commit_message_repo(path):
 
 
 def run_commit_message_in(repo, message, env=None):
-    """Run commit-msg inside a throwaway repo, so the identity it reads is ours.
-
-    `git var` answers from the repository the hook runs in, so the author and
-    committer scans cannot be exercised against a message file alone.
-    """
+    """Run commit-msg in a throwaway repo: `git var` answers from the repo the hook runs in."""
     (repo / "message.txt").write_text(message)
     return run_hook(repo, "commit-msg", args=("message.txt",), env=env)
 
@@ -256,10 +242,7 @@ POISONED_NAME = f"Pasted {SAMPLE_SECRET}"
 
 
 def test_commit_message_hook_scans_the_author_header(tmp_path):
-    # `git commit --author=` and a pasted user.name write operator-supplied text
-    # into the commit object; the message scan reads the message only. Only the
-    # author is poisoned here, so dropping it from the scan would leave a clean
-    # committer and an attributed message, and the commit would land.
+    # Only the author is poisoned: a message-only scan would let this commit land.
     repo = make_commit_message_repo(tmp_path / "repo")
     result = run_commit_message_in(
         repo,
@@ -275,8 +258,7 @@ def test_commit_message_hook_scans_the_author_header(tmp_path):
 
 
 def test_commit_message_hook_scans_the_committer_header(tmp_path):
-    # The committer identity is separate from the author and equally carried into
-    # the object. Poisoned alone for the same reason as above.
+    # The committer is poisoned alone, for the same reason.
     repo = make_commit_message_repo(tmp_path / "repo")
     result = run_commit_message_in(
         repo,
@@ -292,8 +274,7 @@ def test_commit_message_hook_scans_the_committer_header(tmp_path):
 
 
 def test_ordinary_commit_message_still_passes_with_the_identity_scan(tmp_path):
-    # The other half: the scan must not refuse an ordinary configured identity,
-    # or the tests above would pass for a hook that blocks everything.
+    # Positive control: a hook that blocked everything would pass the tests above.
     repo = make_commit_message_repo(tmp_path / "repo")
     result = run_commit_message_in(
         repo,
@@ -364,13 +345,7 @@ def test_install_configures_local_hooks_after_prerequisites(tmp_path):
 
 
 def test_install_creates_every_drawer_the_contract_declares(tmp_path):
-    """The test above pre-creates six drawers and asserts only `core.hooksPath`, so
-    it cannot see the installer dropping one. A new drawer was once added
-    without the installer following, and a fresh clone silently lacked the
-    one-way staging drawer while `tidy.py` read its absence as empty. Nothing
-    here is pre-created: the installer is the only thing that can make these
-    appear.
-    """
+    """Nothing is pre-created: only the installer can make these drawers appear."""
     repo = init_repo(tmp_path / "repo")
     shutil.copytree(HOOKS, repo / ".githooks")
     result = run_hook(repo, "install.sh")
@@ -390,11 +365,8 @@ def test_install_creates_every_drawer_the_contract_declares(tmp_path):
 
 
 def test_fixture_images_are_binary_at_any_depth(tmp_path):
-    """`proof/fixtures/*` matched one path level while the fixtures live a directory
-    deeper, so `git check-attr` reported `text=auto` on them and the explicit binary
-    policy was not the thing applying. Asserted by asking git, not by reading the
-    pattern — the pattern looked right before, too.
-    """
+    """Asked of git, not read from the pattern: `proof/fixtures/*` once looked right yet
+    matched only one level, leaving nested fixtures `text=auto`."""
     repo = init_repo(tmp_path / "repo")
     shutil.copy(ROOT / ".gitattributes", repo / ".gitattributes")
     nested = repo / "proof" / "fixtures" / "synthetic-two-page-v0"
@@ -418,9 +390,7 @@ def failing_command_env(path, name):
 
 @pytest.mark.parametrize("failing", ["chmod", "mkdir"])
 def test_install_does_not_configure_hooks_when_a_prerequisite_fails(tmp_path, failing):
-    # Both filesystem steps run before `git config` so that a fault leaves a
-    # previously working hooksPath alone. A hooksPath pointed at files git cannot
-    # execute is a clone reporting "Hooks installed" and running no hook at all.
+    # A hooksPath at files git cannot execute would report installed and run no hook.
     repo = init_repo(tmp_path / "repo")
     shutil.copytree(HOOKS, repo / ".githooks")
     git(repo, "config", "core.hooksPath", "previous-hooks")

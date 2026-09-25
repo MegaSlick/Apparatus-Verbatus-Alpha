@@ -32,11 +32,8 @@ APPROVER: Final = "project-lead"
 # it without treating a free-text label as authority.
 ACTIONS: Final = ("advance", "exclusion", "salvage-promotion", "other")
 
-# Approval records are small operator-authored evidence, but both entry points
-# hash the whole object and the builder sorts every subject.  Bounds make a
-# planted object a named refusal rather than an unbounded allocation.  The
-# subject ceiling still permits a large explicit batch while keeping its maximum
-# encoded text below the receipt reader's four-mebibyte record bound.
+# Bounds make a planted object a named refusal, not an unbounded allocation; the
+# subject ceiling stays below the receipt reader's four-mebibyte record bound.
 MAX_APPROVAL_SUBJECTS: Final = 384
 MAX_APPROVAL_SUBJECT_BYTES: Final = 1024
 MAX_APPROVAL_REASON_BYTES: Final = 256 * 1024
@@ -48,10 +45,6 @@ SYNTHETIC_FIXTURE_INGRESS: Final = "synthetic-fixture"
 REAL_INGRESS: Final = "real"
 
 _REQUIRED: Final = (
-    # `schema` is required like every other field, so a record that simply omits
-    # it is named as absent rather than reported below as a schema of the wrong
-    # type — a diagnostic that sent the reader looking for a value that was
-    # never there.
     "schema",
     "subject_ids",
     "action",
@@ -106,10 +99,7 @@ class ApprovalRecordBinding:
     ):
         if not isinstance(reference, ApprovalRecordReference):
             raise ApprovalRefusal("an approval-record binding has no typed reference")
-        # `type(...) is str`, not `isinstance`, for the reason this module states
-        # at `_text_field_refusal`: a str subclass can override comparison, and
-        # the arm that decides which experiment an approval covers does so by
-        # comparing this subject against a named constant.
+        # `type(...) is str`: a str subclass could override the comparison below.
         if type(subject) is not str or not subject.strip():
             raise ApprovalRefusal("an approval-record binding names no subject")
         if not _is_sha256(target_version_hash):
@@ -189,9 +179,6 @@ def build_approval_record(
             "an approval must name the lowercase sha256 of the exact policy or target version "
             "it approved, or it goes on approving something that changed underneath it"
         )
-    # The last asymmetry between this and the validator. The validator refuses a
-    # blank or non-string timestamp; this did not check it at all, so a caller
-    # could seal `timestamp="   "` here and no reader would ever accept it back.
     if not _bounded_text(timestamp, MAX_APPROVAL_TIMESTAMP_BYTES):
         raise ApprovalRefusal(
             "an approval with no timestamp cannot be reviewed later; when it was given "
@@ -267,13 +254,7 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
             "approval record subjects are not in canonical order; one subject set must have "
             "one content address"
         )
-    # The validator is the gate for records read off disk, so it has to be at
-    # least as strict as the builder. It was not: the builder refuses an empty
-    # reason or target version, and this only checked that the keys existed — so a
-    # record written by hand or by another tool could pass with both blank, and
-    # its self-hash would verify happily, because a hash covers whatever bytes
-    # were sealed rather than whether they meant anything. The exact-version
-    # binding this module exists for would then name no target at all.
+    # At least as strict as the builder: a self-hash verifies blank fields too.
     for field, maximum in (
         ("reason", MAX_APPROVAL_REASON_BYTES),
         ("timestamp", MAX_APPROVAL_TIMESTAMP_BYTES),

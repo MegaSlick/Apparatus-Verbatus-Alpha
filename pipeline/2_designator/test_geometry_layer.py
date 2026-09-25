@@ -28,8 +28,8 @@ from common.contracts.stages import writing_directory
 from common.runtree.store import BLOBS_DIR
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
-# Derived exactly as the custody module derives its prefix, so this fixture can
-# never regress to the bare-stage-name literal the F-S2 fix removed.
+# Derived exactly as the custody module derives its prefix, so this fixture
+# can never regress to a bare-stage-name literal.
 RESPONSE = {"relative_path": RESPONSE_BLOB_PREFIX + "b" * 64, "sha256": "b" * 64}
 PAGE_ID = "pg_fixture"
 PAGE_ORDINAL = 0
@@ -41,12 +41,9 @@ BOTH_PASS_POLYGON = [{"x": 4, "y": 804}, {"x": 8, "y": 804}, {"x": 8, "y": 808}]
 
 
 def _detector_that_only_sees_its_own_tile(polygon, score=lambda tile: 9000):
-    """A detector reports page-absolute geometry, and only for tiles containing it.
-
-    The adapter now holds `detect` to exactly this. A fixture that returned one
-    page-absolute polygon from every tile described a detector that cannot
-    exist -- and it was the only reason the union looked exercised across the two
-    passes.
+    """A detector reports page-absolute geometry, and only for tiles containing
+    it -- a fixture returning one polygon from every tile would describe a
+    detector that cannot exist.
     """
 
     def detect(tile):
@@ -62,9 +59,7 @@ def _detector_that_only_sees_its_own_tile(polygon, score=lambda tile: 9000):
 
 def test_sealed_policy_exposes_integer_surya_sizing_and_yolo_rectification_toggle():
     policy = load_geometry_policy()
-    # The digest the Designator hands to require_sealed_config must be taken over
-    # the same raw bytes common/stage.py seals, or every run refuses an unchanged
-    # file.
+    # Must be the same raw bytes common/stage.py seals, or an unchanged file refuses.
     assert policy["config_sha256"] == digest_bytes(DEFAULT_POLICY_PATH.read_bytes())
     assert policy["surya"]["tile_height_px"] == 1400
     assert policy["surya"]["half_tile_vertical_offset_px"] == 700
@@ -86,9 +81,8 @@ def test_unknown_geometry_policy_knob_is_refused(tmp_path):
 
 
 def test_an_unreadable_geometry_policy_file_is_a_named_refusal_not_an_oserror(tmp_path):
-    """The same reasoning the Chandra blob read applies: a missing or unreadable
-    sealed policy reaches the caller as a refusal naming the path, never as a
-    bare OSError out of the middle of the loader."""
+    """A missing or unreadable sealed policy reaches the caller as a named
+    refusal, never a bare OSError out of the middle of the loader."""
     with pytest.raises(SchemaRefusal, match="geometry policy"):
         load_geometry_policy(tmp_path / "absent.toml")
 
@@ -130,9 +124,8 @@ def test_point_of_use_policy_refuses_every_missing_sealed_value(field_path):
 
 
 def test_an_enabled_rectify_toggle_is_refused_until_an_implementation_exists():
-    """A sealed policy with rectify=true would make yolo_proposals publish
-    mode-"rectify" records for crops nothing rectified -- a false claim in
-    published custody. The record schema keeps "rectify" reserved; the sealed
+    """A sealed policy with rectify=true would publish mode="rectify" records
+    for crops nothing rectified -- a false claim in published custody. The
     toggle fails closed until the implementation and its tests arrive."""
     policy = deepcopy(load_geometry_policy())
     policy["yolo_obb"]["rectify"] = True
@@ -142,10 +135,11 @@ def test_an_enabled_rectify_toggle_is_refused_until_an_implementation_exists():
 
 @pytest.mark.parametrize("field", ["half_tile_vertical_offset_px", "horizontal_overlap_px"])
 def test_sealed_tiling_geometry_must_stay_half_the_tile_it_offsets(field):
-    """The half-tile equalities are doing safety work -- a vertical offset that is
-    not half the tile height reopens the seam the double pass exists to cover, and
-    a horizontal overlap that is not half the tile width reopens the x=1400,2800
-    fragmentation V1 fixed -- so a present-but-wrong value must refuse, not load."""
+    """A vertical offset that isn't half the tile height reopens the seam the
+    double pass exists to cover; a horizontal overlap that isn't half the
+    tile width reopens the same fragmentation at the tile boundary -- so a
+    present-but-wrong value must refuse, not load.
+    """
     policy = deepcopy(load_geometry_policy())
     policy["surya"][field] = policy["surya"][field] + 1
     with pytest.raises(SchemaRefusal, match="half the sealed tile"):
@@ -174,15 +168,14 @@ def test_surya_runs_both_half_offset_tilings_and_unions_without_discarding_pass_
     assert [call["y"] for call in calls] == [0, 1400, 700, 2100]
     assert len(proposals) == 1
     assert proposals[0]["source"] == "surya"
-    # One physical detection in the band both passes tile: seen once per pass and
-    # unioned, with both pass ordinals retained under their declared unit.
+    # Seen once per pass and unioned, both pass ordinals retained.
     assert proposals[0]["observation_unit"] == "surya-tiling-pass"
     assert proposals[0]["observed_ordinals"] == [0, 1]
     validate_raw_proposal(proposals[0])
 
 
 def test_surya_horizontal_overlap_recovers_a_detection_cut_by_the_original_width_seam():
-    """V1: union cannot reconstruct partial boxes, so one tile must see the whole detection."""
+    """Union cannot reconstruct partial boxes, so one tile must see the whole detection."""
     policy = load_geometry_policy()
     target = [{"x": 1390, "y": 100}, {"x": 1410, "y": 100}, {"x": 1410, "y": 120}]
 
@@ -248,12 +241,9 @@ def test_chandra_split_refuses_text_and_only_preserves_geometry_reference():
 
 
 class _FixtureTree:
-    """Mimics the real run tree's numbered stage directories, not the bare stage name.
-
-    A `put_blob("designator", …)` fixture that wrote to `"designator/blobs/…"`
-    instead of the real `"2_designator/blobs/…"` (`writing_directory`) is exactly
-    what let the matching prefix bug in `retain_chandra_response` go unnoticed by
-    this suite — the fixture restated the path scheme instead of deriving it.
+    """Mimics the real run tree's numbered stage directories, not the bare
+    stage name -- a fixture writing to `"designator/blobs/…"` instead of the
+    real `"2_designator/blobs/…"` would hide a prefix bug from this suite.
     """
 
     def __init__(self, *, receipt_chair="designator_structure"):
@@ -272,11 +262,9 @@ class _FixtureTree:
         return {"chair": self.receipt_chair}
 
     def read_bytes(self, path):
-        # `RunTree.read_bytes` is `Path.read_bytes`, so a blob that is not there
-        # raises FileNotFoundError. A double that raised KeyError instead would
-        # let a missing-blob refusal pass in this suite and fail against the real
-        # tree — the same fixture-restates-the-real-thing gap this class's
-        # docstring already names for stage directories.
+        # RunTree.read_bytes is Path.read_bytes, which raises FileNotFoundError
+        # for a missing file; a double raising KeyError instead would hide a
+        # missing-blob refusal from this suite.
         try:
             return self.blobs[path]
         except KeyError:
@@ -302,10 +290,8 @@ def test_one_chandra_response_has_one_receipt_and_two_consumable_references():
         )
         == body
     )
-    # The same receipt is verified at both ends of custody: once when the response
-    # is retained, once when it is read back.
+    # Verified at both ends of custody: once retained, once read back.
     assert tree.receipts == [RECEIPT, RECEIPT]
-    # Geometry itself contains only the sealed blob reference, never the response text.
     geometry = chandra_layout(
         page_id="pg_fixture",
         page_ordinal=0,
@@ -324,8 +310,6 @@ def test_chandra_custody_refuses_a_forged_blob_reference():
     stored = retain_chandra_response(
         tree, b"fixture", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
     )
-    # A response reference whose claimed digest disagrees with what the custody
-    # binding recorded is refused by the pairing check before any bytes are read.
     forged = {**stored["response_ref"], "sha256": "0" * 64}
     with pytest.raises(SchemaRefusal, match="names a different response"):
         read_retained_chandra_response(
@@ -336,8 +320,6 @@ def test_chandra_custody_refuses_a_forged_blob_reference():
             page_id=PAGE_ID,
             page_ordinal=PAGE_ORDINAL,
         )
-    # Tampering the stored bytes themselves (leaving every reference honest) is
-    # refused by the digest check instead.
     tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered"
     with pytest.raises(SchemaRefusal, match="response blob differs from its sealed reference"):
         read_retained_chandra_response(
@@ -353,11 +335,7 @@ def test_chandra_custody_refuses_a_forged_blob_reference():
 @pytest.mark.parametrize("removed", ["response_ref", "custody_ref"])
 def test_chandra_custody_refuses_a_reference_whose_blob_is_gone(removed):
     """A vanished blob is a named custody refusal, not a bare FileNotFoundError.
-
-    Both halves of the pair are read through the same helper, so both are pinned:
-    the run tree already treats a receipt reference whose file is missing this
-    way, and a stage boundary that exists to say what it refused may not end a
-    stage with an unnamed OS error instead.
+    Both halves of the pair are read through the same helper, so both are pinned.
     """
     tree = _FixtureTree()
     stored = retain_chandra_response(
@@ -376,15 +354,11 @@ def test_chandra_custody_refuses_a_reference_whose_blob_is_gone(removed):
 
 
 def test_chandra_custody_retains_a_pathologically_nested_response_unparsed():
-    """G13, the write door's half: `retain_chandra_response` asks
-    `_is_custody_binding` whether the bytes it was handed are themselves a
-    canonical binding, and that question is answered by `json.loads`.
-
-    A response nested ~10k deep makes that question raise `RecursionError`
-    rather than return an answer. The predicate must read that as "not a
-    binding" -- which is true; a binding is a closed four-field object -- and
-    the response must be retained as the opaque custody it is, never parsed and
-    never a crash on the Designator's live structure pass.
+    """`retain_chandra_response` asks `_is_custody_binding` whether the bytes
+    it was handed are themselves a canonical binding, via `json.loads`. A
+    response nested ~10k deep makes that raise `RecursionError` rather than
+    answer; the predicate must read that as "not a binding" and retain the
+    response as opaque custody, never a crash on the live structure pass.
     """
     tree = _FixtureTree()
     nested = (b"[" * 10_000) + (b"]" * 10_000)
@@ -406,16 +380,10 @@ def test_chandra_custody_retains_a_pathologically_nested_response_unparsed():
 
 
 def test_chandra_custody_refuses_a_pathologically_nested_binding():
-    """G13: a well-formed but ~10k-deep custody binding blob is this boundary's
-    named refusal, never an escaping `RecursionError`.
-
-    `json.loads` recurses per nesting level, so a binding blob nested deep
-    enough defeats the parser separately from `json.JSONDecodeError` -- the
-    same failure `common/chandra_layout.py` and `structure_answer.py` guard
-    the same way. The custody read path parses the binding blob's bytes
-    before it ever inspects their shape, so this exercises the boundary that
-    would otherwise crash the Designator's live structure pass
-    (`structure_pass.py::ask_page`) on a corrupted or hostile binding blob.
+    """A well-formed but ~10k-deep custody binding blob is this boundary's
+    named refusal, never an escaping `RecursionError`: `json.loads` recurses
+    per nesting level, so a blob nested deep enough defeats the parser
+    separately from `json.JSONDecodeError`.
     """
     tree = _FixtureTree()
     stored = retain_chandra_response(
@@ -470,8 +438,8 @@ def test_chandra_custody_refuses_to_retain_under_a_non_designator_receipt():
 def test_chandra_custody_refuses_a_malformed_page_identity_before_writing(
     page_id, page_ordinal, message
 ):
-    """Every `_page_identity` branch refuses at the write door, nothing sealed;
-    the exact message proves each case hits ITS branch, not a sibling's."""
+    """Every `_page_identity` branch refuses at the write door; the exact
+    message proves each case hits ITS branch, not a sibling's."""
     tree = _FixtureTree()
     with pytest.raises(SchemaRefusal, match=message):
         retain_chandra_response(
@@ -540,8 +508,6 @@ def test_chandra_custody_refuses_a_receipt_reused_with_a_different_response():
         page_id=PAGE_ID,
         page_ordinal=PAGE_ORDINAL,
     )
-    # Both references are individually well formed and individually retrievable;
-    # only their pairing is forged.
     with pytest.raises(SchemaRefusal, match="different receipt"):
         read_retained_chandra_response(
             tree,
@@ -551,9 +517,8 @@ def test_chandra_custody_refuses_a_receipt_reused_with_a_different_response():
             page_id=PAGE_ID,
             page_ordinal=PAGE_ORDINAL,
         )
-    # The cross-response forgery under the binding's OWN receipt: the receipt
-    # check passes honestly, so what refuses is the response pairing itself —
-    # otherwise this case would only re-prove the receipt branch above.
+    # Under the binding's OWN receipt, so the receipt check passes honestly
+    # and what refuses is the response pairing itself.
     with pytest.raises(SchemaRefusal, match="names a different response"):
         read_retained_chandra_response(
             tree,
@@ -692,11 +657,11 @@ def test_resolver_consumer_refuses_a_raw_proposal_with_unsealed_extra_field():
         resolve([forged, raw_sources[1]], [])
 
 
-# --- BREAKER battery (Sonnet R2 adversarial test-authorship duty) ---------------
+# --- full-width tiling edge cases -----------------------------------------
 
 
 def test_surya_tiles_the_full_page_width_not_only_the_first_tile_column():
-    """S2: a page wider than one sealed tile must still be scanned past x=1400."""
+    """A page wider than one sealed tile must still be scanned past x=1400."""
     policy = load_geometry_policy()
     calls = []
 
@@ -714,7 +679,6 @@ def test_surya_tiles_the_full_page_width_not_only_the_first_tile_column():
         response_ref=RESPONSE,
         detect=detect,
     )
-    # Every (y, x) tile origin actually issued to the detector.
     origins = {(call["y"], call["x"]) for call in calls}
     assert (0, 0) in origins and (0, 1400) in origins and (0, 2800) in origins, (
         "Surya must tile across the full 3000px width, not just x=0..1400"
@@ -746,8 +710,8 @@ def test_surya_still_covers_a_narrow_page_with_a_single_column():
 
 
 def test_surya_union_key_includes_score_so_a_rescored_repeat_is_retained_not_merged():
-    """Union invariant: identical geometry at a different score across passes is
-    two honest raw signals, never silently averaged or discarded."""
+    """Identical geometry at a different score across passes is two honest
+    raw signals, never silently averaged or discarded."""
     policy = load_geometry_policy()
     detect = _detector_that_only_sees_its_own_tile(
         BOTH_PASS_POLYGON, score=lambda tile: 9000 if tile["y"] == 0 else 7000
@@ -757,7 +721,7 @@ def test_surya_union_key_includes_score_so_a_rescored_repeat_is_retained_not_mer
         page_id="pg_fixture",
         page_ordinal=0,
         page_w=100,
-        page_h=2600,  # tall enough that both offset-0 and offset-700 passes tile it
+        page_h=2600,  # tall enough that both offset-0 and offset-700 tile it
         policy=policy,
         receipt_ref=RECEIPT,
         response_ref=RESPONSE,
@@ -828,7 +792,7 @@ def test_content_identity_unions_exact_duplicate_single_call_detections():
 
 
 def test_raw_proposal_transform_refuses_a_non_identity_scale_in_page_pixel_space():
-    """Adversarial transform: page-pixels-to-page-pixels can only be 1:1."""
+    """page-pixels-to-page-pixels can only be 1:1."""
     proposal = yolo_obb(
         page_id="pg_fixture",
         page_ordinal=0,
@@ -861,7 +825,7 @@ def test_raw_proposal_transform_refuses_a_non_identity_scale_in_page_pixel_space
 
 
 def test_resolver_refuses_an_occlusion_polygon_outside_the_shared_page_extent():
-    """S3 (extent half): validate_occlusion cannot see the page; the resolver must."""
+    """`validate_occlusion` cannot see the page; the resolver must."""
     raw_sources = _geometry_sources()  # 100x100 page
     out_of_bounds = occlusion_envelope(
         run_id="r2-fixture",
@@ -885,11 +849,9 @@ def test_resolver_refuses_an_occlusion_polygon_outside_the_shared_page_extent():
 
 
 def test_resolver_refuses_two_occlusions_sharing_one_identity():
-    """The resolver refuses colliding raw proposal ids; occlusions are the same fact.
-
-    `occlusion_ids` goes into every partition row, so an id counted twice tells a
-    reviewer that two separate obstructions bear on every proposal on the page
-    when only one was ever recorded.
+    """The resolver refuses colliding raw proposal ids; occlusions are the same
+    fact: `occlusion_ids` goes into every partition row, so an id counted
+    twice would tell a reviewer two obstructions bear on the page.
     """
     raw_sources = _geometry_sources()
     first = _occlusion_envelope()
@@ -953,9 +915,10 @@ def test_resolver_refuses_raw_proposals_with_mismatched_page_pixel_extent():
 
 
 def test_resolve_does_not_mutate_its_inputs_across_the_internal_double_derivation():
-    """S4: resolve() calls _derive_resolution twice (once directly, once inside
-    validate_resolution). Confirm the second derivation sees the same untouched
-    inputs -- no TOCTOU between the two passes."""
+    """`resolve()` calls `_derive_resolution` twice (once directly, once
+    inside `validate_resolution`); confirm the second sees the same
+    untouched inputs.
+    """
     raw_sources = _geometry_sources()
     occlusions = [_occlusion_envelope()]
     before_raw = deepcopy(raw_sources)
@@ -998,16 +961,15 @@ def test_empty_detections_lists_are_held_as_empty_not_an_error():
 
 
 def test_resolver_refuses_a_page_with_zero_raw_proposals_rather_than_an_empty_partition():
-    """Recorded verdict, not a fix: a page with no raw proposal source has no
-    denominator for the resolver to partition at all, so it fails closed instead
-    of silently returning an empty coverage record."""
+    """A page with no raw proposal source has no denominator to partition,
+    so it fails closed instead of returning an empty coverage record."""
     with pytest.raises(SchemaRefusal, match="no raw proposal denominator"):
         resolve([], [])
 
 
 def test_three_point_collinear_polygon_is_accepted_as_a_thin_one_pixel_region():
-    """Breaker battery: a degenerate 3-point line does not crash the pipeline;
-    the enclosing AABB's half-open-edge rule gives it a real, non-empty crop."""
+    """A degenerate 3-point line does not crash the pipeline; the enclosing
+    AABB's half-open-edge rule gives it a real, non-empty crop."""
     policy = load_geometry_policy()
     collinear = [{"x": 10, "y": 10}, {"x": 20, "y": 10}, {"x": 30, "y": 10}]  # one horizontal line
 
@@ -1026,9 +988,8 @@ def test_three_point_collinear_polygon_is_accepted_as_a_thin_one_pixel_region():
 
 
 def test_degenerate_obb_with_only_three_distinct_corners_is_accepted():
-    """OBB requires exactly four corner points structurally; a real detector may
-    still emit a duplicated corner (rounding collapse). That is still >= 3
-    distinct points, so it is held, not refused."""
+    """A real detector may emit a duplicated corner (rounding collapse); that
+    is still >= 3 distinct points, so it is held, not refused."""
     proposal = yolo_obb(
         page_id="pg_fixture",
         page_ordinal=0,
@@ -1121,11 +1082,10 @@ def test_score_bp_boundary_values_are_refused(score_bp):
 
 
 def test_chandra_bbox_at_a_one_pixel_page_collapses_to_too_few_distinct_points_and_is_refused():
-    """S5 breaker battery, x1=1000/page_w=1 edge: the floor-left and ceil-right
-    formulas both round to the page's only column, so a full-range bbox on a
-    degenerate 1px page yields fewer than three distinct corners. That is a
-    correct fail-closed refusal (principle 2: never silently accepted as a real
-    crop), not a coverage loss -- a 1px page is not a real corpus case."""
+    """The floor-left and ceil-right formulas both round to the page's only
+    column at a 1px page, so a full-range bbox yields fewer than three
+    distinct corners -- a fail-closed refusal, not a coverage loss.
+    """
     policy = load_geometry_policy()
     with pytest.raises(SchemaRefusal, match="fewer than three distinct points"):
         chandra_layout(
@@ -1141,9 +1101,9 @@ def test_chandra_bbox_at_a_one_pixel_page_collapses_to_too_few_distinct_points_a
 
 
 def test_chandra_bbox_rounding_never_inverts_for_a_thin_real_region():
-    """A genuinely thin but non-degenerate region (a header rule, a signature
-    line) on a realistically sized page: right edge must never land left of the
-    left edge after the ceil-based rounding, and the crop must be non-empty."""
+    """A genuinely thin but non-degenerate region: the right edge must never
+    land left of the left edge after ceil-based rounding.
+    """
     policy = load_geometry_policy()
     thin = chandra_layout(
         page_id="pg_fixture",
@@ -1158,9 +1118,6 @@ def test_chandra_bbox_rounding_never_inverts_for_a_thin_real_region():
     aabb = thin[0]["aabb"]
     assert aabb["w"] >= 1 and aabb["h"] >= 1, "no inverted or zero-area crop for a thin real region"
 
-    # x1 pinned at the maximum normalized coordinate on an ordinary page: the
-    # ceil-based right edge must land exactly at the page's last column, not
-    # past it and not before the left edge.
     full_width = chandra_layout(
         page_id="pg_fixture",
         page_ordinal=0,
@@ -1175,9 +1132,8 @@ def test_chandra_bbox_rounding_never_inverts_for_a_thin_real_region():
 
 
 def test_a_raw_proposal_must_name_what_its_observation_ordinals_count():
-    """`[0, 1]` means two tiling passes for Surya and two detections in one
-    response for YOLO/Chandra; the record says which rather than leaving a reader
-    to guess from the source name."""
+    """`[0, 1]` means two tiling passes for Surya but two detections in one
+    response for YOLO/Chandra; the record says which."""
     proposal = chandra_layout(
         page_id="pg_fixture",
         page_ordinal=0,
@@ -1196,8 +1152,8 @@ def test_a_raw_proposal_must_name_what_its_observation_ordinals_count():
 
 
 def test_occlusion_polygon_answers_the_same_shape_question_as_proposal_geometry():
-    """One degenerate point repeated three times is not page geometry, and the two
-    validators may not disagree about that."""
+    """One degenerate point repeated three times is not page geometry, and the
+    two validators may not disagree about that."""
     with pytest.raises(SchemaRefusal, match="fewer than three distinct points"):
         occlusion_envelope(
             run_id="r2-fixture",
@@ -1219,13 +1175,10 @@ def test_occlusion_polygon_answers_the_same_shape_question_as_proposal_geometry(
 
 
 def test_surya_refuses_tile_local_coordinates_instead_of_placing_ink_on_the_wrong_region():
-    """The union across overlapping tiles assumes page-absolute detector output.
-
-    A tile-local polygon is indistinguishable from a page-absolute one by shape
-    alone, so without this refusal a live adapter that forgot the tile origin
-    would file every proposal at the wrong place on the page, silently, and one
-    physical detection seen from several tiles would be retained several times at
-    several wrong places instead of unioning into one.
+    """The union across overlapping tiles assumes page-absolute detector
+    output. A tile-local polygon is indistinguishable from a page-absolute
+    one by shape alone, so without this refusal a live adapter that forgot
+    the tile origin would silently file every proposal at the wrong place.
     """
     policy = load_geometry_policy()
     line = [{"x": 800, "y": 100}, {"x": 1500, "y": 100}, {"x": 1500, "y": 120}]
@@ -1259,15 +1212,13 @@ def test_surya_refuses_tile_local_coordinates_instead_of_placing_ink_on_the_wron
 
 
 def test_a_detection_wider_than_the_overlap_keeps_its_complete_sighting_and_its_fragments():
-    """Full-width tiling, horizontal overlap, and the union key, read together.
-
-    A detection wider than the sealed 700px overlap cannot fit inside every tile
-    that touches it, so overlapping tiles clip it differently and each clipping is
-    retained as its own raw proposal. That is honest retention, not double
-    counting: one tile still saw the whole detection, and the resolver publishes
-    the complete sighting as containing each fragment rather than choosing
-    between them. No coverage denominator is inflated -- the residual-ink check
-    counts page pixels, never proposals (U13).
+    """A detection wider than the sealed 700px overlap cannot fit inside every
+    tile that touches it, so overlapping tiles clip it differently and each
+    clipping is retained as its own raw proposal -- honest retention, not
+    double counting, since the resolver publishes the complete sighting as
+    containing each fragment rather than choosing between them. No coverage
+    denominator is inflated -- the residual-ink check counts page pixels,
+    never proposals.
     """
     policy = load_geometry_policy()
     line = [
@@ -1319,8 +1270,8 @@ def test_a_detection_wider_than_the_overlap_keeps_its_complete_sighting_and_its_
 
 
 def test_two_proposals_with_the_same_box_are_an_ambiguity_not_an_invented_hierarchy():
-    """Coincident AABBs each 'contain' the other, so publishing one as the outer
-    one invents a parent-child relation out of the proposal_id sort order."""
+    """Coincident AABBs each 'contain' the other, so publishing one as the
+    outer one would invent a parent-child relation from sort order."""
     policy = load_geometry_policy()
     proposals = surya_double_pass(
         page_id="pg_coincident",
@@ -1346,8 +1297,7 @@ def test_two_proposals_with_the_same_box_are_an_ambiguity_not_an_invented_hierar
     }
     assert resolve(list(reversed(envelopes)), []) == resolved
 
-    # A strictly larger box still contains each of them: containment survives as a
-    # relation, it just stops being asserted between equals.
+    # A strictly larger box still contains each of them.
     bigger = yolo_obb(
         page_id="pg_coincident",
         page_ordinal=0,

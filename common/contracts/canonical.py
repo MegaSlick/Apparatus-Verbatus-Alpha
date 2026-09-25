@@ -28,17 +28,8 @@ import hashlib
 import json
 from typing import Any
 
-# Everything this system writes in its first form carries this label. It is
-# deliberately disposable: spec 01 calls the contracts intentionally throwaway
-# before alpha, and DATA_CONTRACT.md is reserved until 01-03 have stabilized.
-#
-# v1 adds the attempt binding and a self-hash to every envelope.  An earlier
-# envelope carried an artifact id derived from that binding without carrying the
-# binding itself, so a consumer could only check the id's shape rather than
-# recomputing it.  It also left ordinary stage payloads mutable without any
-# integrity evidence. Reusing a v0 run under the repaired rule would be an
-# incompatible interpretation of its evidence, so the label changes rather than
-# pretending the two shapes agree.
+# v1 envelopes carry the attempt binding and a self-hash, so a v0 run is not
+# reusable under them.
 SCHEMA_LABEL = "skeleton.v1"
 
 # CPython's integer-to-decimal limit may be configured down to 640 digits;
@@ -51,15 +42,10 @@ def _segment(key: str) -> str:
     return key if key.isprintable() else ascii(key)
 
 
-# One walk position, as a crumb and its parent, so a walk carries where it is
-# without paying for the rendered string at every level. `None` is the root's
-# parent. Rendered by `_at`, and only when a refusal has to name a place.
+# One walk position as (crumb, parent), rendered by `_at` only on refusal.
 _Trail = tuple[str, Any] | None
 
-# A refusal an operator cannot read has not named anything. A million-deep
-# payload's position is its top, its bottom, and how far apart they are; the
-# whole path would be several million characters of prose on stderr. No real
-# record comes near this, so ordinary refusals are rendered whole.
+# A deep position is rendered as its top, its bottom and the gap between.
 _MAX_RENDERED_CRUMBS = 32
 
 
@@ -77,21 +63,8 @@ def _at(trail: _Trail) -> str:
     return "".join(crumbs)
 
 
-# How deep a canonical artifact may nest. This is a contract about what this
-# pipeline seals, not a tuning knob: the deepest record it builds is a handful
-# of levels, and a payload that nests past this is a defect in whatever produced
-# it rather than evidence anything can hash against.
-#
-# It exists because the alternative is an interpreter detail. Before this bound,
-# the depth at which `canonical_bytes` refused was wherever one of two walks ran
-# out of stack: `_refuse_floats`'s Python frames at roughly the recursion limit,
-# or, once that walk stopped recursing, `json.dumps`'s C encoder — which on this
-# machine absorbs about 9,997 levels and on another absorbs a different number,
-# because CPython's C recursion limit is platform-dependent (the same fact
-# `common/test_corpus_register.py` records about the JSON *parser*). A hasher
-# whose acceptance depends on which machine ran it cannot say two artifacts with
-# the same content produce the same bytes, which is the one thing this module is
-# for.
+# Declared, so acceptance never depends on the host's platform-dependent C
+# recursion limit in `json.dumps`. Real records nest a handful of levels.
 _MAX_CANONICAL_DEPTH = 256
 
 
@@ -99,9 +72,7 @@ def _enter_container(container: Any, open_path: set[int], trail: _Trail) -> None
     """Open one container: refuse a cycle, refuse excessive depth, mark it open.
 
     `open_path` holds exactly the containers between the root and here, so its
-    size is the current depth and no separate counter can drift from it. Every
-    open container is still referenced by the walk, so its identity cannot be
-    reused underneath this set while it is being watched for.
+    size is the current depth.
     """
     marker = id(container)
     if marker in open_path:
@@ -121,38 +92,13 @@ def _enter_container(container: Any, open_path: set[int], trail: _Trail) -> None
 def _refuse_floats(value: Any, path: str = "$") -> None:
     """Walk the structure and refuse numbers outside the canonical vocabulary.
 
-    Iterative for the reason the preference screens are (see
-    `common/corpus_register.py::refuse_capture_preference`): the value handed to
-    this walk is whatever a caller asks the pipeline to seal, and much of it
-    began as model or witness JSON that passed through several stages before
-    reaching the one hasher every artifact goes through. A recursive walk over a
-    deeply nested payload exhausted the interpreter stack, and while
-    `canonical_bytes` does convert that `RecursionError` into a named refusal,
-    the refusal then depended on which of two walks ran out of stack first
-    rather than on anything this module decides. Depth is this walk's own list
-    now, and its own declared bound; `json.dumps` recurses in C below it and
-    keeps the existing guard, but never sees a structure deep enough to need it.
-
-    The path is assembled only when something is refused. Concatenating it at
-    every level would cost a deeply nested payload the square of its depth in
-    string bytes, which is the same denial the rewrite exists to remove.
-
-    Cycles and depth are named here rather than left to run out of stack. The
-    recursive walk refused both by exhausting itself, which a walk with no stack
-    to exhaust would have turned into a hang for the first and a
-    platform-dependent threshold for the second -- so the containers on the
-    current path are tracked, and one reached from inside itself, or past
-    `_MAX_CANONICAL_DEPTH`, is refused in the same terms `canonical_bytes` uses
-    for a structure it cannot serialize. Only the *current path* is tracked, so
-    a value that legitimately appears twice in a record is walked twice rather
-    than mistaken for a loop.
+    Iterative, with its own declared depth bound and cycle check, so a deep or
+    self-containing payload is refused in this module's terms rather than
+    wherever a stack runs out. Only the current path is tracked, so a value that
+    appears twice is walked twice. The path is rendered only on refusal.
     """
-    # (kind, payload, trail). A "key" task checks one dict key's type at the
-    # point the recursive form checked it -- after the preceding sibling's whole
-    # subtree, before its own value's -- so a payload carrying both a bad key and
-    # a bad number is still named by whichever the old walk reached first. An
-    # "exit" task is stacked under a container's children and clears it from the
-    # open path once they are all walked.
+    # A "key" task refuses a bad key in depth-first order, after the preceding
+    # sibling's subtree; an "exit" task closes a container once its children ran.
     pending: list[tuple[str, Any, _Trail]] = [("value", value, (path, None))]
     open_path: set[int] = set()
     while pending:
@@ -161,8 +107,7 @@ def _refuse_floats(value: Any, path: str = "$") -> None:
             open_path.discard(current)
             continue
         if kind == "key":
-            # A hostile or huge key may fail while being rendered; its type
-            # and location identify the schema defect without formatting it.
+            # Named by type: a hostile key may fail while being rendered.
             raise TypeError(f"non-string key of type {type(current).__name__} at {_at(trail)}")
         if isinstance(current, bool):
             continue
@@ -184,9 +129,6 @@ def _refuse_floats(value: Any, path: str = "$") -> None:
             tasks: list[tuple[str, Any, _Trail]] = []
             for key, item in current.items():
                 if not isinstance(key, str):
-                    # Queued rather than raised here: the value tasks already
-                    # stacked for earlier siblings must run first, exactly as
-                    # the recursive walk ran them before reaching this key.
                     tasks.append(("key", key, trail))
                     continue
                 tasks.append(("value", item, (f".{_segment(key)}", trail)))
@@ -202,20 +144,9 @@ def _refuse_floats(value: Any, path: str = "$") -> None:
 def _unencodable_path(value: Any, path: str = "$") -> str | None:
     """Locate the first UTF-8 failure in canonical order for a refusal message.
 
-    Iterative for `_refuse_floats`'s reason and for one more: this runs inside
-    `canonical_bytes`'s `UnicodeEncodeError` handler, which is outside the guard
-    that turns exhausted traversal into a named refusal. A `RecursionError`
-    raised in here escaped as an implementation traceback from the function
-    every sealed artifact is hashed through.
-
-    Positions are carried as trails and rendered once, for `_refuse_floats`'s
-    reason: this locator's whole output is one path, so building the other
-    million on the way to it is pure cost.
-
-    No cycle check, deliberately. This is reached only after `json.dumps` has
-    serialized the same value, and json refuses a circular structure before it
-    can return -- so a cycle cannot arrive here, and a check for one would be a
-    guard whose failing case no caller can construct.
+    Iterative: it runs inside `canonical_bytes`'s encode handler, outside the
+    guard that names a `RecursionError`. No cycle check: `json.dumps` has already
+    refused any cycle before this can run.
     """
     pending: list[tuple[str, Any, _Trail]] = [("value", value, (path, None))]
     while pending:
@@ -227,12 +158,9 @@ def _unencodable_path(value: Any, path: str = "$") -> str | None:
             if _is_unencodable(current):
                 return _at(trail)
         elif isinstance(current, dict):
-            # The encoder sees sorted keys; insertion order could pair its offender
-            # with a different field's path when several strings are unencodable.
+            # Sorted, as the encoder saw it.
             tasks: list[tuple[str, Any, _Trail]] = []
             for key in sorted(current):
-                # This locator must not replace the original refusal if called
-                # independently of the canonical-vocabulary walk.
                 if not isinstance(key, str):
                     continue
                 tasks.append(("key", key, trail))
@@ -265,11 +193,7 @@ def canonical_bytes(value: Any) -> bytes:
             allow_nan=False,
         )
     except RecursionError as error:
-        # `_refuse_floats` no longer recurses and names a cycle itself, so what
-        # is left under this guard is `json.dumps`, which recurses in C and
-        # cannot be rewritten here. Excessive nesting still means this process
-        # cannot establish a canonical form, and it may not escape as an
-        # implementation traceback.
+        # Left for `json.dumps`, which recurses in C.
         raise TypeError(
             "structure is recursive or nests too deeply for canonical JSON; no "
             "canonical artifact can carry it or be hashed against it"
@@ -278,8 +202,6 @@ def canonical_bytes(value: Any) -> bytes:
         return text.encode("utf-8")
     except UnicodeEncodeError as error:
         # json.loads accepts lone surrogates, but they have no UTF-8 form.
-        # TypeError is the established boundary for values outside this
-        # canonical vocabulary and is already handled by its consumers.
         offender = error.object[error.start : error.end]
         raise TypeError(
             f"unencodable character {offender!a} at {_unencodable_path(value) or '$'}: "
@@ -313,12 +235,7 @@ def digest_of(value: Any) -> str:
 
 
 def self_hash(record: dict[str, Any], field: str = "self_hash") -> str:
-    """The digest a record carries of itself, computed over the record without it.
-
-    A self-hash that included itself would be impossible to compute and trivially
-    unverifiable, so the field is removed first. `verify_self_hash` recomputes the
-    same way, which is what lets a reader detect a record edited after sealing.
-    """
+    """The digest a record carries of itself, computed over the record without that field."""
     without = {key: item for key, item in record.items() if key != field}
     return digest_of(without)
 
@@ -331,17 +248,11 @@ def verify_self_hash(record: dict[str, Any], field: str = "self_hash") -> bool:
     try:
         return stored == self_hash(record, field)
     except (RecursionError, TypeError):
-        # A boolean verifier must safely reject both an unrecomputable digest
-        # and a mismatch; human-facing boundaries recover the cause separately.
         return False
 
 
 def self_hash_refusal(record: dict[str, Any], field: str = "self_hash") -> str | None:
-    """Name why no digest can be computed, without claiming when damage arose.
-
-    Kept separate from the boolean verifier because only human-facing refusal
-    paths need the diagnostic and its extra serialization.
-    """
+    """Name why no digest can be computed, for human-facing refusals only."""
     try:
         self_hash(record, field)
     except TypeError as error:

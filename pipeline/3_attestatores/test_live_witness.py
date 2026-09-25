@@ -334,7 +334,6 @@ def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends()
 
 
 def test_the_old_flat_bound_is_refused_by_smaller_churro_rows_and_fits_80gb():
-    """The old flat ceiling remains visible beside the corrected 80 GB row."""
 
     rows = _sealed_churro_rows()
     over = [row.tier for row in rows if CHURRO_OUTPUT_TOKENS >= row.max_model_len]
@@ -371,8 +370,7 @@ def test_the_declared_bound_is_sent_only_where_it_is_what_binds(chair):
     expressed by sending no field -- checked either side of the crossover and
     exactly on it.
 
-    The generalisation of what used to be Churro's rule alone: DAI and Chandra
-    sent no bound at all, which let the engine set the budget to
+    Sending no bound at all lets the engine set the budget to
     `max_model_len - prompt` -- some 7,700 tokens for a DAI act crop whose own
     publisher runs it at 1,024.
     """
@@ -530,24 +528,22 @@ def test_a_page_that_fits_carries_its_capacity_record_onto_the_request():
     # system string, which is a single sentence where the retired layout
     # instruction was a two-message brief.
     assert capacity["prompt_tokens"] == 27
-    # U14: the dense-page answer is now measured over the vendor's own
-    # `HistoricalDocument` grammar, not the retired JSON contract (1,631).
+    # Measured over the vendor's own `HistoricalDocument` grammar.
     assert capacity["answer_budget"] == 1905
 
 
 def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_the_numbers():
     """The counterfactual this unit exists for, at the context the tree shipped.
 
-    A 300-dpi A4 page is 2,480x3,508.  Against the Churro row's own `max_pixels`
-    (U15: 401,408 / 4,014,080, its trained geometry, the same at every tier)
-    it costs 5,100 image tokens; with the measured 27-token vendor system
-    string and U14's 1,905-token dense-page answer that is 7,032 -- against
-    the `max_model_len = 2048` this catalogue carried until an earlier branch.
-    The request went to the endpoint and the engine answered HTTP 400; now
-    nothing is built.  The shipped row is 8,192 and admits the same page,
-    which is what `operations/serving/test_serving_catalogue_capacity.py`
-    asserts; the row is reconstructed here because the drill is about the
-    refusal, not the row.
+    A 300-dpi A4 page is 2,480x3,508. Against the Churro row's own
+    `max_pixels` (401,408 / 4,014,080, its trained geometry, the same at every
+    tier) it costs 5,100 image tokens; with the measured 27-token vendor
+    system string and the 1,905-token dense-page answer that is 7,032 --
+    against a `max_model_len = 2048` row, which answers HTTP 400 for real, so
+    nothing is built. The shipped row is 8,192 and admits the same page,
+    which `operations/serving/test_serving_catalogue_capacity.py` asserts; the
+    row is reconstructed here because the drill is about the refusal, not the
+    row.
     """
 
     shipped = [row for row in _sealed_churro_rows() if row.tier == "generic-24gb"][0]
@@ -570,15 +566,13 @@ def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
     """DAI is act-scoped, and a page-fallback act's crop is the whole page.
 
     The measured case from the token study: a fallback band's presented crop
-    was 1,291x1,826, costing 2,990 image tokens against U15's own DAI
+    was 1,291x1,826, costing 2,990 image tokens against DAI's own
     `max_pixels` (2,359,296, the same at every tier as `DAI_MAX_TOTAL_PIXELS`),
     which the 24 GB row cannot hold beside an 84-token prompt even with the
-    *smaller* single-act answer budget reserved. `feeding.dai_dimensions` no
-    longer produces exactly this size for this input (`v4` restored a
-    total-pixel ceiling `v3` had dropped, and 1,291x1,826 -- 2,357,366px -- is
-    itself over it); ``adapter.present`` is stubbed to hand the presentation
-    back unchanged, so this drill exercises `request_capacity_or_refuse`'s own
-    arithmetic on a fixed image size, not the resize rule, and the
+    *smaller* single-act answer budget reserved. ``adapter.present`` is
+    stubbed to hand the presentation back unchanged, so this drill exercises
+    `request_capacity_or_refuse`'s own arithmetic on a fixed image size, not
+    the resize rule, and the
     1,291x1,826 probe stays valid for that. The image cost alone is what
     settles it -- which is why an act chair reserving one act's answer rather
     than a page's does not let a page-fallback act through.
@@ -603,7 +597,6 @@ def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
 
 
 def test_an_ordinary_act_crop_still_fits_the_smallest_row():
-    """DAI's ordinary act path is the one measured sound at 24 GB; it stays so."""
 
     context = SimpleNamespace(tree=_FakeTree())
     image_bytes = _png(1500, 353)
@@ -1256,10 +1249,8 @@ def test_live_attempt_from_response_read_on_a_complete_stop(tmp_path: Path):
 def test_format_capabilities_falls_back_to_the_blanket_default_when_undeclared(tmp_path: Path):
     """`adapter.format_capabilities` read with the old default as fallback.
 
-    `_stub_adapter` declares no `format_capabilities` attribute at all --
-    exactly today's real adapters, which have not yet grown one (Wave 2's
-    U9/U10/U11/U12) -- so this seam must still record the blanket default
-    every live attempt used to hard-code, not raise `AttributeError` and not
+    `_stub_adapter` declares no `format_capabilities` attribute, so this seam
+    must still record the blanket default, not raise `AttributeError` and not
     silently record `None`.
     """
 
@@ -1346,8 +1337,7 @@ def test_format_capabilities_for_refuses_a_malformed_adapter_declaration(bad_dec
     """A declaration that is not the two-key boolean object this seam knows is
     this seam's own bug -- an adapter is code in this tree, not a vendor
     response -- and is refused here, before an immutable Testimonium can carry
-    it, rather than only later at `run.py::validate_tallied_testimonium`
-    (hostile review, U5 round 2)."""
+    it, rather than only later at `run.py::validate_tallied_testimonium`."""
 
     adapter = SimpleNamespace(format_capabilities=bad_declaration)
     with pytest.raises(SchemaRefusal, match="format_capabilities"):
@@ -1762,9 +1752,9 @@ def test_a_no_resize_dai_act_whose_model_image_is_other_bytes_is_still_refused(t
 
 
 def test_a_live_act_says_which_kind_of_bytes_it_retained(tmp_path: Path):
-    """U8's sixth gap, at the seam that decides it.
+    """`raw_response_ref` names which kind of bytes it holds.
 
-    `raw_response_ref` means the adapter's own output on every branch where a
+    It means the adapter's own output on every branch where a
     parser ran, and the whole transport body on the one branch where none
     could. Two kinds of evidence under one field name, and nothing said which.
     """
@@ -2094,14 +2084,12 @@ def test_captured_page_attempt_real_chandra_adapter_is_honest_about_an_unrecogni
     assert attempt.outcome == "failed"
     assert "no-layout-blocks" in attempt.reason
     assert blob_store.has(response.response_sha256)
-    # U8's fourth gap: the adapter's own account of those bytes is now
-    # attachable. It reached `unrecognized-shape` -- the parser ran, read the
-    # whole body, and could place no shape it knows -- which the shared capture
-    # contract admits, so the retained model view stays beside the blob it
-    # describes instead of being dropped for want of a state name. The outcome
-    # separates the two ways an answer yields no block: `no-layout-blocks` is
-    # an answer with no `<div>` in it at all, and `blocks-not-at-top-level` an
-    # answer that wrapped every one of them.
+    # `unrecognized-shape` -- the parser ran, read the whole body, and could
+    # place no shape it knows -- keeps the retained model view beside the blob
+    # it describes rather than dropping it for want of a state name. The
+    # outcome separates the two ways an answer yields no block:
+    # `no-layout-blocks` is an answer with no `<div>` at all, and
+    # `blocks-not-at-top-level` an answer that wrapped every one of them.
     assert attempt.native_capture["parse"] == {
         "state": "unrecognized-shape",
         "parser": "html",

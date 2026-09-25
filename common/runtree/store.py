@@ -46,12 +46,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final
 
-# At module level, not deferred inside the receipt-backed record methods. The
-# dependencies are real — the store is the one writer and reader for these records,
-# refusing invalid values at both ends — so they belong where a reader of the imports
-# can see them. Neither contract imports this module, so there is no cycle to dodge,
-# and a deferred import that exists only to hide a layer from the eye is a layer nobody
-# can check.
 from common.chairs.receipts import receipt_record, validate_receipt
 from common.contracts.approval import ApprovalRecordReference, validate_approval_record
 from common.contracts.canonical import (
@@ -83,13 +77,8 @@ ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
 RECEIPTS_DIR: Final = "receipts/sha256"
 RECENSOR_PARTITION_RECEIPT_FILE: Final = "run-health/recensor-partition-receipt.json"
-# Not a store writer: the serving assembly's launcher writes an engine log per
-# started chair into `<stage>/serving-logs/` while a stage is running. The store
-# never publishes there and never reads it, but harvest invariant #13 is about
-# every managed path *any* code writes in the tree, not only this module's own
-# -- so it is named here, and `inventory_scope()` covers it. Leaving it unnamed
-# is what made `fetch-run` refuse a whole served run tree by the first log it
-# listed.
+# Written by the serving launcher while a stage runs, never by this store; named
+# so `inventory_scope()` covers every path any code writes in the tree.
 SERVING_LOGS_DIR: Final = "serving-logs"
 
 # The facts a run id is bound to. Changing any of them means this is a different
@@ -105,53 +94,20 @@ _BOUND_FIELDS: Final = (
 )
 _INGRESS_FIELD: Final = "ingress"
 
-# What a filesystem that will not hard-link answers with. Named so `_atomic_create`
-# can say which setup fact is wrong instead of letting a bare OSError about `link`
-# escape as a traceback.
+# What a filesystem that will not hard-link answers with.
 _NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
-# A manifest walks files that may have been damaged or replaced outside the
-# store. Bound both axes before accepting them as an inventory: one malformed
-# artifact must not be able to allocate the process out of existence, and an
-# attacker-created directory forest must not grow the walk without limit.
+# A run tree may be damaged or hostile (fetched, resumed), so every whole-file
+# read is bounded, and the manifest walk is bounded in entries too.
 _MAX_MANIFEST_ARTIFACT_BYTES: Final = 64 * 1024 * 1024
 _MAX_MANIFEST_WALK_ENTRIES: Final = 100_000
-# The same reasoning applies to every other file this store reads whole into
-# memory -- `run.json`, an index, a receipt, a retained response blob, a custody
-# binding, an arbitrary artifact fetched back off a volume -- not only the
-# manifest walk: `Path.read_bytes()` has no ceiling of its own, so a run tree
-# that is damaged, corrupted in transit, or genuinely hostile (a fetched run, a
-# resumed one) could otherwise be read whole before anything here gets a chance
-# to refuse it (G13, "read_bytes is unbounded").
-#
-# Two ceilings, because a run tree holds two kinds of file and one number cannot
-# describe both honestly.
-#
-# `MAX_RECORD_READ_BYTES` bounds a JSON record -- a manifest, an index, a
-# receipt, an artifact envelope. It is the same 64 MiB the manifest walk already
-# applies to every artifact it reads, and it is generous at that size rather
-# than asserted to be: the largest legitimate record is a stage manifest, and
-# `_MAX_MANIFEST_WALK_ENTRIES` (100_000) entries of a few hundred bytes each is
-# tens of megabytes. Public, because a record can be read through `read_bytes`
-# by a caller outside this module -- `operations/operator/surface.py` reads a
-# `manifest.json` that just arrived from a volume -- and such a caller must be
-# able to ask for the record-sized ceiling by name instead of settling for the
-# blob-sized one.
-#
-# `_MAX_TREE_READ_BYTES` bounds everything else, and what else means here is a
-# page blob. Blobs are deliberately not read by the manifest walk (see
-# `_walk_blobs`: "they may be full page images"), so nothing else in this module
-# bounds them. The value is calibrated from the bounds the pipeline already puts
-# on an image rather than guessed: an admitted source is refused above
-# `MAX_SOURCE_BYTES` (64 MiB) and a rendered page is bounded to
-# `MAX_PNG_DECODED_BYTES` (128 MiB) of decoded pixels, both in
-# `pipeline/1_exemplar/image_formats.py`. 192 MiB is half again the larger of
-# those, and it is deliberately *below* `MAX_FETCH_OBJECT_BYTES` (256 MiB, in
-# `operations/operator/surface.py`), which is the ceiling on every object the
-# fetch verb pulls off a volume: a read ceiling set above every other ceiling on
-# the path where untrusted bytes actually arrive can never fire there, which is
-# what an audit found the first value (512 MiB) did. A test in
-# `operations/operator/test_surface.py` pins that ordering so neither number can
-# drift past the other unnoticed.
+# Two read ceilings, one per kind of file.  `MAX_RECORD_READ_BYTES` bounds a
+# JSON record (the largest legitimate one, a 100,000-entry manifest, is tens of
+# MiB); it is public so a caller reading a record through `read_bytes` can ask
+# for it by name.  `_MAX_TREE_READ_BYTES` bounds a page blob: half again the
+# 128 MiB decoded-page bound in `pipeline/1_exemplar/image_formats.py`, and
+# below `MAX_FETCH_OBJECT_BYTES` in `operations/operator/surface.py`, since a
+# read ceiling above the fetch ceiling could never fire on fetched bytes.
+# `operations/operator/test_surface.py` pins that ordering.
 MAX_RECORD_READ_BYTES: Final = _MAX_MANIFEST_ARTIFACT_BYTES
 _MAX_TREE_READ_BYTES: Final = 192 * 1024 * 1024
 _DIRECTORY_OPEN_FLAGS: Final = (
@@ -159,28 +115,13 @@ _DIRECTORY_OPEN_FLAGS: Final = (
 )
 _FILE_OPEN_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
 _RENDER_SETTINGS_FIELD: Final = "render_settings"
-# The digest of each configuration file this run sealed, under the name its point
-# of use asks for (`common/stage.py::require_sealed_config`). Recorded in the
-# authority, not only folded into `config_digest`, so a reader holding the tree
-# alone can *name* the policy bytes that governed the run instead of only being
-# able to test a candidate file against a hash of everything at once.
+# Recorded by name, not only folded into `config_digest`, so a reader holding the
+# tree alone can name the policy bytes that governed the run.
 _SEALED_CONFIG_DIGESTS_FIELD: Final = "sealed_config_digests"
-# The commit the code that *created* this run was at. Sealed into the authority
-# because a tree handed to a fresh session could otherwise prove its configuration
-# bytes by digest and still not say which code produced them -- the commit lived
-# only in the pod-run report and the operator's launch receipt, and neither travels
-# with the tree.
-#
-# Deliberately *not* a bound field. A run id names one set of inputs and one
-# configuration; it does not name one build, and binding this would refuse every
-# resume made after a fix. What the project does want is for such a resume not to be
-# silent, and an immutable authority cannot record it: run.json is created once, by
-# the Door, and never rewritten, so this names the creating commit and nothing else.
-# The commit that ran each later stage is recorded per invocation in the stage
-# timing journal `pod_run` gives the orchestrator on the volume, which is where a
-# cross-commit resume actually becomes visible -- and which is outside this tree
-# precisely because a clock cannot live in a tree that is pinned byte-identical
-# on rerun and resume.
+# The commit of the code that created this run, so a fetched tree can say which
+# code produced it.  Not a bound field: a run id names inputs and configuration,
+# not a build, and binding it would refuse every resume after a fix.  The commit
+# behind each later stage is in the orchestrator's timing journal, outside the tree.
 _REPOSITORY_COMMIT_FIELD: Final = "repository_commit"
 
 
@@ -227,10 +168,8 @@ class RunTree:
 
     def __init__(self, root: Path, run_id: str):
         self.run_id = validate_run_id(run_id)
-        # Resolve the requested base separately from its run-id child.  A run-id
-        # symlink must not redirect a new run outside the caller's approved root:
-        # once that escape became ``self.root``, every later containment check
-        # would faithfully protect the wrong tree.
+        # Resolved apart from its run-id child, so a run-id symlink cannot become
+        # the root every later containment check protects.
         requested_root = Path(root).resolve()
         candidate = requested_root / self.run_id
         resolved = candidate.resolve()
@@ -239,9 +178,7 @@ class RunTree:
                 "run id resolves outside the requested run root; a run tree may not be "
                 "redirected through a symlink"
             )
-        # Resolved once, here, so every later comparison is against one spelling.
-        # `relative_to` is exact rather than semantic: on macOS a caller passing
-        # `/tmp` produces the real `/private/tmp` spelling consistently.
+        # One resolved spelling (`/private/tmp`, never `/tmp`) for exact comparisons.
         self.root = resolved
         self._root_identity: tuple[int, int] | None = None
         if self.root.exists():
@@ -273,40 +210,21 @@ class RunTree:
         leaves the tree exactly as it found it.
         """
         tree = cls(root, run_id)
-        # Validated and digested here, but not *stored* until the run authority
-        # has accepted it below. Storing it first would put a foreign register's
-        # bytes into an existing run's blob store on the way to refusing that
-        # very register as an incompatible reuse — writing into a tree while
-        # telling the operator nothing was written.
+        # Not stored until the authority accepts it: storing first would write a
+        # foreign register into an existing run on the way to refusing it.
         snapshot = empty_register() if register_bytes is None else register_bytes
         register_required = register_bytes is not None
         validate_register_bytes(snapshot)
         snapshot_digest = digest_bytes(snapshot)
-        # An ordinal names one page. Two rows carrying the same one do not describe
-        # a duplicate page — they make the run's page count ambiguous before
-        # anything has been read. That matters because the Armarium's page census
-        # reconciles itself against these ordinals *as a set*: a repeat silently
-        # reduces two declared pages to one, so a run that lost one of them still
-        # balances and still reports `complete`. Four reviewers filed the
-        # lost-page defect this check's absence recreates one level down.
-        #
-        # Refused here, at the one place a manifest enters a run, rather than
-        # defended at each of the places it is later read.
+        # Refused here, where a manifest enters a run.  A repeated ordinal would let
+        # the Armarium's set-based page census balance with a page lost.
         ordinals = [page.get("ordinal") for page in source_manifest]
         if any(not isinstance(ordinal, int) or isinstance(ordinal, bool) for ordinal in ordinals):
             raise SchemaRefusal(
                 "every source page must declare an integer ordinal: a run cannot "
                 "account for pages it cannot count"
             )
-        # And a page number, not merely an integer. Every producer in this tree
-        # counts from one -- the Door's expansion increments before it assigns,
-        # and the fixture declarations follow it -- so a zero or negative ordinal
-        # is a manifest nothing here can legitimately have written. Sealed
-        # unchecked it would enter the corpus frame membership and, through it,
-        # gold's re-derivation of the same frame, giving the run a page numbering
-        # that no other part of the system agrees with. Refused at the one place
-        # a manifest enters a run, beside the checks above, rather than defended
-        # wherever an ordinal is later read.
+        # Every producer counts pages from one; nothing here can have written less.
         non_positive = sorted({ordinal for ordinal in ordinals if ordinal < 1})
         if non_positive:
             raise SchemaRefusal(
@@ -372,15 +290,13 @@ class RunTree:
 
         run_file = tree.root / RUN_FILE
         tree.root.parent.mkdir(parents=True, exist_ok=True)
-        # Creators serialize on the already-resolved parent directory itself, so
-        # no predictable lock pathname is introduced.  A new run publishes the
-        # immutable snapshot first and run.json last: a failed blob write can no
-        # longer leave a trusted authority sealing evidence that never arrived.
+        # Serialized on the resolved parent itself, so no lock pathname is
+        # predictable.  The snapshot is published before run.json, so a failed
+        # blob write cannot leave an authority sealing evidence that never arrived.
         with _run_creation_lock(tree.root.parent):
             tree.root.mkdir(parents=True, exist_ok=True)
-            # The root did not exist when __init__ resolved it, so bind device and
-            # inode here, before any write goes through it. Every later descriptor
-            # this tree opens is checked against the directory bound at this line.
+            # Bound before any write when __init__ found no root, and re-verified
+            # against the identity __init__ bound when it did.
             tree._bind_root_identity()
             if run_file.exists():
                 _verify_compatible_reuse(tree, run_id, authority)
@@ -390,9 +306,8 @@ class RunTree:
             try:
                 _atomic_create(run_file, canonical_bytes(authority))
             except FileExistsError:
-                # A non-cooperating writer can still race the advisory lock. Its
-                # authority must pass the same complete reuse check before this
-                # caller can proceed.
+                # A writer ignoring the advisory lock won the race; its authority
+                # must pass the same reuse check.
                 _verify_compatible_reuse(tree, run_id, authority)
                 _verify_register_snapshot_present(tree, snapshot_digest, snapshot)
         return tree
@@ -407,9 +322,6 @@ class RunTree:
             )
         record = _read_json(run_file)
         if not verify_self_hash(record):
-            # Bare run authority has no envelope boundary to name an unhashable
-            # value; without a computed digest, this boundary cannot claim when
-            # the malformed content arose.
             unhashable = self_hash_refusal(record)
             if unhashable is not None:
                 raise IncompatibleReuse(
@@ -443,44 +355,26 @@ class RunTree:
         return f"{writing_directory(stage)}/{BLOBS_DIR}/{digest}"
 
     def manifest_path(self, stage: str) -> str:
-        # Door and Exemplar share their evidence directory, but their manifests
-        # are producer inventories. Giving Door a stage-qualified filename
-        # preserves both inventories, which matters when either one names a
-        # completion seal that later disappears. A shared manifest would let an
-        # Exemplar write erase the Door's deletion trigger.
+        # Door and Exemplar share a directory; separate manifests keep either one's
+        # record of a completion seal from being erased by the other's write.
         filename = DOOR_MANIFEST_FILE if stage == DOOR else MANIFEST_FILE
         return f"{writing_directory(stage)}/{filename}"
 
     def index_path(self, stage: str) -> str:
         """The stage-local, rebuildable derived index path.
 
-        An index has the same standing as a manifest: an inventory made from
-        immutable artifacts, never the evidence that an artifact exists. The
-        store owns the path and the atomic rewrite so stage code cannot invent
-        an untracked side file beside the evidence it summarizes.
-
-        Door and Exemplar share one physical directory (`writing_directory`), so
-        `index_path(DOOR)` and `index_path(EXEMPLAR)` collide. Their producer
-        manifests have stage-qualified paths, but an index holds whatever its
-        caller builds with no `build_manifest`-style stage filter — so
-        `write_index` refuses any stage whose directory has more than one
-        producer, rather than letting the second stage's index silently erase
-        the first stage's rows.
+        An index is an inventory, never evidence; the store owns its path so a
+        stage cannot invent an untracked side file.  Door and Exemplar share one
+        directory, so `write_index` refuses a stage whose directory is shared.
         """
         return f"{writing_directory(stage)}/{INDEX_FILE}"
 
     def serving_log_path(self, stage: str) -> str:
         """Where the serving launcher writes this stage's engine logs, inside the tree.
 
-        The store neither writes nor reads here (see `SERVING_LOGS_DIR`), but it
-        owns the path, for the same reason it owns `manifest_path`: the stage
-        that serves a chair and `inventory_scope()` have to mean the same
-        directory, and every stage that spelled the directory for itself was a
-        chance for them to differ. One did -- the Attestatores passed the stage
-        name `attestatores` where the writing directory is `3_attestatores`, so
-        every engine log landed outside the scope and `fetch-run` refused the
-        whole served run tree by name, bringing home nothing from a run that had
-        already billed a card. Derived from `writing_directory` here, once.
+        Owned here so the launcher and `inventory_scope()` derive the directory
+        from `writing_directory` alike; a stage spelling it for itself put logs
+        outside the scope, and `fetch-run` then refused the whole tree.
         """
         return f"{writing_directory(stage)}/{SERVING_LOGS_DIR}"
 
@@ -505,17 +399,12 @@ class RunTree:
         try:
             resolved = (self.root / relative_path).resolve()
         except (OSError, RuntimeError, ValueError) as error:
-            # `Path.resolve` reports a filesystem-level symlink loop as a
-            # RuntimeError (and some platforms report an OSError), and rejects
-            # paths the OS cannot represent with ValueError, before the containment
-            # comparison below can run. Those are still paths the run tree cannot
-            # safely resolve, not interpreter failures a stage should surface as
-            # tracebacks.
+            # A symlink loop (RuntimeError, or OSError) or an unrepresentable path
+            # (ValueError) is a path the tree cannot resolve, not a crash.
             raise SchemaRefusal(
                 f"{relative_path!r} could not be resolved inside the run tree: {error}"
             ) from error
-        # is_relative_to, not a string prefix: with a root of `.../r1`, a prefix
-        # test would happily accept the sibling directory `.../r1-scratch`.
+        # Not a string prefix, which would accept the sibling `.../r1-scratch`.
         if not resolved.is_relative_to(self.root):
             raise SchemaRefusal(f"{relative_path!r} resolves outside the run tree")
         return resolved
@@ -540,15 +429,10 @@ class RunTree:
     def write_run_receipt(self, receipt) -> tuple[RunReceiptReference, PublishResult]:
         """Store one validated serving receipt outside stage artifacts.
 
-        Receipts are intentionally non-deterministic records of a serving moment,
-        so this writer never reaches ``publish_artifact`` or a stage manifest. The
-        record is canonical and content-addressed, making an identical write reuse
-        its bytes while a different receipt receives its own immutable reference.
-
-        The store validates on the way in and again on the way out, for the same
-        reason `build_envelope` does: an invalid record that reached the tree has
-        already lost the moment it described, and finding out at the reader means
-        the evidence of what went wrong is a stage away.
+        Receipts record a serving moment, so they never reach a stage manifest.
+        Content-addressed: an identical write is reused, a different receipt gets
+        its own reference.  Validated on the way in as well as out, because an
+        invalid record found at the reader has already lost its moment.
         """
         record = receipt_record(receipt)
         data = canonical_bytes(record)
@@ -561,12 +445,8 @@ class RunTree:
     ) -> tuple[ApprovalRecordReference, PublishResult]:
         """Store one validated approval record outside stage artifacts.
 
-        An approval records a human act at a moment, so it has the same receipt
-        shape as a serving receipt rather than a stage artifact.  The contract
-        validator checks both the declared approval-record schema and its own
-        hash before any path is made; canonical bytes and the existing immutable
-        writer then make an identical record reuse its receipt and a changed one
-        receive a different content-addressed reference.
+        An approval records a human act at a moment, so it is stored like a
+        serving receipt, validated (schema and self-hash) before any path is made.
         """
         validated = validate_approval_record(record)
         data = canonical_bytes(validated)
@@ -577,34 +457,16 @@ class RunTree:
     def write_recensor_partition_receipt(self, record: dict[str, Any]) -> PublishResult:
         """Atomically replace the derived current Recensor partition receipt.
 
-        Unlike an artifact, the receipt legitimately changes after a bounded
-        recovery: the immutable review and request evidence stays beside it, while
-        this one record describes the current partition reconstructed from that
-        evidence. It is therefore replaced in place rather than published as a new
-        immutable object — and it is still inside `inventory_scope()`, because a
-        record a reviewer recomputes denominators from may not be a file nothing
-        accounts for.
+        Unlike an artifact, it changes after a bounded recovery, so it is replaced
+        in place; it stays inside `inventory_scope()` because reviewers recompute
+        denominators from it.
 
-        This is a replace, not a compare-and-swap: two Recensor passes racing on
-        one shared run tree could write in either order and the last one wins.
-        The race is bounded here rather than fixed. The proposal-act denominator
-        `expected_act_count` recomputes is sealed by the Designator before the
-        Recensor ever runs, so it cannot legitimately differ between two honest
-        passes over the same run; a write that would change it is a different,
-        inconsistent claim about the same sealed denominator, and is refused.
-
-        What a race can still do — replace a receipt from a later, more-resolved
-        pass with one from an earlier pass over the same denominator — cannot
-        manufacture the failure principle 2 and ARCHITECTURE invariant 6 forbid.
-        Every review this receipt cites is itself immutable and append-only, and
-        an act's classification only ever moves toward resolution
-        (`common/contracts/outcomes.py` has no transition back from a
-        COMPLETED-class review), so an honestly computed receipt can under-state
-        a run's completeness but never claim completeness the on-disk reviews do
-        not independently back. A stale write is a confusing audit artifact, not
-        a false "complete". Two Recensor passes must still not run concurrently
-        against one run tree; nothing here makes that safe, only makes one
-        particular inconsistency loud instead of silent.
+        A replace, not a compare-and-swap: of two racing Recensor passes the last
+        write wins.  The race is bounded, not fixed.  `expected_act_count` is
+        sealed by the Designator before the Recensor runs, so a write changing it
+        is refused.  A stale write can under-state completeness but never claim
+        it, because the reviews it cites are append-only and an act's class only
+        moves toward resolution.  Concurrent Recensor passes are still unsafe.
         """
         from common.recensor_receipt import validate_recensor_partition_receipt
 
@@ -615,52 +477,7 @@ class RunTree:
         target = self.resolve(relative)
         data = canonical_bytes(checked)
         if target.exists():
-            # An unreadable or invalid receipt is treated as absent, not as a
-            # reason to refuse the valid one being written. This record is
-            # **derived** — the paragraph above says so, and the immutable review
-            # and request evidence it is reconstructed from sits beside it
-            # untouched — so a torn write, a truncated file or a receipt from an
-            # older schema left the run permanently unable to record a partition
-            # it could recompute perfectly well. principle 4 protects evidence;
-            # this is not evidence, and refusing here protected nothing while
-            # blocking recovery. The `expected_act_count` refusal below still
-            # applies whenever the existing receipt *is* valid, because that is a
-            # real disagreement about a sealed denominator rather than damage.
-            try:
-                existing = validate_recensor_partition_receipt(_read_json(target))
-            # `TypeError` is among them because strict canonicalization raises it: a
-            # receipt damaged with a float reaches `verify_self_hash` →
-            # `canonical_bytes` → `_refuse_floats`, which is a `TypeError` and not a
-            # `ContractError`. Without it the sentence this block exists to make
-            # true — invalid is treated as absent — was false for one whole class of
-            # damage, and it is the same escape route found on the stage-05 branch
-            # the same night: strict canonicalization refusing outside the governed
-            # vocabulary.
-            # `_read_json` already translates `OSError`, `ValueError`, and its
-            # `UnicodeDecodeError` subclass into `SchemaRefusal`/`ContractError`.
-            # `RecursionError` remains separate because `json.loads` can raise it
-            # for a deeply nested damaged file and `_read_json` does not translate
-            # it. These are the three live classes at this boundary.
-            except (ContractError, TypeError, RecursionError) as error:
-                existing = None
-                # Treated as absent, but never *silently* absent. A torn or
-                # truncated receipt means a process died mid-write or the disk
-                # misbehaved — a fact about this run's health, visible at
-                # exactly this moment and nowhere afterwards, because the next
-                # line overwrites it. Discarding it without a word would leave
-                # an auditor a clean receipt and no reason to look further,
-                # which is the shape principle 2 forbids. The path is a
-                # run-tree relative path, never a submitted filename, so this
-                # channel is open to it (`common/exemplar_boundary.py` records
-                # why that distinction matters).
-                print(
-                    f"warning: the existing Recensor partition receipt at {relative} could "
-                    f"not be read as a valid receipt and is being replaced "
-                    f"({type(error).__name__}: {error}). This means a previous write did "
-                    f"not complete; the receipt is derived and is being rebuilt, but the "
-                    f"interruption itself is worth investigating.",
-                    file=sys.stderr,
-                )
+            existing = _existing_partition_receipt(target, relative)
             if existing is not None and (
                 existing["run_id"] == checked["run_id"]
                 and existing["config_digest"] == checked["config_digest"]
@@ -673,19 +490,14 @@ class RunTree:
                     "cannot legitimately differ between two passes over the same run"
                 )
             try:
-                # Bounded by the bytes being published: a file longer than
-                # `data` cannot be the same receipt, and reading it whole to
-                # discover that is exactly the unbounded read this store no
-                # longer performs. A refusal here means "longer, so different",
-                # which is what a mismatch means -- rewrite it (G13).
+                # A file longer than `data` cannot be the same receipt.
                 if _read_bytes_bounded(target, max_bytes=len(data)) == data:
                     return PublishResult(relative, reused=True)
             except SchemaRefusal:
                 pass
             except FileNotFoundError:
-                # Gone between `exists()` above and here. Nothing to reuse and
-                # nothing to refuse: fall through and publish it, which is what
-                # `_publish_bytes` does at the same seam.
+                # Gone between `exists()` above and here: nothing to reuse or
+                # refuse, so publish it, as `_publish_bytes` does at the same seam.
                 pass
         target.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(target, data)
@@ -714,28 +526,13 @@ class RunTree:
         provenance is refused, never repaired).
         """
         parsed = _receipt_reference(reference)
-        expected_path = self.receipt_path(parsed.sha256)
-        if parsed.relative_path != expected_path:
-            raise SchemaRefusal(
-                f"receipt reference {parsed.relative_path!r} is not its content-addressed path "
-                f"{expected_path!r}"
-            )
-        # A reference whose file is gone is a provenance failure, not a crash. Without
-        # this, a valid-looking reference to a removed receipt ended the stage with a
-        # bare FileNotFoundError instead of a named refusal — and #42 is about refusing
-        # provenance, which includes provenance that is no longer there.
-        try:
-            data = self.read_bytes(parsed.relative_path)
-        except OSError as error:
-            raise SchemaRefusal(
-                f"run receipt {parsed.relative_path} could not be read: {error}"
-            ) from error
-        actual = digest_bytes(data)
-        if actual != parsed.sha256:
-            raise SchemaRefusal(
-                f"run receipt {parsed.relative_path} has digest {actual}, not the reference "
-                f"digest {parsed.sha256}"
-            )
+        data = self._read_receipt_bytes(
+            parsed.relative_path,
+            parsed.sha256,
+            SchemaRefusal,
+            label="run receipt",
+            reference_label="receipt",
+        )
         try:
             return validate_receipt(json.loads(data.decode("utf-8")))
         except (UnicodeDecodeError, ValueError) as error:
@@ -753,24 +550,13 @@ class RunTree:
         formed an approval record.
         """
         parsed = _approval_record_reference(reference)
-        expected_path = self.receipt_path(parsed.sha256)
-        if parsed.relative_path != expected_path:
-            raise ApprovalRefusal(
-                f"approval record reference {parsed.relative_path!r} is not its content-addressed "
-                f"path {expected_path!r}"
-            )
-        try:
-            data = self.read_bytes(parsed.relative_path)
-        except OSError as error:
-            raise ApprovalRefusal(
-                f"approval record {parsed.relative_path} could not be read: {error}"
-            ) from error
-        actual = digest_bytes(data)
-        if actual != parsed.sha256:
-            raise ApprovalRefusal(
-                f"approval record {parsed.relative_path} has digest {actual}, not the reference "
-                f"digest {parsed.sha256}"
-            )
+        data = self._read_receipt_bytes(
+            parsed.relative_path,
+            parsed.sha256,
+            ApprovalRefusal,
+            label="approval record",
+            reference_label="approval record",
+        )
         try:
             decoded = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as error:
@@ -779,6 +565,37 @@ class RunTree:
             ) from error
         return validate_approval_record(decoded)
 
+    def _read_receipt_bytes(
+        self,
+        relative_path: str,
+        sha256: str,
+        refusal: type[SchemaRefusal],
+        *,
+        label: str,
+        reference_label: str,
+    ) -> bytes:
+        """The bytes at a receipt reference, refused unless path, presence and digest all agree.
+
+        A missing file is a named refusal like any other bad provenance, never a
+        bare `FileNotFoundError`.
+        """
+        expected_path = self.receipt_path(sha256)
+        if relative_path != expected_path:
+            raise refusal(
+                f"{reference_label} reference {relative_path!r} is not its content-addressed "
+                f"path {expected_path!r}"
+            )
+        try:
+            data = self.read_bytes(relative_path)
+        except OSError as error:
+            raise refusal(f"{label} {relative_path} could not be read: {error}") from error
+        actual = digest_bytes(data)
+        if actual != sha256:
+            raise refusal(
+                f"{label} {relative_path} has digest {actual}, not the reference digest {sha256}"
+            )
+        return data
+
     def _publish_bytes(self, relative: str, data: bytes) -> PublishResult:
         target = self.resolve(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -786,11 +603,7 @@ class RunTree:
             _atomic_create(target, data)
         except FileExistsError:
             try:
-                # Bounded by the bytes being published, for the reason given in
-                # `_publish_recensor_partition_receipt`: a file longer than
-                # `data` is already different, and this is the generic publish
-                # path, reached for every artifact -- including one written into
-                # a tree that was fetched or resumed (G13).
+                # A file longer than `data` is already different.
                 existing: bytes | None = _read_bytes_bounded(target, max_bytes=len(data))
             except SchemaRefusal:
                 existing = None
@@ -912,38 +725,25 @@ class RunTree:
         if it disagrees with the artifacts, the artifacts are right and the
         manifest was stale.
 
-        ``verify_inputs=False`` still applies the envelope, run, and path checks,
-        but not ``_verify_artifact_inputs``. An artifact whose upstream blob has
-        since changed is then listed and reads as present. That option is for a
-        caller whose own boundary owns lineage -- one already verifying the
-        chain, or one deliberately reading a tree it is about to refuse -- and
-        never for speed. A caller that wants a manifest it can trust about
-        lineage leaves it alone.
+        ``verify_inputs=False`` skips only ``_verify_artifact_inputs``, so an
+        artifact whose upstream blob changed is still listed.  It is for a caller
+        whose own boundary owns lineage, never for speed.
         """
-        # A manifest is a read route too. In particular, an empty directory must
-        # not make a missing run authority look like an empty, trustworthy run.
+        # An empty directory must not make a missing run authority look like an empty run.
         self._run_authority()
         entries: list[dict[str, Any]] = []
         artifacts_root = self._inventory_directory(stage, ARTIFACTS_DIR)
         if artifacts_root is not None:
-            # Validate the whole walk before reading bytes so structural failures
-            # cannot be hidden by an earlier artifact-content failure.
+            # The whole walk first, so a content failure cannot hide a structural one.
             members = list(self._walk_artifact_json(artifacts_root))
             for relative_path in members:
-                # One filesystem read supplies both the record that is verified
-                # and its digest. Re-resolving here also closes the replacement
-                # window opened by collecting the complete walk first. The
-                # _naming wrapper attributes a refusal to the exact member that
-                # raised it, for the operator-facing review surface.
+                # One read supplies the verified record and its digest.
                 record, artifact_bytes = self._read_manifest_artifact(relative_path)
                 with _naming(relative_path):
                     record = validate_envelope(record)
                     self._verify_artifact_run(record)
                 self._verify_artifact_path(relative_path, record)
-                # Door and Exemplar deliberately share one physical directory:
-                # a Door admission is part of what Exemplar must account for.
-                # Their manifests still describe producer inventories, not every
-                # neighboring JSON file under that directory.
+                # Door and Exemplar share a directory; a manifest lists its own producer.
                 if record["stage"] != stage:
                     continue
                 if verify_inputs:
@@ -975,10 +775,7 @@ class RunTree:
         parent could make evidence below it look like an honestly empty inventory.
         """
         relative = f"{writing_directory(stage)}/{subdirectory}"
-        # Keep the spelling check for a useful out-of-tree diagnostic, but never
-        # rely on it for safety. The descriptor walk below opens every component
-        # relative to its already-open parent with O_NOFOLLOW and compares the
-        # opened object to the lstat result by device and inode.
+        # For its diagnostic only; safety comes from the no-follow descriptor walk.
         resolved = self.resolve(relative)
         descriptor = self._open_relative_fd(
             relative,
@@ -1014,20 +811,7 @@ class RunTree:
         stack: list[tuple[int, str, list[str], int, frozenset[tuple[int, int]]]] = []
         examined = 0
         try:
-            try:
-                start_names = self._listing_fd(start_fd, relative_root)
-            except BaseException:
-                os.close(start_fd)
-                raise
-            stack.append(
-                (
-                    start_fd,
-                    relative_root,
-                    start_names,
-                    0,
-                    frozenset({start_identity}),
-                )
-            )
+            self._push_listing(stack, start_fd, relative_root, frozenset({start_identity}))
             while stack:
                 directory_fd, relative_directory, names, index, ancestors = stack[-1]
                 if index == len(names):
@@ -1044,8 +828,7 @@ class RunTree:
                         "manifest walk limit"
                     )
                 relative_path = f"{relative_directory}/{name}"
-                # Preserve explicit containment diagnostics. Security comes from
-                # the dir-fd operations below; this resolved spelling is not used.
+                # For its diagnostic only, as in `_inventory_directory`.
                 self.resolve(relative_path)
                 before = self._entry_lstat(directory_fd, name, relative_path)
                 if stat.S_ISLNK(before.st_mode):
@@ -1073,20 +856,7 @@ class RunTree:
                             "a manifest may not describe one artifact at two paths"
                         )
                     walked[identity] = relative_path
-                    try:
-                        child_names = self._listing_fd(child_fd, relative_path)
-                    except BaseException:
-                        os.close(child_fd)
-                        raise
-                    stack.append(
-                        (
-                            child_fd,
-                            relative_path,
-                            child_names,
-                            0,
-                            ancestors | {identity},
-                        )
-                    )
+                    self._push_listing(stack, child_fd, relative_path, ancestors | {identity})
                 elif relative_directory == relative_root:
                     raise SchemaRefusal(
                         f"{relative_path!r} is not a directory where an artifact kind "
@@ -1105,6 +875,21 @@ class RunTree:
                     os.close(directory_fd)
                 except OSError:
                     pass
+
+    def _push_listing(
+        self,
+        stack: list[tuple[int, str, list[str], int, frozenset[tuple[int, int]]]],
+        directory_fd: int,
+        relative_directory: str,
+        ancestors: frozenset[tuple[int, int]],
+    ) -> None:
+        """List an opened directory onto the walk stack, closing it if the listing fails."""
+        try:
+            names = self._listing_fd(directory_fd, relative_directory)
+        except BaseException:
+            os.close(directory_fd)
+            raise
+        stack.append((directory_fd, relative_directory, names, 0, ancestors))
 
     def _walk_blobs(self, directory: Path) -> Iterator[str]:
         """Yield addressable regular blobs in name order.
@@ -1411,28 +1196,13 @@ class RunTree:
     def _verify_artifact_run(self, record: dict[str, Any]) -> None:
         """Bind every read route to the run tree whose authority is being used.
 
-        The run id alone is not that binding. It is caller-supplied and kept boring
-        on purpose so an operator can type it and find the run again
-        (`identities.validate_run_id`), and `--run-root` and `--run-id` are
-        independent flags — so two runs in two roots may both be `run1` and nothing
-        in a name comparison can tell their artifacts apart. Demonstrated: a
-        `perlectio` from one `run1` dropped into the other `run1` was accepted by
-        every generic read route, and that run's manifest, review and export all
-        reconciled around a reading produced under a different configuration. A tree
-        restored from a partial backup is enough to produce it.
+        The run id alone is not that binding: it is caller-supplied, and two runs
+        in two roots may both be `run1`, so an artifact copied from one would be
+        accepted by the other.  The `config_digest` every stage publishes is the
+        authority's own binding to its inputs, so it is compared too.
 
-        The `config_digest` is the authority's own binding to the source manifest,
-        model roster and adapter recipes the run was created with, and every stage
-        publishes the one it opened. Comparing it here closes the gap for every
-        artifact rather than only for the Door admissions and Exemplar pages that
-        were already checked against it by hand at their own boundaries.
-
-        This is integrity, not authentication, and the distinction is worth keeping
-        straight: the self-hash and this check together prove a record was not
-        edited by anything unaware of the scheme, and that it belongs to this run's
-        configuration. Neither proves who wrote it — every input to the hash is
-        inside the record, so anything holding this repository's own API can seal a
-        forgery. Nothing here should be read as claiming otherwise.
+        Integrity, not authentication: every input to the hash is inside the
+        record, so this proves no author.
         """
         if record["run_id"] != self.run_id:
             raise SchemaRefusal(
@@ -1507,9 +1277,7 @@ class RunTree:
         """
         if not isinstance(index, dict):
             raise SchemaRefusal("a derived stage index must be an object")
-        # Behind the run authority like `write_manifest` (through `build_manifest`)
-        # and `read_index`: a tree with no valid `run.json` must not gain a
-        # summary file nothing can bind to it.
+        # Like every read route: no summary file for a tree without a valid run.json.
         self._run_authority()
         directory = writing_directory(stage)
         if _all_writing_directories().count(directory) > 1:
@@ -1521,14 +1289,8 @@ class RunTree:
         try:
             data = canonical_bytes(index)
         except (TypeError, ValueError, RecursionError) as error:
-            # canonical_bytes refuses floats (and anything unserializable) with
-            # TypeError, and a circular structure is named by its float-walk's
-            # own cycle check (TypeError) or by json's (ValueError) — all outside
-            # the ContractError family a stage classifies. RecursionError stays
-            # caught even though that walk no longer recurses: json's C encoder
-            # under it still does, and this boundary is not the place to bet on
-            # a bound one module away. A later caller's measured ratio or
-            # self-referencing row must be a named refusal, not a traceback.
+            # Floats and cycles raise TypeError or ValueError, outside the
+            # ContractError family; json's C encoder can still recurse.
             raise SchemaRefusal(
                 f"a derived stage index must be canonically serializable: {error}"
             ) from error
@@ -1561,16 +1323,10 @@ class RunTree:
     def inventory_scope(self) -> tuple[str, ...]:
         """Every path prefix this store is able to write.
 
-        Harvest invariant #13: the inventory's scope can never silently
-        under-cover — every managed output path any code can write must resolve
-        inside the inventory scope, and adding a managed path without extending
-        the scope fails a static drift test, loudly, naming the path. The test
-        beside this module reads the writers from source and compares.
-
-        "Any code", not only this store: `<stage>/serving-logs/` is written by
-        the serving launcher while a stage runs, and a consumer that reads this
-        scope as the whole of what a run tree may hold — `fetch-run` does —
-        refuses a real served run tree outright if the scope omits it.
+        Every managed path any code writes must fall inside this scope; a static
+        test beside this module reads the writers from source and compares.  That
+        includes `<stage>/serving-logs/`, written by the serving launcher, which
+        `fetch-run` would otherwise refuse.
         """
         prefixes = [RUN_FILE, f"{RECEIPTS_DIR}/", RECENSOR_PARTITION_RECEIPT_FILE]
         for directory in sorted(set(_all_writing_directories())):
@@ -1578,13 +1334,7 @@ class RunTree:
             prefixes.append(f"{directory}/{BLOBS_DIR}/")
             prefixes.append(f"{directory}/{MANIFEST_FILE}")
             prefixes.append(f"{directory}/{INDEX_FILE}")
-            # Written by the serving launcher, not by this store, and carrying
-            # no digest anybody recorded: in scope so a reader of the tree can
-            # account for it, never inventoried as evidence. `build_manifest`
-            # walks `<stage>/artifacts` alone and the blob inventory
-            # `<stage>/blobs`, so naming it here adds nothing to either. Same
-            # spelling as `serving_log_path`, which is what the stages call, so
-            # the writer and the scope cannot name different directories.
+            # In scope, never inventoried as evidence: nothing records its digest.
             prefixes.append(f"{directory}/{SERVING_LOGS_DIR}/")
         prefixes.append(f"{writing_directory(DOOR)}/{DOOR_MANIFEST_FILE}")
         return tuple(prefixes)
@@ -1629,6 +1379,30 @@ def _is_full_commit(value: object) -> bool:
         and len(value) == 40
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _existing_partition_receipt(target: Path, relative: str) -> dict[str, Any] | None:
+    """The stored partition receipt, or `None` when it is unreadable or invalid.
+
+    The receipt is derived, so damage must not block rebuilding it; but the
+    damage is reported, because the next write erases the only trace of it.
+    `TypeError` and `RecursionError` are how strict canonicalization and a deeply
+    nested file refuse; `_read_json` already translates `OSError` and `ValueError`.
+    """
+    from common.recensor_receipt import validate_recensor_partition_receipt
+
+    try:
+        return validate_recensor_partition_receipt(_read_json(target))
+    except (ContractError, TypeError, RecursionError) as error:
+        print(
+            f"warning: the existing Recensor partition receipt at {relative} could "
+            f"not be read as a valid receipt and is being replaced "
+            f"({type(error).__name__}: {error}). This means a previous write did "
+            f"not complete; the receipt is derived and is being rebuilt, but the "
+            f"interruption itself is worth investigating.",
+            file=sys.stderr,
+        )
+        return None
 
 
 def _verify_compatible_reuse(tree: RunTree, run_id: str, authority: dict[str, Any]) -> None:
@@ -1677,18 +1451,9 @@ def _verify_register_snapshot_present(tree: RunTree, digest: str, expected: byte
 def _atomic_write(target: Path, data: bytes) -> None:
     """Temp file in the same directory, flushed, replaced, then the directory synced.
 
-    Same directory because os.replace is only atomic within one filesystem. The
-    fsync is what makes the guarantee survive power loss rather than only process
-    death, which matters because a half-written artifact that a resume trusts is
-    exactly the failure the sealed tree exists to prevent.
-
-    The file fsync alone did not get that. It persists the artifact's *bytes*;
-    the directory entry that names them is a separate call (`fsync(2)`), and
-    without it a power cut could leave this publication's new name — or this
-    replacement of an old one — simply gone. `operations/pod/durable.py` has
-    synced the directory for every operational record since it was written; the
-    run tree, which holds the irreplaceable work, did not. Both now use the same
-    primitive.
+    Same directory because os.replace is only atomic within one filesystem;
+    both the file and its directory entry are synced, so the publication
+    survives power loss, not only process death.
     """
     temporary = _write_temporary(target, data)
     try:
@@ -1702,19 +1467,12 @@ def _atomic_write(target: Path, data: bytes) -> None:
 def _atomic_create(target: Path, data: bytes) -> None:
     """Publish immutable bytes only when their final name does not yet exist.
 
-    A hard link is an atomic create on the target filesystem.  The temporary is
-    fully written and synced first, then either acquires the final name or raises
-    ``FileExistsError`` without replacing the competing writer's bytes.
-
-    **The run root must therefore be on a hard-link-capable filesystem**, which most
-    are and some are not — an exFAT or FAT32 volume, a few network mounts, and some
-    container bind mounts reject ``os.link`` outright.  Those refuse with ``EPERM``,
-    ``EOPNOTSUPP`` or ``ENOSYS``, which escaped from here as a bare ``OSError`` and
-    surfaced as a traceback naming ``link`` rather than as a statement about where
-    the run root was put.  Named instead, because it is a setup fact the operator
-    can act on.  A plain ``O_EXCL`` write is deliberately not substituted: it would
-    publish the final name before the bytes were in it, and no-partial-publication
-    is the guarantee this function exists for.
+    A hard link is an atomic create: the synced temporary either takes the
+    final name or raises ``FileExistsError`` without touching the other
+    writer's bytes.  So the run root must be on a hard-link-capable filesystem
+    (not exFAT, FAT32 or some network and bind mounts), refused by name
+    otherwise.  ``O_EXCL`` is no substitute: it names the file before its bytes
+    are in it.
     """
     temporary = _write_temporary(target, data)
     try:
@@ -1738,18 +1496,9 @@ def _atomic_create(target: Path, data: bytes) -> None:
 def _sync_published_name(target: Path) -> None:
     """Persist the directory entry a publication just created, or refuse by name.
 
-    Strict, unlike the pod-side records' best-effort default, and that is a
-    decision rather than an inherited setting. This tree is the evidence: a
-    stage that reports an artifact published, and a resume that then trusts the
-    report, are exactly what a lost directory entry would betray. principle 2
-    does not allow that to disappear behind a successful return, so a filesystem
-    that cannot prove the entry durable refuses the publication instead — in the
-    same voice as the hard-link refusal above, because it is the same kind of
-    fact about where the run root was put.
-
-    The bytes are already published when this runs. The refusal says so rather
-    than implying nothing was written, because the operator's repair is to move
-    the run root, not to hunt for a partial file.
+    Strict, unlike the pod-side records: this tree is the evidence, and a
+    resume trusts what a publish reported.  The bytes are already published
+    when this refuses, so the refusal says so; the repair is to move the run root.
     """
 
     try:
@@ -1800,33 +1549,11 @@ def _naming(relative_path: str) -> Iterator[None]:
 def _read_bytes_bounded(path: Path, *, max_bytes: int | None = None) -> bytes:
     """Read one file with a hard byte ceiling instead of `Path.read_bytes()`'s none.
 
-    Checked twice -- once from `fstat` before the read, once against what was
-    actually read -- because a file on disk can grow between the two.
-
-    Four call sites, each asking for the ceiling its own bytes deserve, so that
-    a damaged, corrupted-in-transit, or hostile run tree gets this module's own
-    named refusal instead of `MemoryError` (G13): `read_bytes`, at the
-    blob-sized default or at whatever its caller names; `_read_json_with_bytes`
-    (and `read_run`, `read_artifact`, the index and receipt readers through it)
-    at `MAX_RECORD_READ_BYTES`; and the two publish-time reuse comparisons
-    (`_publish_bytes`, `_publish_recensor_partition_receipt`) at the length of
-    the bytes being published, since a longer file is already a different one.
-    `_read_manifest_artifact` is the one whole-file read that does not come
-    through here: it needs its own no-follow descriptor chain, and applies the
-    same record ceiling itself.
-
-    `max_bytes` reads `_MAX_TREE_READ_BYTES` at call time rather than as an
-    ordinary default parameter, so a test can still monkeypatch the module
-    constant -- a default bound at definition time would freeze the value
-    this function saw the moment the module was imported.
-
-    Deliberately *not* a general `except OSError` around the read: a missing
-    or unreadable file must keep raising the same `OSError` subclass
-    `Path.read_bytes()` always did (`FileNotFoundError`, `PermissionError`,
-    ...), because callers such as `_verify_register_snapshot_present` already
-    catch `OSError` specifically and convert it to their own named refusal.
-    Only the two size-ceiling cases below raise this module's own
-    `SchemaRefusal`.
+    Checked before and after the read, because a file can grow in between.
+    `max_bytes` defaults to the blob ceiling, read at call time so a test can
+    monkeypatch it.  A missing or unreadable file still raises the `OSError`
+    subclass `Path.read_bytes()` would, which callers convert to their own
+    refusals; only the ceiling raises `SchemaRefusal`.
     """
     if max_bytes is None:
         max_bytes = _MAX_TREE_READ_BYTES
@@ -1843,31 +1570,10 @@ def _read_bytes_bounded(path: Path, *, max_bytes: int | None = None) -> bytes:
 
 
 def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
-    # `RecursionError` beside the two obvious ones because it is the same fact —
-    # this file could not be read — arriving by a route the tuple did not name.
-    # `json`'s scanner recurses per nesting level, so a deeply nested artifact
-    # raised it straight through every caller: a stage that should have refused
-    # the file and held instead died with a traceback, and the manifest walk that
-    # reads every artifact in a directory made one such file enough to stop the
-    # whole stage. The exact depth this fires at is the scanner's own, not a
-    # number this file should claim: it depends on the interpreter's recursion
-    # limit and the C accelerator's own tolerance, both environment facts rather
-    # than this project's. The regression test drives it at a depth deep enough
-    # to be unambiguous on any of them (30,000) rather than pin one that would
-    # not reproduce elsewhere. A second, shallower band of the same failure can
-    # still reach `verify_self_hash`'s own recursive walk after this guard has
-    # already let a shallower-but-still-deep file through; that band is caught
-    # where it happens, in `common/contracts/canonical.py`.
-    #
-    # Both merged branches split this reader the same way and named the halves
-    # differently; one tuple-returning body survives, under this name, and it
-    # decodes and returns the exact same bytes a caller may later digest.
+    # `RecursionError` too: json's scanner recurses per nesting level, and a
+    # deeply nested file must be refused, not a traceback.  Every path here is a
+    # record, so the record ceiling applies.
     try:
-        # Every path through here is a JSON record, so the record ceiling, not
-        # the blob one. A `SchemaRefusal` from the ceiling is already this
-        # module's own named refusal and needs no arm of its own: it derives
-        # from `ContractError`, not from anything the tuple below names, so it
-        # propagates unwrapped.
         data = _read_bytes_bounded(path, max_bytes=MAX_RECORD_READ_BYTES)
         return json.loads(data.decode("utf-8")), data
     except (OSError, ValueError, RecursionError) as error:

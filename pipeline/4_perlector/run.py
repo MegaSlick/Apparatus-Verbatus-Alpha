@@ -23,6 +23,7 @@ import os
 import stat
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -129,13 +130,13 @@ from operations.serving.residency import (  # noqa: E402
     FileResidencyLease,
 )
 
-_CHAIR_TRANSPORT_FAILURE_TYPES: Final = (serving_errors.ChairTransportFailure,)
 _ACT_LOCAL_READING_FAILURES: Final = (
     EngineSignalRefusal,
     ChairResponseRefusal,
     EndpointUnavailable,
     RequestCapacityRefusal,
-) + _CHAIR_TRANSPORT_FAILURE_TYPES
+    serving_errors.ChairTransportFailure,
+)
 
 # The sealed selector cannot hold the digest of an approval that targets its own config
 # digest, so the sampling gate scans the receipt directory. These bounds make a planted
@@ -266,6 +267,78 @@ def _read_receipt_bytes(directory_descriptor: int, name: str, relative_path: str
             os.close(descriptor)
 
 
+def _receipt_names(directory: int, *, subject: str) -> list[str]:
+    """Every entry in the receipt directory, refusing an unbounded or case-colliding listing."""
+    names: list[str] = []
+    casefolded: dict[str, str] = {}
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                name = entry.name
+                names.append(name)
+                if len(names) > MAX_SAMPLING_APPROVAL_RECEIPTS:
+                    raise ContractError(
+                        f"receipt directory {RECEIPTS_DIR!r} holds more than "
+                        f"{MAX_SAMPLING_APPROVAL_RECEIPTS} entries; the sampling approval "
+                        "scan is bounded"
+                    )
+                folded = name.casefold()
+                other = casefolded.get(folded)
+                if other is not None and other != name:
+                    raise ContractError(
+                        f"receipt directory {RECEIPTS_DIR!r} contains case-variant names "
+                        f"{other!a} and {name!a}; they collide on default APFS"
+                    )
+                casefolded[folded] = name
+    except OSError as error:
+        raise ContractError(
+            f"receipt directory {RECEIPTS_DIR!r} could not be listed while resolving "
+            f"approval for experiment {subject!r}"
+        ) from error
+    return names
+
+
+def _decoded_receipt(data: bytes, relative_path: str, *, subject: str) -> dict:
+    """One receipt's canonical JSON object, or a refusal naming why it is not one."""
+    try:
+        decoded = json.loads(data.decode("utf-8"))
+    except UnicodeDecodeError as error:
+        raise ContractError(
+            f"receipt {relative_path!r} is not UTF-8 while resolving approval for "
+            f"experiment {subject!r}. The sampling gate cannot prove exactly one "
+            "approval while any receipt is undecodable. Restore the exact immutable "
+            "receipt bytes or hold this run for review, then rerun the Perlector"
+        ) from error
+    except (ValueError, RecursionError) as error:
+        raise ContractError(
+            f"receipt {relative_path!r} is malformed JSON while resolving approval for "
+            f"experiment {subject!r}: {error}. The sampling gate cannot prove exactly "
+            "one approval while any receipt is malformed. Restore the exact immutable "
+            "receipt bytes or hold this run for review, then rerun the Perlector"
+        ) from error
+    if not isinstance(decoded, dict):
+        raise ContractError(
+            f"receipt {relative_path!r} is a JSON {type(decoded).__name__}, not an object, "
+            f"while resolving approval for experiment {subject!r}. The sampling gate "
+            "cannot prove exactly one approval without inspecting every receipt object. "
+            "Restore the exact immutable receipt bytes or hold this run for review, then "
+            "rerun the Perlector"
+        )
+    try:
+        canonical = canonical_bytes(decoded)
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ContractError(
+            f"receipt {relative_path!r} cannot be represented as canonical receipt "
+            "bytes while resolving sampling approval"
+        ) from error
+    if canonical != data:
+        raise ContractError(
+            f"receipt {relative_path!r} is not canonical JSON; duplicate or ambiguous "
+            "evidence cannot authorize a sampling arm"
+        )
+    return decoded
+
+
 def _sampling_receipts(context, *, subject: str) -> list[tuple[ApprovalRecordReference, dict]]:
     """Read every receipt once and return validated records for ``subject``."""
     directory = _open_receipts_directory(context.tree)
@@ -273,36 +346,9 @@ def _sampling_receipts(context, *, subject: str) -> list[tuple[ApprovalRecordRef
         return []
     try:
         directory_before = _stable_file_metadata(os.fstat(directory))
-        names: list[str] = []
-        casefolded: dict[str, str] = {}
-        try:
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    name = entry.name
-                    names.append(name)
-                    if len(names) > MAX_SAMPLING_APPROVAL_RECEIPTS:
-                        raise ContractError(
-                            f"receipt directory {RECEIPTS_DIR!r} holds more than "
-                            f"{MAX_SAMPLING_APPROVAL_RECEIPTS} entries; the sampling approval "
-                            "scan is bounded"
-                        )
-                    folded = name.casefold()
-                    other = casefolded.get(folded)
-                    if other is not None and other != name:
-                        raise ContractError(
-                            f"receipt directory {RECEIPTS_DIR!r} contains case-variant names "
-                            f"{other!a} and {name!a}; they collide on default APFS"
-                        )
-                    casefolded[folded] = name
-        except OSError as error:
-            raise ContractError(
-                f"receipt directory {RECEIPTS_DIR!r} could not be listed while resolving "
-                f"approval for experiment {subject!r}"
-            ) from error
-
         records: list[tuple[ApprovalRecordReference, dict]] = []
         scanned_bytes = 0
-        for name in sorted(names):
+        for name in sorted(_receipt_names(directory, subject=subject)):
             digest = _receipt_name_digest(name)
             if digest is None:
                 raise ContractError(
@@ -324,42 +370,7 @@ def _sampling_receipts(context, *, subject: str) -> list[tuple[ApprovalRecordRef
                     f"receipt {relative_path!r} has digest {actual}, not its content-addressed "
                     f"name {digest}; the sampling gate cannot skip corrupted evidence"
                 )
-            try:
-                decoded = json.loads(data.decode("utf-8"))
-            except UnicodeDecodeError as error:
-                raise ContractError(
-                    f"receipt {relative_path!r} is not UTF-8 while resolving approval for "
-                    f"experiment {subject!r}. The sampling gate cannot prove exactly one "
-                    "approval while any receipt is undecodable. Restore the exact immutable "
-                    "receipt bytes or hold this run for review, then rerun the Perlector"
-                ) from error
-            except (ValueError, RecursionError) as error:
-                raise ContractError(
-                    f"receipt {relative_path!r} is malformed JSON while resolving approval for "
-                    f"experiment {subject!r}: {error}. The sampling gate cannot prove exactly "
-                    "one approval while any receipt is malformed. Restore the exact immutable "
-                    "receipt bytes or hold this run for review, then rerun the Perlector"
-                ) from error
-            if not isinstance(decoded, dict):
-                raise ContractError(
-                    f"receipt {relative_path!r} is a JSON {type(decoded).__name__}, not an object, "
-                    f"while resolving approval for experiment {subject!r}. The sampling gate "
-                    "cannot prove exactly one approval without inspecting every receipt object. "
-                    "Restore the exact immutable receipt bytes or hold this run for review, then "
-                    "rerun the Perlector"
-                )
-            try:
-                canonical = canonical_bytes(decoded)
-            except (TypeError, ValueError, RecursionError) as error:
-                raise ContractError(
-                    f"receipt {relative_path!r} cannot be represented as canonical receipt "
-                    "bytes while resolving sampling approval"
-                ) from error
-            if canonical != data:
-                raise ContractError(
-                    f"receipt {relative_path!r} is not canonical JSON; duplicate or ambiguous "
-                    "evidence cannot authorize a sampling arm"
-                )
+            decoded = _decoded_receipt(data, relative_path, subject=subject)
             if decoded.get("subject_ids") != [subject]:
                 continue
             reference = ApprovalRecordReference(relative_path, digest)
@@ -499,6 +510,31 @@ def _region_reference(region: dict) -> dict[str, str]:
     }
 
 
+def _validate_presented_page(context, payload: dict, presented: dict) -> None:
+    """Bind a witness's presentation and observed geometry to its sealed Exemplar page."""
+    page_id = presented.get("source_page_id")
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    page_size = dimensions(page_bytes)
+    validate_native_witness_geometry(payload, page_size=page_size)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=page["payload"]["ordinal"],
+        page_image_path=page["payload"]["image_path"],
+        page_sha256=page["payload"]["source_sha256"],
+        page_size=page_size,
+        page_bytes=page_bytes,
+    )
+
+
+def _sorted_distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
+    return sorted(_distinct_inputs(references), key=_input_order)
+
+
+def _input_order(reference: dict[str, str]) -> tuple[str, str]:
+    return reference["relative_path"], reference["sha256"]
+
+
 def validate_testimonium_regions(context, record: dict, proposal_regions: list[dict]) -> None:
     """Validate an act Testimonium's native presentation, regions and inputs."""
     payload = record["payload"]
@@ -544,22 +580,10 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
             "Its act association could omit or acquire evidence silently. Restore the sealed "
             "proposal references without substituting a recovery crop"
         )
-    page_id = presented.get("source_page_id")
-    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-    page_size = dimensions(page_bytes)
-    validate_native_witness_geometry(payload, page_size=page_size)
-    validate_presented_page_binding(
-        presented,
-        page_ordinal=page["payload"]["ordinal"],
-        page_image_path=page["payload"]["image_path"],
-        page_sha256=page["payload"]["source_sha256"],
-        page_size=page_size,
-        page_bytes=page_bytes,
-    )
-    input_references = []
-    for region in proposal_regions:
-        input_references.append(context.input_ref(region["payload"]["image_path"]))
+    _validate_presented_page(context, payload, presented)
+    input_references = [
+        context.input_ref(region["payload"]["image_path"]) for region in proposal_regions
+    ]
     input_references.append(context.input_ref(presented["image_path"]))
     native_inference = payload.get("native_inference")
     if native_inference is not None:
@@ -583,12 +607,8 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
                 "attestator_1 chandra.v1 act view"
             )
         for row in validate_chandra_trace(native_inference)["attempts"]:
-            for native_reference in (row["intent_ref"], row["attempt_ref"]):
-                input_references.append(native_reference)
-    expected_inputs = sorted(
-        _distinct_inputs(input_references),
-        key=lambda item: (item["relative_path"], item["sha256"]),
-    )
+            input_references.extend((row["intent_ref"], row["attempt_ref"]))
+    expected_inputs = _sorted_distinct_inputs(input_references)
     # Re-derive the explicit limit for every presentation kind so a kind change
     # cannot understate which bound crops its one page-space image omits.
     if unpresented != unpresented_region_ids(presented, proposal_regions):
@@ -687,22 +707,7 @@ def validate_page_testimonium_record(
                 "record. Its observations would be attributed to the wrong sealed ink. Restore "
                 "the page identity and ordinal of the presentation actually served"
             )
-        page = context.tree.read_artifact(
-            EXEMPLAR,
-            "page",
-            artifact_id(EXEMPLAR, "page", presented["source_page_id"]),
-        )
-        page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-        page_size = dimensions(page_bytes)
-        validate_native_witness_geometry(payload, page_size=page_size)
-        validate_presented_page_binding(
-            presented,
-            page_ordinal=page["payload"]["ordinal"],
-            page_image_path=page["payload"]["image_path"],
-            page_sha256=page["payload"]["source_sha256"],
-            page_size=page_size,
-            page_bytes=page_bytes,
-        )
+        _validate_presented_page(context, payload, presented)
         expected_inputs = [
             {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]}
         ]
@@ -720,10 +725,7 @@ def validate_page_testimonium_record(
         # through both `raw_response_refs` and `native_capture`, and
         # `validate_input_refs` refuses a repeated path, so a doubled expectation could
         # never be met.
-        expected_inputs = sorted(
-            _distinct_inputs(expected_inputs + retained),
-            key=lambda item: (item["relative_path"], item["sha256"]),
-        )
+        expected_inputs = _sorted_distinct_inputs(expected_inputs + retained)
         if record.get("inputs") != expected_inputs:
             raise SchemaRefusal(
                 "a page Testimonium does not bind exactly its presented image"
@@ -949,12 +951,7 @@ def act_attachment_view(
         for chair in configured
         for ordinal in (page_ids if chair in page_chairs else (None,))
     }
-    pairs = [
-        (attachment.get("chair"), attachment.get("page_ordinal"))
-        if isinstance(attachment, dict)
-        else (None, None)
-        for attachment in attachments
-    ]
+    pairs = [(attachment["chair"], attachment["page_ordinal"]) for attachment in attachments]
     if len(pairs) != len(set(pairs)) or set(pairs) != expected_pairs:
         raise FatalAccounting(
             f"act {act_id} attachments do not cover every contributing page/witness pair; "
@@ -967,347 +964,37 @@ def act_attachment_view(
     comparison_views: dict[str, str] = {}
     edge_deltas: dict[str, list[dict[str, Any]]] = {}
     for attachment in attachments:
-        _validate_attachment_shape(attachment)
-        span = attachment["span"]
-        characters = attachment["content_health"].get("characters")
-        if attachment["attached"] and not attachment["page_witness"]:
-            if attachment["attachment_basis"] != "presented-region":
-                raise SchemaRefusal("an act-scoped attachment has no presented-region basis")
-            expected_end = (
-                characters
-                if isinstance(characters, int) and not isinstance(characters, bool)
-                else 0
-            )
-            if span != {"start": 0, "end": expected_end}:
-                raise SchemaRefusal(
-                    "an attached act view does not span its complete delivered reading"
-                )
-        if attachment["comparable"] and not attachment["attached"]:
-            raise SchemaRefusal(
-                "an unattached act view cannot claim comparable text. "
-                "Text cannot count for an act when witness geometry did not attach to it. "
-                "Rebuild both facts from the retained Testimonium."
-            )
-        # Independent of the rule above. Page witnesses reach this too, so each refusal
-        # names its own field rather than calling every row an act view.
-        if not attachment["attached"]:
-            if attachment["attachment_basis"] != "unattached":
-                raise SchemaRefusal(
-                    "an unattached attachment names an attachment basis other than "
-                    "'unattached'; nothing attached it, so nothing decided the basis"
-                )
-            if span is not None:
-                raise SchemaRefusal("an unattached attachment claims an alignment span")
+        chair_testimonium = _current_testimonium_for(
+            attachment, act_id=act_id, current=current, page_chairs=page_chairs
+        )
         chair = attachment["chair"]
-        attachment_page = attachment["page_ordinal"]
-        # A reread appends a new attempt without rewriting the attachment, so a stale
-        # attachment could present a superseded outcome as live. For an act-scoped chair
-        # `attached` must equal the current outcome.
-        chair_testimonium = current.get(chair)
-        if chair_testimonium is None:
-            raise FatalAccounting(
-                f"act {act_id} attachment names chair {chair!r}, which has no current Testimonium"
-            )
-        if not attachment["page_witness"] and attachment["attached"] != (
-            chair_testimonium["outcome"] in WITNESS_READING_OUTCOMES
-        ):
-            raise SchemaRefusal(
-                f"act {act_id} attachment for chair {chair!r} disagrees with that chair's "
-                "current Testimonium outcome"
-            )
-        # Not exempted for page witnesses: a reread appends to the same per-(act, chair)
-        # stream either way. `attached` may differ from a page witness's outcome, but
-        # the health must be the current attempt's.
-        if attachment["content_health"] != chair_testimonium["payload"].get("content_health"):
-            raise SchemaRefusal(
-                f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
-                "longer this chair's current Testimonium"
-            )
-        expected_page_witness = chair in page_chairs
-        if attachment["page_witness"] != expected_page_witness:
-            raise SchemaRefusal(
-                f"act {act_id} attachment changes page-witness scope for chair {chair!r}"
-            )
-        # `dissent.py` trusts the Testimonium's own `page_witness` flag and skips the
-        # comparison for it, so a resealed flag could silence an act-scoped chair's
-        # dissent row. Reconcile this copy against the run's declaration too.
-        if chair_testimonium["payload"].get("page_witness", False) is not expected_page_witness:
-            raise SchemaRefusal(
-                f"act {act_id} Testimonium for chair {chair!r} claims a page-witness scope this "
-                "run did not declare"
-            )
         reference = attachment.get("testimonium_ref")
         if attachment["page_witness"]:
-            if attachment_page not in page_ids:
-                raise SchemaRefusal(
-                    f"act {act_id} page attachment names page {attachment_page!r} outside its "
-                    "regions; it claims evidence the Perlector did not read; restore the "
-                    "attachment's contributing page"
-                )
-            testimonium = context.tree.read_artifact_reference(
-                reference,
-                stage=ATTESTATORES,
-                kind="page-testimonium",
-                subject_id=page_ids[attachment_page],
+            view, deltas = _checked_page_attachment(
+                context,
+                act,
+                attachment,
+                chair_testimonium,
+                reference=reference,
+                page_ids=page_ids,
+                bases=bases,
+                proposal_region_ids=proposal_region_ids,
+                all_proposal_regions=all_proposal_regions,
+                page_testimonia_seen=page_testimonia_seen,
             )
-            page_payload = testimonium.get("payload")
-            validate_page_testimonium_record(context, testimonium, all_proposal_regions)
-            # Collected for the caller's run-wide routing sweep: a page Testimonium
-            # belongs to a (page, chair) pair, not to this act. This is the Perlector's
-            # only digest-checked read of these records.
-            if page_testimonia_seen is not None and isinstance(page_payload, dict):
-                page_testimonia_seen[testimonium["artifact_id"]] = testimonium
-            native_capture = page_payload.get("native_capture")
-            if native_capture is not None:
-                if native_capture["raw_response_ref"] not in testimonium.get("inputs", []):
-                    raise SchemaRefusal(
-                        f"act {act_id} page Testimonium for chair {chair!r} does not bind its "
-                        "retained raw response as a verified input"
-                    )
-                if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
-                    raise SchemaRefusal(
-                        f"act {act_id} page Testimonium for chair {chair!r} attributes its "
-                        "native capture to an adapter other than that chair's configured boundary"
-                    )
-                verify_native_capture_blob(context.tree, native_capture)
-            # Sealed proposal geometry only, as the writer used. A recovery crop
-            # postdates testimony, so it may not enlarge the denominator that attached
-            # it after the fact.
-            page_bases = [
-                basis
-                for basis in bases
-                if basis["source_page_ordinal"] == attachment_page
-                and basis["region_id"] in proposal_region_ids
-            ]
-            # Native page and compatibility act outcomes are independent; legacy
-            # page joins instead derive their outcome from the act attempts.
-            attachment_outcome = (
-                testimonium["outcome"]
-                if native_capture is not None
-                else chair_testimonium["outcome"]
-            )
-            # Re-derived through the producer's shared rule: a page witness attaches on
-            # its own ink over this act's sealed proposal or, only where it reported
-            # none, on an anchor line located in its page text. Both `attached` and the
-            # basis are recomputed, so a resealed record cannot claim either.
-            derived_basis = page_attachment_basis(
-                reading=attachment_outcome in WITNESS_READING_OUTCOMES,
-                geometry_overlaps=any(
-                    reported_geometry_overlaps(
-                        page_payload.get("observed", []), basis["transform"]["bounds"]
-                    )
-                    for basis in page_bases
-                ),
-                alignment=attachment["alignment"],
-            )
-            if attachment["attached"] != (derived_basis != "unattached"):
-                raise SchemaRefusal(
-                    f"act {act_id} page attachment for chair {chair!r} does not derive from "
-                    "that witness's reported geometry, or from an anchor line located in its "
-                    "page text, against the sealed proposal"
-                )
-            edge_deltas.setdefault(chair, []).extend(
-                sealed_proposal_edge_deltas(page_payload, page_bases)
-            )
-            unjoined = (
-                page_payload.get("unjoined_act_attempts")
-                if isinstance(page_payload, dict)
-                else None
-            )
-            if (
-                not isinstance(page_payload, dict)
-                or page_payload.get("chair") != chair
-                or page_payload.get("scope") != "page"
-                or page_payload.get("page_ordinal") != attachment_page
-                or not isinstance(unjoined, list)
-                or any(
-                    not isinstance(row, dict)
-                    or set(row) != {"act_id", "act_key", "outcome", "reason"}
-                    or not isinstance(row["act_id"], str)
-                    or not isinstance(row["act_key"], str)
-                    or not isinstance(row["outcome"], str)
-                    or not isinstance(row["reason"], str)
-                    or not row["reason"].strip()
-                    for row in unjoined
-                )
-            ):
-                raise SchemaRefusal(f"act {act_id} attachment points to the wrong page Testimonium")
-            # One act can disprove `primary` or `continuation` from its sealed
-            # primary page. Only the Recensor's whole-page view can verify `mixed`.
-            role = page_payload.get("page_role")
-            is_act_primary_page = attachment_page == act["page_ordinal"]
-            if (
-                not isinstance(role, str)
-                or role not in {"primary", "continuation", "mixed"}
-                or (
-                    (is_act_primary_page and role == "continuation")
-                    or (not is_act_primary_page and role == "primary")
-                )
-            ):
-                raise SchemaRefusal(
-                    f"act {act_id} page Testimonium for chair {chair!r} carries a page_role "
-                    f"{role!r} its own primary-page fact contradicts; the page relationship "
-                    "is false; rebuild the page Testimonium from the attachment denominator"
-                )
-            # Only the alignment is fixed on a continuation page, not `attached`: a page
-            # witness can honestly report geometry there. What the page lacks is an
-            # anchor, which comes from the act's primary page.
-            if not is_act_primary_page and attachment["alignment"] != {
-                "status": "unaligned",
-                "reason": "continuation-page-no-act-anchor",
-            }:
-                raise SchemaRefusal(
-                    f"act {act_id} continuation-page attachment for chair {chair!r} claims "
-                    "an act anchor; this page carries no act-specific anchor; "
-                    "retain it as continuation-page-no-act-anchor"
-                )
-            current_unjoined = [row for row in unjoined if row["act_id"] == act_id]
-            if len(current_unjoined) > 1:
-                raise SchemaRefusal(
-                    f"act {act_id} appears more than once in a page Testimonium's "
-                    "unjoined-attempt record"
-                )
-            # An omitted act is disclosed with the attempt outcome that explains it, and
-            # a reading outcome may still be omitted (a structured native object cannot
-            # be joined). No row means the act joined.
-            row = current_unjoined[0] if current_unjoined else None
-            disclosed = row["outcome"] in WITNESS_READING_OUTCOMES if row is not None else True
-            # Joining only proves the bytes arrived. A joined response may still be
-            # unaligned (an empty response has no span), but an omitted one can never
-            # attach.
-            if not disclosed and attachment["attached"]:
-                raise SchemaRefusal(
-                    f"act {act_id} attachment disagrees with its page Testimonium's "
-                    "unjoined-attempt record"
-                )
-            alignment = attachment["alignment"]
-            # The exact label: `anchor-line` says the chair counts only because another
-            # chair's anchor located its text, so the label is evidence about
-            # independence.
-            if attachment["attached"] and attachment["attachment_basis"] != derived_basis:
-                raise SchemaRefusal(
-                    f"act {act_id} page attachment for chair {chair!r} names basis "
-                    f"{attachment['attachment_basis']!r}, but its own retained evidence "
-                    f"attached it by {derived_basis!r}"
-                )
-            if (
-                attachment["attached"]
-                and isinstance(alignment, dict)
-                and alignment.get("status") == "aligned"
-            ):
-                if (
-                    not isinstance(alignment, dict)
-                    or set(alignment)
-                    != {
-                        "status",
-                        "anchor_basis",
-                        "anchor_chair",
-                        "anchor_span",
-                        "witness_span",
-                        "anchor_line_match",
-                        "line_geometry",
-                        "loss",
-                        "offset_maps",
-                        "deadline_in_force",
-                    }
-                    or alignment.get("status") != "aligned"
-                    or (
-                        alignment.get("anchor_basis") == "act-anchor"
-                        and not isinstance(alignment.get("anchor_chair"), str)
-                    )
-                    or (
-                        alignment.get("anchor_basis") != "act-anchor"
-                        and alignment.get("anchor_chair") is not None
-                    )
-                    or span != alignment.get("witness_span")
-                    # Whether the alignment's SIGALRM backstop was armed, not only
-                    # whether it finished.
-                    or not isinstance(alignment.get("deadline_in_force"), bool)
-                ):
-                    raise SchemaRefusal("an attached page witness has no computed alignment")
-                page_text = page_payload.get("payload")
-                witness_span = alignment["witness_span"]
-                if not isinstance(page_text, str):
-                    raise SchemaRefusal("an attached page witness has no textual comparison view")
-                # `witness_span` indexes the raw page reading. The slice is stripped of
-                # markup because dissent assumes a markup-free comparison view.
-                comparison_views[chair] = act_comparison_view(page_text, witness_span)
-            elif attachment["attached"] and (
-                not isinstance(alignment, dict)
-                or set(alignment) != {"status", "reason"}
-                or alignment.get("status") != "unaligned"
-                or span is not None
-                or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
-            ):
-                raise SchemaRefusal(
-                    "a geometrically attached page witness has no explicit span limit"
-                )
-            elif (
-                not attachment["attached"]
-                and isinstance(alignment, dict)
-                and alignment.get("status") == "aligned"
-            ):
-                # Text alignment survives independently but cannot authorize a
-                # geometric attachment or comparison view.
-                if span is not None:
-                    raise SchemaRefusal("an unattached page witness claims a comparison span")
-            elif not attachment["attached"] and (
-                not isinstance(alignment, dict)
-                or set(alignment) != {"status", "reason"}
-                or alignment.get("status") != "unaligned"
-                or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
-            ):
-                # The producer emits exactly {status, reason}; without a reason the
-                # operator cannot tell why comparison failed.
-                raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
+            if view is not None:
+                comparison_views[chair] = view
             page_witness_chairs.add(chair)
-            # Geometry alone cannot satisfy the witness floor: this act must also
-            # have an aligned slice of retained page text. Re-derive the boolean
-            # so a resealed attachment cannot claim comparability by assertion.
-            if attachment["comparable"] != (
-                attachment["attached"]
-                and isinstance(alignment, dict)
-                and alignment.get("status") == "aligned"
-            ):
-                raise SchemaRefusal(
-                    f"act {act_id} page attachment for chair {chair!r} claims a comparability "
-                    "its own recorded alignment does not support. The witness floor could count "
-                    "text that was never placed in this act. Rebuild comparability from the "
-                    "referenced page Testimonium and alignment."
-                )
         else:
-            if attachment_page is not None:
-                raise SchemaRefusal("an act-scoped witness carries a page ordinal")
-            if attachment["alignment"] is not None:
-                raise SchemaRefusal("an act-scoped witness carries page alignment evidence")
-            testimonium = context.tree.read_artifact_reference(
-                reference,
-                stage=ATTESTATORES,
-                kind="testimonium",
-                subject_id=act_id,
+            deltas = _checked_act_scoped_attachment(
+                context,
+                act_id,
+                attachment,
+                reference=reference,
+                bases=bases,
+                proposal_region_ids=proposal_region_ids,
             )
-            if testimonium.get("payload", {}).get("chair") != chair:
-                raise SchemaRefusal(
-                    f"act {act_id} attachment points to another chair's Testimonium"
-                )
-            # Act-scoped comparability comes from the referenced Testimonium's
-            # own text; structured reports stay retained but uncountable.
-            if attachment["comparable"] != (
-                attachment["attached"]
-                and isinstance(testimonium.get("payload", {}).get("payload"), str)
-            ):
-                raise SchemaRefusal(
-                    f"act {act_id} attachment for chair {chair!r} claims a comparability its "
-                    "own retained derived testimony does not support. The witness floor could "
-                    "count a structured or absent report as act text. Rebuild comparability "
-                    "from the current referenced Testimonium."
-                )
-            edge_deltas.setdefault(chair, []).extend(
-                sealed_proposal_edge_deltas(
-                    testimonium["payload"],
-                    [basis for basis in bases if basis["region_id"] in proposal_region_ids],
-                )
-            )
+        edge_deltas.setdefault(chair, []).extend(deltas)
     return {
         "reference": context.artifact_ref(ATTESTATORES, "act-attachment", record["artifact_id"]),
         # A blinded dossier may show that page evidence exists, but not the
@@ -1320,6 +1007,350 @@ def act_attachment_view(
         "comparison_views": comparison_views,
         "edge_deltas": ordered_edge_deltas(edge_deltas),
     }
+
+
+def _current_testimonium_for(
+    attachment: dict[str, Any], *, act_id: str, current: dict[str, dict], page_chairs: set[str]
+) -> dict:
+    """The chair's current Testimonium, once the attachment's own facts agree with it."""
+    span = attachment["span"]
+    characters = attachment["content_health"].get("characters")
+    if attachment["attached"] and not attachment["page_witness"]:
+        if attachment["attachment_basis"] != "presented-region":
+            raise SchemaRefusal("an act-scoped attachment has no presented-region basis")
+        expected_end = (
+            characters if isinstance(characters, int) and not isinstance(characters, bool) else 0
+        )
+        if span != {"start": 0, "end": expected_end}:
+            raise SchemaRefusal("an attached act view does not span its complete delivered reading")
+    if attachment["comparable"] and not attachment["attached"]:
+        raise SchemaRefusal(
+            "an unattached act view cannot claim comparable text. "
+            "Text cannot count for an act when witness geometry did not attach to it. "
+            "Rebuild both facts from the retained Testimonium."
+        )
+    # Independent of the rule above. Page witnesses reach this too, so each refusal
+    # names its own field rather than calling every row an act view.
+    if not attachment["attached"]:
+        if attachment["attachment_basis"] != "unattached":
+            raise SchemaRefusal(
+                "an unattached attachment names an attachment basis other than "
+                "'unattached'; nothing attached it, so nothing decided the basis"
+            )
+        if span is not None:
+            raise SchemaRefusal("an unattached attachment claims an alignment span")
+    chair = attachment["chair"]
+    # A reread appends a new attempt without rewriting the attachment, so a stale
+    # attachment could present a superseded outcome as live. For an act-scoped chair
+    # `attached` must equal the current outcome.
+    chair_testimonium = current.get(chair)
+    if chair_testimonium is None:
+        raise FatalAccounting(
+            f"act {act_id} attachment names chair {chair!r}, which has no current Testimonium"
+        )
+    if not attachment["page_witness"] and attachment["attached"] != (
+        chair_testimonium["outcome"] in WITNESS_READING_OUTCOMES
+    ):
+        raise SchemaRefusal(
+            f"act {act_id} attachment for chair {chair!r} disagrees with that chair's "
+            "current Testimonium outcome"
+        )
+    # Not exempted for page witnesses: a reread appends to the same per-(act, chair)
+    # stream either way. `attached` may differ from a page witness's outcome, but
+    # the health must be the current attempt's.
+    if attachment["content_health"] != chair_testimonium["payload"].get("content_health"):
+        raise SchemaRefusal(
+            f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
+            "longer this chair's current Testimonium"
+        )
+    expected_page_witness = chair in page_chairs
+    if attachment["page_witness"] != expected_page_witness:
+        raise SchemaRefusal(
+            f"act {act_id} attachment changes page-witness scope for chair {chair!r}"
+        )
+    # `dissent.py` trusts the Testimonium's own `page_witness` flag and skips the
+    # comparison for it, so a resealed flag could silence an act-scoped chair's
+    # dissent row. Reconcile this copy against the run's declaration too.
+    if chair_testimonium["payload"].get("page_witness", False) is not expected_page_witness:
+        raise SchemaRefusal(
+            f"act {act_id} Testimonium for chair {chair!r} claims a page-witness scope this "
+            "run did not declare"
+        )
+    return chair_testimonium
+
+
+def _checked_page_attachment(
+    context,
+    act: dict[str, Any],
+    attachment: dict[str, Any],
+    chair_testimonium: dict,
+    *,
+    reference: Any,
+    page_ids: dict[int, str],
+    bases: list[dict],
+    proposal_region_ids: set[str],
+    all_proposal_regions: list[dict[str, Any]],
+    page_testimonia_seen: dict[str, dict] | None,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Reconcile a page witness's attachment with its page Testimonium.
+
+    Returns the act's comparison view of the page text, if aligned, and the edge deltas.
+    """
+    act_id = act["act_id"]
+    chair = attachment["chair"]
+    attachment_page = attachment["page_ordinal"]
+    span = attachment["span"]
+    view = None
+    if attachment_page not in page_ids:
+        raise SchemaRefusal(
+            f"act {act_id} page attachment names page {attachment_page!r} outside its "
+            "regions; it claims evidence the Perlector did not read; restore the "
+            "attachment's contributing page"
+        )
+    testimonium = context.tree.read_artifact_reference(
+        reference,
+        stage=ATTESTATORES,
+        kind="page-testimonium",
+        subject_id=page_ids[attachment_page],
+    )
+    page_payload = testimonium.get("payload")
+    validate_page_testimonium_record(context, testimonium, all_proposal_regions)
+    # For the caller's run-wide routing sweep: a page Testimonium belongs to a (page,
+    # chair) pair, not to this act, and this is the only digest-checked read of it.
+    if page_testimonia_seen is not None and isinstance(page_payload, dict):
+        page_testimonia_seen[testimonium["artifact_id"]] = testimonium
+    native_capture = page_payload.get("native_capture")
+    if native_capture is not None:
+        if native_capture["raw_response_ref"] not in testimonium.get("inputs", []):
+            raise SchemaRefusal(
+                f"act {act_id} page Testimonium for chair {chair!r} does not bind its "
+                "retained raw response as a verified input"
+            )
+        if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
+            raise SchemaRefusal(
+                f"act {act_id} page Testimonium for chair {chair!r} attributes its "
+                "native capture to an adapter other than that chair's configured boundary"
+            )
+        verify_native_capture_blob(context.tree, native_capture)
+    # Sealed proposal geometry only, as the writer used: a recovery crop postdates
+    # testimony, so it may not enlarge the denominator that attached it.
+    page_bases = [
+        basis
+        for basis in bases
+        if basis["source_page_ordinal"] == attachment_page
+        and basis["region_id"] in proposal_region_ids
+    ]
+    # Native page and compatibility act outcomes are independent; legacy
+    # page joins instead derive their outcome from the act attempts.
+    attachment_outcome = (
+        testimonium["outcome"] if native_capture is not None else chair_testimonium["outcome"]
+    )
+    # The producer's shared rule, recomputed so a resealed record cannot claim either
+    # `attached` or its basis: a page witness attaches on its own ink over this act's
+    # sealed proposal or, only where it reported none, on an anchor line in its text.
+    derived_basis = page_attachment_basis(
+        reading=attachment_outcome in WITNESS_READING_OUTCOMES,
+        geometry_overlaps=any(
+            reported_geometry_overlaps(
+                page_payload.get("observed", []), basis["transform"]["bounds"]
+            )
+            for basis in page_bases
+        ),
+        alignment=attachment["alignment"],
+    )
+    if attachment["attached"] != (derived_basis != "unattached"):
+        raise SchemaRefusal(
+            f"act {act_id} page attachment for chair {chair!r} does not derive from "
+            "that witness's reported geometry, or from an anchor line located in its "
+            "page text, against the sealed proposal"
+        )
+    deltas = sealed_proposal_edge_deltas(page_payload, page_bases)
+    unjoined = page_payload.get("unjoined_act_attempts")
+    if (
+        page_payload.get("chair") != chair
+        or page_payload.get("scope") != "page"
+        or page_payload.get("page_ordinal") != attachment_page
+        or not isinstance(unjoined, list)
+        or any(
+            not isinstance(row, dict)
+            or set(row) != {"act_id", "act_key", "outcome", "reason"}
+            or not isinstance(row["act_id"], str)
+            or not isinstance(row["act_key"], str)
+            or not isinstance(row["outcome"], str)
+            or not isinstance(row["reason"], str)
+            or not row["reason"].strip()
+            for row in unjoined
+        )
+    ):
+        raise SchemaRefusal(f"act {act_id} attachment points to the wrong page Testimonium")
+    # One act can disprove `primary` or `continuation` from its sealed
+    # primary page. Only the Recensor's whole-page view can verify `mixed`.
+    role = page_payload.get("page_role")
+    is_act_primary_page = attachment_page == act["page_ordinal"]
+    if (
+        not isinstance(role, str)
+        or role not in {"primary", "continuation", "mixed"}
+        or (
+            (is_act_primary_page and role == "continuation")
+            or (not is_act_primary_page and role == "primary")
+        )
+    ):
+        raise SchemaRefusal(
+            f"act {act_id} page Testimonium for chair {chair!r} carries a page_role "
+            f"{role!r} its own primary-page fact contradicts; the page relationship "
+            "is false; rebuild the page Testimonium from the attachment denominator"
+        )
+    # Only the alignment is fixed on a continuation page, not `attached`: a page witness
+    # can honestly report geometry there, but the act's anchor is on its primary page.
+    if not is_act_primary_page and attachment["alignment"] != {
+        "status": "unaligned",
+        "reason": "continuation-page-no-act-anchor",
+    }:
+        raise SchemaRefusal(
+            f"act {act_id} continuation-page attachment for chair {chair!r} claims "
+            "an act anchor; this page carries no act-specific anchor; "
+            "retain it as continuation-page-no-act-anchor"
+        )
+    current_unjoined = [row for row in unjoined if row["act_id"] == act_id]
+    if len(current_unjoined) > 1:
+        raise SchemaRefusal(
+            f"act {act_id} appears more than once in a page Testimonium's unjoined-attempt record"
+        )
+    # No row means the act joined. An omitted act is disclosed with the outcome that
+    # explains it; a reading may still be omitted (a structured native object cannot join).
+    row = current_unjoined[0] if current_unjoined else None
+    disclosed = row["outcome"] in WITNESS_READING_OUTCOMES if row is not None else True
+    # Joining only proves the bytes arrived: a joined response may still be unaligned,
+    # but an omitted one can never attach.
+    if not disclosed and attachment["attached"]:
+        raise SchemaRefusal(
+            f"act {act_id} attachment disagrees with its page Testimonium's unjoined-attempt record"
+        )
+    alignment = attachment["alignment"]
+    # The exact label is evidence about independence: `anchor-line` says the chair
+    # counts only because another chair's anchor located its text.
+    if attachment["attached"] and attachment["attachment_basis"] != derived_basis:
+        raise SchemaRefusal(
+            f"act {act_id} page attachment for chair {chair!r} names basis "
+            f"{attachment['attachment_basis']!r}, but its own retained evidence "
+            f"attached it by {derived_basis!r}"
+        )
+    if (
+        attachment["attached"]
+        and isinstance(alignment, dict)
+        and alignment.get("status") == "aligned"
+    ):
+        if (
+            set(alignment)
+            != {
+                "status",
+                "anchor_basis",
+                "anchor_chair",
+                "anchor_span",
+                "witness_span",
+                "anchor_line_match",
+                "line_geometry",
+                "loss",
+                "offset_maps",
+                "deadline_in_force",
+            }
+            or (
+                alignment.get("anchor_basis") == "act-anchor"
+                and not isinstance(alignment.get("anchor_chair"), str)
+            )
+            or (
+                alignment.get("anchor_basis") != "act-anchor"
+                and alignment.get("anchor_chair") is not None
+            )
+            or span != alignment.get("witness_span")
+            # Whether the SIGALRM backstop was armed, not only whether it finished.
+            or not isinstance(alignment.get("deadline_in_force"), bool)
+        ):
+            raise SchemaRefusal("an attached page witness has no computed alignment")
+        page_text = page_payload.get("payload")
+        witness_span = alignment["witness_span"]
+        if not isinstance(page_text, str):
+            raise SchemaRefusal("an attached page witness has no textual comparison view")
+        # `witness_span` indexes the raw page reading. The slice is stripped of
+        # markup because dissent assumes a markup-free comparison view.
+        view = act_comparison_view(page_text, witness_span)
+    elif attachment["attached"] and (
+        not isinstance(alignment, dict)
+        or set(alignment) != {"status", "reason"}
+        or alignment.get("status") != "unaligned"
+        or span is not None
+        or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
+    ):
+        raise SchemaRefusal("a geometrically attached page witness has no explicit span limit")
+    elif (
+        not attachment["attached"]
+        and isinstance(alignment, dict)
+        and alignment.get("status") == "aligned"
+    ):
+        # Text alignment cannot authorize a geometric attachment or comparison view.
+        if span is not None:
+            raise SchemaRefusal("an unattached page witness claims a comparison span")
+    elif not attachment["attached"] and (
+        not isinstance(alignment, dict)
+        or set(alignment) != {"status", "reason"}
+        or alignment.get("status") != "unaligned"
+        or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
+    ):
+        # Without a reason the operator cannot tell why comparison failed.
+        raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
+    # Geometry alone cannot satisfy the witness floor: the act also needs an aligned
+    # slice of retained page text, re-derived so it cannot be claimed by assertion.
+    if attachment["comparable"] != (
+        attachment["attached"]
+        and isinstance(alignment, dict)
+        and alignment.get("status") == "aligned"
+    ):
+        raise SchemaRefusal(
+            f"act {act_id} page attachment for chair {chair!r} claims a comparability "
+            "its own recorded alignment does not support. The witness floor could count "
+            "text that was never placed in this act. Rebuild comparability from the "
+            "referenced page Testimonium and alignment."
+        )
+    return view, deltas
+
+
+def _checked_act_scoped_attachment(
+    context,
+    act_id: str,
+    attachment: dict[str, Any],
+    *,
+    reference: Any,
+    bases: list[dict],
+    proposal_region_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Reconcile an act-scoped witness's attachment with its Testimonium; return its edge deltas."""
+    chair = attachment["chair"]
+    if attachment["page_ordinal"] is not None:
+        raise SchemaRefusal("an act-scoped witness carries a page ordinal")
+    if attachment["alignment"] is not None:
+        raise SchemaRefusal("an act-scoped witness carries page alignment evidence")
+    testimonium = context.tree.read_artifact_reference(
+        reference,
+        stage=ATTESTATORES,
+        kind="testimonium",
+        subject_id=act_id,
+    )
+    if testimonium.get("payload", {}).get("chair") != chair:
+        raise SchemaRefusal(f"act {act_id} attachment points to another chair's Testimonium")
+    # Structured reports stay retained but uncountable.
+    if attachment["comparable"] != (
+        attachment["attached"] and isinstance(testimonium.get("payload", {}).get("payload"), str)
+    ):
+        raise SchemaRefusal(
+            f"act {act_id} attachment for chair {chair!r} claims a comparability its "
+            "own retained derived testimony does not support. The witness floor could "
+            "count a structured or absent report as act text. Rebuild comparability "
+            "from the current referenced Testimonium."
+        )
+    return sealed_proposal_edge_deltas(
+        testimonium["payload"],
+        [basis for basis in bases if basis["region_id"] in proposal_region_ids],
+    )
 
 
 def ordered_edge_deltas(
@@ -1819,13 +1850,24 @@ def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
     artifacts; a resume that simply read again would republish them from a second live
     answer and be refused on every retry.
     """
-    return frozenset(
-        kind
-        for kind, operation in PRE_PERLECTIO_ARTIFACTS
-        if context.tree.has_artifact(
-            PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
-        )
-    )
+    return frozenset(kind for kind, _identifier in _present_arms(context, act_id, ordinal))
+
+
+def _present_arms(context, act_id: str, ordinal: int):
+    """The kind and identifier of each pre-Perlectio artifact of this attempt on disk."""
+    for kind, operation in PRE_PERLECTIO_ARTIFACTS:
+        identifier = _attempt_artifact_id(act_id, kind, operation, ordinal)
+        if context.tree.has_artifact(PERLECTOR, kind, identifier):
+            yield kind, identifier
+
+
+def _published_arm_refs(context, act_id: str, ordinal: int) -> list[dict[str, str]]:
+    """Arms published before a failed call, named so a resume and the Recensor can inspect
+    what completed without re-asking the chair."""
+    return [
+        context.artifact_ref(PERLECTOR, kind, identifier)
+        for kind, identifier in _present_arms(context, act_id, ordinal)
+    ]
 
 
 # The slowest live call observed (441 answer tokens beside ~6,500 prompt tokens, 80 GB
@@ -2013,53 +2055,14 @@ def _reading_image_inputs(
             "a cross-capture partition path conflicts with another direct input digest"
         )
     inputs[partition_ref["relative_path"]] = partition_ref
-    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
+    return sorted(inputs.values(), key=_input_order)
 
 
 # Closed and checked before publication: a missing field (identity, dissent, regime) is
-# the failure a per-field type check never sees.
-_PERLECTIO_FIELDS: Final = frozenset(
-    {
-        "act_key",
-        "attempt_ordinal",
-        "text",
-        "basis",
-        "dossier",
-        "prompt",
-        "dissent",
-        "truncation",
-        "uncertain_spans",
-        "uncertainty_assessment",
-        "gaps",
-        "provenance",
-        "lectio_kind",
-        "self_revision",
-        "protocol",
-        "audit",
-    }
-)
-
-# The instrument record: no `basis`, since a nuda reading has no witnesses, and its
-# sampling design. Every record kind carries the doubt report, because a doubt reported
-# on an instrument call is a measurement too (principle 2).
-_LECTIO_NUDA_FIELDS: Final = frozenset(
-    {
-        "act_key",
-        "attempt_ordinal",
-        "text",
-        "dossier",
-        "prompt",
-        "sampling",
-        "dissent",
-        "truncation",
-        "uncertain_spans",
-        "uncertainty_assessment",
-        "gaps",
-        "provenance",
-    }
-)
-
-_LECTIO_PRIOR_FIELDS: Final = frozenset(
+# the failure a per-field type check never sees. Every record kind carries the doubt
+# report, because a doubt reported on an instrument call is a measurement too
+# (principle 2).
+_READING_FIELDS: Final = frozenset(
     {
         "act_key",
         "attempt_ordinal",
@@ -2072,30 +2075,25 @@ _LECTIO_PRIOR_FIELDS: Final = frozenset(
         "uncertainty_assessment",
         "gaps",
         "provenance",
-        "protocol",
     }
 )
-
-_PRIMED_WITHOUT_PRIOR_FIELDS: Final = frozenset(
-    {
-        "act_key",
-        "attempt_ordinal",
-        "text",
-        "basis",
-        "dossier",
-        "prompt",
-        "sampling",
-        "dissent",
-        "truncation",
-        "uncertain_spans",
-        "uncertainty_assessment",
-        "gaps",
-        "provenance",
-        "lectio_kind",
-        "protocol",
-        "membership",
-    }
-)
+_PERLECTIO_FIELDS: Final = _READING_FIELDS | {
+    "basis",
+    "lectio_kind",
+    "self_revision",
+    "protocol",
+    "audit",
+}
+# No `basis`: a nuda reading has no witnesses.
+_LECTIO_NUDA_FIELDS: Final = _READING_FIELDS | {"sampling"}
+_LECTIO_PRIOR_FIELDS: Final = _READING_FIELDS | {"protocol"}
+_PRIMED_WITHOUT_PRIOR_FIELDS: Final = _READING_FIELDS | {
+    "basis",
+    "sampling",
+    "lectio_kind",
+    "protocol",
+    "membership",
+}
 
 # Each reason nothing was read has a distinct closed shape; otherwise a future
 # branch could omit its provenance without failing publication.
@@ -2109,18 +2107,76 @@ _NOT_RUN_CAPACITY_FIELDS: Final = _NOT_RUN_ABSENT_FIELDS | {
 }
 
 
+def _require_closed_schema(payload: dict, fields: frozenset, *, what: str) -> None:
+    missing = sorted(fields - set(payload))
+    unexpected = sorted(set(payload) - fields)
+    if missing or unexpected:
+        raise SchemaRefusal(
+            f"a Perlector {what} payload is not its closed schema: missing {missing}, "
+            f"unexpected {unexpected}"
+        )
+
+
 def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
     """Refuse a not-run Perlectio missing part of the record it claims.
 
     Capacity holds validate their autopsia and partition input where they are produced.
     """
-    missing = sorted(fields - set(payload))
-    unexpected = sorted(set(payload) - fields)
-    if missing or unexpected:
-        raise SchemaRefusal(
-            f"a Perlector not-run payload is not its closed schema: missing {missing}, "
-            f"unexpected {unexpected}"
-        )
+    _require_closed_schema(payload, fields, what="not-run")
+
+
+_NO_FAILURE_EVIDENCE: Final = {
+    "raw_response_ref": None,
+    "call_record_ref": None,
+    "request_sha256": None,
+    "receipt_ref": None,
+    "served_model_id": None,
+    "response_completion": None,
+}
+
+
+def _failure_facts(phase: str, kind: str, code: str, detail: str, **evidence) -> dict[str, Any]:
+    return {
+        "phase": phase,
+        "kind": kind,
+        "code": code,
+        "detail": detail,
+        **_NO_FAILURE_EVIDENCE,
+        **evidence,
+    }
+
+
+def _copied_ref(reference: Mapping[str, str] | None) -> dict[str, str] | None:
+    return dict(reference) if reference is not None else None
+
+
+def _reported_call_evidence(error: Exception) -> dict[str, Any]:
+    return {
+        "call_record_ref": _copied_ref(getattr(error, "call_record_ref", None)),
+        "request_sha256": getattr(error, "request_sha256", None),
+        "receipt_ref": _copied_ref(getattr(error, "receipt_ref", None)),
+        "served_model_id": getattr(error, "served_model_id", None),
+    }
+
+
+def _publish_not_run(
+    context,
+    *,
+    act_id: str,
+    ordinal: int,
+    fields: frozenset,
+    payload: dict[str, Any],
+    inputs: list[dict[str, str]] | None = None,
+) -> None:
+    validate_not_run_payload(payload, fields=fields)
+    context.publish(
+        kind="perlectio",
+        subject_id=act_id,
+        outcome="not-run",
+        attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
+        inputs=inputs,
+        payload=payload,
+    )
 
 
 def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
@@ -2132,75 +2188,47 @@ def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
     if isinstance(error, RequestCapacityRefusal):
         if error.capacity is None:
             raise error
-        return {
-            "phase": phase,
-            "kind": "request-capacity",
-            "code": "REQUEST_OVER_CAPACITY",
-            "detail": str(error),
-            "raw_response_ref": None,
-            "call_record_ref": None,
-            "request_sha256": None,
-            "receipt_ref": None,
-            "served_model_id": None,
-            "response_completion": None,
-        }
+        return _failure_facts(phase, "request-capacity", "REQUEST_OVER_CAPACITY", str(error))
     if isinstance(error, EngineSignalRefusal):
-        return {
-            "phase": phase,
-            "kind": "engine-signal",
-            "code": error.code,
-            "detail": error.detail,
-            "raw_response_ref": dict(error.raw_response_ref),
-            "call_record_ref": dict(error.call_record_ref),
-            "request_sha256": error.request_sha256,
-            "receipt_ref": dict(error.receipt_ref),
-            "served_model_id": error.served_model_id,
-            "response_completion": "complete",
-        }
+        return _failure_facts(
+            phase,
+            "engine-signal",
+            error.code,
+            error.detail,
+            raw_response_ref=dict(error.raw_response_ref),
+            call_record_ref=dict(error.call_record_ref),
+            request_sha256=error.request_sha256,
+            receipt_ref=dict(error.receipt_ref),
+            served_model_id=error.served_model_id,
+            response_completion="complete",
+        )
     if isinstance(error, ChairResponseRefusal):
-        raw_response_ref = getattr(error, "raw_response_ref", None)
-        call_record_ref = getattr(error, "call_record_ref", None)
-        receipt_ref = getattr(error, "receipt_ref", None)
-        return {
-            "phase": phase,
-            "kind": "chair-response",
-            "code": error.code,
-            "detail": error.detail,
-            "raw_response_ref": dict(raw_response_ref) if raw_response_ref is not None else None,
-            "call_record_ref": dict(call_record_ref) if call_record_ref is not None else None,
-            "request_sha256": getattr(error, "request_sha256", None),
-            "receipt_ref": dict(receipt_ref) if receipt_ref is not None else None,
-            "served_model_id": getattr(error, "served_model_id", None),
-            "response_completion": "complete",
-        }
-    if _CHAIR_TRANSPORT_FAILURE_TYPES and isinstance(error, _CHAIR_TRANSPORT_FAILURE_TYPES):
-        call_record_ref = getattr(error, "call_record_ref", None)
-        receipt_ref = getattr(error, "receipt_ref", None)
-        return {
-            "phase": phase,
-            "kind": "transport",
-            "code": error.code,
-            "detail": error.detail,
-            "raw_response_ref": None,
-            "call_record_ref": (dict(call_record_ref) if call_record_ref is not None else None),
-            "request_sha256": getattr(error, "request_sha256", None),
-            "receipt_ref": dict(receipt_ref) if receipt_ref is not None else None,
-            "served_model_id": getattr(error, "served_model_id", None),
-            "response_completion": getattr(error, "response_completion", None),
-        }
+        return _failure_facts(
+            phase,
+            "chair-response",
+            error.code,
+            error.detail,
+            raw_response_ref=_copied_ref(getattr(error, "raw_response_ref", None)),
+            response_completion="complete",
+            **_reported_call_evidence(error),
+        )
+    if isinstance(error, serving_errors.ChairTransportFailure):
+        return _failure_facts(
+            phase,
+            "transport",
+            error.code,
+            error.detail,
+            response_completion=getattr(error, "response_completion", None),
+            **_reported_call_evidence(error),
+        )
     if isinstance(error, EndpointUnavailable):
-        return {
-            "phase": phase,
-            "kind": "transport",
-            "code": "endpoint-unavailable",
-            "detail": str(error),
-            "raw_response_ref": None,
-            "call_record_ref": None,
-            "request_sha256": None,
-            "receipt_ref": None,
-            "served_model_id": None,
-            "response_completion": "unknown",
-        }
+        return _failure_facts(
+            phase,
+            "transport",
+            "endpoint-unavailable",
+            str(error),
+            response_completion="unknown",
+        )
     return None
 
 
@@ -2216,18 +2244,7 @@ def _failure_from_engine_call(
     context, engine_call: Mapping[str, Any] | None, *, detail: str
 ) -> dict[str, Any]:
     """Build the response-evidence half of a malformed re-proof failure."""
-    record = {
-        "phase": "audit-reproof",
-        "kind": "reproof-response",
-        "code": "ReproofResponseRefusal",
-        "detail": detail,
-        "raw_response_ref": None,
-        "call_record_ref": None,
-        "request_sha256": None,
-        "receipt_ref": None,
-        "served_model_id": None,
-        "response_completion": None,
-    }
+    record = _failure_facts("audit-reproof", "reproof-response", "ReproofResponseRefusal", detail)
     if engine_call is None:
         return record
     call_ref = dict(engine_call["call_record_ref"])
@@ -2279,6 +2296,32 @@ def _publish_failed_perlectio(
     identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
     validate_failed_perlectio(
         context, context.tree.read_artifact(PERLECTOR, "perlectio", identifier), act_id
+    )
+
+
+def _publish_reading_failure(
+    context,
+    *,
+    act_id: str,
+    act_key: str,
+    ordinal: int,
+    inputs: list[dict[str, str]],
+    failure: dict[str, Any],
+    reason: str,
+    provenance: dict[str, Any],
+) -> None:
+    _publish_failed_perlectio(
+        context,
+        act_id=act_id,
+        ordinal=ordinal,
+        inputs=inputs + _failure_evidence_inputs(failure),
+        payload={
+            "act_key": act_key,
+            "attempt_ordinal": ordinal,
+            "reason": reason,
+            "failure": failure,
+            "provenance": provenance,
+        },
     )
 
 
@@ -2334,6 +2377,30 @@ def _validate_cross_capture_dossier(
         )
 
 
+_DOSSIER_FIELDS: Final = frozenset(
+    {
+        "act_id",
+        "act_key",
+        "witness_regime",
+        "regions",
+        "page_renders",
+        "testimonia",
+        "dossier_digest",
+    }
+)
+# Logical identity and atomic presentation travel together or not at all.
+_DOSSIER_SHAPES: Final = tuple(
+    _DOSSIER_FIELDS | variant | cross_capture
+    for variant in (
+        frozenset(),
+        {"act_attachment"},
+        {"prior_draft", "prior_draft_view"},
+        {"act_attachment", "prior_draft", "prior_draft_view"},
+    )
+    for cross_capture in (frozenset(), {"logical_act_id", "cross_capture_autopsia"})
+)
+
+
 def validate_reading_payload(
     payload: dict,
     *,
@@ -2350,13 +2417,7 @@ def validate_reading_payload(
     Checked when written, so a defect surfaces where it was introduced.
     """
     refuse_capture_preference(payload, what="a Perlector reading")
-    missing = sorted(fields - set(payload))
-    unexpected = sorted(set(payload) - fields)
-    if missing or unexpected:
-        raise SchemaRefusal(
-            f"a Perlector reading payload is not its closed schema: missing {missing}, "
-            f"unexpected {unexpected}"
-        )
+    _require_closed_schema(payload, fields, what="reading")
     if outcome == "read" and (not isinstance(payload["text"], str) or not payload["text"].strip()):
         raise SchemaRefusal("a completed reading cannot establish an empty text")
     # The caller's field set decides the record shape, so a Perlectio carrying `basis:
@@ -2390,29 +2451,7 @@ def validate_reading_payload(
             "a Perlector reading by a configured chair records no resolved identity"
         )
     reading_dossier = payload["dossier"]
-    dossier_fields = {
-        "act_id",
-        "act_key",
-        "witness_regime",
-        "regions",
-        "page_renders",
-        "testimonia",
-        "dossier_digest",
-    }
-    # Logical identity and atomic presentation travel together or not at all.
-    _dossier_optional_variants = (
-        set(),
-        {"act_attachment"},
-        {"prior_draft", "prior_draft_view"},
-        {"act_attachment", "prior_draft", "prior_draft_view"},
-    )
-    _cross_capture_fields = {"logical_act_id", "cross_capture_autopsia"}
-    _allowed_dossier_shapes = tuple(
-        dossier_fields | variant | extra
-        for variant in _dossier_optional_variants
-        for extra in (set(), _cross_capture_fields)
-    )
-    if not isinstance(reading_dossier, dict) or set(reading_dossier) not in _allowed_dossier_shapes:
+    if not isinstance(reading_dossier, dict) or set(reading_dossier) not in _DOSSIER_SHAPES:
         raise SchemaRefusal("a Perlector reading carries no closed dossier record")
     if reading_dossier["act_key"] != payload["act_key"]:
         raise SchemaRefusal("a Perlector reading disagrees with its dossier's act key")
@@ -2423,7 +2462,67 @@ def validate_reading_payload(
         raise SchemaRefusal("a Perlector dossier digest does not match the dossier it seals")
     dossier_module.assert_no_order_bearing_field(dossier_body)
     _validate_cross_capture_dossier(reading_dossier, inputs=inputs)
-    lectio_kind = payload.get("lectio_kind")
+    _validate_lectio_kind(payload.get("lectio_kind"), reading_dossier)
+    if "act_attachment" in reading_dossier:
+        attachment = reading_dossier["act_attachment"]
+        if (
+            not isinstance(attachment, dict)
+            or set(attachment)
+            != {"reference", "page_witness_count", "comparison_views", "edge_deltas"}
+            or not isinstance(attachment["reference"], dict)
+            or not isinstance(attachment["page_witness_count"], int)
+            or isinstance(attachment["page_witness_count"], bool)
+            or attachment["page_witness_count"] < 0
+            or not isinstance(attachment["comparison_views"], dict)
+            or not isinstance(attachment["edge_deltas"], dict)
+        ):
+            raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
+        if is_unprimed:
+            raise SchemaRefusal(
+                "an unprimed reading's dossier cannot carry witness-derived act attachment metadata"
+            )
+    _validate_dossier_testimonia(
+        reading_dossier,
+        basis,
+        is_unprimed=is_unprimed,
+        run_id=run_id,
+        config_digest=config_digest,
+    )
+    _validate_reading_prompt(
+        payload,
+        provenance,
+        reading_dossier,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
+    if (
+        not isinstance(payload["truncation"], dict)
+        or payload["truncation"].get("classification") not in truncation.CLASSIFICATIONS
+    ):
+        raise SchemaRefusal(
+            "a Perlector reading carries no truncation classification; truncation is detected "
+            "by an instrument, never assumed"
+        )
+    if outcome == "read" and payload["truncation"]["classification"] != truncation.COMPLETE:
+        raise SchemaRefusal(
+            "a truncated or unknown attempt cannot carry the completed outcome 'read'"
+        )
+    if outcome == "truncated" and payload["truncation"]["classification"] == truncation.COMPLETE:
+        raise SchemaRefusal(
+            "a Perlectio with outcome 'truncated' cannot carry a 'complete' truncation "
+            "classification; outcome == 'truncated' means 'not established complete', and "
+            "the truncation field is where that is confirmed or held unknown, never "
+            "contradicted"
+        )
+    _validate_sealed_doubt(payload, fields=fields)
+    if "audit" in fields:
+        # Re-proof offsets index the frozen semi-final, which may be longer than the final;
+        # the chain check binds them before publication, so no bound is guessed here.
+        audit.validate_perlectio_audit(payload.get("audit"), text_length=None)
+    annotations.validate_annotations(payload, outcome=outcome)
+
+
+def _validate_lectio_kind(lectio_kind: Any, reading_dossier: dict) -> None:
     prior_draft = reading_dossier.get("prior_draft")
     if lectio_kind == "primed-with-prior":
         if (
@@ -2451,24 +2550,16 @@ def validate_reading_payload(
             f"a Perlector reading names unknown lectio kind {lectio_kind!r}; a kind this "
             "validator cannot name would publish its prior-draft evidence unchecked"
         )
-    if "act_attachment" in reading_dossier:
-        attachment = reading_dossier["act_attachment"]
-        if (
-            not isinstance(attachment, dict)
-            or set(attachment)
-            != {"reference", "page_witness_count", "comparison_views", "edge_deltas"}
-            or not isinstance(attachment["reference"], dict)
-            or not isinstance(attachment["page_witness_count"], int)
-            or isinstance(attachment["page_witness_count"], bool)
-            or attachment["page_witness_count"] < 0
-            or not isinstance(attachment["comparison_views"], dict)
-            or not isinstance(attachment["edge_deltas"], dict)
-        ):
-            raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
-        if is_unprimed:
-            raise SchemaRefusal(
-                "an unprimed reading's dossier cannot carry witness-derived act attachment metadata"
-            )
+
+
+def _validate_dossier_testimonia(
+    reading_dossier: dict,
+    basis: Any,
+    *,
+    is_unprimed: bool,
+    run_id: str | None,
+    config_digest: str | None,
+) -> None:
     dossier_testimonia = reading_dossier["testimonia"]
     if not isinstance(dossier_testimonia, list):
         raise SchemaRefusal("a Perlector dossier has no Testimonium list")
@@ -2501,6 +2592,17 @@ def validate_reading_payload(
             raise SchemaRefusal(
                 "a Perlector dossier's witness labels do not match its Testimonium basis"
             )
+
+
+def _validate_reading_prompt(
+    payload: dict,
+    provenance: dict,
+    reading_dossier: dict,
+    *,
+    protocol_config: dict[str, Any] | None,
+    protocol_sha256: str | None,
+) -> None:
+    """The prompt record, and its protocol block, reproduce from the chair and dossier."""
     prompt_record = payload["prompt"]
     identity_record = provenance.get("resolved_identity")
     if not isinstance(identity_record, dict):
@@ -2564,33 +2666,6 @@ def validate_reading_payload(
         raise SchemaRefusal(
             "a Perlector prompt record does not reproduce from its resolved chair and dossier"
         )
-    if (
-        not isinstance(payload["truncation"], dict)
-        or payload["truncation"].get("classification") not in truncation.CLASSIFICATIONS
-    ):
-        raise SchemaRefusal(
-            "a Perlector reading carries no truncation classification; truncation is detected "
-            "by an instrument, never assumed"
-        )
-    if outcome == "read" and payload["truncation"]["classification"] != truncation.COMPLETE:
-        raise SchemaRefusal(
-            "a truncated or unknown attempt cannot carry the completed outcome 'read'"
-        )
-    if outcome == "truncated" and payload["truncation"]["classification"] == truncation.COMPLETE:
-        raise SchemaRefusal(
-            "a Perlectio with outcome 'truncated' cannot carry a 'complete' truncation "
-            "classification; outcome == 'truncated' means 'not established complete', and "
-            "the truncation field is where that is confirmed or held unknown, never "
-            "contradicted"
-        )
-    _validate_sealed_doubt(payload, fields=fields)
-    if "audit" not in fields:
-        annotations.validate_annotations(payload, outcome=outcome)
-        return
-    # Re-proof offsets index the frozen semi-final, which may be longer than the final;
-    # the chain check binds them before publication, so no bound is guessed here.
-    audit.validate_perlectio_audit(payload.get("audit"), text_length=None)
-    annotations.validate_annotations(payload, outcome=outcome)
 
 
 def _validate_sealed_doubt(payload: dict, *, fields: frozenset) -> None:
@@ -3092,6 +3167,60 @@ def _page_flags(
     return audit.flags_once_per_page(frozen)
 
 
+def _publish_audit_draft(
+    context,
+    row: dict[str, Any],
+    flags: list[dict[str, Any]],
+    *,
+    round_cap: int,
+    policy_record: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Freeze the Pass-B semi-final and its page flags before any re-proof."""
+    payload = row["payload"]
+    draft_payload = {
+        "act_key": row["act"]["act_key"],
+        "attempt_ordinal": payload["attempt_ordinal"],
+        "semi_final_text": payload["text"],
+        "page_ids": audit_page_ids(row["bases"]),
+        "round_cap": round_cap,
+        "policy": policy_record,
+        "flags": flags,
+        "flag_location_basis": flag_location_basis(
+            payload["dossier"], flags, semi_final_text=payload["text"]
+        ),
+    }
+    audit.validate_draft(draft_payload)
+    draft = context.publish(
+        kind="audit-draft",
+        subject_id=row["act_id"],
+        outcome="read",
+        attempt=perlector_attempt_id(row["act_id"], "perlegere", payload["attempt_ordinal"]),
+        inputs=row["inputs"],
+        payload=draft_payload,
+    )
+    return draft_payload, context.input_ref(draft.relative_path)
+
+
+def _cap_exhausted_spans(flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"start": start, "end": end, "reason": "audit-round-cap-exhausted"}
+        for start, end in ((flag["location"]["start"], flag["location"]["end"]) for flag in flags)
+        if start < end
+    ]
+
+
+def _row_truncation(
+    row: dict[str, Any], text: str, *, stop_reason: str | None, protocol_config: dict[str, Any]
+) -> dict[str, Any]:
+    return truncation.classify(
+        text,
+        region_pixels=row["region_pixels"],
+        page_pixels=row["page_pixels"],
+        truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+        stop_reason=stop_reason,
+    )
+
+
 def _reseal_dossier(dossier: dict[str, Any]) -> dict[str, Any]:
     """Sweep and seal the final fields retained for publication."""
     body = {key: value for key, value in dossier.items() if key != "dossier_digest"}
@@ -3101,23 +3230,38 @@ def _reseal_dossier(dossier: dict[str, Any]) -> dict[str, Any]:
     return {**body, "dossier_digest": digest_of(body)}
 
 
+@dataclass(frozen=True)
+class _Attempt:
+    """The facts every record of one act's reading attempt is published with."""
+
+    act_key: str
+    act_id: str
+    ordinal: int
+    chair: ChairIdentity
+    bases: list[dict]
+    page_renders: list[dict]
+    region_pixels: int
+    page_pixels: int
+    protocol_config: dict[str, Any]
+    protocol_sha256: str
+    receipt_ref: dict[str, str] | None
+
+    def provenance(self, context) -> dict:
+        return provenance_for(context, self.chair, attempted=True, receipt_ref=self.receipt_ref)
+
+
 def _publication_pass_data(
-    chair: ChairIdentity,
-    dossier: dict[str, Any],
-    result: dict[str, Any],
-    *,
-    region_pixels: int,
-    page_pixels: int,
-    protocol_config: dict[str, Any],
-    protocol_sha256: str,
+    attempt: _Attempt, dossier: dict[str, Any], result: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], str]:
     sealed_dossier = _reseal_dossier(dossier)
-    prompt = prompts.prompt_evidence(chair, sealed_dossier, protocol_config, protocol_sha256)
+    prompt = prompts.prompt_evidence(
+        attempt.chair, sealed_dossier, attempt.protocol_config, attempt.protocol_sha256
+    )
     truncation_record = truncation.classify(
         result["text"],
-        region_pixels=region_pixels,
-        page_pixels=page_pixels,
-        truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+        region_pixels=attempt.region_pixels,
+        page_pixels=attempt.page_pixels,
+        truncation_policy=attempt.protocol_config[protocol.TRUNCATION_TABLE],
         stop_reason=result["stop_reason"],
     )
     outcome = _resolve_outcome(
@@ -3127,33 +3271,56 @@ def _publication_pass_data(
     return sealed_dossier, prompt, outcome, truncation_record, text
 
 
+def _arm_image_inputs(
+    context, attempt: _Attempt, sealed_dossier: dict[str, Any]
+) -> list[dict[str, str]]:
+    return _reading_image_inputs(
+        context,
+        attempt.bases,
+        attempt.page_renders,
+        autopsia=sealed_dossier["cross_capture_autopsia"],
+    )
+
+
+def _protocol_record(context, protocol_config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "selection_rule": protocol_config["selection_rule"],
+        "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
+        "draft_fed": context.draft_fed,
+    }
+
+
+def _testimonium_references(context, testimonia: list[dict]) -> dict[str, dict[str, str]]:
+    return {
+        record["artifact_id"]: context.artifact_ref(
+            ATTESTATORES, "testimonium", record["artifact_id"]
+        )
+        for record in testimonia
+    }
+
+
+def _testimonia_basis(testimonia: list[dict], references: dict[str, dict]) -> list[dict]:
+    return [
+        {
+            "chair": record["payload"]["chair"],
+            "artifact_id": record["artifact_id"],
+            "outcome": record["outcome"],
+            "reference": references[record["artifact_id"]],
+        }
+        for record in testimonia
+    ]
+
+
 def _publish_lectio_nuda(
     context,
-    *,
-    act_key: str,
-    act_id: str,
-    ordinal: int,
-    chair: ChairIdentity,
+    attempt: _Attempt,
     dossier: dict[str, Any],
     result: dict[str, Any],
-    bases: list[dict],
-    page_renders: list[dict],
-    region_pixels: int,
-    page_pixels: int,
-    protocol_config: dict[str, Any],
-    protocol_sha256: str,
     approval_ref: ApprovalRecordBinding,
-    receipt_ref: dict[str, str] | None = None,
 ) -> None:
     """Publish outside Perlectio kind and attempt identity with no witness facts."""
     nuda_dossier, prompt, outcome, truncation_record, nuda_text = _publication_pass_data(
-        chair,
-        dossier,
-        result,
-        region_pixels=region_pixels,
-        page_pixels=page_pixels,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        attempt, dossier, result
     )
     nuda_assessment, nuda_spans, nuda_gaps = _published_doubt(
         result,
@@ -3162,8 +3329,8 @@ def _publish_lectio_nuda(
         whole_act_gaps=_whole_act_gap([], {}),
     )
     payload = {
-        "act_key": act_key,
-        "attempt_ordinal": ordinal,
+        "act_key": attempt.act_key,
+        "attempt_ordinal": attempt.ordinal,
         "text": nuda_text,
         "dossier": nuda_dossier,
         "prompt": prompt,
@@ -3176,59 +3343,36 @@ def _publish_lectio_nuda(
         "uncertain_spans": nuda_spans,
         "uncertainty_assessment": nuda_assessment,
         "gaps": nuda_gaps,
-        "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
+        "provenance": attempt.provenance(context),
     }
     fields = with_engine_call(payload, result, _LECTIO_NUDA_FIELDS)
-    reading_inputs = _reading_image_inputs(
-        context,
-        bases,
-        page_renders,
-        autopsia=nuda_dossier["cross_capture_autopsia"],
-    ) + engine_call_inputs(context, result.get("engine_call"))
+    reading_inputs = _arm_image_inputs(context, attempt, nuda_dossier) + engine_call_inputs(
+        context, result.get("engine_call")
+    )
     validate_reading_payload(
         payload,
         outcome=outcome,
         fields=fields,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        protocol_config=attempt.protocol_config,
+        protocol_sha256=attempt.protocol_sha256,
         inputs=reading_inputs,
     )
     context.publish(
         kind=nuda.LECTIO_NUDA_KIND,
-        subject_id=act_id,
+        subject_id=attempt.act_id,
         outcome=outcome,
-        attempt=perlector_attempt_id(act_id, "lectio-nuda", ordinal),
+        attempt=perlector_attempt_id(attempt.act_id, "lectio-nuda", attempt.ordinal),
         inputs=reading_inputs + [approval_ref.reference.to_record()],
         payload=payload,
     )
 
 
 def _publish_lectio_prior(
-    context,
-    dossier: dict[str, Any],
-    result: dict[str, Any],
-    *,
-    act_key,
-    act_id,
-    ordinal,
-    chair,
-    bases,
-    page_renders,
-    region_pixels,
-    page_pixels,
-    protocol_config,
-    protocol_sha256,
-    receipt_ref: dict[str, str] | None = None,
+    context, attempt: _Attempt, dossier: dict[str, Any], result: dict[str, Any]
 ) -> dict:
     """Publish Pass A as a retained draft, never as a Perlectio."""
     prior_dossier, prompt, outcome, truncation_record, text = _publication_pass_data(
-        chair,
-        dossier,
-        result,
-        region_pixels=region_pixels,
-        page_pixels=page_pixels,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        attempt, dossier, result
     )
     prior_assessment, prior_spans, prior_gaps = _published_doubt(
         result,
@@ -3237,8 +3381,8 @@ def _publish_lectio_prior(
         whole_act_gaps=_whole_act_gap([], {}),
     )
     payload = {
-        "act_key": act_key,
-        "attempt_ordinal": ordinal,
+        "act_key": attempt.act_key,
+        "attempt_ordinal": attempt.ordinal,
         "text": text,
         "dossier": prior_dossier,
         "prompt": prompt,
@@ -3247,37 +3391,32 @@ def _publish_lectio_prior(
         "uncertain_spans": prior_spans,
         "uncertainty_assessment": prior_assessment,
         "gaps": prior_gaps,
-        "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
-        "protocol": {
-            "selection_rule": protocol_config["selection_rule"],
-            "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
-            "draft_fed": context.draft_fed,
-        },
+        "provenance": attempt.provenance(context),
+        "protocol": _protocol_record(context, attempt.protocol_config),
     }
     fields = with_engine_call(payload, result, _LECTIO_PRIOR_FIELDS)
-    reading_inputs = _reading_image_inputs(
-        context,
-        bases,
-        page_renders,
-        autopsia=prior_dossier["cross_capture_autopsia"],
-    ) + engine_call_inputs(context, result.get("engine_call"))
+    reading_inputs = _arm_image_inputs(context, attempt, prior_dossier) + engine_call_inputs(
+        context, result.get("engine_call")
+    )
     validate_reading_payload(
         payload,
         outcome=outcome,
         fields=fields,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        protocol_config=attempt.protocol_config,
+        protocol_sha256=attempt.protocol_sha256,
         inputs=reading_inputs,
     )
     context.publish(
         kind="lectio-prior",
-        subject_id=act_id,
+        subject_id=attempt.act_id,
         outcome=outcome,
-        attempt=perlector_attempt_id(act_id, "lectio-prior", ordinal),
+        attempt=perlector_attempt_id(attempt.act_id, "lectio-prior", attempt.ordinal),
         inputs=reading_inputs,
         payload=payload,
     )
-    prior_artifact_id = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
+    prior_artifact_id = _attempt_artifact_id(
+        attempt.act_id, "lectio-prior", "lectio-prior", attempt.ordinal
+    )
     return {
         "reference": context.artifact_ref(PERLECTOR, "lectio-prior", prior_artifact_id),
         "text": text,
@@ -3286,40 +3425,19 @@ def _publish_lectio_prior(
 
 def _publish_primed_without_prior(
     context,
-    *,
-    act_key,
-    act_id,
-    ordinal,
-    chair,
+    attempt: _Attempt,
     dossier: dict[str, Any],
     result: dict[str, Any],
-    bases,
-    page_renders,
-    region_pixels,
-    page_pixels,
-    testimonia,
-    attachment_view,
-    protocol_config,
-    protocol_sha256,
+    *,
+    testimonia: list[dict],
+    attachment_view: dict[str, Any],
     approval_ref: ApprovalRecordBinding,
-    receipt_ref: dict[str, str] | None = None,
 ) -> None:
     """The sampled control sees witnesses but never the Pass-A draft."""
     control_dossier, prompt, outcome, truncation_record, text = _publication_pass_data(
-        chair,
-        dossier,
-        result,
-        region_pixels=region_pixels,
-        page_pixels=page_pixels,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        attempt, dossier, result
     )
-    testimonium_references = {
-        record["artifact_id"]: context.artifact_ref(
-            ATTESTATORES, "testimonium", record["artifact_id"]
-        )
-        for record in testimonia
-    }
+    testimonium_references = _testimonium_references(context, testimonia)
     # `context.run` was verified when opened and nothing rewrites `run.json`, so it is
     # not re-read per act.
     membership = context.run["corpus_frame_membership"]
@@ -3330,26 +3448,18 @@ def _publish_primed_without_prior(
         whole_act_gaps=_whole_act_gap(testimonia, testimonium_references),
     )
     payload = {
-        "act_key": act_key,
-        "attempt_ordinal": ordinal,
+        "act_key": attempt.act_key,
+        "attempt_ordinal": attempt.ordinal,
         "text": text,
         "basis": {
-            "regions": bases,
-            "testimonia": [
-                {
-                    "chair": record["payload"]["chair"],
-                    "artifact_id": record["artifact_id"],
-                    "outcome": record["outcome"],
-                    "reference": testimonium_references[record["artifact_id"]],
-                }
-                for record in testimonia
-            ],
+            "regions": attempt.bases,
+            "testimonia": _testimonia_basis(testimonia, testimonium_references),
         },
         "dossier": control_dossier,
         "prompt": prompt,
         "sampling": protocol.control_sampling_design(
             per_mille=context.perlector_instrument_per_mille,
-            selection_rule=protocol_config["selection_rule"],
+            selection_rule=attempt.protocol_config["selection_rule"],
             approval_ref=approval_ref,
         ),
         # The digest draw above is keyed by the logical act. Record that same
@@ -3358,29 +3468,20 @@ def _publish_primed_without_prior(
         "membership": {
             **membership,
             "act_id": control_dossier["logical_act_id"],
-            "protocol_sha256": protocol_sha256,
+            "protocol_sha256": attempt.protocol_sha256,
         },
         "dissent": dissent_against(text, dissent_testimonia(testimonia, attachment_view)),
         "truncation": truncation_record,
         "uncertain_spans": control_spans,
         "uncertainty_assessment": control_assessment,
         "gaps": control_gaps,
-        "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
+        "provenance": attempt.provenance(context),
         "lectio_kind": "primed-without-prior",
-        "protocol": {
-            "selection_rule": protocol_config["selection_rule"],
-            "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
-            "draft_fed": context.draft_fed,
-        },
+        "protocol": _protocol_record(context, attempt.protocol_config),
     }
     fields = with_engine_call(payload, result, _PRIMED_WITHOUT_PRIOR_FIELDS)
     reading_inputs = (
-        _reading_image_inputs(
-            context,
-            bases,
-            page_renders,
-            autopsia=control_dossier["cross_capture_autopsia"],
-        )
+        _arm_image_inputs(context, attempt, control_dossier)
         + list(testimonium_references.values())
         + [attachment_view["reference"]]
         + engine_call_inputs(context, result.get("engine_call"))
@@ -3391,18 +3492,120 @@ def _publish_primed_without_prior(
         fields=fields,
         run_id=context.tree.run_id,
         config_digest=context.config_digest,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        protocol_config=attempt.protocol_config,
+        protocol_sha256=attempt.protocol_sha256,
         inputs=reading_inputs,
     )
     context.publish(
         kind="primed-without-prior",
-        subject_id=act_id,
+        subject_id=attempt.act_id,
         outcome=outcome,
-        attempt=perlector_attempt_id(act_id, "primed-without-prior", ordinal),
+        attempt=perlector_attempt_id(attempt.act_id, "primed-without-prior", attempt.ordinal),
         inputs=reading_inputs + [approval_ref.reference.to_record()],
         payload=payload,
     )
+
+
+def _established_row(
+    context,
+    attempt: _Attempt,
+    act: dict[str, Any],
+    establishing: dict[str, Any],
+    *,
+    order: int,
+    declared_failure: str | None,
+    testimonia: list[dict],
+    attachment_view: dict[str, Any],
+    autopsia: dict[str, Any],
+) -> dict[str, Any]:
+    """The Pass-B Perlectio payload and everything the audit pass needs to finish it.
+
+    Publication consumes the one establishing result; it never chooses or merges
+    capture-local readings.
+    """
+    primed_dossier = _reseal_dossier(establishing["dossier"])
+    result = establishing["result"]
+    prior = primed_dossier["prior_draft"]
+    # The prompt is reproduced from the retained dossier. In the withheld arm
+    # `combined.py` removed the prior text before the call; the prompt builder
+    # ignores a withheld prior, so both copies render the same bytes.
+    prompt = prompts.prompt_evidence(
+        attempt.chair, primed_dossier, attempt.protocol_config, attempt.protocol_sha256
+    )
+    # A declared failure is refused in live mode before any call.
+    reading = "" if declared_failure == "no-readable-text" else result["text"]
+    truncation_record = _reconciled_truncation(
+        declared_failure=declared_failure,
+        truncation_record=truncation.classify(
+            reading,
+            region_pixels=attempt.region_pixels,
+            page_pixels=attempt.page_pixels,
+            truncation_policy=attempt.protocol_config[protocol.TRUNCATION_TABLE],
+            stop_reason=result["stop_reason"],
+        ),
+    )
+    outcome = _resolve_outcome(
+        declared_failure=declared_failure, truncation_record=truncation_record, text=reading
+    )
+    if outcome == "no-readable-text":
+        # Whitespace resolved as unreadable is published as the empty text its schema
+        # requires.
+        reading = ""
+    testimonium_references = _testimonium_references(context, testimonia)
+    sealed_doubt, reader_spans, gaps = _published_doubt(
+        result,
+        text=reading,
+        outcome=outcome,
+        whole_act_gaps=_whole_act_gap(testimonia, testimonium_references),
+    )
+    provenance = attempt.provenance(context)
+    payload = {
+        "act_key": act["act_key"],
+        "attempt_ordinal": attempt.ordinal,
+        "text": reading,
+        "basis": {
+            "regions": attempt.bases,
+            "testimonia": _testimonia_basis(testimonia, testimonium_references),
+        },
+        "dossier": primed_dossier,
+        "prompt": prompt,
+        "dissent": dissent_against(reading, dissent_testimonia(testimonia, attachment_view)),
+        "truncation": truncation_record,
+        "uncertain_spans": reader_spans,
+        "gaps": gaps,
+        "uncertainty_assessment": sealed_doubt,
+        "provenance": provenance,
+        "lectio_kind": "primed-with-prior",
+        "self_revision": departures(reading, prior["text"]),
+        "protocol": _protocol_record(context, attempt.protocol_config),
+    }
+    return {
+        "act": act,
+        "act_id": attempt.act_id,
+        "order": order,
+        "bases": attempt.bases,
+        "payload": payload,
+        # The call the published text came from; the audit loop re-points it at the
+        # re-proof's call when that text is published.
+        "fields": with_engine_call(payload, result, _PERLECTIO_FIELDS),
+        "outcome": outcome,
+        # Areas, not decoded pixels: holding every act's images until the audit loop
+        # would grow memory with the act count. A re-proof rebuilds its pixels from the
+        # sealed artifacts.
+        "region_pixels": attempt.region_pixels,
+        "page_pixels": attempt.page_pixels,
+        "declared_failure": declared_failure,
+        "testimonia": testimonia,
+        "attachment_view": attachment_view,
+        "prior": prior,
+        "autopsia": autopsia,
+        "inputs": _reading_image_inputs(
+            context, attempt.bases, attempt.page_renders, autopsia=autopsia
+        )
+        + list(testimonium_references.values())
+        + [attachment_view["reference"], prior["reference"]]
+        + engine_call_inputs(context, result.get("engine_call")),
+    }
 
 
 def _logical_sampling_decisions(context, logical_act_id: str) -> tuple[bool, bool]:
@@ -3455,16 +3658,12 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         "to read another act, when the planned calls would run past it",
     )
     args = parser.parse_args()
-    # Either ingress route, decided from one read of the run authority; the
-    # real route carries the registry and sealed digests the lines below need.
     context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)
     decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
-    # Resolved before anything is published or started, so a live row without a tier
-    # refuses on an untouched tree.
+    # Resolved before anything is published or started, so they refuse on an untouched tree.
     chair = perlector_chair(context)
     serving_mode = perlector_serving_mode(context, args, chair)
-    # Likewise, a real submission with a non-live row refuses here.
     reader = fixture_reader_for(context, chair, serving_mode)
     witness_context_table = dossier_module.load_witness_context(
         Path(context.witness_context_config_path)
@@ -3492,10 +3691,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
     context.require_sealed_config("perlector-audit", audit_sha256)
 
-    # A recovery re-reads only the recovered acts; an attempt nobody requested would
-    # make the attempt tally meaningless.
     expected = expected_acts(context)
     declared_order = {act["act_id"]: order for order, act in enumerate(expected)}
+    # An attempt nobody requested would make the attempt tally meaningless.
     wanted = [act for act in expected if args.act in (None, act["act_id"])]
     if args.act and not wanted:
         raise ContractError(f"asked to read {args.act}, which the proposal seal does not name")
@@ -3512,9 +3710,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     acknowledged = 0
     resumed = 0
     pending: list[dict[str, Any]] = []
-    # Walked once for the whole run: the routing denominator is every sealed
-    # proposal, and `reported_unrouted` keeps one observation's finding from being
-    # restated by every act that reaches the same page Testimonium.
+    # The routing denominator is every sealed proposal; `reported_unrouted` keeps one
+    # finding from being restated by every act reaching the same page Testimonium.
     all_proposal_regions = sealed_proposal_regions(context)
     reported_unrouted: set[tuple[str, int]] = set()
 
@@ -3544,26 +3741,23 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     for act in wanted:
         act_id = act["act_id"]
         if act["outcome"] == "held":
-            # A held act's proposal is incomplete, and reading part of an act would
-            # deliver a truncation as output. It is acknowledged with an explicit
-            # outcome, never skipped, so no unit goes unaccounted.
-            payload = {
-                "act_key": act["act_key"],
-                "attempt_ordinal": 1,
-                "reason": (
-                    "the Designator held this act; an incomplete proposal is "
-                    "not read, because a reading of part of an act would be a "
-                    "truncation delivered as an output"
-                ),
-                "provenance": provenance_for(context, chair, attempted=False),
-            }
-            validate_not_run_payload(payload, fields=_NOT_RUN_HELD_FIELDS)
-            context.publish(
-                kind="perlectio",
-                subject_id=act_id,
-                outcome="not-run",
-                attempt=perlector_attempt_id(act_id, "perlegere", 1),
-                payload=payload,
+            # Reading part of an act would deliver a truncation as output; acknowledged
+            # explicitly, never skipped, so no unit goes unaccounted.
+            _publish_not_run(
+                context,
+                act_id=act_id,
+                ordinal=1,
+                fields=_NOT_RUN_HELD_FIELDS,
+                payload={
+                    "act_key": act["act_key"],
+                    "attempt_ordinal": 1,
+                    "reason": (
+                        "the Designator held this act; an incomplete proposal is "
+                        "not read, because a reading of part of an act would be a "
+                        "truncation delivered as an output"
+                    ),
+                    "provenance": provenance_for(context, chair, attempted=False),
+                },
             )
             acknowledged += 1
             continue
@@ -3574,24 +3768,21 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         regions, proposal_regions = act_regions(context, act_id)
         ordinal = _next_attempt(context, act_id, regions)
         if isinstance(chair, AbsentChair):
-            # No chair to read with. Every act still gets an explicit record
-            # naming the absence: a stage that simply produced nothing would
-            # leave the Recensor to infer a gap it cannot see.
-            payload = {
-                "act_key": act["act_key"],
-                "attempt_ordinal": ordinal,
-                "reason": f"the Perlector chair is explicitly absent: {chair.reason}",
-                "basis": {"regions": [], "testimonia": []},
-                "dissent": [],
-                "provenance": provenance_for(context, chair, attempted=False),
-            }
-            validate_not_run_payload(payload, fields=_NOT_RUN_ABSENT_FIELDS)
-            context.publish(
-                kind="perlectio",
-                subject_id=act_id,
-                outcome="not-run",
-                attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
-                payload=payload,
+            # An explicit record of the absence: producing nothing would leave the Recensor
+            # to infer a gap it cannot see.
+            _publish_not_run(
+                context,
+                act_id=act_id,
+                ordinal=ordinal,
+                fields=_NOT_RUN_ABSENT_FIELDS,
+                payload={
+                    "act_key": act["act_key"],
+                    "attempt_ordinal": ordinal,
+                    "reason": f"the Perlector chair is explicitly absent: {chair.reason}",
+                    "basis": {"regions": [], "testimonia": []},
+                    "dissent": [],
+                    "provenance": provenance_for(context, chair, attempted=False),
+                },
             )
             acknowledged += 1
             continue
@@ -3599,9 +3790,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         if serving_mode == "live" and _reading_already_sealed(
             context, act_id, ordinal, act_key=act["act_key"]
         ):
-            # A live act sealed at this ordinal is never asked again: a second reading
-            # would differ and the store refuses it (principle 4). Counted apart from
-            # `read`: this invocation did not read it.
+            # Never asked again: a second live reading would differ and the store refuses
+            # it (principle 4).
             resumed += 1
             continue
 
@@ -3616,41 +3806,14 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 "declared stand-in cannot override an engine that reported"
             )
 
-        # Every region of the act is verified and read, including a continuation
-        # on the next page: an act that ran over the page break and was read only
-        # up to the fold would be truncated, which is a failure and not an output.
-        bases = [verify_region(context, region) for region in regions]
-        testimonia = testimonia_of(context, act_id, proposal_regions)
-        page_testimonia: dict[str, dict] = {}
-        attachment_view = act_attachment_view(
+        bases, testimonia, attachment_view = _witnessed_act(
             context,
             act,
-            testimonia,
-            bases,
-            {region["payload"]["region_id"] for region in proposal_regions},
-            page_testimonia_seen=page_testimonia,
+            regions,
+            proposal_regions,
             all_proposal_regions=all_proposal_regions,
+            reported_unrouted=reported_unrouted,
         )
-        # Both witness scopes use the run-wide proposal denominator. Deduplicate
-        # page testimony so an observation is named once, not once per act.
-        unrouted = unrouted_observations(
-            testimonia + list(page_testimonia.values()),
-            all_proposal_regions,
-            prior_findings=reported_unrouted,
-        )
-        for finding in unrouted:
-            reported_unrouted.add((finding["testimonium_id"], finding["ordinal"]))
-            # Named on stderr, never normalized into the nearest act. The Recensor
-            # re-derives the same finding independently from the geometry and the sealed
-            # denominator.
-            print(f"non-fatal finding: {finding}", file=sys.stderr)
-
-        # Ink uncovered only by a recovery recrop was never shown to a witness;
-        # recording that keeps the gap visible. The reading itself is unaffected.
-        witnessed = witnessed_region_ids(testimonia, bases)
-        for basis in bases:
-            basis["witness_covered"] = basis["region_id"] in witnessed
-
         region_pixels = _region_pixels(bases)
         page_renders = _page_renders_for(context, bases)
         page_pixels = _page_pixels(page_renders)
@@ -3670,25 +3833,22 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # without killing other acts or allowing the transport to chunk views.
         capacity_finding = over_capacity_reason(autopsia, max_images)
         if capacity_finding is not None:
-            capacity_inputs = _reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
-            payload = {
-                "act_key": act["act_key"],
-                "attempt_ordinal": ordinal,
-                "reason": capacity_finding,
-                "basis": {"regions": [], "testimonia": []},
-                "dissent": [],
-                "provenance": provenance_for(context, chair, attempted=False),
-                "logical_act_id": logical_act_id,
-                "cross_capture_autopsia": autopsia,
-            }
-            validate_not_run_payload(payload, fields=_NOT_RUN_CAPACITY_FIELDS)
-            context.publish(
-                kind="perlectio",
-                subject_id=act_id,
-                outcome="not-run",
-                attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
-                inputs=capacity_inputs,
-                payload=payload,
+            _publish_not_run(
+                context,
+                act_id=act_id,
+                ordinal=ordinal,
+                fields=_NOT_RUN_CAPACITY_FIELDS,
+                inputs=_reading_image_inputs(context, bases, page_renders, autopsia=autopsia),
+                payload={
+                    "act_key": act["act_key"],
+                    "attempt_ordinal": ordinal,
+                    "reason": capacity_finding,
+                    "basis": {"regions": [], "testimonia": []},
+                    "dissent": [],
+                    "provenance": provenance_for(context, chair, attempted=False),
+                    "logical_act_id": logical_act_id,
+                    "cross_capture_autopsia": autopsia,
+                },
             )
             unread -= 1
             acknowledged += 1
@@ -3701,8 +3861,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
         unread -= 1
         if reader is None:
-            # One chair for the whole run, started by the first act that needs a
-            # reading.
             reader, receipt_ref = _live_reader(
                 context,
                 args,
@@ -3726,15 +3884,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             act_attachment=attachment_view,
         )
 
-        # The unprimed instrument, sampled by the run's predeclared design once per
-        # logical act, as the control is.
         nuda_sampled, control_sampled = _logical_sampling_decisions(context, logical_act_id)
 
-        # Bind loop-local publication facts now; the callback runs before the
-        # establishing arm and returns the immutable prior reference it embeds.
-        publish_prior = partial(
-            _publish_lectio_prior,
-            context,
+        attempt = _Attempt(
             act_key=act["act_key"],
             act_id=act_id,
             ordinal=ordinal,
@@ -3747,6 +3899,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             protocol_sha256=protocol_sha256,
             receipt_ref=receipt_ref,
         )
+        # Runs before the establishing arm, which embeds the prior reference it returns.
+        publish_prior = partial(_publish_lectio_prior, context, attempt)
 
         # Every arm receives the complete presentation in one reader call.
         try:
@@ -3764,37 +3918,21 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         except _ACT_LOCAL_READING_FAILURES as error:
             failure = _failure_record(error, phase="establishing")
             assert failure is not None  # narrowed by the exception tuple above
-            failure_inputs = (
-                _reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
+            _publish_reading_failure(
+                context,
+                act_id=act_id,
+                act_key=act["act_key"],
+                ordinal=ordinal,
+                inputs=_reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
                 + [
                     context.artifact_ref(ATTESTATORES, "testimonium", record["artifact_id"])
                     for record in testimonia
                 ]
                 + [attachment_view["reference"]]
-            )
-            # Arms published before the failed call are immutable evidence of
-            # this same attempt.  Naming them makes a resume and the Recensor
-            # able to inspect what completed without re-asking the chair.
-            for kind, operation in PRE_PERLECTIO_ARTIFACTS:
-                identifier = _attempt_artifact_id(act_id, kind, operation, ordinal)
-                if context.tree.has_artifact(PERLECTOR, kind, identifier):
-                    failure_inputs.append(context.artifact_ref(PERLECTOR, kind, identifier))
-            failure_inputs.extend(_failure_evidence_inputs(failure))
-            failure_payload = {
-                "act_key": act["act_key"],
-                "attempt_ordinal": ordinal,
-                "reason": f"live Perlector {failure['kind']} failure: {failure['code']}",
-                "failure": failure,
-                "provenance": provenance_for(
-                    context, chair, attempted=True, receipt_ref=receipt_ref
-                ),
-            }
-            _publish_failed_perlectio(
-                context,
-                act_id=act_id,
-                ordinal=ordinal,
-                inputs=failure_inputs,
-                payload=failure_payload,
+                + _published_arm_refs(context, act_id, ordinal),
+                failure=failure,
+                reason=f"live Perlector {failure['kind']} failure: {failure['code']}",
+                provenance=provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
             )
             acknowledged += 1
             continue
@@ -3802,168 +3940,51 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         if nuda_sampled:
             _publish_lectio_nuda(
                 context,
-                act_key=act["act_key"],
-                act_id=act_id,
-                ordinal=ordinal,
-                chair=chair,
-                dossier=passes["lectio-nuda"]["dossier"],
-                result=passes["lectio-nuda"]["result"],
-                bases=bases,
-                page_renders=page_renders,
-                region_pixels=region_pixels,
-                page_pixels=page_pixels,
-                protocol_config=protocol_config,
-                protocol_sha256=protocol_sha256,
-                approval_ref=nuda_approval,
-                receipt_ref=receipt_ref,
+                attempt,
+                passes["lectio-nuda"]["dossier"],
+                passes["lectio-nuda"]["result"],
+                nuda_approval,
             )
 
         if control_sampled:
             _publish_primed_without_prior(
                 context,
-                act_key=act["act_key"],
-                act_id=act_id,
-                ordinal=ordinal,
-                chair=chair,
-                dossier=passes["primed-without-prior"]["dossier"],
-                result=passes["primed-without-prior"]["result"],
-                bases=bases,
-                page_renders=page_renders,
-                region_pixels=region_pixels,
-                page_pixels=page_pixels,
+                attempt,
+                passes["primed-without-prior"]["dossier"],
+                passes["primed-without-prior"]["result"],
                 testimonia=testimonia,
                 attachment_view=attachment_view,
-                protocol_config=protocol_config,
-                protocol_sha256=protocol_sha256,
                 approval_ref=instrument_approval,
-                receipt_ref=receipt_ref,
             )
 
-        # Publication consumes the one establishing result; it never chooses or
-        # merges capture-local readings.
-        primed_dossier = _reseal_dossier(passes["perlectio"]["dossier"])
-        result = passes["perlectio"]["result"]
-        prior = primed_dossier["prior_draft"]
-        # The prompt is reproduced from the retained dossier. In the withheld arm
-        # `combined.py` removed the prior text before the call; the prompt builder
-        # ignores a withheld prior, so both copies render the same bytes.
-        prompt = prompts.prompt_evidence(chair, primed_dossier, protocol_config, protocol_sha256)
-
-        # Already refused for live mode above; here it decides `reading` and `outcome`
-        # together.
-        reading = "" if declared_failure == "no-readable-text" else result["text"]
-        truncation_record = _reconciled_truncation(
-            declared_failure=declared_failure,
-            truncation_record=truncation.classify(
-                reading,
-                region_pixels=region_pixels,
-                page_pixels=page_pixels,
-                truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
-                stop_reason=result["stop_reason"],
-            ),
-        )
-        outcome = _resolve_outcome(
-            declared_failure=declared_failure, truncation_record=truncation_record, text=reading
-        )
-        if outcome == "no-readable-text":
-            # See the nuda publish path: whitespace resolved as unreadable is
-            # published as the empty text its schema requires.
-            reading = ""
-        testimonium_references = {
-            record["artifact_id"]: context.artifact_ref(
-                ATTESTATORES, "testimonium", record["artifact_id"]
-            )
-            for record in testimonia
-        }
-        # The reader's own doubts over the text it read, by the one rubric every
-        # record kind uses (`_published_doubt`).
-        sealed_doubt, reader_spans, gaps = _published_doubt(
-            result,
-            text=reading,
-            outcome=outcome,
-            whole_act_gaps=_whole_act_gap(testimonia, testimonium_references),
-        )
-
-        provenance = provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref)
-        payload = {
-            "act_key": act["act_key"],
-            "attempt_ordinal": ordinal,
-            "text": reading,
-            "basis": {
-                "regions": bases,
-                "testimonia": [
-                    {
-                        "chair": record["payload"]["chair"],
-                        "artifact_id": record["artifact_id"],
-                        "outcome": record["outcome"],
-                        "reference": testimonium_references[record["artifact_id"]],
-                    }
-                    for record in testimonia
-                ],
-            },
-            "dossier": primed_dossier,
-            "prompt": prompt,
-            "dissent": dissent_against(reading, dissent_testimonia(testimonia, attachment_view)),
-            "truncation": truncation_record,
-            "uncertain_spans": reader_spans,
-            "gaps": gaps,
-            "uncertainty_assessment": sealed_doubt,
-            "provenance": provenance,
-            "lectio_kind": "primed-with-prior",
-            "self_revision": departures(reading, prior["text"]),
-            "protocol": {
-                "selection_rule": protocol_config["selection_rule"],
-                "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
-                "draft_fed": context.draft_fed,
-            },
-        }
-        # The call the published text came from; the audit loop re-points it at the
-        # re-proof's call when that text is published.
-        payload_fields = with_engine_call(payload, result, _PERLECTIO_FIELDS)
         pending.append(
-            {
-                "act": act,
-                "act_id": act_id,
-                "order": declared_order[act_id],
-                "bases": bases,
-                "payload": payload,
-                "fields": payload_fields,
-                "outcome": outcome,
-                # Not the decoded pixels: holding every act's images until the audit
-                # loop would grow memory with the act count and risk an OOM kill before
-                # any Perlectio publishes. A re-proof rebuilds its pixels from the
-                # sealed artifacts.
-                "region_pixels": region_pixels,
-                "page_pixels": page_pixels,
-                "declared_failure": declared_failure,
-                "testimonia": testimonia,
-                "attachment_view": attachment_view,
-                "prior": prior,
-                "autopsia": autopsia,
-                "inputs": _reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
-                + list(testimonium_references.values())
-                + [attachment_view["reference"], prior["reference"]]
-                + engine_call_inputs(context, result.get("engine_call")),
-            }
+            _established_row(
+                context,
+                attempt,
+                act,
+                passes["perlectio"],
+                order=declared_order[act_id],
+                declared_failure=declared_failure,
+                testimonia=testimonia,
+                attachment_view=attachment_view,
+                autopsia=autopsia,
+            )
         )
         read += 1
 
-    # The page flag pass receives these immutable Pass-B semi-finals together,
-    # before any re-proof result exists.  Its output is therefore one
-    # deterministic cross-act computation per page, with no cascade.
-    semi_finals = []
-    for row in pending:
-        payload = row["payload"]
-        bases = row["bases"]
-        semi_finals.extend(
-            audit_semi_finals_for_pages(
-                act_id=row["act_id"],
-                order=row["order"],
-                text=payload["text"],
-                bases=bases,
-                dossier=payload["dossier"],
-            )
+    # All Pass-B semi-finals together, before any re-proof exists: one deterministic
+    # cross-act computation per page, with no cascade.
+    semi_finals = [
+        semi_final
+        for row in pending
+        for semi_final in audit_semi_finals_for_pages(
+            act_id=row["act_id"],
+            order=row["order"],
+            text=row["payload"]["text"],
+            bases=row["bases"],
+            dossier=row["payload"]["dossier"],
         )
+    ]
     page_flags = _page_flags(
         context,
         semi_finals,
@@ -3977,68 +3998,41 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         payload = row["payload"]
         act_id = row["act_id"]
         flags = page_flags[act_id]
-        page_ids = audit_page_ids(row["bases"])
-        draft_payload = {
-            "act_key": row["act"]["act_key"],
-            "attempt_ordinal": payload["attempt_ordinal"],
-            "semi_final_text": payload["text"],
-            "page_ids": page_ids,
-            "round_cap": audit_policy["round_cap"],
-            "policy": policy_record,
-            "flags": flags,
-            "flag_location_basis": flag_location_basis(
-                payload["dossier"], flags, semi_final_text=payload["text"]
-            ),
-        }
-        audit.validate_draft(draft_payload)
-        draft = context.publish(
-            kind="audit-draft",
-            subject_id=act_id,
-            outcome="read",
-            attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
-            inputs=row["inputs"],
-            payload=draft_payload,
+        draft_payload, draft_ref = _publish_audit_draft(
+            context, row, flags, round_cap=audit_policy["round_cap"], policy_record=policy_record
         )
-        draft_ref = context.input_ref(draft.relative_path)
+        page_ids = draft_payload["page_ids"]
         final_text = payload["text"]
-        # The frozen semi-final, captured before an accepted rewrite changes
-        # `payload["text"]`.
-        pre_audit_text = payload["text"]
         # The truncation verdict on the re-proof call itself, measured before its text
         # is compared with the semi-final: a cut-off re-proof that returned the
         # established text verbatim must not pass as complete.
         reproof_truncation: dict[str, Any] | None = None
-        # Computed once by the function `validate_chain` re-derives it with and
-        # `audit_request` builds from, so the sealed, delivered and recomputed plans are
-        # one computation.
+        # The one function `validate_chain` and `audit_request` also use, so the sealed,
+        # delivered and recomputed plans are one computation.
         reproofs = audit.reproof_plan(
             flags, text_length=len(final_text), policy_schema=audit_policy["schema"]
         )
         request_digest: str | None = None
         changes: list[dict[str, Any]] = []
-        uncertainty: list[dict[str, Any]] = []
         reproof_edits: list[dict[str, Any]] | None = None
         payload_fields = row["fields"]
         # A re-proof is evidence whether or not it changed the text, so it is always
         # bound as an input; `engine_call` names it only when its text is published.
         reproof_inputs: list[dict[str, str]] = []
         reproof_call_record: dict[str, Any] | None = None
-        # The same predicate `validate_chain` re-derives from the frozen draft:
-        # one spelling of "a re-proof request exists for this act".
+        # The predicate `validate_chain` re-derives from the frozen draft.
         if audit.reproof_delivery_due(flags, audit_policy["round_cap"]):
             base_prompt_record = copy.deepcopy(payload["prompt"])
             base_prompt_text = prompts.build_prompt(
                 chair.serving_recipe, chair.role, payload["dossier"], protocol_config
             )
-            # Exactly one reader call per act and audit round, over the establishing
-            # pass's complete atomic presentation; a flagged-page subset would be a
-            # capture-local call.
+            # One reader call per act and round over the complete atomic presentation; a
+            # flagged-page subset would be a capture-local call.
             reproof_pixels = atomic_delivered_pixels(
                 row["autopsia"], read_bytes=context.tree.read_bytes, max_images=max_images
             )
-            # Read before the re-proof result overwrites the final text: the request
-            # carries the frozen semi-final its locations index into, bound by the
-            # published draft's digest. The dossier goes through untouched so its
+            # The request carries the frozen semi-final its locations index into, bound by
+            # the published draft's digest; the dossier goes through untouched so its
             # `dossier_digest` still covers it.
             audit_request = audit.audit_request(
                 act_key=row["act"]["act_key"],
@@ -4066,40 +4060,28 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             except _ACT_LOCAL_READING_FAILURES as error:
                 failure = _failure_record(error, phase="audit-reproof")
                 assert failure is not None
-                failure_inputs = row["inputs"] + [draft_ref]
-                for kind, operation in PRE_PERLECTIO_ARTIFACTS:
-                    identifier = _attempt_artifact_id(
-                        act_id, kind, operation, payload["attempt_ordinal"]
-                    )
-                    if context.tree.has_artifact(PERLECTOR, kind, identifier):
-                        failure_inputs.append(context.artifact_ref(PERLECTOR, kind, identifier))
-                failure_inputs.extend(_failure_evidence_inputs(failure))
-                failure_payload = {
-                    "act_key": row["act"]["act_key"],
-                    "attempt_ordinal": payload["attempt_ordinal"],
-                    "reason": f"live Perlector {failure['kind']} failure during audit re-proof: {failure['code']}",
-                    "failure": failure,
-                    "provenance": payload["provenance"],
-                }
-                _publish_failed_perlectio(
+                _publish_reading_failure(
                     context,
                     act_id=act_id,
+                    act_key=row["act"]["act_key"],
                     ordinal=payload["attempt_ordinal"],
-                    inputs=failure_inputs,
-                    payload=failure_payload,
+                    inputs=row["inputs"]
+                    + [draft_ref]
+                    + _published_arm_refs(context, act_id, payload["attempt_ordinal"]),
+                    failure=failure,
+                    reason=f"live Perlector {failure['kind']} failure during audit re-proof: {failure['code']}",
+                    provenance=payload["provenance"],
                 )
                 continue
-            # A Pass-C reply is a set of exact draft-anchored edits, never a second
-            # whole reading; assembly validates every edit before it can touch the
-            # established text.
+            # A Pass-C reply is exact draft-anchored edits, never a second whole reading;
+            # assembly validates every edit before it touches the established text.
             try:
                 final_text, reproof_response = audit.assemble_reproof_response(
                     reproof["text"], audit_request
                 )
-                # Publishing whitespace as the canonical empty reading would
-                # remove characters outside a narrow edit.  That projection is
-                # not one of the exact edits the response accounted for.
-                if _publishes_empty(final_text) and final_text not in {"", pre_audit_text}:
+                # Publishing whitespace as the empty reading would remove characters
+                # outside the exact edits the response accounted for.
+                if _publishes_empty(final_text) and final_text not in {"", payload["text"]}:
                     raise audit.ReproofResponseRefusal(
                         "an audit re-proof response becomes a whole-act empty projection outside "
                         "its exact requested edits"
@@ -4112,51 +4094,32 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     request=audit_request,
                 )
             except audit.ReproofResponseRefusal as error:
-                failure_inputs = (
-                    row["inputs"]
-                    + [draft_ref]
-                    + engine_call_inputs(context, reproof.get("engine_call"))
-                )
-                for kind, operation in PRE_PERLECTIO_ARTIFACTS:
-                    identifier = _attempt_artifact_id(
-                        act_id, kind, operation, payload["attempt_ordinal"]
-                    )
-                    if context.tree.has_artifact(PERLECTOR, kind, identifier):
-                        failure_inputs.append(context.artifact_ref(PERLECTOR, kind, identifier))
-                failure_payload = {
-                    "act_key": row["act"]["act_key"],
-                    "attempt_ordinal": payload["attempt_ordinal"],
-                    "reason": "the delivered audit re-proof response could not be assembled safely",
-                    "failure": _failure_from_engine_call(
-                        context, reproof.get("engine_call"), detail=str(error)
-                    ),
-                    "provenance": payload["provenance"],
-                }
-                failure_inputs.extend(_failure_evidence_inputs(failure_payload["failure"]))
-                _publish_failed_perlectio(
+                _publish_reading_failure(
                     context,
                     act_id=act_id,
+                    act_key=row["act"]["act_key"],
                     ordinal=payload["attempt_ordinal"],
-                    inputs=failure_inputs,
-                    payload=failure_payload,
+                    inputs=row["inputs"]
+                    + [draft_ref]
+                    + engine_call_inputs(context, reproof.get("engine_call"))
+                    + _published_arm_refs(context, act_id, payload["attempt_ordinal"]),
+                    failure=_failure_from_engine_call(
+                        context, reproof.get("engine_call"), detail=str(error)
+                    ),
+                    reason="the delivered audit re-proof response could not be assembled safely",
+                    provenance=payload["provenance"],
                 )
                 continue
-            pre_audit_text = payload["text"]
             reproof_inputs = engine_call_inputs(context, reproof.get("engine_call"))
-            reproof_truncation = truncation.classify(
-                final_text,
-                region_pixels=row["region_pixels"],
-                page_pixels=row["page_pixels"],
-                truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
-                stop_reason=reproof["stop_reason"],
+            reproof_truncation = _row_truncation(
+                row, final_text, stop_reason=reproof["stop_reason"], protocol_config=protocol_config
             )
             # The edits are already checked; this binds the accepted text to its
             # producing call. Unchanged text keeps Pass B's provenance.
             if final_text != payload["text"]:
                 payload["text"] = final_text
                 # The doubt report travels with the call whose text is published, so
-                # nothing is re-anchored by guesswork. Replacing both layers also drops
-                # a Pass-B whole-act gap, which a re-proof's own report can never carry.
+                # nothing is re-anchored by guesswork; this also drops a Pass-B whole-act gap.
                 reproof_assessment = _assessed(reproof, text=final_text)
                 if "[[" in final_text or "]]" in final_text:
                     reproof_assessment = annotations.malformed_assessment(
@@ -4180,7 +4143,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 payload["dissent"] = dissent_against(
                     final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
                 )
-                # Self-revision describes the published text's departure from Pass A.
                 payload["self_revision"] = departures(final_text, row["prior"]["text"])
                 # Re-measured over the published text with the re-proof's own stop
                 # reason; `_audited_truncation` never lets Pass C improve the verdict.
@@ -4204,15 +4166,13 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     # the whole-act gap carrying the witness evidence.
                     final_text = ""
                     payload["text"] = ""
-                    # Re-measured over the emptied text: `validate_finding` binds the
-                    # sealed termination to the published text. An empty reading is
-                    # never length-suspicious or abrupt.
-                    reproof_truncation = truncation.classify(
+                    # `validate_finding` binds the sealed termination to the published
+                    # text, so it is re-measured over the emptied text.
+                    reproof_truncation = _row_truncation(
+                        row,
                         final_text,
-                        region_pixels=row["region_pixels"],
-                        page_pixels=row["page_pixels"],
-                        truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
                         stop_reason=reproof["stop_reason"],
+                        protocol_config=protocol_config,
                     )
                     # Re-asked against the empty text, so the record never says
                     # `assessed` over a report that was thrown away.
@@ -4225,13 +4185,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                         text="",
                         outcome="no-readable-text",
                         whole_act_gaps=_whole_act_gap(
-                            row["testimonia"],
-                            {
-                                record["artifact_id"]: context.artifact_ref(
-                                    ATTESTATORES, "testimonium", record["artifact_id"]
-                                )
-                                for record in row["testimonia"]
-                            },
+                            row["testimonia"], _testimonium_references(context, row["testimonia"])
                         ),
                     )
                     if reproof_assessment["state"] == "malformed":
@@ -4243,23 +4197,17 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # Record the exact validated edits; downstream validation replays
             # them against the frozen draft and the published text.
             changes = audit.change_records_from_edits(reproof_edits)
-        # One shared derivation of the examination and whether the flags stay
-        # unresolved. Only an exhausted cap mints spans; an incomplete re-proof is
-        # recorded as an incomplete examination for the Recensor to route, never as a
-        # span or a truncation.
+        # Only an exhausted cap mints spans; an incomplete re-proof is recorded as an
+        # incomplete examination for the Recensor to route, never as a span or truncation.
         examination = audit.examination_state(
             flags,
             audit_policy["round_cap"],
             reproof_truncation,
         )
         unresolved = audit.unresolved_state(examination)
-        if examination == audit.EXAMINATION_CAP_EXHAUSTED:
-            for flag in flags:
-                start, end = flag["location"]["start"], flag["location"]["end"]
-                if start < end:
-                    uncertainty.append(
-                        {"start": start, "end": end, "reason": "audit-round-cap-exhausted"}
-                    )
+        uncertainty = (
+            _cap_exhausted_spans(flags) if examination == audit.EXAMINATION_CAP_EXHAUSTED else []
+        )
         finding_payload = {
             "act_key": row["act"]["act_key"],
             "attempt_ordinal": payload["attempt_ordinal"],
@@ -4273,9 +4221,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "examination": examination,
             "reproof_truncation": reproof_truncation,
             "reproof_edits": reproof_edits,
-            # The re-proof's retained response (none for the fixture reader), named here
-            # because the Perlectio's `engine_call` stays Pass B's when the text is
-            # unchanged.
+            # Named here because the Perlectio's `engine_call` stays Pass B's when the
+            # text is unchanged.
             "reproof_call": reproof_call_record if reproof_truncation is not None else None,
         }
         audit.validate_finding(
@@ -4293,10 +4240,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             payload=finding_payload,
         )
         finding_ref = context.input_ref(finding.relative_path)
-        # An unresolved flag never stays a clean `read`: it becomes an explicit span on
-        # the Perlectio layer, and the Recensor consumes the `unresolved` fact. The
-        # projected spans carry no instrument label; only `payload["audit"]` and the
-        # finding say which are the audit's.
+        # An unresolved flag never stays a clean `read`: it becomes an explicit span,
+        # unlabelled; only `payload["audit"]` and the finding say which are the audit's.
         payload["uncertain_spans"] = _union_with_projection(
             [
                 {
@@ -4334,9 +4279,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 finding_ref,
             ]
         )
-        # The producer and every later consumer use the same cross-record
-        # validation. Run it before the Perlectio is published so a drifted
-        # draft/finding relationship never becomes an unreadable artifact.
+        # The consumers' own cross-record validation, run before publication so a
+        # drifted draft/finding relationship never becomes an unreadable artifact.
         audit.validate_chain(
             context.tree,
             {"payload": payload, "inputs": reading_inputs},
@@ -4371,6 +4315,50 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     context.seal_boundary()
     context.finish()
     return EXIT_COMPLETE
+
+
+def _witnessed_act(
+    context,
+    act: dict[str, Any],
+    regions: list[dict],
+    proposal_regions: list[dict],
+    *,
+    all_proposal_regions: list[dict],
+    reported_unrouted: set[tuple[str, int]],
+) -> tuple[list[dict], list[dict], dict[str, Any]]:
+    """Verify every region of the act and the testimony about it: bases, testimonia, attachment.
+
+    Every region is read, including a continuation on the next page: an act read only up
+    to the fold would be truncated, a failure and not an output.
+    """
+    bases = [verify_region(context, region) for region in regions]
+    testimonia = testimonia_of(context, act["act_id"], proposal_regions)
+    page_testimonia: dict[str, dict] = {}
+    attachment_view = act_attachment_view(
+        context,
+        act,
+        testimonia,
+        bases,
+        {region["payload"]["region_id"] for region in proposal_regions},
+        page_testimonia_seen=page_testimonia,
+        all_proposal_regions=all_proposal_regions,
+    )
+    # Both witness scopes use the run-wide proposal denominator; page testimony is
+    # deduplicated so an observation is named once, not once per act.
+    for finding in unrouted_observations(
+        testimonia + list(page_testimonia.values()),
+        all_proposal_regions,
+        prior_findings=reported_unrouted,
+    ):
+        reported_unrouted.add((finding["testimonium_id"], finding["ordinal"]))
+        # Never normalized into the nearest act; the Recensor re-derives it independently.
+        print(f"non-fatal finding: {finding}", file=sys.stderr)
+    # Ink uncovered only by a recovery recrop was never shown to a witness; recording that
+    # keeps the gap visible. The reading itself is unaffected.
+    witnessed = witnessed_region_ids(testimonia, bases)
+    for basis in bases:
+        basis["witness_covered"] = basis["region_id"] in witnessed
+    return bases, testimonia, attachment_view
 
 
 def _next_attempt(context, act_id: str, regions: list[dict]) -> int:
