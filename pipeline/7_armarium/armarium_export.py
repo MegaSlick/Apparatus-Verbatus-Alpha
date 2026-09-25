@@ -1747,44 +1747,8 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             require_approval(ARMARIUM, category, act.get("approval_ref"))
         _reject_act_salvage_namespace(act)
     perlector_basis = not_measured_basis[_PERLECTOR_UNCERTAIN_SPANS]
-    delivered_count = sum(
-        act["category"] == ArmariumCategory.DELIVERED.value for act in projection.acts
-    )
-    uncertain_count = sum(
-        act["category"] == ArmariumCategory.DELIVERED.value
-        and isinstance(act.get("uncertainty"), dict)
-        and bool(act["uncertainty"].get("uncertain_spans"))
-        for act in projection.acts
-    )
-    # Counted by state, never by subtraction, so a broken doubt report is not
-    # counted as "no doubt channel". Any other state (the Recensor's `malformed`,
-    # for one) is refused: the Recensor holds those, so a delivered one means the
-    # projection did not come from a run.
-    assessed_count = 0
-    not_assessed_count = 0
-    for act in projection.acts:
-        if act["category"] != ArmariumCategory.DELIVERED.value:
-            continue
-        uncertainty = act.get("uncertainty")
-        assessment = uncertainty.get("assessment") if isinstance(uncertainty, dict) else None
-        state = assessment.get("state") if isinstance(assessment, dict) else None
-        if state == "assessed":
-            assessed_count += 1
-        elif state == "not-assessed":
-            not_assessed_count += 1
-        else:
-            raise SchemaRefusal(
-                f"an Armarium projection delivers act {act.get('act_key')!r} whose sealed doubt "
-                f"assessment is {state!r}; only a reading that was assessed, or one whose reader "
-                "had no channel, is deliverable -- a doubt report that could not be anchored is "
-                "held for review, never counted"
-            )
-    if (
-        perlector_basis["acts_delivered"] != delivered_count
-        or perlector_basis["acts_with_uncertain_spans"] != uncertain_count
-        or perlector_basis["acts_assessed"] != assessed_count
-        or perlector_basis["acts_not_assessed"] != not_assessed_count
-    ):
+    delivered_counts = _delivered_doubt_counts(projection.acts)
+    if any(perlector_basis[field] != count for field, count in delivered_counts.items()):
         raise SchemaRefusal(
             "an Armarium projection's Perlector uncertainty basis does not exactly reconcile "
             "with its delivered act projection"
@@ -1811,6 +1775,40 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     )
     if canonical_text(projection.aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("an Armarium projection aggregate does not match its measured basis")
+
+
+def _delivered_doubt_counts(acts: tuple[dict[str, Any], ...]) -> dict[str, int]:
+    """The Perlector uncertainty basis's four counts, taken from the delivered acts.
+
+    Counted by state, never by subtraction, so a broken doubt report is not
+    counted as "no doubt channel". Any other state (the Recensor's `malformed`,
+    for one) is refused: the Recensor holds those, so a delivered one means the
+    projection did not come from a run.
+    """
+    counts = dict.fromkeys(
+        ("acts_delivered", "acts_with_uncertain_spans", "acts_assessed", "acts_not_assessed"), 0
+    )
+    for act in acts:
+        if act["category"] != ArmariumCategory.DELIVERED.value:
+            continue
+        counts["acts_delivered"] += 1
+        uncertainty = act.get("uncertainty")
+        if isinstance(uncertainty, dict) and uncertainty.get("uncertain_spans"):
+            counts["acts_with_uncertain_spans"] += 1
+        assessment = uncertainty.get("assessment") if isinstance(uncertainty, dict) else None
+        state = assessment.get("state") if isinstance(assessment, dict) else None
+        if state == "assessed":
+            counts["acts_assessed"] += 1
+        elif state == "not-assessed":
+            counts["acts_not_assessed"] += 1
+        else:
+            raise SchemaRefusal(
+                f"an Armarium projection delivers act {act.get('act_key')!r} whose sealed doubt "
+                f"assessment is {state!r}; only a reading that was assessed, or one whose reader "
+                "had no channel, is deliverable -- a doubt report that could not be anchored is "
+                "held for review, never counted"
+            )
+    return counts
 
 
 def _require_damage_record(
