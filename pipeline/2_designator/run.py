@@ -2066,6 +2066,10 @@ def _publish_page_conservation(
     return residual_rows, secondary_held, unmeasured
 
 
+def _evidence_of(rows: list[dict]) -> list[dict]:
+    return [reference for row in rows for reference in row["evidence"]]
+
+
 def _initial_pass_has_holds(
     expected: list[dict],
     failures: dict[int, str],
@@ -2302,7 +2306,7 @@ def initial_pass(context) -> bool:
         context, pages, failures, page_cache, status_refs, provenance, grouping_policy
     )
     expected.extend(fallback_rows)
-    seal_inputs.extend(reference for row in fallback_rows for reference in row["evidence"])
+    seal_inputs.extend(_evidence_of(fallback_rows))
     if not expected:
         raise ContractError("no declared act or page fallback was marked out on any sealed page")
 
@@ -2311,17 +2315,13 @@ def initial_pass(context) -> bool:
         context, pages, failures, page_cache, secondary, grouping_policy
     )
     expected.extend(residual_rows)
-    seal_inputs.extend(reference for row in residual_rows for reference in row["evidence"])
-
+    seal_inputs.extend(_evidence_of(residual_rows))
     _publish_proposal_seal(context, expected, seal_inputs, provenance)
     # Any hold, secondary hold or unmeasured page withholds "complete"
     # (principle 2). An unmeasured page has not reconciled, but its crops still
     # go downstream; only the run's completion claim is withheld.
     return _initial_pass_has_holds(
-        expected,
-        failures,
-        secondary_held=secondary_held,
-        unmeasured=unmeasured,
+        expected, failures, secondary_held=secondary_held, unmeasured=unmeasured
     )
 
 
@@ -2561,6 +2561,117 @@ def _terminalize_structure_history(
     return answer, _publish_structure_answer(context, page_record, answer)
 
 
+def _needs_another_attempt(
+    history: list[tuple[structure_pass.PageAnswer, dict[str, str]]],
+    attempt_policy: Mapping[str, Any],
+) -> bool:
+    return not history or (
+        _recoverable_structure_outcome(history[-1][0])
+        and len(history) < attempt_policy["max_attempts"]
+    )
+
+
+def _resumed_structure_answers(
+    context, pages: dict[int, dict], attempt_policy: Mapping[str, Any]
+) -> tuple[dict[int, structure_pass.PageAnswer], dict[int, dict[str, str]]]:
+    """Every page's already-sealed terminal answer and its reference, by ordinal."""
+    answers: dict[int, structure_pass.PageAnswer] = {}
+    answer_refs: dict[int, dict[str, str]] = {}
+    for ordinal, page_record in sorted(pages.items()):
+        sealed = _sealed_structure_answer(context, page_record, attempt_policy)
+        if sealed is None:
+            continue
+        record, reference = sealed
+        if record["page_ordinal"] != ordinal:
+            raise ContractError(
+                f"the sealed structure answer for page {page_record['subject_id']} says it is "
+                f"page {record['page_ordinal']}, and the Exemplar sealed that page as "
+                f"{ordinal}; a page answered under one ordinal and resumed under another would "
+                "mint act keys for a page it is not"
+            )
+        answers[ordinal] = structure_pass.sealed_page_answer(record)
+        answer_refs[ordinal] = reference
+    return answers, answer_refs
+
+
+def _publish_live_proposals(
+    context,
+    pages: dict[int, dict],
+    page_cache: dict[int, dict],
+    answers: dict[int, structure_pass.PageAnswer],
+    padding: dict,
+    provenance_by_page: dict[int, dict],
+) -> list[dict]:
+    """Cut and group every rectangle the chair proposed; return their seal rows."""
+    rows = []
+    for ordinal, answer in answers.items():
+        if answer.disposition != structure_pass.DISPOSITION_DETECTED:
+            continue
+        page_record = pages[ordinal]
+        analysis = page_cache[ordinal]
+        minted: list[tuple[str, str, dict]] = []
+        for act in answer.mint:
+            bounds = structure_pass.validated_rectangle(act, analysis["width"], analysis["height"])
+            act_id = derive_minted_act_id(page_record["subject_id"], "proposal", bounds)
+            act_key = structure_pass.proposal_act_key(ordinal, act["ordinal"])
+            region = cut_minted_region(
+                context,
+                act_id,
+                act_key,
+                page_record,
+                bounds,
+                1,
+                ordinal,
+                "proposal",
+                padding=padding,
+                provenance=provenance_by_page[ordinal],
+            )
+            evidence = [context.input_ref(region.relative_path)]
+            rows.append(
+                _seal_row(act_id, act_key, page_record["subject_id"], ordinal, "proposed", evidence)
+            )
+            minted.append((act_id, act_key, bounds))
+        _publish_live_act_groups(context, page_record, analysis, minted)
+    return rows
+
+
+def _publish_live_fallbacks(
+    context,
+    pages: dict[int, dict],
+    page_cache: dict[int, dict],
+    answers: dict[int, structure_pass.PageAnswer],
+    status_refs: dict[int, dict[str, str]],
+    provenance_by_page: dict[int, dict],
+) -> list[dict]:
+    """Tile each page the chair answered with no act over its own grid, never the
+    scan's groups, which here only corroborate; return the seal rows."""
+    rows = []
+    claimed_by_page = _claimed_regions_by_page(context)
+    for ordinal, answer in answers.items():
+        if answer.disposition != structure_pass.DISPOSITION_FALLBACK_TILES:
+            continue
+        analysis = page_cache[ordinal]
+        tiled = {
+            **analysis,
+            "structure_evidence": "fallback-tiles",
+            # The chair decides when to tile; the sealed policy decides how.
+            "groups": _fallback_grid(analysis["width"], analysis["height"], analysis["thresholds"]),
+        }
+        row = _publish_page_fallback(
+            context,
+            ordinal,
+            pages[ordinal],
+            tiled,
+            status_refs[ordinal],
+            claimed_by_page.get(ordinal, []),
+            provenance_by_page[ordinal],
+            reason=_FALLBACK_REASON_LIVE,
+        )
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
 def live_initial_pass(context, serving_factory, tier: str) -> bool:
     """Mark out every sealed page through the served structure chair. True when held.
 
@@ -2597,41 +2708,20 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     for ordinal, page_record in pages.items():
         _analyze_page(page_cache, context, ordinal, page_record, grouping_policy)
 
-    reused: dict[int, structure_pass.PageAnswer] = {}
-    answer_refs: dict[int, dict[str, str]] = {}
-    for ordinal, page_record in sorted(pages.items()):
-        sealed = _sealed_structure_answer(context, page_record, attempt_policy)
-        if sealed is None:
-            continue
-        record, reference = sealed
-        if record["page_ordinal"] != ordinal:
-            raise ContractError(
-                f"the sealed structure answer for page {page_record['subject_id']} says it is "
-                f"page {record['page_ordinal']}, and the Exemplar sealed that page as "
-                f"{ordinal}; a page answered under one ordinal and resumed under another would "
-                "mint act keys for a page it is not"
-            )
-        reused[ordinal] = structure_pass.sealed_page_answer(record)
-        answer_refs[ordinal] = reference
-    unanswered = [ordinal for ordinal in sorted(pages) if ordinal not in reused]
-    answers: dict[int, structure_pass.PageAnswer] = dict(reused)
-
+    answers, answer_refs = _resumed_structure_answers(context, pages, attempt_policy)
+    unanswered = [ordinal for ordinal in sorted(pages) if ordinal not in answers]
     histories = {
         ordinal: _published_structure_attempts(context, pages[ordinal], attempt_policy)
         for ordinal in unanswered
     }
-    needs_request: list[int] = []
+    needs_request = []
     for ordinal in unanswered:
-        history = histories[ordinal]
-        if history and (
-            not _recoverable_structure_outcome(history[-1][0])
-            or len(history) >= attempt_policy["max_attempts"]
-        ):
-            answer, reference = _terminalize_structure_history(context, pages[ordinal], history)
-            answers[ordinal] = answer
-            answer_refs[ordinal] = reference
-        else:
+        if _needs_another_attempt(histories[ordinal], attempt_policy):
             needs_request.append(ordinal)
+        else:
+            answers[ordinal], answer_refs[ordinal] = _terminalize_structure_history(
+                context, pages[ordinal], histories[ordinal]
+            )
 
     # Nothing left to ask means no chair, and no paid pod, is started.
     if needs_request:
@@ -2644,10 +2734,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
             for ordinal in needs_request:
                 page_record = pages[ordinal]
                 history = histories[ordinal]
-                while not history or (
-                    _recoverable_structure_outcome(history[-1][0])
-                    and len(history) < attempt_policy["max_attempts"]
-                ):
+                while _needs_another_attempt(history, attempt_policy):
                     answer = structure_pass.ask_page(
                         context,
                         client,
@@ -2675,9 +2762,9 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
                             ),
                         )
                     )
-                answer, reference = _terminalize_structure_history(context, page_record, history)
-                answers[ordinal] = answer
-                answer_refs[ordinal] = reference
+                answers[ordinal], answer_refs[ordinal] = _terminalize_structure_history(
+                    context, page_record, history
+                )
 
     # Page order, so a resume seals the same `expected_acts` list as a fresh run.
     answers = {ordinal: answers[ordinal] for ordinal in sorted(answers)}
@@ -2709,64 +2796,14 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
         provenance_by_page=provenance_by_page,
     )
 
-    expected = []
-    seal_inputs = []
-    for ordinal, answer in answers.items():
-        if answer.disposition != structure_pass.DISPOSITION_DETECTED:
-            continue
-        page_record = pages[ordinal]
-        analysis = page_cache[ordinal]
-        minted: list[tuple[str, str, dict]] = []
-        for act in answer.mint:
-            bounds = structure_pass.validated_rectangle(act, analysis["width"], analysis["height"])
-            act_id = derive_minted_act_id(page_record["subject_id"], "proposal", bounds)
-            act_key = structure_pass.proposal_act_key(ordinal, act["ordinal"])
-            region = cut_minted_region(
-                context,
-                act_id,
-                act_key,
-                page_record,
-                bounds,
-                1,
-                ordinal,
-                "proposal",
-                padding=padding,
-                provenance=provenance_by_page[ordinal],
-            )
-            evidence = [context.input_ref(region.relative_path)]
-            expected.append(
-                _seal_row(act_id, act_key, page_record["subject_id"], ordinal, "proposed", evidence)
-            )
-            seal_inputs.extend(evidence)
-            minted.append((act_id, act_key, bounds))
-        _publish_live_act_groups(context, page_record, analysis, minted)
-
-    # A page the chair answered with no act is tiled over its own grid, never
-    # the scan's groups, which here only corroborate.
-    claimed_by_page = _claimed_regions_by_page(context)
-    for ordinal, answer in answers.items():
-        if answer.disposition != structure_pass.DISPOSITION_FALLBACK_TILES:
-            continue
-        analysis = page_cache[ordinal]
-        tiled = {
-            **analysis,
-            "structure_evidence": "fallback-tiles",
-            # The chair decides when to tile; the sealed policy decides how.
-            "groups": _fallback_grid(analysis["width"], analysis["height"], analysis["thresholds"]),
-        }
-        row = _publish_page_fallback(
-            context,
-            ordinal,
-            pages[ordinal],
-            tiled,
-            status_refs[ordinal],
-            claimed_by_page.get(ordinal, []),
-            provenance_by_page[ordinal],
-            reason=_FALLBACK_REASON_LIVE,
+    expected = _publish_live_proposals(
+        context, pages, page_cache, answers, padding, provenance_by_page
+    )
+    expected.extend(
+        _publish_live_fallbacks(
+            context, pages, page_cache, answers, status_refs, provenance_by_page
         )
-        if row is not None:
-            expected.append(row)
-            seal_inputs.extend(row["evidence"])
+    )
     if not expected and not failures:
         raise ContractError("no structural proposal or page fallback was marked out on any page")
 
@@ -2774,19 +2811,14 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
         context, pages, failures, page_cache, secondary, grouping_policy
     )
     expected.extend(residual_rows)
-    seal_inputs.extend(reference for row in residual_rows for reference in row["evidence"])
     if not expected:
         raise ContractError(
             "every page was held and none carried ink to account for; the run has no act "
             "denominator to seal"
         )
-
-    _publish_proposal_seal(context, expected, seal_inputs, seal_provenance)
+    _publish_proposal_seal(context, expected, _evidence_of(expected), seal_provenance)
     return _initial_pass_has_holds(
-        expected,
-        failures,
-        secondary_held=secondary_held,
-        unmeasured=unmeasured,
+        expected, failures, secondary_held=secondary_held, unmeasured=unmeasured
     )
 
 
