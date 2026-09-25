@@ -34,9 +34,9 @@ detail, the refusal receipt and the drill's evidence file -- because the first
 authorized boot exists to return a number for each, and a single number
 covering both is a number about neither.
 
-The container wait never refuses on its own.  Its signal is optional and, by
-open item 04-6, documented rather than observed; "no start was reported" is
-therefore not evidence that no start happened, and the thing that decides
+The container wait never refuses on its own.  Its signal is optional and
+documented rather than observed; "no start was reported" is therefore not
+evidence that no start happened, and the thing that decides
 whether a pod is armed stays what it always was -- a report this pod wrote,
 read back through the channel.
 

@@ -11,10 +11,9 @@ non-zero at once, which is the correct immediate close for pod_timer to act on.
 Composition is deliberately **tracked**: every pinned input this process needs
 is an explicit flag, never an inferred default, so a request file that built
 this command names exactly what ran.  ``ChairCacheBootstrapAction`` is
-constructed here for the first time in the tracked tree, closing the
-"constructed nowhere" half of deferral 04-8.  The other half stays open: it is
-wired with ``refetch_same_pin=None`` (see the comment beside that call below),
-so the at-most-one same-pin re-fetch itself still does not ship.
+constructed here in the tracked tree, wired with ``refetch_same_pin=None``
+(see the comment beside that call below), so the at-most-one same-pin
+re-fetch itself still does not ship.
 
 **What ``PREFLIGHT`` measures, and through what.**  The chair-cache half is
 :class:`RegistryChairCacheVerifier`: ``ChairRegistry.ensure`` over the plan's
@@ -40,12 +39,11 @@ row.  Only this smoke-preflight assembly receives the private qualification
 purpose that permits such a row to launch while retaining every snapshot,
 runtime, request, shutdown, and evidence check.  A green report can then be
 verified offline by ``operations.serving.qualify`` to render the identity and
-profile digests for review; the verifier edits no catalogue.  The stack itself
-was re-planned onto
-``vllm 0.27.1`` / ``transformers 5.14.1``, which lock beside the project's
-``huggingface_hub==1.26.0``, and ``bootstrap.py``'s ``uv sync`` now carries
-``--group pod``.  That the wheels install and the weights load on real silicon
-is still unproven; only a boot proves it.
+profile digests for review; the verifier edits no catalogue.  The stack pins
+``vllm 0.27.1`` / ``transformers 5.14.1`` beside the project's
+``huggingface_hub==1.26.0``, and ``bootstrap.py``'s ``uv sync`` carries
+``--group pod``.  That the wheels install and the weights load on real
+silicon is still unproven; only a boot proves it.
 
 **TRANSFER's direction is named, not defaulted.**  A pod that is *consuming* a
 submission already on its volume passes neither ``--submission-manifest`` nor
