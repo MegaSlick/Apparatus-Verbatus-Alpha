@@ -70,12 +70,10 @@ SECRET_PATTERNS = (
     ("anthropic-api-key", re.compile(rb"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
     ("huggingface-token", re.compile(rb"\bhf_[A-Za-z0-9]{20,}\b")),
     ("google-oauth-secret", re.compile(rb"\bGOCSPX-[A-Za-z0-9_-]{20,}")),
-    # `xoxe` is a refresh token and `xapp` an app-level token; both are as
-    # usable as the bot token the original class covered.
+    # `xoxe` (refresh) and `xapp` (app-level) tokens are as usable as bot tokens.
     ("slack-token", re.compile(rb"\bxox[baeprs]-[A-Za-z0-9-]{20,}\b")),
     ("slack-token", re.compile(rb"\bxapp-[0-9]-[A-Za-z0-9-]{20,}\b")),
-    # A webhook URL is a bearer credential in one string: whoever holds it can
-    # post as the app. Pasting one into a note is an ordinary mistake.
+    # A webhook URL is a bearer credential: whoever holds it can post as the app.
     (
         "slack-webhook",
         re.compile(
@@ -86,14 +84,12 @@ SECRET_PATTERNS = (
     ("stripe-restricted-key", re.compile(rb"\brk_live_[A-Za-z0-9]{20,}\b")),
     ("stripe-webhook-secret", re.compile(rb"\bwhsec_[A-Za-z0-9]{20,}\b")),
     ("pypi-token", re.compile(rb"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}")),
-    # A signed bearer token carries its own authority until it expires, and
-    # the payload is only base64: it leaks the claims as well as the access.
+    # A signed bearer token carries its own authority, and its base64 payload leaks claims.
     (
         "json-web-token",
         re.compile(rb"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
     ),
-    # The credential-url rule below is anchored to HTTP. A database URI leaks
-    # exactly the same way and is the likelier paste in this project.
+    # credential-url below is HTTP-only; a database URI leaks the same way.
     (
         "credential-uri",
         re.compile(
@@ -102,28 +98,16 @@ SECRET_PATTERNS = (
             re.I,
         ),
     ),
-    # An ntfy topic is unauthenticated by design: the name IS the whole
-    # credential, for reading and for forging. The old repository leaked its
-    # topic into six committed paths, mostly as pasted working command lines.
-    # Both rules terminate at 64: ntfy's topic limit is 64 characters, so a
-    # 65-character run is not a working topic and refusing a prefix of it
-    # would be the over-refusal that pressures a bypass.
+    # An ntfy topic name is the whole credential, for reading and forging. Both rules stop
+    # at ntfy's 64-character limit: refusing a prefix of a longer run would over-refuse.
     (
         "ntfy-topic",
         re.compile(rb"\bNTFY_TOPIC[\t ]*=[\t ]*[\"']?[A-Za-z0-9_-]{1,64}(?![A-Za-z0-9_-])"),
     ),
-    # The URL form is how the old leak actually happened: a working command
-    # line pasted whole. Any topic-shaped path segment is refused, host
-    # case-insensitively — anchoring to this project's topic prefix would both
-    # publish the prefix and miss a rotated topic. ntfy's own documentation
-    # URLs (ntfy.sh/publish, ntfy.sh/docs, ntfy.sh/app) stay committable: an
-    # over-refusing scanner is the mechanism by which the guard gets bypassed.
-    # The exemption ends where the topic character set ends, not at a word
-    # boundary: a hyphen is a topic character, so "docs-secret" is a topic,
-    # not the docs path.
-    # Case-insensitivity covers only the host: topics are case-sensitive, so
-    # DOCS is a possible topic, not the docs path. The lookbehind is the host
-    # boundary — a word boundary would let example-ntfy.sh match.
+    # Any topic-shaped segment (a prefix anchor would publish the prefix and miss a
+    # rotated topic), except ntfy's docs/publish/app pages: over-refusal invites bypass.
+    # The exemption ends at the topic charset ("docs-x" is a topic) and is case-sensitive
+    # like topics; only the host is not. The lookbehind stops example-ntfy.sh matching.
     (
         "ntfy-topic",
         re.compile(
@@ -138,27 +122,14 @@ SECRET_PATTERNS = (
     ),
 )
 
-# Path/rule/digest triples exempting one exact byte sequence at one exact path.
-# Not a placeholder exemption: the same bytes elsewhere, or any newly invented
-# topic at the same path, stay blocked. Full digests keep the 12-character
-# display fingerprints out of the trust boundary.
-#
-# It is empty, and that is the intended resting state. Two triples lived here
-# briefly to cover synthetic values in intermediate working commits that were
-# never pushed; the tree those commits produced does not contain them, so the
-# exemptions were dead the moment the work was assembled. A digest nobody can
-# resolve back to a string is unauditable by construction, and an exemption
-# nobody can audit inside a credential scanner is worse than no exemption at
-# all. An empty set is readable at a glance. Anything added here must arrive
-# with the reason, and must fail the scan when removed.
+# (path, rule, full sha256) triples exempting one exact byte sequence at one exact path;
+# full digests keep the 12-character display fingerprints out of the trust boundary.
+# Empty by intent: an entry must arrive with its reason and fail the scan when removed.
 DECLARED_SECRET_FIXTURES = frozenset()
 
-# The key half tolerates a vendor prefix joined by `_`, `-` or `.`. An
-# earlier `\b` anchor was defeated by the commonest real spelling there is:
-# `aws_secret_access_key`, where the underscore is a word character and so no
-# boundary exists before `secret`. The trailing lookahead keeps the key from
-# ending mid-word, and the assignment operator must still follow immediately,
-# which is what keeps ordinary prose out.
+# A vendor prefix joined by `_`, `-` or `.` is allowed (`aws_secret_access_key` has no
+# `\b` before `secret`). The key may not end mid-word, and the operator must follow at
+# once, which keeps ordinary prose out.
 GENERIC_ASSIGNMENT = re.compile(
     rb"""(?ix)
     (?P<key_quote>["']?)
@@ -198,13 +169,12 @@ def file_kind(mode: int) -> str:
 
 
 def measured_read(path: Path, max_bytes: int | None) -> tuple[int, bytes | None]:
-    """Return a regular file's size, and its bytes only if it is small enough.
+    """A regular file's size, and its bytes only if within `max_bytes`.
 
-    The size comes from the same descriptor that would be read, so a file that
-    grows between the decision and the read cannot smuggle its payload in. A
-    file past `max_bytes` is refused on its size alone, and pulling it into
-    memory to say so would crash the scanner instead of producing the clean
-    oversize diagnosis it exists to produce.
+    O_NONBLOCK and fstat on the opened descriptor: a FIFO would block a plain open
+    forever (hanging pre-commit or CI), a swap after a name check is closed, a device
+    that reads cleanly is refused, and a file that grows cannot slip bytes past the
+    size decision. An oversize file is never pulled into memory.
     """
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     try:
@@ -220,17 +190,6 @@ def measured_read(path: Path, max_bytes: int | None) -> tuple[int, bytes | None]
 
 
 def read_regular_file(path: Path) -> bytes:
-    """Read a path only after the opened descriptor proves it is a regular file.
-
-    A FIFO at a scanned path blocks a plain open forever when no writer
-    exists, and this scanner runs from `pre-commit` and from CI: that is not a
-    failed scan but a session or a build that never finishes and never says
-    why. `O_NONBLOCK` makes the open itself return, and judging the type from
-    `fstat` on the descriptor rather than from the name closes the race where
-    a regular file is swapped for a FIFO between the check and the read.
-    A device that reads cleanly is refused too: a successful read is not
-    evidence that a regular file was scanned.
-    """
     _, data = measured_read(path, None)
     return data
 
@@ -278,12 +237,8 @@ def git(*args: str) -> bytes:
     return result.stdout
 
 
-# The size cache holds one integer per reachable object id. Blob payloads are
-# much larger, so their cache has a separate aggregate byte budget. An entry
-# count is the wrong bound here: 65 tiny, frequently reused blobs make a
-# 64-entry LRU miss forever, while 64 one-MiB blobs consume the whole intended
-# allowance. The byte-budgeted LRU can retain every small blob that fits and
-# never retains a single blob larger than the entire allowance.
+# Payloads are bounded by bytes, not entries: an entry count thrashes on many tiny
+# reused blobs and overcommits on large ones.
 BLOB_CACHE_MAX_BYTES = 64 * 1_048_576
 
 
@@ -316,16 +271,13 @@ class BlobDataCache:
         except KeyError:
             pass
         else:
-            # Reinsert the same object at the MRU end. Its payload was already
-            # counted, so a repeated OID must not grow the byte accounting.
+            # Back to the MRU end; its bytes are already counted.
             self._entries[oid] = data
             return data
 
         data = git("cat-file", "blob", oid)
         size = len(data)
         if size > self.max_bytes:
-            # The caller still receives the bytes it requested, but the cache
-            # cannot retain a payload larger than its whole memory allowance.
             return data
 
         while self._entries and self.bytes_used + size > self.max_bytes:
@@ -354,9 +306,7 @@ def entry_data(entry: Blob) -> bytes:
     if entry.data is not None:
         return entry.data
     if entry.size is not None:
-        # Refused on size, so its bytes were deliberately never read. Asking
-        # for them anyway is a caller defect, not something to answer with an
-        # empty payload that would scan clean.
+        # A caller defect: an empty payload here would scan clean.
         raise ScanFailure(f"{entry.path} was refused on size; its bytes were not read")
     return blob_data(entry.oid)
 
@@ -410,22 +360,16 @@ def working_tree() -> dict[str, Blob]:
                     path, "worktree", "120000", data=os.fsencode(os.readlink(source))
                 )
             elif stat.S_ISREG(mode):
-                # No legal payload exceeds the fixture ceiling, so a file
-                # above it is refused on size alone and never read: the file
-                # too big to accept was the one being pulled into memory.
+                # No legal payload exceeds the fixture ceiling: refuse on size, never read.
                 size, data = measured_read(source, FIXTURE_MAX_BYTES)
                 entries[path] = Blob(path, "worktree", "100644", data=data, size=size)
             elif stat.S_ISDIR(mode):
                 entries[path] = Blob(path, "worktree", "160000", "commit")
             else:
-                # A FIFO, socket or device used to fall through every branch
-                # and the run still reported passed. principle 2: a partial
-                # result is visibly partial, so it is named and it blocks.
+                # Named, so it blocks: a partial scan must be visibly partial.
                 entries[path] = Blob(path, "worktree", "000000", file_kind(mode))
         except FileNotFoundError:
-            # A tracked path missing from disk is a working-tree deletion, not
-            # a payload to scan. The staged/index mode still inspects what Git
-            # records.
+            # A working-tree deletion; --staged still inspects what Git records.
             continue
     return entries
 
@@ -542,77 +486,49 @@ def parse_manifest(
     fixtures = {}
     issues = []
     for number, raw in enumerate(raw_fixtures, start=1):
-        label = f"fixture entry {number}"
-        if not isinstance(raw, dict):
-            issues.append(Issue(MANIFEST_PATH, "manifest", f"{label} is not a table", context))
-            continue
-        required = ("path", "sha256", "bytes", "media_type", "source", "reason")
-        missing = [key for key in required if key not in raw]
-        if missing:
-            issues.append(
-                Issue(
-                    MANIFEST_PATH,
-                    "manifest",
-                    f"{label} is missing {', '.join(missing)}",
-                    context,
-                )
-            )
-            continue
-        path = raw["path"]
-        digest = raw["sha256"]
-        size = raw["bytes"]
-        media_type = raw["media_type"]
-        source = raw["source"]
-        reason = raw["reason"]
-        if not all(isinstance(value, str) for value in (path, digest, media_type, source, reason)):
-            issues.append(
-                Issue(MANIFEST_PATH, "manifest", f"{label} has a non-string field", context)
-            )
-            continue
-        normalized = PurePosixPath(path)
-        valid_path = (
-            path.startswith(FIXTURE_ROOT)
-            and not normalized.is_absolute()
-            and ".." not in normalized.parts
-            and normalized.as_posix() == path
-        )
-        if not valid_path:
-            issues.append(
-                Issue(MANIFEST_PATH, "manifest", f"{label} has an invalid fixture path", context)
-            )
-            continue
-        if path in fixtures:
-            issues.append(Issue(MANIFEST_PATH, "manifest", f"duplicate entry for {path}", context))
-            continue
-        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
-            issues.append(Issue(MANIFEST_PATH, "manifest", f"{label} has invalid bytes", context))
-            continue
-        if not re.fullmatch(r"[0-9a-f]{64}", digest):
-            issues.append(Issue(MANIFEST_PATH, "manifest", f"{label} has invalid sha256", context))
-            continue
-        if media_type not in MEDIA:
-            issues.append(
-                Issue(MANIFEST_PATH, "manifest", f"{label} has unsupported media_type", context)
-            )
-            continue
-        extensions, _ = MEDIA[media_type]
-        if normalized.suffix.lower() not in extensions:
-            issues.append(
-                Issue(
-                    MANIFEST_PATH,
-                    "manifest",
-                    f"{label} extension does not match {media_type}",
-                    context,
-                )
-            )
-            continue
-        if not source.strip() or not reason.strip():
-            issues.append(
-                Issue(MANIFEST_PATH, "manifest", f"{label} needs source and reason", context)
-            )
-            continue
-        fixtures[path] = Fixture(path, digest, size, media_type, source, reason)
+        problem = _fixture_entry_problem(raw, f"fixture entry {number}", fixtures)
+        if problem:
+            issues.append(Issue(MANIFEST_PATH, "manifest", problem, context))
+        else:
+            fixtures[raw["path"]] = Fixture(*(raw[key] for key in _FIXTURE_FIELDS))
     return fixtures, issues
+
+
+_FIXTURE_FIELDS = ("path", "sha256", "bytes", "media_type", "source", "reason")
+
+
+def _fixture_entry_problem(raw, label: str, fixtures: dict[str, Fixture]) -> str | None:
+    if not isinstance(raw, dict):
+        return f"{label} is not a table"
+    missing = [key for key in _FIXTURE_FIELDS if key not in raw]
+    if missing:
+        return f"{label} is missing {', '.join(missing)}"
+    path, digest, size, media_type, source, reason = (raw[key] for key in _FIXTURE_FIELDS)
+    if not all(isinstance(value, str) for value in (path, digest, media_type, source, reason)):
+        return f"{label} has a non-string field"
+    normalized = PurePosixPath(path)
+    valid_path = (
+        path.startswith(FIXTURE_ROOT)
+        and not normalized.is_absolute()
+        and ".." not in normalized.parts
+        and normalized.as_posix() == path
+    )
+    if not valid_path:
+        return f"{label} has an invalid fixture path"
+    if path in fixtures:
+        return f"duplicate entry for {path}"
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        return f"{label} has invalid bytes"
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return f"{label} has invalid sha256"
+    if media_type not in MEDIA:
+        return f"{label} has unsupported media_type"
+    extensions, _ = MEDIA[media_type]
+    if normalized.suffix.lower() not in extensions:
+        return f"{label} extension does not match {media_type}"
+    if not source.strip() or not reason.strip():
+        return f"{label} needs source and reason"
+    return None
 
 
 def scan_tree(entries: dict[str, Blob], context: str) -> list[Issue]:
@@ -666,9 +582,8 @@ def scan_tree(entries: dict[str, Blob], context: str) -> list[Issue]:
 
     for path, entry in entries.items():
         if path.startswith("private/") and path != PRIVATE_README:
-            # `.gitignore` prevents an ordinary add, but `git add -f` bypasses
-            # it. The directory's contract is stronger: local material never
-            # enters history, whether or not its content resembles a secret.
+            # `git add -f` bypasses .gitignore; local material never enters history,
+            # whether or not it resembles a secret.
             issues.append(
                 Issue(path, "private-path", "local private material may not enter Git", context)
             )
@@ -747,8 +662,8 @@ def scan_history(revision: str) -> list[Issue]:
     issues = []
     for commit in commits:
         issues.extend(scan_tree(commit_tree(commit), commit[:12]))
-        # The whole commit object, not just the message, so credential-shaped text
-        # in the author or committer header is caught even where no hook ran.
+        # The whole commit object, so author and committer headers are caught even
+        # where no hook ran.
         issues.extend(
             secret_issues("<commit-object>", git("cat-file", "commit", commit), commit[:12])
         )
@@ -756,11 +671,7 @@ def scan_history(revision: str) -> list[Issue]:
 
 
 def scan_ref_object(revision: str) -> list[Issue]:
-    """Scan every annotated-tag object in a ref's peel chain.
-
-    `git rev-list` peels tags to commits and therefore never exposes annotated
-    tag messages, so they are scanned here.
-    """
+    """Scan the annotated tags in a ref's peel chain, which `git rev-list` never exposes."""
     raw_oid = git("rev-parse", "--verify", revision).strip()
     try:
         oid = raw_oid.decode("ascii")
@@ -835,8 +746,6 @@ def report(issues: list[Issue], limit: int = 100) -> int:
         where = f" ({context})" if context else ""
         print(f"  {path}{where}: [{issue.rule}] {detail}", file=sys.stderr)
     if len(shown) < len(issues):
-        # The remainder used to be unreachable: a count, and no way to see
-        # what it counted.
         print(
             f"  ...and {len(issues) - len(shown)} more issue(s); "
             "re-run with --max-findings 0 to list them all",
@@ -902,9 +811,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.worktree:
             issues = scan_tree(working_tree(), "worktree")
         elif args.message_file is not None:
-            # `is not None`, not truthiness: an empty-string value satisfies the
-            # required mode group but is falsy, and falling through here used to
-            # end in scan_history(None) — a traceback, not a reasoned verdict.
+            # `is not None`: an empty path satisfies the required group but is falsy.
             data = read_regular_file(Path(args.message_file))
             issues = secret_issues("<commit-message>", data, "message")
         elif args.file is not None:
@@ -922,8 +829,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.history is not None:
             issues = scan_history(args.history)
         else:
-            # Unreachable while the mode group stays required; a scanner that
-            # scanned nothing must still refuse rather than report a pass.
+            # Unreachable while the group is required; scanning nothing must still refuse.
             raise ScanFailure("no scan mode was selected")
         return report(unique_issues(issues), args.max_findings)
     except (OSError, ScanFailure) as exc:

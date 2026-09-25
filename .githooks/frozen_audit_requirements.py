@@ -13,23 +13,14 @@ import sys
 from importlib.metadata import distributions
 
 PROJECT_DISTRIBUTION = "verbatus"
-"""This project's own distribution name, excluded from the audited inventory.
-
-It must match `project.name` in pyproject.toml, and `.githooks/
-test_ci_workflow.py` names the same literal again. Renaming the distribution
-without changing all three emits a pin for something with no PyPI advisory
-identity, and `pip_audit --strict` then fails the whole gate with a message
-about an unresolvable requirement rather than about the rename. It is not read
-from pyproject.toml here because this helper must run with nothing beyond the
-standard library and must not depend on the checkout's layout.
-"""
+"""Excluded: it has no PyPI identity. Must match pyproject.toml's `project.name`, or
+pip_audit --strict fails obscurely; this helper may not depend on the checkout layout."""
 NAME = re.compile(r"[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*")
 VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.!+_-]*")
 
 
 def installed_pins() -> dict[str, str]:
-    """Return one unambiguous name/version pair per installed distribution."""
-
+    """One unambiguous name/version pair per installed distribution."""
     pins: dict[str, str] = {}
     for distribution in distributions():
         raw_name = distribution.metadata.get("Name")
