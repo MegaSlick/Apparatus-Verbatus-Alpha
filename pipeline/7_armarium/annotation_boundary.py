@@ -1,33 +1,24 @@
-"""The deliberately read-only boundary for a future annotation layer.
+"""The deliberately read-only boundary for a future annotation layer, not yet
+approved or wired into the pipeline. This module defines only the narrow
+contract it may eventually occupy: it may *read* an established Archetypus
+text, its hash, uncertainty/gap spans, and layout anchors, and return
+annotations keyed to that exact act and text hash. It has no operation for
+creating, replacing, normalizing, publishing, or otherwise emitting a reading.
 
-The annotation layer is not approved or wired into the pipeline.  This module
-therefore defines only the narrow contract it may eventually occupy: it may
-*read* an established Archetypus text, its hash, uncertainty/gap spans, and
-layout anchors; it returns annotations keyed to that exact act and text hash.
-It has no operation for creating, replacing, normalizing, publishing, or
-otherwise emitting an established reading.
+``canonical_clean_text`` is input-only: the one literal an annotator may
+inspect, with no field on ``Annotation`` or ``AnnotationResult`` that can
+carry it back out. Spec 11's fields (a normalized date, a person's role, ...)
+draw from closed vocabularies fixed here rather than free text, since no
+annotation value may become a second reading; a person is a span of the text
+plus a role, never a name this layer wrote down.
 
-``canonical_clean_text`` is intentionally an input-only field.  It is the one
-literal an annotator may inspect, but neither ``Annotation`` nor
-``AnnotationResult`` has a field that can carry it back out.  Annotation kind
-and attribute names are identifiers, not another reading of the act.
-
-**The fields spec 11 names are a closed vocabulary rather than free text**, because the
-two things it asks for pull against each other: it needs a *normalized* date and a
-person's *role*, while no annotation value may become a second reading. So semantic
-labels come from closed sets fixed here and a normalized date has a strict ISO-8601
-prefix form. Record identifiers and producer identities have to be strings, but no
-writer maps one into established text. A person is a span of the text plus a role --
-never a name this layer wrote down.
-
-**The anchoring refusal is spec 11's test 7.** "A hallucinated person (not a span
-of the text) is refused at the schema and recorded (annotations must anchor to
-text spans)." ``verify_annotations_anchor_to_text`` is that refusal. It is
-checkable today against synthetic text even though no annotator model exists to
-produce a real annotation. *Recorded* is the half this build cannot finish: an
-annotation refusal belongs in the export's ``refused-with-reason`` set, and the
-terminal ledger has no annotation unit type because nothing produces annotations
-to account for. That is named here rather than half-built.
+``verify_annotations_anchor_to_text`` is spec 11's test 7: a hallucinated
+person -- not a span of the text -- is refused at the schema. It is checkable
+today against synthetic text even with no annotator model to produce a real
+annotation. *Recorded* is the half this build cannot finish: that refusal
+belongs in the export's ``refused-with-reason`` set, and the terminal ledger
+has no annotation unit type because nothing produces annotations to account
+for.
 """
 
 from __future__ import annotations
@@ -43,12 +34,10 @@ AnnotationValue: TypeAlias = bool | int | None
 
 ANNOTATION_KINDS: Final = frozenset({"act-type", "date", "person", "kinship", "flag"})
 
-# An annotation vocabulary, not a definition of *act*. GLOSSARY.md refuses to define
-# an act tightly on purpose -- "a narrow definition excludes material, and a missed act
-# is worse than a poorly read one" -- so `other` is a first-class member here and an
-# act whose type is not in this list is annotated `other` with its established text
-# untouched. Widening the list is a code change the project lead can rule on; nothing
-# about the text depends on it.
+# An annotation vocabulary, not a definition of *act* (GLOSSARY.md refuses that
+# on purpose): `other` is a first-class member, so an unlisted act type is
+# annotated `other` with its established text untouched. Widening the list is
+# a project-lead call; nothing about the text depends on it.
 ACT_TYPES: Final = frozenset(
     {"baptism", "marriage", "burial", "index-row", "letter", "note", "essay", "other"}
 )
@@ -72,10 +61,8 @@ FLAG_KINDS: Final = frozenset(
     {"ambiguous-date", "ambiguous-identity", "damaged-context", "conflicting-witnesses", "other"}
 )
 
-# `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. A register date that cannot be resolved to one of
-# these is `None`, never an empty string -- the 4c rule for `no_readable_text`
-# applies to a normalized field for the same reason: an empty string is
-# indistinguishable from a value that was lost.
+# `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. An unresolvable register date is `None`,
+# never an empty string, which would be indistinguishable from a lost value.
 _ISO_DATE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?$")
 
 

@@ -1,22 +1,17 @@
-"""The pre-door triage decision-manifest contract.
+"""The pre-door triage decision-manifest contract. Records transform decisions
+only: it never transforms a source frame and never chooses a member of a
+re-shoot cluster (complementary views remain rows).
 
-This module records transform decisions only.  It never transforms a source frame and it
-never chooses a member of a re-shoot cluster: complementary views remain rows.
+Geometry and colour conversion are per split part, not per frame, because a
+document taped over the page at its own angle has no single gutter for
+auto-split or global deskew to straighten both surfaces with, and a bound
+spread's two pages each want their own crop besides.
 
-Geometry and colour conversion are per split part, not per frame.  The unit's own structural case is a
-document taped over the page at its own angle, "where no single gutter exists for
-auto-split and no global deskew straightens both surfaces";
-one frame-level crop box and
-one frame-level rotation cannot express it, and a bound spread's two pages each
-want their own crop besides.
-
-The closed split record carries its operation order, and every rectangle and
-rotation carries its coordinate/convention fields.  ``region`` is a half-open
-rectangle in source-frame pixel coordinates.  After cutting it, ``crop_box`` is
-a half-open rectangle in that part's local pixel coordinates.  The cropped pixels
-are then rotated clockwise about their centre onto an expanded canvas.  Pixel
-sampling, fill and encoding belong to Unit 7's sealed apply recipe; they are not
-geometry defaults hidden in this manifest.
+``region`` is a half-open rectangle in source-frame pixel coordinates; after
+cutting it, ``crop_box`` is half-open in that part's local pixel coordinates,
+then rotated clockwise about its centre onto an expanded canvas. Pixel
+sampling, fill and encoding belong to Unit 7's sealed apply recipe, not to
+geometry defaults hidden here.
 """
 
 from __future__ import annotations

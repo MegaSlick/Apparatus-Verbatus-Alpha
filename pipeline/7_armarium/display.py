@@ -1,41 +1,27 @@
-"""The proposed uncertainty/gap display convention. A proposal, not a decision.
+"""The proposed uncertainty/gap display convention -- a proposal, not a decision
+(spec 11 leaves the choice to the project lead): **the choice changes only this
+file.** No hash, stored field, or format writer depends on which brackets are used.
 
-Spec 11 leaves the uncertainty/gap convention to the project lead at this gate, so a
-rendering has to exist to pick against, and its test 2 asks for render -> strip -> hash, so a
-way back from it has to exist for the identity test to mean anything. This module is
-both and nothing more: **the choice changes only this file.** No hash, no stored field
-and no format writer depends on which brackets are used.
+The split is EpiDoc's `<unclear>` (ink present but doubted) vs `<gap>` (ink
+simply gone) rather than a typographic one: a gap carries its evidence beside
+the text and never characters inside it. Markers are plain text, not literal
+XML, because the near-term readers are a text file and a terminal; literal
+marker glyphs are escaped before rendering so a text already containing them
+still round-trips byte-identical through `strip_display`.
 
-**The split it adopts is EpiDoc's, and it is a semantic one rather than a
-typographic one.** EpiDoc distinguishes `<unclear>` -- ink that is present but
-doubted -- from `<gap>` -- ink that is simply gone; a reconstruction attributed to
-someone else is `<supplied>` and sits outside the established text. That is exactly
-the line drawn: a gap carries its evidence beside the text and
-never characters inside it, and "we don't want it making shit up". The markers below
-are plain text rather than literal XML because the near-term readers are a text file
-and a terminal, not an XML toolchain. Literal bracket glyphs are escaped before
-rendering, so even an established text containing the proposed delimiters remains
-byte-identical after stripping; rarity is not used as a correctness argument.
-
-**What is not exercised against real data, said rather than left to be found.** Since
-R8 the Archetypus record does carry a canonical uncertainty layer, and the export
-carries it beside each literal in every selected format -- but no writer feeds it to
-`render_display`, so every rendering this repository produces is still established
-text with no generated span markers (literal delimiter glyphs are escaped reversibly),
-and the round trip below is still exercised only against spans built by hand in this
-module's tests. The reason is no longer that the layer does not exist: marking spans
-inside a displayed reading would exercise a convention spec 11 reserves to the project
-lead at this gate. EXPORT_MANIFEST.json states that non-carriage as
-`claims.display.renders_canonical_uncertainty`; the pair here is ready for that word.
+No writer feeds the canonical uncertainty layer (carried since R8) to
+`render_display` yet -- marking spans in a displayed reading would exercise
+the convention spec 11 still reserves -- so every real rendering today carries
+no generated span markers, and `EXPORT_MANIFEST.json` says so via
+`claims.display.renders_canonical_uncertainty`.
 """
 
 import json
 from dataclasses import dataclass, field
 from typing import Final
 
-# The name the EXPORT_MANIFEST reports, so a reader of the product can tell which
-# convention produced a rendering without reading this file. It says "proposed"
-# because it is: spec 11 leaves the choice to the project lead at this gate.
+# Reported in EXPORT_MANIFEST.json; "proposed" because spec 11 leaves the
+# choice to the project lead.
 DISPLAY_CONVENTION: Final = "epidoc-semantics-plaintext-markers.proposed.v2"
 
 GAP_KINDS: Final = frozenset({"leading", "internal", "trailing", "whole-act"})
