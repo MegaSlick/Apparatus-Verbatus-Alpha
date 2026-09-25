@@ -733,17 +733,9 @@ class PodRuntime:
     def create(self, request: PodCreateRequest, *, confirmation: str | None) -> LaunchResult:
         """Serialize the shared lease-root assessment through durable reservation."""
 
-        try:
-            with self._spend_gate_lock():
-                return self._create_locked(request, confirmation=confirmation)
-        except _SpendGateLockFailure as error:
-            return LaunchResult(
-                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
-                detail=(
-                    "balance safety could not be established because the spend-reservation "
-                    f"lock failed: {error}; no paid action occurred"
-                ),
-            )
+        return self._under_spend_gate(
+            lambda: self._create_locked(request, confirmation=confirmation)
+        )
 
     def _create_locked(
         self, request: PodCreateRequest, *, confirmation: str | None
@@ -756,54 +748,11 @@ class PodRuntime:
         # Narrowing, not a check: `_preview` is the only producer of `PREVIEW` and it
         # always carries a `PaidActionPreview`, under `-O` as much as without it.
         assert preview_result.preview is not None
-        if not preview_result.preview.assessment.allowed:
-            # Same policy as the confirmation refusals: a refusal report never
-            # carries a phrase whose challenge is still spendable.
-            return LaunchResult(
-                _spend_refusal_state(preview_result.preview.assessment),
-                phraseless(preview_result.preview),
-                detail="; ".join(preview_result.preview.assessment.reasons),
-            )
-        # Check leases before consuming the challenge so closing the open pod leaves
-        # this preview available, while ceiling refusals retain precedence.
-        open_lease = self._open_lease_refusal()
-        if open_lease is not None:
-            return LaunchResult(
-                LaunchState.REFUSED_ACTIVE_LEASE,
-                phraseless(preview_result.preview),
-                detail=open_lease,
-            )
-        # This early branch only avoids constructing a phrase; `_claim_challenge`
-        # remains the atomic authority when an outstanding challenge was observed.
-        claimed = preview_result.preview.challenge is not None
-        if claimed:
-            try:
-                claimed = self._claim_challenge(
-                    "create",
-                    request.name,
-                    hard_deadline=request.hard_deadline,
-                    request_digest=request.reviewed_digest(),
-                    challenge=preview_result.preview.challenge or "",
-                    expected=preview_result.preview.confirmation_phrase,
-                    typed=confirmation,
-                )
-            except SpendRefusal as error:
-                return LaunchResult(
-                    LaunchState.REFUSED_CONFIRMATION,
-                    phraseless(preview_result.preview),
-                    detail=str(error),
-                )
-        if not claimed:
-            return LaunchResult(
-                LaunchState.REFUSED_CONFIRMATION,
-                phraseless(preview_result.preview),
-                detail=(
-                    "no preview in this run issued a challenge for this create at this "
-                    "hard deadline; run the preview and confirm the phrase it prints; "
-                    "no paid action occurred"
-                ),
-            )
-
+        refusal = self._confirmation_gate_refusal(
+            "create", request.name, preview_result.preview, request, confirmation
+        )
+        if refusal is not None:
+            return refusal
         try:
             lease_id = self._token("lease id")
             owner_token = self._token("lease owner token")
@@ -863,21 +812,14 @@ class PodRuntime:
         try:
             bound = store.bind_pod(owner_token=owner_token, record=record, now=self.now())
         except Exception as error:
-            close, detail = self._close_and_record(
+            return self._close_as(
+                LaunchState.CREATE_UNLEASED,
+                preview_result.preview,
                 record=record,
                 reason="create returned before lease binding failed",
                 store=store,
                 owner_token=owner_token,
                 situation=f"created pod could not be bound to its lease: {error}",
-            )
-            return LaunchResult(
-                LaunchState.CREATE_UNLEASED,
-                preview_result.preview,
-                record=record,
-                lease_path=store.path,
-                owner_token=owner_token,
-                detail=detail,
-                close_report=close,
             )
         if record.runtime_contract is None or not record.runtime_contract.matches(sealed):
             return self._contract_mismatch_close(
@@ -902,21 +844,14 @@ class PodRuntime:
             # channel bound (`controller_armer._await_container`), and a pod
             # that never runs never writes the report arming waits for, so it
             # is closed when those bounds expire.
-            close, detail = self._close_and_record(
+            return self._close_as(
+                LaunchState.REFUSED_RUNTIME_CONTRACT,
+                preview_result.preview,
                 record=record,
                 reason=f"created pod arrived in state {record.state!r}, not RUNNING",
                 store=store,
                 owner_token=owner_token,
                 situation=f"created pod reports state {record.state!r} rather than RUNNING",
-            )
-            return LaunchResult(
-                LaunchState.REFUSED_RUNTIME_CONTRACT,
-                preview_result.preview,
-                record=record,
-                lease_path=store.path,
-                owner_token=owner_token,
-                detail=detail,
-                close_report=close,
             )
         actual, actual_preview = self._reassess_actual_price(
             action="create",
@@ -1010,21 +945,9 @@ class PodRuntime:
     ) -> LaunchResult:
         """Serialize adoption with every other liability in the shared lease root."""
 
-        try:
-            with self._spend_gate_lock():
-                return self._adopt_locked(
-                    pod_id,
-                    expected=expected,
-                    confirmation=confirmation,
-                )
-        except _SpendGateLockFailure as error:
-            return LaunchResult(
-                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
-                detail=(
-                    "balance safety could not be established because the spend-reservation "
-                    f"lock failed: {error}; no paid action occurred"
-                ),
-            )
+        return self._under_spend_gate(
+            lambda: self._adopt_locked(pod_id, expected=expected, confirmation=confirmation)
+        )
 
     def _adopt_locked(
         self,
@@ -1042,56 +965,16 @@ class PodRuntime:
         # Narrowing, not a check: `preview_adopt` returns `PREVIEW` from one line, and it
         # passes `_preview`'s preview and a non-None record on it. Neither needs `-O` off.
         assert preview_result.preview is not None and preview_result.record is not None
-        if not preview_result.preview.assessment.allowed:
-            # Same policy as the confirmation refusals: no live phrase on a
-            # refusal report.
-            return LaunchResult(
-                _spend_refusal_state(preview_result.preview.assessment),
-                phraseless(preview_result.preview),
-                record=preview_result.record,
-                detail="; ".join(preview_result.preview.assessment.reasons),
-            )
-        # Adoption creates the same local billing liability and must share the
-        # pre-consumption lease refusal with create.
-        open_lease = self._open_lease_refusal()
-        if open_lease is not None:
-            return LaunchResult(
-                LaunchState.REFUSED_ACTIVE_LEASE,
-                phraseless(preview_result.preview),
-                record=preview_result.record,
-                detail=open_lease,
-            )
-        # `_claim_challenge` remains the atomic authority after this early branch.
-        claimed = preview_result.preview.challenge is not None
-        if claimed:
-            try:
-                claimed = self._claim_challenge(
-                    "adopt",
-                    preview_result.record.pod_id,
-                    hard_deadline=expected.hard_deadline,
-                    request_digest=expected.reviewed_digest(),
-                    challenge=preview_result.preview.challenge or "",
-                    expected=preview_result.preview.confirmation_phrase,
-                    typed=confirmation,
-                )
-            except SpendRefusal as error:
-                return LaunchResult(
-                    LaunchState.REFUSED_CONFIRMATION,
-                    phraseless(preview_result.preview),
-                    record=preview_result.record,
-                    detail=str(error),
-                )
-        if not claimed:
-            return LaunchResult(
-                LaunchState.REFUSED_CONFIRMATION,
-                phraseless(preview_result.preview),
-                record=preview_result.record,
-                detail=(
-                    "no preview in this run issued a challenge for this adoption at this "
-                    "hard deadline; run the preview and confirm the phrase it prints; "
-                    "no paid action occurred"
-                ),
-            )
+        refusal = self._confirmation_gate_refusal(
+            "adopt",
+            preview_result.record.pod_id,
+            preview_result.preview,
+            expected,
+            confirmation,
+            record=preview_result.record,
+        )
+        if refusal is not None:
+            return refusal
         try:
             lease_id = self._token("lease id")
             owner_token = self._token("lease owner token")
@@ -1154,21 +1037,14 @@ class PodRuntime:
             # path.  This one is reachable: `load()` reads a file back off disk.
             # An adopted pod that cannot be guarded does not keep billing, so
             # this closes it exactly as a failed arming would.
-            close, detail = self._close_and_record(
+            return self._close_as(
+                LaunchState.LEASE_FAILURE,
+                preview_result.preview,
                 record=preview_result.record,
                 reason="adoption lease could not be read back after it was written",
                 store=store,
                 owner_token=owner_token,
                 situation="adoption lease was written but could not be read back",
-            )
-            return LaunchResult(
-                LaunchState.LEASE_FAILURE,
-                preview_result.preview,
-                record=preview_result.record,
-                lease_path=store.path,
-                owner_token=owner_token,
-                detail=detail,
-                close_report=close,
             )
         return self._arm_or_close(
             action="adopt",
@@ -1179,6 +1055,86 @@ class PodRuntime:
             owner_token=owner_token,
             preview=preview_result.preview,
             success_state=LaunchState.ADOPTED_GUARDED,
+        )
+
+    def _under_spend_gate(self, locked: Callable[[], LaunchResult]) -> LaunchResult:
+        try:
+            with self._spend_gate_lock():
+                return locked()
+        except _SpendGateLockFailure as error:
+            return LaunchResult(
+                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
+                detail=(
+                    "balance safety could not be established because the spend-reservation "
+                    f"lock failed: {error}; no paid action occurred"
+                ),
+            )
+
+    def _confirmation_gate_refusal(
+        self,
+        action: str,
+        subject: str,
+        preview: PaidActionPreview,
+        request: PodCreateRequest,
+        confirmation: str | None,
+        *,
+        record: PodRecord | None = None,
+    ) -> LaunchResult | None:
+        """The spend, open-lease and confirmation refusals create and adopt share.
+
+        No refusal report carries a phrase whose challenge is still spendable.
+        Leases are checked before the challenge is consumed, so closing the open
+        pod leaves this preview confirmable, while spend refusals keep precedence.
+        `_claim_challenge` stays the atomic authority; the early ``claimed``
+        branch only avoids building a phrase when no challenge was observed.
+        """
+
+        if not preview.assessment.allowed:
+            return LaunchResult(
+                _spend_refusal_state(preview.assessment),
+                phraseless(preview),
+                record=record,
+                detail="; ".join(preview.assessment.reasons),
+            )
+        open_lease = self._open_lease_refusal()
+        if open_lease is not None:
+            return LaunchResult(
+                LaunchState.REFUSED_ACTIVE_LEASE,
+                phraseless(preview),
+                record=record,
+                detail=open_lease,
+            )
+        claimed = preview.challenge is not None
+        if claimed:
+            try:
+                claimed = self._claim_challenge(
+                    action,
+                    subject,
+                    hard_deadline=request.hard_deadline,
+                    request_digest=request.reviewed_digest(),
+                    challenge=preview.challenge or "",
+                    expected=preview.confirmation_phrase,
+                    typed=confirmation,
+                )
+            except SpendRefusal as error:
+                return LaunchResult(
+                    LaunchState.REFUSED_CONFIRMATION,
+                    phraseless(preview),
+                    record=record,
+                    detail=str(error),
+                )
+        if claimed:
+            return None
+        noun = "adoption" if action == "adopt" else action
+        return LaunchResult(
+            LaunchState.REFUSED_CONFIRMATION,
+            phraseless(preview),
+            record=record,
+            detail=(
+                f"no preview in this run issued a challenge for this {noun} at this "
+                "hard deadline; run the preview and confirm the phrase it prints; "
+                "no paid action occurred"
+            ),
         )
 
     @contextmanager
@@ -1885,21 +1841,14 @@ class PodRuntime:
                     ),
                     controller_arming=arming,
                 )
-        close, close_detail = self._close_and_record(
+        return self._close_as(
+            LaunchState.CONTROLLERS_UNARMED,
+            preview,
             record=record,
             reason=f"{action} controller arming failed",
             store=store,
             owner_token=owner_token,
             situation="controller arming failed",
-        )
-        return LaunchResult(
-            LaunchState.CONTROLLERS_UNARMED,
-            preview,
-            record=record,
-            lease_path=store.path,
-            owner_token=owner_token,
-            detail=close_detail,
-            close_report=close,
             controller_arming=arming,
         )
 
@@ -1927,6 +1876,38 @@ class PodRuntime:
         expected_path = command[report_flag + 1]
         if timer.get("report_path") != expected_path:
             raise ValueError("pod timer acknowledged a different durable report path")
+
+    def _close_as(
+        self,
+        state: LaunchState,
+        preview: PaidActionPreview,
+        *,
+        record: PodRecord,
+        reason: str,
+        store: LeaseStore,
+        owner_token: str,
+        situation: str,
+        controller_arming: ControllerArming | None = None,
+    ) -> LaunchResult:
+        """Close a pod that already exists and report it under ``state``, never green."""
+
+        close, detail = self._close_and_record(
+            record=record,
+            reason=reason,
+            store=store,
+            owner_token=owner_token,
+            situation=situation,
+        )
+        return LaunchResult(
+            state,
+            preview,
+            record=record,
+            lease_path=store.path,
+            owner_token=owner_token,
+            detail=detail,
+            close_report=close,
+            controller_arming=controller_arming,
+        )
 
     def _close_and_record(
         self,
@@ -1990,13 +1971,14 @@ class PodRuntime:
                 subject,
             )
         except Exception as error:
-            # Everything this assessment touches already fails closed with a
-            # named reason, so nothing here is expected to raise.  But a pod is
-            # billing by this line, and an escaping exception is the one outcome
-            # that leaves it running with no close attempted and no result to
-            # read.  An assessment that could not be completed is exactly the
-            # balance-safety fact that could not be established.
-            close, detail = self._close_and_record(
+            # Nothing here is expected to raise, but a pod is billing by this
+            # line and an escaping exception would leave it running unclosed.
+            # The pre-create assessment is carried, without its challenge, as
+            # the last one that actually ran.
+            unassessed = PaidActionPreview(preview.action, preview.subject, preview.assessment)
+            closed = self._close_as(
+                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
+                unassessed,
                 record=record,
                 reason=f"{action} post-create spend assessment could not be completed: {error}",
                 store=store,
@@ -2006,29 +1988,15 @@ class PodRuntime:
                     f"({type(error).__name__}: {error})"
                 ),
             )
-            # The pre-create assessment, carried without its challenge: it is the
-            # last one that actually ran, and the state and detail say plainly
-            # that the one after the pod existed did not.
-            unassessed = PaidActionPreview(preview.action, preview.subject, preview.assessment)
-            return (
-                LaunchResult(
-                    LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
-                    unassessed,
-                    record=record,
-                    lease_path=store.path,
-                    owner_token=owner_token,
-                    detail=detail,
-                    close_report=close,
-                ),
-                unassessed,
-            )
+            return closed, unassessed
         actual_preview = PaidActionPreview(preview.action, preview.subject, assessment)
         if assessment.allowed:
             return None, actual_preview
-        # No challenge: this preview reports why a created pod is being closed, and its
-        # challenge was consumed by the create that got here. A refusal report must not
-        # carry a phrase that would authorize anything.
-        close, detail = self._close_and_record(
+        # No challenge: the create that got here consumed it, and a refusal
+        # report must not carry a phrase that would authorize anything.
+        closed = self._close_as(
+            _spend_refusal_state(assessment),
+            actual_preview,
             record=record,
             reason=(
                 f"{action} post-create spend assessment refused: " + "; ".join(assessment.reasons)
@@ -2041,18 +2009,7 @@ class PodRuntime:
                 + ")"
             ),
         )
-        return (
-            LaunchResult(
-                _spend_refusal_state(assessment),
-                actual_preview,
-                record=record,
-                lease_path=store.path,
-                owner_token=owner_token,
-                detail=detail,
-                close_report=close,
-            ),
-            actual_preview,
-        )
+        return closed, actual_preview
 
     def _contract_mismatch_close(
         self,
@@ -2068,21 +2025,14 @@ class PodRuntime:
         situation = "effective runtime contract was unproven"
         if record.contract_refusal is not None:
             situation = f"{situation}: {record.contract_refusal}"
-        close, detail = self._close_and_record(
+        return self._close_as(
+            LaunchState.REFUSED_RUNTIME_CONTRACT,
+            preview,
             record=record,
             reason=f"{action} effective runtime contract was unproven",
             store=store,
             owner_token=owner_token,
             situation=situation,
-        )
-        return LaunchResult(
-            LaunchState.REFUSED_RUNTIME_CONTRACT,
-            preview,
-            record=record,
-            lease_path=store.path,
-            owner_token=owner_token,
-            detail=detail,
-            close_report=close,
         )
 
     def _token(self, label: str) -> str:
