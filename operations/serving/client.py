@@ -84,20 +84,13 @@ _UNRECORDABLE = object()
 def _recorded_generation(view: Mapping[str, object]) -> dict[str, object]:
     """The generation view in a form the canonical writer can hold, losslessly.
 
-    A vendor's decoding value may be a float — DAI's carried
-    ``generation_config.json`` names ``repetition_penalty`` 1.05 and ``top_p``
-    0.001 — and :func:`common.contracts.canonical.canonical_bytes` refuses
-    floats outright, so a call record that simply carried them could not be
-    written at all. That refusal is right and is not loosened here: a float's
-    JSON form is not stable enough to hash against.
-
-    What is recorded instead is the exact decimal text the request body itself
-    carries for that value, tagged with ``wire-decimal.v1`` so a reader can
-    tell it from a string the vendor genuinely declared. ``json.dumps`` emits
-    the shortest text that reads back as the identical double, which is why
-    this is a transcription rather than a rounding: :func:`_decoded_generation`
-    returns the very same value, and ``read`` proves that on every call before
-    it writes the record.
+    A vendor's decoding value may be a float (e.g. ``top_p`` 0.001), and
+    :func:`common.contracts.canonical.canonical_bytes` refuses floats outright
+    since their JSON form is not stable enough to hash. Recorded instead is
+    the exact decimal text the wire body carries, tagged ``wire-decimal.v1``
+    so a reader can tell it from a genuinely declared string; ``read`` proves
+    on every call, via :func:`_decoded_generation`, that this is a lossless
+    transcription rather than a rounding.
     """
 
     return {key: _recorded_value(item) for key, item in view.items()}
@@ -172,11 +165,8 @@ def _refuse_generation_that_cannot_be_recorded_as_sent(
 class ReceiptDriftRefusal(ServingError):
     """The receipt re-read after start no longer names this chair's exact identity.
 
-    Not defined in :mod:`operations.serving.errors` because U1 did not need
-    it: nothing before this client ever re-read a receipt back through the
-    tree it had just written. The check itself is the guarantee principle 6
-    asks for — "the record itself protects the past" — applied at the moment
-    a client is about to start reading against it.
+    Principle 6's "the record itself protects the past", applied at the
+    moment a client is about to start reading against it.
     """
 
     def __init__(self, code: str, detail: str) -> None:
@@ -188,11 +178,10 @@ class ReceiptDriftRefusal(ServingError):
 class ServingModeRefusal(ServingError):
     """``serving_mode_for`` could not resolve one coherent serving posture.
 
-    Also not in U1's :mod:`operations.serving.errors`: the manager never had
-    to decide *whether* a chair is live before starting it. Every code here
-    names a lookup outcome, never a ranking: zero rows, an unresolved tier, a
-    catalogue mixing live and fixture rows for one chair, or a real chair with
-    no honest implementation (:class:`~operations.serving.config.UnsupportedProfile`).
+    Every code here names a lookup outcome, never a ranking: zero rows, an
+    unresolved tier, a catalogue mixing live and fixture rows for one chair,
+    or a real chair with no honest implementation
+    (:class:`~operations.serving.config.UnsupportedProfile`).
     """
 
     def __init__(self, code: str, detail: str) -> None:
@@ -293,20 +282,15 @@ class ChairRequest:
     arithmetic a request was admitted on beside the request itself. ``None``
     where the caller states none.
 
-    **The capacity record is sealed at construction, all the way down.** It
-    used to be frozen one level deep, and a capacity record is not flat: it
-    carries an ``images`` list of per-image dictionaries, and every production
-    builder passes ``request_fits``'s freshly built record straight in and
-    keeps its own reference to the same object. A caller that touched a nested
-    entry afterwards would leave the retained call record disagreeing with the
-    evidence the request was actually admitted on — the arithmetic in the
-    receipt would be one thing and the arithmetic that let the request through
-    another, with nothing able to tell which was which. :func:`_sealed_capacity`
-    takes a detached recursive snapshot instead: canonicalized through the same
-    writer the call record is serialized with (so a record that could not be
-    written is refused here, at the caller's own construction, rather than
-    inside receipt serialization long after the wire call), then deep-frozen.
-    Nothing the caller still holds reaches into it.
+    **The capacity record is sealed at construction, all the way down.** It is
+    not flat -- it carries an ``images`` list of per-image dictionaries -- and
+    every production builder keeps its own reference to the same object it
+    passes in, so a caller touching a nested entry afterward could make the
+    retained call record disagree with the evidence the request was actually
+    admitted on. :func:`_sealed_capacity` takes a detached recursive snapshot
+    instead, canonicalized through the same writer the call record uses (so an
+    unwritable record is refused here, at construction, not later inside
+    receipt serialization) and then deep-frozen.
     """
 
     kind: str
@@ -457,15 +441,9 @@ class ChairClient:
         handle = self._manager.start(
             self._identity, self._tier, adapter_calibration=self._adapter_calibration
         )
-        # Normalized here, at the one seam that knows both sides.
-        # `ReceiptPublication` freezes its reference into a `MappingProxyType`
-        # so nothing can edit a published provenance record; `RunTree.
-        # read_run_receipt` accepts its own reference type or a plain `dict`
-        # and refuses anything else by name. Both rules are right about their
-        # own boundary, and neither is loosened: the client copies. Without
-        # this, every stage wiring a real tree had to carry a private
-        # converter, and `read_receipt=context.tree.read_run_receipt` — the
-        # wiring this client's own README describes — refused every live start.
+        # Normalized here, at the one seam that knows both sides: a frozen
+        # `MappingProxyType` reference is copied to a plain dict, since
+        # `RunTree.read_run_receipt` accepts only its own type or a plain dict.
         try:
             expected_identity = {
                 "chair": self._identity.role,
@@ -772,18 +750,11 @@ class ChairClient:
                 receipt_ref=handle.receipt_reference,
                 served_model_id=handle.profile.served_model_id,
             ) from error
-        # Retention comes first, and it comes first for the one artefact a
-        # rented card exists to produce: when vLLM refuses a request it says
-        # *why* in the body of a non-200, and that sentence -- "this model's
-        # maximum context length is N tokens, however you requested M" -- is
-        # the whole diagnostic. Refusing before retaining threw it away, on a
-        # card billing by the hour, which is exactly what principle 2 forbids.
-        #
-        # Retention is not attribution. A body from another model is still not
-        # this chair's evidence and still never becomes a reading: the refusal
-        # below is unchanged and no `ChairResponse` is returned. What changes is
-        # that the bytes exist afterwards, by their own digest, so the refusal
-        # can name them and a reader can see what actually arrived.
+        # Retention comes first: vLLM's own refusal reason lives in the body of
+        # a non-200, and dropping it before retaining would waste the one
+        # artefact a rented card exists to produce (principle 2). Retention is
+        # not attribution -- a foreign-model body still never becomes a
+        # reading -- but the bytes exist afterward so the refusal can name them.
         raw_response_ref = self._retain(response.body)
         early_refusal: ChairResponseRefusal | None = None
         try:
@@ -986,24 +957,14 @@ def _refuse_bytes_from_the_wrong_source(
 ) -> None:
     """Refuse a response that is not this chair's, with its bytes already retained.
 
-    Deliberately narrower than :func:`~operations.serving.http.parse_openai_reading`
-    — it checks only status and, when the body parses as a JSON object naming a
-    model, that name. Anything else (an unparseable body, one with no ``model``
-    field) is left for the full parse, because that is legitimate retained
-    evidence for a malformed reading, not evidence from somewhere else.
-
-    ``raw_response_ref`` names the blob the caller has already written. Both
-    refusals carry it, so the bytes are reachable from the traceback as well as
-    on disk.
-
-    **Only the non-200 quotes the body.** A non-200 is the engine's own account
-    of why it refused -- "this model's maximum context length is N tokens" --
-    and that sentence is the artefact a rented card was paying for. A 200 from
-    the wrong model is the opposite case: the body is a *foreign* reading, text
-    some other model produced about who knows what image, and this repository
-    does not put a foreign reading's words into an exception message where they
-    would be read, logged, and quoted onward. It is retained, by its own digest,
-    and the refusal names where.
+    Narrower than :func:`~operations.serving.http.parse_openai_reading`: it
+    checks only status and, when the body names a model, that name. Anything
+    else (unparseable, or no ``model`` field) is left for the full parse, since
+    that is legitimate evidence for a malformed reading, not a foreign source.
+    ``raw_response_ref`` names the already-written blob, carried by both
+    refusals. Only the non-200 quotes the body: that is the engine's own
+    refusal reason, while a 200 from the wrong model is a foreign reading whose
+    words never enter an exception message -- named by digest instead.
     """
 
     if response.status != 200:
