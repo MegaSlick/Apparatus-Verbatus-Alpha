@@ -18,6 +18,7 @@ never supplies characters.
 
 import copy
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -157,7 +158,7 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     return records
 
 
-def _records_of_kind(context, stage: str, kind: str):
+def _records_of_kind(context, stage: str, kind: str) -> Iterator[dict]:
     """Read every artifact of one kind from a stage's manifest, in manifest order."""
     for entry in stage_manifest(context, stage)["artifacts"]:
         if entry["kind"] == kind:
@@ -670,6 +671,8 @@ def act_attachment_facts(
             # OR-ed booleans, so no combination appears that no single page supplied.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
+            # Only rows of one attempt merge (the health check above holds that), so
+            # filling a missing basis from a sibling page borrows nothing.
             # `act-line-not-located` is sticky, or `blank_corroboration` would treat a
             # failed alignment as checked geometry.
             bases_seen = (previous["anchor_basis"], fact["anchor_basis"])
@@ -849,8 +852,10 @@ _ANCHOR_BASES = frozenset({"act-anchor", "no-page-anchor", "act-line-not-located
 
 
 def _require_alignment_shape(act_id: str, chair: str, alignment: dict) -> None:
-    """The closed alignment shapes: an attached record missing its geometry or
-    `anchor_basis` must not count, and an unaligned record needs a reason.
+    """Refuse an alignment record outside its closed aligned or unaligned shape.
+
+    An attached record missing its geometry or `anchor_basis` must not count, and an
+    unaligned record needs a reason.
     """
     if alignment["status"] == "aligned":
         if (
@@ -3295,7 +3300,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         audit_facts = audit_state(context, latest, act_id, expected_act_key=act["act_key"]) or {}
         audit_unresolved = audit_facts.get("unresolved")
         audit_examination = audit_facts.get("examination")
-        # `None` means no Perlectio, so no report.
+        # `None` means the Perlectio carries no assessment object.
         assessment = latest_payload.get("uncertainty_assessment")
         assessment_record = (
             {"state": assessment.get("state"), "problem": assessment.get("problem")}
@@ -3671,6 +3676,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "page_coverage": page_coverage,
                 "audit_unresolved": audit_unresolved,
                 "audit_examination": audit_examination,
+                # Tells an empty uncertainty layer from an absent channel.
                 "uncertainty_assessment": assessment_record,
                 "cross_capture_coverage": cross_coverage,
                 **({"blank_evidence": blank_evidence} if blank_evidence is not None else {}),
