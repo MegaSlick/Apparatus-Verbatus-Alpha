@@ -1,7 +1,6 @@
 #!/bin/sh
 # Refuses a commit whose message, author or committer header matches a known
-# credential pattern. AI attribution (Co-Authored-By / Reviewed-by) is a convention
-# described in CONTRIBUTING.md, not enforced here.
+# credential pattern.
 
 message=$1
 if [ -z "$message" ] || [ ! -f "$message" ]; then
@@ -15,9 +14,8 @@ if [ ! -f "$ingress" ]; then
   echo "  BLOCKED: $ingress is missing, so the commit message cannot be checked." >&2
   exit 1
 fi
-# check_ingress.py exits 1 for a recognised credential and 2 when it could not read
-# its input; both block, but the message says which. The status is captured on its
-# own line because `$?` after an `if` compound is the compound's status.
+# check_ingress.py exits 1 for a recognised credential, 2 when it could not read its
+# input. `$?` is captured on its own line: after an `if` it is the compound's status.
 python3 "$ingress" --message-file "$message" >/dev/null
 status=$?
 if [ "$status" -ne 0 ]; then
@@ -32,23 +30,11 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 
-# The author and committer headers carry operator-supplied text into the commit
-# object, and until now nothing looked at them: `git commit --author='...'` and
-# a pasted `user.name` will carry a token as happily as any prose. Read from
-# `git var`, which is what git itself will record — it reflects --author, the
-# GIT_AUTHOR_*/GIT_COMMITTER_* environment and the configured identity alike.
-#
-# Handed to --ref-fields, the existing NUL-delimited contract, which fingerprints
-# each field instead of echoing it. An identity that failed a scan must not be
-# reprinted to a terminal, a log or a transcript on its way out.
-# An unreadable identity is not an unrun check here, and treating it as one was
-# wrong: `git var GIT_AUTHOR_IDENT` fails precisely when no user.name and
-# user.email are configured, and in that state there is no identity for the
-# commit to carry, so there is nothing to leak. Git refuses the commit itself,
-# for its own reasons, immediately after this hook returns. Blocking here made
-# the hook unusable anywhere an identity is not configured — every CI runner,
-# every fresh container — which is how a fail-closed instinct turns into a
-# check nobody can run at all.
+# The author and committer headers carry operator text (--author, user.name, the
+# GIT_AUTHOR_*/GIT_COMMITTER_* environment); `git var` gives what git will record.
+# --ref-fields fingerprints each field, so a failing identity is never reprinted.
+# No configured identity is not an unrun check: there is nothing to leak and git
+# refuses the commit itself, while blocking would break every CI runner.
 author_ident=$(git var GIT_AUTHOR_IDENT 2>/dev/null) || author_ident=""
 committer_ident=$(git var GIT_COMMITTER_IDENT 2>/dev/null) || committer_ident=""
 

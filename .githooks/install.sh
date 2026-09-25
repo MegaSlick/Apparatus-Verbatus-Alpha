@@ -1,11 +1,7 @@
 #!/bin/sh
-# Install this repository's hooks. Run once, immediately after cloning:
-#
-#     sh .githooks/install.sh
-#
-# core.hooksPath is local git config, so a fresh clone runs no hooks until this has
-# run. The path is relative so each worktree uses the hooks on its own branch.
-#
+# Run once after cloning: sh .githooks/install.sh
+# core.hooksPath is local config, so a fresh clone runs no hooks until this runs. The
+# path is relative so each worktree uses the hooks on its own branch.
 set -e
 
 if ! root=$(git rev-parse --show-toplevel 2>/dev/null); then

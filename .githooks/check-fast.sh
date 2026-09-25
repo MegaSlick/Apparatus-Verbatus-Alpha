@@ -6,7 +6,6 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) ||
   { echo "check-fast: not inside a Git repository" >&2; exit 1; }
 cd "$root"
 
-# Use the project environment when it exists.
 python=python3
 if [ -x .venv/bin/python ]; then
   PATH="$root/.venv/bin:$PATH"
