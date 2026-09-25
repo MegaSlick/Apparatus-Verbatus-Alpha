@@ -356,8 +356,7 @@ def _method_facts(method: Any, claimed_set: Any, sampling: Any) -> None:
     and must name the catalog and plan it was drawn from; a manual pick has a
     stated set and no catalog or plan behind it. Without this, a page chosen by
     hand could be minted as `stratified-seed`, and "the gold was drawn by the
-    seed" would be an unfalsifiable label rather than a replayable fact
-    (principle 8).
+    seed" would be an unfalsifiable label rather than a replayable fact.
     """
     _refuse(
         not isinstance(method, str) or method not in {"stratified-seed", "manual"},
@@ -403,8 +402,8 @@ def build_sample(
     no matter which method produced the sample. `claimed_set` is the
     separate, honest record of what a manual picker believed the set was at pick
     time; it is carried unchanged even when it disagrees with `set`, so a pick
-    made before the frame/seed existed is never silently corrected or discarded
-    (principle 2). `sampling` binds a seeded draw to the exact catalog and plan
+    made before the frame/seed existed is never silently corrected or discarded.
+    `sampling` binds a seeded draw to the exact catalog and plan
     that produced it, so `verify_stratified_selection` can replay the draw
     instead of taking `method` at its word.
     """
@@ -440,10 +439,9 @@ def _quotas(plan: Any, strata: set[str]) -> dict[str, dict[str, int]]:
     """The plan, checked to account for every stratum the catalog declares.
 
     A stratum the plan does not name contributes nothing to gold, and does so
-    without saying anything — the silent shortfall principle 2 forbids. So the
-    plan must name every stratum in both sets, and a quota of 0 is how a stratum
-    is deliberately left unsampled: still a declaration, still visible in the
-    plan file.
+    without saying anything. So the plan must name every stratum in both sets,
+    and a quota of 0 is how a stratum is deliberately left unsampled: still a
+    declaration, still visible in the plan file.
     """
     _refuse(
         not isinstance(plan, dict) or set(plan) != SETS,
@@ -798,8 +796,8 @@ def _person(value: Any, label: str) -> str:
     Gold is made by people. Nothing in this module can prove a string was typed by
     one, but a name shaped like a pipeline identity is the mistake worth catching:
     a model's output entering the gold corpus would make every later measurement
-    circular, since these records are what the pipeline is measured *against*
-    (principle 1; goal 1's "not against what a witness reported").
+    circular, since these records are what the pipeline is measured *against*,
+    not against what a witness reported.
     """
     _refuse(not isinstance(value, str) or not value.strip(), f"{label} is empty")
     _refuse(value != value.strip(), f"{label} has surrounding whitespace")
@@ -1031,14 +1029,13 @@ def adjudicate(
 ) -> dict[str, Any]:
     """Reconcile two independent transcriptions of one act into one gold reading.
 
-    **This is not a picker** (principle 1), and the distinction is
-    the same one the architecture makes everywhere else. The transcribers are
+    **This is not a picker**, and the distinction is the same one the
+    architecture makes everywhere else. The transcribers are
     people making the corpus the pipeline is measured against, not Attestatores,
     and no model output reaches these records. Where the two readings differ, the
     adjudicator does not choose the better transcription: they read the ink and
     record what they read, which may match one, both in part, or neither. Both
-    transcriptions are retained inside the record, unaltered, whatever it says
-    (principle 4).
+    transcriptions are retained inside the record, unaltered, whatever it says.
 
     Where the two readings are identical there is nothing to reconcile: the
     outcome is `agreed`, no adjudicator is recorded, and passing one is refused —
@@ -1239,8 +1236,8 @@ def validate_layout(record: Any, run_path: str | Path | None = None) -> dict[str
     _refuse(not isinstance(regions, list), "layout regions is not a list")
     # Page-layout gold accounts for the whole page, so "no regions" is not a
     # finding — it is an annotation that never happened, and an empty list would
-    # let it read as a completed one (principle 2). A page with nothing on it is
-    # annotated as such: that is what the `true-blank` kind is for.
+    # let it read as a completed one. A page with nothing on it is annotated as
+    # such: that is what the `true-blank` kind is for.
     _refuse(
         not regions,
         "page-layout gold has no regions; an empty page is annotated as true-blank, "
@@ -1328,6 +1325,17 @@ def validate_record(record: Any, run_path: str | Path | None = None) -> dict[str
     if schema == ADJUDICATION_SCHEMA:
         return validate_adjudication(record)
     raise SchemaRefusal(f"{schema!r} is not a gold record schema")
+
+
+def _register_frame(frames: dict[str, dict[str, str]], frame: dict[str, str]) -> None:
+    prior = frames.setdefault(frame["frame_digest"], frame)
+    _refuse(
+        prior != frame,
+        f"corpus frame digest {frame['frame_digest']} carries contradictory page_digest "
+        "or seed facts across gold records. One frame identity therefore denotes two "
+        "different authorities. Keep immutable records unchanged and separate the "
+        "frames, or regenerate an unpublished bad record from the R0 authority",
+    )
 
 
 def validate_corpus(
@@ -1418,25 +1426,9 @@ def validate_corpus(
     )
     frames: dict[str, dict[str, str]] = {}
     for sample in samples:
-        frame = sample["frame"]
-        prior = frames.setdefault(frame["frame_digest"], frame)
-        _refuse(
-            prior != frame,
-            f"corpus frame digest {frame['frame_digest']} carries contradictory page_digest "
-            "or seed facts across gold records. One frame identity therefore denotes two "
-            "different authorities. Keep immutable records unchanged and separate the "
-            "frames, or regenerate an unpublished bad record from the R0 authority",
-        )
+        _register_frame(frames, sample["frame"])
     for draw in draws.values():
-        frame = draw["frame"]
-        prior = frames.setdefault(frame["frame_digest"], frame)
-        _refuse(
-            prior != frame,
-            f"corpus frame digest {frame['frame_digest']} carries contradictory page_digest "
-            "or seed facts across gold records. One frame identity therefore denotes two "
-            "different authorities. Keep immutable records unchanged and separate the "
-            "frames, or regenerate an unpublished bad record from the R0 authority",
-        )
+        _register_frame(frames, draw["frame"])
     _refuse(
         len(frames) > 1,
         f"these gold records were built under {len(frames)} different corpus frames "
