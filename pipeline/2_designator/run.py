@@ -2370,14 +2370,6 @@ def _publish_live_act_groups(
         )
 
 
-def _structure_answer_identity(page_id: str) -> str:
-    """The one artifact identity a page's structure answer is ever published under.
-
-    One derivation, so a resume looks up exactly what `context.publish` wrote.
-    """
-    return artifact_id(DESIGNATOR, STRUCTURE_ANSWER_KIND, page_id, None)
-
-
 def _sealed_structure_answer(
     context,
     page_record: dict,
@@ -2390,7 +2382,7 @@ def _sealed_structure_answer(
     it is about to be copied onto new artifacts and its receipt must still exist.
     """
     page_id = page_record["subject_id"]
-    identifier = _structure_answer_identity(page_id)
+    identifier = artifact_id(DESIGNATOR, STRUCTURE_ANSWER_KIND, page_id, None)
     if not context.tree.has_artifact(DESIGNATOR, STRUCTURE_ANSWER_KIND, identifier):
         return None
     relative = context.tree.artifact_path(DESIGNATOR, STRUCTURE_ANSWER_KIND, identifier)
@@ -2429,22 +2421,29 @@ def _sealed_structure_answer(
     return payload, context.input_ref(relative)
 
 
+def _publish_structure_record(
+    context, page_record: dict, answer: structure_pass.PageAnswer, kind: str, **attempt
+) -> dict[str, str]:
+    inputs = [context.input_ref(page_record["payload"]["image_path"])]
+    if answer.record["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+        inputs.append(dict(answer.record["presentation_ref"]))
+    published = context.publish(
+        kind=kind,
+        subject_id=answer.page_id,
+        outcome="held" if answer.disposition == structure_pass.DISPOSITION_HELD else "proposed",
+        inputs=inputs,
+        payload=answer.record,
+        **attempt,
+    )
+    return context.input_ref(published.relative_path)
+
+
 def _publish_structure_answer(
     context, page_record: dict, answer: structure_pass.PageAnswer
 ) -> dict[str, str]:
     """Publish one page's answer the moment it arrives, and return its reference."""
     _validate_structure_answer_payload(answer.record, terminal=True)
-    inputs = [context.input_ref(page_record["payload"]["image_path"])]
-    if answer.record["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
-        inputs.append(dict(answer.record["presentation_ref"]))
-    published = context.publish(
-        kind=STRUCTURE_ANSWER_KIND,
-        subject_id=answer.page_id,
-        outcome="held" if answer.disposition == structure_pass.DISPOSITION_HELD else "proposed",
-        inputs=inputs,
-        payload=answer.record,
-    )
-    return context.input_ref(published.relative_path)
+    return _publish_structure_record(context, page_record, answer, STRUCTURE_ANSWER_KIND)
 
 
 def _recoverable_structure_outcome(answer: structure_pass.PageAnswer) -> bool:
@@ -2465,18 +2464,13 @@ def _publish_structure_attempt(
     answer.record["attempt_ordinal"] = ordinal
     answer.record["attempts"] = list(prior_references)
     _validate_structure_answer_payload(answer.record, terminal=False)
-    inputs = [context.input_ref(page_record["payload"]["image_path"])]
-    if answer.record["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
-        inputs.append(dict(answer.record["presentation_ref"]))
-    published = context.publish(
-        kind=STRUCTURE_ATTEMPT_KIND,
-        subject_id=answer.page_id,
-        outcome="held" if answer.disposition == structure_pass.DISPOSITION_HELD else "proposed",
+    return _publish_structure_record(
+        context,
+        page_record,
+        answer,
+        STRUCTURE_ATTEMPT_KIND,
         attempt=attempt_id(answer.page_id, "structure", ordinal),
-        inputs=inputs,
-        payload=answer.record,
     )
-    return context.input_ref(published.relative_path)
 
 
 def _published_structure_attempts(
