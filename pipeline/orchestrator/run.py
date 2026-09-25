@@ -88,6 +88,7 @@ from common.stage import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+_TRIAGE_PATHS = ("triage_decision_manifest", "triage_clusters", "triage_producer_recipe")
 
 # The pipeline in flow order. The door is a program of the Exemplar's directory
 # because it owns no directory of its own.
@@ -185,11 +186,7 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
     for attribute in (
         "submission_folder",
         "submission_manifest",
-        "triage_decision_manifest",
-        "triage_clusters",
-        "triage_producer_recipe",
-        # Resolved here too, or an ordinary CLI run with a relative
-        # `--cache-root` would be refused by the boundary guard above.
+        *_TRIAGE_PATHS,
         "cache_root",
     ):
         value = getattr(args, attribute, None)
@@ -213,33 +210,38 @@ def stage_environment() -> dict[str, str]:
     }
 
 
-def invoke(program: str, args: argparse.Namespace, **extra) -> int:
-    """Run one stage as a program and return its exit code."""
-    require_coherent_ingress_options(args)
-    # Direct invocation entry points must not reinterpret caller paths under the
-    # child's repository-root cwd.
-    for attribute, flag in (
-        ("run_root", "--run-root"),
-        ("submission_folder", "--submission-folder"),
-        ("submission_manifest", "--submission-manifest"),
-        ("data_gate_policy", "--data-gate-policy"),
-        # The three triage paths and the model cache were forwarded to children
-        # unchecked, so a direct caller could make the Door read triage data, or
-        # a stage read a model cache, relative to the repository rather than to
-        # the caller. They belong behind the same boundary as every
-        # other caller path.
-        ("triage_decision_manifest", "--triage-decision-manifest"),
-        ("triage_clusters", "--triage-clusters"),
-        ("triage_producer_recipe", "--triage-producer-recipe"),
-        ("cache_root", "--cache-root"),
+def _argv(pairs, *, omit_unset: bool = False) -> list[str]:
+    return [
+        part
+        for flag, value in pairs
+        if not (omit_unset and value is None)
+        for part in (flag, str(value))
+    ]
+
+
+def _require_absolute_caller_paths(args: argparse.Namespace) -> None:
+    for attribute in (
+        "run_root",
+        "submission_folder",
+        "submission_manifest",
+        "data_gate_policy",
+        *_TRIAGE_PATHS,
+        "cache_root",
     ):
         value = getattr(args, attribute, None)
         if value is not None and not Path(value).is_absolute():
+            flag = "--" + attribute.replace("_", "-")
             raise ContractError(
                 f"{flag} is still the caller-relative path {str(value)!r}. Stages run from "
                 f"{ROOT} while the caller may be anywhere, so this must be resolved at the "
                 "orchestration boundary (`resolve_caller_paths`) before any child sees it"
             )
+
+
+def invoke(program: str, args: argparse.Namespace, **extra) -> int:
+    """Run one stage as a program and return its exit code."""
+    require_coherent_ingress_options(args)
+    _require_absolute_caller_paths(args)
     command = [
         sys.executable,
         # Ignore PYTHON* startup controls and the user site for child stages.
@@ -248,98 +250,71 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         # before the stage reached its first refusal boundary.
         "-I",
         str(ROOT / program),
-        "--run-root",
-        str(args.run_root),
-        "--run-id",
-        args.run_id,
-        "--scenario",
-        args.scenario,
-        "--fixture-root",
-        str(args.fixture_root),
-        "--models-config",
-        str(args.models_config),
-        "--decoding-config",
-        str(args.decoding_config),
-        "--serving-recipes-config",
-        str(args.serving_recipes_config),
-        "--pdf-render-config",
-        str(args.pdf_render_config),
-        "--designator-padding-config",
-        str(args.designator_padding_config),
-        "--designator-geometry-config",
-        str(args.designator_geometry_config),
-        "--designator-grouping-config",
-        str(args.designator_grouping_config),
-        "--alignment-config",
-        str(args.alignment_config),
-        "--formats-config",
-        str(args.formats_config),
-        "--recovery-config",
-        str(args.recovery_config),
-        "--hard-failure-config",
-        str(args.hard_failure_config),
+        *_argv(
+            (
+                ("--run-root", args.run_root),
+                ("--run-id", args.run_id),
+                ("--scenario", args.scenario),
+                ("--fixture-root", args.fixture_root),
+                ("--models-config", args.models_config),
+                ("--decoding-config", args.decoding_config),
+                ("--serving-recipes-config", args.serving_recipes_config),
+                ("--pdf-render-config", args.pdf_render_config),
+                ("--designator-padding-config", args.designator_padding_config),
+                ("--designator-geometry-config", args.designator_geometry_config),
+                ("--designator-grouping-config", args.designator_grouping_config),
+                ("--alignment-config", args.alignment_config),
+                ("--formats-config", args.formats_config),
+                ("--recovery-config", args.recovery_config),
+                ("--hard-failure-config", args.hard_failure_config),
+            )
+        ),
     ]
-    cache_root = getattr(args, "cache_root", None)
-    if cache_root is not None:
-        command += ["--cache-root", str(cache_root)]
+    command += _argv((("--cache-root", getattr(args, "cache_root", None)),), omit_unset=True)
     # Later stages may read only the run tree the Door sealed, never source paths.
     if program == STAGE_PROGRAMS["door"]:
-        # The Door is the one stage that creates the run authority, so it is the
-        # only one that can seal the commit into it. Forwarded only when it was
-        # actually read: a tree with no version control records no commit rather
-        # than a placeholder that looks like one (principle 8).
+        # Only the Door creates the run authority, so only it can seal the commit.
+        # An unread commit is omitted, never a placeholder (principle 8).
         commit, _detail = repository_commit(args)
-        if commit is not None:
-            command += ["--repository-commit", commit]
-        if args.submission_folder is not None:
-            command += ["--submission-folder", str(args.submission_folder)]
-        if args.submission_manifest is not None:
-            command += ["--submission-manifest", str(args.submission_manifest)]
-        if args.data_gate_policy is not None:
-            command += ["--data-gate-policy", str(args.data_gate_policy)]
-        for attribute, flag in (
-            ("triage_decision_manifest", "--triage-decision-manifest"),
-            ("triage_clusters", "--triage-clusters"),
-            ("triage_producer_recipe", "--triage-producer-recipe"),
-        ):
-            value = getattr(args, attribute, None)
-            if value is not None:
-                command += [flag, str(value)]
-    if args.pdf_target_dpi is not None:
-        command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
-    # A measured runtime fact of the card, not run configuration (principle 6);
-    # forwarded only when set, so a fixture run's argv carries no
-    # "--placement-tier None" and stage_parser's own default (None) governs.
-    if args.placement_tier is not None:
-        command += ["--placement-tier", str(args.placement_tier)]
+        command += _argv(
+            (
+                ("--repository-commit", commit),
+                ("--submission-folder", args.submission_folder),
+                ("--submission-manifest", args.submission_manifest),
+                ("--data-gate-policy", args.data_gate_policy),
+                ("--triage-decision-manifest", getattr(args, "triage_decision_manifest", None)),
+                ("--triage-clusters", getattr(args, "triage_clusters", None)),
+                ("--triage-producer-recipe", getattr(args, "triage_producer_recipe", None)),
+            ),
+            omit_unset=True,
+        )
+    # The placement tier is a measured runtime fact of the card, not run
+    # configuration (principle 6), so an unset one is omitted and stage_parser's
+    # own default (None) governs.
+    command += _argv(
+        (("--pdf-target-dpi", args.pdf_target_dpi), ("--placement-tier", args.placement_tier)),
+        omit_unset=True,
+    )
     if getattr(args, "mechanics_qualification", False):
         command.append("--mechanics-qualification")
     # Forwarded to every stage, not only to the door that snapshots it: the
     # drift refusal exists to catch a register appended *between* two stages of
     # one run, which is precisely the case an unforwarded flag cannot see.
-    if args.corpus_register is not None:
-        command += ["--corpus-register", str(args.corpus_register)]
-    command += [
-        "--witness-context",
-        args.witness_context,
-        "--witness-context-config",
-        str(args.witness_context_config),
-        "--nuda-per-mille",
-        str(args.nuda_per_mille),
-        "--nuda-approval-ref",
-        str(args.nuda_approval_ref),
-        "--perlector-instrument-per-mille",
-        str(args.perlector_instrument_per_mille),
-        "--perlector-instrument-approval-ref",
-        str(args.perlector_instrument_approval_ref),
-        "--perlector-protocol-config",
-        str(args.perlector_protocol_config),
-        "--perlector-audit-config",
-        str(args.perlector_audit_config),
-    ]
+    command += _argv((("--corpus-register", args.corpus_register),), omit_unset=True)
+    command += _argv(
+        (
+            ("--witness-context", args.witness_context),
+            ("--witness-context-config", args.witness_context_config),
+            ("--nuda-per-mille", args.nuda_per_mille),
+            ("--nuda-approval-ref", args.nuda_approval_ref),
+            ("--perlector-instrument-per-mille", args.perlector_instrument_per_mille),
+            ("--perlector-instrument-approval-ref", args.perlector_instrument_approval_ref),
+            ("--perlector-protocol-config", args.perlector_protocol_config),
+            ("--perlector-audit-config", args.perlector_audit_config),
+        )
+    )
     command.append("--draft-fed" if args.draft_fed else "--no-draft-fed")
-    for key, value in extra.items():
-        command += [f"--{key.replace('_', '-')}", str(value)]
+    command += _argv((f"--{key.replace('_', '-')}", value) for key, value in extra.items())
 
     # Inherit the operator's streams instead of buffering a stage's unbounded
     # stdout/stderr in the orchestrator. Each stage owns its diagnostic text,
