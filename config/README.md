@@ -169,7 +169,7 @@ be compared directly: `pod_placement.toml` caps a longest edge in pixels, while
 a serving profile's `max_pixels` is a total pixel count passed to vLLM. Both
 files say so where the value is defined.
 
-`spend.toml` is intentionally a refusal, not a placeholder default. A configured version
+`spend.toml` is the configured policy; an unconfigured one refuses every paid action. It
 must name `currency = "USD"`, `max_hourly_usd` and `max_estimated_metered_cost_usd`
 ceilings for the combined metered pod and attached-volume hourly price and cost through
 the hard lifetime, the `hard_lifetime_seconds` itself, plus a bounded
@@ -182,8 +182,7 @@ would not preserve the reserve. The documented `$50.00` floor is an unverified p
 value, not a balance observation, until checked against RunPod before a live run. The
 loader refuses any key it does not know and any policy missing one of these.
 It does not authorize retaining or deleting a volume after close: that is a separately
-named decision, and every close report states the volume's own ongoing price. The file
-itself carries the full key list as comments, so filling it in needs no code reading.
+named decision, and every close report states the volume's own ongoing price.
 
 `pod_placement.toml` is planning, not permission. Serving is **sequential** — one model
 at a time, as much of the card as stays stable, next model after — so every tier is
