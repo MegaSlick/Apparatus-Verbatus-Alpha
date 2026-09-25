@@ -471,7 +471,6 @@ class ServingManager:
         shutdown_timeout_seconds: float = 10.0,
         _launch_purpose: object | None = None,
     ) -> None:
-        supplied_command_prefix = command_prefix is not None
         if command_prefix is None:
             # This interpreter, so the launched vLLM is the one whose version
             # was inspected; a PATH console script could belong to another venv.
@@ -485,15 +484,9 @@ class ServingManager:
             or not Path(command_prefix[0]).is_absolute()
         ):
             raise ValueError("vLLM command_prefix must start with an absolute interpreter path")
-        if (
-            supplied_command_prefix
-            and package_inspector is None
-            and command_prefix[0] != sys.executable
-        ):
-            # The default inspector reads this interpreter's packages, so the pin
-            # check only means something if the child is this interpreter --
-            # compared as exact strings, since two venvs can symlink one
-            # interpreter with different site-packages.
+        if package_inspector is None and command_prefix[0] != sys.executable:
+            # Exact strings: two venvs can symlink one interpreter with
+            # different site-packages.
             raise ValueError(
                 "the default package inspector reads this interpreter's installed "
                 "distributions, so a supplied vLLM command_prefix must launch "
@@ -557,7 +550,6 @@ class ServingManager:
             raise ServingConfigurationError("serving start requires one resolved ChairIdentity")
         if not isinstance(tier, str) or not tier:
             raise ServingConfigurationError("serving start requires one non-blank placement tier")
-        # Checked here because every launch passes through ``start``.
         assert_no_discoverable_local_env()
         if self._active is not None or self._residency_handle is not None:
             # Not failed-launch cleanup: the held lease records an unverified shutdown.
@@ -572,8 +564,6 @@ class ServingManager:
         process: ServerProcess | None = None
         endpoint = ""
         try:
-            # Both the chair's and an adapter base's profiles pass the recipe
-            # check before any snapshot is verified.
             profile = self._launchable_profile(identity, tier)
             self._assert_runtime(profile)
             base_identity, base_profile = self._base_profile(identity, tier, profile)
@@ -881,7 +871,6 @@ class ServingManager:
                 if progress_line is not None and current_progress != progress_line:
                     progress_advanced = True
                 progress_line = current_progress
-            # No time left: a request could not succeed.
             if deadline - self.monotonic() <= 0:
                 raise watchdog_timeout()
             try:
@@ -1210,7 +1199,6 @@ class ServingManager:
         deadline = self.monotonic() + self.shutdown_timeout_seconds
         last = "endpoint absence has not been observed"
         while True:
-            # Cap each probe by the time left, as in `_wait_until_ready`.
             remaining = deadline - self.monotonic()
             if remaining <= 0:
                 raise ServiceStopError(last)
