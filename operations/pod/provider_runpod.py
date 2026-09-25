@@ -339,16 +339,9 @@ class UrllibRunPodTransport:
 class GraphQLBalanceObserver:
     """`myself { clientBalance currentSpendPerHr }`, refused by name on every doubt.
 
-    The zero-argument callable `RunPodProvider.observe_account_balance` runs
-    on its bounded thread. It refuses, naming the reason: a non-200 status; a
-    3xx (the transport already refuses to follow one); a body that is not a
-    JSON object; a GraphQL `errors` array; a missing `data`, `myself`,
-    `clientBalance` or `currentSpendPerHr`; a value that is not a JSON number
-    (`null`, a string, a boolean); a negative balance, since
-    `AccountBalanceObservation` cannot carry one and a gate that read it
-    as zero would be wrong in the unsafe direction; and any key anywhere in
-    the response that looks credential-shaped, because the query asked for
-    two numbers and a body carrying a key or token is not the answer to it.
+    A negative balance is refused rather than read as zero, which would be wrong
+    in the unsafe direction; so is any credential-shaped key anywhere in the
+    response, because the query asked for two numbers.
     """
 
     def __init__(
@@ -398,16 +391,9 @@ class GraphQLBalanceObserver:
     def _ping(self, balance: Decimal, spend_per_hour: Decimal) -> str | None:
         """Notify the phone; return a note when the ping did not land.
 
-        Best-effort, never raised: a notification hook must never turn a
-        successful observation into a failed one (spend machinery is tracking
-        plus notifications only, no new enforcement). But a ping that was
-        refused on sight, never delivered, or raised is itself a fact about
-        this observation, and principle 2 does not let it disappear into a
-        bare ``pass``. It comes back as a note appended to the observation's own
-        ``source``, which every spend assessment and launch record already
-        carries, so a phone that never rang says so where the money decision
-        is written down. A delivered ping adds nothing: the caller that wired
-        the hook records that outcome itself.
+        Never raises: a notification must not fail an observation. A ping that
+        was refused, undelivered or raised is still a fact, so it comes back as
+        a note on the observation's ``source``, which every spend record carries.
         """
 
         if self.notify is None:
@@ -592,15 +578,9 @@ class _RunPodAdapter:
     ) -> None:
         """Wire the phone hook into the observer this adapter built, under ``--notify``.
 
-        `cli.py` calls this by duck type, so that surface names no vendor -- the
-        same shape `--record-fixture` uses for `record_exchanges`. Only the
-        default `GraphQLBalanceObserver` this adapter constructed for a live
-        transport can be wired: an injected observer is an opaque callable and
-        is left alone, and a fake transport built no observer at all, so
-        `--notify` can never conjure a balance ping where there is no balance
-        source. Both of those refuse by name rather than silently doing
-        nothing, because a caller that asked for balance pings and got none
-        must be told which.
+        `cli.py` calls this by duck type, so that surface names no vendor. An
+        injected observer or a missing one refuses by name, so a caller that
+        asked for balance pings is told why it gets none.
         """
 
         observer = self.balance_observer
@@ -1915,22 +1895,11 @@ def _bounded_read(
 ) -> bytes:
     """Refuse to buffer a response past ``_MAX_RESPONSE_BYTES``, never truncate it silently.
 
-    ``HTTPResponse.read(amt)`` is documented as returning *up to* ``amt`` bytes,
-    so one call may return a short read before EOF; a valid billing response
-    under the cap would then reach ``_json`` truncated and be refused as
-    malformed.  CPython's own implementation happens not to short-read here
-    today -- this accumulates against the documented contract rather than
-    against that implementation detail.
-
-    ``deadline`` is the caller's whole-call monotonic deadline, checked between
-    reads.  It is a refinement and not the bound: ``read`` blocks until it has
-    the amount asked for, so a responder dribbling inside the socket timeout
-    never returns control to this loop at all.  What actually bounds that case
-    is the worker thread the caller joins with its budget
-    (``operations/http_deadline.py``); this check exists so a response arriving
-    in several complete-but-slow reads is refused here, by name, instead of
-    becoming a cancelled thread.  ``None`` keeps the unbounded behaviour for the
-    direct-call tests that hand this function a synthetic stream.
+    Accumulates because ``read(amt)`` may legally return a short read before EOF.
+    ``deadline`` (the caller's whole-call monotonic deadline) is checked between
+    reads so a response arriving in slow complete reads is refused by name; a
+    responder dribbling inside one read is bounded by the caller's worker thread
+    (``operations/http_deadline.py``). ``None`` is for tests' synthetic streams.
     """
 
     parts: list[bytes] = []
