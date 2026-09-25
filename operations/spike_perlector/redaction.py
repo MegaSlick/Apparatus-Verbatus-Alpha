@@ -178,6 +178,15 @@ def _require_nonnegative_int(value: Any, label: str) -> None:
         raise PublicSafetyRefusal(f"public {label} must be a non-negative integer")
 
 
+def _require_ratio(
+    record: dict[str, Any], field: str, numerator: str, denominator: str, message: str
+) -> None:
+    if not math.isclose(
+        record[field], record[numerator] / record[denominator], rel_tol=0, abs_tol=1e-12
+    ):
+        raise PublicSafetyRefusal(message)
+
+
 def _require_rate(value: Any, label: str, *, nullable: bool = False, signed: bool = False) -> None:
     if value is None and nullable:
         return
@@ -228,36 +237,32 @@ def _validate_metric_fields(record: dict[str, Any], *, baseline: bool) -> None:
         raise PublicSafetyRefusal("public response states do not cover planned cells")
     for field in ("cer", "wer", "completeness"):
         _require_rate(record[field], field)
-    if not math.isclose(
-        record["cer"],
-        record["cer_errors"] / record["cer_reference_units"],
-        rel_tol=0,
-        abs_tol=1e-12,
-    ):
-        raise PublicSafetyRefusal(
-            "public CER does not equal its retained numerator and denominator"
-        )
-    if not math.isclose(
-        record["wer"],
-        record["wer_errors"] / record["wer_reference_units"],
-        rel_tol=0,
-        abs_tol=1e-12,
-    ):
-        raise PublicSafetyRefusal(
-            "public WER does not equal its retained numerator and denominator"
-        )
+    _require_ratio(
+        record,
+        "cer",
+        "cer_errors",
+        "cer_reference_units",
+        "public CER does not equal its retained numerator and denominator",
+    )
+    _require_ratio(
+        record,
+        "wer",
+        "wer_errors",
+        "wer_reference_units",
+        "public WER does not equal its retained numerator and denominator",
+    )
     if (
         record["cer_matches"] > record["cer_reference_units"]
         or record["wer_matches"] > record["wer_reference_units"]
     ):
         raise PublicSafetyRefusal("public match count exceeds its checked denominator")
-    if not math.isclose(
-        record["completeness"],
-        record["cer_matches"] / record["cer_reference_units"],
-        rel_tol=0,
-        abs_tol=1e-12,
-    ):
-        raise PublicSafetyRefusal("public completeness does not equal its retained match count")
+    _require_ratio(
+        record,
+        "completeness",
+        "cer_matches",
+        "cer_reference_units",
+        "public completeness does not equal its retained match count",
+    )
     _require_rate(record["dissent_rate"], "dissent_rate", nullable=True)
     _require_rate(record["mean_elapsed_ms"], "mean_elapsed_ms", nullable=True)
     _require_rate(record["mean_cost_usd"], "mean_cost_usd", nullable=True)

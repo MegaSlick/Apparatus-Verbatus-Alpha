@@ -707,8 +707,7 @@ def test_a_roster_naming_one_model_three_ways_is_not_three_distinct_sources():
 
     The three roles exist to be genuinely different — a stock base, an unaltered
     vendor model and a trained checkpoint — and a roster that is one model wearing
-    three spellings defeats the comparison the whole instrument is for. Found by
-    the Opus read of this branch.
+    three spellings defeats the comparison the whole instrument is for.
     """
 
     roster = CandidateRoster(

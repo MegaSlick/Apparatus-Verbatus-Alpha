@@ -15,12 +15,11 @@ FORBIDDEN_ATTESTATOR_SOURCE = "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR"
 def validate_perlector_candidate(identity: ResolvedIdentity) -> None:
     """Apply the structural no-self-witness rule at every execution boundary.
 
-    **The comparison is normalized, because this is a structural rule and not a
-    string match.** Principle 1 says the Perlector reads
-    and never picks among witnesses; a witness sitting in the candidate roster is
-    that rule broken at the root. Compared exactly, a trailing space, a capital
-    letter, or a `@revision` pin walked the Attestator straight through the one
-    check standing in its way — and the refusal that did not fire is invisible.
+    The comparison is normalized, because this is a structural rule and not a
+    string match: a witness sitting in the candidate roster breaks the rule at
+    the root. Compared exactly, a trailing space, a capital letter, or a
+    `@revision` pin walked the Attestator straight through the one check
+    standing in its way — and the refusal that did not fire is invisible.
     """
 
     if repository_of(identity.source_ref) == repository_of(FORBIDDEN_ATTESTATOR_SOURCE):
@@ -80,8 +79,7 @@ class CandidateRoster:
         # Normalized, for the reason `repository_of` gives: three roles whose
         # `source_ref`s differ only by a trailing space or an `@revision` pin are
         # three names for one model, and this refusal exists to stop exactly that
-        # roster. Three lines above the normalized check and still a raw compare
-        # until the Opus read of this branch executed it.
+        # roster.
         sources = [repository_of(identity.source_ref) for identity in identities]
         if len(set(candidate_keys)) != len(candidate_keys) or set(slots) != {1, 2, 3}:
             raise CandidateRosterRefusal(

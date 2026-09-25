@@ -103,6 +103,17 @@ def _approval_digest(record: Mapping[str, object]) -> str:
     return digest_of(dict(record))
 
 
+def _require_approval_reference(reference: Any, message: str) -> None:
+    """Refuse a missing/malformed reference before its `.relative_path` is read.
+
+    Reading that attribute off a missing reference reports a Python
+    `AttributeError` where the governed condition is an absent approval.
+    """
+
+    if not isinstance(reference, ApprovalRecordReference):
+        raise DisclosureRefusal(message)
+
+
 def _require_content_addressed_reference(
     reference: ApprovalRecordReference, *, label: str = "approval authority"
 ) -> str:
@@ -247,16 +258,10 @@ class DataGateAuthority:
     ) -> "DataGateAuthority":
         """Resolve the repository's single policy home, then load its approval."""
 
-        # Checked before it is dereferenced, so a missing approval refuses by the
-        # governed condition that actually failed.  Reading `.relative_path` first
-        # turned the missing case into an AttributeError wearing a refusal's clothes:
-        # it still failed closed, but it reported a Python attribute rather than the
-        # absence of the project lead's approval, which is the one fact a reader needs here.
-        if not isinstance(approval_reference, ApprovalRecordReference):
-            raise DisclosureRefusal(
-                "data-gate approval is missing; real input requires a current "
-                "approval-record artifact"
-            )
+        _require_approval_reference(
+            approval_reference,
+            "data-gate approval is missing; real input requires a current approval-record artifact",
+        )
 
         # Before the read, not after it: the path this names is about to be
         # opened by a caller-supplied reader.
@@ -392,15 +397,11 @@ class ThirdPartyTransmissionApproval:
     ) -> "ThirdPartyTransmissionApproval":
         """Load an immutable vendor/pages approval from an approved private reader."""
 
-        # Checked before it is dereferenced, for the reason `DataGateAuthority.load`
-        # gives: reading `.relative_path` off a missing reference reports a Python
-        # attribute where the governed condition is the absence of the project
-        # lead's approval. That fix reached one of four loaders; this is another.
-        if not isinstance(approval_reference, ApprovalRecordReference):
-            raise DisclosureRefusal(
-                "third-party transmission approval is missing; this run requires a current "
-                "approval-record artifact"
-            )
+        _require_approval_reference(
+            approval_reference,
+            "third-party transmission approval is missing; this run requires a current "
+            "approval-record artifact",
+        )
 
         # Before the read, not after it: the path this names is about to be
         # opened by a caller-supplied reader.
@@ -680,19 +681,15 @@ class RunPlanApproval:
         one boundary, but nothing in this loader treats those fields as human-approved.
         """
 
-        # Checked before it is dereferenced, for the reason `DataGateAuthority.load`
-        # gives: reading `.relative_path` off a missing reference reports a Python
-        # attribute where the governed condition is the absence of the project
-        # lead's approval. That fix reached one of four loaders; this is another.
-        if not isinstance(approval_reference, ApprovalRecordReference):
-            raise DisclosureRefusal(
-                "run-plan approval is missing; this run requires a current approval-record artifact"
-            )
-        if not isinstance(engineering_declaration_reference, ApprovalRecordReference):
-            raise DisclosureRefusal(
-                "engineering declaration reference is missing; this run requires the "
-                "session's content-addressed declaration artifact"
-            )
+        _require_approval_reference(
+            approval_reference,
+            "run-plan approval is missing; this run requires a current approval-record artifact",
+        )
+        _require_approval_reference(
+            engineering_declaration_reference,
+            "engineering declaration reference is missing; this run requires the "
+            "session's content-addressed declaration artifact",
+        )
 
         # Before the read, not after it: the path this names is about to be
         # opened by a caller-supplied reader.
