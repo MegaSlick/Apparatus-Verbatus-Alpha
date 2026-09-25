@@ -402,6 +402,28 @@ def _page_occlusion_survey(occlusions: dict[str, list[dict]], page_id: str) -> d
     return {"surveyed": surveyed, "polygons": polygons, "occlusion_refs": sorted(refs)}
 
 
+def _view_visibility(
+    surveyed: bool, page_count: int, bounds_list: list[dict], polygons: list
+) -> tuple[str, list, list, list[str]]:
+    """``(visibility_state, visible_cells, occluded_cells, finding_codes)`` for one view."""
+    if not surveyed:
+        return "unresolved", [], [], [SURVEY_ABSENT]
+    # One bounding box over two pages would mix two coordinate spaces, so occlusion on
+    # page two would land in page one's cells. Until each page is classified on its own
+    # grid such a view is unmeasured; continuation acts make this the common case.
+    if page_count > 1:
+        return "unresolved", [], [], [SURVEY_SPANS_TWO_PAGES]
+    x0 = min(bounds["x"] for bounds in bounds_list)
+    y0 = min(bounds["y"] for bounds in bounds_list)
+    x1 = max(bounds["x"] + bounds["w"] for bounds in bounds_list)
+    y1 = max(bounds["y"] + bounds["h"] for bounds in bounds_list)
+    survey = classify_capture_visibility(
+        bounds={"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
+        occlusion_polygons=polygons,
+    )
+    return survey["visibility_state"], survey["visible_cells"], survey["occluded_cells"], []
+
+
 def act_cross_capture_coverage(
     context,
     act_id: str,
@@ -459,34 +481,9 @@ def act_cross_capture_coverage(
             surveyed = surveyed and page_survey["surveyed"]
             polygons.extend(page_survey["polygons"])
             occlusion_refs.extend(page_survey["occlusion_refs"])
-        # An act crossing a page break gives one capture two pages, and one bounding box
-        # would mix two coordinate spaces, so occlusion on page two would land in page
-        # one's cells. Until each page is classified on its own grid, such a view is
-        # recorded as unmeasured (principles 2, 8). This is the common case:
-        # continuation acts are ordinary in these registers.
-        if surveyed and len(view["page_ids"]) > 1:
-            visibility_state = "unresolved"
-            visible_cells = []
-            occluded_cells = []
-            finding_codes = [SURVEY_SPANS_TWO_PAGES]
-        elif surveyed:
-            x0 = min(bounds["x"] for bounds in bounds_list)
-            y0 = min(bounds["y"] for bounds in bounds_list)
-            x1 = max(bounds["x"] + bounds["w"] for bounds in bounds_list)
-            y1 = max(bounds["y"] + bounds["h"] for bounds in bounds_list)
-            survey = classify_capture_visibility(
-                bounds={"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
-                occlusion_polygons=polygons,
-            )
-            visibility_state = survey["visibility_state"]
-            visible_cells = survey["visible_cells"]
-            occluded_cells = survey["occluded_cells"]
-            finding_codes = []
-        else:
-            visibility_state = "unresolved"
-            visible_cells = []
-            occluded_cells = []
-            finding_codes = [SURVEY_ABSENT]
+        visibility_state, visible_cells, occluded_cells, finding_codes = _view_visibility(
+            surveyed, len(view["page_ids"]), bounds_list, polygons
+        )
         row = {
             "source_sha256": view["source_sha256"],
             "alignment_ref": view["alignment_ref"],
