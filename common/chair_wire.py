@@ -20,7 +20,8 @@ from typing import Any, Final, Mapping
 
 # Sent on every Chandra request, at both chairs. The two chat templates that
 # ship at the pinned revision disagree on whether a turn opens in thinking
-# mode; forcing this off is a no-op under one template and decisive under the
+# mode -- read from the release's own template files, never seen running --
+# so forcing this off is a no-op under one template and decisive under the
 # other, and either way it is free -- a thinking turn would waste a tight page
 # budget, and both chairs' parsers refuse a body that opens with `<think>`.
 CHANDRA_CHAT_TEMPLATE_KWARGS: Final[Mapping[str, bool]] = MappingProxyType(
@@ -40,8 +41,9 @@ def chandra_wire_fields() -> dict[str, Any]:
     return {"chat_template_kwargs": dict(CHANDRA_CHAT_TEMPLATE_KWARGS)}
 
 
-# `chat_template_content_format` (which pins image-before-text ordering) is
-# NOT sendable per request: vLLM sets it once at server launch from a CLI
-# argument and never reads it off an incoming request, so naming it here would
-# be silently accepted and ignored. The real fix is a launch argument in
-# `operations/serving/manager.py`, not a field in this module.
+# `chat_template_content_format` is NOT sendable per request: vLLM sets it
+# once at server launch from a CLI argument and never reads it off an incoming
+# request, so naming it here would be silently accepted and ignored. It is
+# pinned to `openai`, which keeps the caller's part order, at launch in
+# `operations/serving/manager.py`; vLLM's `string` format would move images
+# ahead of text instead.

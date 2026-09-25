@@ -4,8 +4,9 @@ Shared by the Designator (cropping a sealed page), the Perlector (verifying a
 handed region decodes to the claimed size) and the proof fixtures, so the
 pipeline and its fixtures read bytes from exactly one encoder. Deliberately
 narrow -- 8-bit grayscale, filter 0, no interlacing -- and anything else is
-refused rather than guessed at; Pillow and PDFium handle real decoding
-elsewhere (the Exemplar).
+refused rather than guessed at; `crop_png`, `grayscale_rows` and `dimensions`
+decode through Pillow themselves, and PDFium handles the one decode neither
+this module nor Pillow does, a page straight off a PDF (the Exemplar).
 
 Reading is Pillow's job wherever this codec cannot; *writing* run evidence is
 not. A crop is content-addressed, so its bytes name its blob path and every
@@ -214,15 +215,19 @@ def _refuse_unreadable_transparency(image: Image.Image) -> None:
             "grey would count them as ink or as paper without either being recorded; the "
             "policy for reading a transparent page is not settled"
         )
+    # A fully opaque alpha band is not refused: every pixel already carries a
+    # definite grey value, so refusing here would lose a readable page over a
+    # channel that changes nothing about how it reads.
 
 
 def _grayscale_samples(image: Image.Image) -> Image.Image:
     """One sealed page as 8-bit grey, scaling the modes a bare convert would clip.
 
-    `convert("L")` maps a high-precision sample straight through, so a 16-bit
-    scan reads as near-white ink returned as a blank page. Scaled here by
-    `_HIGH_PRECISION_SCALE`, the same rule `crop_png` already applies, so the
-    grey a stage measures and the grey a model is shown agree.
+    `convert("L")` maps a high-precision sample straight through instead of
+    scaling it, so 1024 and 65535 both land on 255 and a 16-bit scan's ink
+    reads as near-white -- a page of ink returned as a blank one. Scaled here
+    by `_HIGH_PRECISION_SCALE`, the same rule `crop_png` already applies, so
+    the grey a stage measures and the grey a model is shown agree.
     """
     _refuse_unreadable_transparency(image)
     if image.mode == "L":
@@ -757,15 +762,16 @@ def convert_png_to_rgb(png_bytes: bytes) -> bytes:
     """Expand an image to three 8-bit colour samples, deterministically framed.
 
     A vendor preprocessor converts before handing the model an image (Churro's
-    ``ensure_rgb``), so that conversion has to be executed here and recorded in
-    the transform -- left to the engine it would happen server-side,
-    unrecorded, breaking ARCHITECTURE invariant 3.
+    ``ensure_rgb``, Chandra's own ``convert("RGB")``), so that conversion has
+    to be executed here and recorded in the transform -- left to the engine it
+    would happen server-side, unrecorded, breaking ARCHITECTURE invariant 3.
 
-    It is exactly ``Image.convert("RGB")``, the whole body of both vendors' own
-    step, so the samples produced are the samples the vendor's model is given.
+    It is exactly ``Image.convert("RGB")``, the whole body of both Chandra's
+    and Churro's own step, so the samples produced are the samples the
+    vendor's model is given.
 
     An alpha channel is dropped, not refused or composited, because that is
-    the path both vendors take; refusing it would leave a page the door
+    the path both Chandra and Churro take; refusing it would leave a page the door
     legitimately admitted (``LA``/``RGBA``) with no legal presentation at all.
     The drop is recorded: the presentation names ``colour_mode: "rgb"``, and
     the alpha samples stay in the sealed page untouched.

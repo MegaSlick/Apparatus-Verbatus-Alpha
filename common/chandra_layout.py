@@ -44,8 +44,8 @@ grammar, `chandra/settings.py` for `BBOX_SCALE`.
 * **Character data outside every top-level block is counted and named**
   (`content-outside-blocks`), since the vendor's `recursive=False` scan does
   not see it and it would otherwise be a missed act under a clean parse. Only
-  the character count is published, not the text, matching how
-  `malformed-bbox` quotes under a bound.
+  the character count is published, not the text -- unlike `malformed-bbox`,
+  which quotes the offending text under a bound.
 * **The returned block count is reconciled against a second, independent scan**
   of top-level `<div>`s (`_count_top_level_divs`), so a block lost to
   unbalanced markup shows up as `block-count-mismatch` rather than silently.
@@ -418,7 +418,7 @@ def _quoted(value: str | None) -> dict[str, Any]:
 # one, a model writing a component thousands of digits long reaches `int()`
 # below and CPython's own integer-string-conversion limit turns that into an
 # unhandled `ValueError` that crashes the Designator instead of producing this
-# function's named refusal (G13, "huge integer").
+# function's named refusal.
 _MAX_BBOX_COMPONENT_DIGITS: Final = 16
 _BBOX_COMPONENT: Final = re.compile(rf"[+-]?[0-9]{{1,{_MAX_BBOX_COMPONENT_DIGITS}}}")
 
@@ -461,7 +461,7 @@ def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | Non
     # integer-string limit, which is the only way this call can raise. A guard
     # here would be code no test can reach, implying a failure mode the regex
     # has already removed; the bound above is what keeps that true, and the
-    # regression test measures it (G13).
+    # regression test measures it.
     box = [int(part) for part in parts]
     if not all(0 <= component <= BBOX_SCALE for component in box):
         return None, f"components outside [0, {BBOX_SCALE}]"

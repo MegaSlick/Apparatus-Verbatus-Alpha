@@ -1,4 +1,4 @@
-"""R4 alignment: markup loss is visible and bounded failures are records."""
+"""Alignment: markup loss is visible and bounded failures are records."""
 
 import signal
 import time
@@ -101,7 +101,7 @@ def test_an_ampersand_terminated_far_past_any_entity_stays_a_literal_ampersand()
     assert view["loss"]["markup_characters"] == 0
 
 
-# --- BREAKER battery -----------------------------------------------------
+# --- Adversarial offset-map battery ---------------------------------------
 
 
 def test_markup_that_decodes_to_the_same_text_keeps_independent_raw_offsets():
@@ -459,18 +459,18 @@ def test_a_shared_act_opening_attaches_to_the_act_the_witness_actually_read():
 
 @pytest.mark.full
 def test_the_page_that_set_the_deadline_still_aligns_under_the_sealed_limits():
-    """Hostile review C: the workload that decided `timeout_seconds`, run
-    against the sealed value, so lowering that value goes red here.
+    """The workload that decided `timeout_seconds`, run against the sealed
+    value, so lowering that value goes red here.
 
     A fired deadline is `unaligned`, an unaligned page witness is not
     `comparable`, and an incomparable chair leaves the act's witness floor -- so
     a comparison that is merely slow is recorded as coverage that is missing
-    (goal 2). The input below is what made five seconds too short: 7,500
-    characters of register prose whose acts repeat one formula verbatim, which
-    is what a scribe copying one form actually produces, and which is the shape
-    Ratcliff-Obershelp works hardest on. It measures 10.1 s. Under the five
-    seconds this config used to carry it came back `unaligned`, and a page that
-    had been read perfectly well was recorded as an act nobody corroborated.
+    (goal 2). The input below is 7,500 characters of register prose whose acts
+    repeat one formula verbatim, which is what a scribe copying one form
+    actually produces, and which is the shape Ratcliff-Obershelp works hardest
+    on. It measures 10.1 s: under a shorter deadline it came back `unaligned`,
+    and a page that had been read perfectly well was recorded as an act nobody
+    corroborated.
 
     The bar is the sealed deadline itself, not a fraction of it derived here:
     the claim is "this page aligns under the shipped limits", and a second
@@ -634,9 +634,9 @@ def test_starter_starter_composition_yields_honest_none_offsets_never_shifted_on
     assert view["offset_map"] == [None]
 
 
-# --- bracket_marker_view (U6): removes exactly the RecordGold uncertainty
-# markers, offset-mapped so a span found in the stripped text still resolves
-# back to the raw ink it came from.
+# --- bracket_marker_view: removes exactly the RecordGold uncertainty markers,
+# offset-mapped so a span found in the stripped text still resolves back to
+# the raw ink it came from.
 
 
 def test_bracket_marker_view_removes_both_markers_and_keeps_offsets_pointing_at_raw():

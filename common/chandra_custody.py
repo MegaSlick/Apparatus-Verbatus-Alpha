@@ -5,7 +5,9 @@ independently-supplied, individually-valid references are not proof they came
 from the same Chandra call. `retain_chandra_response` writes a small
 content-addressed custody record naming exactly the receipt and response it
 was given; `read_retained_chandra_response` requires that record back and
-refuses a response paired with any other receipt. Both ends validate the
+refuses a response paired with any other receipt. The receipt is already
+published by the time a response is retained, so this only ever binds a
+response to a receipt that exists. Both ends validate the
 receipt through the same `_validated_designator_receipt`, so they cannot drift
 on what "the Chandra receipt" means, and the writer cannot seal a binding its
 own reader would refuse.
@@ -82,8 +84,8 @@ def retain_chandra_response(
     _validated_designator_receipt(tree, receipt)
     # Bindings and responses share one blob namespace, so a response that *is*
     # a canonical binding could otherwise be read back as proof of a pairing
-    # nothing recorded. Refusing it means no binding this module accepts came
-    # from anywhere but its own writer below.
+    # nothing recorded. Refusing it holds this module's own writer to that;
+    # it does not bind a caller who writes blobs through the tree directly.
     if _is_custody_binding(response):
         raise SchemaRefusal("Chandra raw response is itself a custody binding record")
     digest, published = tree.put_blob(DESIGNATOR, response)
@@ -119,7 +121,7 @@ def read_retained_chandra_response(
     page_id: str,
     page_ordinal: int,
 ) -> bytes:
-    """R3's intake boundary: forged, mismatched, or tampered references are refused."""
+    """Forged, mismatched, or tampered references are refused."""
     _page_identity(page_id, page_ordinal)
     response = custody_reference(response_ref, RESPONSE_BLOB_PREFIX, "Chandra response reference")
     receipt = custody_reference(receipt_ref, _RECEIPT_PREFIX, "Chandra receipt reference")
@@ -133,7 +135,7 @@ def read_retained_chandra_response(
         recorded = json.loads(binding_bytes.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError) as error:
         # `RecursionError` because nesting, not length, is what breaks the JSON
-        # parser (G13); uncaught it would escape this boundary's named refusal.
+        # parser; uncaught it would escape this boundary's named refusal.
         raise SchemaRefusal(f"Chandra custody binding is not valid JSON: {error}") from error
     if not isinstance(recorded, dict) or set(recorded) != _BINDING_FIELDS:
         raise SchemaRefusal("Chandra custody binding is not its closed schema")

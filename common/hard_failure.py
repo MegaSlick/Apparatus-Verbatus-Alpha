@@ -22,6 +22,8 @@ DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
 )
 
 # Two continues as an early warning, the third stops; not tunable by config.
+# The project lead's own ruling (quoted in full in config/hard_failure.toml),
+# not a value this session may change.
 RULED_THRESHOLD: Final = 2
 # A policy is bounded operator declaration, not a corpus payload: a
 # caller-selected file must not turn one checkpoint into unbounded memory or

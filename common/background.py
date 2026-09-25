@@ -53,8 +53,8 @@ class BackgroundInferenceRefusal(ContractError):
     apart from a corrupt decode. A page this is raised for is still cut and
     still read -- it changes how the page is cut, never whether it is -- but it
     ends this stage's ink measurement for that page: substituting a stand-in
-    divider (the page's own mean, as `run.py` once did) is a guess wearing a
-    measurement's name, which principle 8 forbids.
+    divider (the page's own mean) is a guess wearing a measurement's name,
+    which principle 8 forbids.
     """
 
 
@@ -83,10 +83,12 @@ def _derived_ink_margin(paper: int, dark_mode: int, ink_margin_bp: int) -> int:
     the distance between the two modes is the missing scale, large on a
     photograph with a black surround and small on a flat page.
 
-    Floored at `PRIMARY_MARGIN`: below a 60-grey-level gap between the two
-    modes the page has too little separation to derive a margin from, and the
-    floor holds those pages at their pre-existing behaviour, keeping the change
-    monotone (no page's threshold ever rises).
+    Floored at `PRIMARY_MARGIN`: below a gap between the two modes that the
+    floor divides to less than the floor itself -- 60 grey levels, only at the
+    sealed `ink_margin_bp = 3333` -- the page has too little separation to
+    derive a margin from, and the floor holds those pages at their
+    pre-existing behaviour, keeping the change monotone (no page's threshold
+    ever rises).
 
     What this cannot do: a frame holding two leaves lit differently has two
     dominant paper populations, and this places the threshold for only one --
@@ -169,6 +171,7 @@ class BackgroundEvidence(TypedDict):
 # The two `source` values `infer_background_evidence` can return; a page that
 # reaches neither raises `BackgroundInferenceRefusal` instead. Spelled here
 # rather than translated in `run.py`, which publishes them as `background_source`.
+# Neither string may be renamed: existing records carry it as published.
 BACKGROUND_SOURCE_MODAL: Final = "inferred-modal"
 BACKGROUND_SOURCE_INTERIOR_MODE: Final = "inferred-interior-mode"
 
@@ -185,9 +188,10 @@ def _dark_distribution(
 ) -> DarkDistributionEvidence | None:
     """Measure this page's dark distribution for the interior-mode branch.
 
-    The interior sample distinguishes the photographed pages and refusing
-    controls measured below. It does not establish a physical frame: a spatially
-    uniform mixture with 40% dark pixels also passes the existing interior bound.
+    The interior sample distinguishes the photographed pages from the refusing
+    controls measured in the sealed policy's own calibration caveat. It does
+    not establish a physical frame: a spatially uniform mixture with 40% dark
+    pixels also passes the existing interior bound.
     The border sample is reported but imposes no enrichment requirement.
 
     The level is the integer midpoint between the dark and light population
@@ -271,7 +275,7 @@ def infer_background_evidence(
 
     The majority-ink test alone is also wrong for a photograph, measured on 7
     of 7 real proxies: a black surround (18-26% of the frame) makes pure black
-    the modal pixel even though the paper itself is unambiguously the 180-240
+    the modal pixel even though the paper itself measures in the 180-240
     band, so every one of those pages was refused and fell back to a blind,
     unreconciled crop. The repair, `_dark_distribution`, measures the interior
     dark fraction and, if it is within the sealed limit, takes the modal pixel
@@ -296,16 +300,19 @@ def infer_background_evidence(
 
     Two shapes are known to be wrong and neither is caught, recorded rather
     than repaired: a surround within ~15 grey levels of the paper is inferred
-    as the paper (pinned by a synthetic test that asserts the wrong answer so
-    it cannot change unnoticed); and a frame holding two differently-lit
+    as the paper (pinned by
+    `test_a_light_surround_close_to_the_paper_tone_is_not_caught_and_that_is_recorded`,
+    which asserts the wrong answer so it cannot change unnoticed); and a frame
+    holding two differently-lit
     leaves gets one paper value, so the darker leaf reads as ink edge to edge
     (found on real material, proxy `da9e07ec...`; `_derived_ink_margin` can
     only place a threshold for one dominant population). A per-region
     background is the repair, and a different unit.
 
     Conservation separately reconciles at the more sensitive, non-derived
-    `SECONDARY_MARGIN`; a page that guard refuses is likewise still cut and
-    read, and holds the run rather than reporting an unmade measurement.
+    `SECONDARY_MARGIN`; a page `_ink_threshold` refuses at that margin is
+    likewise still cut and read, and holds the run rather than reporting an
+    unmade measurement.
     """
     if width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to infer a background from")
@@ -326,7 +333,8 @@ def infer_background_evidence(
     # value at or above the mean is the paper population's peak (measured on
     # the whole page since a photographed surround is entirely below the
     # mean), and its mirror below the mean is the dark population's peak. On
-    # the plain modal branch `paper` and `background` are the same value.
+    # the plain modal branch `paper` and `background` are the same value,
+    # asserted by `test_the_paper_mode_and_the_modal_background_are_one_value_on_that_branch`.
     paper = max(range(mean, 256), key=lambda value: histogram[value])
     dark_mode = max(range(0, mean + 1), key=lambda value: histogram[value])
     ink_margin = _derived_ink_margin(paper, dark_mode, background_policy["ink_margin_bp"])

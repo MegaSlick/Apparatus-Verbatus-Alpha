@@ -8,8 +8,9 @@ report that pixel population as ordinary outside-coverage ink.
 
 The audit re-derives that component rather than reading the Designator's
 record: it labels the same page at the same derived margin under the same
-sealed `gap_tolerance_px`, so it reaches the identical component from the
-identical bytes without trusting the stage it audits. What stays the audit's
+sealed `gap_tolerance_px` and `page_spanning_area_bp`, so it reaches the
+identical component from the identical bytes without trusting the stage it
+audits. What stays the audit's
 own is the contrast it *counts* ink at, which is the half of the instrument
 that makes it a second opinion rather than a restatement -- measured on 44 real
 pages, using the audit's own looser ink set for the margin instead merges the
@@ -119,7 +120,7 @@ def ink_runs_by_row(pixels) -> dict[int, list[tuple[int, int]]]:
     `>` rather than `!=`, because the declared input is a set but a caller is
     not owed a crash for handing the same pixel twice, and because the tests
     drive orderings other than a set's through here. Both halves are pinned:
-    `test_component_order_is_total_not_merely_by_origin` drives every
+    `test_two_components_sharing_a_top_left_origin_still_sort_deterministically` drives every
     permutation of one page's pixels as an ordered `dict.keys()` view, and
     `test_a_repeated_pixel_is_tolerated_rather_than_split_into_two_runs` hands
     this function a list with duplicates in it.
@@ -168,9 +169,9 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     comparing the two implementations directly on every page shape.
 
     The technique is `conservation._components`', written beside it rather
-    than imported, since `conservation.py` imports from this module and the
-    reverse would be circular; `test_conservation.py` compares both against
-    `label_components_reference`, the pixel-set definition they answer to.
+    than imported, since `common/` may not import a stage; `test_conservation.py`
+    compares both against `label_components_reference`, the pixel-set
+    definition they answer to.
     """
     return [
         component

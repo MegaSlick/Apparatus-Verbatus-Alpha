@@ -27,9 +27,12 @@ vendor's own functions against these ports over that table.
 
 **Departures, deliberate.** Each vendor function takes and returns a Pillow
 image; these take and return dimensions, since resampling is
-``imaging.resize_png_lanczos``'s job. Each vendor also silently passes through
-a non-positive side; a sealed page never has one, so both ports refuse it
-instead of reproducing that silent pass-through.
+``imaging.resize_png_lanczos``'s job. Each vendor function also has an early
+return that is not a scaling decision -- Chandra returns the image untouched
+when a side is not positive, Churro's caller never reaches it with one -- and
+rather than reproduce a silent pass-through of an impossible page, both ports
+refuse a non-positive side instead; a sealed page always has two positive
+sides, so no admitted input takes a different path than the vendor's.
 """
 
 from __future__ import annotations

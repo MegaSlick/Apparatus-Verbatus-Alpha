@@ -22,7 +22,8 @@ user text; the image is the whole user turn):
   errors ("entiretly", "documents") are part of the bytes that harness
   actually sent and are carried unaltered; the same release's CLI default
   spells both correctly, so these are two named variants rather than one
-  string with an unattributable typo.
+  string with an unattributable typo. Which variant the fine-tuning itself
+  saw is stated nowhere in the vendor's release; this module does not guess.
 
 Churro's code is Apache-2.0, so carrying these strings is permitted; the
 weights are under the Qwen research licence and are never vendored. The

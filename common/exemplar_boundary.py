@@ -36,10 +36,10 @@ from common.imaging import (
 )
 from common.runtree.store import RunTree
 
-# The one name for a triage derivative's kind. The Door writes it, this boundary
-# and the Exemplar stage read it, and each of the three used to spell it out
-# separately; a producer and its two consumers agreeing by coincidence is what
-# `is_triage_derivative_contract` below exists to stop.
+# The one name for a triage derivative's kind. The Door writes it, and this
+# boundary and the Exemplar stage read it; a producer and its two consumers
+# agreeing by coincidence is what `is_triage_derivative_contract` below exists
+# to stop.
 SEALED_DERIVATIVE_PAGE_KIND: Final = "sealed-derivative-page-v1"
 
 
@@ -88,11 +88,10 @@ def verify_sealed_page_pixels(
     if not _is_sha256(source_digest):
         raise ContractError("a sealed Exemplar page has no lowercase pixel sha256")
     rendered = payload.get("rendered_from")
-    # `_page_origin` is the stricter of the two derivations that met here: it
-    # type-checks every render field rather than only closing the key set. The
-    # try/except is the other branch's contribution and is kept, so a malformed
-    # origin that survives validation still becomes a named refusal rather than a
-    # raw TypeError or RecursionError out of the identity derivation.
+    # `_page_origin` type-checks every render field rather than only closing
+    # the key set; the try/except below is kept so a malformed origin that
+    # survives validation still becomes a named refusal rather than a raw
+    # TypeError or RecursionError out of the identity derivation.
     origin = _page_origin(source_digest, rendered)
     try:
         expected_page_id = page_id(origin, {"operation": "whole"})
@@ -578,7 +577,9 @@ def _verify_act_identity_binding(
     The proposal seal (`common/stage.py`'s `expected_acts`) is emitted once,
     never rewritten, so a region's `act_key` must name exactly one seal entry,
     and that entry's own `act_id`, not the region's self-reported one, is what
-    `subject_id` must equal.
+    `subject_id` must equal. Proposal evidence is checked here too, so this
+    function does not depend on a caller first running the broader
+    proposal-seal reconciliation.
     """
     subject_id = region.get("subject_id")
     act_key = payload.get("act_key")
@@ -630,7 +631,9 @@ def _refuse_a_merged_page_no_consumer_reads_yet(records: dict[int, dict[str, Any
     not the other: a triage-declared frame binds identity to its admitted
     derivative, so two sources with different bytes and identical derivatives
     still arrive here. This guards the sealed shape itself, on its own merits,
-    regardless of which route produced it.
+    regardless of which route produced it. The refusal message below still
+    names "identical bytes" -- the shape it describes, not a precondition of
+    this check, since the derivative route reaches it too.
     """
     for ordinal, record in records.items():
         if record.get("outcome") != "sealed":

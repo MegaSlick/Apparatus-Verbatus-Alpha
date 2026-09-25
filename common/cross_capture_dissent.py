@@ -104,9 +104,10 @@ def _stable_id(value: Any, label: str) -> str:
 def _refuse_scalar_claim_keys(value: Any) -> None:
     # Iterative and cycle-aware like its sibling screens (corpus_register,
     # autopsia, partition): untrusted caller input, so depth is this walk's
-    # own list, never the interpreter stack, and only containers open on the
-    # current path are tracked so a self-referential value is refused rather
-    # than looped on forever.
+    # own list, never the interpreter stack. Only containers open on the
+    # current path are tracked, so a shared sub-record reachable by more than
+    # one path is still allowed; refusing a genuine cycle instead of looping
+    # forever comes from tracking the open path at all.
     pending: list[tuple[str, Any]] = [("value", value)]
     open_path: set[int] = set()
     while pending:

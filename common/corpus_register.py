@@ -24,7 +24,8 @@ The chain is verified on read: a reader replays it, so a membership record
 removed or reordered mid-register breaks every successor's predecessor
 digest. Replay alone cannot see truncation of the newest link, since the
 register carries no external head; `run.json`'s `register_digest` is that
-anchor.
+anchor, and catching a truncation needs comparing it against an earlier run's
+own recorded digest, not just replaying the register in hand.
 """
 
 import json
@@ -233,7 +234,7 @@ def _register_lock(path: Path) -> Iterator[None]:
 
 
 def _read_register_path(path: Path, *, missing_ok: bool) -> bytes:
-    """HEAD-era entry point: bounded bytes, absent register optional."""
+    """Read the register's bytes: bounded, with an absent register optional."""
     try:
         return _read_register_path_with_identity(path)[0]
     except FileNotFoundError:
@@ -620,10 +621,10 @@ def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> N
                 )
             pending.extend(("value", item) for item in current.values())
         elif isinstance(current, (list, tuple)):
-            # F085: `canonical_bytes` serializes a tuple exactly like a list, so
-            # a preference field wrapped in one reached a sealed artifact
-            # looking like an ordinary array member unless this walk also
-            # descends into it.
+            # `canonical_bytes` serializes a tuple exactly like a list, so a
+            # preference field wrapped in one reached a sealed artifact looking
+            # like an ordinary array member unless this walk also descends
+            # into it.
             pending.extend(("value", item) for item in current)
 
 

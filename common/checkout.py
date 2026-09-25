@@ -7,7 +7,8 @@ installed package's. Refusing early states that in one sentence, before a run
 begins, instead of meeting a missing-file error part way through.
 
 `gold/` is deliberately not among the directories checked below: it is real
-comparison material, not required to start.
+comparison material, not required to start, and the repair for a wheel that
+lacks it is not to package private material into the wheel to make it import.
 """
 
 from __future__ import annotations
