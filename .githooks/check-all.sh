@@ -44,8 +44,8 @@ PYTHONSAFEPATH=1
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 export PYTHONNOUSERSITE PYTHONSAFEPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD
 
-# The offline sync runs before `.venv`'s interpreter executes anything; only then
-# does the prefix check reject a PATH shadow.
+# `.venv`'s interpreter runs once before the offline sync, to read the uv version with
+# stdlib tomllib only (no third-party import); the prefix check follows the sync.
 frozen_python="$root/.venv/bin/python"
 UV_PROJECT_ENVIRONMENT="$root/.venv"
 export UV_PROJECT_ENVIRONMENT
@@ -150,7 +150,8 @@ esac
 }
 
 # Compare the resolved sys.prefix, not sys.executable (possibly a PATH symlink), so a
-# `.venv` symlink to the same environment passes. The interpreter's first run: after uv.
+# `.venv` symlink to the same environment passes. Its first run past the stdlib-only
+# version read, so no package imports before uv reconciled them.
 [ "$("$frozen_python" -c 'import os, sys; print(os.path.realpath(sys.prefix))')" \
   = "$(CDPATH='' cd -- "$root/.venv" && pwd -P)" ] || {
   echo "check-all: $frozen_python does not import from the frozen environment at $root/.venv; run 'uv sync --frozen --group test --group audit'" >&2
@@ -195,7 +196,8 @@ fi
 # Audit the exact installed inventory: `--requirement` on requirements-dev.txt would
 # re-resolve transitives and could audit a newer release than uv.lock installed. The
 # editable local project has no PyPI identity. `--strict`: an audit that could not run
-# is not evidence. Last, so network trouble never stops the scans or suites.
+# is not evidence. `--no-deps --disable-pip`: consume the pins, resolve and install
+# nothing. Last, so network trouble never stops the scans or suites.
 audit_directory=$(mktemp -d "/tmp/verbatus-frozen-audit.XXXXXX") || {
   echo "check-all: could not create the private frozen audit directory" >&2
   exit 1

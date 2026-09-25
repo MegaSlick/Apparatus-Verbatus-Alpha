@@ -124,7 +124,9 @@ SECRET_PATTERNS = (
 
 # (path, rule, full sha256) triples exempting one exact byte sequence at one exact path;
 # full digests keep the 12-character display fingerprints out of the trust boundary.
-# Empty by intent: an entry must arrive with its reason and fail the scan when removed.
+# The same bytes at any other path stay blocked. Empty by intent: a digest-stored
+# exemption cannot be audited back to its string, so an entry must arrive with its
+# reason and fail the scan when removed.
 DECLARED_SECRET_FIXTURES = frozenset()
 
 # A vendor prefix joined by `_`, `-` or `.` is allowed (`aws_secret_access_key` has no
@@ -174,7 +176,8 @@ def measured_read(path: Path, max_bytes: int | None) -> tuple[int, bytes | None]
     O_NONBLOCK and fstat on the opened descriptor: a FIFO would block a plain open
     forever (hanging pre-commit or CI), a swap after a name check is closed, a device
     that reads cleanly is refused, and a file that grows cannot slip bytes past the
-    size decision. An oversize file is never pulled into memory.
+    size decision. The memory bound applies to the measured size: a file over
+    `max_bytes` is never read, though one within it is read to EOF.
     """
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     try:
@@ -237,8 +240,8 @@ def git(*args: str) -> bytes:
     return result.stdout
 
 
-# Payloads are bounded by bytes, not entries: an entry count thrashes on many tiny
-# reused blobs and overcommits on large ones.
+# blob_size's unbounded cache holds one integer per object. Payloads are bounded by
+# bytes, not entries: a count thrashes on tiny reused blobs, overcommits on large ones.
 BLOB_CACHE_MAX_BYTES = 64 * 1_048_576
 
 
@@ -465,6 +468,9 @@ def secret_issues(path: str, data: bytes, context: str) -> list[Issue]:
     return issues
 
 
+_FIXTURE_FIELDS = ("path", "sha256", "bytes", "media_type", "source", "reason")
+
+
 def parse_manifest(
     entries: dict[str, Blob], context: str
 ) -> tuple[dict[str, Fixture], list[Issue]]:
@@ -490,11 +496,15 @@ def parse_manifest(
         if problem:
             issues.append(Issue(MANIFEST_PATH, "manifest", problem, context))
         else:
-            fixtures[raw["path"]] = Fixture(*(raw[key] for key in _FIXTURE_FIELDS))
+            fixtures[raw["path"]] = Fixture(
+                path=raw["path"],
+                sha256=raw["sha256"],
+                size=raw["bytes"],
+                media_type=raw["media_type"],
+                source=raw["source"],
+                reason=raw["reason"],
+            )
     return fixtures, issues
-
-
-_FIXTURE_FIELDS = ("path", "sha256", "bytes", "media_type", "source", "reason")
 
 
 def _fixture_entry_problem(raw, label: str, fixtures: dict[str, Fixture]) -> str | None:

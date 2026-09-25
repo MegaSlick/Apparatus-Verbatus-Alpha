@@ -59,7 +59,7 @@ fi
 # Exit 0 keeps the suites' delivered/NOT DELIVERED outcomes unchanged; the bridges
 # map exit 0 to delivered, so the stdout line NOTIFY_SUPPRESSED marks it.
 # A literal, not a pattern, so a mistyped real topic never silently stops notifying.
-# Printing it is safe: control reaches here only for the public constant.
+# Safe to print here and nowhere else in this script: only the public constant gets here.
 if [ "$topic" = "verbatus-test-sink" ]; then
   printf 'NOTIFY_SUPPRESSED %s\n' "$topic"
   echo "notify: test sink — not sent ($event): $message" >&2
@@ -71,8 +71,9 @@ fi
 stamp="$root/private/.notify-start-stamp"
 suppress_window_s=900
 
-# The stamp is evidence of delivery: trust only a regular file, never a symlink (which
-# would also redirect the write out of private/), holding a past epoch second.
+# The stamp is evidence of delivery: trust only a regular file holding a past epoch
+# second. Unlike the config, it is also written, so a symlink would redirect the write
+# out of private/. It records a clock reading only; the topic never enters it.
 # `find -mmin` once accepted directories, FIFOs, symlinks and future dates. Every
 # refusal sends the ping: a duplicate is cheaper than a start nobody hears about.
 stamp_is_plain_file() {

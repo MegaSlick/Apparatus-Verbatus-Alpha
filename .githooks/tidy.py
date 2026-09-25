@@ -2,6 +2,8 @@
 """Report on the state of workbench/ for session start and end. Changes nothing:
 only the session that did the work can say which notes are finished.
 
+    python3 .githooks/tidy.py
+
 Exit 0: nothing wants attention; 1: the report has something in it (the ordinary
 case); 2: the check itself broke, which a caller must never read as a pass.
 """

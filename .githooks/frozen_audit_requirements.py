@@ -14,7 +14,8 @@ from importlib.metadata import distributions
 
 PROJECT_DISTRIBUTION = "verbatus"
 """Excluded: it has no PyPI identity. Must match pyproject.toml's `project.name`, or
-pip_audit --strict fails obscurely; this helper may not depend on the checkout layout."""
+pip_audit --strict fails obscurely. Not read from there: this helper is stdlib-only and
+may not depend on the checkout layout."""
 NAME = re.compile(r"[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*")
 VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.!+_-]*")
 
