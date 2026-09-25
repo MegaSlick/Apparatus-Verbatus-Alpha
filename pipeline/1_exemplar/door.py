@@ -152,6 +152,18 @@ class _Decision(NamedTuple):
     rendered_from: dict[str, Any] | None = None
 
 
+def _refused(reason: str | None, digest: str | None = None) -> _Decision:
+    return _Decision("refused", reason, digest, None, None)
+
+
+def _refused_for(code: RefusalReason, detail: str, digest: str | None = None) -> _Decision:
+    return _refused(admission.reason(code, detail), digest)
+
+
+def _format_refused(error: FormatRefusal) -> _Decision:
+    return _refused_for(admission._refusal_code(error), str(error))
+
+
 DOOR_REFUSAL_REPORT_SCHEMA: Final = "door-refusal-report.v0"
 DOOR_REFUSAL_REPORT_SUBJECT: Final = "refusal-report"
 DOOR_DUPLICATE_REPORT_SCHEMA: Final = "door-duplicate-report.v0"
@@ -477,15 +489,10 @@ def decide(
         whole_digest = source_digest or digest_bytes(data)
     verdict = admission.classify_detected_format(detected, policy)
     if source.declared_sha256 is not None and whole_digest != source.declared_sha256:
-        return _Decision(
-            "refused",
-            admission.reason(
-                RefusalReason.DIGEST_MISMATCH,
-                f"computed {whole_digest}, but {source.declared_sha256} was declared",
-            ),
+        return _refused_for(
+            RefusalReason.DIGEST_MISMATCH,
+            f"computed {whole_digest}, but {source.declared_sha256} was declared",
             whole_digest,
-            None,
-            None,
         )
     if source.triage_row is not None:
         if data is None or source.triage_part_index is None:
@@ -505,29 +512,11 @@ def decide(
             part = source.triage_row["split"]["parts"][source.triage_part_index]
             page_bytes, _geometry, contract = render_raster_page(data, frame_index, part)
         except triage_manifest.SchemaRefusal as error:
-            return _Decision(
-                "refused",
-                admission.reason(RefusalReason.DIGEST_MISMATCH, str(error)),
-                None,
-                None,
-                None,
-            )
+            return _refused_for(RefusalReason.DIGEST_MISMATCH, str(error))
         except FormatRefusal as error:
-            return _Decision(
-                "refused",
-                admission.reason(admission._refusal_code(error), str(error)),
-                None,
-                None,
-                None,
-            )
+            return _format_refused(error)
         except ContractError as error:
-            return _Decision(
-                "refused",
-                admission.reason(RefusalReason.CORRUPT, str(error)),
-                None,
-                None,
-                None,
-            )
+            return _refused_for(RefusalReason.CORRUPT, str(error))
         backlink = triage_manifest.derivative_page_backlink(
             source.triage_row, source.triage_part_index
         )
@@ -564,22 +553,17 @@ def decide(
         }
         checked = admission.inspect_source(page_bytes, declared_sha256=None, policy=policy)
         if checked.outcome != "admitted":
-            return _Decision("refused", checked.reason, None, None, None)
+            return _refused(checked.reason)
         return _Decision(
             "admitted", None, checked.digest, page_bytes, checked.geometry, rendered_from
         )
 
     if source.container_page_index is None:
         if verdict == admission.RENDER_PAGES:
-            return _Decision(
-                "refused",
-                admission.reason(
-                    RefusalReason.UNSUPPORTED_VARIANT,
-                    "a page container must be declared with a page index; this one carries none",
-                ),
+            return _refused_for(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                "a page container must be declared with a page index; this one carries none",
                 whole_digest,
-                None,
-                None,
             )
         if data is None:
             raise ValueError("only a PDF container may be decided without its bytes")
@@ -629,27 +613,14 @@ def decide(
                 "render_contract": contract,
             }
     except pdf_render.PdfRefusal as error:
-        return _Decision("refused", str(error), None, None, None)
+        return _refused(str(error))
     except FormatRefusal as error:
-        return _Decision(
-            "refused",
-            admission.reason(admission._refusal_code(error), str(error)),
-            None,
-            None,
-            None,
-        )
+        return _format_refused(error)
 
     checked = admission.inspect_source(page_bytes, declared_sha256=None, policy=policy)
     if checked.outcome != "admitted":
-        return _Decision(
-            "refused",
-            admission.reason(
-                RefusalReason.CORRUPT,
-                f"the rendered page did not itself admit: {checked.reason}",
-            ),
-            None,
-            None,
-            None,
+        return _refused_for(
+            RefusalReason.CORRUPT, f"the rendered page did not itself admit: {checked.reason}"
         )
     return _Decision("admitted", None, checked.digest, page_bytes, checked.geometry, rendered_from)
 
@@ -1161,17 +1132,11 @@ def process_sources(
                         active_pdf_document = pdf_render.open_document(active_opened_source.handle)
                     opened_pdf = active_pdf_document
                 except pdf_render.PdfRefusal as error:
-                    decision = _Decision("refused", str(error), None, None, None)
+                    decision = _refused(str(error))
                 except (OSError, inventory.SubmissionInputError) as error:
                     # Per-file: a descriptor lost here refuses this source, not
                     # every source after it.
-                    decision = _Decision(
-                        "refused",
-                        admission.reason(RefusalReason.UNREADABLE, str(error)),
-                        None,
-                        None,
-                        None,
-                    )
+                    decision = _refused_for(RefusalReason.UNREADABLE, str(error))
                 else:
                     decision = decide(
                         None,
