@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Final, Mapping, Protocol
+from typing import Any, Callable, Final, Mapping, NoReturn, Protocol
 
 from common.chairs.errors import ChairRefusal, UnresolvedChairRefusal
 from common.chairs.models import (
@@ -583,14 +583,13 @@ class ServingManager:
         assert_no_discoverable_local_env()
         if self._active is not None or self._residency_handle is not None:
             # Not failed-launch cleanup: the held lease records an unverified shutdown.
-            self._refuse(
+            self._refuse_start(
                 identity,
                 ServingConfigurationError(
                     "a serving process is still resident or its shutdown is not verified; "
                     "stop and verify it before starting another chair"
                 ),
             )
-            raise AssertionError("registry refusal returned unexpectedly")  # pragma: no cover
 
         process: ServerProcess | None = None
         endpoint = ""
@@ -705,21 +704,15 @@ class ServingManager:
                 self._refuse(identity, error, also=cleanup_error)
             raise
         except ServingError as error:
-            self._refuse(identity, error, also=self._attempt_cleanup(process, endpoint))
-            raise AssertionError(
-                "registry refusal returned unexpectedly"
-            ) from error  # pragma: no cover
+            self._refuse_start(identity, error, also=self._attempt_cleanup(process, endpoint))
         except Exception as error:
-            self._refuse(
+            self._refuse_start(
                 identity,
                 ProcessLaunchError(
                     f"unexpected serving start failure: {type(error).__name__}: {error}"
                 ),
                 also=self._attempt_cleanup(process, endpoint),
             )
-            raise AssertionError(
-                "registry refusal returned unexpectedly"
-            ) from error  # pragma: no cover
         except BaseException as error:
             # An interrupt must not strand a child. If cleanup is verified, the
             # interrupt is re-raised unchanged. If not, a possibly resident child
@@ -1291,6 +1284,16 @@ class ServingManager:
     def _require_active(self, handle: ServiceHandle) -> None:
         if self._active is not handle:
             raise ServiceStopError("service handle is not this manager's active owned service")
+
+    def _refuse_start(
+        self,
+        identity: ChairIdentity,
+        error: BaseException,
+        *,
+        also: BaseException | None = None,
+    ) -> NoReturn:
+        self._refuse(identity, error, also=also)
+        raise AssertionError("registry refusal returned unexpectedly")  # pragma: no cover
 
     def _refuse(
         self,
