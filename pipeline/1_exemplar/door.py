@@ -1278,22 +1278,16 @@ def publish_refusal_report(context: StageContext) -> str | None:
         # Parse the closed code so a producer bug cannot pass as free text.
         admission.reason_code(refusal)
         rows.append({"ordinal": ordinal, "declared_path": path, "reason": refusal})
-        inputs.append({"relative_path": entry["relative_path"], "sha256": entry["sha256"]})
+        inputs.append(_entry_ref(entry))
     if not rows:
         return None
-    payload: dict[str, Any] = {
+    payload = {
         "schema": DOOR_REFUSAL_REPORT_SCHEMA,
         "refusals": sorted(rows, key=lambda row: row["ordinal"]),
     }
-    payload["self_hash"] = self_hash(payload)
-    published = context.publish(
-        kind="refusal-report",
-        subject_id=DOOR_REFUSAL_REPORT_SUBJECT,
-        outcome="refused",
-        inputs=inputs,
-        payload=payload,
+    return _publish_report(
+        context, "refusal-report", DOOR_REFUSAL_REPORT_SUBJECT, "refused", inputs, payload
     )
-    return published.relative_path
 
 
 def publish_duplicate_report(context: StageContext) -> str | None:
@@ -1321,9 +1315,7 @@ def publish_duplicate_report(context: StageContext) -> str | None:
             raise ContractError(
                 "an admitted door source has no source digest for duplicate accounting"
             )
-        grouped.setdefault(source_digest, []).append(
-            (ordinal, path, {"relative_path": entry["relative_path"], "sha256": entry["sha256"]})
-        )
+        grouped.setdefault(source_digest, []).append((ordinal, path, _entry_ref(entry)))
 
     groups: list[dict[str, Any]] = []
     inputs: list[dict[str, str]] = []
@@ -1362,21 +1354,15 @@ def publish_duplicate_report(context: StageContext) -> str | None:
 
     if not groups:
         return None
-    payload: dict[str, Any] = {
+    payload = {
         "schema": DOOR_DUPLICATE_REPORT_SCHEMA,
         "duplicate_source_count": duplicate_sources,
         "duplicate_ordinal_count": duplicate_ordinals,
         "groups": groups,
     }
-    payload["self_hash"] = self_hash(payload)
-    published = context.publish(
-        kind="duplicate-report",
-        subject_id=DOOR_DUPLICATE_REPORT_SUBJECT,
-        outcome="admitted",
-        inputs=inputs,
-        payload=payload,
+    return _publish_report(
+        context, "duplicate-report", DOOR_DUPLICATE_REPORT_SUBJECT, "admitted", inputs, payload
     )
-    return published.relative_path
 
 
 def publish_cluster_report(context: StageContext) -> str | None:
@@ -1421,7 +1407,7 @@ def publish_cluster_report(context: StageContext) -> str | None:
                     "outcome": outcome,
                 }
             )
-            inputs.append({"relative_path": entry["relative_path"], "sha256": entry["sha256"]})
+            inputs.append(_entry_ref(entry))
     if not groups:
         return None
     payload = {
@@ -1444,15 +1430,38 @@ def publish_cluster_report(context: StageContext) -> str | None:
             for _cluster_id, group in sorted(groups.items())
         ],
     }
+    return _publish_report(
+        context, "re-shoot-cluster-report", "re-shoot-cluster-report", "admitted", inputs, payload
+    )
+
+
+def _entry_ref(entry: dict[str, Any]) -> dict[str, str]:
+    return {"relative_path": entry["relative_path"], "sha256": entry["sha256"]}
+
+
+def _publish_report(
+    context: StageContext,
+    kind: str,
+    subject_id: str,
+    outcome: str,
+    inputs: list[dict[str, str]],
+    payload: dict[str, Any],
+) -> str:
+    """Seal one self-hashed report and return where it was written."""
     payload["self_hash"] = self_hash(payload)
     published = context.publish(
-        kind="re-shoot-cluster-report",
-        subject_id="re-shoot-cluster-report",
-        outcome="admitted",
-        inputs=inputs,
-        payload=payload,
+        kind=kind, subject_id=subject_id, outcome=outcome, inputs=inputs, payload=payload
     )
     return published.relative_path
+
+
+def _read_duplicate_report(tree: RunTree) -> dict[str, Any]:
+    record = tree.read_artifact(
+        DOOR,
+        "duplicate-report",
+        artifact_id(DOOR, "duplicate-report", DOOR_DUPLICATE_REPORT_SUBJECT),
+    )
+    return record["payload"]
 
 
 def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) -> None:
@@ -1475,12 +1484,7 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
     """
     if duplicate_report is None:
         return
-    record = tree.read_artifact(
-        DOOR,
-        "duplicate-report",
-        artifact_id(DOOR, "duplicate-report", DOOR_DUPLICATE_REPORT_SUBJECT),
-    )
-    groups = record["payload"].get("groups")
+    groups = _read_duplicate_report(tree).get("groups")
     # The report was written moments ago, so a malformed one means the tree
     # changed underneath; refuse by name rather than with a traceback.
     if not isinstance(groups, list) or not groups:
@@ -2009,12 +2013,7 @@ def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> N
     """Count duplicate sources in the operator summary without printing filenames."""
     if duplicate_report is None:
         return
-    record = tree.read_artifact(
-        DOOR,
-        "duplicate-report",
-        artifact_id(DOOR, "duplicate-report", DOOR_DUPLICATE_REPORT_SUBJECT),
-    )
-    payload = record["payload"]
+    payload = _read_duplicate_report(tree)
     sources = payload.get("duplicate_source_count")
     ordinals = payload.get("duplicate_ordinal_count")
     if not _is_int(sources) or not _is_int(ordinals):
