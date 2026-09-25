@@ -316,25 +316,7 @@ def _read_triage_document(path: str | Path, label: str) -> tuple[bytes, Any]:
         raise ContractError(
             f"the {label} exceeds the {MAX_TRIAGE_DOCUMENT_BYTES}-byte document bound"
         )
-    before_identity = (
-        before.st_dev,
-        before.st_ino,
-        before.st_mode,
-        before.st_size,
-        before.st_mtime_ns,
-        before.st_ctime_ns,
-        before.st_nlink,
-    )
-    after_identity = (
-        after.st_dev,
-        after.st_ino,
-        after.st_mode,
-        after.st_size,
-        after.st_mtime_ns,
-        after.st_ctime_ns,
-        after.st_nlink,
-    )
-    if before_identity != after_identity:
+    if _file_identity(before) != _file_identity(after):
         raise ContractError(f"the {label} changed while it was being read")
     try:
         return raw, json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
@@ -343,6 +325,18 @@ def _read_triage_document(path: str | Path, label: str) -> tuple[bytes, Any]:
             f"the {label} is not valid UTF-8 JSON; no run was created because its decisions "
             "cannot be interpreted; export valid UTF-8 JSON and retry"
         ) from error
+
+
+def _file_identity(status: os.stat_result) -> tuple[int, ...]:
+    return (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_size,
+        status.st_mtime_ns,
+        status.st_ctime_ns,
+        status.st_nlink,
+    )
 
 
 def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -367,18 +361,12 @@ def load_triage_decisions(
     run id after a re-run triage pass is refused by name.
     """
     manifest_bytes, document = _read_triage_document(manifest_path, "triage decision manifest")
-    if clusters_path is not None:
-        clusters_bytes, clusters_document = _read_triage_document(
-            clusters_path, "triage re-shoot cluster records"
-        )
-    else:
-        clusters_bytes = clusters_document = None
-    if producer_recipe_path is not None:
-        recipe_bytes, recipe_document = _read_triage_document(
-            producer_recipe_path, "triage producer recipe"
-        )
-    else:
-        recipe_bytes = recipe_document = None
+    clusters_bytes, clusters_document = _read_optional_triage_document(
+        clusters_path, "triage re-shoot cluster records"
+    )
+    recipe_bytes, recipe_document = _read_optional_triage_document(
+        producer_recipe_path, "triage producer recipe"
+    )
     digests = {"triage-decision-manifest": digest_bytes(manifest_bytes)}
     if clusters_bytes is not None:
         digests["triage-re-shoot-clusters"] = digest_bytes(clusters_bytes)
@@ -426,37 +414,47 @@ def load_triage_decisions(
     return rows, dict(clusters or {}), digests
 
 
+def _read_optional_triage_document(
+    path: str | Path | None, label: str
+) -> tuple[bytes, Any] | tuple[None, None]:
+    return (None, None) if path is None else _read_triage_document(path, label)
+
+
+def _exceeds_triage_bound(lists: Any) -> bool:
+    """Whether the lists among ``lists`` hold more than the bound, stopping once they do."""
+    total = 0
+    for items in lists:
+        if isinstance(items, list):
+            total += len(items)
+            if total > MAX_TRIAGE_DERIVATIVE_PAGES:
+                return True
+    return False
+
+
+def _member(value: Any, key: str) -> Any:
+    return value.get(key) if isinstance(value, dict) else None
+
+
 def _refuse_triage_amplification(document: Any, clusters: Any) -> None:
     """Bound split and cluster fan-out before triage validation walks attacker-sized lists."""
     if isinstance(document, dict) and isinstance(document.get("records"), list):
-        derivative_pages = 0
-        for row in document["records"]:
-            split = row.get("split") if isinstance(row, dict) else None
-            parts = split.get("parts") if isinstance(split, dict) else None
-            if not isinstance(parts, list):
-                continue
-            derivative_pages += len(parts)
-            if derivative_pages > MAX_TRIAGE_DERIVATIVE_PAGES:
-                raise ContractError(
-                    "the triage decision manifest declares more than "
-                    f"{MAX_TRIAGE_DERIVATIVE_PAGES} derivative pages; no run was created because "
-                    "attacker-controlled split counts must be bounded before pairwise geometry "
-                    "validation and source expansion; export one configured shard and retry"
-                )
+        split_parts = (_member(_member(row, "split"), "parts") for row in document["records"])
+        if _exceeds_triage_bound(split_parts):
+            raise ContractError(
+                "the triage decision manifest declares more than "
+                f"{MAX_TRIAGE_DERIVATIVE_PAGES} derivative pages; no run was created because "
+                "attacker-controlled split counts must be bounded before pairwise geometry "
+                "validation and source expansion; export one configured shard and retry"
+            )
     if isinstance(clusters, dict):
-        member_references = 0
-        for record in clusters.values():
-            members = record.get("member_frame_sha256") if isinstance(record, dict) else None
-            if not isinstance(members, list):
-                continue
-            member_references += len(members)
-            if member_references > MAX_TRIAGE_DERIVATIVE_PAGES:
-                raise ContractError(
-                    "the triage re-shoot cluster records declare more than "
-                    f"{MAX_TRIAGE_DERIVATIVE_PAGES} member references; no run was created because "
-                    "attacker-controlled cluster counts must be bounded before set expansion; "
-                    "export only the clusters for one configured shard and retry"
-                )
+        members = (_member(record, "member_frame_sha256") for record in clusters.values())
+        if _exceeds_triage_bound(members):
+            raise ContractError(
+                "the triage re-shoot cluster records declare more than "
+                f"{MAX_TRIAGE_DERIVATIVE_PAGES} member references; no run was created because "
+                "attacker-controlled cluster counts must be bounded before set expansion; "
+                "export only the clusters for one configured shard and retry"
+            )
 
 
 def decide(
