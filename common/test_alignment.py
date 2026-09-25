@@ -38,7 +38,7 @@ def test_alignment_returns_an_explicit_unaligned_record_at_the_sealed_pair_limit
     assert result["status"] == "unaligned"
     assert result["reason"] == "character-pair-limit"
     assert result["witness"]["text"] == "alpha beta gamma"
-    # Refused before the matcher ever ran; no timer question arises (F087).
+    # Refused before the matcher ever ran; no timer question arises.
     assert result["deadline_in_force"] is False
 
 
@@ -53,20 +53,19 @@ def test_alignment_carries_matching_spans_through_markup_normalization():
     assert result["spans"] == [
         {"witness": {"start": 0, "end": 10}, "anchor": {"start": 0, "end": 10}}
     ]
-    # F087: an ordinary aligned run on this interpreter (main thread, SIGALRM
+    # An ordinary aligned run on this interpreter (main thread, SIGALRM
     # available, no timer already held) actually armed the backstop.
     posix_alarm_available = all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL"))
     assert result["deadline_in_force"] is posix_alarm_available
 
 
-# --- F-X1: the ampersand that ate the markup ---------------------------------
+# --- The ampersand that ate the markup ---------------------------------
 
 
 def test_a_literal_ampersand_does_not_swallow_the_markup_after_it():
     """`&` is ordinary ink ("Jean & Marie", "&c.") and a later `;` is ordinary
-    punctuation. Reading the pair as one entity handed every tag between them
-    back as stripped text, so dissent counted `</p><p>` as witness
-    disagreement and `loss.markup_characters` under-reported what was removed.
+    punctuation; reading the pair as one entity would hand every tag between
+    them back as stripped text.
     """
     raw = "<p>Jean & Marie</p><p>born 1688</p><i>note; here</i>"
     view = markup_text_view(raw)
@@ -211,7 +210,7 @@ def test_alignment_deadline_reports_unaligned_honestly_never_a_partial_map(monke
     assert result["reason"] == alignment_module.DEADLINE_REASON == "alignment-deadline-exceeded"
     assert "spans" not in result, "a timed-out alignment must never carry a partial spans list"
     # The backstop that fired is the one thing this record can say for certain
-    # was in force (F087).
+    # was in force.
     assert result["deadline_in_force"] is True
 
 
@@ -239,7 +238,7 @@ def test_alignment_does_not_cancel_an_unrelated_existing_alarm():
         assert result["status"] == "aligned"
         assert remaining > 0
         assert signal.getsignal(signal.SIGALRM) is unrelated_handler
-        # F087: this call could not arm its own backstop -- a timer was already
+        # This call could not arm its own backstop -- a timer was already
         # running -- so the record must say the comparison ran unbounded, even
         # though it still finished and reports `aligned`.
         assert result["deadline_in_force"] is False
@@ -289,13 +288,10 @@ def test_alignment_clears_its_alarm_and_restores_the_handler_on_an_exception(mon
     reason="requires the POSIX real-time alarm inspected by the alignment backstop",
 )
 def test_an_alarm_firing_at_the_cancellation_point_is_a_record_not_an_exception(monkeypatch):
-    """P2 review. Cancelling only in the `finally` left a real window: an alarm
-    firing after `get_matching_blocks` returned raised `_TimedOut` from inside
-    the `finally` itself, past the `except` above it, so a SUCCESSFUL alignment
-    propagated an internal exception out of a function whose whole contract is
-    to return an `unaligned` record instead. The sibling deadline in
-    `pipeline/4_perlector/dissent.py::_aligned_within_deadline` already closes
-    exactly this window.
+    """Cancelling only in the `finally` left a real window: an alarm firing
+    after `get_matching_blocks` returned would raise `_TimedOut` from inside
+    the `finally` itself, past the `except` above it, propagating an internal
+    exception out of a function whose contract is to return `unaligned`.
 
     The fire is simulated at the first cancellation, which is where the real
     signal would land. Recording `timeout` there understates a finished
@@ -388,8 +384,7 @@ def test_matched_blocks_are_strictly_ordered_and_non_overlapping_on_both_sides()
     """`pipeline/3_attestatores/run.py` clips a whole-page alignment to one
     act's anchor range and hulls what survives. That is only sound while the
     blocks advance monotonically on BOTH sides: out-of-order blocks would let
-    an act's anchor range pull in witness text from the far end of the page,
-    which is the F-X2 failure the clipping was written to end."""
+    an act's anchor range pull in witness text from the far end of the page."""
     witness = "et de Marie Bernard, laboureur de cette paroisse, en presence de Jean Moreau"
     anchor = "et de Marie Bernart, laboureur de ceste parroisse, en presence de Jan Moreau"
     blocks = alignment_module._matching_blocks(witness, anchor)

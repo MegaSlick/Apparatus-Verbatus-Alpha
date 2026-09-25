@@ -9,10 +9,9 @@ it is the vendor's own console message for that case, standing in the field
 where its substitute would have come from.)
 
 Two halves. The first pins the carry: the prompt renders to the digest recorded
-against `datalab-to/chandra @ d4f7467…`, it still states the scale the geometry
-divides by, and the 36 tags, 14 attributes and 19 labels are all there and all
-in the prompt. Each of those checks is then made to fail on purpose, because a
-seal nobody has watched refuse anything is a comment.
+against `datalab-to/chandra @ d4f7467…`, states the scale the geometry divides
+by, and lists the 36 tags, 14 attributes and 19 labels. Each check is then
+made to fail on purpose, since a seal nobody has watched refuse is a comment.
 
 The second half pins the reader, and above all the five departures from
 `chandra/output.py::parse_layout`. Each is asserted as a *fact about the
@@ -233,7 +232,7 @@ def test_a_well_formed_bbox_is_four_normalized_integers(raw, expected):
         # A 4,301-digit component is otherwise a plain decimal integer, but
         # `int()` on it would cross CPython's own integer-string-conversion
         # limit (4,300 digits by default) and raise a bare `ValueError` --
-        # this reader's refusal, not a crash reaching the Designator (G13).
+        # this reader's refusal, not a crash reaching the Designator.
         ("9" * 4301 + " 2 3 4", "not plain decimal integers"),
     ],
 )
