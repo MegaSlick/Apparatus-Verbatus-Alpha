@@ -1710,34 +1710,43 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
                 )
             previous_end = start + length
             ink_spans.append((max(x0, start), min(x1, start + length)))
-        cut_spans = sorted(
+        # A union, so overlapping act crops never subtract their shared pixels twice.
+        cuts = _union(
             (max(x0, bounds["x"]), min(x1, bounds["x"] + bounds["w"]))
             for bounds in covered
             if bounds["y"] <= y0 + offset < bounds["y"] + bounds["h"]
         )
-        cuts: list[tuple[int, int]] = []
-        for cut_start, cut_end in cut_spans:
-            if cut_start >= cut_end:
-                continue
-            # Coverage is a union: overlapping act crops must not subtract
-            # their shared pixels twice and understate the unclaimed ink.
-            if cuts and cut_start <= cuts[-1][1]:
-                cuts[-1] = (cuts[-1][0], max(cut_end, cuts[-1][1]))
-            else:
-                cuts.append((cut_start, cut_end))
-        for start, end in ink_spans:
-            cursor = start
-            for cut_start, cut_end in cuts:
-                if cut_end <= cursor:
-                    continue
-                if cut_start >= end:
-                    break
-                total += max(0, min(cut_start, end) - cursor)
-                cursor = max(cursor, cut_end)
-                if cursor >= end:
-                    break
-            total += max(0, end - cursor)
+        total += sum(_length_outside(start, end, cuts) for start, end in ink_spans)
     return total
+
+
+def _union(intervals) -> list[tuple[int, int]]:
+    """Merge half-open intervals into sorted, disjoint ones; empty ones drop out."""
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if start >= end:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _length_outside(start: int, end: int, cuts: list[tuple[int, int]]) -> int:
+    """How much of ``[start, end)`` the sorted, disjoint ``cuts`` leave uncovered."""
+    total = 0
+    cursor = start
+    for cut_start, cut_end in cuts:
+        if cut_end <= cursor:
+            continue
+        if cut_start >= end:
+            break
+        total += max(0, min(cut_start, end) - cursor)
+        cursor = max(cursor, cut_end)
+        if cursor >= end:
+            break
+    return total + max(0, end - cursor)
 
 
 def unclaimed_ink_observations(
@@ -2334,19 +2343,10 @@ def _covered_intervals(
     spans: list[tuple[int, int, str]], text_length: int
 ) -> list[tuple[int, int]]:
     """Validate and merge coverage without allocating one slot per character."""
-    intervals = []
     for start, end, _ in spans:
         if start < 0 or end < start or end > text_length:
             raise FatalAccounting("act attachment span lies outside its page Testimonium")
-        if start != end:
-            intervals.append((start, end))
-    merged: list[tuple[int, int]] = []
-    for start, end in sorted(intervals):
-        if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-    return merged
+    return _union((start, end) for start, end, _ in spans)
 
 
 def uncovered_non_whitespace_ranges(text: str, covered_intervals: list[tuple[int, int]]) -> dict:
