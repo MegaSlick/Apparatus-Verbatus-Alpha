@@ -50,7 +50,7 @@ from common.contracts.errors import (
     IncompatibleReuse,
     SchemaRefusal,
 )
-from common.contracts.identities import act_bindings, artifact_id, attempt_id
+from common.contracts.identities import PROPOSAL_SEAL_ID, act_bindings, artifact_id, attempt_id
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
 from common.contracts.outcomes import (
@@ -2243,7 +2243,7 @@ def expected_acts(context) -> list[dict[str, Any]]:
     seal = context.tree.read_artifact(
         DESIGNATOR,
         "proposal-seal",
-        artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
+        PROPOSAL_SEAL_ID,
     )
     payload = seal.get("payload")
     if not isinstance(payload, dict) or not verify_self_hash(payload):

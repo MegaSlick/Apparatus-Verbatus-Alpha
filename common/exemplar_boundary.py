@@ -17,7 +17,7 @@ from typing import Any, Final
 from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
 from common.contracts.envelope import validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.identities import artifact_id, page_id, region_id
+from common.contracts.identities import PROPOSAL_SEAL_ID, artifact_id, page_id, region_id
 from common.contracts.stages import (
     DESIGNATOR,
     DOOR,
@@ -589,9 +589,7 @@ def _verify_act_identity_binding(
     act_key = payload.get("act_key")
     if not isinstance(act_key, str) or not act_key:
         raise ContractError("a crop region names no act_key to verify its identity against")
-    seal = tree.read_artifact(
-        DESIGNATOR, "proposal-seal", artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
-    )
+    seal = tree.read_artifact(DESIGNATOR, "proposal-seal", PROPOSAL_SEAL_ID)
     matches = [
         entry for entry in seal["payload"]["expected_acts"] if entry.get("act_key") == act_key
     ]
