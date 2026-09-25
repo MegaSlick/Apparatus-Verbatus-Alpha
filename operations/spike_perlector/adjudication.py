@@ -5,8 +5,7 @@ executes it, because a procedure nothing executes is a promise, and the point of
 double keying is that no disagreement is quietly dropped.  What makes it
 mechanical: ``disagreement_spans`` computes the disputed spans, and ``reconcile``
 demands exactly that set as the adjudicator's resolution keys.  Both drafts and
-every resolution stay on the record unedited beside the reconciled reading
-(principle 4).
+every resolution stay on the record unedited beside the reconciled reading.
 
 The method is standard rather than invented here -- two independent annotators,
 differences resolved by a third and more experienced one, and material whose

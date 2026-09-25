@@ -91,8 +91,7 @@ def _approval_digest(record: Mapping[str, object]) -> str:
     for an approval, because an approval scope is a *claim about exactly what was
     approved*.  Under the permissive encoder ``{1: x}`` and ``{"1": x}`` digest
     identically, so a policy could change underneath a live approval without making it
-    stale — and the retired ``data_gate_policy_hash`` these scopes replaced refused
-    both cases outright.
+    stale.
 
     ``digest_of`` refuses floats and non-string keys recursively, which restores that
     guarantee.  The sibling scopes carry only strings and pinned digests, so this is a
@@ -103,17 +102,26 @@ def _approval_digest(record: Mapping[str, object]) -> str:
     return digest_of(dict(record))
 
 
+def _require_approval_reference(reference: Any, message: str) -> None:
+    """Refuse a missing/malformed reference before its `.relative_path` is read.
+
+    Reading that attribute off a missing reference reports a Python
+    `AttributeError` where the governed condition is an absent approval.
+    """
+
+    if not isinstance(reference, ApprovalRecordReference):
+        raise DisclosureRefusal(message)
+
+
 def _require_content_addressed_reference(
     reference: ApprovalRecordReference, *, label: str = "approval authority"
 ) -> str:
     """Refuse a reference before anything opens the path it names.
 
-    Every ``load()`` hands ``relative_path`` to a caller-supplied ``read_bytes``.
-    The shape check used to happen afterwards, inside the record verification, so
-    a reference naming ``../`` was *read* first and only then refused. A reader
-    that is not itself confined to the approved root would have opened a file
-    outside it before this gate had an opinion. The digest comparison would still
-    have refused the content — but the read had already happened.
+    Every ``load()`` hands ``relative_path`` to a caller-supplied ``read_bytes``,
+    which is not itself guaranteed to be confined to the approved root. Checking
+    the shape here, before any read, keeps a reference naming ``../`` from ever
+    reaching that reader.
     """
 
     if not isinstance(reference, ApprovalRecordReference):
@@ -148,12 +156,11 @@ class DataGateAuthority:
     """A data-gate record that has been checked through its approval reference.
 
     Binds its own content-addressed scope, the same way
-    ``ThirdPartyTransmissionApproval`` and ``RunPlanApproval`` below do: the shared
-    approval-record contract's own ``data-gate`` action existed for a different
-    question (whether real images ever reach git) and was retired for it;
-    this module's question — whether private-register material may be
-    disclosed under a checked, current, content-addressed policy — is unrelated and
-    still stands, now carried entirely by this class rather than by a shared action.
+    ``ThirdPartyTransmissionApproval`` and ``RunPlanApproval`` below do. This
+    module's question — whether private-register material may be disclosed
+    under a checked, current, content-addressed policy — is unrelated to the
+    shared approval-record contract's own ``data-gate`` action, so it is
+    carried entirely by this class rather than by a shared action.
 
     The immutable object retains the exact checked record rather than a
     caller-provided digest string.
@@ -247,16 +254,10 @@ class DataGateAuthority:
     ) -> "DataGateAuthority":
         """Resolve the repository's single policy home, then load its approval."""
 
-        # Checked before it is dereferenced, so a missing approval refuses by the
-        # governed condition that actually failed.  Reading `.relative_path` first
-        # turned the missing case into an AttributeError wearing a refusal's clothes:
-        # it still failed closed, but it reported a Python attribute rather than the
-        # absence of the project lead's approval, which is the one fact a reader needs here.
-        if not isinstance(approval_reference, ApprovalRecordReference):
-            raise DisclosureRefusal(
-                "data-gate approval is missing; real input requires a current "
-                "approval-record artifact"
-            )
+        _require_approval_reference(
+            approval_reference,
+            "data-gate approval is missing; real input requires a current approval-record artifact",
+        )
 
         # Before the read, not after it: the path this names is about to be
         # opened by a caller-supplied reader.
@@ -392,15 +393,11 @@ class ThirdPartyTransmissionApproval:
     ) -> "ThirdPartyTransmissionApproval":
         """Load an immutable vendor/pages approval from an approved private reader."""
 
-        # Checked before it is dereferenced, for the reason `DataGateAuthority.load`
-        # gives: reading `.relative_path` off a missing reference reports a Python
-        # attribute where the governed condition is the absence of the project
-        # lead's approval. That fix reached one of four loaders; this is another.
-        if not isinstance(approval_reference, ApprovalRecordReference):
-            raise DisclosureRefusal(
-                "third-party transmission approval is missing; this run requires a current "
-                "approval-record artifact"
-            )
+        _require_approval_reference(
+            approval_reference,
+            "third-party transmission approval is missing; this run requires a current "
+            "approval-record artifact",
+        )
 
         # Before the read, not after it: the path this names is about to be
         # opened by a caller-supplied reader.
@@ -680,19 +677,15 @@ class RunPlanApproval:
         one boundary, but nothing in this loader treats those fields as human-approved.
         """
 
-        # Checked before it is dereferenced, for the reason `DataGateAuthority.load`
-        # gives: reading `.relative_path` off a missing reference reports a Python
-        # attribute where the governed condition is the absence of the project
-        # lead's approval. That fix reached one of four loaders; this is another.
-        if not isinstance(approval_reference, ApprovalRecordReference):
-            raise DisclosureRefusal(
-                "run-plan approval is missing; this run requires a current approval-record artifact"
-            )
-        if not isinstance(engineering_declaration_reference, ApprovalRecordReference):
-            raise DisclosureRefusal(
-                "engineering declaration reference is missing; this run requires the "
-                "session's content-addressed declaration artifact"
-            )
+        _require_approval_reference(
+            approval_reference,
+            "run-plan approval is missing; this run requires a current approval-record artifact",
+        )
+        _require_approval_reference(
+            engineering_declaration_reference,
+            "engineering declaration reference is missing; this run requires the "
+            "session's content-addressed declaration artifact",
+        )
 
         # Before the read, not after it: the path this names is about to be
         # opened by a caller-supplied reader.
