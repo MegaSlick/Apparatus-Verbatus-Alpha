@@ -763,7 +763,7 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
     record in this package that nothing held to a shape.
 
     **Closed exactly where a name is read**, and the docstring says so rather
-    than claiming more (round 2 item 5): the top level, `run`, `corpus`,
+    than claiming more: the top level, `run`, `corpus`,
     `corpus.splits`, `denominators`, `code_ref_check`, `aggregate` with both of
     its rate blocks and every rate inside them, and every record row. The three
     lists -- `pages`, `unmatched_pipeline_acts`, `pages_without_reference` --

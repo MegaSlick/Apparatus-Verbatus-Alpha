@@ -2110,27 +2110,17 @@ def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_complete
     """The operator case the refusal exists for, end to end on the real route.
 
     A folder holding the same scan under two filenames is routine in archive
-    exports. Before this it produced a green door, a green Exemplar, and then a
-    fatal Designator complaining about a page ordinal that was never lost — the
-    wrong stage saying the wrong thing about the wrong page. Now the door itself
-    exits `EXIT_FATAL`, which `pipeline/orchestrator/run.py::invoke` refuses to
-    carry ("exited 2"), so the run stops at the stage that still had the
-    filenames in hand.
+    exports. The door itself exits `EXIT_FATAL`, which
+    `pipeline/orchestrator/run.py::invoke` refuses to carry ("exited 2"), so the
+    run stops at the stage that still had the filenames in hand.
 
     **A hand-driven Exemplar is barred too, and this is the one place that is
-    proved over the real Door's own refusal.** It used to be the one route by
-    which a caller running the programs one by one, past the door's non-zero
-    exit, still got a sealed merged page: the Exemplar built its real-ingress
-    `StageContext` by hand and so never called `verify_predecessor_seal`. The
-    shared constructor now asks for the door's completion seal on both ingress
-    routes before anything is written, so the Exemplar refuses by name here.
-    `test_exemplar_seal.py::
+    proved over the real Door's own refusal.** The shared constructor asks for
+    the door's completion seal on both ingress routes before anything is
+    written, so an Exemplar started directly over this same refused door still
+    refuses by name here. `test_exemplar_seal.py::
     test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_complete`
-    pins the same check over a hand-built refused door, and
-    `test_exemplar_seal.py::
-    test_a_merged_page_is_refused_by_name_at_the_first_stage_that_would_read_it_twice`
-    keeps the second-line-of-defence coverage the retired
-    `verify_exemplar_corpus_seal` call used to exercise here.
+    pins the same check over a hand-built refused door.
     """
     data = png(4, 3)
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
@@ -2183,7 +2173,7 @@ def test_real_pdf_replaced_after_its_hash_seals_the_opened_original(tmp_path, mo
     The first PDFium open is expansion's page count. The second is admission,
     after the real door has streamed the source digest. Both must receive an
     already-open stream: `pypdfium2` resolves and reopens a path it is handed, so
-    a pathname replaced at that moment used to make it seal the replacement's
+    a pathname replaced at that moment could otherwise seal the replacement's
     600-pixel page while writing the original's digest.
 
     What this pins is the *shape* of what PDFium receives, plus the sealed result.
@@ -2712,12 +2702,11 @@ def test_an_unreadable_corpus_register_really_does_leave_no_run_behind(tmp_path,
 def test_an_unapproved_run_root_is_named_before_its_run_authority_is_read(tmp_path, monkeypatch):
     """The storage gate runs before the run-level cap, so no run.json is opened.
 
-    The cap check used to run first, in `main`, against the typed run root. For a
-    real submission that meant opening and self-hash-verifying a run authority in
-    a directory the data-handling policy never approved — the exact read the gate
-    exists to stop — and an operator who mistyped the root onto an unapproved
-    volume that happened to hold a run.json was told the run was halted rather
-    than that the root is not an approved location.
+    Running the cap check first would mean opening and self-hash-verifying a run
+    authority in a directory the data-handling policy never approved — the exact
+    read the gate exists to stop — and an operator who mistyped the root onto an
+    unapproved volume that happened to hold a run.json would be told the run was
+    halted rather than that the root is not an approved location.
     """
     _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png()}
@@ -2785,12 +2774,8 @@ def test_two_byte_identical_pages_inside_one_container_are_both_kept(tmp_path):
 
     The duplicate rule and the fan-out rule meet here and could contradict each
     other: a scanned volume routinely holds several byte-identical blank or ruled
-    pages, and collapsing the second into "already admitted as source-1" loses a
-    page that genuinely exists — goal 2, in the place the old door failed.
-
-    The test beside this one is named for this case and never exercised it: its body
-    submits two identical PNG *files* and stops there, so the half of its name about
-    pages inside one container was covered by nothing.
+    pages, and collapsing the second into "already admitted as source-1" would
+    lose a page that genuinely exists.
     """
     data = blank_pages_pdf(2, width=8, height=6)
     files = {"scanned-volume.pdf": data}

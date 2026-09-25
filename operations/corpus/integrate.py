@@ -1,23 +1,18 @@
 """Closes the U2/U3 seam: a sealed fetch log becomes `submission.FetchedPage` objects.
 
-`submission.py`'s `FetchedPage` docstring is explicit about a boundary it keeps on
-purpose: "nothing here reads `private/corpora/recordgold/cache/` directly, so no
-coupling to U2's internal layout is baked in." U3 was built before U2 existed, and
-that boundary is why it still holds today — `submission.build_submission` takes
-`fetched_pages: dict[str, FetchedPage]` as a plain argument and never once opens
-`cache/`. Reading the cache is exactly what this module exists to do instead:
-`fetched_pages_from_log` is the one place U2's on-disk layout
-(`cache.body_path` — `cache/<response-sha256>.jpg`) and U3's `FetchedPage` contract
-meet. That coupling has to live *somewhere*; putting it in a third module rather
-than folding it into `submission.py` keeps U3's own file honest about the claim
-its docstring already makes, and keeps this seam small enough that a change to
-either U2's log shape or U3's `FetchedPage` shape touches one file, not both of
-theirs.
+`submission.py`'s `FetchedPage` docstring keeps a boundary on purpose: nothing
+there reads `private/corpora/recordgold/cache/` directly, so `build_submission`
+takes `fetched_pages: dict[str, FetchedPage]` as a plain argument and never opens
+`cache/` itself. Reading the cache is exactly what this module exists to do
+instead: `fetched_pages_from_log` is the one place U2's on-disk layout
+(`cache.body_path` — `cache/<response-sha256>.jpg`) and U3's `FetchedPage`
+contract meet. Keeping that coupling in its own module, rather than folding it
+into `submission.py`, keeps this seam small enough that a change to either U2's
+log shape or U3's `FetchedPage` shape touches one file, not both of theirs.
 
-**Rule 6, applied at this exact boundary.** A fetch log is revalidated here via
-`fetch.validate_fetch_log` — the closed-shape check that, as of this seam closing,
-also refuses a malformed `"fetched"` entry by name rather than letting a caller
-hit a `KeyError` three lines later. Past that, two more facts are checked before a
+A fetch log is revalidated here via `fetch.validate_fetch_log`, which also
+refuses a malformed `"fetched"` entry by name rather than letting a caller hit a
+`KeyError` three lines later. Past that, two more facts are checked before a
 `FetchedPage` is ever handed out: the cache file the log names actually exists,
 and it hashes to the digest the log declares. Neither is optional — a log is not
 proof a file is still there, or that it was never touched, only a claim about what

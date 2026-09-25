@@ -108,17 +108,16 @@ def validate_verdict(value: Any) -> dict[str, Any]:
             for key, item in fact["categorical"].items()
         ):
             raise ReconciliationRefusal("structural categorical facts must be non-blank strings")
+        # Some recorded passes predate this closure and used open vocabularies
+        # ("up"/"down", "recto"/"verso"); their face disagreement is
+        # vocabulary-induced and stands as recorded. The enum below is closed so
+        # unanimity on this fact is decidable by observation, not by dialect.
         face = fact["categorical"].get("loose_document_face")
         if face is not None and face not in {
             "written-side-up",
             "written-side-down",
             "indeterminate",
             "none",
-            # The first measured pass (2026-08-22) predates this closure and
-            # recorded seats answering in two open vocabularies ("up"/"down",
-            # "recto"/"verso"); its face disagreement is vocabulary-induced and
-            # stands as recorded. From here the enum is closed so unanimity on
-            # this fact is decidable by observation, not by dialect.
         }:
             raise ReconciliationRefusal(
                 "loose_document_face must be one of written-side-up, written-side-down, "

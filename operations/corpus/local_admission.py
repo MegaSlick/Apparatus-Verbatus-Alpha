@@ -1007,9 +1007,8 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
         )
     # The pages themselves, and the link the rows claim to them. `evaluate.py`
     # decides `reference-page-not-in-ledger` from the rows'
-    # `reference_page_self_hash` alone, so a ledger naming page identities no
-    # page in it carries would bless any reference pages at all (independent
-    # audit of 2026-09-11, round 2 item 4).
+    # `reference_page_self_hash` alone, so a ledger naming a reference_page_self_hash
+    # no reference page in it carries would bless any reference pages at all.
     embedded = set()
     for page in reference_pages:
         try:
