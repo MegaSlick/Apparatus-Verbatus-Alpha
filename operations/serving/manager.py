@@ -529,14 +529,11 @@ class ServingManager:
         self.monotonic = monotonic or time.monotonic
         self.sleep = sleep or time.sleep
         self.shutdown_timeout_seconds = shutdown_timeout_seconds
-        self._qualification_launch = _launch_purpose in (
-            _PREFLIGHT_QUALIFICATION_PURPOSE,
-            MECHANICS_QUALIFICATION_PURPOSE,
-        )
         self.launch_purpose = {
             _PREFLIGHT_QUALIFICATION_PURPOSE: _PREFLIGHT_QUALIFICATION_LAUNCH,
             MECHANICS_QUALIFICATION_PURPOSE: _MECHANICS_QUALIFICATION_LAUNCH,
         }.get(_launch_purpose, _NORMAL_LAUNCH)
+        self._qualification_launch = self.launch_purpose != _NORMAL_LAUNCH
         self._active: ServiceHandle | None = None
         self._residency_handle: ResidencyHandle | None = None
         self._unready_process: ServerProcess | None = None
@@ -726,12 +723,7 @@ class ServingManager:
             seed=handle.profile.seed,
             deterministic=False,
         )
-        response = self.http.request(
-            "POST",
-            endpoint_for_probe(handle.endpoint, kind),
-            body=body,
-            timeout_seconds=_INFERENCE_TIMEOUT_SECONDS,
-        )
+        response = self._post(handle.endpoint, kind, body, _INFERENCE_TIMEOUT_SECONDS)
         if exchange_observer is not None:
             exchange_observer(body, response)
         result = parse_openai_answer(
@@ -751,12 +743,7 @@ class ServingManager:
 
         self._require_active(handle)
         self._assert_process_live(handle.process)
-        return self.http.request(
-            "POST",
-            endpoint_for_probe(handle.endpoint, kind),
-            body=body_bytes,
-            timeout_seconds=timeout_seconds,
-        )
+        return self._post(handle.endpoint, kind, body_bytes, timeout_seconds)
 
     def stop(self, handle: ServiceHandle) -> None:
         """Stop one exact owned process and verify its endpoint no longer responds."""
@@ -843,12 +830,7 @@ class ServingManager:
 
     def _assert_endpoint_unoccupied(self, endpoint: str) -> None:
         try:
-            response = self.http.request(
-                "GET",
-                health_url(endpoint),
-                body=None,
-                timeout_seconds=_READINESS_PROBE_TIMEOUT_SECONDS,
-            )
+            response = self._get(health_url(endpoint), _READINESS_PROBE_TIMEOUT_SECONDS)
         except EndpointUnavailable as error:
             if error.definitively_absent:
                 return
@@ -903,21 +885,17 @@ class ServingManager:
             if deadline - self.monotonic() <= 0:
                 raise watchdog_timeout()
             try:
-                health = self.http.request(
-                    "GET",
+                health = self._get(
                     health_url(profile.endpoint),
-                    body=None,
-                    timeout_seconds=self._time_left(deadline, _READINESS_PROBE_TIMEOUT_SECONDS),
+                    self._time_left(deadline, _READINESS_PROBE_TIMEOUT_SECONDS),
                 )
                 if health.status != 200:
                     raise ReadinessError(
                         "VLLM_HEALTH_UNAVAILABLE", f"/health returned HTTP {health.status}"
                     )
-                models = self.http.request(
-                    "GET",
+                models = self._get(
                     models_url(profile.endpoint),
-                    body=None,
-                    timeout_seconds=self._time_left(deadline, _READINESS_PROBE_TIMEOUT_SECONDS),
+                    self._time_left(deadline, _READINESS_PROBE_TIMEOUT_SECONDS),
                 )
                 model_ids = require_exact_model_id(models, profile.served_model_id)
                 probe = self._post_probe(
@@ -967,6 +945,14 @@ class ServingManager:
                 f"owned process pid={process.pid} exited with {exit_code}",
             )
 
+    def _get(self, url: str, timeout_seconds: float) -> HttpResponse:
+        return self.http.request("GET", url, body=None, timeout_seconds=timeout_seconds)
+
+    def _post(self, endpoint: str, kind: str, body: bytes, timeout_seconds: float) -> HttpResponse:
+        return self.http.request(
+            "POST", endpoint_for_probe(endpoint, kind), body=body, timeout_seconds=timeout_seconds
+        )
+
     def _post_probe(
         self,
         *,
@@ -978,11 +964,11 @@ class ServingManager:
         deterministic: bool,
         timeout_seconds: float = _INFERENCE_TIMEOUT_SECONDS,
     ) -> OpenAIResult:
-        response = self.http.request(
-            "POST",
-            endpoint_for_probe(endpoint, kind),
-            body=request_body(payload, model_id=model_id, seed=seed, deterministic=deterministic),
-            timeout_seconds=timeout_seconds,
+        response = self._post(
+            endpoint,
+            kind,
+            request_body(payload, model_id=model_id, seed=seed, deterministic=deterministic),
+            timeout_seconds,
         )
         return parse_openai_answer(response, kind=kind, expected_model_id=model_id)
 
@@ -1008,12 +994,7 @@ class ServingManager:
                 "tower/connector LoRA requires an image-bearing adapter calibration"
             )
         calibration_payload = calibration.request_payload()
-        response = self.http.request(
-            "GET",
-            models_url(profile.endpoint),
-            body=None,
-            timeout_seconds=_READINESS_PROBE_TIMEOUT_SECONDS,
-        )
+        response = self._get(models_url(profile.endpoint), _READINESS_PROBE_TIMEOUT_SECONDS)
         ids = require_exact_model_id(response, profile.served_model_id)
         if base_profile.served_model_id not in ids:
             raise AdapterActivityError(
@@ -1234,11 +1215,8 @@ class ServingManager:
             if remaining <= 0:
                 raise ServiceStopError(last)
             try:
-                response = self.http.request(
-                    "GET",
-                    health_url(endpoint),
-                    body=None,
-                    timeout_seconds=min(_READINESS_PROBE_TIMEOUT_SECONDS, remaining),
+                response = self._get(
+                    health_url(endpoint), min(_READINESS_PROBE_TIMEOUT_SECONDS, remaining)
                 )
             except EndpointUnavailable as error:
                 if error.definitively_absent:
