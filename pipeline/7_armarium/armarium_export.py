@@ -727,6 +727,7 @@ _NOT_MEASURED_DETAIL_FIELDS: Final = {
 _GEOMETRY_CALIBRATION_ROW_FIELDS: Final = frozenset(
     {"configuration", "calibrated_for_this_corpus", "sample_count"}
 )
+# Where a reader checks each row against the evidence.
 _NOT_MEASURED_RECORDED_IN: Final = {
     _TESTIMONY_COVERAGE: (
         "each act's Recensor review, fields `testimony_content_coverage` and "
@@ -2404,6 +2405,7 @@ def _mark_retained_references(value: Any) -> Any:
     """Recursively make opaque run-tree evidence honest in a product projection."""
     if isinstance(value, dict):
         if "relative_path" in value:
+            # Keep any extra metadata, but always relabel the path and digest.
             marked = {
                 key: _mark_retained_references(item)
                 for key, item in value.items()
