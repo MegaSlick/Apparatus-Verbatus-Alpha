@@ -2377,6 +2377,30 @@ def _validate_cross_capture_dossier(
         )
 
 
+_DOSSIER_FIELDS: Final = frozenset(
+    {
+        "act_id",
+        "act_key",
+        "witness_regime",
+        "regions",
+        "page_renders",
+        "testimonia",
+        "dossier_digest",
+    }
+)
+# Logical identity and atomic presentation travel together or not at all.
+_DOSSIER_SHAPES: Final = tuple(
+    _DOSSIER_FIELDS | variant | cross_capture
+    for variant in (
+        frozenset(),
+        {"act_attachment"},
+        {"prior_draft", "prior_draft_view"},
+        {"act_attachment", "prior_draft", "prior_draft_view"},
+    )
+    for cross_capture in (frozenset(), {"logical_act_id", "cross_capture_autopsia"})
+)
+
+
 def validate_reading_payload(
     payload: dict,
     *,
@@ -2427,29 +2451,7 @@ def validate_reading_payload(
             "a Perlector reading by a configured chair records no resolved identity"
         )
     reading_dossier = payload["dossier"]
-    dossier_fields = {
-        "act_id",
-        "act_key",
-        "witness_regime",
-        "regions",
-        "page_renders",
-        "testimonia",
-        "dossier_digest",
-    }
-    # Logical identity and atomic presentation travel together or not at all.
-    _dossier_optional_variants = (
-        set(),
-        {"act_attachment"},
-        {"prior_draft", "prior_draft_view"},
-        {"act_attachment", "prior_draft", "prior_draft_view"},
-    )
-    _cross_capture_fields = {"logical_act_id", "cross_capture_autopsia"}
-    _allowed_dossier_shapes = tuple(
-        dossier_fields | variant | extra
-        for variant in _dossier_optional_variants
-        for extra in (set(), _cross_capture_fields)
-    )
-    if not isinstance(reading_dossier, dict) or set(reading_dossier) not in _allowed_dossier_shapes:
+    if not isinstance(reading_dossier, dict) or set(reading_dossier) not in _DOSSIER_SHAPES:
         raise SchemaRefusal("a Perlector reading carries no closed dossier record")
     if reading_dossier["act_key"] != payload["act_key"]:
         raise SchemaRefusal("a Perlector reading disagrees with its dossier's act key")
@@ -2460,7 +2462,67 @@ def validate_reading_payload(
         raise SchemaRefusal("a Perlector dossier digest does not match the dossier it seals")
     dossier_module.assert_no_order_bearing_field(dossier_body)
     _validate_cross_capture_dossier(reading_dossier, inputs=inputs)
-    lectio_kind = payload.get("lectio_kind")
+    _validate_lectio_kind(payload.get("lectio_kind"), reading_dossier)
+    if "act_attachment" in reading_dossier:
+        attachment = reading_dossier["act_attachment"]
+        if (
+            not isinstance(attachment, dict)
+            or set(attachment)
+            != {"reference", "page_witness_count", "comparison_views", "edge_deltas"}
+            or not isinstance(attachment["reference"], dict)
+            or not isinstance(attachment["page_witness_count"], int)
+            or isinstance(attachment["page_witness_count"], bool)
+            or attachment["page_witness_count"] < 0
+            or not isinstance(attachment["comparison_views"], dict)
+            or not isinstance(attachment["edge_deltas"], dict)
+        ):
+            raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
+        if is_unprimed:
+            raise SchemaRefusal(
+                "an unprimed reading's dossier cannot carry witness-derived act attachment metadata"
+            )
+    _validate_dossier_testimonia(
+        reading_dossier,
+        basis,
+        is_unprimed=is_unprimed,
+        run_id=run_id,
+        config_digest=config_digest,
+    )
+    _validate_reading_prompt(
+        payload,
+        provenance,
+        reading_dossier,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
+    if (
+        not isinstance(payload["truncation"], dict)
+        or payload["truncation"].get("classification") not in truncation.CLASSIFICATIONS
+    ):
+        raise SchemaRefusal(
+            "a Perlector reading carries no truncation classification; truncation is detected "
+            "by an instrument, never assumed"
+        )
+    if outcome == "read" and payload["truncation"]["classification"] != truncation.COMPLETE:
+        raise SchemaRefusal(
+            "a truncated or unknown attempt cannot carry the completed outcome 'read'"
+        )
+    if outcome == "truncated" and payload["truncation"]["classification"] == truncation.COMPLETE:
+        raise SchemaRefusal(
+            "a Perlectio with outcome 'truncated' cannot carry a 'complete' truncation "
+            "classification; outcome == 'truncated' means 'not established complete', and "
+            "the truncation field is where that is confirmed or held unknown, never "
+            "contradicted"
+        )
+    _validate_sealed_doubt(payload, fields=fields)
+    if "audit" in fields:
+        # Re-proof offsets index the frozen semi-final, which may be longer than the final;
+        # the chain check binds them before publication, so no bound is guessed here.
+        audit.validate_perlectio_audit(payload.get("audit"), text_length=None)
+    annotations.validate_annotations(payload, outcome=outcome)
+
+
+def _validate_lectio_kind(lectio_kind: Any, reading_dossier: dict) -> None:
     prior_draft = reading_dossier.get("prior_draft")
     if lectio_kind == "primed-with-prior":
         if (
@@ -2488,24 +2550,16 @@ def validate_reading_payload(
             f"a Perlector reading names unknown lectio kind {lectio_kind!r}; a kind this "
             "validator cannot name would publish its prior-draft evidence unchecked"
         )
-    if "act_attachment" in reading_dossier:
-        attachment = reading_dossier["act_attachment"]
-        if (
-            not isinstance(attachment, dict)
-            or set(attachment)
-            != {"reference", "page_witness_count", "comparison_views", "edge_deltas"}
-            or not isinstance(attachment["reference"], dict)
-            or not isinstance(attachment["page_witness_count"], int)
-            or isinstance(attachment["page_witness_count"], bool)
-            or attachment["page_witness_count"] < 0
-            or not isinstance(attachment["comparison_views"], dict)
-            or not isinstance(attachment["edge_deltas"], dict)
-        ):
-            raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
-        if is_unprimed:
-            raise SchemaRefusal(
-                "an unprimed reading's dossier cannot carry witness-derived act attachment metadata"
-            )
+
+
+def _validate_dossier_testimonia(
+    reading_dossier: dict,
+    basis: Any,
+    *,
+    is_unprimed: bool,
+    run_id: str | None,
+    config_digest: str | None,
+) -> None:
     dossier_testimonia = reading_dossier["testimonia"]
     if not isinstance(dossier_testimonia, list):
         raise SchemaRefusal("a Perlector dossier has no Testimonium list")
@@ -2538,6 +2592,17 @@ def validate_reading_payload(
             raise SchemaRefusal(
                 "a Perlector dossier's witness labels do not match its Testimonium basis"
             )
+
+
+def _validate_reading_prompt(
+    payload: dict,
+    provenance: dict,
+    reading_dossier: dict,
+    *,
+    protocol_config: dict[str, Any] | None,
+    protocol_sha256: str | None,
+) -> None:
+    """The prompt record, and its protocol block, reproduce from the chair and dossier."""
     prompt_record = payload["prompt"]
     identity_record = provenance.get("resolved_identity")
     if not isinstance(identity_record, dict):
@@ -2601,31 +2666,6 @@ def validate_reading_payload(
         raise SchemaRefusal(
             "a Perlector prompt record does not reproduce from its resolved chair and dossier"
         )
-    if (
-        not isinstance(payload["truncation"], dict)
-        or payload["truncation"].get("classification") not in truncation.CLASSIFICATIONS
-    ):
-        raise SchemaRefusal(
-            "a Perlector reading carries no truncation classification; truncation is detected "
-            "by an instrument, never assumed"
-        )
-    if outcome == "read" and payload["truncation"]["classification"] != truncation.COMPLETE:
-        raise SchemaRefusal(
-            "a truncated or unknown attempt cannot carry the completed outcome 'read'"
-        )
-    if outcome == "truncated" and payload["truncation"]["classification"] == truncation.COMPLETE:
-        raise SchemaRefusal(
-            "a Perlectio with outcome 'truncated' cannot carry a 'complete' truncation "
-            "classification; outcome == 'truncated' means 'not established complete', and "
-            "the truncation field is where that is confirmed or held unknown, never "
-            "contradicted"
-        )
-    _validate_sealed_doubt(payload, fields=fields)
-    if "audit" in fields:
-        # Re-proof offsets index the frozen semi-final, which may be longer than the final;
-        # the chain check binds them before publication, so no bound is guessed here.
-        audit.validate_perlectio_audit(payload.get("audit"), text_length=None)
-    annotations.validate_annotations(payload, outcome=outcome)
 
 
 def _validate_sealed_doubt(payload: dict, *, fields: frozenset) -> None:
