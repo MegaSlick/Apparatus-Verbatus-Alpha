@@ -31,7 +31,7 @@ is the opposite of the `pass_kind` exemption, not a version of it. Before it
 existed, Pass C sealed a re-proof plan and called `read` with the Pass-B dossier
 plus a bare `semi_final_text` — the reader received no flag, location or prompt
 at all, and a changed final text was published as the result of a measured,
-neutral, span-scoped re-proof that had never been presented (Sol-S2). The
+neutral, span-scoped re-proof that had never been presented. The
 consequence for every implementation of this protocol: a reader that is given
 `pass_kind="audit-reproof"` and no request must refuse, and
 `validate_audit_delivery` below is that refusal.
@@ -65,7 +65,7 @@ PAGE_FALLBACK_INK_MARGIN: Final = 2
 # own text as the Pass-A draft and publish a `self_revision` of nothing at all.
 # A refusal is the only reading of that a record can carry.
 # `audit-reproof` joins at R5b, which adds the Pass-C span re-proof pass. It is
-# the one member the reader does *not* dispatch on: since the Sol-S2 repair the
+# the one member the reader does *not* dispatch on: since that repair, the
 # re-proof is chosen by the delivered `audit_request`, and this membership only
 # decides that the pass is nameable and that its instrument had to travel with
 # it. The producer-literal pin in `test_reader.py` holds the set to exactly what
@@ -131,7 +131,7 @@ def validate_audit_delivery(
     together or the call is refused. Both directions are refusals, and each
     names a different failure.
 
-    A re-proof pass with no request is the Sol-S2 defect itself — the record
+    A re-proof pass with no request is exactly the defect this guards against: the record
     would seal a delivered plan while the reader was handed nothing to work
     from, and a reader forbidden to condition on `pass_kind` has no honest way
     to fill the gap in. A request on any other pass is the mirror image: a
@@ -585,9 +585,8 @@ class FixtureReader:
         that pass alone: `audit-reproof-cutoff` declares `length` for the
         re-proof only, so Pass B establishes a complete reading and the
         re-examination of it is the call that fails. Without that, one row set
-        every pass's stop word at once and the composition the independent
-        audit named (a completed establishment followed by a cut-off re-proof,
-        F1) could not be declared. A row without `pass_kind` covers every pass,
+        every pass's stop word at once, so a completed establishment followed by a
+        cut-off re-proof could not be declared. A row without `pass_kind` covers every pass,
         exactly as before.
         """
 

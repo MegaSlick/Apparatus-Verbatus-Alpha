@@ -1,15 +1,9 @@
-"""Prompt fidelity -- spec 08's invariant #49, whose text is carried here in
-full because the numbered spec list lives outside the repository: "the serving
-path builds each seat's declared prompt format byte-for-byte (a fine-tuned
-candidate misread through the wrong prompt would be measured as a failure of
-the model rather than of the harness). Tested per seat."
-
-The serving path builds each chair's declared prompt format byte-for-byte. A
-fine-tuned candidate misread through the wrong prompt would be measured as a
-failure of the model rather than of the harness --
-so this is a registry keyed by `ChairIdentity.serving_recipe`, and a recipe with
-no registered builder refuses outright. The silent fallback to some other
-chair's template is the failure invariant #49 exists to prevent.
+"""Prompt fidelity -- invariant #49: the serving path builds each chair's
+declared prompt format byte-for-byte, so a fine-tuned candidate misread
+through the wrong prompt is measured as a failure of the model rather than of
+the harness. This is a registry keyed by `ChairIdentity.serving_recipe`, and a
+recipe with no registered builder refuses outright rather than silently
+falling back to some other chair's template.
 
 Real byte fidelity against an actual chat template needs the tokenizer and
 template files for whichever model finally sits in the chair, which this
@@ -169,10 +163,10 @@ def prompt_evidence(
     testimonium the reader was shown, which already travels once on the
     Perlectio's own `dossier`, and a second copy is a second thing to drift.
 
-    D-7: the recipe name pins *which* template a reading was produced through
-    only by convention -- nothing bound the builder's own bytes into the
-    record, so reproducing `rendered_sha256` later needs the builder at the
-    exact revision that ran, and the record itself could not say whether that
+    The recipe name pins *which* template a reading was produced through only
+    by convention -- nothing bound the builder's own bytes into the record, so
+    reproducing `rendered_sha256` later needs the builder at the exact
+    revision that ran, and the record itself could not say whether that
     revision had moved. `builder_sha256` closes that: a digest of this whole
     module's source — not one function's, because a builder renders through
     helpers, and an edited helper changes the rendered bytes just as surely as

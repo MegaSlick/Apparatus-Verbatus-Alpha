@@ -1,6 +1,6 @@
 """``VLLMReader``: the live implementation of the ``Reader`` protocol
-(``reader.py``), behind one ``ChairClient`` (``operations/serving/client.py``,
-U2) already entered for this chair's pass.
+(``reader.py``), behind one ``ChairClient`` (``operations/serving/client.py``)
+already entered for this chair's pass.
 
 ``FixtureReader`` stands in for an engine this chamber has no pod for.
 ``VLLMReader`` is the seam a real one occupies: everything downstream --
@@ -318,9 +318,9 @@ class VLLMReader:
             )
 
         # Page render first, then the prompt text, then the act's own region
-        # crops -- hostile-review item M (SPEC_FINDINGS 2026-09-06). The page
-        # render is the one image shared, byte-identical, across every act on
-        # the same page; the region crop is the one image unique to this act.
+        # crops. The page render is the one image shared, byte-identical,
+        # across every act on the same page; the region crop is the one image
+        # unique to this act.
         # A chat template that renders a message's content parts in list order
         # sees the shared block first and the act-unique block last, which is
         # what gives vLLM's automatic prefix cache the longest run of

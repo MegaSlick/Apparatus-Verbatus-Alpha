@@ -62,17 +62,16 @@ CLASSIFICATIONS: Final = frozenset({COMPLETE, TRUNCATED, UNKNOWN})
 _STRUCTURE_PAIRS: Final = (("(", ")"), ("[", "]"), ("“", "”"))
 
 # The length signal's floor is sealed, not a module constant, and it is
-# dimensionless. `config/perlector_protocol.toml`'s `[truncation]` names it:
-# a reading is length-suspicious when, scaled from its region to the whole
-# page's area, it would carry fewer than the floor's characters. Until
-# 2026-09-14 this was `MIN_PIXELS_PER_CHARACTER = 2000`, an absolute ratio set
-# to clear this repository's 200x260 fixture pages -- and an absolute ratio
-# scales the wrong way: a real 300-DPI act crop has far MORE pixels per
-# character than a fixture crop, so the value that cleared the fixture held
-# every ordinary act as truncated (pre-launch review, F082). The sealed value
-# reaches this module as `truncation_policy`, read once per pass by
-# `pipeline/4_perlector/run.py` and proven against the `perlector-protocol`
-# seal, so which floor judged a reading is in the run's config_digest (F088).
+# dimensionless rather than an absolute pixels-per-character ratio: an
+# absolute ratio scales the wrong way, since a real 300-DPI act crop has far
+# more pixels per character than a fixture crop, so a ratio tuned to the
+# fixture would hold every ordinary act as truncated.
+# `config/perlector_protocol.toml`'s `[truncation]` names the floor: a reading
+# is length-suspicious when, scaled from its region to the whole page's area,
+# it would carry fewer than the floor's characters. It reaches this module as
+# `truncation_policy`, read once per pass and proven against the
+# `perlector-protocol` seal, so which floor judged a reading is in the run's
+# config_digest.
 LENGTH_FLOOR_FIELD: Final = "length_floor_characters_per_page"
 
 
@@ -86,18 +85,14 @@ class TruncationSignals(TypedDict):
 class TruncationMeasure(TypedDict):
     """What the length signal was judged from, recorded so it can be re-judged.
 
-    The three text signals were the producer's word until 2026-09-14 because
-    `region_pixels` was not on the record. It is now, with the page area it was
-    read against, the character count, and the floor those three were judged
-    under -- every term of the predicate, so a consumer holding nothing but
-    this block recomputes `length_suspicious` rather than trusting it. The
-    floor travels on the record and not only in the run's config_digest for
-    the reason the Armarium's re-measurement row carries its own noise floor
-    (`pipeline/7_armarium/run.py::ink_map_page_rows`): configuration protects
-    reproducibility going forward, the record itself protects the past
-    (principle 6), and a reader who has the record but not that run's
-    `config/perlector_protocol.toml` could otherwise only take the signal on
-    trust.
+    Carries every term of the predicate -- region pixels, page pixels,
+    character count, floor -- so a consumer holding nothing but this block
+    recomputes `length_suspicious` rather than trusting it. The floor travels
+    on the record and not only in the run's config_digest because
+    configuration protects reproducibility going forward while the record
+    protects the past (principle 6): a reader with the record but not that
+    run's `config/perlector_protocol.toml` could otherwise only take the
+    signal on trust.
     """
 
     region_pixels: int
@@ -217,22 +212,17 @@ def classify(
     is silence from the engine: neither is resolved toward `complete`, because
     an ambiguous signal is exactly what "unknown holds" means.
     """
-    # Absence is refused by name exactly as a wrong type is. The sealed path
-    # cannot reach it -- `protocol.validate_truncation_table` guarantees the
-    # key -- but a hand-built policy is what the tests and any later caller
-    # pass, and a bare `KeyError` is the one boundary in this module that would
-    # escape unnamed (independent audit of 2026-09-14).
+    # Absence is refused by name exactly as a wrong type is: the sealed path
+    # cannot reach it (`protocol.validate_truncation_table` guarantees the
+    # key), but a hand-built policy is what the tests pass, and a bare
+    # `KeyError` is the one boundary in this module that would escape unnamed.
     if LENGTH_FLOOR_FIELD not in truncation_policy:
         raise ContractError(f"the truncation policy declares no {LENGTH_FLOOR_FIELD}")
     floor = truncation_policy[LENGTH_FLOOR_FIELD]
-    # Non-positive is refused here and not left to `is_length_suspicious`: that
-    # function raises `ValueError` for a floor of zero, and a `ValueError` is
-    # not one of the named contract refusals this stage's boundary classifies,
-    # so a hand-built policy carrying zero escaped as an unclassified exception
-    # where a wrongly-typed one was named. The bound is
-    # the same one `protocol.validate_truncation_table` applies to the sealed
-    # file: a floor of zero never fires and is the signal switched off by a
-    # value rather than by a decision.
+    # Refused here rather than left to `is_length_suspicious`, whose
+    # `ValueError` is not one of this boundary's named contract refusals: a
+    # floor of zero never fires and is the signal switched off by a value
+    # rather than by a decision.
     if not isinstance(floor, int) or isinstance(floor, bool) or floor <= 0:
         raise ContractError(
             f"the truncation policy's {LENGTH_FLOOR_FIELD} is not a positive integer"

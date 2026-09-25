@@ -1,12 +1,11 @@
 """Dissent, computed against derived comparison views -- never against raw bytes
 picked to make a witness look right or wrong.
 
-ARCHITECTURE: "The Perlectio records where the reading departed from every
-witness. This is structural, not evaluative... It is not a quality signal on
-its own." Spec_08 asks for the comparison to run on "derived comparison views --
-loss-accounted normalizations built beside the verbatim payloads (which are
-never coerced, per spec 07); where a witness format cannot be compared, dissent
-for that witness is recorded `unknown`, never guessed."
+Recording where the established reading departs from a witness is structural,
+not evaluative, and not a quality signal on its own. The comparison runs on
+loss-accounted normalizations built beside the verbatim payloads, which are
+never coerced; where a witness format cannot be compared, dissent for that
+witness is recorded `unknown`, never guessed.
 
 Two things here would be a picker with extra steps: choosing which view "wins"
 (there is no winning -- a view is compared to the already-fixed reading and
@@ -42,23 +41,16 @@ from common.alignment import markup_text_view
 from common.contracts.errors import SchemaRefusal
 from common.stage import WITNESS_READING_OUTCOMES
 
-# `SequenceMatcher`'s alignment cost is *not* simply the product of the two
-# lengths -- that was this module's own original claim, measured once on
-# `"ab"*n` vs `"ba"*n` (roughly 12-13M character-pairs/second there) and
-# believed to generalize. It does not: a reading and a report that differ in
-# many scattered places -- which is exactly what a systematically-mistaken
-# witness produces, the case this instrument exists to catch -- cost close to
-# the *cube* of the length, not the square. Measured in this chamber: a
-# 6,800-character reading against an equally long, scattered-difference report
-# is 46.2M pairs, comfortably under the bound below, and took 127 seconds.
-#
-# So this constant is kept as a cheap prefilter for the case it was first
-# written for -- a witness stuck in a repetition loop until its token cap,
-# `pipeline/3_attestatores/run.py` enforcing no ceiling on report length, and
-# the 24,000-token cap of `common/native_witness.py::CHURRO_OUTPUT_TOKENS`
-# running well over a hundred thousand characters -- but it is
-# no longer the thing that actually bounds wall-clock time. `MAX_COMPARISON_SECONDS`
-# below is. Alpha testing over real reports is what would tune either number.
+# `SequenceMatcher`'s alignment cost is not simply the product of the two
+# lengths: a reading and a report that differ in many scattered places --
+# exactly what a systematically-mistaken witness produces, the case this
+# instrument exists to catch -- costs close to the *cube* of the length, not
+# the square. Measured in this chamber: a 6,800-character reading against an
+# equally long, scattered-difference report is 46.2M pairs, comfortably under
+# the bound below, and took 127 seconds. This constant is kept as a cheap
+# prefilter for a witness stuck in a repetition loop until its token cap, but
+# it no longer bounds wall-clock time on its own -- `MAX_COMPARISON_SECONDS`
+# below does that.
 MAX_COMPARISON_CHARACTER_PAIRS: Final = 100_000_000
 
 # The real backstop. `SequenceMatcher.get_opcodes()` is pure Python, so a
@@ -84,16 +76,14 @@ def _aligned_within_deadline(reading: str, reported: str, *, seconds: int) -> li
     touched either way -- the alignment simply does not finish, exactly as
     the pair-count bound already declares of itself.
     """
-    # The same ownership rule `common/alignment.py::align_to_anchor` carries
-    # (R4 audit, F-L3), for the same reason and in the same process: `SIGALRM`
-    # and `ITIMER_REAL` are process-global, so arming unconditionally replaced
-    # a caller's own real-time timer and then cancelled it in `finally` --
-    # destroying a deadline this module never owned. From a non-main thread
-    # `signal.signal` raises outright, so this was also the one of the two
-    # bounded comparisons in the pipeline that could not run off the main
-    # thread at all. Arm only where nothing else owns the timer; otherwise run
-    # unbounded under the caller's deadline, which is the honest degradation
-    # the missing-SIGALRM branch below already takes. Found in audit; F-X4.
+    # The same ownership rule `common/alignment.py::align_to_anchor` carries:
+    # `SIGALRM` and `ITIMER_REAL` are process-global, so arming unconditionally
+    # would replace a caller's own real-time timer and then cancel it in
+    # `finally`, destroying a deadline this module never owned. From a
+    # non-main thread `signal.signal` raises outright. Arm only where nothing
+    # else owns the timer; otherwise run unbounded under the caller's
+    # deadline, the same honest degradation the missing-SIGALRM branch below
+    # already takes.
     if (
         not hasattr(signal, "SIGALRM")
         or not hasattr(signal, "ITIMER_REAL")
@@ -105,16 +95,13 @@ def _aligned_within_deadline(reading: str, reported: str, *, seconds: int) -> li
     signal.alarm(seconds)
     try:
         result = departures(reading, reported)
-        # Cancelled inside the `try`, not only in the `finally`. An alarm that
-        # fired after `departures` returned but before the `finally` ran raised
-        # `_ComparisonTimedOut` from inside the `finally` itself, where the
-        # `except` above has already been passed — so a comparison that had
-        # *succeeded* propagated a timeout exception out of a function whose whole
-        # contract is to return `None` instead of raising. The window is narrow
-        # and it is real. Cancelling here does not close it completely: a firing
-        # in the remaining instructions is caught by the `except` and returns
-        # `None`, which understates a finished comparison rather than crashing
-        # one. That is the safe direction of the two.
+        # Cancelled inside the `try`, not only in `finally`: an alarm that
+        # fires after `departures` returns but before `finally` runs would
+        # otherwise raise `_ComparisonTimedOut` past the `except` above and
+        # propagate a timeout out of a function whose contract is to return
+        # `None` instead. A firing in the remaining instructions is still
+        # caught below and understates a finished comparison rather than
+        # crashing one -- the safe direction of the two.
         signal.alarm(0)
         return result
     except _ComparisonTimedOut:
@@ -179,66 +166,23 @@ def is_comparable(record: dict[str, Any]) -> bool:
     """Whether a Testimonium's own declared format admits a plain comparison view.
 
     A witness whose format can express uncertainty
-    (`format_capabilities.can_express_uncertainty`, spec_07) may embed
-    alternative-reading markup inline in `reported` -- diffing that raw string
-    against clean established text would count markup characters as
-    disagreement, which is not what dissent means. The format is refused a fake
-    comparison instead.
-
-    **This branch is live.** It used to say no producer reached it, which was
-    true until spec 07's fixture declared `can_express_uncertainty` on chair 2 of
-    act a1 so that the `format_capabilities` distinction was exercised rather
-    than merely representable.
-
-    **The permanent-unknown watch item is closed, and how it closed matters.**
-    This used to record that a witness adapter self-declaring
-    `can_express_uncertainty` went uncompared on this axis forever -- read-only,
-    so not a picker, but a hole in the instrument ARCHITECTURE names for
-    catching a checkpoint that "learned to agree with witnesses rather than to
-    read ink". It was about to become permanent for the only chair whose grammar
-    says anything about uncertain ink: the DAI adapter's declaration is
-    `can_express_uncertainty: true` (its `[UNCERTAIN]`/`[CROSSED_OUT]` notation
-    is the RecordGold card's), and that flag is deliberately flipped only AFTER
-    this wiring exists, so that declaring it truthfully never costs the chair
-    its dissent row. `pipeline/4_perlector/run.py::dissent_testimonia` now
-    builds each such chair a `comparison_reported` from its OWN retained bytes:
-    an anchored, markup-stripped page slice for a page witness, and
-    `common/alignment.py::bracket_marker_view` -- exactly the two RecordGold
-    bracket tokens removed, offset-mapped -- for an act-scoped one. The
-    exemption below therefore still refuses a raw diff and still returns
-    `False`, but for a shrinking set: a capability-declared chair for which no
-    safe view could be derived at all.
-
-    What remains uncompared, named rather than hidden: a page witness whose
-    recorded alignment is explicitly unaligned (no anchored slice exists), and
-    any future capability-declared chair whose notation is neither tag-shaped
-    nor these two bracket tokens. Those rows stay visible in the record as
-    `compared: "unknown"` with their reason, never folded into a coverage count.
+    (`format_capabilities.can_express_uncertainty`) may embed alternative-
+    reading markup inline in `reported` -- diffing that raw string against
+    clean established text would count markup characters as disagreement,
+    which is not what dissent means. Such a chair stays unmeasurable UNLESS a
+    derived comparison view already exists for it (`comparison_reported`,
+    never the raw `reported`): an anchored, markup-stripped page slice for a
+    page witness, or `common/alignment.py::bracket_marker_view` for an
+    act-scoped one. A chair with one rejoins the instrument through that safe
+    view; one without -- a page witness whose alignment failed, or a future
+    chair whose notation this view-building step does not yet handle -- stays
+    honestly unknown with its reason recorded rather than folded into a
+    coverage count.
     """
     payload = record.get("payload", {})
     capabilities = payload.get("format_capabilities", {})
     if not bool(capabilities.get("can_express_uncertainty", False)):
         return True
-    # A format that can embed uncertainty markup inline (`[UNCERTAIN]`,
-    # `[CROSSED_OUT]`) is unsafe to diff against its raw report -- the markup
-    # itself would read as disagreement. That is still true here: this chair
-    # stays unmeasurable UNLESS a derived comparison view already exists for it
-    # (`comparison_reported`, never the raw `reported`). A chair that has one
-    # rejoins the instrument through the safe view rather than by declaration
-    # alone; one that has none -- a page witness whose alignment failed -- stays
-    # honestly unknown with its reason recorded.
-    #
-    # Said exactly: `markup_text_view` removes TAG markup (`<...>`) and decodes
-    # entities; `bracket_marker_view` removes exactly `[UNCERTAIN]` and
-    # `[CROSSED_OUT]`. Neither is universal, so this test is that A view was
-    # derived, not that EVERY notation is handled -- the caller picks the view
-    # by scope, and it picks the right one for both notations in the tree
-    # today (tag-shaped for the page witnesses, bracketed for the act-scoped
-    # DAI chair). A future chair whose notation is neither would be handed a
-    # view that leaves its markers in, and the guard against that is a notation
-    # field on the capability rather than a check this function could make: it
-    # sees a string and cannot tell which grammar produced it. Named rather
-    # than assumed away (principle 8).
     return isinstance(payload.get("comparison_reported"), str)
 
 
@@ -302,11 +246,9 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 {
                     "chair": chair,
                     "compared": "unknown",
-                    # Since R4 an attached page witness always carries a
-                    # comparison view, so absence means exactly one thing: the
-                    # chair's recorded alignment is explicitly unaligned (the
-                    # act-attachment names its reason). Not "before R4" -- that
-                    # message outlived the build it described.
+                    # An attached page witness always carries a comparison
+                    # view, so absence means exactly one thing: the chair's
+                    # recorded alignment is explicitly unaligned.
                     "reason": (
                         "page witness is not attached to this act; its recorded alignment "
                         "is explicitly unaligned, so there is no act-anchored comparison "
@@ -361,18 +303,10 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 "departures": spans,
                 "comparison_loss": {
                     "reading_dropped_characters": reading_view["dropped_characters"],
-                    # Removal only, never re-encoding -- the two halves of this
-                    # account must answer the same question, and the reading
-                    # half is `comparison_view`, whose docstring settles it:
-                    # "NFC discards nothing -- it re-encodes a character, it
-                    # does not remove one", and charging composition to the loss
-                    # account "would put a wrong number on every diacritic-heavy
-                    # act in the corpus this project exists to read". Summing
-                    # every `markup_text_view` loss field charged exactly that,
-                    # on the witness side alone, so a witness reporting
-                    # decomposed French was recorded as having lost a character
-                    # per accent while the identically-composed reading was not.
-                    # Markup and collapsed whitespace ARE removals and stay.
+                    # Removal only, never re-encoding: NFC composition is not a
+                    # loss (see `comparison_view`), so only markup and
+                    # collapsed whitespace are charged here, on both sides
+                    # alike.
                     "witness_dropped_characters": witness_view["dropped_characters"]
                     + markup_view["loss"]["markup_characters"]
                     + markup_view["loss"]["whitespace_characters"],

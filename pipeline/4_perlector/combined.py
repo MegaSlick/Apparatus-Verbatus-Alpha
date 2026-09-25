@@ -100,8 +100,8 @@ def run_logical_passes(
         pass_kind="perlectio",
     )
     if not draft_fed:
-        # Retain the prior only on a separate post-call copy because a reader may
-        # keep the exact dossier object it was handed.
+        # A reader may keep the exact dossier object it was handed, so the
+        # prior is retained on a separate post-call copy.
         retained_dossier = copy.deepcopy(final_dossier)
         retained_dossier["prior_draft"] = prior_draft
         if "dossier_digest" in retained_dossier:
