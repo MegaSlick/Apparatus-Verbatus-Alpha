@@ -1699,53 +1699,14 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     for act in projection.acts:
         if not isinstance(act, dict):
             raise SchemaRefusal("an Armarium projection act is not an object")
-        act_id, act_key, category = act.get("act_id"), act.get("act_key"), act.get("category")
+        act_id, act_key = act.get("act_id"), act.get("act_key")
         if not _is_line_safe_identity(act_id) or not _is_line_safe_identity(act_key):
             raise SchemaRefusal("an Armarium projection act lacks a line-safe act identity")
         if act_id in act_ids or act_key in act_keys:
             raise SchemaRefusal("an Armarium projection repeats an act identity")
         act_ids.add(act_id)
         act_keys.add(act_key)
-        if category not in _KNOWN_CATEGORIES:
-            raise SchemaRefusal(f"an Armarium projection uses unknown category {category!r}")
-        if CANONICAL_TEXT_FIELD not in act:
-            raise SchemaRefusal("an Armarium projection act has no canonical-text field")
-        literal = act[CANONICAL_TEXT_FIELD]
-        regions = act.get("source_regions", [])
-        if not isinstance(regions, list):
-            raise SchemaRefusal("an Armarium projection act has malformed source-region provenance")
-        if act.get("reason") is not None and not isinstance(act.get("reason"), str):
-            raise SchemaRefusal("an Armarium projection act has an untyped reason")
-        if category == ArmariumCategory.DELIVERED.value:
-            if not isinstance(literal, str):
-                raise SchemaRefusal("a delivered act has no literal Archetypus clean text")
-            if not isinstance(act.get("provenance"), dict) or not act["provenance"]:
-                raise SchemaRefusal("a delivered act has no provenance")
-            if not regions:
-                raise SchemaRefusal("a delivered act has no source-region provenance")
-            # `utf8_round_trip` also runs `validate_uncertainty`.
-            utf8_round_trip(act.get("uncertainty"), literal)
-            _require_damage_record(
-                act.get("text_status"),
-                act.get("transcription_annotations"),
-                act.get("uncertainty"),
-                literal,
-                subject="Armarium projection act",
-            )
-        elif literal is not None:
-            raise SchemaRefusal("a non-delivered act may not carry purported clean text")
-        elif act.get("uncertainty") is not None:
-            # Offsets into a text the act does not have.
-            raise SchemaRefusal("a non-delivered act may not carry an uncertainty layer")
-        elif act.get("text_status") is not None or act.get("transcription_annotations") is not None:
-            # An act with no Archetypus record has no status or annotation layer.
-            raise SchemaRefusal(
-                "a non-delivered act may not carry an established-text status or a "
-                "transcription annotation layer"
-            )
-        if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
-            require_approval(ARMARIUM, category, act.get("approval_ref"))
-        _reject_act_salvage_namespace(act)
+        _validate_projection_act(act)
     perlector_basis = not_measured_basis[_PERLECTOR_UNCERTAIN_SPANS]
     delivered_counts = _delivered_doubt_counts(projection.acts)
     if any(perlector_basis[field] != count for field, count in delivered_counts.items()):
@@ -1775,6 +1736,51 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     )
     if canonical_text(projection.aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("an Armarium projection aggregate does not match its measured basis")
+
+
+def _validate_projection_act(act: dict[str, Any]) -> None:
+    """One act's text, provenance and approval, as its category requires."""
+    category = act.get("category")
+    if category not in _KNOWN_CATEGORIES:
+        raise SchemaRefusal(f"an Armarium projection uses unknown category {category!r}")
+    if CANONICAL_TEXT_FIELD not in act:
+        raise SchemaRefusal("an Armarium projection act has no canonical-text field")
+    literal = act[CANONICAL_TEXT_FIELD]
+    regions = act.get("source_regions", [])
+    if not isinstance(regions, list):
+        raise SchemaRefusal("an Armarium projection act has malformed source-region provenance")
+    if act.get("reason") is not None and not isinstance(act.get("reason"), str):
+        raise SchemaRefusal("an Armarium projection act has an untyped reason")
+    if category == ArmariumCategory.DELIVERED.value:
+        if not isinstance(literal, str):
+            raise SchemaRefusal("a delivered act has no literal Archetypus clean text")
+        if not isinstance(act.get("provenance"), dict) or not act["provenance"]:
+            raise SchemaRefusal("a delivered act has no provenance")
+        if not regions:
+            raise SchemaRefusal("a delivered act has no source-region provenance")
+        # `utf8_round_trip` also runs `validate_uncertainty`.
+        utf8_round_trip(act.get("uncertainty"), literal)
+        _require_damage_record(
+            act.get("text_status"),
+            act.get("transcription_annotations"),
+            act.get("uncertainty"),
+            literal,
+            subject="Armarium projection act",
+        )
+    elif literal is not None:
+        raise SchemaRefusal("a non-delivered act may not carry purported clean text")
+    elif act.get("uncertainty") is not None:
+        # Offsets into a text the act does not have.
+        raise SchemaRefusal("a non-delivered act may not carry an uncertainty layer")
+    elif act.get("text_status") is not None or act.get("transcription_annotations") is not None:
+        # An act with no Archetypus record has no status or annotation layer.
+        raise SchemaRefusal(
+            "a non-delivered act may not carry an established-text status or a "
+            "transcription annotation layer"
+        )
+    if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
+        require_approval(ARMARIUM, category, act.get("approval_ref"))
+    _reject_act_salvage_namespace(act)
 
 
 def _delivered_doubt_counts(acts: tuple[dict[str, Any], ...]) -> dict[str, int]:
