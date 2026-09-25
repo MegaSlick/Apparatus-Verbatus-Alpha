@@ -20,8 +20,8 @@ bytes to refuse with.
 
 Refusal messages never interpolate a submitted path, since `submit.py`'s CLI
 prints them to stderr and the data-handling policy's logging rule excludes
-that value; the name still rides on the exception as `entry`, for the
-door's own approved private report.
+that value; the name still rides on the exception as `entry`, for
+`submit.py`'s own private refusal report.
 
 The walk is bounded in four independent directions -- file count, aggregate
 retained bytes, aggregate bytes actually read, and directory depth/entries --

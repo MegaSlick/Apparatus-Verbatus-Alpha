@@ -494,6 +494,8 @@ class ServingManager:
         if command_prefix is None:
             # This interpreter, so the launched vLLM is the one whose version
             # was inspected; a PATH console script could belong to another venv.
+            # `vllm.entrypoints.cli.main`, not `vllm`: the vLLM wheel ships no
+            # `vllm/__main__.py`, so `-m vllm` has no launch target and fails.
             command_prefix = (sys.executable, "-m", "vllm.entrypoints.cli.main")
         if (
             not isinstance(command_prefix, tuple)
@@ -1331,8 +1333,10 @@ def assert_processor_geometry(snapshot: VerifiedSnapshot, profile: ServingProfil
 
     They set every image's prompt-token cost, so a wrong declaration mis-counts
     every request; the check needs the weights, so it runs at every start.
-    Rows that declare neither value (fixtures) are skipped, as is a snapshot
-    with neither file present -- only a test store lacks both.
+    A row that does not declare both values (fixtures) is skipped, and so is
+    a snapshot with neither config file present -- that is safe because a
+    snapshot's completeness against the manifest is already checked
+    elsewhere.
     """
 
     declared = {field: getattr(profile, field, None) for field in ("patch_size", "merge_size")}

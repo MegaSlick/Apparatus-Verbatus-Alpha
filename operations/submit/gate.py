@@ -1,8 +1,10 @@
 """The data-handling gate: where real material may live, checked mechanically.
 
 The gate *policy* is this directory's `README.md`; this module is only its
-mechanical enforcement -- policy load and storage-root checks, independent of
-any per-run sign-off (git ingress and CI's history scan already cover that).
+mechanical enforcement -- policy load and storage-root checks. Per-run
+sign-off is a separate, human decision this module does not make: git
+ingress and CI's history scan only keep real material out of git, and
+sending it to a vendor is a separate lead decision on top of that.
 Fixture status is never a flag: the door's fixture route comes from the
 repository's own declared fixture root and manifest, never a caller-supplied
 name or boolean. This lives in `operations/submit/`, not beside the door,

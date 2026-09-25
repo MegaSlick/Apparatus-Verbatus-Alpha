@@ -469,7 +469,7 @@ def assert_image_before_text_on_wire(content: list[Mapping[str, object]]) -> Non
     (vllm-project/vllm#14047), so a rendered body checked under ``string``
     format would read image-first and pass no matter what order the caller
     actually assembled -- a no-op that could never catch a caller putting
-    text first (hostile review item A). Under the pinned ``openai`` format
+    text first. Under the pinned ``openai`` format
     the rendered content list keeps the caller's own order verbatim, so this
     check against the rendered body reflects a real caller ordering bug
     rather than the engine's own reformatting.
@@ -711,8 +711,9 @@ def _bounded_read(response: Any, deadline: float) -> bytes:
     whole-call bound itself is enforced above this by a joined worker thread,
     since no check between reads can regain control from an already-blocked
     receive; this check turns an ordinary slow body into a precise, named
-    refusal instead. One extra byte past the size bound is requested so a
-    response at exactly the limit does not look like an overage.
+    refusal instead. One extra byte past the size bound is requested so an
+    oversized body is detected as such, rather than silently truncated at
+    the limit and mistaken for one that fit.
 
     ``read1``, not ``read``, so a trickling responder returns control here
     instead of blocking until the full amount arrives -- at the cost of

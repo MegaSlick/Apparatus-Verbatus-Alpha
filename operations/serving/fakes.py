@@ -1,7 +1,7 @@
 """A shared fake serving endpoint for stage tests built against :class:`ChairClient`.
 
-Mirrors :mod:`operations.serving.test_manager`'s own fakes without being
-moved there, since Attestatores and Perlector stage tests both need one
+Copies :mod:`operations.serving.test_manager`'s own fakes rather than
+importing them, since Attestatores and Perlector stage tests both need one
 scripted endpoint speaking the reading contract.
 
 The builders under "the structure chair's answers" script what the

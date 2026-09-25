@@ -120,9 +120,7 @@ def walk_folder(source: Path) -> list[dict[str, Any]]:
 
     Not one byte of content is retained. This tool writes a manifest of paths,
     digests and sizes, and never looks at what a file holds — so `max_bytes=0` is
-    the honest request, and it also removes the second hand-kept copy of the door's
-    64 MiB admission limit that used to live here under another name. The digest is
-    streamed and exact whatever the file's size.
+    the honest request. The digest is streamed and exact whatever the file's size.
     """
     sources = inventory.read_submission(source, max_bytes=RETAIN_NO_BYTES)
     if not sources:
@@ -255,7 +253,9 @@ def atomic_create(target: Path, data: bytes) -> bool:
         # `mkstemp`, not a pid-derived name: a pid can be reused, leaving a
         # stale, guessable temp name on disk that then wedges every later
         # write. `mkstemp` picks an unpredictable name per attempt with
-        # O_CREAT|O_EXCL, mode 0600 -- same as `common/runtree/store.py`.
+        # O_CREAT|O_EXCL, mode 0600 -- same as `common/runtree/store.py` --
+        # so a symlink planted at a guessed name is refused, not followed,
+        # unlike `open()` which would write through it.
         descriptor, raw_temporary = tempfile.mkstemp(
             prefix=f".{target.name}.tmp-", dir=target.parent
         )
@@ -288,6 +288,9 @@ def atomic_create(target: Path, data: bytes) -> bool:
         completed = True
         return True
     except OSError as error:
+        # Without this handler an OSError from the block above escaped `main()`
+        # as a traceback, printing the manifest path to stderr -- forbidden by
+        # the data-handling policy's logging rule.
         raise SubmitRefusal(
             "the submission manifest could not be written; nothing was sealed"
         ) from error
@@ -296,6 +299,9 @@ def atomic_create(target: Path, data: bytes) -> bool:
         # temporary file remains on disk; `temporary` is None only when
         # `mkstemp` itself failed, leaving nothing to remove.
         try:
+            # `missing_ok=True` unlinks directly rather than checking existence
+            # first: a pre-check would be a second `stat` that can itself fail
+            # on an over-long temp path.
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
         except OSError as error:

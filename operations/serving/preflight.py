@@ -59,10 +59,9 @@ def prepare_log_root(log_root: str | Path) -> Path:
 
     Lives here so both production seams give the same guarantee:
     ``assemble_serving_preflight_callback`` calls it when its callback runs,
-    and :meth:`ServingSmokeReader.read` calls it before each start — so the
-    plain smoke-reader seam cannot write a run's logs through a symlinked or
-    group-readable root that only the callback seam used to refuse.
-    Construction stays effect-free on both seams either way.
+    and :meth:`ServingSmokeReader.read` calls it before each start — so
+    neither seam can write a run's logs through a symlinked or
+    group-readable root. Construction stays effect-free on both seams either way.
     """
 
     prepared = Path(log_root)
@@ -119,9 +118,9 @@ def assert_resized_pixels_within_trained_geometry(
     resize port) has run -- never against the source image.  A resize
     algorithm that silently under- or over-shoots a vendor's own declared
     training range (Model card "Parameters", ``processor_config.json``) reads
-    a page at the wrong scale with no error anywhere else (hostile review
-    item A; the same silent-drop failure mode as an unrecognised
-    ``mm_processor_kwargs``, GOALS 2's worst-rated failure).
+    a page at the wrong scale with no error anywhere else -- the same
+    silent-drop failure mode as an unrecognised ``mm_processor_kwargs``,
+    GOALS 2's worst-rated failure.
     """
 
     if resized_width <= 0 or resized_height <= 0:
@@ -157,9 +156,9 @@ def assert_generation_config_key_coverage(
     with the recorded reason it is withheld (Churro's paper-era ``0.6``
     temperature is the one case on record).  A key in neither set is not a
     decision anyone made -- it is a vendor value quietly falling on the floor,
-    exactly the shape hostile review item A names for the JSON grammar this
-    project no longer imposes on Chandra.  A key claimed both sent and
-    deliberately withheld is a contradiction, refused the same way.
+    the same shape as the JSON grammar this project no longer imposes on
+    Chandra.  A key claimed both sent and deliberately withheld is a
+    contradiction, refused the same way.
     """
 
     vendor_keys = set(vendor_generation_config)
@@ -355,9 +354,9 @@ class ServingSmokeReader:
         self.calibration_for = calibration_for
         self.placement_table = placement_table
         # `operations.pod.preflight.SmokeReader.read` does not carry the measured
-        # profile as of spec 04's landed shape, so it travels bound to the reader
-        # instead of per call. `assemble_serving_preflight_callback` sets this the
-        # moment its own probe measures one, right before `PreflightRunner.run`.
+        # profile, so it travels bound to the reader instead of per call.
+        # `assemble_serving_preflight_callback` sets this the moment its own
+        # probe measures one, right before `PreflightRunner.run`.
         self.gpu_profile = gpu_profile
 
     def read(
@@ -484,7 +483,9 @@ class ServingSmokeReader:
         vLLM's `--mm-processor-kwargs` -- comparing them directly always fails,
         so this checks the sound relation instead: an image whose longest edge
         is at most L has at most L*L pixels, which is conservative rather than
-        exact.
+        exact. `pixel_cap`'s name reads as a pixel-count cap and is not one,
+        which GLOSSARY.md's one-word-one-concept rule forbids; the fix belongs
+        with `config/pod_placement.toml`, not here.
         """
 
         recipe = placement.recipe

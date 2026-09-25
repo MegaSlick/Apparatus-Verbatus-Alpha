@@ -171,10 +171,9 @@ def assemble_serving_preflight_callback(
         prepared_log_root = prepare_log_root(log_root)
         probe = gpu_probe or SystemGpuProbe(disk_path=prepared_log_root)
         profile = probe.profile(dtype)
-        # `operations.pod.preflight.SmokeReader.read` carries no profile parameter
-        # in spec 04's landed shape, so the reader holds the measured profile
-        # itself; bind it the moment it exists, immediately before the one run
-        # that will read it.
+        # `operations.pod.preflight.SmokeReader.read` carries no profile
+        # parameter, so the reader holds the measured profile itself; bind it
+        # the moment it exists, immediately before the one run that will read it.
         reader.gpu_profile = profile
         return runner.run(profile).to_record()
 
