@@ -1,6 +1,6 @@
 """``VLLMReader``: the live implementation of the ``Reader`` protocol
-(``reader.py``), behind one ``ChairClient`` (``operations/serving/client.py``,
-U2) already entered for this chair's pass.
+(``reader.py``), behind one ``ChairClient`` (``operations/serving/client.py``)
+already entered for this chair's pass.
 
 ``FixtureReader`` stands in for an engine this chamber has no pod for.
 ``VLLMReader`` is the seam a real one occupies: everything downstream --
@@ -32,24 +32,24 @@ copies it onto the retained call record, so the arithmetic sits beside the
 reading it allowed. Nothing is ever downscaled to make a request fit.
 
 **Admission is on an upper bound; the floor travels beside it.** This chair's
-prompt is dossier-built, so it has no fixed text to seal a constant against, and
-it used to be admitted on ``perlector_prompt_tokens`` -- a *lower* bound,
-measured over a 73-word pass-A dossier and over plain prose. A check that admits
-on a lower bound admits exactly the requests it should have refused: a dossier
-carrying five witnesses' full act texts, or a pass-B prompt with reproof
-instruments appended, would pass it and then be answered with the HTTP 400 the
-check exists to prevent. ``perlector_prompt_bound`` is the measured upper bound
-this reader now admits on -- the maximum tokens-per-character ratio over 168
-rendered prompts, with a stated margin, over the measured chat-template overhead
--- and it is sealed against ``prompts.py``'s own module digest, so editing the
+prompt is dossier-built, so it has no fixed text to seal a constant against.
+A check admitting on a lower bound would admit exactly the requests it should
+refuse: a dossier carrying five witnesses' full act texts, or a pass-B prompt
+with reproof instruments appended, would pass it and then be answered with the
+HTTP 400 the check exists to prevent. ``perlector_prompt_bound`` is the
+measured upper bound this reader admits on -- the maximum tokens-per-character
+ratio over 168 rendered prompts, with a stated margin, over the measured
+chat-template overhead -- and it is sealed against ``prompts.py``'s own module
+digest, so editing the
 prompt builder expires the measurement rather than leaving a stale rate in
 force. The floor is still computed, and is recorded on the capacity record
 beside the bound with both bases named, because it is what says a refused
 request was refused by a measurement and not by a margin.
 
 **The stop-reason mapping is where an unrecognized engine answer becomes a
-loud stop, not a silent guess.** ``truncation.py:77-93`` documents the rule
-this implements: an engine's own word is authoritative for ``length``, but a
+loud stop, not a silent guess.** ``truncation.py::classify``'s docstring
+documents the rule this implements: an engine's own word is authoritative for
+``length``, but a
 string this seam does not recognize is not folded into either bucket -- it is
 refused by name, with the raw response bytes already retained (they are
 retained before this reader is ever asked to interpret them --
@@ -318,16 +318,16 @@ class VLLMReader:
             )
 
         # Page render first, then the prompt text, then the act's own region
-        # crops -- hostile-review item M (SPEC_FINDINGS 2026-09-06). The page
-        # render is the one image shared, byte-identical, across every act on
-        # the same page; the region crop is the one image unique to this act.
+        # crops. The page render is the one image shared, byte-identical,
+        # across every act on the same page; the region crop is the one image
+        # unique to this act.
         # A chat template that renders a message's content parts in list order
         # sees the shared block first and the act-unique block last, which is
         # what gives vLLM's automatic prefix cache the longest run of
         # identical leading tokens across the acts on one page; putting it
-        # after the act's own text, as this seam did until now, invalidated
-        # the cache on every act's own rendered dossier even though the page
-        # pixels never moved. **Whether the engine's chat template actually
+        # after the act's own text would invalidate the cache on every act's
+        # own rendered dossier even though the page pixels never moved.
+        # **Whether the engine's chat template actually
         # renders content in list order, rather than falling back to a
         # string convention that would re-order it regardless, is a fact
         # about the launch argument `common/chair_wire.py` documents

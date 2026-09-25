@@ -138,10 +138,8 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
             resampler = "pillow-lanczos"
         # The project's own deterministic encoder, never Pillow's: Pillow's
         # wheels bundle their own zlib, so `rendered.save(...)` produces
-        # different bytes on Linux than on macOS — and a run-time blob's bytes
+        # different bytes on Linux than on macOS, and a run-time blob's bytes
         # name its content-addressed path and every artifact digest downstream.
-        # A Linux CI runner once re-derived both acceptance pins to values
-        # no macOS machine could reproduce.
         grayscale = rendered.convert("L")
         samples = grayscale.tobytes()
         deterministic = encode_grayscale_png_deterministic(
@@ -615,17 +613,11 @@ def assert_no_order_bearing_field(value: Any, path: str = "$") -> None:
     that reintroduces a trust/order/preferred field is caught immediately
     rather than argued about at review.
 
-    This is the last member of the no-picker family (principle 1) to stop
-    recursing. The family is enumerated and guarded in
-    `common/test_preference_screen_walks.py`; the round that converted it
-    reported four screens and complete coverage, and there were six -- this one
-    missed because it lives in dossier assembly and is not *called* a preference
-    screen, while doing the same forbidden-vocabulary walk over the same class
-    of witness-derived data. It is iterative now for the family's reason: a
-    dossier carries every Testimonium verbatim, model-authored JSON whose depth
-    this build does not choose, and a recursive walk over a deep one raised
-    `RecursionError` -- a crash naming nothing, from the guard standing over the
-    rule, on the production path, before the digest is taken.
+    Iterative, not recursive: a dossier carries every Testimonium verbatim,
+    model-authored JSON whose depth this build does not choose, and a
+    recursive walk over a deep one raised `RecursionError` -- a crash naming
+    nothing, from the guard standing over the rule, on the production path,
+    before the digest is taken.
 
     The path is assembled only when a field is refused, so a deep dossier costs
     this walk its own list rather than the square of its depth in string bytes.
@@ -668,8 +660,8 @@ def assert_no_order_bearing_field(value: Any, path: str = "$") -> None:
                 tasks.append(("value", item, (f".{key}", trail)))
             pending.extend(reversed(tasks))
         elif isinstance(current, (list, tuple)):
-            # F085: a tuple serializes exactly like a list through
-            # `canonical_bytes`, so a field wrapped in one must be screened the
-            # same way or it reaches the sealed dossier unexamined.
+            # A tuple serializes exactly like a list through `canonical_bytes`,
+            # so a field wrapped in one must be screened the same way or it
+            # reaches the sealed dossier unexamined.
             for index in range(len(current) - 1, -1, -1):
                 pending.append(("value", current[index], (f"[{index}]", trail)))
