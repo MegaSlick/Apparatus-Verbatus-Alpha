@@ -396,10 +396,13 @@ def fallback_tiles(
 ) -> list[ActGroup]:
     """Predetermined overlapping crops covering a page that requires fallback.
 
-    Every pixel falls inside at least one band, and adjacent bands overlap by
-    `overlap_px`, so a line sitting exactly on a boundary is whole inside one
-    of the two rather than cut in half by both. Each group's rationale says
-    it's a fallback tile, so nothing downstream mistakes a grid for a real find.
+    Every pixel falls inside at least one band. At an unclipped boundary, the
+    earlier band extends down and the later band extends up by `overlap_px`,
+    so adjacent bands overlap by `2 * overlap_px`. Page-edge clipping can
+    reduce this overlap. A line sitting exactly on a boundary is whole inside
+    one of the two rather than cut in half by both. Each group's rationale records
+    that it is a fallback tile. `_publish_act_group` uses `structure_evidence`
+    to prevent fallback grids from providing continuation corroboration.
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no area to tile")

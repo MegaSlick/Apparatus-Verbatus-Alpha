@@ -7,7 +7,7 @@ geometry the answer mints. Nothing here cuts a crop or writes a stage artifact
 pass uses, so a crop has exactly one author and a page exactly one status
 record whichever pass marked it out.
 
-**What is sent.** One `chat-completions` request per sealed page, the rendered
+**What is sent.** At most one `chat-completions` request per page per attempt, subject to capacity admission. The rendered
 and resized RGB PNG `prepare_page_request_image` produces as a
 `data:image/png;base64` block, bound back to the sealed page by a
 transformation artifact -- `image_sha256s` records that rendered image's own
@@ -35,9 +35,10 @@ proposal marks the page `detected`; one that proposes nothing marks it
 `fallback-tiles` and cuts the page into predetermined crops; a cut-off, an
 unparseable answer, an unusable call, or rectangles that touch none of the
 scan's own ink holds the page under `STRUCTURE_HELD_CODES`. A refusal before
-the chair was reached (`ServingError`/`EndpointUnavailable`) is fatal, with
-nothing published for the page; a capacity refusal or a dispatched call that
-came back unusable, with the durable call facts recorded, instead holds the
+the chair was reached (`ServingError`/`EndpointUnavailable`) is fatal: no
+answer or page status is published, but the request-image artefact remains; a
+capacity refusal or a dispatched call that came back unusable, with the
+durable call facts recorded, instead holds the
 page under `HELD_CALL_UNUSABLE` -- a terminal outcome, not a pending one. A
 bad reading is never repaired or re-rolled; the bounded call retry
 (`ABSOLUTE_STRUCTURE_ATTEMPT_CEILING`) only recovers a structural loop or an
@@ -1131,7 +1132,8 @@ def ask_page(
     Three refusal scopes stay distinct: a transport failure or an HTTP/source
     refusal after dispatch becomes one terminal held attempt (so resume can't
     duplicate a possibly completed inference); a pre-client serving failure
-    aborts, since no request fact exists to publish; a custody refusal is one
+    aborts, since no durable call record exists to publish (the request-image
+    artefact remains); a custody refusal is one
     page's outcome, not the run's -- the bytes were retained but the binding
     that proves which call produced them couldn't be, so only this page holds.
     """

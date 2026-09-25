@@ -110,7 +110,7 @@ def framed_pass(tmp_path_factory):
     """One whole Designator initial pass over a framed page 1."""
     with pytest.MonkeyPatch.context() as monkeypatch:
         root = tmp_path_factory.mktemp("framed") / "runs"
-        # The shipped bound, asked for by name; not about the residual ceiling.
+        # The shipped residual-component bound (2000); page-spanning remains 5000.
         grouping_config = _grouping_config_with_bound(root.parent, 2000)
         _base_run(root, grouping_config)
         designator = _load_designator()
