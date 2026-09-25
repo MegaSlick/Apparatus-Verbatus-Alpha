@@ -266,18 +266,19 @@ def _is_run_relative(path: str) -> bool:
 
 
 def digest_ref(value: Any, what: str) -> dict[str, str]:
-    """A closed `{relative_path, sha256}` reference to bytes inside the run tree.
+    """A closed `{relative_path, sha256}` reference, checked on its path text.
 
-    Empty, `.` and `..` segments are refused, and so is a leading `/`, so a
-    reference sealed here can never name bytes outside the run root.
+    A leading `/`, an empty, `.` or `..` segment and a NUL are refused, so the
+    text cannot name a place outside the run root; symlinks are
+    `RunTree.resolve()`'s job when the path is read.
     """
     if not isinstance(value, dict) or set(value) != {"relative_path", "sha256"}:
         raise SchemaRefusal(f"{what} is not a closed {{relative_path, sha256}} reference")
     path, sha = value["relative_path"], value["sha256"]
-    if type(path) is not str or not path:
+    if type(path) is not str or not path.strip():
         raise SchemaRefusal(f"{what} has no relative_path")
     if not _is_run_relative(path):
-        raise SchemaRefusal(f"{what} relative_path {path!r} escapes the run tree")
+        raise SchemaRefusal(f"{what} relative_path {path!r} is not a canonical run-relative path")
     if not is_sha256(sha):
         raise SchemaRefusal(f"{what} sha256 is not a lowercase sha256")
     return {"relative_path": path, "sha256": sha}

@@ -710,8 +710,6 @@ def test_bracket_marker_view_refuses_non_text_input():
 
 
 def test_feedings_uncertainty_tokens_are_the_contracts():
-    """`feeding.py` still carries its own copy of the markers; this pins it
-    until it imports `common.contracts.uncertainty.UNCERTAINTY_TOKENS`."""
     import importlib.util
 
     feeding_path = (

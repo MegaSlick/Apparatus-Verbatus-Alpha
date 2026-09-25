@@ -662,7 +662,7 @@ def test_instrument_sampling_is_keyed_only_by_logical_act(monkeypatch):
 
 @pytest.mark.parametrize("escaping_path", ["../outside", "a/../../outside", "/etc/passwd"])
 def test_a_traversal_partition_ref_is_refused_before_any_reader_call(escaping_path):
-    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+    with pytest.raises(SchemaRefusal, match="is not a canonical run-relative path"):
         build_autopsia(
             logical_act_id="pac_fixture",
             partition_ref={"relative_path": escaping_path, "sha256": "c" * 64},
@@ -676,7 +676,7 @@ def test_a_traversal_region_ref_is_refused_before_any_reader_call():
         **view(A, "a"),
         "region_refs": [{"relative_path": "../outside", "sha256": "c" * 64}],
     }
-    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+    with pytest.raises(SchemaRefusal, match="is not a canonical run-relative path"):
         build_autopsia(
             logical_act_id="pac_fixture",
             partition_ref=REF,
@@ -686,7 +686,7 @@ def test_a_traversal_region_ref_is_refused_before_any_reader_call():
 
 
 def test_a_traversal_dissent_shell_reference_is_refused():
-    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+    with pytest.raises(SchemaRefusal, match="is not a canonical run-relative path"):
         dissent_shell(
             perlectio_ref={"relative_path": "../outside", "sha256": "c" * 64},
             autopsia=autopsia(),

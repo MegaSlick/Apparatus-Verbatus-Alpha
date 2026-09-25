@@ -506,11 +506,21 @@ def _reference_screens():
     }
 
 
-@pytest.mark.parametrize("path", ["../escape", "a/../../escape", "/absolute", "a//b", "./a"])
+@pytest.mark.parametrize(
+    ("path", "match"),
+    [
+        ("../escape", "is not a canonical run-relative path"),
+        ("a/../../escape", "is not a canonical run-relative path"),
+        ("/absolute", "is not a canonical run-relative path"),
+        ("a//b", "is not a canonical run-relative path"),
+        ("./a", "is not a canonical run-relative path"),
+        ("a\0b", "is not a canonical run-relative path"),
+        ("   ", "has no relative_path"),
+    ],
+)
 @pytest.mark.parametrize(
     "screen", ["digest_ref", "run receipt", "chandra custody", "cross-capture dissent"]
 )
-def test_every_reference_screen_refuses_a_path_outside_the_run_tree(screen, path):
-    """Only some screens refused `..` before they shared `digest_ref`."""
-    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+def test_every_reference_screen_refuses_a_path_outside_the_run_tree(screen, path, match):
+    with pytest.raises(SchemaRefusal, match=match):
         _reference_screens()[screen]({"relative_path": path, "sha256": "a" * 64})

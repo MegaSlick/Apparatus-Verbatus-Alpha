@@ -256,11 +256,11 @@ def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_pa
         "receipt_reference": receipt_reference,
         "launch_audit_reference": audit_reference,
     }
-    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+    with pytest.raises(SchemaRefusal, match="is not a canonical run-relative path"):
         context.write_serving_evidence_manifest(
             {"relative_path": "/absolute", "sha256": "c" * 64}, audit_reference
         )
-    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+    with pytest.raises(SchemaRefusal, match="is not a canonical run-relative path"):
         context.write_serving_evidence_manifest(
             {"relative_path": "stages/preflight/../../escape", "sha256": "c" * 64}, audit_reference
         )

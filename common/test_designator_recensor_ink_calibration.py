@@ -111,8 +111,8 @@ def test_the_sealed_ink_bound_still_sits_at_the_level_it_was_measured_at():
     against a median of 2434 over the other 121 -- interleaved, and no value of
     the bound separates them at all.
 
-    So the constant is pinned here, in the file that already reads
-    `SECONDARY_MARGIN` as a source literal, rather than the level being moved
+    So the constant is pinned here, in the file that already pins
+    `SECONDARY_MARGIN`, rather than the level being moved
     into `[grouping.background]` as a fifth field. A sealed field would be a
     second home for one number: `_derived_ink_margin` floors at
     `PRIMARY_MARGIN`, `conservation`'s sensitivity argument is stated against it,
@@ -185,8 +185,8 @@ def _ink_at(rows: list[bytearray], threshold: int) -> set[tuple[int, int]]:
 def test_the_containment_is_not_vacuous_on_a_photographed_page():
     """One background, three margins, and three ink sets that actually nest.
 
-    The first test in this file pins `recensor_contrast >= SECONDARY_MARGIN` as
-    two source literals. That inequality orders two *thresholds* only if both are
+    The first test in this file pins `recensor_contrast >= SECONDARY_MARGIN`.
+    That inequality orders two *thresholds* only if both are
     subtracted from the same background, and on a photographed page they were
     not: the Designator inferred 210 here and the audit inferred 5, whose 40-level
     contrast is below every 8-bit sample. The audit's ink set was empty, its

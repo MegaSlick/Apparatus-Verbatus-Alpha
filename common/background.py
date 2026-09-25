@@ -42,7 +42,9 @@ PRIMARY_MARGIN: Final = 20
 # Deliberately not derived or configured: a fixed 2 below background is
 # smaller than any derived margin, so the Designator's secondary scan and
 # conservation, and the Perlector's page-fallback reader, are strictly more
-# sensitive than the primary scan on every page, never the reverse.
+# sensitive than the primary scan on every page, never the reverse. A derived
+# value could invert that on some page, trading a visible over-count for a
+# possible silent loss.
 SECONDARY_MARGIN: Final = 2
 
 # The denominator of every basis-point fraction this module is handed. The

@@ -308,7 +308,7 @@ def test_partition_input_collections_refuse_their_own_malformed_shape():
             capture_alignments=[],
             source_ledger=[SOURCE_A],
         )
-    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+    with pytest.raises(SchemaRefusal, match="is not a canonical run-relative path"):
         build_physical_act_partition(
             register=empty_register(),
             register_digest=register_digest(empty_register()),
@@ -2147,7 +2147,7 @@ def test_one_source_split_into_two_pages_resolves_each_page_to_its_own_physical_
 
 @pytest.mark.parametrize("escaping_path", ["../outside", "a/../../outside", "/etc/passwd"])
 def test_a_traversal_proposal_seal_ref_is_refused_at_the_builder(escaping_path):
-    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+    with pytest.raises(SchemaRefusal, match="is not a canonical run-relative path"):
         build_physical_act_partition(
             register=empty_register(),
             register_digest=register_digest(empty_register()),
@@ -2170,7 +2170,7 @@ def test_a_traversal_proposal_seal_ref_is_refused_at_the_validator():
         "findings": [],
     }
     payload["self_hash"] = self_hash(payload)
-    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+    with pytest.raises(SchemaRefusal, match="is not a canonical run-relative path"):
         validate_physical_act_partition(payload)
 
 
