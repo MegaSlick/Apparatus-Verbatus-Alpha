@@ -1,4 +1,4 @@
-"""Strict, intentionally unconfigured spend policy and shared paid-action gate."""
+"""Strict spend policy and the shared paid-action gate."""
 
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def confirmation_phrase(
 
 @dataclass(frozen=True, slots=True)
 class SpendPolicy:
-    """Ceilings the project lead configures; the checked-in policy intentionally has none.
+    """Ceilings the project lead configures.
 
     ``max_hourly_usd`` and ``max_estimated_metered_cost_usd`` apply to all
     launch-time metering: the pod plus its attached volume. Ongoing volume
@@ -107,8 +107,8 @@ class SpendPolicy:
     run to its hard deadline, so the floor is tested against the observed
     balance both now and net of this action's own estimated cost plus every
     locally reserved paid-action liability -- a reserve concurrent runs may
-    spend through is not a reserve. The documented
-    ``"50.00"`` config-template default is unverified and must be checked
+    spend through is not a reserve. The configured
+    ``"50.00"`` floor is unverified and must be checked
     against RunPod before a live run. ``account_balance_alert_usd`` is a higher
     warning threshold: it never blocks a paid action.
     """

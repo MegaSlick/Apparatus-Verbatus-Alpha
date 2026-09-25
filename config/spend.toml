@@ -1,4 +1,5 @@
-# Pod-plus-attached-volume money ceilings; config/README.md documents every key.
+# Pod-plus-attached-volume money ceilings. config/README.md describes the keys and
+# operations/pod/spend.py refuses any that are missing, unknown or inconsistent.
 # This file being configured is not permission to launch: every boot is asked for
 # separately in the session that runs it.
 schema = "pod-spend.v3"
@@ -6,6 +7,7 @@ state = "configured"
 currency = "USD"
 
 # Decimal strings, never TOML numbers: a float does not keep money exact.
+# $0.50 admits the RTX A5000 ($0.27) and the A40 ($0.44) beside a volume of up to $0.06/h.
 max_hourly_usd = "0.50"
 max_estimated_metered_cost_usd = "2.00"
 

@@ -169,7 +169,7 @@ be compared directly: `pod_placement.toml` caps a longest edge in pixels, while
 a serving profile's `max_pixels` is a total pixel count passed to vLLM. Both
 files say so where the value is defined.
 
-`spend.toml` is intentionally a refusal, not a placeholder default. A configured version
+`spend.toml` is the configured policy; an unconfigured one refuses every paid action. It
 must name `currency = "USD"`, `max_hourly_usd` and `max_estimated_metered_cost_usd`
 ceilings for the combined metered pod and attached-volume hourly price and cost through
 the hard lifetime, the `hard_lifetime_seconds` itself, plus a bounded

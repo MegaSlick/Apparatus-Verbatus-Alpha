@@ -336,8 +336,8 @@ in the launch record's `balance_notification`, not refused.
   and a row whose *reviewed* price exceeds `max_hourly_usd` net of the volume rate. Both
   are `refused-card`. An unreadable table refuses the launch. `adopt` is not gated: the pod
   exists, and refusing it would leave it billing unguarded.
-- **Spend policy.** `config/spend.toml` ships unconfigured, so paid paths refuse until the
-  project lead supplies a reviewed policy. `billing_cutoff_margin_seconds` must lie in
+- **Spend policy.** Paid paths refuse unless `config/spend.toml` is a configured policy
+  the project lead reviewed. `billing_cutoff_margin_seconds` must lie in
   0–3600 (never clamped) and is sealed into both shutdown controllers.
 - **Balance floor.** `account_balance_floor_usd` is tested against the observed balance net
   of this action's cost to its deadline and every liability in the same lease root. An
