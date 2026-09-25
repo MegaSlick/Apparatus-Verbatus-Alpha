@@ -520,10 +520,13 @@ def _inventory_descriptor(
                 raise BackupRefusal(f"run tree member {relative!r} is a symbolic link")
             if _is_os_residue(name):
                 # Neither copied nor inventoried: this was never a run-tree
-                # member. Checked before the directory branch below, since
-                # `.Trashes`, `.fseventsd` and `.Spotlight-V100` are
-                # directories on macOS and would otherwise be walked and
-                # hashed into the snapshot like any other directory.
+                # member, so excluding it needs no entry in the snapshot the
+                # way a publication temporary's exclusion does -- a known
+                # limitation, not tracked anywhere else. Checked before the
+                # directory branch below, since `.Trashes`, `.fseventsd` and
+                # `.Spotlight-V100` are directories on macOS and would
+                # otherwise be walked and hashed into the snapshot like any
+                # other directory.
                 continue
             if stat.S_ISDIR(details.st_mode):
                 if len(stack) >= MAX_DIRECTORY_DEPTH:

@@ -8,8 +8,8 @@ learns which vendor's volume it is reading. Same split, and the same reason, as
 resume journal and refusal-to-overwrite all stay in `ChecksummedTransfer`,
 which already does them for every target.
 
-**RunPod's documented S3 API**, quoted rather than paraphrased where the detail
-is load-bearing:
+**RunPod's documented S3 API** (`https://docs.runpod.io/storage/s3-api`),
+quoted rather than paraphrased where the detail is load-bearing:
 
 - endpoint: one per datacenter, `https://s3api-DATACENTER.runpod.io/`, with the
   datacenter **lowercased** in the hostname (`EU-CZ-1` → `s3api-eu-cz-1.runpod.io`).
@@ -44,15 +44,14 @@ is load-bearing:
    whole-file MD5 even on AWS, the sealed manifest carries SHA-256 rather than
    MD5, and an integrity check built on a value whose definition is unclear is not
    an integrity check.
-3. The original upload path was run once against the authenticated RunPod
-   endpoint: the image bytes arrived, both `HeadObject` and `GetObject`
-   omitted the supplied custom metadata, and an independent hash of the
-   returned bytes matched the source. The target-byte fallback added from
-   that observation is covered by injected-client tests and has not been
-   rerun against RunPod; `S3VolumeObjectReader` listing/fetch remains
-   untested against the real endpoint. boto3 is imported lazily, so `upload`
-   without `--network-volume` does not construct a client or read storage
-   credentials.
+3. Against the authenticated RunPod endpoint, the image bytes arrived, both
+   `HeadObject` and `GetObject` omitted the supplied custom metadata, and an
+   independent hash of the returned bytes matched the source. The target-byte
+   fallback added from that observation is covered by injected-client tests
+   and has not been rerun against RunPod; `S3VolumeObjectReader` listing/fetch
+   remains untested against the real endpoint. boto3 is imported lazily, so
+   `upload` without `--network-volume` does not construct a client or read
+   storage credentials.
 """
 
 from __future__ import annotations
@@ -273,7 +272,7 @@ class S3VolumeTarget:
                     # unmake the bytes already read and digested. Left to the
                     # outer handler it became a `VolumeTransferRefusal`, so a
                     # verified transfer was recorded as partial on a cleanup
-                    # error. `S3VolumeObjectReader.read` already
+                    # error. `S3VolumeReadChannel.read` already
                     # suppresses this for the same reason.
                     try:
                         closer()
@@ -304,7 +303,8 @@ class S3VolumeTarget:
 
         `upload_fileobj` takes the same `ExtraArgs`/`Config` as `upload_file` and
         needs only a binary-mode, readable file object — no path, no seekability
-        requirement beyond what this handle already gives it.
+        requirement beyond what this handle already gives it (see
+        `https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/upload_fileobj.html`).
         """
 
         try:
@@ -535,11 +535,12 @@ class S3VolumeObjectReader:
                     )
             truncated = page.get("IsTruncated")
             if not isinstance(truncated, bool):
-                # A page with no usable `IsTruncated` used to read exactly like
-                # `False` -- complete -- so a client answer missing or
-                # malforming the one field this reader trusts to know it has
-                # seen everything could end the walk early and let `fetch-run`
-                # record "verified" over a listing that was never proven whole.
+                # A page with no usable `IsTruncated` would otherwise read
+                # exactly like `False` -- complete -- so a client answer
+                # missing or malforming the one field this reader trusts to
+                # know it has seen everything could end the walk early and let
+                # `fetch-run` record "verified" over a listing that was never
+                # proven whole.
                 raise VolumeTransferRefusal(
                     f"the network volume answered a listing of {prefix!r} with no usable "
                     "IsTruncated flag; a listing this reader cannot tell complete from "

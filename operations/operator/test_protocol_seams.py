@@ -145,8 +145,9 @@ def _missing_concrete_methods(protocol: type, implementation: type) -> list[str]
 class _DescriptorSeam(Protocol):
     """Not a real seam: the shapes `_missing_concrete_methods` must judge.
 
-    No pair in `SEAMS` declares a descriptor member today, so this exercises
-    the walker's handling of one nowhere else would catch.
+    No pair in `SEAMS` declares a descriptor member today, so the walker's
+    handling of one is exercised nowhere else and could be wrong -- or could
+    be broken later -- without a single test noticing.
     """
 
     @property

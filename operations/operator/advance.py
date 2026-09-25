@@ -449,7 +449,9 @@ def trigger_advance(
     # naming which tree may be written; the decision travels on stdin, the
     # channel a requester may fill, naming only which sealed boundary inside
     # that tree. A request that could also name the tree could redirect the
-    # one permitted write at a run nobody granted.
+    # one permitted write at a run nobody granted. `validate_run_id` has
+    # already refused anything but `[a-z0-9._-]`, and `root` is absolute, so
+    # neither value can be read by the child's parser as an option.
     request = json.dumps({"stage": stage, "reason": reason, "expected_digest": expected_digest})
     if len(request) > MAX_ADVANCE_REQUEST_CHARACTERS:
         raise OperatorError(

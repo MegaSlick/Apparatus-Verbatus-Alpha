@@ -403,11 +403,11 @@ class PlainParser(argparse.ArgumentParser):
 
 
 def _annotate_unrecognized(message: str) -> str:
-    """Name the fix when argparse's unrecognized-arguments message is our own.
+    """Name the fix for the one unrecognized-arguments cause this is (F004).
 
-    `message` is argparse's own wording, matched by prefix rather than
-    parsed, so an unrecognized wording reaches the operator unmodified
-    instead of being misread.
+    `message` is argparse's own wording, not this codebase's -- matched by
+    prefix rather than parsed, so a wording this function does not
+    recognize still reaches the operator unmodified instead of being misread.
     """
 
     prefix = "unrecognized arguments: "
@@ -442,6 +442,9 @@ def build_parser() -> PlainParser:
         type=Path,
         # No computed default: `main` resolves the durable default against
         # the resolved workspace, and `None` is how it knows none was named.
+        # Deciding that from a scan of raw argv could not work: argparse
+        # accepts unambiguous abbreviations like `--state-di`, so a scan
+        # looking for the exact flag would miss a path the parser accepted.
         default=None,
         help="where local receipts are kept",
     )
@@ -1205,9 +1208,8 @@ def _advance_with_confirmation(
 
     tree = _bound_run_tree(RunTree, run_root, run_id)
     try:
-        # Stored boundary facts are gathered before the declared mode is
-        # validated, so an invalid range is refused before anything is
-        # presented as evidence.
+        # Stored boundary facts are gathered and printed before the declared
+        # mode is validated; only the mode claims below wait on that check.
         boundary_states: list[dict[str, object] | None] = []
         for candidate in STAGES:
             try:

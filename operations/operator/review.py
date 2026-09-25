@@ -1231,7 +1231,7 @@ def _stage_census(progress: tuple[dict[str, Any], ...]) -> str:
     "Everything before X is sealed and nothing from X onward has run" is two
     claims about nine stages derived from one of them. A hand-run single stage
     or a partially restored tree makes both halves false while the Stages list
-    on the same screen shows the truth, so the sentence is now the list.
+    on the same screen shows the truth, so this says the list, not the sentence.
     """
     if not progress:
         return "this projection lists no stages"
@@ -1643,7 +1643,10 @@ def _advance_records(
 
 
 def _still_binds(record: dict[str, Any], boundaries: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Say whether this advance still binds its boundary, since nothing else does.
+    """Say whether this advance still binds its boundary.
+
+    `advance.verify_advance` checks the same binding at advance time; this
+    is the review-side check for a boundary that may have moved since.
 
     The digest binding is the reason the record carries a
     `target_version_hash`; this checks it against the boundary's current

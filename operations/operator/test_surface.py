@@ -1922,7 +1922,7 @@ def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
 def test_a_nothing_to_transfer_report_does_not_read_as_upload_complete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F027: the top-level receipt state must agree with the nested transfer record.
+    """The top-level receipt state must agree with the nested transfer record.
 
     Not reachable today through `upload()` itself -- the sealed manifest
     snapshot it writes always exists by the time `resume()` checks for one --
@@ -2674,7 +2674,7 @@ def test_pipeline_children_do_not_receive_upload_only_credentials(
 def test_pipeline_children_do_not_receive_any_provider_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F016: not only the transfer's own two S3 keys -- every provider
+    """Not only the transfer's own two S3 keys -- every provider
     credential a decoder RCE in a stage reached by a submitted page could spend
     (pod creation money included) must stay off this environment, the same as
     the confined console/backup/advance/ScanTailor children already get from
@@ -2805,7 +2805,7 @@ def test_door_module_leaves_no_trace_in_sys_path_or_sys_modules():
 
 
 def test_exported_work_names_every_delivered_and_non_delivered_act():
-    """F030: the closing accounting line reads a completed run's own export
+    """The closing accounting line reads a completed run's own export
     record, so it can name an act (like ink-free-page's minted fallback) that
     no fixture declaration could have known about in advance."""
     pages, acts = _exported_work(
@@ -3490,7 +3490,7 @@ def test_a_malformed_reasons_field_is_named_unreadable_not_silently_dropped(
 def test_an_unbounded_notification_message_is_truncated_before_it_is_sent(
     tmp_path: Path,
 ) -> None:
-    """F020: a held run with hundreds of unsealed pages must not build a
+    """A held run with hundreds of unsealed pages must not build a
     notification message with no ceiling at all -- the transport already
     truncates its own failure-detail string this way; the outbound message
     needs the same treatment."""
@@ -6782,7 +6782,7 @@ def test_every_run_receipt_carries_identity_configuration_commit_and_output(
         assert (commit is None) != (receipt["repository_commit_unreadable"] is None)
         if commit is not None:
             assert commit == _repository_commit(ROOT)
-            # F098: the orchestrator invocation itself must carry the commit
+            # The orchestrator invocation itself must carry the commit
             # the receipt says the run ran under, not only the receipt.
             assert argv[argv.index("--repository-commit") + 1] == commit
     assert finished["exit_code"] == 0
@@ -7142,7 +7142,7 @@ def test_export_run_root_naming_no_matching_receipt_is_refused(tmp_path: Path) -
 
 
 def test_derived_evidence_prefixes_reads_the_launch_receipt(tmp_path: Path) -> None:
-    """F110/G11: `--evidence-prefix` derives from the same saved launch receipt
+    """`--evidence-prefix` derives from the same saved launch receipt
     `--evidence-key` already does (`cli._derived_evidence_keys`), so an
     operator is not asked to retype a 32-hex token by hand for one flag while
     the other derives it for free. Real requests write every report path at
@@ -7234,9 +7234,9 @@ def test_status_names_fetch_run_volumes_and_unexpected_failures(tmp_path: Path) 
 def test_status_names_an_advance_so_the_operators_sequence_is_reconstructible(
     tmp_path: Path,
 ) -> None:
-    """F108: status had no arm for advance at all before this.
+    """Status must have an arm for advance.
 
-    Exercises `record_advance` and `_status_projection`'s new arm directly,
+    Exercises `record_advance` and `_status_projection`'s advance arm directly,
     the way `record_backup`'s own coverage does for the sibling verb --
     `_advance_with_confirmation`'s own boundary/confirmation machinery is
     covered separately in test_advance_modes.py and test_permission_boundary.py.

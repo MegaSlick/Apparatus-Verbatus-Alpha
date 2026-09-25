@@ -281,7 +281,7 @@ def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
 def test_a_supplied_surface_records_the_advance_for_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F108: passing `surface` wires the advance into status; omitting it costs nothing."""
+    """Passing `surface` wires the advance into status; omitting it costs nothing."""
     from .surface import OperatorSurface
 
     run_root, run_id = _run(tmp_path)

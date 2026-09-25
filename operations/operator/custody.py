@@ -186,14 +186,17 @@ def require_no_provider_credentials(environment: dict[str, str] | None = None) -
 
 # ``setpriv`` exits with this code when it establishes no privilege change at
 # all -- including Landlock unsupported or disabled -- and never execs the
-# wrapped program, so this is a custody-boundary refusal, not a fact about
-# the run tree or the advance request it was never given.
+# wrapped program (util-linux ``sys-utils/setpriv.c``, ``SETPRIV_EXIT_PRIVERR``,
+# and ``sys-utils/setpriv-landlock.c``'s Landlock-ruleset failure path), so this
+# is a custody-boundary refusal, not a fact about the run tree or the advance
+# request it was never given.
 SETPRIV_PRIVILEGE_FAILURE_EXIT: Final = 127
 
 # ``sandbox-exec`` prefixes its own diagnostics with its program name and
 # never execs the target when the profile fails to apply, so a line
-# beginning this way is the launcher speaking, not the console; neither
-# confined child ever writes this prefix itself.
+# beginning this way is the launcher speaking, not the console (documented
+# shape: ``sandbox-exec: execvp() of './writefoo' failed: Operation not
+# permitted``); neither confined child ever writes this prefix itself.
 SANDBOX_EXEC_DIAGNOSTIC_PREFIX: Final = "sandbox-exec:"
 
 
@@ -494,7 +497,9 @@ def _diagnostic(completed: subprocess.CompletedProcess) -> str:
 # boundary holds), permitted (the boundary is incomplete), or nothing ran
 # (the launcher failed); only refused is a pass. Probes an outbound connect,
 # not bare socket creation, since macOS Seatbelt mediates `network-outbound`
-# while socket() itself succeeds under (deny default).
+# while socket() itself succeeds under (deny default). A denial surfaces as
+# EPERM/EACCES; ECONNREFUSED or a timeout means the connect reached the
+# network stack, which is exactly the capability the boundary must not grant.
 _PROBE_SOURCE: Final = (
     "import errno, socket, sys\n"
     "from pathlib import Path\n"

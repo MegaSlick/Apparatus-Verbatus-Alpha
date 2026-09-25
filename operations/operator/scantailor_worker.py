@@ -181,6 +181,7 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         if entry.attrib["id"] not in image_paths:
             raise _refuse("page-split geometry names an unknown image")
         if entry.attrib["id"] in claimed_images:
+            # The refusal keeps any step from picking among witnesses.
             raise _refuse("page-split offers more than one geometry for the same image")
         claimed_images.add(entry.attrib["id"])
         image = image_paths[entry.attrib["id"]]

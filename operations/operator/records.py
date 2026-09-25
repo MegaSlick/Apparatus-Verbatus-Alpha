@@ -78,7 +78,10 @@ def sha256_file(path: Path) -> str:
     Opened non-blocking, no-follow, and refused unless the open descriptor
     says it is a regular file, not the name, which can change between the
     check and the open. A FIFO left at a recorded path would otherwise
-    block the open, and `status` would hang having printed nothing.
+    block the open, and `status` would hang having printed nothing; a
+    planted symlink would be read through to bytes this store never wrote
+    and cannot vouch for (`operations/pod/transfer.py` closes the same gap
+    the same way).
     """
 
     descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)

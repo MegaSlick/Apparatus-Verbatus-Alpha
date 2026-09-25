@@ -428,6 +428,8 @@ class OperatorError(RuntimeError):
             f"Next step: {self.copy.next_step}",
         ]
         if self.detail is not None:
+            # Not truthiness: an empty detail must still render as "no
+            # additional detail was recorded", not be dropped like a missing one.
             lines.append(f"Saved detail: {sanitize_detail(self.detail)}")
         return "\n".join(lines)
 

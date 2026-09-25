@@ -41,7 +41,8 @@ class TriageRefusal(ProducerRefusal):
 def _refuse_preference_named(value: Any, what: str) -> None:
     """Reraise `refuse_capture_preference`'s refusal as this console's own vocabulary.
 
-    The CLI boundary handles `TriageRefusal`, not the `SchemaRefusal`
+    The refusal keeps any step here from picking among witnesses. The CLI
+    boundary handles `TriageRefusal`, not the `SchemaRefusal`
     `refuse_capture_preference` raises. `what` names the triage record that
     carried the field, rather than blaming the corpus register for it.
     """
@@ -631,7 +632,10 @@ def accept_candidate(
             # filesystem this console ships to is case-insensitive. Two
             # spellings naming no file yet become one directory entry the
             # moment both writes land, which neither the exact-text check
-            # above nor `samefile` below can see before that happens.
+            # above nor `samefile` below can see before that happens: the
+            # journal write would durably publish, and the unconditional
+            # `os.replace` behind the confirmation write would then silently
+            # overwrite it, with no schema check on that path to catch the loss.
             or state_resolved.as_posix().casefold() == target_resolved.as_posix().casefold()
             or (state_target.exists() and target.exists() and state_target.samefile(target))
         )

@@ -151,8 +151,10 @@ FETCH_RUN_PREFIX = DEFAULT_RUNS_DIRECTORY
 FETCH_EVIDENCE_PREFIX = "preflight"
 """Where a launch's PREFLIGHT evidence sits on the volume, relative to its
 mount: the golden page, serving logs, and content-addressed receipts, audits
-and manifests. Spelled here rather than imported, since the module that
-defines it pulls the whole serving stack in behind it."""
+and manifests. Spelled here rather than imported, since `bootstrap_main`
+(`operations/pod/bootstrap_main.py`, `PREFLIGHT_DIRECTORY`) pulls the whole
+serving stack in behind it; `operations/pod/test_pod_run.py` holds the two
+spellings together."""
 EVIDENCE_DIRECTORY = "evidence"
 """Where fetched evidence lands under `--into`, beside `<run_id>/` rather than
 inside it: the run tree must stay byte-for-byte what the volume holds under

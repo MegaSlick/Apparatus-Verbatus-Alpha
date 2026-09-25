@@ -204,7 +204,10 @@ def _uncertainty_lines(
     `attributable` says whether every span in the layer is the reader's own.
     Where the layer is a union of the audit's projection and the reader's
     report, this surface cannot tell which entry is whose, and says so
-    rather than crediting the reader with both.
+    rather than crediting the reader with both. Only a record with no audit
+    behind it is attributable, and every Perlectio carries an audit, so that
+    form is unreachable today -- true only while `audit` stays in the
+    Perlectio's closed field set (`pipeline/4_perlector/run.py::_PERLECTIO_FIELDS`).
     """
     if assessment is not None and not isinstance(assessment, dict):
         raise ProjectionShapeError(
@@ -481,6 +484,8 @@ def render(projection: dict[str, Any]) -> list[str]:
                     # chain, so its layer is a union like any established
                     # reading's, and nothing here says which entry is whose.
                     attributable=False,
+                    # A delivered act was read by definition; its text is the
+                    # string this branch was entered on.
                     outcome="read",
                 )
             )

@@ -74,7 +74,7 @@ def test_backup_is_content_addressed_resumable_and_verifies_each_digest(tmp_path
 
 
 def test_os_residue_is_neither_copied_nor_inventoried(tmp_path: Path) -> None:
-    """F104: a Finder/Explorer droppings is not a run-tree member.
+    """A Finder/Explorer dropping is not a run-tree member.
 
     canonical_bytes has nothing to do with this path -- the residue is excluded
     before it is ever read, not merely kept out of the published record -- so a

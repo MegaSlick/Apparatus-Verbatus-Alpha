@@ -121,6 +121,9 @@ class SpendSurface:
         for path, record in sorted(
             records, key=lambda item: (_recorded_instant(item[1]), item[0].name)
         ):
+            # `readable_records_of_kind` hands back only files it opened by the
+            # name it was given, and `ReceiptStore.read` matched that name's
+            # digest to the canonical bytes; a link would break both halves.
             digest = path.name.rsplit("-", 1)[-1].removesuffix(".json")
             preview = record["payload"].get("preview")
             spend = preview.get("spend") if isinstance(preview, dict) else None
