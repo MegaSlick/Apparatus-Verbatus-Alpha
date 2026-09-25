@@ -795,8 +795,8 @@ def test_a_churro_presentation_the_vendors_fit_rule_cannot_produce_is_refused_at
         adapters.validate_adapter_presentation("churro.v1", source, forged)
 
     # And an adapter that did nothing at all -- the presentation returned
-    # unchanged, which is exactly what this adapter did before U10 -- is refused
-    # by the seam's own sentence rather than passing as "no crop of its own".
+    # unchanged -- is refused by the seam's own sentence rather than passing
+    # as "no crop of its own".
     with pytest.raises(SchemaRefusal, match="prepare_ocr_image rule"):
         adapters.validate_adapter_presentation("churro.v1", source, source)
 

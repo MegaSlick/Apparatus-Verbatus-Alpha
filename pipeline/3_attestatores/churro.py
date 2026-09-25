@@ -173,6 +173,7 @@ def retain(
 def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     """Size and colour a whole page the way Churro's own pipeline does, and record it.
 
+    Adapted from `src/churro_ocr/_internal/image.py::prepare_ocr_image`.
     Resize then convert-to-RGB, matching the vendor's own
     `ensure_rgb(resize_image_to_fit(...))` order: converting first would
     resample three expanded channels instead of the one the vendor resampled.

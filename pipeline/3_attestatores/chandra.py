@@ -203,6 +203,7 @@ def retain(
 def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     """Size a whole page the way Chandra's own pipeline sizes it, and record it.
 
+    Adapted from `chandra/model/util.py::scale_to_fit`.
     Converts to RGB before resizing, matching the vendor's own load order:
     on `LA`/`RGBA` pages the two orders are not the same pixels (Pillow's
     resampler treats an alpha band differently), so converting afterwards

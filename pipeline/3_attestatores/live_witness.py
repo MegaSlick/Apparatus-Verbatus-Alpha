@@ -95,7 +95,7 @@ DEFAULT_FORMAT_CAPABILITIES: Mapping[str, bool] = witness_adapters.FALLBACK_FORM
 
 
 def _format_capabilities_for(adapter: Any) -> dict[str, bool]:
-    """What this adapter's own grammar can carry, or the old blanket default.
+    """What this adapter's own grammar can carry, or the blanket default.
 
     A fact about the adapter's grammar, never about one reply -- `ChairResponse`
     carries no self-reported capability. Thin wrapper over
@@ -185,8 +185,8 @@ def _system_content(text: str) -> list[dict[str, str]]:
     """One system turn's content: a single-element list of ``{type: text}`` parts.
 
     DAI's README and Churro's `HFChatTemplate.build_conversation` both render a
-    system message this way, not the bare string this seam sent until now.
-    Shared here so both builders below carry it identically. No token count
+    system message this way, not as a bare string. Shared here so both
+    builders below carry it identically. No token count
     moves: a plain string and a one-element list of the same text carry the
     same text; only the JSON shape the chat template sees changes.
     """
@@ -405,11 +405,12 @@ def page_chair_request(
     """Build one page-scoped (Churro or Chandra) reading request from a whole page.
 
     ``presentation`` is exactly what `run.py::presentation_for_page` returns,
-    but the two adapters do not treat it alike: `chandra.present` runs the
-    vendor's own `scale_to_fit` and publishes a resized blob under a different
-    digest, while `churro.present` binds the given image unchanged. Everything
-    below reads the bytes, digest and size off `adapter.present`'s own return,
-    never off ``presentation``.
+    but both adapters use the image `adapter.present` returns, not the source
+    image unchanged: `chandra.present` runs the vendor's own `scale_to_fit`
+    and publishes a resized blob under a different digest, while
+    `churro.present` resizes, converts to RGB and publishes its own
+    adapter-crop. Everything below reads the bytes, digest and size off
+    `adapter.present`'s own return, never off ``presentation``.
 
     ``profile`` is the sealed serving row this chair runs under. What may be
     sent (`generation_bound_sent`) and whether the request fits

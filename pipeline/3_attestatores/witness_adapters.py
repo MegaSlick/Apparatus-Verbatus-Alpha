@@ -8,12 +8,15 @@ native_payload)`` derives the closed ``observed`` entries from that exact
 image/response pair. Chandra's ``observe`` also takes ``page_size``, read off
 this registry's ``takes_page_size`` rather than the adapter's name, because its
 grammar reports boxes normalized against the whole sealed page rather than the
-presented crop. An adapter whose grammar reports no geometry (Churro always,
-Chandra on an unusable body) returns only a ``bounds_source='presented'`` echo,
-excluded from routing and coverage.
+presented crop. Churro's grammar never reports geometry, so its ``observe``
+returns only a ``bounds_source='presented'`` echo of the adapter's own crop.
+Chandra's ``observe`` returns an empty list when its response has no
+resolvable geometry; the stage, not the adapter, then adds the presentation
+echo, excluded from routing and coverage.
 
-A new adapter must move the shared declared-name set, this local mapping, and
-any native parser/retention dispatch in :mod:`feeding` together.
+A new adapter must move the shared declared-name set, this local mapping, any
+native parser/retention dispatch in :mod:`feeding`, and its own rule in
+``validate_adapter_presentation`` together.
 
 A native float-to-pixel rule is declared beside each adapter as
 ``quantization``; ``None`` prevents a no-layout adapter from acquiring another
@@ -105,8 +108,8 @@ class RunnableAdapter:
     #: has exactly one framing and there is nothing to choose.
     resolve_framing: Callable[..., str] | None = None
     #: What this adapter's own output grammar can carry -- a fact about the
-    #: grammar, never about a reply. The default is the blanket value every
-    #: live attempt recorded before adapters could declare their own.
+    #: grammar, never about a reply. The default is the blanket value used
+    #: when an adapter declares none of its own.
     format_capabilities: Mapping[str, bool] = FALLBACK_FORMAT_CAPABILITIES
     #: How this adapter reads the committed fixture's own declared bytes, where
     #: those are not the vendor grammar a served chair answers in. ``None`` for
@@ -215,7 +218,7 @@ def _validate_whole_page_adapter_crop(
     presented: dict[str, Any],
     fit: Callable[[int, int], tuple[int, int]],
     build_transform: Callable[[str, int, dict[str, int], tuple[int, int]], dict[str, Any]],
-    vendor_rule_name: str,
+    vendor_rule_phrase: str,
 ) -> None:
     """Re-derive a page-witness adapter-crop from the source presentation alone.
 
@@ -244,10 +247,7 @@ def _validate_whole_page_adapter_crop(
         or presented["source_page_ordinal"] != source["source_page_ordinal"]
         or presented["transform"] != expected
     ):
-        raise SchemaRefusal(
-            f"{resolved} adapter-crop is not the sealed page prepared by the vendor's own "
-            f"{vendor_rule_name} rule"
-        )
+        raise SchemaRefusal(f"{resolved} adapter-crop is not the sealed page {vendor_rule_phrase}")
 
 
 def validate_adapter_presentation(
@@ -269,7 +269,7 @@ def validate_adapter_presentation(
             presented,
             imaging_ports.resize_to_fit_churro,
             churro.presented_transform,
-            "prepare_ocr_image",
+            "prepared by the vendor's own prepare_ocr_image rule",
         )
         return
     if resolved == "chandra.v1":
@@ -279,7 +279,7 @@ def validate_adapter_presentation(
             presented,
             imaging_ports.scale_to_fit_chandra,
             chandra.presented_transform,
-            "scale_to_fit",
+            "sized by the vendor's own scale_to_fit rule",
         )
         return
     if resolved != "dai.v1":
