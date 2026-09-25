@@ -182,10 +182,16 @@ def dai_wire_stop_token_ids() -> dict[str, list[int]]:
 def dai_prompt() -> dict[str, str]:
     """Return DAI's two carried prompt files byte-for-byte as UTF-8 text.
 
-    Carried third-party content from Teklia's pinned
+    Carried third-party content: ``system.txt`` (206 bytes, SHA-256
+    ``b4e7d61d4f27f0aa46ba597ebfac3925b3ed87e72583def4bce2bd4f0393c333``)
+    and ``query.txt`` (33 bytes, SHA-256
+    ``3a5cd8eb3263f2511d207f49f9933b1cf184e95fd7a9534871207d8d8b6a3489``)
+    from Teklia's pinned
     ``Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`` repository at
-    ``e371095d4ffe585f31f4974462931ddbac61ff64`` (research-track use, project
-    lead's settled ruling). Named carries, not reconstructed instructions:
+    ``e371095d4ffe585f31f4974462931ddbac61ff64``:
+    https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR/tree/e371095d4ffe585f31f4974462931ddbac61ff64.
+    The source declares no licence; its research-track use is the project lead's
+    settled ruling. These are named carries, not reconstructed instructions:
     changing any character changes the trained request framing.
     """
     return {
@@ -201,9 +207,16 @@ def dai_prompt() -> dict[str, str]:
 def dai_generation() -> dict[str, Any]:
     """Return DAI's carried ``generation_config.json`` without changing its values.
 
-    Carried third-party content from the same pinned Teklia source as
-    :func:`dai_prompt`: the shipped generation configuration, not a locally
-    chosen decoding policy. In particular, ``do_sample`` remains true.
+    Carried third-party content: every value in ``generation_config.json`` (243
+    source bytes, SHA-256
+    ``f4cd2d54597a1a3cb38ac78d5cb275d06f6fd660fef52ee444a58d81297ff027``),
+    from the same pinned Teklia source and under the same no-licence/ruling
+    citation as :func:`dai_prompt`. What crosses is the nine values, re-typed as
+    a Python mapping; the source file's bytes are its JSON framing, which this
+    function does not return, so this is a source-file digest rather than a
+    byte-count claim about the mapping. This is the shipped generation
+    configuration, not a locally chosen decoding policy; in particular,
+    ``do_sample`` remains true.
     """
     return {
         "bos_token_id": 151643,
