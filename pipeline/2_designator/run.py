@@ -2103,36 +2103,26 @@ def _account_for_declared_act(
     continuation = continuation_for(context.fixture, act["key"])
     continuation_cut = False
     evidence = []
+    # (blocking page ordinal, reason, reason code) when the act is held.
+    hold_cause = None
 
     if page_ordinal not in pages:
         # Unsealed page: held, and no region is cut, not even a sealed
         # continuation, which would be an orphan crop.
-        outcome = "held"
-        hold = hold_act(
-            context,
-            act,
-            act_id,
+        hold_cause = (
             page_ordinal,
-            records,
             f"page {page_ordinal} was not sealed, so the act could not be marked out",
             "exemplar-page-not-sealed",
         )
-        evidence.append(context.input_ref(hold.relative_path))
     elif page_ordinal in failures:
         # Sealed but structure-held: the act is held, and its ink still reaches
         # conservation as residual.
-        outcome = "held"
-        hold = hold_act(
-            context,
-            act,
-            act_id,
+        hold_cause = (
             page_ordinal,
-            records,
             f"the structure pass could not mark out page {page_ordinal} "
             f"({failures[page_ordinal]}), so the act could not be bounded",
             "structure-pass-held",
         )
-        evidence.append(context.input_ref(hold.relative_path))
     else:
         analysis = _analyze_page(
             page_cache, context, page_ordinal, pages[page_ordinal], grouping_policy
@@ -2151,26 +2141,19 @@ def _account_for_declared_act(
         evidence.append(context.input_ref(primary.relative_path))
 
         # A continuation is a second region of the same act, never a new act.
+        far_ordinal = continuation["page_ordinal"] if continuation else None
         continuation_analysis = None
-        if (
-            continuation
-            and continuation["page_ordinal"] in pages
-            and continuation["page_ordinal"] not in failures
-        ):
+        if continuation and far_ordinal in pages and far_ordinal not in failures:
             continuation_analysis = _analyze_page(
-                page_cache,
-                context,
-                continuation["page_ordinal"],
-                pages[continuation["page_ordinal"]],
-                grouping_policy,
+                page_cache, context, far_ordinal, pages[far_ordinal], grouping_policy
             )
             continuation_region = cut_region(
                 context,
                 act,
-                pages[continuation["page_ordinal"]],
+                pages[far_ordinal],
                 _bounds_of(continuation),
                 2,
-                continuation["page_ordinal"],
+                far_ordinal,
                 "proposal",
                 padding=padding,
                 provenance=provenance,
@@ -2181,25 +2164,22 @@ def _account_for_declared_act(
         if continuation and not continuation_cut:
             # The near side stays cut as evidence, but the act is held: reading
             # it alone would pass a truncation as complete.
-            outcome = "held"
-            far_ordinal = continuation["page_ordinal"]
             if far_ordinal in failures:
-                reason = (
+                hold_cause = (
+                    far_ordinal,
                     f"the act continues onto page {far_ordinal}, which the structure "
                     f"pass could not mark out ({failures[far_ordinal]}), so its "
-                    "continuation could not be cut"
+                    "continuation could not be cut",
+                    "structure-pass-held-on-continuation",
                 )
-                reason_code = "structure-pass-held-on-continuation"
             else:
-                reason = (
+                hold_cause = (
+                    far_ordinal,
                     f"the act continues onto page {far_ordinal}, "
-                    "which was not sealed, so its continuation could not be cut"
+                    "which was not sealed, so its continuation could not be cut",
+                    "exemplar-continuation-not-sealed",
                 )
-                reason_code = "exemplar-continuation-not-sealed"
-            hold = hold_act(context, act, act_id, far_ordinal, records, reason, reason_code)
-            evidence.append(context.input_ref(hold.relative_path))
         else:
-            outcome = "proposed"
             _publish_act_group(
                 context,
                 act,
@@ -2207,9 +2187,15 @@ def _account_for_declared_act(
                 pages[page_ordinal],
                 analysis,
                 continuation if continuation_cut else None,
-                pages[continuation["page_ordinal"]] if continuation_cut else None,
-                continuation_analysis if continuation_cut else None,
+                pages[far_ordinal] if continuation_cut else None,
+                continuation_analysis,
             )
+
+    if hold_cause is not None:
+        blocking_ordinal, reason, reason_code = hold_cause
+        hold = hold_act(context, act, act_id, blocking_ordinal, records, reason, reason_code)
+        evidence.append(context.input_ref(hold.relative_path))
+    outcome = "proposed" if hold_cause is None else "held"
 
     # The sealed page's subject where one exists; the fixture derivation only
     # for an unsealed page.
