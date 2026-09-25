@@ -1334,8 +1334,7 @@ def publish_duplicate_report(context: StageContext) -> str | None:
         )
         duplicate_sources += len(sources) - 1
         duplicate_ordinals += sum(len(source["ordinals"]) for source in sources[1:])
-        inputs.extend(reference for _ordinal, reference in by_path[first_path])
-        for path in ordered_paths[1:]:
+        for path in ordered_paths:
             inputs.extend(reference for _ordinal, reference in by_path[path])
 
     if not groups:
@@ -1779,15 +1778,8 @@ def real_submission(args, registry) -> int:
     )
     # The halted-run cap, now that the resolved root is approved.
     _refuse_halted_run_root(run_root, args)
-    for location, label in (
-        (run_root, "run root"),
-        (manifest_path, "submission filename ledger"),
-    ):
-        if location.is_relative_to(submission_folder):
-            raise ContractError(
-                f"the {label} cannot live inside the submitted folder; otherwise the next "
-                "inventory includes pipeline-produced records as submitted sources"
-            )
+    _refuse_inside_submission(run_root, submission_folder, "run root")
+    _refuse_inside_submission(manifest_path, submission_folder, "submission filename ledger")
     ledger = submission_ledger.load_manifest(manifest_path)
     if args.triage_clusters is not None and args.triage_decision_manifest is None:
         raise ContractError("triage cluster records require a triage decision manifest")
@@ -1805,11 +1797,7 @@ def real_submission(args, registry) -> int:
         if location is None:
             continue
         resolved = gate.require_approved_storage_location(Path(location), roots, label)
-        if resolved.is_relative_to(submission_folder):
-            raise ContractError(
-                f"the {label} cannot live inside the submitted folder; otherwise the next "
-                "inventory includes pipeline-produced records as submitted sources"
-            )
+        _refuse_inside_submission(resolved, submission_folder, label)
         gated_triage[label] = resolved
     triage_rows, triage_clusters, triage_digests = (
         load_triage_decisions(
@@ -1938,6 +1926,14 @@ def real_submission(args, registry) -> int:
         open_source=open_source,
     )
     return _finish_door_run(context, tree, admitted)
+
+
+def _refuse_inside_submission(location: Path, submission_folder: Path, label: str) -> None:
+    if location.is_relative_to(submission_folder):
+        raise ContractError(
+            f"the {label} cannot live inside the submitted folder; otherwise the next "
+            "inventory includes pipeline-produced records as submitted sources"
+        )
 
 
 def _read_corpus_register(register_path: str | None) -> bytes | None:
