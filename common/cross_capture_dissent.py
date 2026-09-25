@@ -60,22 +60,12 @@ _PAIR_FIELDS: Final = frozenset(
 )
 _CONDITION_FIELDS: Final = frozenset({"both_unoccluded", "comparably_captured"})
 _SPAN_FIELDS: Final = frozenset({"start", "end"})
-# Consult §6, made mechanical rather than described: "The record contains
-# structural observations and exact image anchors, not a quality score,
-# confidence, rank, severity, or scalar variance."  The field-by-field checks
-# below cannot enforce that on their own -- `model_provenance` is accepted as
-# any object at all -- so the whole candidate is swept for these keys first, at
-# every depth.
-#
-# Matched as key fragments, not exact names, because this vocabulary is the one
-# a builder spells slightly differently (`iou_score`, `mean_variance`,
-# `capture_confidence`) while meaning exactly the thing §6 forbids.  §7 shape
-# 1's preference vocabulary is swept the same way, from the corpus register's
-# own list rather than a second copy here, so the two spellings of "forbidden"
-# cannot drift; `refuse_capture_preference` then matches those names exactly and names
-# the producing record in its refusal.  The sweep is over keys only:
-# `observed_form` is legitimately a witness-shaped string and must stay
-# readable as evidence.
+# The record carries structural observations and exact image anchors, never a
+# quality score, confidence, rank, severity, or scalar variance -- checked as
+# key fragments, not exact names, since a builder spells this vocabulary
+# slightly differently (`iou_score`, `mean_variance`) while meaning the same
+# thing. The sweep is over keys only: `observed_form` is legitimately a
+# witness-shaped string and must stay readable as evidence.
 _FORBIDDEN_CLAIM_FRAGMENTS: Final = (
     "variance",
     "score",
@@ -112,16 +102,11 @@ def _stable_id(value: Any, label: str) -> str:
 
 
 def _refuse_scalar_claim_keys(value: Any) -> None:
-    # Iterative like its sibling screens (corpus_register, autopsia,
-    # partition): the value is untrusted caller input, and depth must be this
-    # walk's own list, never the interpreter stack.
-    #
-    # And cycle-aware like all of them, by the same on-path bookkeeping: the
-    # record reaching `build_cross_capture_dissent` is the caller's own keyword
-    # structure, so a value that is its own ancestor gets here, and a worklist
-    # with no stack to exhaust would append forever rather than refuse. Only
-    # containers open on the current path are tracked, so a shared, non-cyclic
-    # sub-record is still screened wherever it appears.
+    # Iterative and cycle-aware like its sibling screens (corpus_register,
+    # autopsia, partition): untrusted caller input, so depth is this walk's
+    # own list, never the interpreter stack, and only containers open on the
+    # current path are tracked so a self-referential value is refused rather
+    # than looped on forever.
     pending: list[tuple[str, Any]] = [("value", value)]
     open_path: set[int] = set()
     while pending:
@@ -156,8 +141,8 @@ def _refuse_scalar_claim_keys(value: Any) -> None:
                     )
                 pending.append(("value", item))
         elif isinstance(current, (list, tuple)):
-            # F085: a tuple serializes exactly like a list through
-            # `canonical_bytes`, so it must be walked the same way here too.
+            # A tuple serializes exactly like a list through `canonical_bytes`,
+            # so it must be walked the same way here too.
             pending.extend(("value", item) for item in current)
 
 
@@ -165,11 +150,10 @@ def _span_or_gap_ref(value: Any) -> Any:
     """Where in the one established text a locus sits -- never the text itself.
 
     Closed to exactly the two things its name allows: an offset span into the
-    established text, or a digest-bound reference to the gap artifact that
-    stands where the reading declined to place either observed form.  Anything
-    free-form here could carry the established string itself, and this record's
-    whole purpose is to hold evidence *beside* that text and never a second
-    copy of it (consult §6, principle 5).
+    established text, or a digest-bound reference to the gap artifact where the
+    reading declined to place either observed form. Anything free-form here
+    could carry the established string itself, which this record must never
+    duplicate (principle 5).
     """
     if value is None:
         return None
@@ -374,14 +358,10 @@ def build_cross_capture_dissent(**record: Any) -> dict[str, Any]:
     """Validate and seal the pair-complete Unit 19 evidence record."""
     candidate = dict(record)
     candidate.pop("self_hash", None)
-    # Both screens are iterative, so a deep `model_provenance` is walked to the
-    # bottom here; the depth boundary is then `self_hash`'s own named refusal
-    # ("no canonical serial form"), never an uncaught RecursionError.
     _refuse_scalar_claim_keys(candidate)
-    # The fragment sweep above already subsumes these exact names at every
-    # depth.  This is the shared screen every producer of the §7 vocabulary
-    # runs, kept so that narrowing the fragment match can never silently retire
-    # the preference screen with it.
+    # The shared screen every producer of the forbidden-preference vocabulary
+    # runs, kept separately so narrowing the fragment sweep above can never
+    # silently retire this one too.
     refuse_capture_preference(candidate, what="cross-capture dissent")
     supplied_caveat = candidate.pop("caveat", CAVEAT)
     if supplied_caveat != CAVEAT or set(candidate) != _FIELDS - {"self_hash", "caveat"}:
@@ -488,24 +468,17 @@ def unit20_dissent_input(record: Any) -> dict[str, Any]:
     """The deliberately one-way Unit 20 consumer seam.
 
     Unit 20 receives the immutable pair denominator and may add structural
-    delta/review records elsewhere.  It receives neither an established-text
-    field nor a numeric variance claim from Unit 19.
-
-    The subject, the one Perlectio reference, the complete unordered-pair
-    denominator, and the caveat: that is the whole seam, and it is deliberately
-    narrower than the record (consult §10.13 -- Unit 19 owns the pair-complete
-    evidence and the caveat; Unit 20 owns structural deltas and review flags).
-    ``loci`` is not projected here.  A Unit 20 implementation that wants the
+    delta/review records elsewhere, never an established-text field or a
+    numeric variance claim. The subject, the Perlectio reference, the complete
+    unordered-pair denominator, and the caveat: deliberately narrower than the
+    full record. `loci` is not projected: a Unit 20 implementation wanting
     per-locus observations reads the sealed record through
-    ``validate_cross_capture_dissent``, which re-proves the whole closed shape
-    including its caveat; widening this projection instead would give a
-    consumer a *partial* copy of the observation set with the caveat's binding
-    context stripped down to a string it could drop, and a subset of loci is
-    the one thing a record built to be pair-complete must never hand out.
+    `validate_cross_capture_dissent` instead, since a partial copy of the
+    observation set is the one thing a pair-complete record must never hand
+    out.
 
-    The caveat cannot be dropped on the way through: ``build_...`` refuses any
-    other wording and supplies this one when none is given, ``validate_...``
-    requires the field and re-derives the record's canonical form, and this
+    The caveat cannot be dropped on the way through: `build_...` refuses any
+    other wording, `validate_...` requires and re-derives it, and this
     projection copies the validated value rather than a caller's.
     """
     checked = validate_cross_capture_dissent(record)
