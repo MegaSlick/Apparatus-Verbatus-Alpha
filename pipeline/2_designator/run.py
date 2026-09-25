@@ -2997,6 +2997,29 @@ def _verify_coverage_recovery_evidence(
         )
 
 
+def _declared_recovery(context, act_key: str) -> tuple[dict, list[dict]]:
+    """The fixture act for `act_key` and its one declared recovery row, as a list."""
+    fixture_acts = [item for item in context.fixture["act"] if item["key"] == act_key]
+    if not fixture_acts:
+        raise ContractError(
+            f"recovery fixture declares no act for key {act_key!r}; the fixture "
+            "cannot supply recovery geometry for an act it never declared"
+        )
+    if len(fixture_acts) != 1:  # pragma: no cover - fixture loading already refuses duplicates
+        raise ContractError(
+            f"recovery fixture declares {len(fixture_acts)} acts for key "
+            f"{act_key!r}; recovery geometry needs one unambiguous act"
+        )
+    act = fixture_acts[0]
+    recovery = [row for row in context.fixture.get("recovery", []) if row["act_key"] == act["key"]]
+    if len(recovery) != 1:
+        raise ContractError(
+            f"the fixture declares {len(recovery)} recovery regions for act {act['key']}; "
+            "a recovery request must name exactly one coverage rectangle"
+        )
+    return act, recovery
+
+
 def recovery_pass(context, act_id: str, request_id: str) -> None:
     """Cut one replacement region for one act, at the Recensor's request.
 
@@ -3046,34 +3069,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
 
     real_input = parse_ingress_record(context.run.get("ingress")) == REAL_INGRESS
     # Real ingress has no fixture: its recrop geometry comes from the request.
-    fixture_acts = (
-        []
-        if real_input
-        else [item for item in context.fixture["act"] if item["key"] == match[0]["act_key"]]
-    )
-    if not real_input and not fixture_acts:
-        raise ContractError(
-            f"recovery fixture declares no act for key {match[0]['act_key']!r}; the fixture "
-            "cannot supply recovery geometry for an act it never declared"
-        )
-    if (
-        not real_input and len(fixture_acts) != 1
-    ):  # pragma: no cover - fixture loading already refuses duplicates
-        raise ContractError(
-            f"recovery fixture declares {len(fixture_acts)} acts for key "
-            f"{match[0]['act_key']!r}; recovery geometry needs one unambiguous act"
-        )
-    act = fixture_acts[0] if fixture_acts else None
-    recovery = (
-        []
-        if real_input
-        else [row for row in context.fixture.get("recovery", []) if row["act_key"] == act["key"]]
-    )
-    if not real_input and len(recovery) != 1:
-        raise ContractError(
-            f"the fixture declares {len(recovery)} recovery regions for act {act['key']}; "
-            "a recovery request must name exactly one coverage rectangle"
-        )
+    act, recovery = (None, []) if real_input else _declared_recovery(context, match[0]["act_key"])
 
     pages = sealed_pages(page_records(context))
     if real_input:
@@ -3134,6 +3130,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             "may only answer the next recorded request"
         )
     region_ordinal = _next_region_ordinal(context, act_id)
+    request_ref = context.artifact_ref(RECENSOR, "recovery-request", request["artifact_id"])
     if real_input:
         cut_minted_region(
             context,
@@ -3144,18 +3141,11 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             region_ordinal,
             page_ordinal,
             "recovery",
-            context.artifact_ref(RECENSOR, "recovery-request", request["artifact_id"]),
+            request_ref,
         )
     else:
         cut_region(
-            context,
-            act,
-            page_record,
-            bounds,
-            region_ordinal,
-            page_ordinal,
-            "recovery",
-            context.artifact_ref(RECENSOR, "recovery-request", request["artifact_id"]),
+            context, act, page_record, bounds, region_ordinal, page_ordinal, "recovery", request_ref
         )
 
 
