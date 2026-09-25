@@ -898,11 +898,8 @@ def ink_map_page_rows(
 # the CLI attribute the run seals, so a file renamed in `config/` moves here
 # rather than leaving the export quietly reporting one fewer caveat.
 #
-# `perlector-protocol` joined the three Designator files on 2026-09-14, when the
-# truncation instrument's length floor moved out of source into
-# `[truncation]` with a `calibrated_for_this_corpus = false` block of its own
-# (pre-launch review, F082/F088). It decides whether an act is held as
-# truncated, and an uncalibrated instrument that decides a hold is exactly what
+# `perlector-protocol`'s `[truncation]` block decides whether an act is held as
+# truncated, and an uncalibrated instrument deciding a hold is exactly what
 # this survey exists to disclose; a caveat that stayed in `config/` and never
 # reached the bundle would be one the product does not carry.
 _CALIBRATED_CONFIG_ATTRIBUTES: Final = (
