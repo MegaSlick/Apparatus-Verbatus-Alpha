@@ -1493,14 +1493,13 @@ class OperatorSurface:
                 signal.signal(signal.SIGTERM, signal.SIG_DFL if previous is None else previous)
 
     def _run_stage_child(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        # Stages decode untrusted images, so no provider credential may reach them.
         return self.runner(
             command,
             cwd=self.workspace,
             capture_output=True,
             text=True,
             check=False,
-            env=credential_free_environment(),
+            env=_stage_environment(),
         )
 
     def _present_review_command(self, run_root: Path, run_id: str) -> None:
@@ -3311,6 +3310,15 @@ def _pod_from_record(value: dict[str, Any]) -> PodRecord:
         raise OperatorError(
             ErrorCode.CLOSE_NOTHING, detail="the saved pod record is invalid"
         ) from error
+
+
+def _stage_environment() -> dict[str, str]:
+    """The ordinary environment with every provider credential stripped.
+
+    Stages decode untrusted images, so no credential may reach them.
+    """
+
+    return credential_free_environment()
 
 
 def _sha256_regular_file_nofollow(path: Path) -> str:
