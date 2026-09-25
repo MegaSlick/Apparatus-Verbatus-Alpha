@@ -75,6 +75,7 @@ from common.corpus_register import (  # noqa: E402
     membership_heads,
     read_register_file,
     read_snapshot,
+    validate_register_bytes,
 )
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
@@ -1516,34 +1517,51 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
 def require_confirmed_re_shoots(context: StageContext, cluster_report: str | None) -> None:
     """Refuse a submission holding a triage re-shoot the corpus register does not confirm.
 
-    Only a register membership tells later stages that two captures show one page;
-    without it each capture becomes its own act, and one physical act is read and
-    exported once per capture with nothing linking them. The submission is refused
-    whole before the seal, so no page is lost: confirm the cluster into the register
-    (or remove the triage link) and resubmit.
+    Only a register membership tells later stages that captures show one page; without
+    it each capture becomes its own act, and one physical act is read and exported once
+    per capture with nothing linking them. A cluster is confirmed only when one current
+    membership of a page in its own corpus holds every member. The submission is
+    refused whole before the seal, so no page is lost.
     """
     if cluster_report is None:
         return
-    clusters = json.loads(context.tree.read_bytes(cluster_report))["payload"]["clusters"]
-    confirmed = {
-        capture
-        for _digest, members in membership_heads(read_snapshot(context.tree, context.run)).values()
-        for capture in members
+    register = read_snapshot(context.tree, context.run)
+    corpus_of = {
+        record["physical_page_id"]: record["corpus_id"]
+        for record in validate_register_bytes(register)["records"]
+        if record["kind"] == "physical-page"
     }
-    unconfirmed = sorted(
-        cluster["cluster_id"]
-        for cluster in clusters
-        if any(member["source_frame_sha256"] not in confirmed for member in cluster["members"])
-    )
+    pages = [
+        (corpus_of[page], members)
+        for page, (_digest, members) in membership_heads(register).items()
+    ]
+    try:
+        clusters = json.loads(context.tree.read_bytes(cluster_report))["payload"]["clusters"]
+        unconfirmed = sorted(
+            cluster["cluster_id"]
+            for cluster in clusters
+            if not any(
+                corpus == cluster["corpus_id"]
+                and {member["source_frame_sha256"] for member in cluster["members"]} <= members
+                for corpus, members in pages
+            )
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise ContractError(
+            f"the door re-shoot cluster report at {cluster_report} is malformed ({error!r}); "
+            "its clusters cannot be checked against the corpus register"
+        ) from error
     if unconfirmed:
         raise ContractError(
             f"unconfirmed-re-shoot: triage links re-shoot cluster(s) {', '.join(unconfirmed)}, "
-            "but the corpus register this run was created with records no membership for "
-            "every capture in them, so each capture would be read and exported as a separate "
-            "act. Nothing is sealed and no page is dropped: the submission is refused whole, "
-            f"and the sealed cluster report at {cluster_report} names each member. Confirm the "
-            "cluster into the corpus register and pass --corpus-register, or remove the "
-            "triage link if the captures are not one page, then resubmit"
+            "but no page of that corpus in the corpus register this run was created with "
+            "holds every capture in them, so each capture would be read and exported as a "
+            "separate act. Nothing is sealed and no page is dropped: the submission is "
+            f"refused whole, and the sealed cluster report at {cluster_report} names each "
+            "member. Confirm the cluster into the corpus register (or remove the triage "
+            "link if the captures are not one page), then resubmit under a new run id with "
+            "--corpus-register; this run id stays bound to the register and triage inputs "
+            "it was created with and refuses reuse"
         )
 
 
