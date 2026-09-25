@@ -168,6 +168,14 @@ MAX_TRIAGE_DERIVATIVE_PAGES: Final = 1_000
 # stage rechecks it and `common/` may not import this file.
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_positive_int(value: Any) -> bool:
+    return _is_int(value) and value >= 1
+
+
 def _source_digest_stream(handle: BinaryIO) -> tuple[str, int]:
     """Hash an already-open source and reset it for the PDF decoder."""
     digest = hashlib.sha256()
@@ -690,11 +698,7 @@ def expand_sources(
                     "post-split census; regenerate the manifest with one row for every submitted "
                     "frame digest and retry"
                 )
-        if declared_size is not None and (
-            not isinstance(declared_size, int)
-            or isinstance(declared_size, bool)
-            or declared_size < 0
-        ):
+        if declared_size is not None and (not _is_int(declared_size) or declared_size < 0):
             # No path in the message: `run_stage` prints it to stderr, and the
             # data-handling policy keeps declared paths out of logs.
             raise ContractError(
@@ -911,14 +915,8 @@ def content_aware_shards(
     change its immutable denominator. The page cap is sealed policy; pass
     ``max_shards`` only for a caller's own ceiling.
     """
-    if (
-        not isinstance(max_pages_per_shard, int)
-        or isinstance(max_pages_per_shard, bool)
-        or max_pages_per_shard < 1
-        or (
-            max_shards is not None
-            and (not isinstance(max_shards, int) or isinstance(max_shards, bool) or max_shards < 1)
-        )
+    if not _is_positive_int(max_pages_per_shard) or (
+        max_shards is not None and not _is_positive_int(max_shards)
     ):
         raise ContractError(
             "content-aware sharding received a non-positive or non-integer page or shard limit; "
@@ -1293,12 +1291,7 @@ def _publish(
         row = source.triage_row
         split = row.get("split")
         parts = split.get("parts") if isinstance(split, dict) else None
-        if (
-            not isinstance(parts, list)
-            or not parts
-            or not isinstance(source.triage_part_index, int)
-            or isinstance(source.triage_part_index, bool)
-        ):
+        if not isinstance(parts, list) or not parts or not _is_int(source.triage_part_index):
             raise ContractError("a triage admission has no declared split-part identity")
         backlink = triage_manifest.derivative_page_backlink(row, source.triage_part_index)
         # A refused page has no derivative contract, so it needs this sibling link
@@ -1345,7 +1338,7 @@ def publish_refusal_report(context: StageContext) -> str | None:
             payload.get("declared_path"),
             payload.get("reason"),
         )
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        if not _is_int(ordinal):
             raise ContractError("a refused door admission has no integer source ordinal")
         if not isinstance(path, str) or not path:
             raise ContractError("a refused door admission has no declared filename")
@@ -1383,7 +1376,7 @@ def publish_duplicate_report(context: StageContext) -> str | None:
         # Not the optional `declared_sha256`: every admission has this digest, so
         # its absence is a contract breach and stays loud (principle 2).
         source_digest = payload.get("admitted_source_sha256")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        if not _is_int(ordinal):
             raise ContractError(
                 "an admitted door source has no integer ordinal for duplicate accounting"
             )
@@ -1570,14 +1563,7 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
         rendered = []
         for source in sources:
             ordinals = source.get("ordinals") if isinstance(source, dict) else None
-            if (
-                not isinstance(ordinals, list)
-                or not ordinals
-                or not all(
-                    isinstance(ordinal, int) and not isinstance(ordinal, bool)
-                    for ordinal in ordinals
-                )
-            ):
+            if not isinstance(ordinals, list) or not ordinals or not all(map(_is_int, ordinals)):
                 raise ContractError(
                     "the door duplicate report names a duplicate source with no integer ordinals"
                 )
@@ -2098,12 +2084,7 @@ def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> N
     payload = record["payload"]
     sources = payload.get("duplicate_source_count")
     ordinals = payload.get("duplicate_ordinal_count")
-    if (
-        not isinstance(sources, int)
-        or isinstance(sources, bool)
-        or not isinstance(ordinals, int)
-        or isinstance(ordinals, bool)
-    ):
+    if not _is_int(sources) or not _is_int(ordinals):
         raise ContractError("the door duplicate report has no integer source and ordinal counts")
     # "detected", not "admitted": the whole submission is refused two calls later.
     print(
