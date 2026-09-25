@@ -3819,37 +3819,14 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 "declared stand-in cannot override an engine that reported"
             )
 
-        # Every region is read, including a continuation on the next page: an act read
-        # only up to the fold would be truncated, a failure and not an output.
-        bases = [verify_region(context, region) for region in regions]
-        testimonia = testimonia_of(context, act_id, proposal_regions)
-        page_testimonia: dict[str, dict] = {}
-        attachment_view = act_attachment_view(
+        bases, testimonia, attachment_view = _witnessed_act(
             context,
             act,
-            testimonia,
-            bases,
-            {region["payload"]["region_id"] for region in proposal_regions},
-            page_testimonia_seen=page_testimonia,
+            regions,
+            proposal_regions,
             all_proposal_regions=all_proposal_regions,
+            reported_unrouted=reported_unrouted,
         )
-        # Both witness scopes use the run-wide proposal denominator. Deduplicate
-        # page testimony so an observation is named once, not once per act.
-        unrouted = unrouted_observations(
-            testimonia + list(page_testimonia.values()),
-            all_proposal_regions,
-            prior_findings=reported_unrouted,
-        )
-        for finding in unrouted:
-            reported_unrouted.add((finding["testimonium_id"], finding["ordinal"]))
-            # Never normalized into the nearest act; the Recensor re-derives it independently.
-            print(f"non-fatal finding: {finding}", file=sys.stderr)
-
-        # Ink uncovered only by a recovery recrop was never shown to a witness;
-        # recording that keeps the gap visible. The reading itself is unaffected.
-        witnessed = witnessed_region_ids(testimonia, bases)
-        for basis in bases:
-            basis["witness_covered"] = basis["region_id"] in witnessed
 
         region_pixels = _region_pixels(bases)
         page_renders = _page_renders_for(context, bases)
@@ -4352,6 +4329,50 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     context.seal_boundary()
     context.finish()
     return EXIT_COMPLETE
+
+
+def _witnessed_act(
+    context,
+    act: dict[str, Any],
+    regions: list[dict],
+    proposal_regions: list[dict],
+    *,
+    all_proposal_regions: list[dict],
+    reported_unrouted: set[tuple[str, int]],
+) -> tuple[list[dict], list[dict], dict[str, Any]]:
+    """Verify every region of the act and the testimony about it: bases, testimonia, attachment.
+
+    Every region is read, including a continuation on the next page: an act read only up
+    to the fold would be truncated, a failure and not an output.
+    """
+    bases = [verify_region(context, region) for region in regions]
+    testimonia = testimonia_of(context, act["act_id"], proposal_regions)
+    page_testimonia: dict[str, dict] = {}
+    attachment_view = act_attachment_view(
+        context,
+        act,
+        testimonia,
+        bases,
+        {region["payload"]["region_id"] for region in proposal_regions},
+        page_testimonia_seen=page_testimonia,
+        all_proposal_regions=all_proposal_regions,
+    )
+    # Both witness scopes use the run-wide proposal denominator; page testimony is
+    # deduplicated so an observation is named once, not once per act.
+    for finding in unrouted_observations(
+        testimonia + list(page_testimonia.values()),
+        all_proposal_regions,
+        prior_findings=reported_unrouted,
+    ):
+        reported_unrouted.add((finding["testimonium_id"], finding["ordinal"]))
+        # Never normalized into the nearest act; the Recensor re-derives it independently.
+        print(f"non-fatal finding: {finding}", file=sys.stderr)
+    # Ink uncovered only by a recovery recrop was never shown to a witness; recording that
+    # keeps the gap visible. The reading itself is unaffected.
+    witnessed = witnessed_region_ids(testimonia, bases)
+    for basis in bases:
+        basis["witness_covered"] = basis["region_id"] in witnessed
+    return bases, testimonia, attachment_view
 
 
 def _next_attempt(context, act_id: str, regions: list[dict]) -> int:
