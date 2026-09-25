@@ -90,6 +90,7 @@ from common.chandra_native_retry import (
     recipe_record as chandra_recipe_record,
 )
 from common.chandra_native_retry import wire_parameters as chandra_wire_parameters
+from common.contracts.canonical import ast_digest
 from common.imaging import encode_grayscale_png
 from common.imaging_ports import (
     CHANDRA_GRID_SIZE,
@@ -200,25 +201,6 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _canonical_ast(value: object) -> object:
-    """Represent AST semantics without ``ast.dump``'s version-specific defaults."""
-    if isinstance(value, ast.AST):
-        return [
-            type(value).__name__,
-            [(name, _canonical_ast(field)) for name, field in ast.iter_fields(value)],
-        ]
-    if isinstance(value, list):
-        return [_canonical_ast(item) for item in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    raise TypeError(f"unsupported AST value {type(value).__name__}")
-
-
-def _canonical_ast_digest(value: ast.AST) -> str:
-    normalized = json.dumps(_canonical_ast(value), ensure_ascii=True, separators=(",", ":"))
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
 def _function_body_digest(source: str, *, filename: str, function_name: str) -> str:
     """Digest one function's normalized AST body, excluding its docstring."""
     tree = ast.parse(source, filename=filename)
@@ -234,7 +216,7 @@ def _function_body_digest(source: str, *, filename: str, function_name: str) -> 
     body = (
         function.body[1:] if ast.get_docstring(function, clean=False) is not None else function.body
     )
-    return _canonical_ast_digest(ast.Module(body=body, type_ignores=[]))
+    return ast_digest(ast.Module(body=body, type_ignores=[]))
 
 
 # How deep into a module-level container the string walk below goes.  Six is
@@ -480,7 +462,7 @@ def test_chandra_native_retry_arithmetic_and_detector_match_the_pinned_source_of
         if isinstance(node, ast.FunctionDef) and node.name == "detect_repeat_token"
     )
     body = function.body[1:]  # discard the local docstring, absent upstream
-    assert _canonical_ast_digest(ast.Module(body=body, type_ignores=[])) == (
+    assert ast_digest(ast.Module(body=body, type_ignores=[])) == (
         "a76c8f2bc96316cedf7ed3ba820f5cfae71663b98410bdeedb080499d9378345"
     )
 

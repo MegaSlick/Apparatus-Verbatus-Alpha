@@ -24,6 +24,7 @@ A float that reached an artifact would be a silent determinism defect, so it is 
 loud one instead.
 """
 
+import ast
 import hashlib
 import json
 from typing import Any
@@ -263,3 +264,30 @@ def self_hash_refusal(record: dict[str, Any], field: str = "self_hash") -> str |
             "never recomputable here and nothing can be checked against it"
         )
     return None
+
+
+def _ast_value(value: Any) -> Any:
+    if isinstance(value, ast.AST):
+        fields = [(name, _ast_value(field)) for name, field in ast.iter_fields(value)]
+        return [type(value).__name__, fields]
+    if isinstance(value, list):
+        return [_ast_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return repr(value)
+
+
+def ast_digest(node: ast.AST) -> str:
+    """The digest of a syntax tree's fields, free of `ast.dump`'s per-version defaults."""
+    normalized = json.dumps(_ast_value(node), ensure_ascii=True, separators=(",", ":"))
+    return digest_bytes(normalized.encode("utf-8"))
+
+
+def code_digest(source: str) -> str:
+    """The digest of Python source as code: comments, docstrings and layout never move it."""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        docstring_owner = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        if isinstance(node, docstring_owner) and ast.get_docstring(node, clean=False) is not None:
+            node.body = node.body[1:]
+    return ast_digest(tree)

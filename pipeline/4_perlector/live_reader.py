@@ -60,15 +60,13 @@ nothing this pass.
 from __future__ import annotations
 
 import base64
-from pathlib import Path
-from typing import Any, Final, Mapping
+from typing import Any, Mapping
 
 import annotations
 import prompts
 from reader import PASS_KINDS, DeliveredPixels, LectioResult, validate_audit_delivery
 
 from common.chairs.models import ChairIdentity
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
 from common.perlector_audit import render_reproof_instruction
@@ -82,15 +80,6 @@ from common.request_capacity import (
     refuse_unless_it_fits,
 )
 from operations.serving.client import ChairClient, ChairRequest
-
-# The prompt builder this reader renders through, by its own module bytes: the
-# same digest `prompts.prompt_evidence` records as `builder_sha256`, computed
-# here rather than read off that module's private name, and reconciled against
-# it by `test_live_reader.py`. It is what expires the sealed tokens-per-
-# character bound when the template is edited -- read once at import, as
-# `prompts.py` reads its own, so a deployment missing its source files fails
-# when the module loads rather than per act mid-run.
-_PROMPT_TEMPLATE_DIGEST: Final[str] = digest_bytes(Path(prompts.__file__).resolve().read_bytes())
 
 
 class EngineSignalRefusal(ContractError):
@@ -360,7 +349,7 @@ class VLLMReader:
         # beside it: a request is never let through on a number that says only
         # what it costs *at least*.
         prompt_bound, bound_basis = perlector_prompt_bound(
-            text, template_digest=_PROMPT_TEMPLATE_DIGEST
+            text, template_digest=prompts.BUILDER_SHA256
         )
         prompt_floor, floor_basis = perlector_prompt_tokens(text)
         region_sizes = image_sizes(region_images)

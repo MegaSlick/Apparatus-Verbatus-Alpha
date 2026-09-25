@@ -559,7 +559,7 @@ PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS: Final = 32
 # `prompts.py`'s module digest (`builder_sha256`): editing the builder expires
 # the measured ratio.
 PERLECTOR_PROMPT_TEMPLATE_DIGEST: Final = (
-    "ed90b14c673f8ae228e61e517b364cf8413f7ceac30bc295fa820500a0b5bb3d"
+    "64263538423aab2f2864a05d599c704c543b908da6a1e001ca91e7fefded651d"
 )
 # The representative dossier's size and bound, for weighing the shipped rows
 # against what is admitted on; a test re-derives the bound from the size.

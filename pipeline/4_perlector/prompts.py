@@ -24,13 +24,9 @@ from pathlib import Path
 from typing import Any, Callable, Final
 
 from common.chairs.models import ChairIdentity
-from common.contracts.canonical import canonical_text, digest_bytes, digest_of
+from common.contracts.canonical import canonical_text, code_digest, digest_bytes, digest_of
 
-# The whole module's bytes, read once at import. A deployment without source
-# files still needs them for this line — but it fails loudly when the module
-# loads, before any act is read, rather than per prompt mid-run as
-# `inspect.getsource` would.
-_MODULE_SOURCE_DIGEST: Final[str] = digest_bytes(Path(__file__).resolve().read_bytes())
+BUILDER_SHA256: Final[str] = code_digest(Path(__file__).resolve().read_text(encoding="utf-8"))
 _DEFAULT_PROTOCOL: Final = {
     "page_shared_prefix_policy": "page-shared-prefix-first.v1",
     "pass_b_fragment": "",
@@ -174,11 +170,10 @@ def prompt_evidence(
     record, so reproducing `rendered_sha256` later needs the builder at the
     exact revision that ran, and the record itself could not say whether that
     revision had moved. `builder_sha256` closes that: a digest of this whole
-    module's source — not one function's, because a builder renders through
-    helpers, and an edited helper changes the rendered bytes just as surely as
-    an edited builder — so any edit to the prompt-building code changes this
-    record's own claim about itself rather than silently invalidating an old
-    one nothing can detect.
+    module's code — not one function's, because a builder renders through
+    helpers — with comments and docstrings stripped, so any edit to prompt
+    text or builder logic changes this record's own claim about itself, and an
+    edit to prose alone does not.
     """
     builder = _builder_for(chair.serving_recipe)
     protocol_config = protocol_config or _DEFAULT_PROTOCOL
@@ -188,7 +183,7 @@ def prompt_evidence(
         "chair_identity_sha256": digest_of(chair.to_record()),
         "dossier_digest": dossier["dossier_digest"],
         "rendered_sha256": digest_bytes(rendered.encode("utf-8")),
-        "builder_sha256": _MODULE_SOURCE_DIGEST,
+        "builder_sha256": BUILDER_SHA256,
         "protocol_sha256": protocol_sha256,
         "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
     }

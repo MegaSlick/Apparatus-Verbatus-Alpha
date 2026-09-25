@@ -10,6 +10,7 @@ import protocol
 import pytest
 
 from common.chandra_native_retry import attempt_parameters, recipe_record, validate_trace
+from common.contracts.canonical import code_digest, digest_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -223,17 +224,8 @@ def test_prompt_evidence_binds_the_builders_own_bytes_not_only_its_name(monkeypa
     )
     dossier = _dossier() | {"dossier_digest": "d" * 64}
     before = prompts.prompt_evidence(chair, dossier)
-    # The claim is module-wide on purpose: a builder renders through helpers,
-    # so the digest binds every line of prompt-building code, not one
-    # function's source. A monkeypatched builder is not a source edit and must
-    # NOT move it -- only the rendered bytes move.
-    from pathlib import Path
-
-    from common.contracts.canonical import digest_bytes
-
-    module_bytes = Path(prompts.__file__).resolve().read_bytes()
-    assert before["builder_sha256"] == digest_bytes(module_bytes), (
-        "builder_sha256 must be the digest of the whole prompt module's source"
+    assert before["builder_sha256"] == code_digest(Path(prompts.__file__).read_text()), (
+        "builder_sha256 must be the code digest of the whole prompt module"
     )
 
     def _mutated_builder(chair_role, dossier, protocol_config):
@@ -242,9 +234,29 @@ def test_prompt_evidence_binds_the_builders_own_bytes_not_only_its_name(monkeypa
     monkeypatch.setitem(prompts._BUILDERS, "fake-perlector-v0", _mutated_builder)
     after = prompts.prompt_evidence(chair, dossier)
     assert after["builder_sha256"] == before["builder_sha256"], (
-        "a runtime monkeypatch is not a source edit; the module digest binds bytes on disk"
+        "a runtime monkeypatch is not a source edit; the module digest binds code on disk"
     )
     assert after["rendered_sha256"] != before["rendered_sha256"]
+
+
+def test_a_comment_or_docstring_edit_leaves_builder_sha256_unchanged():
+    source = Path(prompts.__file__).read_text()
+    assert (
+        source.count('"""Build one chair\'s declared prompt, byte-exact, or refuse by name."""')
+        == 1
+    )
+    edited = source.replace(
+        '"""Build one chair\'s declared prompt, byte-exact, or refuse by name."""',
+        '"""Reworded."""\n    # an added comment',
+    )
+    assert code_digest(edited + "\n# trailing note\n") == prompts.BUILDER_SHA256
+
+
+def test_a_prompt_text_edit_moves_builder_sha256():
+    source = Path(prompts.__file__).read_text()
+    assert source.count("Transcribe the ink exactly") == 1
+    edited = source.replace("Transcribe the ink exactly", "Transcribe the ink faithfully")
+    assert code_digest(edited) != prompts.BUILDER_SHA256
 
 
 # --- `unproven-real-perlector` (the first real recipe) -----------------------
@@ -278,7 +290,6 @@ def test_the_pinned_transcription_instruction_names_no_preference_and_sets_no_fl
 
 def test_unproven_real_perlector_is_covered_by_the_same_builder_sha256():
     from common.chairs.models import ChairIdentity
-    from common.contracts.canonical import digest_bytes
 
     chair = ChairIdentity(
         role="perlector",
@@ -294,15 +305,14 @@ def test_unproven_real_perlector_is_covered_by_the_same_builder_sha256():
     )
     dossier = _dossier() | {"dossier_digest": "d" * 64}
     evidence = prompts.prompt_evidence(chair, dossier)
-    module_bytes = Path(prompts.__file__).resolve().read_bytes()
-    assert evidence["builder_sha256"] == digest_bytes(module_bytes)
+    assert evidence["builder_sha256"] == prompts.BUILDER_SHA256
     assert evidence["rendered_sha256"] == digest_bytes(
         prompts.build_prompt("unproven-real-perlector", "perlector", dossier).encode("utf-8")
     )
 
 
 def test_the_default_protocols_policy_literal_agrees_with_the_protocol_pin():
-    """prompts.py is self-digesting (its bytes are builder_sha256), so the
+    """prompts.py is self-digesting (its code is builder_sha256), so the
     duplicate literal cannot be replaced with an import without moving every
     pin. The agreement is pinned here instead: if either side changes its
     spelling, this fails and a person reconciles the two on purpose."""
