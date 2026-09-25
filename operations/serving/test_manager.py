@@ -1228,8 +1228,8 @@ def _never_answering(manager, launcher, http):  # type: ignore[no-untyped-def]
     """Make every readiness request look like a port that is not open yet.
 
     The watchdog's whole budget then runs out with `last` naming an
-    `EndpointUnavailable`, which is the shape a still-loading engine and a dead
-    one both present -- the case F057 is about.
+    `EndpointUnavailable`, the shape a still-loading engine and a dead one
+    both present.
     """
 
     class NeverUp:
@@ -1246,12 +1246,11 @@ def _never_answering(manager, launcher, http):  # type: ignore[no-untyped-def]
 def test_a_watchdog_timeout_while_the_engine_is_loading_says_so_and_carries_the_tail(
     tmp_path: Path,
 ) -> None:
-    """F057: "connection refused" and "still reading 51.7 GiB of weights" were one sentence.
+    """A watchdog timeout during loading says so and carries the log tail.
 
-    They call for opposite responses -- raise this row's
-    `startup_timeout_seconds`, or go and find out what is broken -- and the
-    launch log already distinguishes them. It was read every poll for fatal
-    signatures and never reached the refusal.
+    "Connection refused" and "still reading 51.7 GiB of weights" call for
+    opposite responses -- raise this row's `startup_timeout_seconds`, or go
+    find out what is broken -- and the launch log distinguishes them.
     """
 
     chair = identity("reader", "reader-v1")
@@ -1320,8 +1319,7 @@ def test_a_watchdog_timeout_with_no_sign_of_loading_says_connection_refused(
 def test_a_watchdog_timeout_on_an_answering_endpoint_claims_neither(tmp_path: Path) -> None:
     """A 503 from `/health` is the engine answering; it is not a refused connection.
 
-    The last readiness answer still leads the message, on its first line, which
-    is what the older pinned refusals in this file read.
+    The last readiness answer still leads the message, on its first line.
     """
 
     chair = identity("reader", "reader-v1")
@@ -1599,11 +1597,10 @@ def test_an_unreadable_launch_log_is_a_named_readiness_refusal(tmp_path: Path) -
 def test_bare_runtimeerror_or_valueerror_in_the_log_does_not_abort_a_start_that_would_succeed(
     tmp_path: Path,
 ) -> None:
-    """The exact false positive the old pipeline's grep produced, not carried here.
+    """A launch log naming ``RuntimeError``/``ValueError`` alone is not fatal.
 
-    A launch log naming ``RuntimeError``/``ValueError`` without one of the five
-    named fatal substrings must reach a normal successful start;
-    ``_fatal_log_signature``'s docstring holds the reasoning.
+    Without one of the five named fatal substrings, it must reach a normal
+    successful start; ``_fatal_log_signature``'s docstring holds the reasoning.
     """
 
     chair = identity("reader", "reader-v1")
@@ -4751,11 +4748,9 @@ def test_the_plain_reader_seam_gives_the_same_log_root_guarantee_as_the_callback
 ) -> None:
     """The reader refuses a symlinked log root before anything can launch through it.
 
-    ``prepare_log_root``'s symlink refusal and 0700 chmod used to run only
-    inside ``assemble_serving_preflight_callback``'s returned callable, so the
-    documented plain seam wrote a run's logs wherever a pre-existing link
-    pointed (audit finding F7). The reader now prepares the root before each
-    start, on whichever seam assembled it.
+    ``prepare_log_root`` runs before each start regardless of which seam
+    assembled the reader, so the plain seam gets the same symlink refusal and
+    0700 chmod as the callback seam.
     """
 
     chair = identity("reader", "reader-v1")
@@ -5353,10 +5348,9 @@ def test_an_unreadable_processor_configuration_is_refused_rather_than_skipped(
 def test_a_present_file_with_neither_pair_complete_is_refused_not_skipped(
     tmp_path: Path, filename: str, document: dict
 ) -> None:
-    """A present file that names only one of the two values used to fall
-    through silently: nothing had checked the row's declaration, and the
-    receipt still recorded it as confirmed. `common/request_capacity.py` uses
-    both row values on every image, so an unconfirmed pair must refuse."""
+    """A present file naming only one of the two values must refuse, not pass
+    silently: `common/request_capacity.py` uses both row values on every
+    image, so an unconfirmed pair cannot be treated as confirmed."""
 
     with pytest.raises(ServingConfigurationError) as error:
         assert_processor_geometry(_snapshot_carrying(tmp_path, filename, document), _geometry_row())
@@ -5390,12 +5384,10 @@ def test_a_split_declaration_that_disagrees_with_the_row_is_refused(tmp_path: Pa
 
 
 # --------------------------------------------------------------------------
-# U4: generation_config = "auto"; hybrid-attention prefix caching;
+# generation_config = "auto"; hybrid-attention prefix caching;
 # --enable-prompt-tokens-details and usage reconciliation; a deterministic
 # probe rejection breaking before the watchdog; local.env discoverability;
-# and the three static preflight assertions from hostile review item A.
-# (The row's declared image geometry against the model's own processor file,
-# above, landed already on this unit's base and is not re-tested here.)
+# and static preflight assertions.
 # --------------------------------------------------------------------------
 
 
@@ -6055,11 +6047,9 @@ def test_the_readiness_poll_retries_a_transport_refusal_and_then_starts(tmp_path
 def test_a_readiness_probe_never_outlives_what_is_left_of_the_watchdog(tmp_path: Path) -> None:
     """Each probe gets the smaller of its own budget and the watchdog's remainder.
 
-    The watchdog's deadline used to be consulted only *between* requests, so a
-    probe issued one millisecond inside it could still add its whole budget to a
-    start that had already run out of time. With `startup_timeout_seconds` of 3
-    and a 1-second poll, the third round has one second left and the probe must
-    be told so.
+    With `startup_timeout_seconds` of 3 and a 1-second poll, the third round
+    has one second left, and the probe must be told so rather than issued its
+    full budget regardless of how little time remains.
     """
 
     chair = identity("reader", "reader-v1")
