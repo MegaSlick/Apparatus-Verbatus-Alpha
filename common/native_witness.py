@@ -37,6 +37,7 @@ PRESENTATION_KINDS: Final = frozenset({"page", "region", "adapter-crop"})
 BOUNDS_SOURCES: Final = frozenset({"native", "derived", "presented"})
 REPORTED_BOUNDS_SOURCES: Final = frozenset({"native", "derived"})
 _BOUNDS_FIELDS: Final = frozenset({"x", "y", "w", "h"})
+_OBSERVED_ENTRY_FIELDS: Final = frozenset({"ordinal", "bounds", "bounds_source", "span"})
 PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
     {
         "chair",
@@ -169,6 +170,19 @@ def _bounds(value: Any, what: str, *, page_size: tuple[int, int] | None) -> dict
     ):
         raise SchemaRefusal(f"{what} falls outside the sealed source page")
     return value
+
+
+def _contains(outer: dict[str, int], inner: dict[str, int]) -> bool:
+    return (
+        outer["x"] <= inner["x"]
+        and outer["y"] <= inner["y"]
+        and outer["x"] + outer["w"] >= inner["x"] + inner["w"]
+        and outer["y"] + outer["h"] >= inner["y"] + inner["h"]
+    )
+
+
+def _attestatores_blob_path(digest: str) -> str:
+    return f"{writing_directory(ATTESTATORES)}/blobs/sha256/{digest}"
 
 
 def churro_fit_target(source_width: int, source_height: int) -> tuple[int, int]:
@@ -377,12 +391,7 @@ def validate_observed(
         raise SchemaRefusal("a Testimonium observed block is not a list")
     spans: list[tuple[int, int]] = []
     for index, item in enumerate(value):
-        if not isinstance(item, dict) or set(item) != {
-            "ordinal",
-            "bounds",
-            "bounds_source",
-            "span",
-        }:
+        if not isinstance(item, dict) or set(item) != _OBSERVED_ENTRY_FIELDS:
             raise SchemaRefusal("a Testimonium observed entry is not its closed schema")
         if not _integer(item["ordinal"]) or item["ordinal"] != index:
             raise SchemaRefusal("a Testimonium observed ordinals are not dense, unique, 0-based")
@@ -402,12 +411,7 @@ def validate_observed(
         # A page witness's act view restates page-level geometry, so its boxes
         # may exceed this record's crop; they stay bounded by the sealed page.
         presented_bounds = presented["transform"]["bounds"]
-        if presentation_is_witness_view and not (
-            presented_bounds["x"] <= bounds["x"]
-            and presented_bounds["y"] <= bounds["y"]
-            and presented_bounds["x"] + presented_bounds["w"] >= bounds["x"] + bounds["w"]
-            and presented_bounds["y"] + presented_bounds["h"] >= bounds["y"] + bounds["h"]
-        ):
+        if presentation_is_witness_view and not _contains(presented_bounds, bounds):
             raise SchemaRefusal(
                 "a Testimonium observed box falls outside the exact image presentation. "
                 "The record would attribute unseen page pixels to this witness. Correct the "
@@ -539,9 +543,8 @@ def validate_presented_page_binding(
                 "an adapter-crop presentation cannot be re-derived without its sealed page bytes"
             )
         derived = crop_png(page_bytes, bounds)
-        # The vendor's own order; see `_COLOUR_BEFORE_RESIZE`.
-        colour_first = operation in _COLOUR_BEFORE_RESIZE
-        if colour_first:
+        colour_before_resize = operation in _COLOUR_BEFORE_RESIZE
+        if colour_before_resize:
             derived = _replay_colour_mode(presented, derived)
         if operation in RESIZING_ADAPTER_CROP_OPERATIONS:
             resize = presented["transform"]["resize"]
@@ -551,7 +554,7 @@ def validate_presented_page_binding(
             derived = resize_png_lanczos(
                 derived, resize["target_width_px"], resize["target_height_px"]
             )
-        if not colour_first:
+        if not colour_before_resize:
             derived = _replay_colour_mode(presented, derived)
         expected_sha256 = digest_bytes(derived)
         if presented["image_sha256"] != expected_sha256:
@@ -608,14 +611,7 @@ def unpresented_region_ids(
         region_id = payload.get("region_id") if isinstance(payload, dict) else None
         if not isinstance(region_id, str) or not region_id or not isinstance(bounds, dict):
             raise SchemaRefusal("a bound proposal region has no page-space identity to compare")
-        contained = (
-            transform.get("source_page_id") == page_id
-            and presented_bounds["x"] <= bounds["x"]
-            and presented_bounds["y"] <= bounds["y"]
-            and presented_bounds["x"] + presented_bounds["w"] >= bounds["x"] + bounds["w"]
-            and presented_bounds["y"] + presented_bounds["h"] >= bounds["y"] + bounds["h"]
-        )
-        if not contained:
+        if not (transform.get("source_page_id") == page_id and _contains(presented_bounds, bounds)):
             unpresented.append(region_id)
     return unpresented
 
@@ -648,7 +644,6 @@ def validate_page_testimonium_payload(
     if (
         payload["scope"] != "page"
         or not _integer(payload["page_ordinal"])
-        # 1-based everywhere.
         or payload["page_ordinal"] < 1
         or not isinstance(page_role, str)
         or page_role not in PAGE_ROLES
@@ -667,7 +662,6 @@ def validate_page_testimonium_payload(
             "the page ordinal of the presentation actually served"
         )
     if "partition_disagreement" in payload:
-        presented = payload["presented"]
         disagreement = validate_partition_disagreement(
             payload["partition_disagreement"],
             observed=payload["observed"],
@@ -680,95 +674,99 @@ def validate_page_testimonium_payload(
     if "native_capture" in payload:
         capture = validate_native_capture(payload["native_capture"])
         if capture["adapter"] == "churro.v1":
-            parse = capture["parse"]
-            parsed_text = parse.get("text")
-            if parse["state"] == "parsed":
-                if payload["payload"] != parsed_text:
-                    raise SchemaRefusal(
-                        "a Churro page Testimonium payload differs from its parsed native capture"
-                    )
-                truncated, truncation_basis = _truncation_from_stop_word(
-                    capture["transport_stop_reason"]
-                )
-                expected_health = {
-                    "native_type": "string",
-                    "encoding": "utf-8-json-native",
-                    "recordable": True,
-                    "empty": parsed_text == "",
-                    "blank": parsed_text.strip() == "",
-                    "truncated": truncated,
-                    "characters": len(parsed_text),
-                    "truncation_basis": truncation_basis,
-                }
-                if payload["content_health"] != expected_health:
-                    raise SchemaRefusal(
-                        "a Churro page Testimonium health differs from its parsed native capture"
-                    )
-                # An empty reading is a confirmed blank only when the model
-                # positively finished; cut off or unreported needs a reason.
-                interrupted_silence = truncated is not False and parsed_text == ""
-                if interrupted_silence:
-                    if not (isinstance(payload.get("reason"), str) and payload["reason"].strip()):
-                        raise SchemaRefusal(
-                            "a cut-off empty Churro page capture has no failed-attempt reason"
-                        )
-                elif "reason" in payload:
-                    raise SchemaRefusal(
-                        "a usable Churro page capture carries a failed-attempt reason"
-                    )
-            else:
-                if payload["payload"] is not None:
-                    raise SchemaRefusal("an unread Churro page capture claims retained page text")
-                cut_off = capture["transport_stop_reason"] in _CHURRO_CUTOFF_STOP_REASONS
-                # The same helper the writer uses, so the two cannot disagree.
-                parse_refusal = native_parse_refusal(parse)
-                basis = (
-                    "response cut off by the provider "
-                    f"({capture['transport_stop_reason']!r}); {parse_refusal}"
-                    if cut_off
-                    else parse_refusal
-                )
-                expected_health = {
-                    "native_type": "unrecordable",
-                    "encoding": "invalid-or-unrecordable",
-                    "recordable": False,
-                    "empty": None,
-                    "blank": None,
-                    "truncated": None,
-                    "characters": None,
-                    "truncation_basis": basis,
-                }
-                if payload["content_health"] != expected_health:
-                    raise SchemaRefusal(
-                        "an unparseable Churro page Testimonium health differs from its capture"
-                    )
-                reason = payload.get("reason")
-                if not isinstance(reason, str) or not reason.strip() or parse_refusal not in reason:
-                    raise SchemaRefusal(
-                        "an unparseable Churro page capture has no reason naming its parser refusal"
-                    )
+            _validate_churro_page_health(payload, capture)
     if "native_inference" in payload:
-        provenance = payload.get("provenance")
-        identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
-        if (
-            payload.get("chair") != "attestator_1"
-            or not isinstance(identity, dict)
-            or identity.get("role") != "attestator_1"
-            or identity.get("witness_adapter") != "chandra.v1"
-            or identity.get("witness_scope") != "page"
-        ):
-            raise SchemaRefusal(
-                "Chandra native inference provenance belongs only to page-scoped "
-                "attestator_1 with chandra.v1"
-            )
-        capture = payload.get("native_capture")
-        if capture is not None and capture.get("adapter") != "chandra.v1":
-            raise SchemaRefusal(
-                "Chandra native inference provenance names a non-Chandra native capture"
-            )
-        validate_chandra_native_trace(payload["native_inference"])
+        _validate_chandra_native_inference(payload)
     validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
+
+
+def _validate_churro_page_health(payload: dict[str, Any], capture: dict[str, Any]) -> None:
+    parse = capture["parse"]
+    parsed_text = parse.get("text")
+    if parse["state"] == "parsed":
+        if payload["payload"] != parsed_text:
+            raise SchemaRefusal(
+                "a Churro page Testimonium payload differs from its parsed native capture"
+            )
+        truncated, truncation_basis = _truncation_from_stop_word(capture["transport_stop_reason"])
+        expected_health = {
+            "native_type": "string",
+            "encoding": "utf-8-json-native",
+            "recordable": True,
+            "empty": parsed_text == "",
+            "blank": parsed_text.strip() == "",
+            "truncated": truncated,
+            "characters": len(parsed_text),
+            "truncation_basis": truncation_basis,
+        }
+        if payload["content_health"] != expected_health:
+            raise SchemaRefusal(
+                "a Churro page Testimonium health differs from its parsed native capture"
+            )
+        # An empty reading is a confirmed blank only when the model
+        # positively finished; cut off or unreported needs a reason.
+        interrupted_silence = truncated is not False and parsed_text == ""
+        if interrupted_silence:
+            if not (isinstance(payload.get("reason"), str) and payload["reason"].strip()):
+                raise SchemaRefusal(
+                    "a cut-off empty Churro page capture has no failed-attempt reason"
+                )
+        elif "reason" in payload:
+            raise SchemaRefusal("a usable Churro page capture carries a failed-attempt reason")
+    else:
+        if payload["payload"] is not None:
+            raise SchemaRefusal("an unread Churro page capture claims retained page text")
+        cut_off = capture["transport_stop_reason"] in _CHURRO_CUTOFF_STOP_REASONS
+        # The same helper the writer uses, so the two cannot disagree.
+        parse_refusal = native_parse_refusal(parse)
+        basis = (
+            "response cut off by the provider "
+            f"({capture['transport_stop_reason']!r}); {parse_refusal}"
+            if cut_off
+            else parse_refusal
+        )
+        expected_health = {
+            "native_type": "unrecordable",
+            "encoding": "invalid-or-unrecordable",
+            "recordable": False,
+            "empty": None,
+            "blank": None,
+            "truncated": None,
+            "characters": None,
+            "truncation_basis": basis,
+        }
+        if payload["content_health"] != expected_health:
+            raise SchemaRefusal(
+                "an unparseable Churro page Testimonium health differs from its capture"
+            )
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason.strip() or parse_refusal not in reason:
+            raise SchemaRefusal(
+                "an unparseable Churro page capture has no reason naming its parser refusal"
+            )
+
+
+def _validate_chandra_native_inference(payload: dict[str, Any]) -> None:
+    provenance = payload.get("provenance")
+    identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
+    if (
+        payload.get("chair") != "attestator_1"
+        or not isinstance(identity, dict)
+        or identity.get("role") != "attestator_1"
+        or identity.get("witness_adapter") != "chandra.v1"
+        or identity.get("witness_scope") != "page"
+    ):
+        raise SchemaRefusal(
+            "Chandra native inference provenance belongs only to page-scoped "
+            "attestator_1 with chandra.v1"
+        )
+    capture = payload.get("native_capture")
+    if capture is not None and capture.get("adapter") != "chandra.v1":
+        raise SchemaRefusal(
+            "Chandra native inference provenance names a non-Chandra native capture"
+        )
+    validate_chandra_native_trace(payload["native_inference"])
 
 
 def validate_retained_response_refs(
@@ -782,7 +780,6 @@ def validate_retained_response_refs(
     if refs is not None:
         if not isinstance(refs, list) or not refs:
             raise SchemaRefusal("a page Testimonium raw_response_refs is not a non-empty list")
-        expected_prefix = f"{writing_directory(ATTESTATORES)}/blobs/sha256/"
         for reference in refs:
             if (
                 not isinstance(reference, dict)
@@ -790,7 +787,7 @@ def validate_retained_response_refs(
                 or not isinstance(reference["relative_path"], str)
                 or not reference["relative_path"]
                 or not is_sha256(reference["sha256"])
-                or reference["relative_path"] != expected_prefix + reference["sha256"]
+                or reference["relative_path"] != _attestatores_blob_path(reference["sha256"])
             ):
                 raise SchemaRefusal(
                     "a page Testimonium retained-response reference is not a closed blob reference"
@@ -892,12 +889,7 @@ def split_page_edge_overshoots(
     overshoots: list[dict[str, Any]] = []
     page_bounds = {"x": 0, "y": 0, "w": page_size[0], "h": page_size[1]}
     for source_ordinal, item in enumerate(observed):
-        if not isinstance(item, dict) or set(item) != {
-            "ordinal",
-            "bounds",
-            "bounds_source",
-            "span",
-        }:
+        if not isinstance(item, dict) or set(item) != _OBSERVED_ENTRY_FIELDS:
             raise SchemaRefusal(
                 "the page-edge check received an observed entry outside its closed schema. "
                 "The rejected box could lose facts when converted into a finding. "
@@ -990,6 +982,35 @@ def unrouted_observations(
     return findings
 
 
+def _proposal_order(box: dict[str, int]) -> tuple[int, int, int, int]:
+    return (box["y"], box["x"], box["h"], box["w"])
+
+
+def _box_key(box: dict[str, int]) -> tuple[int, int, int, int]:
+    return (box["x"], box["y"], box["w"], box["h"])
+
+
+def _reported_observation_boxes(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "ordinal": observation["ordinal"],
+            "bounds": dict(observation["bounds"]),
+            "bounds_source": observation["bounds_source"],
+        }
+        for observation in observed
+        if observation.get("bounds_source") in REPORTED_BOUNDS_SOURCES
+    ]
+
+
+def _edge_offsets(observed: dict[str, int], proposal: dict[str, int]) -> dict[str, int]:
+    return {
+        "left": observed["x"] - proposal["x"],
+        "top": observed["y"] - proposal["y"],
+        "right": observed["x"] + observed["w"] - proposal["x"] - proposal["w"],
+        "bottom": observed["y"] + observed["h"] - proposal["y"] - proposal["h"],
+    }
+
+
 def partition_disagreement(
     testimonium: dict[str, Any],
     proposal_regions: list[dict[str, Any]],
@@ -1007,17 +1028,9 @@ def partition_disagreement(
             if region.get("payload", {}).get("origin") == "proposal"
             and region["payload"]["transform"].get("source_page_id") == page_id
         ],
-        key=lambda box: (box["y"], box["x"], box["h"], box["w"]),
+        key=_proposal_order,
     )
-    observations = [
-        {
-            "ordinal": observation["ordinal"],
-            "bounds": dict(observation["bounds"]),
-            "bounds_source": observation["bounds_source"],
-        }
-        for observation in payload.get("observed", [])
-        if observation.get("bounds_source") in REPORTED_BOUNDS_SOURCES
-    ]
+    observations = _reported_observation_boxes(payload.get("observed", []))
     deltas, unobserved_proposals, ambiguous_pairings = _partition_pairing_facts(
         proposals, observations
     )
@@ -1048,24 +1061,13 @@ def _partition_pairing_facts(
         matches = [proposal for proposal in proposals if _overlaps(observation["bounds"], proposal)]
         observation_match_counts[observation["ordinal"]] = len(matches)
         for proposal in matches:
-            key = (proposal["x"], proposal["y"], proposal["w"], proposal["h"])
+            key = _box_key(proposal)
             proposal_match_counts[key] = proposal_match_counts.get(key, 0) + 1
             pairing = {
                 "proposal_box": dict(proposal),
                 "observed_ordinal": observation["ordinal"],
                 "observed_box": dict(observation["bounds"]),
-                "edge_offsets": {
-                    "left": observation["bounds"]["x"] - proposal["x"],
-                    "top": observation["bounds"]["y"] - proposal["y"],
-                    "right": observation["bounds"]["x"]
-                    + observation["bounds"]["w"]
-                    - proposal["x"]
-                    - proposal["w"],
-                    "bottom": observation["bounds"]["y"]
-                    + observation["bounds"]["h"]
-                    - proposal["y"]
-                    - proposal["h"],
-                },
+                "edge_offsets": _edge_offsets(observation["bounds"], proposal),
             }
             deltas.append(pairing)
             pairing_keys.append(key)
@@ -1076,9 +1078,7 @@ def _partition_pairing_facts(
         or proposal_match_counts[key] > 1
     ]
     unobserved_proposals = [
-        proposal
-        for proposal in proposals
-        if (proposal["x"], proposal["y"], proposal["w"], proposal["h"]) not in proposal_match_counts
+        proposal for proposal in proposals if _box_key(proposal) not in proposal_match_counts
     ]
     return deltas, unobserved_proposals, ambiguous_pairings
 
@@ -1242,14 +1242,13 @@ def derive_churro_capture(
                     "inspected": "raw-response",
                 }
             ],
-            "stop_reason": (
-                "partial-parse-failed" if parser is not None else transport_stop_reason
+            "stop_reason": _churro_stop_reason(
+                transport_stop_reason, parse["state"], repeated=False
             ),
         }
 
     parse: dict[str, Any] = {"state": "not-requested", "parser": None}
     findings: list[dict[str, Any]] = []
-    stop_reason = transport_stop_reason
     if parser is not None:
         document = document_parser(raw, system_prompt=system_prompt)
         # Copied: an injected parser may hand back records it keeps.
@@ -1258,7 +1257,6 @@ def derive_churro_capture(
             parse = {"state": "parsed", "parser": parser, "text": document["text"]}
         elif document["state"] == "failed":
             parse = {"state": "failed", "parser": parser, "reason": document["reason"]}
-            stop_reason = "partial-parse-failed"
         else:
             # The whole sentence, because it is what names the root element.
             parse = {
@@ -1266,23 +1264,34 @@ def derive_churro_capture(
                 "parser": parser,
                 "outcome": document["reason"],
             }
-            stop_reason = "partial-parse-unrecognized-shape"
     parsed_text = parse.get("text")
     inspected, basis = (
         (parsed_text.encode("utf-8"), "parsed-text")
         if isinstance(parsed_text, str)
         else (raw, "raw-response")
     )
+    repeated = False
     if finding := repetition_detector(inspected):
         findings.append({**finding, "inspected": basis})
-        # A parse failure outranks repetition in the stop reason; the finding is
-        # kept either way.
-        if finding["kind"] == "post-hoc-repetition" and parse["state"] not in {
-            "failed",
-            "unrecognized-shape",
-        }:
-            stop_reason = "partial-post-hoc-repetition-detected"
-    return {"parse": parse, "findings": findings, "stop_reason": stop_reason}
+        repeated = finding["kind"] == "post-hoc-repetition"
+    return {
+        "parse": parse,
+        "findings": findings,
+        "stop_reason": _churro_stop_reason(
+            transport_stop_reason, parse["state"], repeated=repeated
+        ),
+    }
+
+
+def _churro_stop_reason(transport_stop_reason: str, parse_state: str, *, repeated: bool) -> str:
+    """A parse failure outranks repetition; the repetition finding is kept either way."""
+    if parse_state == "failed":
+        return "partial-parse-failed"
+    if parse_state == "unrecognized-shape":
+        return "partial-parse-unrecognized-shape"
+    if repeated:
+        return "partial-post-hoc-repetition-detected"
+    return transport_stop_reason
 
 
 def churro_capture_system_prompt(capture: dict[str, Any]) -> str | None:
@@ -1369,8 +1378,7 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
     if (
         not isinstance(generation, dict)
         or set(generation) != {"max_new_tokens"}
-        or not isinstance(generation["max_new_tokens"], int)
-        or isinstance(generation["max_new_tokens"], bool)
+        or not _integer(generation["max_new_tokens"])
         or generation["max_new_tokens"] != CHURRO_OUTPUT_TOKENS
     ):
         raise SchemaRefusal(
@@ -1392,9 +1400,7 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
             continue
         if kind == "post-hoc-repetition":
             if set(finding) != {"kind", "unit_characters", "repeats", "inspected"} or any(
-                not isinstance(finding[field], int)
-                or isinstance(finding[field], bool)
-                or finding[field] <= 0
+                not _integer(finding[field]) or finding[field] <= 0
                 for field in ("unit_characters", "repeats")
             ):
                 raise SchemaRefusal(
@@ -1411,15 +1417,9 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
                 "a Churro page capture repetition finding does not name the inspected view"
             )
     repeated = any(finding["kind"] == "post-hoc-repetition" for finding in findings)
-    expected_stop = value["transport_stop_reason"]
-    if state == "failed":
-        expected_stop = "partial-parse-failed"
-    elif state == "unrecognized-shape":
-        # Same precedence as `derive_churro_capture`.
-        expected_stop = "partial-parse-unrecognized-shape"
-    elif repeated:
-        expected_stop = "partial-post-hoc-repetition-detected"
-    if value["stop_reason"] != expected_stop:
+    if value["stop_reason"] != _churro_stop_reason(
+        value["transport_stop_reason"], state, repeated=repeated
+    ):
         raise SchemaRefusal(
             "a Churro page capture stop reason disagrees with its parse and findings"
         )
@@ -1497,9 +1497,7 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         raise SchemaRefusal(
             "a page Testimonium native capture has an invalid raw-response reference"
         )
-    digest = reference["sha256"]
-    expected_path = f"{writing_directory(ATTESTATORES)}/blobs/sha256/{digest}"
-    if not is_sha256(digest) or reference["relative_path"] != expected_path:
+    if reference["relative_path"] != _attestatores_blob_path(reference["sha256"]):
         raise SchemaRefusal(
             "a page Testimonium native capture raw-response reference is not its "
             "content-addressed Attestatores blob path and digest"
@@ -1583,8 +1581,7 @@ def validate_partition_disagreement(
         for box in value[field]:
             _bounds(box, "a page Testimonium partition proposal box", page_size=None)
     if proposal_boxes is not None and value["proposal_boxes"] != sorted(
-        proposal_boxes,
-        key=lambda box: (box["y"], box["x"], box["h"], box["w"]),
+        proposal_boxes, key=_proposal_order
     ):
         raise SchemaRefusal(
             "a page Testimonium partition disagreement contradicts the sealed proposals on its page"
@@ -1609,16 +1606,7 @@ def validate_partition_disagreement(
             )
         _bounds(observation["bounds"], "a page Testimonium partition observed box", page_size=None)
     if observed is not None:
-        expected_observed = [
-            {
-                "ordinal": observation["ordinal"],
-                "bounds": dict(observation["bounds"]),
-                "bounds_source": observation["bounds_source"],
-            }
-            for observation in observed
-            if observation.get("bounds_source") in REPORTED_BOUNDS_SOURCES
-        ]
-        if value["observed_boxes"] != expected_observed:
+        if value["observed_boxes"] != _reported_observation_boxes(observed):
             raise SchemaRefusal(
                 "a page Testimonium partition disagreement contradicts its observed geometry"
             )

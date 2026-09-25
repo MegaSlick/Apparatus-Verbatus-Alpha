@@ -292,18 +292,13 @@ def _copy_verified_file(
 ) -> None:
     """Copy the inode that validation observed, refusing a check/use swap."""
 
-    # `O_NONBLOCK`, as `model_store._read_limited_bytes` already pays for: validation
-    # proved this name was a regular file, but the Hugging Face client still owns the
-    # per-call cache directory between then and now. A name replaced by a FIFO would
-    # block this open forever -- inside a pod boot, with the GPU billing, no journal
-    # step recorded and no reason printed -- before the `fstat` below could reject it.
+    # `O_NONBLOCK`: a name swapped for a FIFO since validation would block this
+    # open forever on a billing pod before `fstat` could reject it.
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(origin, flags)
     try:
         status = os.fstat(descriptor)
         if not stat.S_ISREG(status.st_mode):
-            # Named separately from the identity check below so the refusal says
-            # what was found, not merely that something changed.
             raise DigestMismatchRefusal(
                 repo,
                 f"returned snapshot file {relative!r} is no longer a regular file",
@@ -446,9 +441,7 @@ class ChairRegistry:
                 identity.role,
                 "identity differs from the configured pin; ensure and receipt never accept a neighbouring revision",
             )
-        # Identity mismatch must win when a caller supplies the sentinel against
-        # a configured real pin. Config accepts the sentinel only so launch-time
-        # materialization can read the roster; every pin-reliant door meets it here.
+        # After the identity check, so a mismatch wins over the sentinel.
         if identity.digest_manifest == PRE_MATERIALIZATION_SENTINEL:
             raise ConfigurationRefusal(
                 identity.role,
@@ -491,15 +484,8 @@ class ChairRegistry:
             )
         if "/" in identity.role or "\\" in identity.role or identity.role in ("", ".", ".."):
             raise CacheRevisionRefusal(identity.role, "role is unsafe as a cache path")
-        # The cache writes its identity descriptor *inside* the snapshot root, so a
-        # manifest that pins a file of that name and the cache want the same byte
-        # range. Nothing downstream could see the collision: `_write_cache_descriptor`
-        # overwrote the pinned file after verification had passed, so `ensure` returned
-        # a VerifiedSnapshot whose root no longer matched the pin, and `_missing_files`
-        # skips that path forever, refetching and reoverwriting on every call. A pin is
-        # a constant the artifact must match (#43); overwriting a pinned file to make
-        # room for bookkeeping is not a verified snapshot, so this is refused rather
-        # than resolved in the cache's favour.
+        # The cache writes its descriptor inside the snapshot root, and would
+        # overwrite a pinned file of that name after verification passed.
         if any(row.path == CACHE_DESCRIPTOR for row in manifest.rows):
             raise CacheRevisionRefusal(
                 identity.role,

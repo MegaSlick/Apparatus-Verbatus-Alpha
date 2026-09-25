@@ -218,13 +218,8 @@ class ModelsConfig:
     witness_floor: int
     chairs: Mapping[str, ChairIdentity | AbsentChair]
     adapter_recipes: Mapping[str, str] = field(default_factory=dict)
-    #: Which framing a witness chair is asked in, by chair role. An adapter with
-    #: more than one declared framing (`pipeline/3_attestatores/churro.py`) is
-    #: asked in the one named here; a chair absent from this table is asked in
-    #: its adapter's own default. Declared beside the adapter recipes because it
-    #: is the same kind of fact -- what this run asks of a chair, sealed with the
-    #: roster rather than chosen inside a stage -- and because a framing that a
-    #: run could not state would make an A/B a code edit on a pod.
+    #: Which framing each witness chair is asked in, by role; an absent chair
+    #: gets its adapter's default. Sealed with the roster, not chosen in a stage.
     witness_framings: Mapping[str, str] = field(default_factory=dict)
     model_root: str | None = None
     source_path: Path | None = field(default=None, compare=False, repr=False)
@@ -244,11 +239,7 @@ class ModelsConfig:
             "adapter_recipes": dict(sorted(self.adapter_recipes.items())),
             "chairs": chairs,
         }
-        # Present only when the roster declares one. An undeclared framing is
-        # not the same fact as an empty declaration: a roster that names none
-        # asks every chair in its adapter's own default, and adding an empty
-        # table to this record would move the `config_digest` of every run that
-        # never mentioned a framing at all.
+        # Omitted when empty, or every run's `config_digest` would move.
         if self.witness_framings:
             record["witness_framings"] = dict(sorted(self.witness_framings.items()))
         return record

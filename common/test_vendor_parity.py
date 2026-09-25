@@ -108,10 +108,8 @@ from operations.serving.http import chat_image_bytes_all
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 
-# --------------------------------------------------------------------------
 # The vendor pins.  Every digest below was measured from the pinned source at
 # the commit or revision named beside it, offline-testable afterwards.
-# --------------------------------------------------------------------------
 
 CHANDRA_CODE_REPOSITORY: Final = "github.com/datalab-to/chandra"
 CHANDRA_CODE_COMMIT: Final = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
@@ -289,9 +287,7 @@ def _module_string_constants(module: ModuleType) -> dict[str, str]:
     return found
 
 
-# --------------------------------------------------------------------------
 # Test 1 — carried-bytes digests
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.xfail(condition=_CHANDRA_LAYOUT_PENDING, reason=_PENDING_REASON, strict=False)
@@ -518,9 +514,7 @@ def test_the_carried_dai_generation_values_rebuild_the_shipped_file_byte_for_byt
     assert hashlib.sha256(rebuilt).hexdigest() == DAI_CARRIED_FILE_SHA256["generation_config.json"]
 
 
-# --------------------------------------------------------------------------
 # Test 2 — request shape
-# --------------------------------------------------------------------------
 
 
 class VendorRequestShapeRefusal(AssertionError):
@@ -1057,9 +1051,7 @@ def test_a_caller_that_names_a_manager_owned_field_is_refused_by_the_client():
         _refuse_unbuildable_request(request)
 
 
-# --------------------------------------------------------------------------
 # Test 4 — resize ports
-# --------------------------------------------------------------------------
 
 # Every entry measured against the vendors' own functions at the pinned commits
 # while this file was written, and re-measured on demand by the network arm.
@@ -1193,9 +1185,7 @@ def test_churros_truncation_is_int_and_not_round():
     assert round(1000 * scale) == 1_000
 
 
-# --------------------------------------------------------------------------
 # Test 6 — namespace guard
-# --------------------------------------------------------------------------
 
 
 def _shadowing_import_line() -> str:
@@ -1243,9 +1233,7 @@ def test_no_vendor_source_sits_at_the_repository_root():
         )
 
 
-# --------------------------------------------------------------------------
 # Test 5 — vendor equality, network-gated
-# --------------------------------------------------------------------------
 
 CHANDRA_RAW: Final = f"https://raw.githubusercontent.com/datalab-to/chandra/{CHANDRA_CODE_COMMIT}"
 CHURRO_RAW: Final = f"https://raw.githubusercontent.com/stanford-oval/Churro/{CHURRO_CODE_COMMIT}"

@@ -112,13 +112,8 @@ def image_prompt_tokens(
     resize the adapter does.
     """
 
-    factor = _positive(patch_size, "patch_size") * _positive(merge_size, "merge_size")
-    resized_height, resized_width = smart_resize(
-        height,
-        width,
-        factor=factor,
-        min_pixels=_positive(min_pixels, "min_pixels"),
-        max_pixels=_positive(max_pixels, "max_pixels"),
+    factor, resized_height, resized_width = _resize(
+        width, height, min_pixels, max_pixels, patch_size, merge_size
     )
     return (resized_height // factor) * (resized_width // factor)
 
@@ -134,6 +129,16 @@ def resized_dimensions(
 ) -> tuple[int, int]:
     """The ``(width, height)`` the chair actually sees, for the record."""
 
+    _factor, resized_height, resized_width = _resize(
+        width, height, min_pixels, max_pixels, patch_size, merge_size
+    )
+    return resized_width, resized_height
+
+
+def _resize(
+    width: int, height: int, min_pixels: int, max_pixels: int, patch_size: int, merge_size: int
+) -> tuple[int, int, int]:
+    """``(factor, resized_height, resized_width)`` with every geometry term checked positive."""
     factor = _positive(patch_size, "patch_size") * _positive(merge_size, "merge_size")
     resized_height, resized_width = smart_resize(
         height,
@@ -142,11 +147,15 @@ def resized_dimensions(
         min_pixels=_positive(min_pixels, "min_pixels"),
         max_pixels=_positive(max_pixels, "max_pixels"),
     )
-    return resized_width, resized_height
+    return factor, resized_height, resized_width
+
+
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def _positive(value: object, field: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+    if not _is_positive_int(value):
         raise RequestCapacityRefusal(
             f"{field} must be a positive integer to compute an image's token cost, not "
             f"{value!r}; nothing here defaults it"
@@ -179,7 +188,7 @@ def row_image_geometry(profile: Any) -> RowImageGeometry:
     missing: list[str] = []
     for field in ("min_pixels", "max_pixels", "patch_size", "merge_size"):
         value = getattr(profile, field, None)
-        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        if not _is_positive_int(value):
             missing.append(field)
         else:
             values[field] = value
@@ -208,23 +217,34 @@ def image_token_costs(row: Any, images: Sequence[tuple[int, int]]) -> list[int]:
 
     geometry = row_image_geometry(row)
     return [
-        image_prompt_tokens(
-            width,
-            height,
-            min_pixels=geometry.min_pixels,
-            max_pixels=geometry.max_pixels,
-            patch_size=geometry.patch_size,
-            merge_size=geometry.merge_size,
-        )
-        for width, height in images
+        _image_record(width, height, geometry)["image_prompt_tokens"] for width, height in images
     ]
+
+
+def _image_record(width: int, height: int, geometry: RowImageGeometry) -> dict[str, int]:
+    """One embedded image's size, the size the chair sees, and its prompt-token cost."""
+    factor, resized_height, resized_width = _resize(
+        width,
+        height,
+        geometry.min_pixels,
+        geometry.max_pixels,
+        geometry.patch_size,
+        geometry.merge_size,
+    )
+    return {
+        "width": width,
+        "height": height,
+        "resized_width": resized_width,
+        "resized_height": resized_height,
+        "image_prompt_tokens": (resized_height // factor) * (resized_width // factor),
+    }
 
 
 def row_context_length(profile: Any) -> int:
     """The sealed row's ``max_model_len``, or a refusal naming the row."""
 
     value = getattr(profile, "max_model_len", None)
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+    if not _is_positive_int(value):
         raise RequestCapacityRefusal(
             f"the sealed serving row ({_row_name(profile)}) states no positive max_model_len, "
             "so nothing here can say what request length the engine accepts"
@@ -343,32 +363,7 @@ def request_fits(
                 "exactly as the admitted count does"
             )
 
-    image_records: list[dict[str, Any]] = []
-    for width, height in images:
-        resized_width, resized_height = resized_dimensions(
-            width,
-            height,
-            min_pixels=geometry.min_pixels,
-            max_pixels=geometry.max_pixels,
-            patch_size=geometry.patch_size,
-            merge_size=geometry.merge_size,
-        )
-        image_records.append(
-            {
-                "width": width,
-                "height": height,
-                "resized_width": resized_width,
-                "resized_height": resized_height,
-                "image_prompt_tokens": image_prompt_tokens(
-                    width,
-                    height,
-                    min_pixels=geometry.min_pixels,
-                    max_pixels=geometry.max_pixels,
-                    patch_size=geometry.patch_size,
-                    merge_size=geometry.merge_size,
-                ),
-            }
-        )
+    image_records = [_image_record(width, height, geometry) for width, height in images]
     image_total = sum(entry["image_prompt_tokens"] for entry in image_records)
     need = image_total + prompt_tokens + answer_budget
     headroom = max_model_len - need

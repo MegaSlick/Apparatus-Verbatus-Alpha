@@ -62,20 +62,10 @@ def _refuse_preference(value: Any) -> None:
 def _refuse_textual(value: Any) -> None:
     """Refuse textual evidence anywhere in an untrusted proposal payload.
 
-    Iterative for the same reason the preference screens are: the value is
-    caller input, screened before any shape check closes it, so a deep payload
-    walked recursively exhausted the interpreter stack and raised
-    ``RecursionError`` -- a crash naming nothing, where this module's whole
-    purpose is to refuse by name. Depth is this walk's own list now.
-
-    A cycle is refused rather than looped on, for the same reason and with the
-    same on-path bookkeeping every screen in the family now carries: the
-    recursion this replaced ended a self-referential payload by exhausting
-    itself, and a worklist has no stack to exhaust. The proposal components
-    reaching `_refuse_textual` are the caller's own objects, not something this
-    module parsed, so the shape is reachable. Only containers open on the
-    current path are tracked, so a component shared between siblings is still
-    walked wherever it appears.
+    Iterative, so a deep payload is a named refusal rather than a
+    `RecursionError`, and a self-containing one is refused rather than looped
+    on. Only containers open on the current path are tracked, so a component
+    shared between siblings is still walked wherever it appears.
     """
     pending: list[tuple[str, Any]] = [("value", value)]
     open_path: set[int] = set()
@@ -102,10 +92,43 @@ def _refuse_textual(value: Any) -> None:
                 )
             pending.extend(("value", item) for item in current.values())
         elif isinstance(current, (list, tuple)):
-            # F085: a tuple serializes exactly like a list through
-            # `canonical_bytes`, so this walk must descend into one too or a
-            # forbidden field wrapped in one reaches a sealed proposal unseen.
+            # A tuple serializes exactly like a list through `canonical_bytes`.
             pending.extend(("value", item) for item in current)
+
+
+def _findings(code: str, acts: list[dict[str, Any]]) -> list[dict[str, str]]:
+    return [{"code": code, "act_id": row["act_id"]} for row in acts]
+
+
+def _integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _refuse_unverified_self_hash(payload: dict[str, Any], subject: str, noun: str) -> None:
+    if verify_self_hash(payload):
+        return
+    unhashable = self_hash_refusal(payload)
+    if unhashable is not None:
+        raise SchemaRefusal(f"{subject}: self hash cannot be verified: {unhashable}")
+    raise SchemaRefusal(f"{subject}: self hash does not match the sealed {noun}")
+
+
+def _finding_pairs(findings: list[Any], subject: str) -> list[tuple[str, str]]:
+    """Closed findings as sorted, unique `(act_id, code)` pairs, or refuse."""
+    pairs: list[tuple[str, str]] = []
+    for row in findings:
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"code", "act_id"}
+            or not isinstance(row["code"], str)
+            or not row["code"]
+            or not _is_derived_id(row["act_id"], "act_")
+        ):
+            raise SchemaRefusal(f"{subject}: finding is not closed")
+        pairs.append((row["act_id"], row["code"]))
+    if pairs != sorted(set(pairs)):
+        raise SchemaRefusal(f"{subject}: findings are not sorted unique facts")
+    return pairs
 
 
 def _dedupe_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -127,24 +150,13 @@ def _sha(value: Any, what: str) -> str:
 
 
 def _is_derived_id(value: Any, prefix: str) -> bool:
-    """A derived identity of one kind: the right shape *and* the right prefix.
-
-    `is_well_formed` accepts every derived-identity prefix, so the prefix test
-    is what pins which kind of thing a field names. Shape alone would let a page
-    id stand where an act id belongs.
-    """
+    """A derived identity of one kind: `is_well_formed` accepts every prefix."""
     return is_well_formed(value) and value.startswith(prefix)
 
 
 def _path(value: Any, what: str) -> str:
-    # Same containment idiom as `common/contracts/envelope.py::validate_input_refs`
-    # and `common/runtree/store.py::RunTree.resolve`: a reference is relative to
-    # the run root, and a digest-bound reference this schema seals must be
-    # refused here rather than trusted through to whichever reader dereferences it.
-    # Typed before it is walked. The key-set check upstream proves the field is
-    # present, not that it is a string, so a `relative_path` of None or a number
-    # reached `startswith` and killed the stage with an AttributeError traceback
-    # instead of the named refusal this module exists to produce.
+    # A sealed reference is relative to the run root, as in
+    # `common/contracts/envelope.py::validate_input_refs`.
     if not isinstance(value, str) or not value:
         raise SchemaRefusal(f"physical-act partition: {what} path is not a non-empty string")
     if value.startswith("/") or ".." in value.split("/"):
@@ -158,10 +170,8 @@ def _act(row: Any, *, require_bindings: bool = False) -> dict[str, Any]:
     if not isinstance(row, dict) or not (base <= set(row) <= base | bindings):
         raise SchemaRefusal("physical-act partition: local act must use its closed lineage shape")
     if require_bindings and not bindings <= set(row):
-        # The register re-derives every correspondence's act_id from its class
-        # and minted bounds, so a discovery row that will be appended must
-        # carry both; a run-partition row read from the Designator seal, whose
-        # closed contract has no bindings, legitimately omits them.
+        # The register re-derives an appended act_id from its class and bounds;
+        # a Designator-sealed partition row has no bindings.
         raise SchemaRefusal(
             "physical-act partition: a correspondence-bound local act must carry "
             "its act_class and minted act_bounds"
@@ -181,8 +191,6 @@ def _act(row: Any, *, require_bindings: bool = False) -> dict[str, Any]:
             "refused because normalization variants cannot be separate denominator keys"
         )
     if bindings <= set(row):
-        # Proving the identity here keeps a mismatched class or bounds a
-        # partition intake refusal rather than a later append refusal.
         try:
             expected_act = local_act_id(row["page_id"], row["act_class"], row["act_bounds"])
         except ContractError as error:
@@ -194,11 +202,7 @@ def _act(row: Any, *, require_bindings: bool = False) -> dict[str, Any]:
                 "physical-act partition: local act_id does not derive from its own "
                 "page, class, and minted bounds"
             )
-    if (
-        not isinstance(row["page_ordinal"], int)
-        or isinstance(row["page_ordinal"], bool)
-        or row["page_ordinal"] < 0
-    ):
+    if not _integer(row["page_ordinal"]) or row["page_ordinal"] < 0:
         raise SchemaRefusal(
             "physical-act partition: local act page ordinal is negative, boolean, or not an "
             "integer; the partition is refused because source-page attribution must be a "
@@ -211,8 +215,7 @@ def _act(row: Any, *, require_bindings: bool = False) -> dict[str, Any]:
         or not all(isinstance(x, str) and x for x in row["proposal_refs"])
     ):
         raise SchemaRefusal("physical-act partition: local act must retain proposal references")
-    # Several region references for one local act are a set.  Preserve them all,
-    # but do not preserve the producer's traversal order as a durable byte.
+    # A set: the producer's traversal order is not a durable byte.
     row["proposal_refs"] = sorted(set(row["proposal_refs"]))
     return row
 
@@ -236,14 +239,9 @@ def _presentation_index(
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Every ``(physical page, capture)`` an alignment table declares.
 
-    A capture may reach one physical page through more than one rendered page --
-    a whole opening and the split half of it are two `page_id`s over identical
-    source bytes -- so the consult's presentation row carries `page_ids[]`.
-    Keeping the first row and dropping the rest would delete a page from the
-    record, which is why the union is built once here rather than by a
-    `setdefault` at each use.  Two rows that disagree about *how* one capture
-    aligns to one physical page are a contradiction in the caller's table, not a
-    choice to be made: they are refused.
+    One capture may reach one physical page through several rendered pages (a
+    whole opening and its split half), so the page ids are a union. Two rows
+    aligning one capture to one page by different references are refused.
     """
     index: dict[tuple[str, str], dict[str, Any]] = {}
     for row in alignments:
@@ -267,12 +265,7 @@ def _presentation(
     page: str,
     source: str,
 ) -> dict[str, Any]:
-    """The one presentation row for one capture of one physical page.
-
-    Created from the alignment index rather than from whichever alignment row is
-    to hand, so a capture reaching the page through several rendered pages keeps
-    all of them and the row is the same whichever member reaches it first.
-    """
+    """The one presentation row for one capture of one physical page, made once from the index."""
     key = (page, source)
     row = presentations.get(key)
     if row is None:
@@ -297,6 +290,49 @@ def _accepted_record_sort_key(row: dict[str, Any]) -> tuple[int, str, str, str]:
     )
 
 
+def _logical_scope(
+    act: dict[str, Any],
+    *,
+    register: bytes,
+    source_ledger: set[str],
+    by_page: dict[str, dict[str, Any]],
+    clustered_sources: set[str],
+) -> str | tuple[str, tuple[str, str | None, str | None]]:
+    """One local act's logical act and identity scope, or the finding code that holds it."""
+    if act["source_sha256"] not in source_ledger:
+        return "local-source-absent"
+    alignment = by_page.get(act["page_id"])
+    if alignment is None:
+        # A clustered capture missing from the alignment table is unaligned, not a
+        # singleton: a singleton would duplicate the logical act it belongs to.
+        if act["source_sha256"] in clustered_sources:
+            return "capture-page-alignment-unresolved"
+        return act["act_id"], ("image-local-singleton", None, None)
+    if alignment["source_sha256"] != act["source_sha256"]:
+        raise SchemaRefusal(
+            "physical-act partition: local act source_sha256 does not match its "
+            "page's capture alignment"
+        )
+    page = alignment["physical_page_id"]
+    members = members_of(register, page)
+    # No declared member, or a capture outside the declared cluster.
+    if not members or alignment["source_sha256"] not in members:
+        return "capture-page-alignment-unresolved"
+    if any(member not in source_ledger for member in members):
+        return "cluster-member-absent"
+    resolved = resolve_proposal(register, act["act_id"])
+    if resolved["outcome"] != "resolved":
+        return resolved["code"]
+    if resolved["page_id"] != act["page_id"]:
+        return "correspondence-page-mismatch"
+    # The register minted the act on another physical page than this capture is
+    # aligned to; neither side is taken.
+    if resolved["physical_page_id"] != page:
+        return "capture-page-alignment-unresolved"
+    logical = resolved["physical_act_id"]
+    return logical, ("physical-act", logical, page)
+
+
 def build_physical_act_partition(
     *,
     register: bytes,
@@ -315,12 +351,8 @@ def build_physical_act_partition(
     """
     _refuse_preference({"local_acts": local_acts, "capture_alignments": capture_alignments})
     _sha(register_digest, "register_digest")
-    # The digest is sealed into the artifact as the provenance of this grouping, so
-    # it has to be the digest of the bytes that produced it. A caller that reads the
-    # digest before an append and the bytes after gets a partition grouped by one
-    # register and attributed to another -- a cluster re-registered mid-lifecycle,
-    # with nothing downstream able to see it. Reading the digest here also validates
-    # the register, which the alignment-free path would otherwise never do.
+    # The sealed digest must be of the bytes grouped, or a mid-build append would
+    # attribute this grouping to another register. This also validates the register.
     if read_register_digest(register) != register_digest:
         raise IncompatibleReuse(
             "physical-act partition: register_digest is not the digest of the register bytes "
@@ -337,12 +369,7 @@ def build_physical_act_partition(
         raise SchemaRefusal("physical-act partition: no local expected acts are not a denominator")
     if not isinstance(capture_alignments, list):
         raise SchemaRefusal("physical-act partition: capture alignments must be a list")
-    if not isinstance(source_ledger, set) or not all(
-        isinstance(source, str)
-        and len(source) == 64
-        and all(character in "0123456789abcdef" for character in source)
-        for source in source_ledger
-    ):
+    if not isinstance(source_ledger, set) or not all(is_sha256(source) for source in source_ledger):
         raise SchemaRefusal(
             "physical-act partition: source ledger must be a set of lowercase SHA-256 digests"
         )
@@ -361,9 +388,6 @@ def build_physical_act_partition(
             "physical-act partition: a capture page has more than one physical alignment"
         )
     index = _presentation_index(alignments)
-    # A local act on a clustered capture absent from this run's alignment table is
-    # missing alignment, not an image-local singleton. Publishing it as a singleton
-    # would duplicate the logical act it belongs to.
     clustered_sources = {
         source
         for _page, (_digest, members) in membership_heads(register).items()
@@ -373,81 +397,33 @@ def build_physical_act_partition(
     scopes: dict[str, tuple[str, str | None, str | None]] = {}
     findings: list[dict[str, str]] = []
     for act in acts:
-        if act["source_sha256"] not in source_ledger:
-            findings.append({"code": "local-source-absent", "act_id": act["act_id"]})
+        resolved = _logical_scope(
+            act,
+            register=register,
+            source_ledger=source_ledger,
+            by_page=by_page,
+            clustered_sources=clustered_sources,
+        )
+        if isinstance(resolved, str):
+            findings.append({"code": resolved, "act_id": act["act_id"]})
             continue
-        alignment = by_page.get(act["page_id"])
-        if alignment is None:
-            if act["source_sha256"] in clustered_sources:
-                findings.append(
-                    {"code": "capture-page-alignment-unresolved", "act_id": act["act_id"]}
-                )
-                continue
-            logical = act["act_id"]
-            scopes[logical] = ("image-local-singleton", None, None)
-        else:
-            if alignment["source_sha256"] != act["source_sha256"]:
-                raise SchemaRefusal(
-                    "physical-act partition: local act source_sha256 does not match its "
-                    "page's capture alignment"
-                )
-            page = alignment["physical_page_id"]
-            members = members_of(register, page)
-            if not members or alignment["source_sha256"] not in members:
-                # Either the physical page currently has no declared member (every
-                # link retracted, or none yet), or this alignment names a capture the
-                # register does not declare for that physical page -- a correspondence
-                # naming a capture outside the cluster. Both are the same finding: the
-                # alignment cannot be trusted to resolve this act.
-                findings.append(
-                    {"code": "capture-page-alignment-unresolved", "act_id": act["act_id"]}
-                )
-                continue
-            if any(member not in source_ledger for member in members):
-                findings.append({"code": "cluster-member-absent", "act_id": act["act_id"]})
-                continue
-            resolved = resolve_proposal(register, act["act_id"])
-            if resolved["outcome"] != "resolved":
-                findings.append({"code": resolved["code"], "act_id": act["act_id"]})
-                continue
-            if resolved["page_id"] != act["page_id"]:
-                findings.append({"code": "correspondence-page-mismatch", "act_id": act["act_id"]})
-                continue
-            if resolved["physical_page_id"] != page:
-                # The register minted this physical act on one physical page and the
-                # caller's table aligns this capture to another. Taking either side
-                # would make one logical act's page depend on which member happened
-                # to sort first, so neither is taken.
-                findings.append(
-                    {"code": "capture-page-alignment-unresolved", "act_id": act["act_id"]}
-                )
-                continue
-            logical = resolved["physical_act_id"]
-            scopes[logical] = ("physical-act", logical, page)
+        logical, scope = resolved
+        scopes[logical] = scope
         groups[logical].append(act)
     logical_acts: list[dict[str, Any]] = []
     for logical in sorted(groups):
         members = sorted(groups[logical], key=lambda row: row["act_id"])
         scope, physical, physical_page = scopes[logical]
-        # A same-capture double member is an ambiguous component, never an arbitrary collapse.
         sources = [row["source_sha256"] for row in members]
         if len(sources) != len(set(sources)):
-            findings.extend(
-                {"code": "ambiguous-physical-act", "act_id": row["act_id"]} for row in members
-            )
+            findings.extend(_findings("ambiguous-physical-act", members))
             continue
         components: dict[str, set[str]] = defaultdict(set)
         presentations: dict[tuple[str, str], dict[str, Any]] = {}
         if physical is not None:
-            # `physical_page` is the page the register minted this physical act on,
-            # already checked against every member's alignment above -- never read
-            # off whichever member sorted first.
             required = members_of(register, physical_page)
             if any((physical_page, source) not in index for source in required):
-                findings.extend(
-                    {"code": "capture-page-alignment-unresolved", "act_id": row["act_id"]}
-                    for row in members
-                )
+                findings.extend(_findings("capture-page-alignment-unresolved", members))
                 continue
             components[physical_page].update(required)
             for source in required:
@@ -468,9 +444,7 @@ def build_physical_act_partition(
                     {"physical_page_id": key, "required_capture_sha256s": sorted(value)}
                     for key, value in sorted(components.items())
                 ],
-                # Bindings (act_class/act_bounds) are intake facts for identity
-                # re-derivation and register appends; the sealed lineage row is
-                # the closed six-field shape every downstream consumer closes on.
+                # The bindings are intake facts; the sealed row is the six-field shape.
                 "member_local_acts": [
                     {
                         key: value
@@ -501,24 +475,105 @@ def build_physical_act_partition(
         "findings": sorted(_dedupe_findings(findings), key=_finding_sort_key),
     }
     payload["self_hash"] = self_hash(payload)
-    # The builder is held to the same conservation arithmetic its consumers are.
-    # A denominator that is wrong here is wrong everywhere downstream, and a
-    # producer that only its readers check is one refactor away from publishing a
-    # partition nobody re-reads until a stage has already used it.
     return validate_physical_act_partition(payload)
+
+
+def _component_pairs(components: Any) -> set[tuple[str, str]]:
+    """Every required `(physical page, capture)` of a closed component list."""
+    if not isinstance(components, list):
+        raise SchemaRefusal("physical-act partition: physical page components are invalid")
+    component_pairs: set[tuple[str, str]] = set()
+    component_pages: list[str] = []
+    for component in components:
+        if not isinstance(component, dict) or set(component) != {
+            "physical_page_id",
+            "required_capture_sha256s",
+        }:
+            raise SchemaRefusal("physical-act partition: physical page component is not closed")
+        page = component["physical_page_id"]
+        required_captures = component["required_capture_sha256s"]
+        if (
+            not _is_derived_id(page, "ppg_")
+            or not isinstance(required_captures, list)
+            or not required_captures
+            or not all(isinstance(item, str) for item in required_captures)
+            or required_captures != sorted(set(required_captures))
+        ):
+            raise SchemaRefusal(
+                "physical-act partition: physical-page component has a malformed identity "
+                "or required-capture set; the partition is refused because its capture "
+                "denominator must be a non-empty canonical set"
+            )
+        for source in required_captures:
+            _sha(source, "required capture source_sha256")
+            component_pairs.add((page, source))
+        component_pages.append(page)
+    if component_pages != sorted(set(component_pages)):
+        raise SchemaRefusal(
+            "physical-act partition: physical page components are not sorted unique pages"
+        )
+    return component_pairs
+
+
+def _presentation_facts(presentations: Any) -> tuple[set[tuple[str, str]], list[str]]:
+    """The `(physical page, capture)` pairs and local act ids a closed presentation list names."""
+    if not isinstance(presentations, list):
+        raise SchemaRefusal("physical-act partition: capture presentations are invalid")
+    presented_local_ids: list[str] = []
+    presentation_keys: list[tuple[str, str]] = []
+    for presentation in presentations:
+        if not isinstance(presentation, dict) or set(presentation) != {
+            "physical_page_id",
+            "source_sha256",
+            "page_ids",
+            "local_act_ids",
+            "alignment_ref",
+            "projected_view_refs",
+        }:
+            raise SchemaRefusal("physical-act partition: capture presentation is not closed")
+        page = presentation["physical_page_id"]
+        source = presentation["source_sha256"]
+        page_ids = presentation["page_ids"]
+        local_ids = presentation["local_act_ids"]
+        projected = presentation["projected_view_refs"]
+        if not _is_derived_id(page, "ppg_"):
+            raise SchemaRefusal(
+                "physical-act partition: capture presentation physical_page_id is not a "
+                "recognized derived identity; the partition is refused because capture "
+                "evidence cannot attach to a free-form page key"
+            )
+        _sha(source, "capture presentation source_sha256")
+        if (
+            not isinstance(page_ids, list)
+            or not page_ids
+            or not all(isinstance(item, str) for item in page_ids)
+            or page_ids != sorted(set(page_ids))
+            or not all(_is_derived_id(item, "pg_") for item in page_ids)
+            or not isinstance(local_ids, list)
+            or not all(isinstance(item, str) for item in local_ids)
+            or local_ids != sorted(set(local_ids))
+            or not all(_is_derived_id(item, "act_") for item in local_ids)
+            or not isinstance(presentation["alignment_ref"], str)
+            or not presentation["alignment_ref"]
+            or not isinstance(projected, list)
+            or not all(isinstance(item, str) and item for item in projected)
+            or projected != sorted(set(projected))
+        ):
+            raise SchemaRefusal("physical-act partition: capture presentation is malformed")
+        presentation_keys.append((page, source))
+        presented_local_ids.extend(local_ids)
+    if presentation_keys != sorted(set(presentation_keys)):
+        raise SchemaRefusal(
+            "physical-act partition: capture presentations are not in canonical set order"
+        )
+    return set(presentation_keys), presented_local_ids
 
 
 def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
     _refuse_preference(payload)
     if not isinstance(payload, dict) or payload.get("schema") != PARTITION_SCHEMA:
         raise SchemaRefusal("physical-act partition: invalid schema")
-    if not verify_self_hash(payload):
-        unhashable = self_hash_refusal(payload)
-        if unhashable is not None:
-            raise SchemaRefusal(
-                f"physical-act partition: self hash cannot be verified: {unhashable}"
-            )
-        raise SchemaRefusal("physical-act partition: self hash does not match the sealed partition")
+    _refuse_unverified_self_hash(payload, "physical-act partition", "partition")
     required = {
         "schema",
         "register_digest",
@@ -544,7 +599,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
     _path(seal["relative_path"], "proposal seal")
     _sha(seal["sha256"], "proposal seal sha256")
     if any(
-        not isinstance(payload[name], int) or isinstance(payload[name], bool) or payload[name] < 0
+        not _integer(payload[name]) or payload[name] < 0
         for name in ("local_expected_count", "logical_expected_count")
     ):
         raise SchemaRefusal("physical-act partition: expected counts are invalid")
@@ -620,92 +675,9 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
         published_member_keys.update(member_keys)
 
         components = group["physical_page_components"]
-        if not isinstance(components, list):
-            raise SchemaRefusal("physical-act partition: physical page components are invalid")
-        component_pairs: set[tuple[str, str]] = set()
-        component_pages: list[str] = []
-        for component in components:
-            if not isinstance(component, dict) or set(component) != {
-                "physical_page_id",
-                "required_capture_sha256s",
-            }:
-                raise SchemaRefusal("physical-act partition: physical page component is not closed")
-            page = component["physical_page_id"]
-            required_captures = component["required_capture_sha256s"]
-            if (
-                not _is_derived_id(page, "ppg_")
-                or not isinstance(required_captures, list)
-                or not required_captures
-                or not all(isinstance(item, str) for item in required_captures)
-                or required_captures != sorted(set(required_captures))
-            ):
-                raise SchemaRefusal(
-                    "physical-act partition: physical-page component has a malformed identity "
-                    "or required-capture set; the partition is refused because its capture "
-                    "denominator must be a non-empty canonical set"
-                )
-            for source in required_captures:
-                _sha(source, "required capture source_sha256")
-                component_pairs.add((page, source))
-            component_pages.append(page)
-        if component_pages != sorted(set(component_pages)):
-            raise SchemaRefusal(
-                "physical-act partition: physical page components are not sorted unique pages"
-            )
-
+        component_pairs = _component_pairs(components)
         presentations = group["capture_presentations"]
-        if not isinstance(presentations, list):
-            raise SchemaRefusal("physical-act partition: capture presentations are invalid")
-        presentation_pairs: set[tuple[str, str]] = set()
-        presented_local_ids: list[str] = []
-        presentation_keys: list[tuple[str, str]] = []
-        for presentation in presentations:
-            if not isinstance(presentation, dict) or set(presentation) != {
-                "physical_page_id",
-                "source_sha256",
-                "page_ids",
-                "local_act_ids",
-                "alignment_ref",
-                "projected_view_refs",
-            }:
-                raise SchemaRefusal("physical-act partition: capture presentation is not closed")
-            page = presentation["physical_page_id"]
-            source = presentation["source_sha256"]
-            page_ids = presentation["page_ids"]
-            local_ids = presentation["local_act_ids"]
-            projected = presentation["projected_view_refs"]
-            if not _is_derived_id(page, "ppg_"):
-                raise SchemaRefusal(
-                    "physical-act partition: capture presentation physical_page_id is not a "
-                    "recognized derived identity; the partition is refused because capture "
-                    "evidence cannot attach to a free-form page key"
-                )
-            _sha(source, "capture presentation source_sha256")
-            if (
-                not isinstance(page_ids, list)
-                or not page_ids
-                or not all(isinstance(item, str) for item in page_ids)
-                or page_ids != sorted(set(page_ids))
-                or not all(_is_derived_id(item, "pg_") for item in page_ids)
-                or not isinstance(local_ids, list)
-                or not all(isinstance(item, str) for item in local_ids)
-                or local_ids != sorted(set(local_ids))
-                or not all(_is_derived_id(item, "act_") for item in local_ids)
-                or not isinstance(presentation["alignment_ref"], str)
-                or not presentation["alignment_ref"]
-                or not isinstance(projected, list)
-                or not all(isinstance(item, str) and item for item in projected)
-                or projected != sorted(set(projected))
-            ):
-                raise SchemaRefusal("physical-act partition: capture presentation is malformed")
-            pair = (page, source)
-            presentation_pairs.add(pair)
-            presentation_keys.append(pair)
-            presented_local_ids.extend(local_ids)
-        if presentation_keys != sorted(set(presentation_keys)):
-            raise SchemaRefusal(
-                "physical-act partition: capture presentations are not in canonical set order"
-            )
+        presentation_pairs, presented_local_ids = _presentation_facts(presentations)
 
         scope = group["identity_scope"]
         physical = group["physical_act_id"]
@@ -773,24 +745,9 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
         raise SchemaRefusal(
             "physical-act partition: local_to_logical does not equal the published group members"
         )
-    finding_pairs: list[tuple[str, str]] = []
-    for row in payload["findings"]:
-        if (
-            not isinstance(row, dict)
-            or set(row) != {"code", "act_id"}
-            or not isinstance(row["code"], str)
-            or not row["code"]
-            or not _is_derived_id(row["act_id"], "act_")
-        ):
-            raise SchemaRefusal("physical-act partition: finding is not closed")
-        finding_pairs.append((row["act_id"], row["code"]))
-    if finding_pairs != sorted(set(finding_pairs)):
-        raise SchemaRefusal("physical-act partition: findings are not sorted unique facts")
-    held = {act for act, _code in finding_pairs}
-    # An act is carried into a logical act or it is held by a named finding. Both at
-    # once means the record answers two ways at once; a sum that merely reaches the
-    # expected count lets one act cover another's disappearance, which is precisely
-    # the arithmetic a partial run would produce.
+    held = {act for act, _code in _finding_pairs(payload["findings"], "physical-act partition")}
+    # Mapped and held are disjoint, or one act could cover another's disappearance
+    # in a sum that still reaches the expected count.
     if mapped & held:
         raise SchemaRefusal(
             "physical-act partition: an act is both mapped to a logical act and held by a "
@@ -810,18 +767,11 @@ def build_correspondence_proposal(
 ) -> dict[str, Any]:
     """Turn exact-one geometric components into an appendable, sealed proposal.
 
-    ``components`` is deliberately geometry-only: each component names its
-    physical page, its local acts, and digest-bound registration evidence.  A
-    component with any finding is retained as a finding and contributes no
-    records; the register writer therefore cannot turn ambiguity into a mint.
-
-    The register is read, not merely named. A resolver that mints from geometry
-    alone cannot see that one of its local acts already belongs to a physical
-    act, so two honest discovery runs over an overlapping component split one
-    physical act into two -- and the split is quiet, because each surviving act
-    resolves perfectly well on its own. Whether the two runs merge or split then
-    depends only on which ran first, which is the order-dependence the consult's
-    §2.2 transitivity requirement rules out.
+    ``components`` is geometry-only. A component with a finding contributes no
+    records, so the register writer cannot turn ambiguity into a mint. The
+    register is read, not merely named: minting from geometry alone would split
+    one physical act in two across overlapping discovery runs, depending only
+    on which ran first (consult §2.2).
     """
     _refuse_preference(components)
     _refuse_textual(components)
@@ -877,18 +827,12 @@ def build_correspondence_proposal(
                 "page": page,
                 "existing": existing,
                 "acts": acts,
-                # Evidence names a set of geometric facts.  Its enumerator's
-                # traversal order is neither evidence nor a durable corpus fact.
                 "evidence": sorted(set(evidence)),
                 "finding": finding,
             }
         )
 
-    def ambiguous(acts: list[dict[str, Any]]) -> list[dict[str, str]]:
-        return [{"code": "ambiguous-physical-act", "act_id": row["act_id"]} for row in acts]
-
-    # Resolution must finish before emission: emitting as it goes would let the
-    # component listed first take a physical act and leave the second held.
+    # Resolve everything before emitting, so listing order takes nothing.
     plans: list[dict[str, Any]] = []
     target_count: dict[str, int] = defaultdict(int)
     for component in parsed:
@@ -897,46 +841,28 @@ def build_correspondence_proposal(
         acts = component["acts"]
         finding = component["finding"]
         if finding is not None:
-            plans.append({"findings": [{"code": finding, "act_id": row["act_id"]} for row in acts]})
+            plans.append({"findings": _findings(finding, acts)})
             continue
-        # A local act named by more than one component in this same discovery
-        # run is exactly "a capture in two proposed correspondences": the
-        # resolver did not produce an exact-one admissible component, so the
-        # whole component is ambiguous and none of it is appended -- never
-        # resolved by which component happened to be listed first.
+        # A local act in two components of one run is ambiguous, never settled
+        # by listing order.
         if any(act_component_count[row["act_id"]] > 1 for row in acts):
-            plans.append({"findings": ambiguous(acts)})
+            plans.append({"findings": _findings("ambiguous-physical-act", acts)})
             continue
         ids = sorted(row["act_id"] for row in acts)
         if len(ids) != len(set(ids)) or len({row["source_sha256"] for row in acts}) != len(acts):
-            plans.append({"findings": ambiguous(acts)})
+            plans.append({"findings": _findings("ambiguous-physical-act", acts)})
             continue
         registered_sources = set(members_of(register, page))
         if not registered_sources or any(
             row["source_sha256"] not in registered_sources for row in acts
         ):
-            # Geometry may relate acts only inside the capture cluster the
-            # immutable register declares. Letting an outsider through here
-            # would append a durable correspondence the register cannot later
-            # audit, because that record carries the rendered page and act but
-            # not a second copy of the source digest.
-            plans.append(
-                {
-                    "findings": [
-                        {
-                            "code": "capture-page-alignment-unresolved",
-                            "act_id": row["act_id"],
-                        }
-                        for row in acts
-                    ]
-                }
-            )
+            # Only inside the declared cluster: an appended correspondence carries
+            # no source digest, so the register could not audit an outsider later.
+            plans.append({"findings": _findings("capture-page-alignment-unresolved", acts)})
             continue
-        # What the register already says about these local acts. A component whose
-        # members already belong to a physical act is *that* act growing, never a
-        # second mint over an overlapping set; one that reaches two physical acts
-        # is the transitive merge §2.2 holds rather than performs; and one whose
-        # correspondence a person retracted is not re-declared behind them.
+        # Members already in a physical act grow that act rather than mint a second;
+        # reaching two acts is a merge held, not performed (§2.2); a retracted
+        # correspondence is not re-declared.
         resolutions = {row["act_id"]: resolve_proposal(register, row["act_id"]) for row in acts}
         named: dict[str, str] = {}
         for row in acts:
@@ -949,11 +875,8 @@ def build_correspondence_proposal(
             elif resolution["outcome"] == "resolved" and resolution["page_id"] != row["page_id"]:
                 named[row["act_id"]] = "correspondence-page-mismatch"
         if named:
-            # The whole component is withheld. Each member is named for what the
-            # register says of it, and a member this run leaves without any
-            # correspondence is named too -- an unnamed member is a lost one
-            # (principle 2). A member that already resolves keeps the
-            # correspondence it has and needs no finding.
+            # The component is withheld; every member left without a
+            # correspondence is named (principle 2).
             plans.append(
                 {
                     "findings": [
@@ -974,27 +897,21 @@ def build_correspondence_proposal(
             if resolution["outcome"] == "resolved"
         }
         if len(touched) > 1 or (touched and existing is not None and existing not in touched):
-            plans.append({"findings": ambiguous(acts)})
+            plans.append({"findings": _findings("ambiguous-physical-act", acts)})
             continue
         if touched:
-            # Exactly one, proven above rather than chosen: the unpack raises if
-            # this component ever reaches two physical acts.
+            # Proven single above, not chosen: the unpack raises on two targets.
             (target,) = touched
         else:
-            # The caller's `physical_act_id` is a consistency assertion, not a
-            # route for attaching an otherwise-unresolved component.  A real
-            # touch is established only by replaying one of this component's
-            # local acts through the register.  Trusting a same-page id here
+            # The caller's `physical_act_id` asserts, it never attaches: trusting it
             # would let a caller fuse any disjoint act into any existing act.
             if existing is not None:
-                plans.append({"findings": ambiguous(acts)})
+                plans.append({"findings": _findings("ambiguous-physical-act", acts)})
                 continue
             target = None
         if target is not None and physical_act_page(register, target) != page:
-            # The named physical act is undeclared, or was minted on another
-            # physical page. Appending against it would attach this component to
-            # a page the register never put it on.
-            plans.append({"findings": ambiguous(acts)})
+            # Undeclared, or minted on another physical page.
+            plans.append({"findings": _findings("ambiguous-physical-act", acts)})
             continue
         if target is not None:
             target_count[target] += 1
@@ -1020,9 +937,7 @@ def build_correspondence_proposal(
         evidence = plan["evidence"]
         physical = plan["target"]
         if physical is not None and target_count[physical] > 1:
-            # Two components of one run reaching one physical act is that run
-            # merging them, and neither is preferred for being listed first.
-            findings.extend(ambiguous(acts))
+            findings.extend(_findings("ambiguous-physical-act", acts))
             continue
         if physical is None:
             designation = physical_act_component_designation(page, plan["ids"])
@@ -1050,17 +965,11 @@ def build_correspondence_proposal(
                 "appending_run": discovery_run_id,
             }
             for row in sorted(acts, key=lambda item: item["act_id"])
-            # A member the register already corresponds to this act needs no second
-            # declaration; re-declaring it would refuse the whole append.
+            # Re-declaring an existing correspondence would refuse the whole append.
             if plan["resolutions"][row["act_id"]]["outcome"] != "resolved"
         )
-    # Enumeration order must not reach the seal. Two discovery runs that found the
-    # same components in a different order would otherwise seal different bytes and
-    # append the same facts in a different sequence, giving the corpus a different
-    # register_digest for identical evidence (consult §2.2, closing paragraph).
-    # Mints sort ahead of the correspondences that name them because the register
-    # reads a record only after something declares it; within each, the sort is a
-    # serialization of the whole set, never a choice among it.
+    # Enumeration order must not reach the seal, or identical evidence would give
+    # a different register_digest. Mints sort ahead of the correspondences naming them.
     accepted.sort(key=_accepted_record_sort_key)
     payload = {
         "schema": PROPOSAL_SCHEMA,
@@ -1078,13 +987,7 @@ def validate_correspondence_proposal(payload: dict[str, Any]) -> dict[str, Any]:
     _refuse_preference(payload)
     if not isinstance(payload, dict) or payload.get("schema") != PROPOSAL_SCHEMA:
         raise SchemaRefusal("correspondence proposal: invalid schema")
-    if not verify_self_hash(payload):
-        unhashable = self_hash_refusal(payload)
-        if unhashable is not None:
-            raise SchemaRefusal(
-                f"correspondence proposal: self hash cannot be verified: {unhashable}"
-            )
-        raise SchemaRefusal("correspondence proposal: self hash does not match the sealed proposal")
+    _refuse_unverified_self_hash(payload, "correspondence proposal", "proposal")
     required = {
         "schema",
         "register_digest",
@@ -1178,19 +1081,7 @@ def validate_correspondence_proposal(payload: dict[str, Any]) -> dict[str, Any]:
     if minted - referenced:
         raise SchemaRefusal("correspondence proposal: a physical-act mint has no correspondence")
 
-    finding_pairs: list[tuple[str, str]] = []
-    for finding in findings:
-        if (
-            not isinstance(finding, dict)
-            or set(finding) != {"code", "act_id"}
-            or not isinstance(finding["code"], str)
-            or not finding["code"]
-            or not _is_derived_id(finding["act_id"], "act_")
-        ):
-            raise SchemaRefusal("correspondence proposal: finding is not closed")
-        finding_pairs.append((finding["act_id"], finding["code"]))
-    if finding_pairs != sorted(set(finding_pairs)):
-        raise SchemaRefusal("correspondence proposal: findings are not sorted unique facts")
+    finding_pairs = _finding_pairs(findings, "correspondence proposal")
     if correspondence_acts & {act for act, _code in finding_pairs}:
         raise SchemaRefusal(
             "correspondence proposal: one local act is both accepted and held by a finding"

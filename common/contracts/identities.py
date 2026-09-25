@@ -25,11 +25,7 @@ from typing import Any, Final
 from .canonical import digest_of
 from .errors import IdentityRefusal
 
-# Sixteen hex characters, 64 bits. Long enough that a collision inside one run is
-# not a practical concern, short enough that a human can compare two ids by eye in
-# a directory listing — which is a thing the operator surface will actually ask
-# them to do. Widen it here if a real corpus ever makes that judgement wrong; every
-# id in the system is derived through this module, so it is one edit.
+# 64 bits: no practical collision in a run, yet comparable by eye in a listing.
 _DIGEST_CHARS: Final = 16
 
 _PREFIXES: Final = {
@@ -43,9 +39,7 @@ _PREFIXES: Final = {
     "artifact": "art",
 }
 
-# A run id an operator types, and that is also safe as a directory name on every
-# platform this may run on. Deliberately narrow: no spaces, no leading dot, no
-# path separators, no case-folding surprises between macOS and Linux.
+# Typed by an operator and safe as a directory name on macOS and Linux alike.
 _RUN_ID_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 _ID_PATTERN: Final = re.compile(r"^(pg|act|ppg|pac|rgn|ve|att|art)_[0-9a-f]{%d}$" % _DIGEST_CHARS)
@@ -208,10 +202,6 @@ def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
     reporting a mismatch that says nothing about why.
     """
     if act_class not in ACT_CLASSES:
-        # Spelled from the enum rather than beside it. The prose list said
-        # "'proposal', 'residual', or 'page-fallback'" while the set held the
-        # same three, and a fourth class added to one and not the other reports
-        # a closed vocabulary that is not the one being enforced.
         allowed = ", ".join(repr(name) for name in sorted(ACT_CLASSES))
         raise IdentityRefusal(f"act class must be one of {allowed}")
     _identity(page, "pg", "act page")
@@ -337,9 +327,7 @@ def attempt_bindings(subject: str, operation: str, ordinal: int) -> dict[str, An
 
 
 # Perlector's passes share an act and ordinal, so their operation names are part
-# of the identity boundary rather than informal labels. The generic identity
-# constructor remains stage-neutral; the Perlector calls this vocabulary before
-# deriving one of its reading attempts.
+# of the identity.
 PERLECTOR_READING_OPERATIONS = frozenset(
     {"perlegere", "lectio-nuda", "lectio-prior", "primed-without-prior"}
 )

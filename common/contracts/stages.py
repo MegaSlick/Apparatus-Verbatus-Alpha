@@ -37,10 +37,7 @@ STAGES: Final = (
     ARMARIUM,
 )
 
-# Where each stage writes inside a run tree. The door has no directory of its own —
-# it writes into the Exemplar's, because its refusals are part of the record of
-# what arrived, and a stage directory nothing downstream reads would be a place for
-# evidence to go quiet.
+# The door has no directory: its refusals belong to the record of what arrived.
 STAGE_DIRECTORIES: Final = {
     EXEMPLAR: "1_exemplar",
     INK_MAP: "1_ink_map",
@@ -67,25 +64,15 @@ HANDOFFS: Final = (
 
 ORCHESTRATOR: Final = "orchestrator"
 
-# Completion seals are witnessed statements at the end of each producer pass.
-# Keys are consumers, including the orchestrator as Armarium's final consumer.
-#
-# Derived from HANDOFFS rather than restated. A seal is the witness to exactly the
-# boundary above it, so a hand-kept second copy of the same eight pairs could drift
-# from the list this module exists to be the single source of — and a seal bound to
-# a boundary nobody hands off across is a statement about nothing. The orchestrator
-# is the one entry HANDOFFS cannot carry: it consumes the Armarium's pass without
-# being a stage that writes.
+# Consumer -> the producer whose completion seal it reads, derived from HANDOFFS
+# so the two cannot drift; the orchestrator consumes the Armarium without writing.
 SEAL_PREDECESSORS: Final = {
     **{consumer: producer for producer, consumer in HANDOFFS},
     ORCHESTRATOR: ARMARIUM,
 }
 
 
-# Where each producer *writes*, which is not the same question as which directory
-# a stage owns. The door owns nothing and writes into the Exemplar's directory, so
-# its refusals sit inside the record of what arrived rather than in a drawer no
-# downstream stage reads.
+# Where each producer writes; the door writes into the Exemplar's directory.
 WRITING_DIRECTORIES: Final = {**STAGE_DIRECTORIES, DOOR: STAGE_DIRECTORIES[EXEMPLAR]}
 
 
@@ -114,10 +101,6 @@ def stage_directory(stage: str) -> str:
 # vocabulary rather than maintain independent spellings that can drift.
 TRIAGE_MODES: Final = ("manual", "semi", "auto")
 
-# The cap on the parts of one frame's split decision. Here beside the mode
-# vocabulary because two validators bound it: the pre-door manifest contract and
-# the Exemplar boundary's own restatement of that row, each of which checks the
-# parts pairwise for overlap and so does work quadratic in this number on input it
-# does not trust. A second spelling of the limit could drift, and the looser of the
-# two would be the one that decided.
+# Bounds quadratic pairwise overlap checks on untrusted input; one spelling for
+# both validators, or the looser would decide.
 MAX_TRIAGE_SPLIT_PARTS: Final = 64

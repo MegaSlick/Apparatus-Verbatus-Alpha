@@ -15,12 +15,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 from .errors import DigestMismatchRefusal
 from .models import ChairIdentity, DigestManifest, ManifestRow, VerifiedSnapshot, is_sha256
 
-# A manifest is a small control artifact (path/sha256/size rows), not raw model
-# weight bytes -- `model_store.py`'s own control artifacts (`download_record.json`,
-# a shard index) draw exactly this distinction and bound their reads; unlike
-# them, `read_manifest` used to read the whole file into memory before checking
-# anything about it, no matter its size. Matches `MAX_SHARD_INDEX_BYTES` there:
-# generous for even a many-thousand-file snapshot, still a fixed ceiling.
+# A manifest is a small control artifact, bounded like `model_store`'s shard index.
 MAX_MANIFEST_BYTES = 16_777_216
 
 
@@ -311,10 +306,7 @@ def _guarded(chair: str, relative: str, read):
 
 
 def _validate_manifest(manifest: DigestManifest, chair: str) -> None:
-    # A manifest with no rows is satisfied by any empty directory, so a chair
-    # pinned to one resolves, verifies and receipts exactly as a real one while
-    # constraining nothing. A pin is a constant the artifact must match (#43);
-    # a pin that no artifact can fail is not one.
+    # An empty manifest is a pin no artifact can fail.
     if not manifest.rows:
         raise DigestMismatchRefusal(
             chair, "manifest has no rows; an empty manifest constrains no snapshot"
@@ -366,9 +358,7 @@ def _regular_files(root: Path, *, chair: str) -> list[tuple[str, Path]]:
 
 
 def _safe_relative(value: Any) -> bool:
-    # Empty `.parts` is the rule, not the literal ".": "./" also names the
-    # directory itself and has no parts, and `model_store._safe` — the same
-    # rule spelled as a refusal — already judges by parts. The two must agree.
+    # Judged by empty `.parts` ("./" too), agreeing with `model_store._safe`.
     if not isinstance(value, str) or not value or "\\" in value:
         return False
     path = PurePosixPath(value)
