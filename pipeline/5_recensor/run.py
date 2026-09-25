@@ -18,6 +18,7 @@ never supplies characters.
 
 import copy
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -157,6 +158,41 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     return records
 
 
+def _records_of_kind(context, stage: str, kind: str) -> Iterator[dict]:
+    """Read every artifact of one kind from a stage's manifest, in manifest order."""
+    for entry in stage_manifest(context, stage)["artifacts"]:
+        if entry["kind"] == kind:
+            yield context.tree.read_artifact(stage, kind, entry["artifact_id"])
+
+
+_BOX_SIDES = ("x", "y", "w", "h")
+
+
+def _plain_int(value) -> bool:
+    """An int that is not a bool: JSON `true` would otherwise pass as 1."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _int_box(bounds) -> bool:
+    """Exactly the keys x, y, w, h, each a plain int."""
+    return (
+        isinstance(bounds, dict)
+        and set(bounds) == set(_BOX_SIDES)
+        and all(_plain_int(bounds[side]) for side in _BOX_SIDES)
+    )
+
+
+def _page_rect(bounds) -> bool:
+    """An `_int_box` with a non-negative origin and a positive size."""
+    return (
+        _int_box(bounds)
+        and bounds["x"] >= 0
+        and bounds["y"] >= 0
+        and bounds["w"] > 0
+        and bounds["h"] > 0
+    )
+
+
 def audit_state(
     context, reading: dict, act_id: str, *, expected_act_key: str | None = None
 ) -> dict | None:
@@ -200,8 +236,7 @@ def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
     records = artifacts_for(context, ATTESTATORES, "testimonium", act_id)
     return {
         record["payload"]["chair"]: {
-            # The identity is required to reject an attachment that combines a
-            # current outcome with a superseded Testimonium payload.
+            # Rejects an attachment pairing a current outcome with a superseded payload.
             "artifact_id": record["artifact_id"],
             "outcome": record["outcome"],
             "content_health": record["payload"].get("content_health"),
@@ -253,20 +288,10 @@ def _proposal_geometry_by_page(context, act_id: str) -> dict[int, dict]:
         transform = facts["transform"]
         bounds = transform.get("bounds") if isinstance(transform, dict) else None
         if (
-            not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
+            not _plain_int(ordinal)
             or not isinstance(facts["source_page_id"], str)
             or not facts["source_page_id"]
-            or not isinstance(bounds, dict)
-            or set(bounds) != {"x", "y", "w", "h"}
-            or any(
-                not isinstance(bounds[key], int) or isinstance(bounds[key], bool)
-                for key in ("x", "y", "w", "h")
-            )
-            or bounds["x"] < 0
-            or bounds["y"] < 0
-            or bounds["w"] <= 0
-            or bounds["h"] <= 0
+            or not _page_rect(bounds)
         ):
             raise FatalAccounting(f"act {act_id} has malformed sealed-proposal page geometry")
         page = pages.setdefault(
@@ -308,10 +333,7 @@ def occlusion_records_by_page(context) -> dict[str, list[dict]]:
     survey, where they name the page.
     """
     records: dict[str, list[dict]] = {}
-    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "occlusion":
-            continue
-        record = context.tree.read_artifact(DESIGNATOR, "occlusion", entry["artifact_id"])
+    for record in _records_of_kind(context, DESIGNATOR, "occlusion"):
         payload = _payload(record, f"Designator occlusion {record['artifact_id']}")
         page = payload.get("page_id")
         if not isinstance(page, str) or not page:
@@ -380,6 +402,28 @@ def _page_occlusion_survey(occlusions: dict[str, list[dict]], page_id: str) -> d
     return {"surveyed": surveyed, "polygons": polygons, "occlusion_refs": sorted(refs)}
 
 
+def _view_visibility(
+    surveyed: bool, page_count: int, bounds_list: list[dict], polygons: list
+) -> tuple[str, list, list, list[str]]:
+    """``(visibility_state, visible_cells, occluded_cells, finding_codes)`` for one view."""
+    if not surveyed:
+        return "unresolved", [], [], [SURVEY_ABSENT]
+    # One bounding box over two pages would mix two coordinate spaces, so occlusion on
+    # page two would land in page one's cells. Until each page is classified on its own
+    # grid such a view is unmeasured; continuation acts make this the common case.
+    if page_count > 1:
+        return "unresolved", [], [], [SURVEY_SPANS_TWO_PAGES]
+    x0 = min(bounds["x"] for bounds in bounds_list)
+    y0 = min(bounds["y"] for bounds in bounds_list)
+    x1 = max(bounds["x"] + bounds["w"] for bounds in bounds_list)
+    y1 = max(bounds["y"] + bounds["h"] for bounds in bounds_list)
+    survey = classify_capture_visibility(
+        bounds={"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
+        occlusion_polygons=polygons,
+    )
+    return survey["visibility_state"], survey["visible_cells"], survey["occluded_cells"], []
+
+
 def act_cross_capture_coverage(
     context,
     act_id: str,
@@ -437,34 +481,9 @@ def act_cross_capture_coverage(
             surveyed = surveyed and page_survey["surveyed"]
             polygons.extend(page_survey["polygons"])
             occlusion_refs.extend(page_survey["occlusion_refs"])
-        # An act crossing a page break gives one capture two pages, and one bounding box
-        # would mix two coordinate spaces, so occlusion on page two would land in page
-        # one's cells. Until each page is classified on its own grid, such a view is
-        # recorded as unmeasured (principles 2, 8). This is the common case:
-        # continuation acts are ordinary in these registers.
-        if surveyed and len(view["page_ids"]) > 1:
-            visibility_state = "unresolved"
-            visible_cells = []
-            occluded_cells = []
-            finding_codes = [SURVEY_SPANS_TWO_PAGES]
-        elif surveyed:
-            x0 = min(bounds["x"] for bounds in bounds_list)
-            y0 = min(bounds["y"] for bounds in bounds_list)
-            x1 = max(bounds["x"] + bounds["w"] for bounds in bounds_list)
-            y1 = max(bounds["y"] + bounds["h"] for bounds in bounds_list)
-            survey = classify_capture_visibility(
-                bounds={"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
-                occlusion_polygons=polygons,
-            )
-            visibility_state = survey["visibility_state"]
-            visible_cells = survey["visible_cells"]
-            occluded_cells = survey["occluded_cells"]
-            finding_codes = []
-        else:
-            visibility_state = "unresolved"
-            visible_cells = []
-            occluded_cells = []
-            finding_codes = [SURVEY_ABSENT]
+        visibility_state, visible_cells, occluded_cells, finding_codes = _view_visibility(
+            surveyed, len(view["page_ids"]), bounds_list, polygons
+        )
         row = {
             "source_sha256": view["source_sha256"],
             "alignment_ref": view["alignment_ref"],
@@ -557,8 +576,6 @@ def act_attachment_facts(
     records = artifacts_for(context, ATTESTATORES, "act-attachment", act_id)
     if not records:
         raise FatalAccounting(f"act {act_id} has no derived act-attachment record")
-    # The shared derivation of "current" the Perlector uses; it refuses a duplicate or
-    # gapped ordinal chain.
     record = latest_attempt(records, f"act-attachment for {act_id}", operation="act-attachment")
     payload = record.get("payload")
     entries = payload.get("attachments") if isinstance(payload, dict) else None
@@ -585,14 +602,11 @@ def act_attachment_facts(
                 f"act {act_id} attachment entry for chair {entry['chair']!r} has no known attachment basis"
             )
         health = entry.get("content_health")
-        # A malformed health record and an absent one are different facts: only
-        # the absent one is honestly "health not recorded", and only the
-        # malformed one tells the operator to look at the artifact.
+        # Malformed is not absent: only an absent record means "health not recorded".
         if health is not None and not isinstance(health, dict):
             raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
         truncated = health.get("truncated") if isinstance(health, dict) else None
-        # Likewise malformed versus absent: a non-boolean read as act-scoped would skip
-        # the alignment check and fail later, blaming the Testimonium.
+        # A non-boolean read as act-scoped would skip the alignment check.
         page_witness = entry.get("page_witness")
         if not isinstance(page_witness, bool):
             raise FatalAccounting(
@@ -601,7 +615,7 @@ def act_attachment_facts(
             )
         page_ordinal = entry.get("page_ordinal")
         if page_witness:
-            if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool):
+            if not _plain_int(page_ordinal):
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} has no integer page ordinal; its "
                     "attachment cannot be placed; restore the contributing page identity"
@@ -619,267 +633,11 @@ def act_attachment_facts(
             )
         seen_pairs.add(pair)
         if page_witness:
-            # `page_ordinal` was type-checked above.
-            proposal_page = proposal_pages.get(page_ordinal)
-            if proposal_page is None:
-                raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} attaches outside the sealed "
-                    "proposal denominator"
-                )
-            reference = entry.get("testimonium_ref")
-            if not isinstance(reference, dict):
-                raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} has no page Testimonium reference"
-                )
-            try:
-                page_testimonium = context.tree.read_artifact_reference(
-                    reference,
-                    stage=ATTESTATORES,
-                    kind="page-testimonium",
-                    subject_id=proposal_page["source_page_id"],
-                )
-                page_payload = validate_page_testimonium_payload(
-                    page_testimonium.get("payload"),
-                    testimonium_id=page_testimonium.get("artifact_id"),
-                    read_bytes=context.tree.read_bytes,
-                )
-            except ContractError as error:
-                raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} has no valid page geometry: {error}"
-                ) from error
-            if (
-                page_payload.get("chair") != chair
-                or page_payload.get("page_ordinal") != page_ordinal
-            ):
-                raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} points to a different page Testimonium"
-                )
-            # The same rule as the native capture below, for the responses a
-            # page partition was quantized from: a retained response named only
-            # in the payload is one an ordinary artifact read never re-hashes.
-            for reference in page_payload.get("raw_response_refs", []):
-                if reference not in page_testimonium.get("inputs", []):
-                    raise FatalAccounting(
-                        f"act {act_id} page witness {chair!r} does not bind a retained raw "
-                        "response its own geometry was quantized from as a verified input"
-                    )
-            native_capture = page_payload.get("native_capture")
-            if native_capture is not None:
-                if native_capture["raw_response_ref"] not in page_testimonium.get("inputs", []):
-                    raise FatalAccounting(
-                        f"act {act_id} page witness {chair!r} does not bind its retained raw "
-                        "response as a verified input"
-                    )
-                # `resolve` may return an `AbsentChair`, which has no `witness_adapter`;
-                # refuse by name rather than raise AttributeError.
-                resolved = context.registry.resolve(chair)
-                if not isinstance(resolved, ChairIdentity):
-                    raise FatalAccounting(
-                        f"act {act_id} page witness {chair!r} carries a native capture while the "
-                        "roster records that chair as absent; an absent chair has no adapter "
-                        "boundary to attribute it to; restore the chair or the retained record"
-                    )
-                if native_capture["adapter"] != resolved.witness_adapter:
-                    raise FatalAccounting(
-                        f"act {act_id} page witness {chair!r} attributes its native capture to "
-                        "an adapter other than that chair's configured boundary"
-                    )
-                try:
-                    verify_native_capture_blob(context.tree, native_capture)
-                except ContractError as error:
-                    raise FatalAccounting(
-                        f"act {act_id} page witness {chair!r} has a native capture that does "
-                        f"not derive from its retained raw response: {error}"
-                    ) from error
-            # Native page and compatibility act outcomes are independent; legacy
-            # page joins instead derive their outcome from the act attempts.
-            attachment_outcome = (
-                page_testimonium["outcome"] if native_capture is not None else outcomes.get(chair)
+            _verify_page_witness_entry(
+                context, act_id, entry, proposal_pages, outcomes, attachment_basis
             )
-            # The shared attachment rule, applied to this stage's own copy of the
-            # evidence: a page witness attaches on its ink over the sealed proposal or,
-            # only where it reported none, on a located anchor line (the only path for a
-            # grammar with no geometry). The floor is counted from this derivation,
-            # never from the record's boolean; an unrecognized alignment derives as not
-            # located.
-            derived_basis = page_attachment_basis(
-                reading=attachment_outcome in WITNESS_READING_OUTCOMES,
-                geometry_overlaps=any(
-                    reported_geometry_overlaps(page_payload.get("observed", []), bounds)
-                    for bounds in proposal_page["bounds"]
-                ),
-                alignment=entry.get("alignment"),
-            )
-            if entry["attached"] != (derived_basis != "unattached"):
-                raise FatalAccounting(
-                    f"act {act_id} page attachment for chair {chair!r} does not derive from "
-                    "that witness's reported geometry, or from an anchor line located in its "
-                    "page text, against the sealed proposal"
-                )
-            if entry["comparable"] and not entry["attached"]:
-                raise FatalAccounting(
-                    f"act {act_id} has comparable text without an attached witness. "
-                    "The witness floor could count text that geometry did not place in the act. "
-                    "Rebuild the attachment facts from the retained witness geometry."
-                )
-            alignment = entry.get("alignment")
-            alignment_status = alignment.get("status") if isinstance(alignment, dict) else None
-            # An unhashable JSON value at an enum field is a named refusal,
-            # never a set-membership TypeError.
-            if not isinstance(alignment_status, str) or alignment_status not in {
-                "aligned",
-                "unaligned",
-            }:
-                raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} has no computed alignment fact"
-                )
-            # The exact label: `anchor-line` says this chair counts only because another
-            # chair's anchor located its text.
-            if entry["attached"] and attachment_basis != derived_basis:
-                raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} names attachment basis "
-                    f"{attachment_basis!r}, but its own retained evidence attached it by "
-                    f"{derived_basis!r}"
-                )
-            if not entry["attached"] and attachment_basis != "unattached":
-                raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} names a basis for an unattached record"
-                )
-            # The closed shapes, enforced where the floor is counted: an attached record
-            # missing its geometry or `anchor_basis` must not count, and an unaligned
-            # record needs a reason.
-            if alignment["status"] == "aligned":
-                if (
-                    set(alignment)
-                    != {
-                        "status",
-                        "anchor_basis",
-                        "anchor_chair",
-                        "anchor_span",
-                        "witness_span",
-                        "anchor_line_match",
-                        "line_geometry",
-                        "loss",
-                        "offset_maps",
-                        "deadline_in_force",
-                    }
-                    or not isinstance(alignment["anchor_basis"], str)
-                    or alignment["anchor_basis"]
-                    not in {
-                        "act-anchor",
-                        "no-page-anchor",
-                        "act-line-not-located",
-                    }
-                    or (
-                        alignment["anchor_basis"] == "act-anchor"
-                        and not isinstance(alignment.get("anchor_chair"), str)
-                    )
-                    or (
-                        alignment["anchor_basis"] != "act-anchor"
-                        and alignment.get("anchor_chair") is not None
-                    )
-                    # The alignment's SIGALRM backstop fact, as the Perlector requires
-                    # it.
-                    or not isinstance(alignment.get("deadline_in_force"), bool)
-                ):
-                    raise FatalAccounting(
-                        f"act {act_id} page witness {chair!r} carries a malformed aligned "
-                        "alignment record; the witness floor may not be counted from "
-                        "geometry evidence that is missing or unrecognised"
-                    )
-            elif set(alignment) != {"status", "reason"} or not (
-                isinstance(alignment["reason"], str) and alignment["reason"].strip()
-            ):
-                raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} carries an unaligned record with "
-                    "no usable reason; an unexplained failure is a silent loss"
-                )
-            # `attached` proves some evidence placed this reading in the act, not that
-            # there is retained text to compare; the floor also needs an aligned record
-            # and a string page payload.
-            if entry["comparable"] != (
-                entry["attached"]
-                and alignment["status"] == "aligned"
-                and isinstance(page_payload.get("payload"), str)
-            ):
-                raise FatalAccounting(
-                    f"act {act_id} page attachment for chair {chair!r} claims a comparability "
-                    "its own retained page testimony does not support. The witness floor could "
-                    "count text the page record cannot supply for this act. Rebuild the attachment "
-                    "from the referenced page Testimonium and alignment."
-                )
         else:
-            # Act-scoped floor facts come from the current referenced
-            # Testimonium; trusting both stored booleans would allow a producer
-            # to forge them false and silently remove a completed chair.
-            reference = entry.get("testimonium_ref")
-            if not isinstance(reference, dict):
-                raise FatalAccounting(
-                    f"act {act_id} act-scoped witness {chair!r} has no Testimonium reference. "
-                    "Its attachment and comparability cannot be checked against immutable evidence. "
-                    "Rebuild the attachment with a reference to the current Testimonium."
-                )
-            try:
-                testimonium = context.tree.read_artifact_reference(
-                    reference,
-                    stage=ATTESTATORES,
-                    kind="testimonium",
-                    subject_id=act_id,
-                )
-            except ContractError as error:
-                raise FatalAccounting(
-                    f"act {act_id} act-scoped witness {chair!r} names no readable "
-                    f"Testimonium: {error}. Its witness-floor contribution is unverifiable. "
-                    "Restore the referenced artifact and retry the Recensor."
-                ) from error
-            act_payload = testimonium.get("payload")
-            if not isinstance(act_payload, dict) or act_payload.get("chair") != chair:
-                raise FatalAccounting(
-                    f"act {act_id} act-scoped attachment for chair {chair!r} points to "
-                    "another chair's Testimonium. One witness's evidence would be attributed "
-                    "to another chair. Rebuild the attachment from the named chair's own record."
-                )
-            current = current_attempts.get(chair)
-            if not isinstance(current, dict) or testimonium.get("artifact_id") != current.get(
-                "artifact_id"
-            ):
-                raise FatalAccounting(
-                    f"act {act_id} act-scoped attachment for chair {chair!r} does not point "
-                    "to that chair's current Testimonium; its referenced witness basis has "
-                    "since superseded. The witness floor would be computed from stale evidence. "
-                    "Rebuild the attachment against the current immutable attempt."
-                )
-            derived_attached = testimonium.get("outcome") in WITNESS_READING_OUTCOMES
-            if entry["attached"] != derived_attached:
-                raise FatalAccounting(
-                    f"act {act_id}'s derived act-attachment disagrees with the current "
-                    f"Testimonium outcome for chair {chair!r}; the witness floor may not be "
-                    "counted from a superseded attempt. The attachment is stale or malformed. "
-                    "Rebuild it from the current Testimonium before retrying."
-                )
-            if entry.get("page_ordinal") is not None or entry.get("alignment") is not None:
-                raise FatalAccounting(
-                    f"act {act_id} act-scoped attachment for chair {chair!r} carries page "
-                    "alignment evidence. The record mixes witness scopes with different "
-                    "derivations. Rebuild it without page alignment fields."
-                )
-            expected_basis = "presented-region" if derived_attached else "unattached"
-            if attachment_basis != expected_basis:
-                raise FatalAccounting(
-                    f"act {act_id} act-scoped attachment for chair {chair!r} names "
-                    f"{attachment_basis!r} instead of its derived {expected_basis!r} basis. "
-                    "The stated cause contradicts the current Testimonium outcome. "
-                    "Rebuild the basis from that current outcome."
-                )
-            if entry["comparable"] != (
-                derived_attached and isinstance(act_payload.get("payload"), str)
-            ):
-                raise FatalAccounting(
-                    f"act {act_id} attachment for chair {chair!r} claims a comparability its "
-                    "own retained derived testimony does not support. The witness floor could "
-                    "count a structured or absent report as act text. Rebuild comparability "
-                    "from the current referenced Testimonium."
-                )
+            _verify_act_scoped_entry(context, act_id, entry, current_attempts, attachment_basis)
         fact = {
             "attached": entry["attached"],
             "comparable": entry["comparable"],
@@ -909,10 +667,8 @@ def act_attachment_facts(
                     "across its pages; one act attempt cannot have two health records; "
                     "restore the attempt's single recorded health"
                 )
-            # A page witness has one row per contributing page but one act attempt, so
-            # rows merge and a continuation without an anchor cannot erase the primary
-            # page's attachment. Whole rows merge, never OR-ed booleans, so no
-            # combination appears that no single page supplied.
+            # One row per contributing page, one act attempt: whole rows merge, never
+            # OR-ed booleans, so no combination appears that no single page supplied.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
             # Only rows of one attempt merge (the health check above holds that), so
@@ -930,6 +686,282 @@ def act_attachment_facts(
             continue
         facts[chair] = fact
     return facts
+
+
+def _verify_page_witness_entry(
+    context,
+    act_id: str,
+    entry: dict,
+    proposal_pages: dict[int, dict],
+    outcomes: dict[str, str],
+    attachment_basis: str,
+) -> None:
+    """Derive a page witness's attachment from its own page Testimonium and alignment."""
+    chair, page_ordinal = entry["chair"], entry["page_ordinal"]
+    proposal_page = proposal_pages.get(page_ordinal)
+    if proposal_page is None:
+        raise FatalAccounting(
+            f"act {act_id} page witness {chair!r} attaches outside the sealed proposal denominator"
+        )
+    reference = entry.get("testimonium_ref")
+    if not isinstance(reference, dict):
+        raise FatalAccounting(
+            f"act {act_id} page witness {chair!r} has no page Testimonium reference"
+        )
+    try:
+        page_testimonium = context.tree.read_artifact_reference(
+            reference,
+            stage=ATTESTATORES,
+            kind="page-testimonium",
+            subject_id=proposal_page["source_page_id"],
+        )
+        page_payload = validate_page_testimonium_payload(
+            page_testimonium.get("payload"),
+            testimonium_id=page_testimonium.get("artifact_id"),
+            read_bytes=context.tree.read_bytes,
+        )
+    except ContractError as error:
+        raise FatalAccounting(
+            f"act {act_id} page witness {chair!r} has no valid page geometry: {error}"
+        ) from error
+    if page_payload.get("chair") != chair or page_payload.get("page_ordinal") != page_ordinal:
+        raise FatalAccounting(
+            f"act {act_id} page witness {chair!r} points to a different page Testimonium"
+        )
+    # A response named only in the payload is one no ordinary artifact read re-hashes.
+    for reference in page_payload.get("raw_response_refs", []):
+        if reference not in page_testimonium.get("inputs", []):
+            raise FatalAccounting(
+                f"act {act_id} page witness {chair!r} does not bind a retained raw "
+                "response its own geometry was quantized from as a verified input"
+            )
+    native_capture = page_payload.get("native_capture")
+    if native_capture is not None:
+        _verify_native_capture(context, act_id, chair, page_testimonium, native_capture)
+    # Native page and compatibility act outcomes are independent; legacy
+    # page joins instead derive their outcome from the act attempts.
+    attachment_outcome = (
+        page_testimonium["outcome"] if native_capture is not None else outcomes.get(chair)
+    )
+    # The floor is counted from this derivation, never from the record's boolean.
+    derived_basis = page_attachment_basis(
+        reading=attachment_outcome in WITNESS_READING_OUTCOMES,
+        geometry_overlaps=any(
+            reported_geometry_overlaps(page_payload.get("observed", []), bounds)
+            for bounds in proposal_page["bounds"]
+        ),
+        alignment=entry.get("alignment"),
+    )
+    if entry["attached"] != (derived_basis != "unattached"):
+        raise FatalAccounting(
+            f"act {act_id} page attachment for chair {chair!r} does not derive from "
+            "that witness's reported geometry, or from an anchor line located in its "
+            "page text, against the sealed proposal"
+        )
+    if entry["comparable"] and not entry["attached"]:
+        raise FatalAccounting(
+            f"act {act_id} has comparable text without an attached witness. "
+            "The witness floor could count text that geometry did not place in the act. "
+            "Rebuild the attachment facts from the retained witness geometry."
+        )
+    alignment = entry.get("alignment")
+    alignment_status = alignment.get("status") if isinstance(alignment, dict) else None
+    # An unhashable JSON value at an enum field is a named refusal,
+    # never a set-membership TypeError.
+    if not isinstance(alignment_status, str) or alignment_status not in {
+        "aligned",
+        "unaligned",
+    }:
+        raise FatalAccounting(f"act {act_id} page witness {chair!r} has no computed alignment fact")
+    # The exact label: `anchor-line` says this chair counts only because another
+    # chair's anchor located its text.
+    if entry["attached"] and attachment_basis != derived_basis:
+        raise FatalAccounting(
+            f"act {act_id} page witness {chair!r} names attachment basis "
+            f"{attachment_basis!r}, but its own retained evidence attached it by "
+            f"{derived_basis!r}"
+        )
+    if not entry["attached"] and attachment_basis != "unattached":
+        raise FatalAccounting(
+            f"act {act_id} page witness {chair!r} names a basis for an unattached record"
+        )
+    _require_alignment_shape(act_id, chair, alignment)
+    # `attached` proves some evidence placed this reading in the act, not that
+    # there is retained text to compare; the floor also needs an aligned record
+    # and a string page payload.
+    if entry["comparable"] != (
+        entry["attached"]
+        and alignment["status"] == "aligned"
+        and isinstance(page_payload.get("payload"), str)
+    ):
+        raise FatalAccounting(
+            f"act {act_id} page attachment for chair {chair!r} claims a comparability "
+            "its own retained page testimony does not support. The witness floor could "
+            "count text the page record cannot supply for this act. Rebuild the attachment "
+            "from the referenced page Testimonium and alignment."
+        )
+
+
+def _verify_native_capture(
+    context, act_id: str, chair: str, page_testimonium: dict, native_capture: dict
+) -> None:
+    """A native capture must bind its raw response and come from the chair's own adapter."""
+    if native_capture["raw_response_ref"] not in page_testimonium.get("inputs", []):
+        raise FatalAccounting(
+            f"act {act_id} page witness {chair!r} does not bind its retained raw "
+            "response as a verified input"
+        )
+    # `resolve` may return an `AbsentChair`, which has no `witness_adapter`;
+    # refuse by name rather than raise AttributeError.
+    resolved = context.registry.resolve(chair)
+    if not isinstance(resolved, ChairIdentity):
+        raise FatalAccounting(
+            f"act {act_id} page witness {chair!r} carries a native capture while the "
+            "roster records that chair as absent; an absent chair has no adapter "
+            "boundary to attribute it to; restore the chair or the retained record"
+        )
+    if native_capture["adapter"] != resolved.witness_adapter:
+        raise FatalAccounting(
+            f"act {act_id} page witness {chair!r} attributes its native capture to "
+            "an adapter other than that chair's configured boundary"
+        )
+    try:
+        verify_native_capture_blob(context.tree, native_capture)
+    except ContractError as error:
+        raise FatalAccounting(
+            f"act {act_id} page witness {chair!r} has a native capture that does "
+            f"not derive from its retained raw response: {error}"
+        ) from error
+
+
+_ALIGNED_KEYS = frozenset(
+    {
+        "status",
+        "anchor_basis",
+        "anchor_chair",
+        "anchor_span",
+        "witness_span",
+        "anchor_line_match",
+        "line_geometry",
+        "loss",
+        "offset_maps",
+        "deadline_in_force",
+    }
+)
+_ANCHOR_BASES = frozenset({"act-anchor", "no-page-anchor", "act-line-not-located"})
+
+
+def _require_alignment_shape(act_id: str, chair: str, alignment: dict) -> None:
+    """Refuse an alignment record outside its closed aligned or unaligned shape.
+
+    An attached record missing its geometry or `anchor_basis` must not count, and an
+    unaligned record needs a reason.
+    """
+    if alignment["status"] == "aligned":
+        if (
+            set(alignment) != _ALIGNED_KEYS
+            or not isinstance(alignment["anchor_basis"], str)
+            or alignment["anchor_basis"] not in _ANCHOR_BASES
+            or (
+                alignment["anchor_basis"] == "act-anchor"
+                and not isinstance(alignment.get("anchor_chair"), str)
+            )
+            or (
+                alignment["anchor_basis"] != "act-anchor"
+                and alignment.get("anchor_chair") is not None
+            )
+            # The SIGALRM backstop fact, as the Perlector requires it.
+            or not isinstance(alignment.get("deadline_in_force"), bool)
+        ):
+            raise FatalAccounting(
+                f"act {act_id} page witness {chair!r} carries a malformed aligned "
+                "alignment record; the witness floor may not be counted from "
+                "geometry evidence that is missing or unrecognised"
+            )
+    elif set(alignment) != {"status", "reason"} or not (
+        isinstance(alignment["reason"], str) and alignment["reason"].strip()
+    ):
+        raise FatalAccounting(
+            f"act {act_id} page witness {chair!r} carries an unaligned record with "
+            "no usable reason; an unexplained failure is a silent loss"
+        )
+
+
+def _verify_act_scoped_entry(
+    context, act_id: str, entry: dict, current_attempts: dict[str, dict], attachment_basis: str
+) -> None:
+    """Act-scoped floor facts come from the current referenced Testimonium.
+
+    Trusting both stored booleans would let a producer forge them false and silently
+    remove a completed chair.
+    """
+    chair = entry["chair"]
+    reference = entry.get("testimonium_ref")
+    if not isinstance(reference, dict):
+        raise FatalAccounting(
+            f"act {act_id} act-scoped witness {chair!r} has no Testimonium reference. "
+            "Its attachment and comparability cannot be checked against immutable evidence. "
+            "Rebuild the attachment with a reference to the current Testimonium."
+        )
+    try:
+        testimonium = context.tree.read_artifact_reference(
+            reference,
+            stage=ATTESTATORES,
+            kind="testimonium",
+            subject_id=act_id,
+        )
+    except ContractError as error:
+        raise FatalAccounting(
+            f"act {act_id} act-scoped witness {chair!r} names no readable "
+            f"Testimonium: {error}. Its witness-floor contribution is unverifiable. "
+            "Restore the referenced artifact and retry the Recensor."
+        ) from error
+    act_payload = testimonium.get("payload")
+    if not isinstance(act_payload, dict) or act_payload.get("chair") != chair:
+        raise FatalAccounting(
+            f"act {act_id} act-scoped attachment for chair {chair!r} points to "
+            "another chair's Testimonium. One witness's evidence would be attributed "
+            "to another chair. Rebuild the attachment from the named chair's own record."
+        )
+    current = current_attempts.get(chair)
+    if not isinstance(current, dict) or testimonium.get("artifact_id") != current.get(
+        "artifact_id"
+    ):
+        raise FatalAccounting(
+            f"act {act_id} act-scoped attachment for chair {chair!r} does not point "
+            "to that chair's current Testimonium; its referenced witness basis has "
+            "since superseded. The witness floor would be computed from stale evidence. "
+            "Rebuild the attachment against the current immutable attempt."
+        )
+    derived_attached = testimonium.get("outcome") in WITNESS_READING_OUTCOMES
+    if entry["attached"] != derived_attached:
+        raise FatalAccounting(
+            f"act {act_id}'s derived act-attachment disagrees with the current "
+            f"Testimonium outcome for chair {chair!r}; the witness floor may not be "
+            "counted from a superseded attempt. The attachment is stale or malformed. "
+            "Rebuild it from the current Testimonium before retrying."
+        )
+    if entry.get("page_ordinal") is not None or entry.get("alignment") is not None:
+        raise FatalAccounting(
+            f"act {act_id} act-scoped attachment for chair {chair!r} carries page "
+            "alignment evidence. The record mixes witness scopes with different "
+            "derivations. Rebuild it without page alignment fields."
+        )
+    expected_basis = "presented-region" if derived_attached else "unattached"
+    if attachment_basis != expected_basis:
+        raise FatalAccounting(
+            f"act {act_id} act-scoped attachment for chair {chair!r} names "
+            f"{attachment_basis!r} instead of its derived {expected_basis!r} basis. "
+            "The stated cause contradicts the current Testimonium outcome. "
+            "Rebuild the basis from that current outcome."
+        )
+    if entry["comparable"] != (derived_attached and isinstance(act_payload.get("payload"), str)):
+        raise FatalAccounting(
+            f"act {act_id} attachment for chair {chair!r} claims a comparability its "
+            "own retained derived testimony does not support. The witness floor could "
+            "count a structured or absent report as act text. Rebuild comparability "
+            "from the current referenced Testimonium."
+        )
 
 
 def blank_corroboration(
@@ -1026,9 +1058,6 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             "chairs and nothing may add one after the seal"
         )
     attachments = act_attachment_facts(context, act_id, current_attempts)
-    # A page witness's attachment is an independent computed fact: it may have read its
-    # page while alignment honestly stayed unaligned, so it is not forced to match the
-    # act outcome.
     unaccounted = sorted(set(outcomes) ^ set(attachments))
     if unaccounted:
         raise FatalAccounting(
@@ -1036,10 +1065,8 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"chair(s) {unaccounted}; an absent fact would silently read as unattached, and "
             "an extra one would attach a chair that never testified for this act"
         )
-    # An act-scoped chair's `attached` restates its current Testimonium outcome. A
-    # reread appends an attempt without a new attachment, so a mismatch means the floor
-    # would count a superseded attempt. Page witnesses are exempt: their alignment check
-    # above is the independent fact.
+    # A reread appends an attempt without a new attachment, so a mismatch means a
+    # superseded attempt. Page witnesses are exempt: their alignment is their own fact.
     superseded = sorted(
         chair
         for chair, outcome in outcomes.items()
@@ -1052,9 +1079,7 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"outcome for chair(s) {superseded}; the witness floor may not be counted from "
             "a superseded attempt"
         )
-    # For every chair, page witnesses included: attachment health comes from this
-    # per-(act, chair) stream. The Perlector's `act_attachment_view` makes the same
-    # check.
+    # Every chair, page witnesses included; the Perlector's `act_attachment_view` agrees.
     stale_health = sorted(
         chair
         for chair, fact in attachments.items()
@@ -1132,11 +1157,7 @@ def recovery_state(context, act_id: str, budget: dict) -> dict:
         if review.get("outcome") != "recovery-requested":
             continue
         payload = _payload(review, f"recovery-requested review of {act_id}")
-        # The review's own recense ordinal, a function of its content, bound to its
-        # sealed identity below.
-        ordinal = payload.get("attempt_ordinal")
-        # The position of the request this review answers, which differs from the
-        # recense ordinal.
+        review_ordinal = payload.get("attempt_ordinal")
         request_ordinal = payload.get("recovery_request_ordinal")
         request_ref = payload.get("recovery_request_ref")
         matching_request = next(
@@ -1150,11 +1171,9 @@ def recovery_state(context, act_id: str, budget: dict) -> dict:
         if (
             matching_request is None
             or request_ref not in review.get("inputs", [])
-            or not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
-            or review.get("attempt_id") != attempt_id(act_id, "recense", ordinal)
-            or not isinstance(request_ordinal, int)
-            or isinstance(request_ordinal, bool)
+            or not _plain_int(review_ordinal)
+            or review.get("attempt_id") != attempt_id(act_id, "recense", review_ordinal)
+            or not _plain_int(request_ordinal)
         ):
             raise FatalAccounting(
                 f"recovery-requested review of {act_id} has no exact matching recovery request"
@@ -1324,10 +1343,7 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
     no act's review reports it.
     """
     by_page: dict[int, list[dict]] = {}
-    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "region":
-            continue
-        record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+    for record in _records_of_kind(context, DESIGNATOR, "region"):
         payload = record.get("payload")
         transform = payload.get("transform") if isinstance(payload, dict) else None
         if not isinstance(transform, dict):
@@ -1339,13 +1355,9 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
         # All four numbers: `residual_ink` indexes each, and a bare dict would fail by
         # traceback.
         if (
-            not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
+            not _plain_int(ordinal)
             or not isinstance(bounds, dict)
-            or any(
-                not isinstance(bounds.get(side), int) or isinstance(bounds.get(side), bool)
-                for side in ("x", "y", "w", "h")
-            )
+            or not all(_plain_int(bounds.get(side)) for side in _BOX_SIDES)
         ):
             raise FatalAccounting(
                 f"Designator region {record.get('artifact_id')} has an invalid transform"
@@ -1368,7 +1380,7 @@ def _source_rows(run: dict) -> dict[int, dict]:
         if not isinstance(row, dict):
             raise FatalAccounting("run.json carries a source-manifest row that is not an object")
         ordinal = row.get("ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        if not _plain_int(ordinal):
             raise FatalAccounting(
                 "run.json carries a source-manifest row without an integer ordinal"
             )
@@ -1386,14 +1398,11 @@ def sealed_page_images(context) -> dict[int, dict]:
     verified first, as every stage that reads page pixels does.
     """
     pages: dict[int, dict] = {}
-    for entry in stage_manifest(context, EXEMPLAR)["artifacts"]:
-        if entry["kind"] != "page":
-            continue
-        record = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+    for record in _records_of_kind(context, EXEMPLAR, "page"):
         if record["outcome"] != "sealed":
             continue
         ordinal = record["payload"].get("ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        if not _plain_int(ordinal):
             raise FatalAccounting(
                 f"Exemplar page {record.get('artifact_id')} carries no integer ordinal"
             )
@@ -1468,13 +1477,10 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
     regions = regions_by_source_page(context)
     if not regions:
         return {}
-    # The sealed file the Designator and Ink Map read, bound at open; only the band
-    # widths vary per page.
     background_config = load_background_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", background_config["config_sha256"])
-    # `[coverage_audit]` from the same sealed bytes, with the Designator's page-spanning
-    # bound, so the component this audit sets aside is the one that stage accounts for.
-    # Only an unclaimed remainder is held.
+    # The Designator's own page-spanning bound, so this audit sets aside the component
+    # that stage accounts for.
     coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     pages = sealed_page_images(context) if sealed_pages is None else sealed_pages
@@ -1504,9 +1510,7 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
                 coverage_policy=resolve_coverage_audit_policy(coverage_config, width, height),
             )
         except BackgroundInferenceRefusal as error:
-            # Without a paper value there is no ink count, and zero would be a false
-            # clean page. The refusal is recorded and carried to every act touching the
-            # page.
+            # Without a paper value zero ink would be a false clean page.
             findings[ordinal] = {
                 "ink_measurable": False,
                 "named_finding": INK_NOT_MEASURABLE,
@@ -1514,6 +1518,16 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
                 "background_config_sha256": background_config["config_sha256"],
             }
     return findings
+
+
+def _region_page_ordinals(act_regions: list[dict]) -> set[int]:
+    """The source pages of every region with an object payload and transform."""
+    return {
+        region["payload"]["transform"]["source_page_ordinal"]
+        for region in act_regions
+        if isinstance(region.get("payload"), dict)
+        and isinstance(region["payload"].get("transform"), dict)
+    }
 
 
 def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dict[str, list[int]]:
@@ -1525,15 +1539,9 @@ def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dic
     "never checked". One derivation for every review shape, including a held act, so a
     flagged page's only evidence is never dropped.
     """
-    ordinals = sorted(
-        {
-            region["payload"]["transform"]["source_page_ordinal"]
-            for region in act_regions
-            if isinstance(region.get("payload"), dict)
-            and isinstance(region["payload"].get("transform"), dict)
-        }
-    )
-    present = [ordinal for ordinal in ordinals if ordinal in findings]
+    present = [
+        ordinal for ordinal in sorted(_region_page_ordinals(act_regions)) if ordinal in findings
+    ]
     # A refused background is a third state beside checked-and-clear and never-checked,
     # listed apart from both.
     unmeasurable = {
@@ -1556,14 +1564,11 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
     """
     coverage_config = None
     maps: dict[int, dict | None] = {}
-    for entry in stage_manifest(context, INK_MAP)["artifacts"]:
-        if entry["kind"] != "ink-map":
-            continue
-        record = context.tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
+    for record in _records_of_kind(context, INK_MAP, "ink-map"):
         payload = _payload(record, "ink-map")
         ordinal = payload.get("page_ordinal")
         evidence = payload.get("edge_findings")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        if not _plain_int(ordinal):
             raise FatalAccounting(
                 "ink-map has a record without an integer page ordinal. The Recensor cannot bind "
                 "its ink evidence to a sealed page. Restore the sealed Ink Map inventory or "
@@ -1656,11 +1661,9 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
     """
     width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
     if (
-        not isinstance(width, int)
-        or isinstance(width, bool)
+        not _plain_int(width)
         or width <= 0
-        or not isinstance(height, int)
-        or isinstance(height, bool)
+        or not _plain_int(height)
         or height <= 0
         or not isinstance(rows, list)
         or len(rows) != height
@@ -1688,11 +1691,7 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
         previous_end = 0
         ink_spans: list[tuple[int, int]] = []
         for run in row:
-            if (
-                not isinstance(run, list)
-                or len(run) != 2
-                or not all(isinstance(v, int) and not isinstance(v, bool) for v in run)
-            ):
+            if not isinstance(run, list) or len(run) != 2 or not all(_plain_int(v) for v in run):
                 raise FatalAccounting(
                     "ink-map edge findings contain a malformed run. Its ink count cannot be "
                     "measured reliably, so it cannot authorize recovery. Restore the sealed "
@@ -1709,34 +1708,43 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
                 )
             previous_end = start + length
             ink_spans.append((max(x0, start), min(x1, start + length)))
-        cut_spans = sorted(
+        # A union, so overlapping act crops never subtract their shared pixels twice.
+        cuts = _union(
             (max(x0, bounds["x"]), min(x1, bounds["x"] + bounds["w"]))
             for bounds in covered
             if bounds["y"] <= y0 + offset < bounds["y"] + bounds["h"]
         )
-        cuts: list[tuple[int, int]] = []
-        for cut_start, cut_end in cut_spans:
-            if cut_start >= cut_end:
-                continue
-            # Coverage is a union: overlapping act crops must not subtract
-            # their shared pixels twice and understate the unclaimed ink.
-            if cuts and cut_start <= cuts[-1][1]:
-                cuts[-1] = (cuts[-1][0], max(cut_end, cuts[-1][1]))
-            else:
-                cuts.append((cut_start, cut_end))
-        for start, end in ink_spans:
-            cursor = start
-            for cut_start, cut_end in cuts:
-                if cut_end <= cursor:
-                    continue
-                if cut_start >= end:
-                    break
-                total += max(0, min(cut_start, end) - cursor)
-                cursor = max(cursor, cut_end)
-                if cursor >= end:
-                    break
-            total += max(0, end - cursor)
+        total += sum(_length_outside(start, end, cuts) for start, end in ink_spans)
     return total
+
+
+def _union(intervals) -> list[tuple[int, int]]:
+    """Merge half-open intervals into sorted, disjoint ones; empty ones drop out."""
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if start >= end:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _length_outside(start: int, end: int, cuts: list[tuple[int, int]]) -> int:
+    """How much of ``[start, end)`` the sorted, disjoint ``cuts`` leave uncovered."""
+    total = 0
+    cursor = start
+    for cut_start, cut_end in cuts:
+        if cut_end <= cursor:
+            continue
+        if cut_start >= end:
+            break
+        total += max(0, min(cut_start, end) - cursor)
+        cursor = max(cursor, cut_end)
+        if cursor >= end:
+            break
+    return total + max(0, end - cursor)
 
 
 def unclaimed_ink_observations(
@@ -1775,17 +1783,7 @@ def unclaimed_ink_observations(
     requests = []
     for observation in unclaimed_observations:
         bounds = observation.get("bounds") if isinstance(observation, dict) else None
-        # All four keys as real integers; `_ink_outside_cuts_in_box` indexes each.
-        if (
-            not isinstance(bounds, dict)
-            or set(bounds) != {"x", "y", "w", "h"}
-            or any(
-                key not in bounds
-                or not isinstance(bounds[key], int)
-                or isinstance(bounds[key], bool)
-                for key in ("x", "y", "w", "h")
-            )
-        ):
+        if not _int_box(bounds):
             raise FatalAccounting(
                 f"page {page_ordinal} has a retained unclaimed witness observation with no "
                 "{x, y, w, h} bounds. Skipping it would read a malformed pointer as one that "
@@ -1922,10 +1920,7 @@ def unresolved_observation_hold(
 
 def _require_reconciled_pixels(ordinal: int, pixel_counts: dict) -> tuple[int, int, int]:
     """Pixel-count typing and `claimed + residual == total`, shared by every page shape."""
-    if any(
-        not isinstance(count, int) or isinstance(count, bool) or count < 0
-        for count in pixel_counts.values()
-    ):
+    if any(not _plain_int(count) or count < 0 for count in pixel_counts.values()):
         raise FatalAccounting(
             f"Designator conservation page {ordinal} has malformed measured pixel "
             "counts; total, claimed, and residual must be non-negative integers"
@@ -1960,10 +1955,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         act["act_key"] for act in acts if act["act_key"].startswith("page-residual:")
     ]
     findings: dict[int, dict] = {}
-    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "conservation":
-            continue
-        record = context.tree.read_artifact(DESIGNATOR, "conservation", entry["artifact_id"])
+    for record in _records_of_kind(context, DESIGNATOR, "conservation"):
         payload = _payload(record, f"Designator conservation {record['artifact_id']}")
         ordinal = payload.get("page_ordinal")
         measurable = payload.get("ink_measurable")
@@ -1975,12 +1967,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             "residual_pixel_count",
         )
         pixel_counts = {field: payload.get(field) for field in pixel_count_fields}
-        if (
-            not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
-            or not isinstance(measurable, bool)
-            or ordinal in findings
-        ):
+        if not _plain_int(ordinal) or not isinstance(measurable, bool) or ordinal in findings:
             raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
         if enumeration not in RESIDUAL_ENUMERATIONS:
             raise FatalAccounting(
@@ -2018,11 +2005,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         if not isinstance(components, list):
             raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
         declared_count = payload.get("residual_component_count")
-        if (
-            not isinstance(declared_count, int)
-            or isinstance(declared_count, bool)
-            or declared_count != len(components)
-        ):
+        if not _plain_int(declared_count) or declared_count != len(components):
             raise FatalAccounting(
                 f"Designator conservation page {ordinal} names residual_component_count "
                 f"{declared_count!r} but lists {len(components)} residual components; the count "
@@ -2036,18 +2019,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         for index, component in enumerate(components):
             bounds = component.get("bounds") if isinstance(component, dict) else None
             pixel_count = component.get("pixel_count") if isinstance(component, dict) else None
-            if (
-                not isinstance(component, dict)
-                or not isinstance(bounds, dict)
-                or set(bounds) != {"x", "y", "w", "h"}
-                or any(
-                    not isinstance(bounds[side], int) or isinstance(bounds[side], bool)
-                    for side in ("x", "y", "w", "h")
-                )
-                or not isinstance(pixel_count, int)
-                or isinstance(pixel_count, bool)
-                or pixel_count < 0
-            ):
+            if not _int_box(bounds) or not _plain_int(pixel_count) or pixel_count < 0:
                 raise FatalAccounting(
                     f"Designator conservation page {ordinal} residual component {index} "
                     "is malformed"
@@ -2125,18 +2097,13 @@ def _aggregate_page_conservation(
             f"aggregate Designator conservation page {ordinal} has no complete retained partition"
         )
     width, height = payload.get("page_width"), payload.get("page_height")
-    if any(
-        not isinstance(value, int) or isinstance(value, bool) or value <= 0
-        for value in (width, height)
-    ):
+    if any(not _plain_int(value) or value <= 0 for value in (width, height)):
         raise FatalAccounting(
             f"aggregate Designator conservation page {ordinal} has no positive page geometry"
         )
     policy = sealed_residual_presentation_policy(context)
     if any(
-        not isinstance(payload.get(name), int)
-        or isinstance(payload.get(name), bool)
-        or payload.get(name) != value
+        not _plain_int(payload.get(name)) or payload.get(name) != value
         for name, value in policy.items()
     ):
         raise FatalAccounting(
@@ -2148,10 +2115,11 @@ def _aggregate_page_conservation(
         payload.get("residual_aggregated_component_count"),
         payload.get("residual_component_count"),
     )
-    if any(
-        not isinstance(value, int) or isinstance(value, bool) or value < 0
-        for value in declared_counts
-    ) or declared_counts != (len(promoted), len(aggregate), len(promoted) + len(aggregate)):
+    if any(not _plain_int(value) or value < 0 for value in declared_counts) or declared_counts != (
+        len(promoted),
+        len(aggregate),
+        len(promoted) + len(aggregate),
+    ):
         raise FatalAccounting(
             f"aggregate Designator conservation page {ordinal} does not reconcile its combined "
             "component counts"
@@ -2162,20 +2130,10 @@ def _aggregate_page_conservation(
             bounds = component.get("bounds") if isinstance(component, dict) else None
             pixels = component.get("pixel_count") if isinstance(component, dict) else None
             if (
-                not isinstance(bounds, dict)
-                or set(bounds) != {"x", "y", "w", "h"}
-                or any(
-                    not isinstance(bounds[name], int) or isinstance(bounds[name], bool)
-                    for name in ("x", "y", "w", "h")
-                )
-                or bounds["x"] < 0
-                or bounds["y"] < 0
-                or bounds["w"] <= 0
-                or bounds["h"] <= 0
+                not _page_rect(bounds)
                 or bounds["x"] + bounds["w"] > width
                 or bounds["y"] + bounds["h"] > height
-                or not isinstance(pixels, int)
-                or isinstance(pixels, bool)
+                or not _plain_int(pixels)
                 or pixels < 0
                 or pixels > bounds["w"] * bounds["h"]
             ):
@@ -2183,7 +2141,7 @@ def _aggregate_page_conservation(
                     f"aggregate Designator conservation page {ordinal} {label} component "
                     f"{index} is malformed"
                 )
-            identity = tuple(bounds[name] for name in ("x", "y", "w", "h"))
+            identity = tuple(bounds[name] for name in _BOX_SIDES)
             if identity in identities:
                 raise FatalAccounting(
                     f"aggregate Designator conservation page {ordinal} repeats component "
@@ -2288,10 +2246,7 @@ def _withheld_page_conservation(
         )
     count = payload.get("residual_component_count")
     bound = payload.get("max_residual_components")
-    if any(
-        not isinstance(value, int) or isinstance(value, bool) or value < 0
-        for value in (count, bound)
-    ):
+    if any(not _plain_int(value) or value < 0 for value in (count, bound)):
         raise FatalAccounting(
             f"withheld Designator conservation page {ordinal} names no integer residual "
             "component count and no integer bound it was judged against"
@@ -2364,15 +2319,12 @@ def current_page_testimonia(context) -> dict[tuple[int, str], dict]:
     currency signal, and duplicate or gapped ordinals are accounting failures.
     """
     records: dict[tuple[int, str], list[dict]] = {}
-    for entry in stage_manifest(context, ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "page-testimonium":
-            continue
-        record = context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+    for record in _records_of_kind(context, ATTESTATORES, "page-testimonium"):
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
         ordinal, chair = payload.get("page_ordinal"), payload.get("chair")
         # A boolean ordinal hashes as its integer counterpart, so accepting one
         # here would merge page `true` into page 1 before currency is derived.
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or not isinstance(chair, str):
+        if not _plain_int(ordinal) or not isinstance(chair, str):
             raise FatalAccounting("page Testimonium has no textual page identity")
         records.setdefault((ordinal, chair), []).append(record)
     return {
@@ -2389,19 +2341,10 @@ def _covered_intervals(
     spans: list[tuple[int, int, str]], text_length: int
 ) -> list[tuple[int, int]]:
     """Validate and merge coverage without allocating one slot per character."""
-    intervals = []
     for start, end, _ in spans:
         if start < 0 or end < start or end > text_length:
             raise FatalAccounting("act attachment span lies outside its page Testimonium")
-        if start != end:
-            intervals.append((start, end))
-    merged: list[tuple[int, int]] = []
-    for start, end in sorted(intervals):
-        if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-    return merged
+    return _union((start, end) for start, end, _ in spans)
 
 
 def uncovered_non_whitespace_ranges(text: str, covered_intervals: list[tuple[int, int]]) -> dict:
@@ -2461,7 +2404,7 @@ def reconcile_page_roles(
             if not isinstance(row, dict) or not row.get("page_witness"):
                 continue
             ordinal = row.get("page_ordinal")
-            if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            if not _plain_int(ordinal):
                 raise FatalAccounting(
                     f"act {act_id} page-witness attachment carries no integer page ordinal; "
                     "its page Testimonium cannot be addressed; restore the contributing page"
@@ -2547,17 +2490,8 @@ def continuation_unmeasured_reason(
     )
 
 
-def testimony_content_findings(context) -> dict[int, dict]:
-    """Compare each page witness's text to its own aligned act attachments.
-
-    Testimony to testimony; no Perlectio text participates. A non-whitespace page
-    character outside the union of the aligned spans is a visible coverage shortfall,
-    never a verdict about which witness is right.
-    """
-    attachments = current_act_attachments(context)
-    page_testimonia = current_page_testimonia(context)
-    # Read once: `expected_acts` re-verifies the seal on every call, and this stage
-    # never writes it.
+def _proposal_pages_of_acts(context) -> tuple[dict[int, list[dict]], dict[int, list[dict]]]:
+    """Each page's expected acts and sealed proposal regions, from one seal read."""
     acts_by_page: dict[int, list[dict]] = {}
     proposal_regions_by_page: dict[int, list[dict]] = {}
     for act in expected_acts(context):
@@ -2568,7 +2502,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
             if payload.get("origin") != "proposal" or not isinstance(transform, dict):
                 continue
             ordinal = transform.get("source_page_ordinal")
-            if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            if not _plain_int(ordinal):
                 raise FatalAccounting(
                     f"Designator region of {act['act_id']} has no integer page ordinal; its "
                     "page testimony cannot be grouped; restore the region's sealed transform"
@@ -2577,22 +2511,9 @@ def testimony_content_findings(context) -> dict[int, dict]:
             if act not in page_acts:
                 page_acts.append(act)
             bounds = transform.get("bounds")
-            # The rectangle `_proposal_geometry_by_page` requires: a partial one would
-            # fail as a bare KeyError, and a degenerate one would overlap nothing and
-            # manufacture an unrouted-observation finding that drives recovery
-            # (principles 7, 8).
-            if (
-                not isinstance(bounds, dict)
-                or set(bounds) != {"x", "y", "w", "h"}
-                or any(
-                    not isinstance(bounds[side], int) or isinstance(bounds[side], bool)
-                    for side in ("x", "y", "w", "h")
-                )
-                or bounds["x"] < 0
-                or bounds["y"] < 0
-                or bounds["w"] <= 0
-                or bounds["h"] <= 0
-            ):
+            # A degenerate rectangle would overlap nothing and manufacture an
+            # unrouted-observation finding that drives recovery.
+            if not _page_rect(bounds):
                 raise FatalAccounting(
                     f"Designator proposal region of {act['act_id']} has no page-pixel bounds"
                 )
@@ -2602,6 +2523,16 @@ def testimony_content_findings(context) -> dict[int, dict]:
         # regions; its primary page remains a known one-page denominator.
         if not found_page:
             acts_by_page.setdefault(act["page_ordinal"], []).append(act)
+    return acts_by_page, proposal_regions_by_page
+
+
+def _page_rows_by_chair(
+    context,
+    acts_by_page: dict[int, list[dict]],
+    attachments: dict[str, dict],
+    page_testimonia: dict[tuple[int, str], dict],
+) -> dict[tuple[int, str], list[tuple[str, dict]]]:
+    """Every page-witness attachment row, by page and chair, bound to its current record."""
     rows_by_page_chair: dict[tuple[int, str], list[tuple[str, dict]]] = {}
     for ordinal, acts in acts_by_page.items():
         for act in acts:
@@ -2631,18 +2562,55 @@ def testimony_content_findings(context) -> dict[int, dict]:
                         "or stale; restore the referenced Attestatores record"
                     )
                 rows_by_page_chair.setdefault((ordinal, chair), []).append((act["act_id"], row))
-    # Reference every page row first, so a missing record names the act whose
-    # evidence was lost. The whole-page role reconciliation then catches the
+    return rows_by_page_chair
+
+
+def _aligned_spans(rows: list[tuple[str, dict]]) -> tuple[list[tuple[int, int, str]], list[str]]:
+    """The aligned witness spans of these rows, and the acts declared unanchored."""
+    spans = []
+    declared_unanchored: list[str] = []
+    for act_id, row in rows:
+        alignment = row.get("alignment")
+        if (
+            row.get("attached")
+            and isinstance(alignment, dict)
+            and alignment.get("status") == "aligned"
+        ):
+            span = alignment.get("witness_span")
+            if not isinstance(span, dict) or not all(
+                _plain_int(span.get(k)) for k in ("start", "end")
+            ):
+                raise FatalAccounting("attached page witness has malformed alignment span")
+            spans.append((span["start"], span["end"], act_id))
+        elif (
+            isinstance(alignment, dict)
+            and alignment.get("status") == "unaligned"
+            and alignment.get("reason") == CONTINUATION_NO_ACT_ANCHOR
+        ):
+            # Not conditional on `attached`: unattached continuation rows would
+            # otherwise read as a measured shortfall.
+            declared_unanchored.append(act_id)
+    return spans, declared_unanchored
+
+
+def testimony_content_findings(context) -> dict[int, dict]:
+    """Compare each page witness's text to its own aligned act attachments.
+
+    Testimony to testimony; no Perlectio text participates. A non-whitespace page
+    character outside the union of the aligned spans is a visible coverage shortfall,
+    never a verdict about which witness is right.
+    """
+    attachments = current_act_attachments(context)
+    page_testimonia = current_page_testimonia(context)
+    acts_by_page, proposal_regions_by_page = _proposal_pages_of_acts(context)
+    rows_by_page_chair = _page_rows_by_chair(context, acts_by_page, attachments, page_testimonia)
+    # After the rows, so a missing record names the act that lost it; this catches the
     # converse orphan (a page record no act owns) before any finding is built.
     reconcile_page_roles(context, attachments, page_testimonia)
     findings: dict[int, dict] = {}
-    # Page ordinal -> the (chair, uncovered count, declared-unanchored acts) rows
-    # whose uncovered text no attachment on this page could ever have covered.
     unanchored_by_page: dict[int, list[tuple[str, int, list[str]]]] = {}
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
-        # The observed rows are untrusted and `unrouted_observations` indexes them by
-        # name, so a malformed one is refused by name.
         try:
             validate_reportable_observations(payload.get("observed", []))
         except ContractError as error:
@@ -2672,9 +2640,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ) from error
         observed = payload.get("observed")
         if isinstance(presented, dict) and presented and isinstance(observed, list):
-            # From what the witness saw and the current proposal denominator; the
-            # optional retained partition is audit evidence and may not suppress a
-            # finding.
+            # The retained partition is audit evidence and may not suppress a finding.
             unclaimed = unrouted_observations([record], proposal_regions_by_page.get(ordinal, []))
         else:
             unclaimed = []
@@ -2690,8 +2656,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 observation["testimonium_ref"] = testimonium_ref
                 observation["observation_ordinal"] = observation.pop("ordinal")
             finding.setdefault("unclaimed_observations", []).extend(copy.deepcopy(unclaimed))
-            # An observation outside every proposal routes recovery on its own. It is
-            # not a text shortfall, which would keep every act on the page held over an
+            # Not a text shortfall: that would hold every act on the page over an
             # observation assigned to none of them.
         if "payload" not in payload:
             if record.get("outcome") in WITNESS_READING_OUTCOMES:
@@ -2700,41 +2665,13 @@ def testimony_content_findings(context) -> dict[int, dict]:
                     f"coverage: {record['artifact_id']} for page {ordinal}, chair {chair!r}; "
                     "restore the retained Attestatores record"
                 )
-            # A page witness that read nothing on this page legitimately has no text;
-            # its absence stays visible through its act-scoped Testimonia and the
-            # witness floor.
+            # Nothing read here; the absence stays visible through the witness floor.
             continue
         text = payload.get("payload")
         if not isinstance(text, str):
-            # Structured testimony has no comparable page text; its attachment is
-            # `comparable: false`, so it cannot meet the floor either.
+            # Structured testimony: no comparable text, so it cannot meet the floor either.
             continue
-        spans = []
-        declared_unanchored: list[str] = []
-        for act_id, row in rows_by_page_chair.get((ordinal, chair), []):
-            alignment = row.get("alignment")
-            if (
-                row.get("attached")
-                and isinstance(alignment, dict)
-                and alignment.get("status") == "aligned"
-            ):
-                span = alignment.get("witness_span")
-                if not isinstance(span, dict) or not all(
-                    isinstance(span.get(k), int) and not isinstance(span.get(k), bool)
-                    for k in ("start", "end")
-                ):
-                    raise FatalAccounting("attached page witness has malformed alignment span")
-                spans.append((span["start"], span["end"], act_id))
-            elif (
-                isinstance(alignment, dict)
-                and alignment.get("status") == "unaligned"
-                and alignment.get("reason") == CONTINUATION_NO_ACT_ANCHOR
-            ):
-                # Not conditional on `attached`: the declaration is on every
-                # continuation row and is what makes an aligned span unreachable;
-                # unattached continuation rows would otherwise read as a measured
-                # shortfall.
-                declared_unanchored.append(act_id)
+        spans, declared_unanchored = _aligned_spans(rows_by_page_chair.get((ordinal, chair), []))
         covered_intervals = _covered_intervals(spans, len(text))
         uncovered = uncovered_non_whitespace_ranges(text, covered_intervals)
         finding = findings.setdefault(ordinal, {"by_chair": {}, "shortfall": False})
@@ -2746,29 +2683,23 @@ def testimony_content_findings(context) -> dict[int, dict]:
             "uncovered_non_whitespace": uncovered,
         }
         if declared_unanchored and uncovered["count"]:
-            # Recorded either way; the settlement below decides whether it becomes the
-            # page's reason or rides beside a measured one.
             unanchored_by_page.setdefault(ordinal, []).append(
                 (chair, uncovered["count"], sorted(declared_unanchored))
             )
         if covered_intervals or not declared_unanchored:
-            # Only an empty covered union is unmeasured (a zero-width span covers
-            # nothing). Where this chair has covering spans its uncovered text is a real
-            # measurement, and a neighbour's unanchored declaration may not hide it.
+            # Only an empty covered union is unmeasured; a neighbour's unanchored
+            # declaration may not hide this chair's real measurement.
             finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
     for finding in findings.values():
         if finding["by_chair"]:
             continue
-        # No chair on this page reported text, so nothing was measured, and `shortfall:
-        # False` would publish a clean measurement nobody took (principle 8). The
-        # unclaimed observations stay and still route recovery.
+        # No chair reported text: `False` would publish a measurement nobody took.
         finding["shortfall"] = None
         finding.setdefault("reason", NO_PAGE_CONTENT_COVERAGE["reason"])
     for ordinal, observations in unanchored_by_page.items():
         finding = findings[ordinal]
         if finding["shortfall"]:
-            # A shortfall measured against a real union outranks the unmeasured verdict;
-            # the unmeasured reason is kept beside it (principle 2).
+            # A measured shortfall outranks the unmeasured verdict, which rides beside it.
             finding.setdefault(
                 "unmeasured_reason",
                 continuation_unmeasured_reason(
@@ -2776,9 +2707,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ),
             )
             continue
-        # Unmeasured by name: the diff was taken against a union the Perlector declared
-        # empty, so it is not a shortfall. The count stays in `by_chair`, and every act
-        # spanning the page restates the row.
+        # Measured against a union the Perlector declared empty: not a shortfall.
         finding["shortfall"] = None
         finding.setdefault("reason", continuation_unmeasured_reason(ordinal, observations))
     return findings
@@ -2854,15 +2783,7 @@ def testimony_content_for_continuation_pages(
     (principle 2). Present and empty for a one-page act, so "no continuation" differs
     from "never derived".
     """
-    ordinals = sorted(
-        {
-            region["payload"]["transform"]["source_page_ordinal"]
-            for region in act_regions
-            if isinstance(region.get("payload"), dict)
-            and isinstance(region["payload"].get("transform"), dict)
-        }
-        - {primary_ordinal}
-    )
+    ordinals = sorted(_region_page_ordinals(act_regions) - {primary_ordinal})
     return [
         {"page_ordinal": ordinal, **testimony_content_for_page(findings, ordinal)}
         for ordinal in ordinals
@@ -2906,9 +2827,8 @@ def review_route_from_findings(
     ``None`` means the corresponding measurement does not exist and therefore
     routes like ``False``; absence is not a measured shortfall.
     """
-    # A shape guard: no current route input carries vocabulary a preference could ride
-    # in, so this cannot refuse anything yet. `publish_review` and the recovery payload
-    # are the screens that bite.
+    # A shape guard that cannot refuse anything yet; `publish_review` and the recovery
+    # payload are the screens that bite.
     refuse_capture_preference(
         {
             "cross_capture_occluded_everywhere": cross_capture_occluded_everywhere,
@@ -2956,10 +2876,7 @@ def review_route_from_findings(
         )
     if audit_unresolved:
         if audit_examination == EXAMINATION_INCOMPLETE:
-            # The re-proof ran but did not classify complete. The establishing reading
-            # stands with its own provenance, but the re-examination never happened; the
-            # reason names the instrument's verdict, not an engine word that may not
-            # exist (principle 8).
+            # Names the instrument's verdict, not an engine word that may not exist.
             reasons.append(
                 "the Perlector's audit re-proof of this act did not complete: "
                 f"{_describe_termination(audit_reproof_truncation)}, so the flag(s) it was "
@@ -2968,9 +2885,6 @@ def review_route_from_findings(
                 "re-examination that never finished"
             )
         elif audit_examination == EXAMINATION_REPROOF_REJECTED:
-            # The re-proof completed but rewrote text outside every flag: a reader's
-            # overreach, not a truncation. The rewrite was refused and the Pass-B
-            # reading stands.
             reasons.append(
                 "the Perlector's audit re-proof for this act completed but rewrote text "
                 "outside every location its own flag identified; the rewrite is refused rather "
@@ -2991,10 +2905,7 @@ def review_route_from_findings(
                 "to hold for"
             )
     if assessment_malformed:
-        # An unanchorable doubt report loses what the reader said about its doubts, and
-        # delivering over it would read as confidence. Held, never re-rolled (principle
-        # 7). The retained problem is quoted: it is the only sentence saying what went
-        # wrong.
+        # Held, never re-rolled. The problem is quoted: it alone says what went wrong.
         reason = (
             "the reader's doubt report over this act could not be anchored to its text and is "
             "retained as a malformed assessment; the act is held rather than delivered with "
@@ -3064,28 +2975,23 @@ def publish_review(
             f"the Recensor review of {subject_id!r} has malformed measurement evidence "
             f"in {measurement_field}: {error}"
         ) from error
-    ordinal = 1 if prior is None else prior["payload"]["attempt_ordinal"]
+
+    def publish_at(ordinal: int) -> dict:
+        return context.publish(
+            kind="review",
+            subject_id=subject_id,
+            outcome=outcome,
+            attempt=attempt_id(subject_id, "recense", ordinal),
+            inputs=inputs,
+            payload={**payload, "attempt_ordinal": ordinal},
+        )
+
+    if prior is None:
+        return publish_at(1)
     try:
-        return context.publish(
-            kind="review",
-            subject_id=subject_id,
-            outcome=outcome,
-            attempt=attempt_id(subject_id, "recense", ordinal),
-            inputs=inputs,
-            payload={**payload, "attempt_ordinal": ordinal},
-        )
+        return publish_at(prior["payload"]["attempt_ordinal"])
     except IncompatibleReuse:
-        if prior is None:
-            raise
-        ordinal = prior["payload"]["attempt_ordinal"] + 1
-        return context.publish(
-            kind="review",
-            subject_id=subject_id,
-            outcome=outcome,
-            attempt=attempt_id(subject_id, "recense", ordinal),
-            inputs=inputs,
-            payload={**payload, "attempt_ordinal": ordinal},
-        )
+        return publish_at(prior["payload"]["attempt_ordinal"] + 1)
 
 
 def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) -> list[dict]:
@@ -3153,9 +3059,7 @@ def preflight_review_evidence(context, budget: dict) -> None:
                 "one recorded recrop and no reading may appear unrequested"
             )
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
-        # The earliest stage that can refuse a reading whose witness basis was
-        # superseded; the Archetypus and the export check it too, since any may be
-        # reached first.
+        # The Archetypus and the export check this too, since any may be reached first.
         require_current_witness_basis(
             act_id,
             latest,
@@ -3273,21 +3177,65 @@ def declared_recovery(scenario: dict | None, act_key: str) -> bool:
     return act_key in scenario["recover_acts"]
 
 
+def _publish_designator_hold_review(
+    context,
+    act: dict,
+    *,
+    budget: dict,
+    coverage: dict,
+    geometry_coverage: dict,
+    content_coverage: dict,
+    content_findings: dict[int, dict],
+    page_findings: dict[int, dict],
+) -> None:
+    """An explicit review for a Designator-held act, so its terminal category derives.
+
+    A hold may still have a cut near-side region (only a continuation's page failed to
+    seal), so the page facts come from what was cut rather than being reported empty.
+    """
+    act_id = act["act_id"]
+    hold, hold_path = designator_hold(context, act_id)
+    hold_regions = artifacts_for(context, DESIGNATOR, "region", act_id)
+    publish_review(
+        context,
+        subject_id=act_id,
+        outcome="held-for-review",
+        prior=current_review(context, act_id),
+        inputs=[context.input_ref(hold_path)]
+        + [context.input_ref(region["payload"]["image_path"]) for region in hold_regions],
+        payload={
+            "act_key": act["act_key"],
+            "reason": f"the Designator held this act: {hold['payload']['reason']}",
+            "coverage": coverage,
+            "geometry_coverage": geometry_coverage,
+            "testimony_content_coverage": content_coverage,
+            "testimony_content_coverage_continuation": (
+                testimony_content_for_continuation_pages(
+                    content_findings, hold_regions, act["page_ordinal"]
+                )
+            ),
+            "continuation": recensor_continuation_link(hold_regions, act_id),
+            "page_coverage": page_coverage_for(hold_regions, page_findings),
+            "recoveries_used": 0,
+            "budget_allowed": budget["allowed"],
+            "absolute_cap": budget["absolute_cap"],
+            # No Perlectio, so no audit: distinct from audited-and-resolved (False).
+            "audit_unresolved": None,
+            "audit_examination": None,
+            "uncertainty_assessment": None,
+            "cross_capture_coverage": None,
+        },
+    )
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    # Either ingress route, decided from one read of the run authority; the
-    # real route carries the registry, the sealed digests and the parsed
-    # recovery policy the lines below require.
     context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
-    # The sealed policy parsed when the run's binding was checked, never re-read: a
-    # rewrite in between would publish an allowance the run never sealed, unrecoverably.
-    # The recheck proves the carried policy is the sealed one.
+    # The policy parsed when the run's binding was checked, never re-read: a rewrite in
+    # between would publish an allowance the run never sealed.
     budget = context.recovery_policy
     context.require_sealed_config("recovery", budget["config_sha256"])
-
-    # The declared scenario on the fixture route; nothing on a real submission.
-    # `hold_acts` and `recover_acts` are the two things read from it, below.
     scenario = declared_scenario(context)
     floor = context.witness_floor
 
@@ -3297,29 +3245,20 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     preflight_recovery_history(context, budget)
     preflight_review_evidence(context, budget)
 
-    # Both residual measurement and the witness-pointer gate use the union of
-    # every proposal and recovery crop currently cut on the page.
     cut_regions = regions_by_source_page(context)
-    # Verify sealed pages only when some region is cut; pixels no crop came from are
-    # never read.
+    # Pixels no crop came from are never read.
     sealed_pages = sealed_page_images(context) if cut_regions else {}
     capture_digests = capture_digest_by_page(sealed_pages)
     page_findings = page_coverage_findings(context, sealed_pages)
     geometry_inputs = geometry_coverage_inputs(context)
     content_findings = testimony_content_findings(context)
     ink_maps = ink_map_by_page(context)
-    # The sealed noise floor a pointer's ink must clear, proved against this run's seal;
-    # read once, as it is one flat count.
     coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     minimum_ink_pixels = coverage_config["coverage_audit"]["minimum_ink_pixels"]
-    # The remaining page-level inputs read once per run for the same reason:
-    # the sealed occlusion records by page, and a cache of the local-act
-    # proposal geometry every cross-capture view asks for.
     occlusions = occlusion_records_by_page(context)
     proposal_geometry: dict[str, dict] = {}
-    # Tree-backed accounting keeps the page-wide grant spent across Recensor
-    # passes; an in-memory counter would reset after the requested recrop.
+    # Counted from the tree: an in-memory counter would reset after the requested recrop.
     funded_pages = observation_funded_pages(context, expected_acts(context))
 
     held = 0
@@ -3331,81 +3270,43 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         geometry_coverage = geometry_coverage_for(geometry_inputs, act["page_ordinal"])
 
         if act["outcome"] == "held":
-            # No reading and no recovery: this act's missing ink was never sealed. It
-            # still gets an explicit review, so its terminal category derives like every
-            # other act's.
-            hold, hold_path = designator_hold(context, act_id)
-            # A hold may still have a cut near-side region (only a continuation's page
-            # failed to seal), so read what was cut rather than report empty facts.
-            hold_regions = artifacts_for(context, DESIGNATOR, "region", act_id)
-            publish_review(
+            _publish_designator_hold_review(
                 context,
-                subject_id=act_id,
-                outcome="held-for-review",
-                prior=current_review(context, act_id),
-                inputs=[context.input_ref(hold_path)]
-                + [context.input_ref(region["payload"]["image_path"]) for region in hold_regions],
-                payload={
-                    "act_key": act_key,
-                    "reason": f"the Designator held this act: {hold['payload']['reason']}",
-                    "coverage": coverage,
-                    "geometry_coverage": geometry_coverage,
-                    "testimony_content_coverage": content_coverage,
-                    # Derived from what was cut, as `page_coverage` is.
-                    "testimony_content_coverage_continuation": (
-                        testimony_content_for_continuation_pages(
-                            content_findings, hold_regions, act["page_ordinal"]
-                        )
-                    ),
-                    "continuation": recensor_continuation_link(hold_regions, act_id),
-                    "page_coverage": page_coverage_for(hold_regions, page_findings),
-                    "recoveries_used": 0,
-                    "budget_allowed": budget["allowed"],
-                    "absolute_cap": budget["absolute_cap"],
-                    # None: no Perlectio, so no audit; distinct from audited and
-                    # resolved (False) or unresolved (True).
-                    "audit_unresolved": None,
-                    "audit_examination": None,
-                    "uncertainty_assessment": None,
-                    # None: a held act was never shown capture pixels.
-                    "cross_capture_coverage": None,
-                },
+                act,
+                budget=budget,
+                coverage=coverage,
+                geometry_coverage=geometry_coverage,
+                content_coverage=content_coverage,
+                content_findings=content_findings,
+                page_findings=page_findings,
             )
             held += 1
             continue
 
         state = recovery_state(context, act_id, budget)
         if state["outstanding_request_ids"]:
-            # The matching review is already the durable record of this hold. A
-            # direct Recensor retry must not turn it into a later acceptance while
-            # the Designator has not yet cut the requested recovery crop.
+            # The matching review already records this hold; a retry must not accept
+            # the act before the Designator cuts the requested crop.
             held += 1
             continue
 
-        # `preflight_review_evidence`, above, already refused a non-held act with
-        # no reading at all, over this same list and the same Designator seal
-        # this process never writes to.
+        # Non-empty: `preflight_review_evidence` refused an act with no reading.
         readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
 
         # Every review names the exact Perlectio it assessed, as input and payload, so
         # the Archetypus can prove it establishes that reading.
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         latest_payload = _payload(latest, f"reading of {act_id}")
-        audit_facts = audit_state(context, latest, act_id, expected_act_key=act["act_key"])
-        audit_unresolved = None if audit_facts is None else audit_facts["unresolved"]
-        audit_examination = None if audit_facts is None else audit_facts["examination"]
-        audit_reproof_truncation = (
-            None if audit_facts is None else audit_facts["reproof_truncation"]
-        )
-        # The same closed `{state, problem}` object every record uses; `None` means no
-        # Perlectio, so no report.
+        audit_facts = audit_state(context, latest, act_id, expected_act_key=act["act_key"]) or {}
+        audit_unresolved = audit_facts.get("unresolved")
+        audit_examination = audit_facts.get("examination")
+        # `None` means the Perlectio carries no assessment object.
         assessment = latest_payload.get("uncertainty_assessment")
         assessment_record = (
             {"state": assessment.get("state"), "problem": assessment.get("problem")}
             if isinstance(assessment, dict)
             else None
         )
-        assessment_state = assessment.get("state") if isinstance(assessment, dict) else None
         # The survey must come from the exact Perlectio this review assesses.
         cross_coverage = act_cross_capture_coverage(
             context,
@@ -3418,8 +3319,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             cross_capture_occluded_everywhere,
             cross_capture_unresolved,
         ) = cross_capture_review_causes(cross_coverage)
-        # After `audit_state`; a held act has no audit chain and took its own branch
-        # above.
         findings_route = review_route_from_findings(
             cross_capture_occluded_everywhere=cross_capture_occluded_everywhere,
             cross_capture_unresolved=cross_capture_unresolved,
@@ -3428,9 +3327,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             under_witnessed=coverage["under_witnessed"],
             unreconciled=declared_unreconciled(scenario, act_key),
             audit_examination=audit_examination,
-            audit_reproof_truncation=audit_reproof_truncation,
-            assessment_malformed=assessment_state == "malformed",
-            assessment_problem=assessment.get("problem") if isinstance(assessment, dict) else None,
+            audit_reproof_truncation=audit_facts.get("reproof_truncation"),
+            assessment_malformed=(assessment_record or {}).get("state") == "malformed",
+            assessment_problem=(assessment_record or {}).get("problem"),
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
@@ -3447,9 +3346,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # every act on it, because nobody knows which act the uncovered ink belongs to.
         page_coverage = page_coverage_for(state["regions"], page_findings)
         flagged_pages = page_coverage["flagged_pages"]
-        # The testimony-content half of the same "every page this act touches"
-        # rule, off the same region set. Recorded, never routed: see
-        # `testimony_content_for_continuation_pages`.
+        # Recorded, never routed: see `testimony_content_for_continuation_pages`.
         continuation_content_coverage = testimony_content_for_continuation_pages(
             content_findings, state["regions"], act["page_ordinal"]
         )
@@ -3549,9 +3446,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "act_key": act_key,
                 "attempt_ordinal": request_ordinal,
                 "recovery_kind": FALLBACK_RECROP,
-                # The origin as data, so the page-wide bound counts a fact rather than
-                # parsing prose. Declaration takes precedence for funding; the reason
-                # lists every cause.
+                # As data, so the page-wide bound counts a fact rather than parsing prose.
                 "origin": request_origin,
                 "reason": recovery_request_reason(
                     declared_crop=declared_recovery(scenario, act_key),
@@ -3621,8 +3516,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "recovery_request_ordinal": request_ordinal,
                     "recovery_kind": FALLBACK_RECROP,
                     "coverage": coverage,
-                    # Present on every review shape, so "checked and clear" differs from
-                    # "never checked".
                     "geometry_coverage": geometry_coverage,
                     "testimony_content_coverage": content_coverage,
                     "testimony_content_coverage_continuation": continuation_content_coverage,
@@ -3642,9 +3535,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             held += 1
             continue
 
-        # Whether the reading succeeded, not merely exists: the Archetypus copies the
-        # latest reading's text, so text nobody successfully read is held visibly
-        # (principle 2).
+        # The Archetypus copies the latest reading's text, so text nobody successfully
+        # read is held visibly (principle 2).
         blank_evidence = None
         if reading_class is not OutcomeClass.COMPLETED:
             # `no-readable-text` is the Perlector's own positive finding of absence, so
@@ -3756,9 +3648,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             else:
                 reason = "coverage and geometry reconcile"
 
-        # Derived from the outcome's own class rather than counted by hand in each
-        # branch above, so a review shape added later cannot land in the tree
-        # without also landing in this stage's exit code.
+        # From the outcome's class, so a review shape added later also reaches the exit code.
         if classify(RECENSOR, outcome) is not OutcomeClass.COMPLETED:
             held += 1
 
@@ -3767,9 +3657,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             subject_id=act_id,
             outcome=outcome,
             prior=current_review(context, act_id),
-            # `latest`, not `readings[0]`: manifest order is a hash. `basis_regions` is
-            # empty unless the reading completed, since a `not-run` Perlectio has no
-            # `basis`.
+            # `latest`, not `readings[0]`: manifest order is a hash.
             inputs=[reading_ref]
             + [context.input_ref(reference["image_path"]) for reference in basis_regions],
             payload={
@@ -3784,20 +3672,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "budget_allowed": budget["allowed"],
                 "absolute_cap": budget["absolute_cap"],
                 "perlectio_ref": reading_ref,
-                # Recorded for every act, so "checked and clear" differs from "never
-                # checked".
+                # Recorded for every act: "checked and clear" is not "never checked".
                 "page_coverage": page_coverage,
-                # The Pass-C verdict as data, so an audit-cap hold is separable from
-                # other holds without matching prose.
                 "audit_unresolved": audit_unresolved,
-                # The fact behind the boolean, so review can tell an exhausted cap from
-                # an unfinished re-proof; `None` exactly where `audit_unresolved` is.
                 "audit_examination": audit_examination,
-                # The reader's `{state, problem}`, so an empty uncertainty layer can be
-                # told from an absent channel.
+                # Tells an empty uncertainty layer from an absent channel.
                 "uncertainty_assessment": assessment_record,
                 "cross_capture_coverage": cross_coverage,
-                # Only on `confirmed-blank`, the one outcome that rests on it.
                 **({"blank_evidence": blank_evidence} if blank_evidence is not None else {}),
             },
         )
