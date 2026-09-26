@@ -1,15 +1,8 @@
 # R7b bench runners
 
-`records.py` seals the v1 definitions for B0, B0.5, and B2–B6.  Each measure
-names its numerator, denominator, and treatment of unknown output; no runner may
-replace its definition digest with a later goalpost.  `runner.py` fixture-tests
-those records only.  It has no model, serving, pod, or network import.
-
-Every fixture exercise emits `state: "not-run"` until a later runner supplies
-actual observations. B0 and B0.5 additionally require a separately authorized
-live-pod session. `fixture_verified: true` means only that the local
-record/runner path was exercised; it is not a green result and makes no feeding
-or cost claim.
+`scale.py` is the only bench here: a model-free RunTree cardinality exercise.
+No bench-cell definitions or runners exist yet; B0 and B0.5 will require a
+separately authorized live-pod session.
 
 Run the cardinality exercise (no models) from the repository root:
 
@@ -29,7 +22,7 @@ strings so the record can use the repository's canonical JSON encoding.
 ## Real-runner schema obligations
 
 The later branch that introduces real bench execution must extend the result
-schema deliberately, rather than relaxing the fixture validator:
+schema deliberately:
 
 - A measured B0 or B0.5 result carries the whole proof mark of the serving
   profile it was measured through — `preflight_state`, `preflight_digest`, and

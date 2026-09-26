@@ -54,7 +54,7 @@ _FORMAT_CAPABILITY_FIELDS: Final = frozenset({"can_express_uncertainty", "can_ex
 def declared_format_capabilities(adapter: Any) -> dict[str, bool]:
     """What this adapter's own grammar can carry, validated, as a plain dict.
 
-    Shared by `live_witness._format_capabilities_for` and
+    Shared by `live_witness` and
     `run.py::_declared_format_capabilities` so the two reads of one adapter's
     capabilities cannot drift apart.
 

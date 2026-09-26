@@ -1016,7 +1016,7 @@ def conservation_not_reconciled(
     """Every sealed page whose ink this run never reconciled, with its reason.
 
     `ink_measurable: false` is the Designator's own record of a page it cut and
-    read but could not reconcile -- `infer_background` refused, so conservation
+    read but could not reconcile -- `infer_background_evidence` refused, so conservation
     never ran on it. A page whose record is missing the field entirely is
     counted here too, and for the stronger reason: absent evidence may never
     read cleaner than recorded unmeasurability (principle 8).

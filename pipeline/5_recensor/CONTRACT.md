@@ -383,7 +383,7 @@ outcome was ever produced.
 ARCHITECTURE's candidate list, spec 09's own words: "coverage vs the proposal-
 set seal **plus a residual-ink check whose input is the page image itself,
 never the proposal set** — a denominator derived only from proposals cannot
-see an act nobody proposed (goal 2)." `pipeline/5_recensor/residual_ink.py`
+see an act nobody proposed (goal 2)." `common/residual_ink.py`
 is that check: a pure function over one sealed page's own decoded pixels and
 the page-pixel bounds of every region currently cut on it (proposal and
 recovery, from every act that touches the page), with no witness, no reading,

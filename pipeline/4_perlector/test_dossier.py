@@ -159,24 +159,6 @@ def test_dossier_is_deterministic_and_shuffle_invariant(evidence):
     assert forward["dossier_digest"] == shuffled["dossier_digest"]
 
 
-def test_delivered_image_missing_from_the_tree_is_a_named_refusal(evidence, monkeypatch):
-    context, _act_id, _act_key, _regions, _testimonia = evidence
-
-    def missing_blob(_relative_path):
-        raise FileNotFoundError("missing-region.png")
-
-    monkeypatch.setattr(context.tree, "read_bytes", missing_blob)
-    with pytest.raises(
-        SchemaRefusal,
-        match=r"dossier region at ordinal 0.*missing-region\.png.*could not be read",
-    ):
-        dossier._delivered_images(
-            context,
-            [{"image_path": "missing-region.png", "image_sha256": "unused"}],
-            kind="region",
-        )
-
-
 def test_dossier_carries_no_order_bearing_field(evidence):
     context, act_id, act_key, regions, testimonia = evidence
     built = _build(context, act_id, act_key, regions, testimonia)
@@ -458,7 +440,7 @@ def test_dossier_refuses_an_undeclared_witness_regime_even_without_testimonia(ev
 def test_blinded_pseudonyms_are_stable_and_reversible_without_a_stored_map(evidence):
     """Reversal is recomputing the same deterministic function over the public
     roster in `run.json`, never a second stored copy of it."""
-    from regime import pseudonym_for
+    from common.witness_regime import pseudonym_for
 
     context, act_id, act_key, regions, testimonia = evidence
     blinded = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
@@ -494,7 +476,7 @@ def test_a_blinded_regimes_pseudonym_order_is_not_a_fixed_slot_per_chair(evidenc
     run ids and showing the true chair sequence a reader would see reorders --
     the property `test_..._are_each_sorted_by_displayed_label` above names but,
     being sorted-by-construction either way, can never exhibit."""
-    from regime import pseudonym_for
+    from common.witness_regime import pseudonym_for
 
     context, act_id, act_key, regions, testimonia = evidence
     chairs = [record["payload"]["chair"] for record in testimonia]

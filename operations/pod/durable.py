@@ -25,10 +25,6 @@ import tempfile
 from pathlib import Path
 from typing import Mapping
 
-# Re-exported, not re-implemented: the primitive lives in `common` so that
-# `common/runtree/store.py` can publish artifacts durably without `common`
-# importing the operational layer, while every caller that says
-# `from operations.pod.durable import sync_directory` keeps working.
 from common.durability import sync_directory
 
 __all__ = [
@@ -36,7 +32,6 @@ __all__ = [
     "atomic_write",
     "canonical_json",
     "exclusive_write",
-    "sync_directory",
 ]
 
 # What a filesystem that will not hard-link answers with. The same three codes

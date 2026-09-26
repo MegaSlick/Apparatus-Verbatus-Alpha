@@ -90,21 +90,6 @@ from common.request_capacity import (
 )
 from operations.serving.client import ChairRequest, ChairResponse
 
-# Re-exported so this seam does not duplicate `witness_adapters`' literal.
-DEFAULT_FORMAT_CAPABILITIES: Mapping[str, bool] = witness_adapters.FALLBACK_FORMAT_CAPABILITIES
-
-
-def _format_capabilities_for(adapter: Any) -> dict[str, bool]:
-    """What this adapter's own grammar can carry, or the blanket default.
-
-    A fact about the adapter's grammar, never about one reply -- `ChairResponse`
-    carries no self-reported capability. Thin wrapper over
-    `witness_adapters.declared_format_capabilities`, the one place this
-    validation lives, shared with `run.py::_declared_format_capabilities`.
-    """
-    return witness_adapters.declared_format_capabilities(adapter)
-
-
 # The subset of `feeding.dai_generation()` vLLM's endpoint accepts as extra
 # decoding parameters. Everything else is retained evidence but never sent
 # (principle 3: never silently substitute our own reading of a vendor field).
@@ -643,7 +628,7 @@ def _live_attempt_from_capture(
     """
     base = {
         "witness_reported": None,
-        "format_capabilities": _format_capabilities_for(adapter),
+        "format_capabilities": witness_adapters.declared_format_capabilities(adapter),
         "raw_response_ref": dict(capture["raw_response_ref"]),
         "native_capture": capture,
         "call_record_ref": dict(response.call_record_ref),
@@ -689,7 +674,7 @@ def _malformed_response_attempt(response: ChairResponse, *, adapter: Any) -> Liv
     never repaired, never re-requested -- the same "malformed" branch
     `resolve_attempt` takes for a fixture-declared malformed response.
     ``format_capabilities`` still names the adapter's own grammar
-    (`_format_capabilities_for`): what a chair's grammar can carry is a fact
+    (`witness_adapters.declared_format_capabilities`): what a chair's grammar can carry is a fact
     about the chair, not about whether this one body happened to parse.
     """
 
@@ -698,7 +683,7 @@ def _malformed_response_attempt(response: ChairResponse, *, adapter: Any) -> Liv
         outcome="failed",
         native_payload=None,
         witness_reported=None,
-        format_capabilities=_format_capabilities_for(adapter),
+        format_capabilities=witness_adapters.declared_format_capabilities(adapter),
         health=_unrecordable_health(reason),
         reason=reason,
         raw_response_ref=dict(response.raw_response_ref),

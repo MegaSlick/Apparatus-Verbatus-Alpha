@@ -18,7 +18,15 @@ import reader as reader_module
 from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
-from common.perlector_audit import LEGACY_SCHEMA
+from common.perlector_audit import (
+    LEGACY_SCHEMA,
+    REPROOF_PASS_KIND,
+    change_record,
+    neutral_prompt,
+    truncation_classification,
+    validate_audit_request,
+    validate_truncation_record,
+)
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -480,7 +488,7 @@ def test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals(tmp_pa
         for record in finals.values()
         if record["payload"]["audit"]["request_digest"] is not None
     }
-    audit_calls = [call for call in calls if call["pass_kind"] == audit.REPROOF_PASS_KIND]
+    audit_calls = [call for call in calls if call["pass_kind"] == REPROOF_PASS_KIND]
     # Every act that seals a delivered request had exactly one reader call, and
     # no act had one it did not seal. A count that drifted either way would mean
     # the record and the instrument had parted again.
@@ -510,7 +518,7 @@ def test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals(tmp_pa
         ]
         assert all(
             reproof["prompt"]
-            == audit.neutral_prompt(
+            == neutral_prompt(
                 start=reproof["location"]["start"],
                 end=reproof["location"]["end"],
                 text_length=len(draft["payload"]["semi_final_text"]),
@@ -518,7 +526,7 @@ def test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals(tmp_pa
             for reproof in request["reproofs"]
         )
         # The prompt's exact words, pinned as a LITERAL rather than derived
-        # through `audit.neutral_prompt`: every other check in this suite
+        # through `neutral_prompt`: every other check in this suite
         # compares the instrument against its own generator, so an edit that
         # made the generator directional would agree with its own output
         # everywhere. This is the one place the delivered text is held still
@@ -585,7 +593,7 @@ def test_the_reader_refuses_a_reproof_pass_whose_instrument_never_arrived():
 
     with pytest.raises(ContractError, match="no audit request"):
         reader_module.validate_audit_delivery(
-            {"act_key": "a1"}, pass_kind=audit.REPROOF_PASS_KIND, audit_request=None
+            {"act_key": "a1"}, pass_kind=REPROOF_PASS_KIND, audit_request=None
         )
     # The mirror: a span-scoped task delivered to a read of the whole act.
     with pytest.raises(ContractError, match="belongs to the pass that seals it"):
@@ -595,11 +603,11 @@ def test_the_reader_refuses_a_reproof_pass_whose_instrument_never_arrived():
     # And one act's frozen locations beside another act's pixels.
     with pytest.raises(ContractError, match="delivered beside the dossier"):
         reader_module.validate_audit_delivery(
-            {"act_key": "a2"}, pass_kind=audit.REPROOF_PASS_KIND, audit_request=request
+            {"act_key": "a2"}, pass_kind=REPROOF_PASS_KIND, audit_request=request
         )
     assert (
         reader_module.validate_audit_delivery(
-            {"act_key": "a1"}, pass_kind=audit.REPROOF_PASS_KIND, audit_request=request
+            {"act_key": "a1"}, pass_kind=REPROOF_PASS_KIND, audit_request=request
         )
         == request
     )
@@ -622,17 +630,17 @@ def test_a_directional_or_empty_audit_request_is_refused_at_the_delivery_boundar
     directional = copy.deepcopy(request)
     directional["reproofs"][0]["prompt"] = "The reading is wrong; replace it with gamma."
     with pytest.raises(SchemaRefusal, match="neutral location-only"):
-        audit.validate_audit_request(directional)
+        validate_audit_request(directional)
 
     moved = copy.deepcopy(request)
     moved["reproofs"][0]["location"] = {"start": 6, "end": 99}
     with pytest.raises(SchemaRefusal, match="lies outside the delivered text"):
-        audit.validate_audit_request(moved)
+        validate_audit_request(moved)
 
     empty = copy.deepcopy(request)
     empty["reproofs"] = []
     with pytest.raises(SchemaRefusal, match="delivers no re-proof location"):
-        audit.validate_audit_request(empty)
+        validate_audit_request(empty)
 
     # `validate_input_refs` reads two keys and ignores the rest, so without the
     # nested closure an extra field here would reach the reader, enter the
@@ -641,7 +649,7 @@ def test_a_directional_or_empty_audit_request_is_refused_at_the_delivery_boundar
     widened = copy.deepcopy(request)
     widened["draft_ref"]["note"] = "the reading is probably gamma"
     with pytest.raises(SchemaRefusal, match="draft reference is not its closed shape"):
-        audit.validate_audit_request(widened)
+        validate_audit_request(widened)
 
 
 # Since the correction round `validate_perlectio_audit` refuses a request digest
@@ -1157,7 +1165,7 @@ def test_a_degenerate_digit_run_flags_instead_of_ending_the_stage():
 def test_change_record_refuses_a_change_extending_past_the_flag_end():
     flags = [{"class": "testimony-diff", "location": {"start": 1, "end": 2}}]
     with pytest.raises(SchemaRefusal, match="outside every flagged location"):
-        audit.change_record("abcd", "aXYZ", flags)
+        change_record("abcd", "aXYZ", flags)
 
 
 def test_identical_testimony_flags_are_deduped_before_the_reproof_plan():
@@ -1233,7 +1241,7 @@ def test_unhashable_audit_classes_are_named_schema_refusals():
             {
                 "class": [],
                 "location": {"start": 0, "end": 1},
-                "prompt": audit.neutral_prompt(start=0, end=1, text_length=1),
+                "prompt": neutral_prompt(start=0, end=1, text_length=1),
             }
         ],
     }
@@ -1257,11 +1265,11 @@ def test_change_record_names_the_narrowest_flag_that_located_the_change():
         {"class": "date-sequence", "location": {"start": 0, "end": len(text)}},
         {"class": "testimony-diff", "location": {"start": 21, "end": 26}},
     ]
-    changes = audit.change_record(text, "No 1 1688 alpha beta gamna", flags)
+    changes = change_record(text, "No 1 1688 alpha beta gamna", flags)
     assert changes == [{"start": 24, "end": 25, "triggering_flag_class": "testimony-diff"}]
 
     # A change the narrow flag does not cover still belongs to the wide one.
-    whole_act = audit.change_record(text, "No 1 1687 alpha beta gamma", flags)
+    whole_act = change_record(text, "No 1 1687 alpha beta gamma", flags)
     assert whole_act == [{"start": 8, "end": 9, "triggering_flag_class": "date-sequence"}]
 
 
@@ -2522,9 +2530,9 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
         "measure": dict(_COMPLETE_TRUNCATION["measure"]),
     }
     with pytest.raises(SchemaRefusal, match="own signals make it 'unknown'"):
-        audit.validate_truncation_record(silent, label="a test record")
+        validate_truncation_record(silent, label="a test record")
     with pytest.raises(SchemaRefusal, match="declares stop reason 'banana'"):
-        audit.validate_truncation_record(
+        validate_truncation_record(
             {
                 "classification": "complete",
                 "signals": {**_COMPLETE_TRUNCATION["signals"], "stop_reason_declared": "banana"},
@@ -2549,13 +2557,13 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
             "region_pixels": _TEST_PAGE_PIXELS,
         },
     }
-    assert audit.validate_truncation_record(three, label="x")["classification"] == "truncated"
+    assert validate_truncation_record(three, label="x")["classification"] == "truncated"
     one = {
         "classification": "unknown",
         "signals": {**_COMPLETE_TRUNCATION["signals"], "ends_abruptly": True},
         "measure": dict(_COMPLETE_TRUNCATION["measure"]),
     }
-    assert audit.validate_truncation_record(one, label="x")["classification"] == "unknown"
+    assert validate_truncation_record(one, label="x")["classification"] == "unknown"
     # The producer's instrument decides with the same shared rule.
     perlector = _perlector()
     measured = perlector.truncation.classify(
@@ -2565,7 +2573,7 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
         truncation_policy=_TRUNCATION_POLICY,
         stop_reason="stop",
     )
-    assert measured["classification"] == audit.truncation_classification(measured["signals"])
+    assert measured["classification"] == truncation_classification(measured["signals"])
 
 
 def test_a_perlectio_audit_record_must_agree_with_its_own_delivery_facts():
@@ -2575,7 +2583,7 @@ def test_a_perlectio_audit_record_must_agree_with_its_own_delivery_facts():
         {
             "class": "testimony-diff",
             "location": {"start": 0, "end": 1},
-            "prompt": audit.neutral_prompt(start=0, end=1, text_length=1),
+            "prompt": neutral_prompt(start=0, end=1, text_length=1),
         }
     ]
 
@@ -2812,7 +2820,7 @@ def test_the_audited_truncation_takes_an_already_measured_record_without_remeasu
 def test_an_unhashable_or_non_string_vocabulary_value_is_refused_by_name_not_typeerror(bad):
     """A list or object at a frozenset check must be a refusal, not a TypeError."""
     with pytest.raises(SchemaRefusal, match="unknown truncation classification"):
-        audit.validate_truncation_record(
+        validate_truncation_record(
             {**_COMPLETE_TRUNCATION, "classification": bad}, label="a test record"
         )
     with pytest.raises(SchemaRefusal, match="malformed sealed policy reference"):
@@ -2924,8 +2932,6 @@ def test_the_validator_that_refused_the_unmeasured_emptying_still_does():
     )
     assert whitespace["measure"]["characters"] == 3
     assert emptied["measure"]["characters"] == 0
-
-    from common.perlector_audit import validate_truncation_record
 
     with pytest.raises(SchemaRefusal, match="characters but the text"):
         validate_truncation_record(

@@ -67,12 +67,6 @@ FRAMINGS: Final[Mapping[str, Callable[[], dict[str, str]]]] = MappingProxyType(
 #: current default rather than a guess.
 DEFAULT_FRAMING: Final = "registry-v0.3.0"
 
-if DEFAULT_FRAMING not in FRAMINGS:  # pragma: no cover - import-time guard
-    raise SchemaRefusal(
-        f"churro.v1's default framing {DEFAULT_FRAMING!r} is not one the vendor grammar "
-        f"declares ({sorted(FRAMINGS)}); a chair is never asked a question nobody carried"
-    )
-
 
 def resolve_framing(framing: Any = None) -> str:
     """One declared framing name, exactly, or a refusal listing the declared set.

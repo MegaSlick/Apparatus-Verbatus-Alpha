@@ -26,7 +26,6 @@ from operations.triage import producer
 from operations.triage.producer import SubmittedFrame, triage_manifest
 
 BINDING_SCHEMA: Final = "scantailor-triage-binding.v1"
-ORIENTATION_SCHEMA: Final = "scantailor-orientations.v1"
 _DOCUMENT_FIELDS: Final = {
     "schema",
     "project_sha256",
@@ -59,39 +58,6 @@ def load_imported_geometry(path: str | Path) -> tuple[dict[str, Any], str]:
         raise ScantailorBridgeRefusal("imported ScanTailor geometry is not canonical bytes")
     _document(value)
     return value, digest_bytes(raw)
-
-
-def load_orientations(path: str | Path) -> tuple[dict[str, int], str]:
-    """Read the canonical dataset-orientation declaration used by the bridge."""
-    raw = Path(path).read_bytes()
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as error:
-        raise ScantailorBridgeRefusal("ScanTailor orientations are not JSON") from error
-    if canonical_bytes(value) + b"\n" != raw:
-        raise ScantailorBridgeRefusal("ScanTailor orientations are not canonical bytes")
-    if (
-        not isinstance(value, Mapping)
-        or set(value) != {"schema", "orientations"}
-        or value["schema"] != ORIENTATION_SCHEMA
-        or not isinstance(value["orientations"], Mapping)
-        or not value["orientations"]
-        or any(
-            not isinstance(path, str)
-            or not path
-            # `type(degrees) is not int` before the membership test, not after:
-            # `False == 0` and `True == 1` in Python, so a JSON boolean passes
-            # `degrees not in {0, 180}` and travels on as an orientation. It
-            # then picks the zero-degree region order, records `0` for
-            # `degrees * 1000`, and seals `False` into the binding — an invalid
-            # canonical document accepted rather than refused.
-            or type(degrees) is not int
-            or degrees not in {0, 180}
-            for path, degrees in value["orientations"].items()
-        )
-    ):
-        raise ScantailorBridgeRefusal("ScanTailor orientations have the wrong closed schema")
-    return dict(value["orientations"]), digest_bytes(raw)
 
 
 def transcribe_midpoint_splits(

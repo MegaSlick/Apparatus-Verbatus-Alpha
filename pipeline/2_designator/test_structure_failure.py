@@ -422,7 +422,8 @@ def test_a_uniformly_dark_page_is_refused_rather_than_counted_as_zero_ink():
     is at or below it, and the page would count zero ink pixels -- the same
     silent loss the majority-ink guard exists to stop, by a route it doesn't cover.
     """
-    from structure import PRIMARY_MARGIN, infer_background, primary_scan
+    from _test_support import infer_background
+    from structure import PRIMARY_MARGIN, primary_scan
 
     width, height = 12, 12
     rows = [bytearray([0] * width) for _ in range(height)]
@@ -489,7 +490,7 @@ def test_faint_ink_outside_primary_proposals_withholds_complete_exit(tmp_path, m
 @pytest.mark.parametrize("paper", [0, 19])
 def test_a_background_too_dark_to_express_an_ink_threshold_is_refused(paper):
     """Not only pure black: any mode below the margin separates nothing."""
-    from structure import infer_background
+    from _test_support import infer_background
 
     rows = [bytearray([paper] * 8) for _ in range(8)]
     with pytest.raises(ContractError, match=r"darker than the 20-point ink margin"):
@@ -508,7 +509,7 @@ def test_a_page_of_int_lists_is_refused_by_name_inside_the_dark_distribution_tes
     The page has to reach the surround test to reach the guard, so it is a
     framed one: a dark border around a lighter interior, in lists of ints.
     """
-    from structure import infer_background
+    from _test_support import infer_background
 
     width, height = 400, 300
     rows = [[0] * width for _ in range(height)]

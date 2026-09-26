@@ -1058,30 +1058,6 @@ def require_complete_store(store_root: str | Path) -> dict[str, Any]:
     return inventory
 
 
-def require_store_artifact(store_root: str | Path, artifact: str) -> dict[str, Any]:
-    """Return a byte-verified present artifact or refuse its exact absence class.
-
-    Carries ``chairs``, every chair the artifact serves: chandra-ocr-2 fills two.
-    """
-
-    if artifact == SURYA_OCR_2_REFUSAL["artifact"]:
-        raise DigestMismatchRefusal(
-            artifact,
-            f"artifact is {SURYA_OCR_2_REFUSAL['state']}: "
-            f"{SURYA_OCR_2_REFUSAL['reason']}; the only escape hatch is a "
-            f"{SURYA_OCR_2_REFUSAL['escape_hatch']}",
-        )
-    inventory = verify_store(store_root)
-    rows = [row for row in inventory["artifacts"] if row["artifact"] == artifact]
-    if not rows:
-        raise DigestMismatchRefusal(artifact, "artifact is not part of the required roster")
-    if rows[0]["state"] == "pending-fetch":
-        raise DigestMismatchRefusal(artifact, f"artifact is pending-fetch: {rows[0]['reason']}")
-    result = {key: value for key, value in rows[0].items() if key != "chair"}
-    result["chairs"] = sorted(row["chair"] for row in rows)
-    return result
-
-
 def write_derived_inventory(record: Mapping[str, Any], path: str | Path) -> str:
     """Publish a derived record once; readers must call :func:`read_derived_inventory`.
 

@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import BinaryIO
 
-from operations.pod.durable import sync_directory
+from common.durability import sync_directory
 from operations.pod.fake_provider import FakeProvider
 from operations.pod.models import PodCreateRequest, PodRecord
 from operations.pod.transfer import RemoteObject, TransferTarget

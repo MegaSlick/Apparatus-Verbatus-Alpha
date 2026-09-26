@@ -5112,7 +5112,7 @@ def _serve_chandra_native_page(
     if len(intent_records) == len(terminal_records) + 1:
         # Checked before any republish: a resumed service has a new receipt, which
         # would surface as byte drift instead of the real delivery ambiguity.
-        refuse_chandra_orphan_intent(True)
+        refuse_chandra_orphan_intent()
 
     # A terminal's trigger says whether the loop had another request to make.
     if terminal_records:
@@ -5150,7 +5150,7 @@ def _serve_chandra_native_page(
         if reused_intent:
             # No terminal exists, so the request may have reached vLLM before a
             # crash; reissuing could duplicate it. An operator must decide.
-            refuse_chandra_orphan_intent(True)
+            refuse_chandra_orphan_intent()
 
         response = None
         error: ServingError | None = None

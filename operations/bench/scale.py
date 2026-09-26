@@ -18,8 +18,6 @@ from common.runtree.store import RUN_FILE, PublishResult, RunTree
 
 _SEALED_SHARDS: Final = 10
 _SEALED_PAGES_PER_SHARD: Final = 1_000
-SHARDS: Final = _SEALED_SHARDS
-PAGES_PER_SHARD: Final = _SEALED_PAGES_PER_SHARD
 CONFIG_DIGEST = digest_bytes(b"r7b-runtree-scale-v1")
 _CENSUS_FILE: Final = "aggregate-census.json"
 _CENSUS_SCHEMA: Final = "r7b-runtree-scale-census.v1"

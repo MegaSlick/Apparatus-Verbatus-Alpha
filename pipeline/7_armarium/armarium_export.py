@@ -123,8 +123,8 @@ _SEMANTIC_ANNOTATION_NOT_PRODUCED: Final = "not-produced-pending-architecture-ap
 # The package-level claim; it names the semantic layer so it is not read as
 # "no annotations of any kind".
 _SEMANTIC_ANNOTATIONS_CLAIM: Final = "semantic-annotations-not-produced"
-# Two annotation layers with separate names: the semantic layer
-# (`annotation_boundary.py`, not yet built) and the transcription layer (the
+# Two annotation layers with separate names: the semantic layer (person, date,
+# kinship; no code produces it) and the transcription layer (the
 # Archetypus record's sealed uncertain/illegible marks, which are real). Neither
 # takes the bare name "annotations", so one cannot answer for the other.
 _TRANSCRIPTION_ANNOTATIONS_CARRIED: Final = "archetypus-sealed-uncertain-and-illegible-marks"

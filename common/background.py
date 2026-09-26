@@ -453,22 +453,6 @@ def _settle_background_evidence(
     return evidence
 
 
-def infer_background(
-    width: int, height: int, rows: list, *, background_policy: BackgroundPolicy
-) -> int:
-    """`infer_background_evidence`'s background value alone.
-
-    Kept because most callers -- and every test that builds a page to check one
-    threshold -- want the integer and nothing else. The evidence function is the
-    one `run.py` calls, because a page whose background came from the
-    interior-mode branch has a measurement to publish and dropping it would be
-    the silent half of principle 2.
-    """
-    return infer_background_evidence(width, height, rows, background_policy=background_policy)[
-        "background"
-    ]
-
-
 #: Names this policy refuses wherever they appear: `PRIMARY_MARGIN` and
 #: `SECONDARY_MARGIN`, absolute 8-bit offsets an AST pin in
 #: `common/test_designator_recensor_ink_calibration.py` reads as source

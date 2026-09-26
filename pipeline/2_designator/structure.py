@@ -23,9 +23,8 @@ real ink is not a solid fill, so two ink pixels within `gap_tolerance_px` of eac
 other are treated as one component. This is an ordinary morphological "close"
 before labelling.
 
-`label_components` is a fast row-run labeller; `_label_components_reference`
-(the retired per-pixel implementation) is kept as the independent oracle both
-this module's and `conservation.py`'s labelling are checked against.
+`label_components` is a fast row-run labeller, checked against the retired
+per-pixel implementation kept in `_test_support.py` as the oracle.
 """
 
 from common.background import (  # noqa: F401  (re-exported: see the note above)
@@ -42,7 +41,6 @@ from common.background import (  # noqa: F401  (re-exported: see the note above)
     _derived_ink_margin,
     _ink_threshold,
     _settle_background_evidence,
-    infer_background,
     infer_background_evidence,
 )
 from common.components import (  # noqa: F401  (re-exported: see the note above)
@@ -50,7 +48,6 @@ from common.components import (  # noqa: F401  (re-exported: see the note above)
     ink_runs_by_row,
     label_component_runs,
     label_components,
-    label_components_reference,
 )
 from common.contracts.errors import ContractError
 
@@ -84,12 +81,6 @@ def ink_pixels(width: int, height: int, rows: list, *, background: int, margin: 
             if row[x] <= threshold:
                 ink.add((x, y))
     return ink
-
-
-# The labeller lives in common/components.py (common/ cannot import a stage);
-# these aliases keep this stage's own call sites and tests unchanged.
-_label_components_reference = label_components_reference
-_ink_runs_by_row = ink_runs_by_row
 
 
 def scan_ink_components(
