@@ -1,9 +1,5 @@
-"""Construct the serving-backed pod smoke reader without starting anything.
-
-The pod bootstrap already accepts a preflight callable.  This factory is the
-narrow assembly point an owner passes into that callable: construction reads only
-the checked-in serving configuration catalogues, while all effects remain dormant until
-``PreflightRunner`` asks the returned reader to read one configured chair.
+"""Assemble serving from run-sealed configuration without starting anything: the pod
+preflight's smoke reader, and the chair client each serving stage reads through.
 """
 
 from __future__ import annotations
@@ -15,6 +11,7 @@ from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import stage_directory
+from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH
 from operations.pod.preflight import (
     ChairCacheVerifier,
     GpuProfile,
@@ -44,7 +41,6 @@ from .residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease, ResidencyLea
 DEFAULT_SERVING_RECIPES_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "serving_recipes.toml"
 )
-DEFAULT_POD_PLACEMENT_PATH = Path(__file__).resolve().parents[2] / "config" / "pod_placement.toml"
 
 
 class ProfileProbe(Protocol):
@@ -65,7 +61,7 @@ def assemble_serving_smoke_reader(
     log_root: str | Path,
     calibration_for: CalibrationFor | None = None,
     recipes_path: str | Path = DEFAULT_SERVING_RECIPES_PATH,
-    placement_path: str | Path = DEFAULT_POD_PLACEMENT_PATH,
+    placement_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     launcher: ProcessLauncher | None = None,
     http: HttpTransport | None = None,
     package_inspector: PackageInspector | None = None,
@@ -126,7 +122,7 @@ def assemble_serving_preflight_callback(
     residency_lease: ResidencyLease,
     calibration_for: CalibrationFor | None = None,
     recipes_path: str | Path = DEFAULT_SERVING_RECIPES_PATH,
-    placement_path: str | Path = DEFAULT_POD_PLACEMENT_PATH,
+    placement_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     launcher: ProcessLauncher | None = None,
     http: HttpTransport | None = None,
     package_inspector: PackageInspector | None = None,
@@ -191,20 +187,29 @@ def bound_serving_recipes(context: Any, recipes_path: str | Path) -> ServingReci
     proven by digest at the moment of use, so the rows deciding live or fixture are
     the sealed ones."""
 
+    return _bound_serving(context, recipes_path)[0]
+
+
+def _bound_serving(
+    context: Any, recipes_path: str | Path
+) -> tuple[ServingRecipes, ServingConfigInputs]:
     if context.serving_config_inputs is None:
         raise ContractError(
             "this run authority seals no serving configuration inputs, so the serving "
-            "posture of its chairs cannot be proven"
+            "posture of its chairs cannot be proven; open the run with `open_stage_context`"
         )
     try:
-        recipes, _, _ = _load_bound_configuration(
+        recipes, _, inputs = _load_bound_configuration(
             sealed_config_inputs=dict(context.serving_config_inputs),
             recipes_path=recipes_path,
-            placement_path=DEFAULT_POD_PLACEMENT_PATH,
+            placement_path=DEFAULT_POD_PLACEMENT_CONFIG_PATH,
         )
     except ServingError as error:
-        raise ContractError(f"the sealed serving configuration was refused: {error}") from error
-    return recipes
+        raise ContractError(
+            f"the sealed serving configuration was refused for {recipes_path} and "
+            f"{DEFAULT_POD_PLACEMENT_CONFIG_PATH}: {error}; rerun with the files this run sealed"
+        ) from error
+    return recipes, inputs
 
 
 def retain_chair_bytes(context: Any, data: bytes) -> dict[str, str]:
@@ -215,8 +220,8 @@ def retain_chair_bytes(context: Any, data: bytes) -> dict[str, str]:
 
     if context.sealed:
         raise SchemaRefusal(
-            f"the {context.stage} stage has sealed its completion boundary; retaining a chair "
-            "response afterwards would make its witnessed blob inventory false"
+            f"the {context.stage.capitalize()} has sealed its completion boundary; retaining a "
+            "chair response afterwards would make its witnessed blob inventory false"
         )
     digest, result = context.tree.put_blob(context.stage, data)
     return {"relative_path": result.relative_path, "sha256": digest}
@@ -235,10 +240,11 @@ def stage_chair_client(
     it is entered. Logs travel with the run tree; the residency lease belongs to the
     pod's one card, so every stage and run id contends for it on container-local disk."""
 
+    recipes, config_inputs = _bound_serving(context, context.args.serving_recipes_config)
     manager = ServingManager(
         registry=context.registry,
-        recipes=bound_serving_recipes(context, context.args.serving_recipes_config),
-        config_inputs=ServingConfigInputs.from_record(dict(context.serving_config_inputs)),
+        recipes=recipes,
+        config_inputs=config_inputs,
         launcher=SubprocessLauncher(),
         http=UrllibHttpTransport(),
         receipt_publisher=StageContextReceiptPublisher(context),

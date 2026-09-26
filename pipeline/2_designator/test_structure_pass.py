@@ -496,7 +496,10 @@ def test_a_catalogue_that_is_not_the_sealed_one_is_refused(chained_run, tmp_path
     substitute.write_bytes(Path(catalogue).read_bytes() + b"\n# a byte that moved\n")
     context, args = _mode_arguments(catalogue, TIER)
     args.serving_recipes_config = str(substitute)
-    with pytest.raises(ContractError, match="serving configuration was refused"):
+    with pytest.raises(
+        ContractError,
+        match=r"refused for .*substituted\.toml .*rerun with the files this run sealed",
+    ):
         structure_pass.structure_serving_mode(context, args)
 
 

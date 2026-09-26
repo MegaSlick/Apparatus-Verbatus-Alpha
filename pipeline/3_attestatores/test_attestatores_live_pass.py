@@ -1884,7 +1884,7 @@ def test_bound_serving_recipes_refuses_a_catalogue_it_cannot_read(tmp_path):
             "pod_placement_sha256": "1" * 64,
         },
     )
-    with pytest.raises(ContractError, match="serving configuration"):
+    with pytest.raises(ContractError, match=r"refused for .*absent\.toml .*rerun with the files"):
         attestatores.bound_serving_recipes(context, context.args.serving_recipes_config)
 
 
