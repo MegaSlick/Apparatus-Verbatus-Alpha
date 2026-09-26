@@ -424,7 +424,7 @@ def test_every_source_gets_a_named_record_even_when_nothing_admits(tmp_path):
         for entry in tree.build_manifest(DOOR)["artifacts"]
         if entry["kind"] == "refusal-report"
     )
-    assert report_path == next(
+    assert report_path.path == next(
         entry["relative_path"]
         for entry in tree.build_manifest(DOOR)["artifacts"]
         if entry["kind"] == "refusal-report"
