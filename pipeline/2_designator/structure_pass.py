@@ -67,7 +67,6 @@ from __future__ import annotations
 import base64
 import dataclasses
 from collections import Counter
-from pathlib import Path
 from typing import Any, Final, Mapping, TypedDict, TypeVar, cast
 
 import geometry
@@ -98,9 +97,7 @@ from common.request_capacity import (
     sealed_prompt_tokens,
     sendable_max_tokens,
 )
-from common.sealed_config import read_sealed_toml
 from common.stage import (
-    DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     DESIGNATOR_CHAIR,
     STRUCTURE_ANSWER_PARSED,
     STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
@@ -109,17 +106,10 @@ from common.stage import (
     STRUCTURE_DECODING_POLICY,
     validate_serving_provenance,
 )
+from operations.serving.assembly import bound_serving_recipes, stage_chair_client
 from operations.serving.client import ChairClient, ChairRequest, ChairResponse, serving_mode_for
-from operations.serving.config import ServingConfigInputs, ServingRecipes, load_serving_recipes
 from operations.serving.errors import ChairResponseRefusal, ChairTransportFailure, ServingError
-from operations.serving.http import EndpointUnavailable, UrllibHttpTransport
-from operations.serving.manager import (
-    MECHANICS_QUALIFICATION_PURPOSE,
-    ServingManager,
-    StageContextReceiptPublisher,
-)
-from operations.serving.process import SubprocessLauncher
-from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
+from operations.serving.http import EndpointUnavailable
 
 # The per-page record's second parse state; the first is `common.stage`'s
 # `STRUCTURE_ANSWER_PARSED`, named there because the consumer reads it back.
@@ -241,32 +231,6 @@ _MODEL_ONLY_RATIONALE: Final = (
 # --- selection ----------------------------------------------------------------
 
 
-def bound_serving_recipes(context: Any, recipes_path: str | Path) -> ServingRecipes:
-    """The serving catalogue this run sealed, re-read and proven by digest.
-
-    Restated here because a stage may not import another stage's module: the
-    rows this stage decides live-or-fixture from must be the rows the run's
-    config_digest covers, checked at the moment they are used.
-    """
-    if context.serving_config_inputs is None:
-        raise ContractError(
-            "this run authority seals no serving configuration inputs, so the catalogue that "
-            "decides whether the structure chair is live cannot be proven"
-        )
-    try:
-        recipes = load_serving_recipes(recipes_path)
-        _, placement_sha256 = read_sealed_toml(
-            DEFAULT_POD_PLACEMENT_CONFIG_PATH, "pod placement configuration"
-        )
-        ServingConfigInputs.from_record(dict(context.serving_config_inputs)).require_loaded(
-            recipes_sha256=recipes.source_sha256,
-            placement_sha256=placement_sha256,
-        )
-    except (ServingError, ContractError) as error:
-        raise ContractError(f"the sealed serving configuration was refused: {error}") from error
-    return recipes
-
-
 def resolved_structure_chair(context: Any) -> ChairIdentity:
     """The configured structure chair, refused rather than substituted when absent."""
     resolved = context.registry.resolve(DESIGNATOR_CHAIR)
@@ -353,41 +317,15 @@ def live_chair_record(
 
 
 def default_serving_factory(context: Any, identity: ChairIdentity, tier: str) -> ChairClient:
-    """Build the client the live pass reads the structure chair through.
-
-    Nothing here starts anything -- `ChairClient.__enter__` does, later, once.
-    A stage test supplies its own factory (`main(serving_factory=...)`), the
-    same in-process seam the Attestatores and the Perlector expose.
-    """
+    """Build the client the live pass reads the structure chair through; tests inject
+    their own through `main(serving_factory=...)`."""
     policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
-    manager = ServingManager(
-        registry=context.registry,
-        recipes=bound_serving_recipes(context, context.args.serving_recipes_config),
-        config_inputs=ServingConfigInputs.from_record(dict(context.serving_config_inputs)),
-        launcher=SubprocessLauncher(),
-        http=UrllibHttpTransport(),
-        receipt_publisher=StageContextReceiptPublisher(context),
-        # One card, one resident chair, one lease: the shared container-local
-        # lock path lets a still-running structure chair refuse a witness
-        # rather than co-reside, across run trees.
-        log_root=context.tree.resolve(context.tree.serving_log_path(DESIGNATOR)),
-        residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
-        producer="pipeline/2_designator/run.py",
-        _launch_purpose=(
-            MECHANICS_QUALIFICATION_PURPOSE
-            if getattr(context.args, "mechanics_qualification", False)
-            else None
-        ),
-    )
-    return ChairClient(
-        manager=manager,
-        identity=identity,
-        tier=tier,
-        retain=context.retain,
+    return stage_chair_client(
+        context,
+        identity,
+        tier,
         decoding_config_sha256=decoding_sha256,
-        # The already-checked sealed value, never a serving default.
         record_temperature=executable_temperature(policy),
-        read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
     )
 
 

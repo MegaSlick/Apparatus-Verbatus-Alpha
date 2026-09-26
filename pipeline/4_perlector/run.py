@@ -113,23 +113,13 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
 )
+from operations.serving.assembly import (  # noqa: E402
+    bound_serving_recipes,
+    stage_chair_client,
+)
 from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
-from operations.serving.config import (  # noqa: E402
-    ServingConfigInputs,
-    load_serving_recipes,
-)
 from operations.serving.errors import ChairResponseRefusal  # noqa: E402
-from operations.serving.http import EndpointUnavailable, UrllibHttpTransport  # noqa: E402
-from operations.serving.manager import (  # noqa: E402
-    MECHANICS_QUALIFICATION_PURPOSE,
-    ServingManager,
-    StageContextReceiptPublisher,
-)
-from operations.serving.process import SubprocessLauncher  # noqa: E402
-from operations.serving.residency import (  # noqa: E402
-    POD_RESIDENCY_LOCK_PATH,
-    FileResidencyLease,
-)
+from operations.serving.http import EndpointUnavailable  # noqa: E402
 
 DESCRIPTION = "Perlector: reads the ink, with the testimonia as fallible clues."
 
@@ -1608,30 +1598,6 @@ def provenance_for(
     }
 
 
-def bound_serving_recipes(context, recipes_path: str):
-    """The serving catalogue, proved to be the exact bytes this run sealed.
-
-    Only the catalogue is digested: the placement table is read only by pod preflight
-    to choose a tier, which arrives here measured on `--placement-tier`.
-    """
-    inputs = context.serving_config_inputs
-    if inputs is None:
-        raise ContractError(
-            "this run authority seals no serving configuration inputs, so the catalogue that "
-            "decides whether a chair is live cannot be proven; open the run with "
-            "`open_stage_context`"
-        )
-    expected = ServingConfigInputs.from_record(inputs)
-    recipes = load_serving_recipes(recipes_path)
-    if recipes.source_sha256 != expected.serving_recipes_sha256:
-        raise ContractError(
-            f"the serving recipe catalogue at {recipes_path} is not the catalogue this run "
-            "sealed; the row kind that decides live from fixture would be read out of bytes "
-            "no run authority bound"
-        )
-    return recipes
-
-
 def perlector_serving_mode(context, args, chair: ChairIdentity | AbsentChair) -> str:
     """`"fixture"` or `"live"`, from the sealed serving-recipe row kind alone.
 
@@ -1664,52 +1630,6 @@ class ResidentChair:
         client, self.client = self.client, None
         if client is not None:
             client.__exit__()
-
-
-def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temperature: int):
-    """Build the production `serving_factory(context, chair, tier) -> ChairClient`.
-
-    Tests inject a fake through the same signature. It is reached only after the sealed
-    row has said `live`; it never chooses an engine.
-    """
-
-    def factory(context, chair: ChairIdentity, tier: str) -> ChairClient:
-        manager = ServingManager(
-            registry=context.registry,
-            recipes=recipes,
-            config_inputs=ServingConfigInputs.from_record(context.serving_config_inputs),
-            launcher=SubprocessLauncher(),
-            http=UrllibHttpTransport(),
-            receipt_publisher=StageContextReceiptPublisher(context),
-            _launch_purpose=(
-                MECHANICS_QUALIFICATION_PURPOSE
-                if getattr(context.args, "mechanics_qualification", False)
-                else None
-            ),
-            # Engine logs sit in the run tree beside the stage's blobs, not among them:
-            # the sealed inventory walks `<stage>/blobs` only, so a log still being
-            # written cannot falsify it. `fetch-run` brings them home as unverified side
-            # evidence.
-            log_root=context.tree.resolve(context.tree.serving_log_path(context.stage)),
-            # The card belongs to the pod, not the run tree: every serving stage takes
-            # this container-local lease, so chairs contend for it across run ids, and
-            # no network mount is trusted to honour a lock.
-            residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
-            producer="pipeline/4_perlector/run.py",
-        )
-        return ChairClient(
-            manager=manager,
-            identity=chair,
-            tier=tier,
-            retain=context.retain,
-            decoding_config_sha256=decoding_config_sha256,
-            record_temperature=record_temperature,
-            # `ChairClient.__enter__` passes a plain dict, which is what
-            # `read_run_receipt` requires.
-            read_receipt=context.tree.read_run_receipt,
-        )
-
-    return factory
 
 
 def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -1765,8 +1685,8 @@ def _live_reader(
     which `ChairClient.__enter__` has checked names this chair and revision
     (principle 6).
     """
-    factory = serving_factory or default_serving_factory(
-        bound_serving_recipes(context, args.serving_recipes_config),
+    factory = serving_factory or partial(
+        stage_chair_client,
         decoding_config_sha256=decoding_sha256,
         # The sealed reading-of-record temperature; `ChairClient` refuses anything but 0
         # rather than coercing it.

@@ -115,6 +115,7 @@ from common.stage import (  # noqa: E402
     stage_parser,
     verify_final_seal,
 )
+from operations.serving.assembly import retain_chair_bytes  # noqa: E402
 from operations.serving.client import ChairClient  # noqa: E402
 from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
@@ -232,7 +233,7 @@ class StructureWorld:
 
     Deliberately close to `structure_pass.default_serving_factory`: the same
     manager, the same real `StageContextReceiptPublisher`, the same
-    `StageContext.retain` into the Designator's own blob area, the same receipt
+    `retain_chair_bytes` into the Designator's own blob area, the same receipt
     re-read through the tree. The launcher, the transport and the package
     inspector are the fakes; nothing else is.
     """
@@ -269,7 +270,7 @@ class StructureWorld:
             manager=manager,
             identity=identity,
             tier=tier,
-            retain=context.retain,
+            retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
             record_temperature=structure_pass.executable_temperature(policy),
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),

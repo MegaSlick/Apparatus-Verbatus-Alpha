@@ -59,6 +59,8 @@ from common.request_capacity import (  # noqa: E402
     RequestCapacityRefusal,
 )
 from common.runtree.store import RunTree  # noqa: E402
+from operations.serving import assembly  # noqa: E402
+from operations.serving.assembly import retain_chair_bytes  # noqa: E402
 from operations.serving.client import ChairClient, ChairRequest  # noqa: E402
 from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
@@ -501,7 +503,7 @@ class LiveWorld:
             manager=manager,
             identity=identity,
             tier=tier,
-            retain=context.retain,
+            retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=self.live_run.decoding_sha256,
             record_temperature=0,
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
@@ -806,8 +808,8 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
     call = json.loads(context.tree.read_bytes(call_ref["relative_path"]))
     call["receipt_ref"] = record["payload"]["transport_response_ref"]
     moved_call_receipt = copy.deepcopy(record)
-    moved_call_receipt["payload"]["resolved_attempt"]["serving_call_ref"] = context.retain(
-        json.dumps(call, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    moved_call_receipt["payload"]["resolved_attempt"]["serving_call_ref"] = retain_chair_bytes(
+        context, json.dumps(call, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
     with pytest.raises(SchemaRefusal, match="serving call record moved"):
         attestatores._validate_chandra_terminal(
@@ -1869,12 +1871,12 @@ def test_bound_serving_recipes_refuses_a_catalogue_it_cannot_read(tmp_path):
             "pod_placement_sha256": "1" * 64,
         },
     )
-    with pytest.raises(ContractError, match="serving configuration"):
-        attestatores.bound_serving_recipes(context)
+    with pytest.raises(ContractError, match=r"refused for .*absent\.toml .*rerun with the files"):
+        attestatores.bound_serving_recipes(context, context.args.serving_recipes_config)
 
 
 def test_bound_serving_recipes_names_an_unreadable_placement_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(attestatores, "DEFAULT_POD_PLACEMENT_CONFIG_PATH", tmp_path / "absent.toml")
+    monkeypatch.setattr(assembly, "DEFAULT_POD_PLACEMENT_CONFIG_PATH", tmp_path / "absent.toml")
     context = SimpleNamespace(
         args=SimpleNamespace(serving_recipes_config=str(ROOT / "config" / "serving_recipes.toml")),
         serving_config_inputs={
@@ -1884,9 +1886,9 @@ def test_bound_serving_recipes_names_an_unreadable_placement_file(tmp_path, monk
         },
     )
     with pytest.raises(
-        ContractError, match="sealed serving configuration was refused: .*pod placement"
+        ContractError, match=r"refused for .*absent\.toml: cannot read placement table"
     ):
-        attestatores.bound_serving_recipes(context)
+        attestatores.bound_serving_recipes(context, context.args.serving_recipes_config)
 
 
 def test_require_live_page_capture_refuses_a_page_nobody_was_asked_about():
@@ -2209,6 +2211,10 @@ def test_the_default_serving_factory_binds_the_run_that_will_record_the_reading(
     # And it is inert: no service exists until the pass enters the client.
     with pytest.raises(Exception, match="enter it as a context manager"):
         assert client.handle is None
+    # A chair response retained after the seal would falsify the witnessed blob inventory.
+    context.sealed = True
+    with pytest.raises(SchemaRefusal, match="witnessed blob inventory false"):
+        client._retain(b"{}")
 
 
 def test_the_live_preflight_refuses_to_leave_a_sealed_pair_unresolved(live_run, tmp_path):
@@ -2497,7 +2503,7 @@ def test_a_resumed_chandra_record_that_never_parsed_carries_no_observation_paylo
     """
     run_root = fresh_tree(live_run, tmp_path)
     context = open_live_context(live_run, run_root)
-    raw_response_ref = context.retain(CHANDRA_UNRECOGNIZED_BODY.encode("utf-8"))
+    raw_response_ref = retain_chair_bytes(context, CHANDRA_UNRECOGNIZED_BODY.encode("utf-8"))
     record = {
         "outcome": "failed",
         "payload": {
@@ -2548,7 +2554,7 @@ def test_a_resumed_churro_record_that_never_parsed_carries_no_observation_payloa
     """
     run_root = fresh_tree(live_run, tmp_path)
     context = open_live_context(live_run, run_root)
-    raw_response_ref = context.retain(CHURRO_UNRECOGNIZED_BODY.encode("utf-8"))
+    raw_response_ref = retain_chair_bytes(context, CHURRO_UNRECOGNIZED_BODY.encode("utf-8"))
     record = {
         "outcome": "failed",
         "payload": {
@@ -2601,8 +2607,8 @@ def test_a_resumed_parsed_but_unconfirmed_blank_act_carries_no_observation_paylo
     """
     run_root = fresh_tree(live_run, tmp_path)
     context = open_live_context(live_run, run_root)
-    raw_response_ref = context.retain(
-        b"a chandra body that parsed but was cut off before any stop word"
+    raw_response_ref = retain_chair_bytes(
+        context, b"a chandra body that parsed but was cut off before any stop word"
     )
     record = {
         "outcome": "failed",
@@ -2658,7 +2664,7 @@ def test_an_unparsed_resumed_record_still_reads_and_digest_checks_its_retained_b
     """
     run_root = fresh_tree(live_run, tmp_path)
     context = open_live_context(live_run, run_root)
-    raw_response_ref = context.retain(CHURRO_UNRECOGNIZED_BODY.encode("utf-8"))
+    raw_response_ref = retain_chair_bytes(context, CHURRO_UNRECOGNIZED_BODY.encode("utf-8"))
     stored = context.tree.resolve(raw_response_ref["relative_path"])
     stored.chmod(0o600)
     stored.write_bytes(b"different bytes at the address the record names")

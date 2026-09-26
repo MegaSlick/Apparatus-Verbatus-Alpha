@@ -100,6 +100,7 @@ from common.native_witness import reported_geometry_overlaps  # noqa: E402
 from common.perlector_audit import RESPONSE_SCHEMA as AUDIT_RESPONSE_SCHEMA  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import EXIT_COMPLETE, EXIT_HELD, verify_final_seal  # noqa: E402
+from operations.serving.assembly import retain_chair_bytes  # noqa: E402
 from operations.serving.client import ChairClient  # noqa: E402
 from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
@@ -668,7 +669,7 @@ class WitnessWorld:
             manager=manager,
             identity=identity,
             tier=tier,
-            retain=context.retain,
+            retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=self.decoding_sha256,
             record_temperature=0,
             # Bare, not through a converter: `ChairClient.__enter__` normalizes
@@ -716,7 +717,7 @@ class ReaderWorld:
             manager=manager,
             identity=identity,
             tier=tier,
-            retain=context.retain,
+            retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
             record_temperature=policy["reading_of_record"]["temperature"],
             read_receipt=context.tree.read_run_receipt,
