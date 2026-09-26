@@ -13,6 +13,7 @@ stages receive those sealed pixels and have no renderer API to call.
 from __future__ import annotations
 
 import warnings
+from contextlib import suppress
 from io import BytesIO
 from math import ceil
 from pathlib import Path
@@ -112,33 +113,29 @@ def open_document(source: bytes | str | Path | BinaryIO) -> OpenPdf:
             _open_failure_code(error), f"PDFium could not open the document: {error}"
         ) from error
     try:
-        # PDFium only draws interactive fields after this is called, and its API
-        # requires it immediately after construction, before a page handle or
-        # page count is requested.  A form-init warning is not permitted to scroll
-        # past as an unsealed terminal side effect: it is a named decoder gap.
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", pdfium.PdfiumWarning)
-            document.init_forms()
-        pages = len(document)
-    except pdfium.PdfiumWarning as error:
-        _close_native_document(document)
-        raise PdfRefusal(
-            RefusalReason.UNSUPPORTED_VARIANT,
-            f"PDFium could not initialise the PDF form environment: {error}",
-        ) from error
-    except (pdfium.PdfiumError, ValueError, OSError) as error:
-        _close_native_document(document)
-        raise PdfRefusal(
-            RefusalReason.CORRUPT, f"PDFium could not prepare the document: {error}"
-        ) from error
-    if pages <= 0:
-        # Preserve the primary corrupt-document alarm if cleanup also fails.
-        _close_native_document(document)
-        raise PdfRefusal(RefusalReason.CORRUPT, "the PDF contains no pages")
-    try:
+        try:
+            # PDFium only draws interactive fields after this is called, and its API
+            # requires it immediately after construction, before a page handle or
+            # page count is requested.  A form-init warning is not permitted to scroll
+            # past as an unsealed terminal side effect: it is a named decoder gap.
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", pdfium.PdfiumWarning)
+                document.init_forms()
+            pages = len(document)
+        except pdfium.PdfiumWarning as error:
+            raise PdfRefusal(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"PDFium could not initialise the PDF form environment: {error}",
+            ) from error
+        except (pdfium.PdfiumError, ValueError, OSError) as error:
+            raise PdfRefusal(
+                RefusalReason.CORRUPT, f"PDFium could not prepare the document: {error}"
+            ) from error
+        if pages <= 0:
+            raise PdfRefusal(RefusalReason.CORRUPT, "the PDF contains no pages")
         _refuse_implausible_page_count(pages, _source_size(source))
-    except PdfRefusal:
-        _close_native_document(document)
+    except BaseException:
+        close_document(OpenPdf(document, 0))
         raise
     return OpenPdf(document, pages)
 
@@ -171,14 +168,8 @@ def _source_size(source: bytes | str | Path | BinaryIO) -> int:
 def _refuse_implausible_page_count(pages: int, container_size: int) -> None:
     """Hold a declared page count this reader cannot tell from a shared page tree.
 
-    `UNSUPPORTED_VARIANT`, not `CORRUPT`, and the distinction is the whole point.
-    A blind audit built a *valid* PDF 1.5 — 10,000 distinct page objects, true
-    `/Count`, no shared kids, packed into a Flate object stream — at 9.4 bytes per
-    page, and PDFium opens and renders it. So this ratio does not establish damage,
-    and `CORRUPT` would tell the operator their original is broken when it is not: the one
-    thing a refusal must never do. What it does establish is that this
-    reader cannot yet distinguish that file from the page-tree bomb it is here to
-    stop, which is a gap in this pipeline and is recorded as one.
+    `UNSUPPORTED_VARIANT`, not `CORRUPT`: a valid PDF packed into object streams can
+    fall under this ratio, so it shows a gap in this reader, not damage to the original.
     """
     if container_size < pages * MIN_BYTES_PER_DECLARED_PAGE:
         raise PdfRefusal(
@@ -270,10 +261,8 @@ def count_pages(source: bytes | str | Path | BinaryIO) -> int:
     asked to (`autoclose=False` is its default, confirmed in the installed source).
     """
     opened = open_document(source)
-    try:
-        return opened.page_count
-    finally:
-        close_document(opened)
+    close_document(opened)
+    return opened.page_count
 
 
 def render_page(opened: OpenPdf, page_index: int, settings: PdfRenderSettings) -> RenderedPage:
@@ -356,22 +345,9 @@ def render_page(opened: OpenPdf, page_index: int, settings: PdfRenderSettings) -
 
 
 def close_document(opened: OpenPdf) -> None:
-    """Close an owned native handle, making a normal-path failure visible."""
-    try:
+    """Release a native handle; a failed release never touches a page already read."""
+    with suppress(Exception):
         opened.document.close()
-    except Exception as error:
-        raise PdfRefusal(
-            RefusalReason.UNREADABLE,
-            f"PDFium could not release the document after reading: {error}",
-        ) from error
-
-
-def _close_native_document(document: Any) -> None:
-    """Best-effort cleanup while preserving an open failure already in flight."""
-    try:
-        document.close()
-    except Exception:
-        pass
 
 
 def _render_dimensions(

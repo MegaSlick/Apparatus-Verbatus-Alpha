@@ -43,6 +43,7 @@ from common.contracts.canonical import (
     canonical_bytes,
     canonical_text,
     digest_bytes,
+    is_plain_int,
     is_sha256,
     self_hash,
 )
@@ -868,12 +869,8 @@ def _is_nonempty_str(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
 
-def _is_integer(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 def _is_count(value: object) -> bool:
-    return _is_integer(value) and value >= 0
+    return is_plain_int(value) and value >= 0
 
 
 def _require_non_negative_integer(value: object, *, subject: str) -> int:
@@ -914,7 +911,7 @@ def _validate_not_measured_detail(
         pages = detail["pages_not_reconciled"]
         if (
             not isinstance(pages, list)
-            or any(not _is_integer(page) or page <= 0 for page in pages)
+            or any(not is_plain_int(page) or page <= 0 for page in pages)
             or len(pages) != len(set(pages))
         ):
             raise SchemaRefusal(
@@ -1279,7 +1276,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
                 "Armarium v3 source graph."
             )
         ordinal, outcome, remeasured = row["ordinal"], row["initial_outcome"], row["remeasured"]
-        if not _is_integer(ordinal) or ordinal <= 0:
+        if not is_plain_int(ordinal) or ordinal <= 0:
             raise SchemaRefusal(
                 f"{subject} has an ink-map row without a positive integer page ordinal. The "
                 "verifier cannot bind its measurement to a sealed page. Rebuild the export "
@@ -1306,7 +1303,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
                     "Rebuild the export from the retained Ink Map and Designator evidence."
                 )
             if any(
-                not _is_integer(remeasured[field])
+                not is_plain_int(remeasured[field])
                 or remeasured[field] < (1 if field in _INK_MAP_REMEASURE_GATES else 0)
                 for field in sorted(_INK_MAP_REMEASURE_FIELDS)
             ):
@@ -1515,7 +1512,7 @@ def _validate_logical_act_conservation(
         # The basis is not validated until `_aggregate_from_basis`, so check types
         # before `set()`: a string would dedupe into its characters.
         if not isinstance(attributed, list) or any(
-            not _is_integer(ordinal) for ordinal in attributed
+            not is_plain_int(ordinal) for ordinal in attributed
         ):
             raise SchemaRefusal(
                 f"logical act {act['act_id']} has a page attribution that is not a list of "
@@ -1530,7 +1527,7 @@ def _validate_logical_act_conservation(
                 "drop out of the run's page coverage check"
             )
     declared = projection.local_proposal_rows
-    if not _is_integer(declared):
+    if not is_plain_int(declared):
         raise SchemaRefusal(
             "an Armarium projection carries a logical act but does not say how many "
             "proposal-seal rows its act denominator stands for"
@@ -1659,7 +1656,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     if not _is_nonempty_str(projection.scenario):
         raise SchemaRefusal("an Armarium projection has no scenario")
     _require_sha256(projection.config_digest, "an Armarium projection sealed configuration digest")
-    if not _is_integer(projection.expected_acts):
+    if not is_plain_int(projection.expected_acts):
         raise SchemaRefusal("an Armarium projection expected-act count is not an integer")
     if len(projection.acts) != projection.expected_acts:
         raise SchemaRefusal(
@@ -2051,7 +2048,7 @@ def _validate_cited_region(region: object, *, subject: str) -> None:
     if "ledger_sha256" in region:
         _require_sha256(region["ledger_sha256"], f"a {subject} source region ledger digest")
     ordinal = region.get("source_page_ordinal")
-    if not _is_integer(ordinal):
+    if not is_plain_int(ordinal):
         raise SchemaRefusal(f"a {subject} source region has no source-page ordinal")
     if not isinstance(region.get("source_page_id"), str) or not region["source_page_id"]:
         raise SchemaRefusal(f"a {subject} source region has no source-page identity")
@@ -2076,7 +2073,7 @@ def _pages_by_ordinal(
         if not isinstance(page, dict):
             raise SchemaRefusal("an export page census row is not an object")
         ordinal = page.get("ordinal")
-        if not _is_integer(ordinal) or ordinal in indexed:
+        if not is_plain_int(ordinal) or ordinal in indexed:
             raise SchemaRefusal("an export page census has no unique integer ordinal")
         indexed[ordinal] = page
     return indexed
@@ -3229,7 +3226,7 @@ def _terminal_ledger(
         if not isinstance(ordinals, (list, tuple)):
             raise SchemaRefusal("an Armarium terminal ledger act has no page ordinal list")
         for ordinal in ordinals:
-            if not _is_integer(ordinal):
+            if not is_plain_int(ordinal):
                 raise SchemaRefusal("an Armarium terminal ledger act names a non-integer page")
             acts_on_page.setdefault(ordinal, []).append(category)
 
@@ -3725,7 +3722,7 @@ def _verify_logical_partition_claim(
         )
         if (
             not isinstance(attributed, list)
-            or not all(_is_integer(ordinal) for ordinal in attributed)
+            or not all(is_plain_int(ordinal) for ordinal in attributed)
             or not set(ordinals) <= set(attributed)
         ):
             raise SchemaRefusal(
@@ -3888,7 +3885,7 @@ def _verify_ink_map_claim(claims: dict[str, Any], sources: dict[str, Any]) -> tu
         or ink_map_claim["denominator"] != INK_MAP_DENOMINATOR
         or ink_map_claim["held_pages"] != list(derived_edge_holds)
         or not isinstance(declared_unmeasurable_pages, list)
-        or any(not _is_integer(ordinal) or ordinal <= 0 for ordinal in declared_unmeasurable_pages)
+        or any(not is_plain_int(ordinal) or ordinal <= 0 for ordinal in declared_unmeasurable_pages)
         or declared_unmeasurable_pages != sorted(set(declared_unmeasurable_pages))
         or canonical_text(declared_unmeasurable_pages)
         != canonical_text(list(derived_unmeasurable_pages))
@@ -4289,7 +4286,7 @@ def _verify_salvage_claim(
     if salvage.get("promotion") != _SALVAGE_PROMOTION_CLAIM:
         raise SchemaRefusal("the salvage-tier promotion claim is not this build's fixed claim")
     if status == "accounted":
-        if not _is_integer(count) or count != len(records):
+        if not is_plain_int(count) or count != len(records):
             raise SchemaRefusal("the salvage-tier count does not reconcile to its records")
     elif status == "not-produced-no-sealed-salvage-inventory":
         if (
@@ -4669,7 +4666,7 @@ def _verify_manifest_source_counts(
         if not isinstance(page, dict):
             raise SchemaRefusal("a package source row is not an object")
         ordinal, path = page.get("ordinal"), page.get("declared_path")
-        if not _is_integer(ordinal) or ordinal in ordinals or not isinstance(path, str):
+        if not is_plain_int(ordinal) or ordinal in ordinals or not isinstance(path, str):
             raise SchemaRefusal(
                 "the package source census has duplicate or invalid page identities"
             )

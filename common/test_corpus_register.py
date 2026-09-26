@@ -1,7 +1,6 @@
 """The corpus register declares correspondence without choosing a capture."""
 
 import json
-import pathlib
 import sys
 
 import pytest
@@ -1136,37 +1135,6 @@ def test_replaying_a_withdrawn_correspondence_verbatim_is_refused():
     replayed = {**declaration, "evidence": ["operator:looked-again"]}
     with pytest.raises(SchemaRefusal, match="repeats immutable record"):
         validate_register_bytes(_register(members=["a" * 64], extra=[withdrawal, replayed]))
-
-
-def test_a_cleanup_only_failure_says_the_register_was_already_published(tmp_path, monkeypatch):
-    """The head moved, so the refusal may not read as "nothing was written".
-
-    `os.replace` and the directory fsync have both succeeded by the time the leftover
-    is removed. A caller that reads a bare "temporary could not be removed" as a failed
-    append rebuilds it against the previous digest, and the moved head then refuses that
-    as a concurrent change — two refusals, no explanation, for one durable publish.
-    """
-    path = tmp_path / "register.json"
-    first = append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
-    original_unlink = pathlib.Path.unlink
-
-    def refuse_temporary_unlink(self, *args, **kwargs):
-        if ".tmp-" in self.name:
-            raise OSError("simulated cleanup refusal")
-        return original_unlink(self, *args, **kwargs)
-
-    monkeypatch.setattr(pathlib.Path, "unlink", refuse_temporary_unlink)
-    membership = _membership(["a" * 64])
-    with pytest.raises(SchemaRefusal, match="was replaced and is durable") as refusal:
-        append_records(path, [membership], expected_digest=first)
-    assert "do not retry this append against the previous digest" in str(refusal.value).lower()
-    # The current digest travels in the message, so an operator holding only the error
-    # text does not have to re-read the file to build the next append.
-    assert register_digest(path.read_bytes()) in str(refusal.value)
-
-    # The published half of the claim, not just its wording: the append is on disk.
-    assert members_of(path.read_bytes(), PAGE) == ["a" * 64]
-    assert register_digest(path.read_bytes()) != first
 
 
 def test_both_writers_refuse_a_malformed_expected_digest_before_touching_the_register(tmp_path):

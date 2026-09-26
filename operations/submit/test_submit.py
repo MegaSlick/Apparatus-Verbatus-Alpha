@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from common import durability
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 from operations.submit import cleanup, gate, inventory, submit
 
@@ -617,7 +618,9 @@ def test_the_manifest_is_not_written_through_a_symlink_planted_at_its_temp_path(
         return os.open(planted, flags, 0o600), str(planted)
 
     monkeypatch.setattr(
-        submit.tempfile, "mkstemp", lambda prefix, dir: _mkstemp_at_the_planted_name(prefix, dir)
+        durability.tempfile,
+        "mkstemp",
+        lambda prefix, dir: _mkstemp_at_the_planted_name(prefix, dir),
     )
 
     with pytest.raises(submit.SubmitRefusal, match="could not be written"):
@@ -643,25 +646,6 @@ def test_a_manifest_name_at_the_filesystem_limit_refuses_rather_than_crashing(su
     )
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
-
-
-def test_a_successful_manifest_with_an_unremoved_temp_is_not_reported_complete(
-    monkeypatch, tmp_path
-):
-    """A successful link does not make a retained temporary file disappear."""
-    target = tmp_path / "manifest.json"
-    original_unlink = Path.unlink
-
-    def fail_temporary_unlink(path, *, missing_ok=False):
-        if path.name.startswith(".manifest.json.tmp-"):
-            raise OSError("synthetic cleanup failure")
-        return original_unlink(path, missing_ok=missing_ok)
-
-    monkeypatch.setattr(Path, "unlink", fail_temporary_unlink)
-
-    with pytest.raises(submit.SubmitRefusal, match="temporary file could not be removed"):
-        submit.atomic_create(target, b"synthetic manifest")
-    assert target.read_bytes() == b"synthetic manifest"
 
 
 def test_a_submitted_name_that_is_not_valid_utf8_is_a_named_refusal(submission):

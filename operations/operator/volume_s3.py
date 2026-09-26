@@ -268,12 +268,7 @@ class S3VolumeTarget:
             finally:
                 closer = getattr(body, "close", None)
                 if callable(closer):
-                    # A close that fails after the stream verified does not
-                    # unmake the bytes already read and digested. Left to the
-                    # outer handler it became a `VolumeTransferRefusal`, so a
-                    # verified transfer was recorded as partial on a cleanup
-                    # error. `S3VolumeReadChannel.read` already
-                    # suppresses this for the same reason.
+                    # A failed close cannot unmake bytes already read and verified.
                     try:
                         closer()
                     except Exception:

@@ -47,7 +47,12 @@ import structure_pass  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
-from common.contracts.canonical import digest_bytes, digest_of, self_hash  # noqa: E402
+from common.contracts.canonical import (  # noqa: E402
+    digest_bytes,
+    digest_of,
+    is_plain_int,
+    self_hash,
+)
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import act_id as derive_minted_act_id  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
@@ -141,11 +146,6 @@ HOLD_REASON_CODES = frozenset(
         PAGE_RESIDUAL_AGGREGATE_REASON_CODE,
     }
 )
-
-
-def _is_int(value: object) -> bool:
-    """An int that is not a bool, since bool subclasses int."""
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _refuse_text_fields(value, path: str = "$", *, kind: str = "act-group") -> None:
@@ -434,17 +434,17 @@ def _validate_structure_answer_payload(payload: object, *, terminal: bool = True
         )
         maximum = policy["max_attempts"]
         if (
-            not _is_int(maximum)
+            not is_plain_int(maximum)
             or not 1 <= maximum <= ABSOLUTE_STRUCTURE_ATTEMPT_CEILING
             or policy["seed_schedule"] not in {"fixed-base", "base-plus-attempt-ordinal-minus-one"}
         ):
             raise ContractError("a Designator structure answer has an invalid attempt policy")
         ordinal = record["attempt_ordinal"]
-        if not _is_int(ordinal) or not 1 <= ordinal <= maximum:
+        if not is_plain_int(ordinal) or not 1 <= ordinal <= maximum:
             raise ContractError(
                 "a Designator structure attempt ordinal is outside the sealed range"
             )
-        if not _is_int(record["attempt_seed"]) or record["attempt_seed"] < 0:
+        if not is_plain_int(record["attempt_seed"]) or record["attempt_seed"] < 0:
             raise ContractError("a Designator structure attempt has no non-negative derived seed")
         attempts = record["attempts"]
         expected_count = ordinal if terminal else ordinal - 1
@@ -736,7 +736,7 @@ def page_records(context) -> dict[int, dict]:
             continue
         record = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
         ordinal = record["payload"].get("ordinal")
-        if not _is_int(ordinal):
+        if not is_plain_int(ordinal):
             raise ContractError("an Exemplar page carries no integer ordinal")
         if ordinal in records:
             raise ContractError(f"the Exemplar carries more than one outcome for ordinal {ordinal}")
@@ -761,7 +761,7 @@ def _source_rows(run: dict) -> dict[int, dict]:
             raise ContractError("run.json carries a source-manifest row that is not an object")
         ordinal = row.get("ordinal")
         path = row.get("relative_path")
-        if not _is_int(ordinal):
+        if not is_plain_int(ordinal):
             raise ContractError("run.json carries a source-manifest row without an integer ordinal")
         if ordinal in sources:
             raise ContractError(f"run.json repeats source ordinal {ordinal}")
@@ -978,7 +978,7 @@ def structure_failures(context, pages: dict[int, dict]) -> dict[int, str]:
         if row["scenario"] != context.scenario:
             continue
         ordinal, reason_code = row["page_ordinal"], row["reason_code"]
-        if not _is_int(ordinal):
+        if not is_plain_int(ordinal):
             raise ContractError("a declared structure failure names no integer page ordinal")
         if not isinstance(reason_code, str) or not reason_code:
             raise ContractError("a declared structure failure names no reason code")
@@ -2932,9 +2932,9 @@ def _ink_outside_cut_union(evidence: dict, bounds: dict, covered: list[dict]) ->
     if (
         evidence.get("schema") != "ink-runs.v2"
         or set(evidence) != {"schema", "width", "height", "rows"}
-        or not _is_int(width)
+        or not is_plain_int(width)
         or width <= 0
-        or not _is_int(height)
+        or not is_plain_int(height)
         or height <= 0
         or not isinstance(rows, list)
         or len(rows) != height
@@ -2951,7 +2951,7 @@ def _ink_outside_cut_union(evidence: dict, bounds: dict, covered: list[dict]) ->
             if (
                 not isinstance(run, list)
                 or len(run) != 2
-                or any(not _is_int(value) for value in run)
+                or any(not is_plain_int(value) for value in run)
             ):
                 raise ContractError("the recovery request's Ink Map evidence has a malformed run")
             start, length = run
@@ -3035,7 +3035,7 @@ def _verify_coverage_recovery_evidence(
     if (
         testimonium.get("artifact_id") != observation.get("testimonium_id")
         or testimonium.get("payload", {}).get("page_ordinal") != page_ordinal
-        or not _is_int(ordinal)
+        or not is_plain_int(ordinal)
         or len(source_rows) != 1
         or source_rows[0].get("bounds_source") not in {"native", "derived"}
     ):
@@ -3046,7 +3046,7 @@ def _verify_coverage_recovery_evidence(
     if (
         not isinstance(source, dict)
         or set(source) != {"x", "y", "w", "h"}
-        or any(not _is_int(source[name]) for name in ("x", "y", "w", "h"))
+        or any(not is_plain_int(source[name]) for name in ("x", "y", "w", "h"))
         or source["w"] <= 0
         or source["h"] <= 0
     ):
@@ -3143,7 +3143,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
     if not isinstance(request_payload, dict):  # pragma: no cover - common guard above
         raise ContractError("the requested Recensor recovery record has no payload")
     ordinal = request_payload.get("attempt_ordinal")
-    if not _is_int(ordinal):  # pragma: no cover
+    if not is_plain_int(ordinal):  # pragma: no cover
         raise ContractError("the requested Recensor recovery record has no attempt ordinal")
     if request_payload.get("act_key") != match[0]["act_key"]:
         raise ContractError(

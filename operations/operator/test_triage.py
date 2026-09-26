@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from common import durability
 from common.contracts.canonical import canonical_bytes, digest_of
 from operations.operator import triage
 from operations.operator.errors import ERRORS, ErrorCode
@@ -685,8 +686,8 @@ def test_uncreatable_write_and_lock_resources_are_named_refusals(
     def refuse_temporary(*_args, **_kwargs):
         raise OSError("fixture temporary-file refusal")
 
-    monkeypatch.setattr(triage.tempfile, "mkstemp", refuse_temporary)
-    with pytest.raises(triage.TriageRefusal, match="temporary file could not be created"):
+    monkeypatch.setattr(durability.tempfile, "mkstemp", refuse_temporary)
+    with pytest.raises(triage.TriageRefusal, match="was not published"):
         triage._atomic_bytes(tmp_path / "record.json", b"{}")
 
 
@@ -1007,9 +1008,9 @@ def test_a_recorded_decision_makes_its_directory_entry_durable(
     """
     batch = _Batch(tmp_path)
     synced: list[tuple[Path, bool]] = []
-    original = triage.sync_directory
+    original = durability.sync_directory
     monkeypatch.setattr(
-        triage,
+        durability,
         "sync_directory",
         lambda path, *, strict=False: (
             synced.append((Path(path), strict)),

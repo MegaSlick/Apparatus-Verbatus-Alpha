@@ -7,7 +7,7 @@ import fcntl
 import os
 import stat
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -117,17 +117,10 @@ def _records_in(directory: str | Path | _CorpusDirectory) -> list[dict[str, obje
                     "it. Correct or remove the file and retry"
                 )
             records.append(record)
-    except BaseException:
+    finally:
         if owns_descriptor:
-            try:
+            with suppress(OSError):
                 os.close(corpus.descriptor)
-            except OSError:
-                # Preserve the refusal that stopped collection validation.
-                pass
-        raise
-    else:
-        if owns_descriptor:
-            os.close(corpus.descriptor)
     return records
 
 
@@ -154,10 +147,8 @@ def _locked_corpus(directory: str | Path) -> Iterator[_CorpusDirectory]:
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
     except OSError as error:
-        try:
+        with suppress(OSError):
             os.close(descriptor)
-        except OSError:
-            pass
         raise SchemaRefusal(
             f"the gold-record directory {root} could not acquire its publication lock. "
             "Another writer therefore cannot be excluded, so publishing could create "
@@ -182,16 +173,9 @@ def _locked_corpus(directory: str | Path) -> Iterator[_CorpusDirectory]:
                 "was being acquired; no redirected path was used"
             )
         yield _CorpusDirectory(root, descriptor)
-    except BaseException:
-        try:
+    finally:
+        with suppress(OSError):
             os.close(descriptor)
-        except OSError:
-            # Closing releases `flock`; if cleanup itself fails, preserve the
-            # security refusal that already stopped publication.
-            pass
-        raise
-    else:
-        os.close(descriptor)
 
 
 def _reconcile_and_publish(

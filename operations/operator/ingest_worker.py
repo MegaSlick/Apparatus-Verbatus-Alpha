@@ -31,6 +31,7 @@ from typing import Any, Mapping
 from common import corpus_register
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import ContractError
+from common.durability import is_temporary_name
 from operations.submit import gate, inventory, submit
 from operations.triage import instrument, producer
 
@@ -526,7 +527,15 @@ def _assert_output_identity(prepared: PreparedIngest) -> None:
 def _assert_pre_ready_entries(prepared: PreparedIngest) -> None:
     expected = set(_paths(prepared))
     expected.remove("ingest-ready.json")
-    entries = list(prepared.output_dir.iterdir())
+    entries = [
+        entry
+        for entry in prepared.output_dir.iterdir()
+        if not (
+            is_temporary_name(entry.name)
+            and entry.name[1:].partition(".tmp-")[0] in expected
+            and stat.S_ISREG(entry.lstat().st_mode)
+        )
+    ]
     if {entry.name for entry in entries} != expected or any(
         entry.is_symlink() or not entry.is_file() for entry in entries
     ):

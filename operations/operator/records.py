@@ -12,14 +12,13 @@ import hashlib
 import json
 import os
 import stat
-import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final, Iterator
 
 from common.contracts.canonical import canonical_bytes as _pipeline_canonical_bytes
-from common.durability import sync_directory
+from common.durability import PublishedUnsettled, atomic_create, atomic_replace
 
 UTC = timezone.utc
 SCHEMA = "operator-receipt.v1"
@@ -286,7 +285,7 @@ class ReceiptStore:
 def _entries(directory: int, prefix: str) -> list[str]:
     """The receipt filenames of an open directory, sorted, dot names excluded.
 
-    A dot name here is one of `_sealed_temporary`'s partial files.
+    A dot name here is a publication temporary.
     """
 
     try:
@@ -486,75 +485,34 @@ def _valid_history(value: object, actions: object) -> bool:
     )
 
 
-def _sealed_temporary(target: Path, payload: bytes) -> Path:
-    """Write the payload beside its target, owner-only and already on the disk."""
-
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-    with os.fdopen(descriptor, "wb") as handle:
-        os.fchmod(handle.fileno(), 0o600)
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
-    return Path(temporary_name)
-
-
 def _atomic_create_or_reuse(target: Path, payload: bytes) -> None:
     """Create a receipt once; identical bytes are a true no-op, never an overwrite."""
 
     try:
-        temporary = _sealed_temporary(target, payload)
-    except OSError as error:
-        raise RecordError("operator receipt could not be written") from error
-    try:
+        atomic_create(target, payload)
+    except FileExistsError:
         try:
-            os.link(temporary, target)
-            try:
-                sync_directory(target.parent, strict=True)
-            except OSError as error:
-                raise RecordError(
-                    "the operator receipt was written but its directory entry could not be "
-                    "made durable"
-                ) from error
-        except FileExistsError:
-            try:
-                existing = bounded_bytes(target, "existing operator receipt")
-            except OSError as error:
-                raise RecordError("existing operator receipt cannot be read") from error
-            if existing != payload:
-                raise RecordError(
-                    "an operator receipt path already holds different evidence"
-                ) from None
-            try:
-                sync_directory(target.parent, strict=True)
-            except OSError as error:
-                raise RecordError(
-                    "the operator receipt exists but its directory entry could not be made durable"
-                ) from error
+            existing = bounded_bytes(target, "existing operator receipt")
+        except OSError as error:
+            raise RecordError("existing operator receipt cannot be read") from error
+        if existing != payload:
+            raise RecordError("an operator receipt path already holds different evidence") from None
+    except PublishedUnsettled as error:
+        raise RecordError(
+            "the operator receipt is on disk but its directory entry could not be made durable"
+        ) from error
     except OSError as error:
         raise RecordError("operator receipt could not be written") from error
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _atomic_replace(target: Path, payload: bytes) -> None:
     """Replace the non-evidentiary descriptor atomically after all facts are stored."""
 
     try:
-        temporary = _sealed_temporary(target, payload)
-    except OSError as error:
-        raise RecordError("operator descriptor could not be written") from error
-    try:
-        os.replace(temporary, target)
-    except OSError as error:
-        temporary.unlink(missing_ok=True)
-        raise RecordError("operator descriptor could not be written") from error
-    try:
-        sync_directory(target.parent, strict=True)
-    except OSError as error:
-        # The replace already succeeded, so "not written" here would
-        # contradict what status then shows.
+        atomic_replace(target, payload)
+    except PublishedUnsettled as error:
         raise RecordError(
             "the operator descriptor was written but its directory entry could not be made durable"
         ) from error
-    finally:
-        temporary.unlink(missing_ok=True)
+    except OSError as error:
+        raise RecordError("operator descriptor could not be written") from error

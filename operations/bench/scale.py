@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import json
-import re
-import shutil
-import stat
 import time
 from pathlib import Path
 from typing import Any, Final
 
-from common.contracts.canonical import SCHEMA_LABEL, canonical_bytes, digest_bytes
+from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import artifact_id, page_id
 from common.contracts.stages import DESIGNATOR
@@ -23,26 +19,6 @@ _CENSUS_FILE: Final = "aggregate-census.json"
 _CENSUS_SCHEMA: Final = "r7b-runtree-scale-census.v1"
 _RESULT_FILE: Final = "scale-result.json"
 _RESULT_SCHEMA: Final = "r7b-runtree-scale-result.v1"
-_RESULT_FIELDS: Final = {
-    "schema",
-    "state",
-    "shards",
-    "pages_per_shard",
-    "artifact_count",
-    "create_seconds",
-    "resume_seconds",
-    "manifest_export_seconds",
-    "wall_seconds",
-    "disk_bytes",
-    "inodes",
-}
-_SECONDS_FIELDS: Final = (
-    "create_seconds",
-    "resume_seconds",
-    "manifest_export_seconds",
-    "wall_seconds",
-)
-_DECIMAL_SECONDS_PATTERN: Final = re.compile(r"[0-9]+\.[0-9]{9}")
 
 
 def _decimal_seconds(nanoseconds: int) -> str:
@@ -202,136 +178,3 @@ def run_scale(
         result["disk_bytes"] = complete_disk_bytes
     (root / _RESULT_FILE).write_bytes(result_bytes)
     return result
-
-
-def _validate_scale_census(census: Any) -> list[str]:
-    expected_fields = {
-        "schema",
-        "state",
-        "shards",
-        "pages_per_shard",
-        "runs",
-        "artifact_count",
-    }
-    if not isinstance(census, dict) or set(census) != expected_fields:
-        raise ValueError("scale cleanup marker is not a valid R7b scale census: wrong fields")
-    shards = census["shards"]
-    pages_per_shard = census["pages_per_shard"]
-    if (
-        not isinstance(shards, int)
-        or isinstance(shards, bool)
-        or not 0 < shards <= _SEALED_SHARDS
-        or not isinstance(pages_per_shard, int)
-        or isinstance(pages_per_shard, bool)
-        or not 0 < pages_per_shard <= _SEALED_PAGES_PER_SHARD
-    ):
-        raise ValueError("scale cleanup marker is not a valid R7b scale census: invalid dimensions")
-    expected_state = (
-        "measured"
-        if shards == _SEALED_SHARDS and pages_per_shard == _SEALED_PAGES_PER_SHARD
-        else "smoke-undersized"
-    )
-    if census["schema"] != _CENSUS_SCHEMA or census["state"] != expected_state:
-        raise ValueError(
-            "scale cleanup marker is not a valid R7b scale census: schema or state mismatch"
-        )
-    artifact_count = census["artifact_count"]
-    if (
-        not isinstance(artifact_count, int)
-        or isinstance(artifact_count, bool)
-        or artifact_count != shards * pages_per_shard
-    ):
-        raise ValueError(
-            "scale cleanup marker is not a valid R7b scale census: cardinality mismatch"
-        )
-    runs = census["runs"]
-    if not isinstance(runs, list) or len(runs) != shards:
-        raise ValueError("scale cleanup marker is not a valid R7b scale census: run count mismatch")
-    expected_run_ids = [f"bench-scale-{shard:02d}" for shard in range(1, shards + 1)]
-    manifest_fields = {"schema", "run_id", "stage", "artifacts", "blobs"}
-    for manifest, expected_run_id in zip(runs, expected_run_ids, strict=True):
-        if (
-            not isinstance(manifest, dict)
-            or set(manifest) != manifest_fields
-            or manifest["schema"] != SCHEMA_LABEL
-            or manifest["run_id"] != expected_run_id
-            or manifest["stage"] != DESIGNATOR
-            or not isinstance(manifest["artifacts"], list)
-            or len(manifest["artifacts"]) != pages_per_shard
-            or manifest["blobs"] != []
-        ):
-            raise ValueError(
-                "scale cleanup marker is not a valid R7b scale census: run manifest mismatch"
-            )
-    return expected_run_ids
-
-
-def _is_regular_nonsymlink_file(path: Path) -> bool:
-    try:
-        return stat.S_ISREG(path.lstat().st_mode)
-    except OSError:
-        return False
-
-
-def _validate_scale_result(result: Any, census: dict[str, Any], root: Path) -> None:
-    if not isinstance(result, dict) or set(result) != _RESULT_FIELDS:
-        raise ValueError(f"scale cleanup {_RESULT_FILE} has the wrong fields")
-    if result["schema"] != _RESULT_SCHEMA:
-        raise ValueError(f"scale cleanup {_RESULT_FILE} has a schema mismatch")
-    for field in ("state", "shards", "pages_per_shard", "artifact_count"):
-        if type(result[field]) is not type(census[field]) or result[field] != census[field]:
-            raise ValueError(f"scale cleanup {_RESULT_FILE} has a {field} mismatch with the census")
-    for field in _SECONDS_FIELDS:
-        value = result[field]
-        if not isinstance(value, str) or _DECIMAL_SECONDS_PATTERN.fullmatch(value) is None:
-            raise ValueError(f"scale cleanup {_RESULT_FILE} has an invalid {field}")
-    for field in ("disk_bytes", "inodes"):
-        value = result[field]
-        if type(value) is not int or value < 0:
-            raise ValueError(f"scale cleanup {_RESULT_FILE} has an invalid {field}")
-    tree_disk_bytes, tree_inodes = _tree_storage(root)
-    for field, observed in (("disk_bytes", tree_disk_bytes), ("inodes", tree_inodes)):
-        if result[field] != observed:
-            raise ValueError(f"scale cleanup {_RESULT_FILE} has {field} mismatch with the tree")
-
-
-def cleanup_scale(root: Path) -> None:
-    """Remove a validated scale scratch directory after its result is recorded."""
-    marker = root / _CENSUS_FILE
-    if not _is_regular_nonsymlink_file(marker):
-        raise FileNotFoundError(
-            f"scale cleanup requires the {_CENSUS_FILE} marker as a regular non-symlink file: "
-            f"{marker}"
-        )
-    try:
-        census = json.loads(marker.read_bytes())
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError(
-            "scale cleanup marker is not a valid R7b scale census: unreadable JSON"
-        ) from error
-    run_ids = _validate_scale_census(census)
-    result_path = root / _RESULT_FILE
-    if not _is_regular_nonsymlink_file(result_path):
-        raise FileNotFoundError(
-            f"scale cleanup requires {_RESULT_FILE} as a regular non-symlink file: {result_path}"
-        )
-    try:
-        result_bytes = result_path.read_bytes()
-        result = json.loads(result_bytes)
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"scale cleanup {_RESULT_FILE} is unreadable JSON") from error
-    try:
-        canonical_result_bytes = canonical_bytes(result)
-    except (TypeError, ValueError, RecursionError) as error:
-        raise ValueError(f"scale cleanup {_RESULT_FILE} is not canonical JSON") from error
-    if result_bytes != canonical_result_bytes:
-        raise ValueError(f"scale cleanup {_RESULT_FILE} is not canonical bytes")
-    for run_id in run_ids:
-        authority = root / run_id / RUN_FILE
-        if not _is_regular_nonsymlink_file(authority):
-            raise FileNotFoundError(
-                "scale cleanup census names a run without its RunTree authority; "
-                f"expected a regular non-symlink file: {authority}"
-            )
-    _validate_scale_result(result, census, root)
-    shutil.rmtree(root)

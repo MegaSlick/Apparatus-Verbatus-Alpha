@@ -29,13 +29,13 @@ import json
 import os
 import stat
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Final, Literal, NoReturn
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from common import durability  # noqa: E402
 from common.contracts.canonical import (  # noqa: E402
     canonical_bytes,
     digest_bytes,
@@ -241,77 +241,39 @@ def _content_addressed_report_path(path: Path, report_hash: str) -> Path:
 def atomic_create(target: Path, data: bytes) -> bool:
     """Create the manifest, or reuse an identical one. Never overwrite a different.
 
-    Principle 4: evidence is never overwritten. `os.link` is the same
-    atomic-create-or-fail pattern `common/runtree/store.py` uses one layer
-    down. Identical bytes are a true no-op, so a byte-identical resubmission
+    Principle 4: evidence is never overwritten. Identical bytes are a true no-op, so a byte-identical resubmission
     stays idempotent. Returns True when created, False when an identical file
     was reused; public because `operations/operator/ingest_worker.py` depends
     on exactly this three-way created/reused/`ExistingRecordRefusal` contract.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    completed = False
     try:
-        # `mkstemp`, not a pid-derived name: a pid can be reused, leaving a
-        # stale, guessable temp name on disk that then wedges every later
-        # write. `mkstemp` picks an unpredictable name per attempt with
-        # O_CREAT|O_EXCL, mode 0600 -- same as `common/runtree/store.py` --
-        # so a symlink planted at a guessed name is refused, not followed,
-        # unlike `open()` which would write through it.
-        descriptor, raw_temporary = tempfile.mkstemp(
-            prefix=f".{target.name}.tmp-", dir=target.parent
-        )
-        temporary = Path(raw_temporary)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(temporary, target)
-        except FileExistsError:
-            state = _existing_record_state(target, data)
-            if state == "matches":
-                completed = True
-                return False
-            if state == "unknown":
-                raise ExistingRecordRefusal(
-                    "something already exists at that path and could not be read as a regular "
-                    "file, so it cannot be shown to seal these bytes. Evidence is never "
-                    "overwritten (principle 4): it was not touched. This is not a report that "
-                    "the submission changed — a symlink, a directory, or an unreadable entry "
-                    "there is a different problem, and it needs looking at rather than a new "
-                    "manifest path"
-                ) from None
+        durability.atomic_create(target, data, strict=False)
+    except FileExistsError:
+        state = _existing_record_state(target, data)
+        if state == "matches":
+            return False
+        if state == "unknown":
             raise ExistingRecordRefusal(
-                "a sealed submission record already exists at that path and seals different "
-                "content. Evidence is never overwritten (principle 4): the existing "
-                "record was not touched, and a changed submission needs its own path"
+                "something already exists at that path and could not be read as a regular "
+                "file, so it cannot be shown to seal these bytes. Evidence is never "
+                "overwritten (principle 4): it was not touched. This is not a report that "
+                "the submission changed — a symlink, a directory, or an unreadable entry "
+                "there is a different problem, and it needs looking at rather than a new "
+                "manifest path"
             ) from None
-        completed = True
-        return True
+        raise ExistingRecordRefusal(
+            "a sealed submission record already exists at that path and seals different "
+            "content. Evidence is never overwritten (principle 4): the existing "
+            "record was not touched, and a changed submission needs its own path"
+        ) from None
     except OSError as error:
-        # Without this handler an OSError from the block above escaped `main()`
-        # as a traceback, printing the manifest path to stderr -- forbidden by
-        # the data-handling policy's logging rule.
+        # Unhandled, it escaped `main()` as a traceback printing the manifest path,
+        # which the data-handling policy's logging rule forbids.
         raise SubmitRefusal(
             "the submission manifest could not be written; nothing was sealed"
         ) from error
-    finally:
-        # A completed create/reuse must not be reported successful while its
-        # temporary file remains on disk; `temporary` is None only when
-        # `mkstemp` itself failed, leaving nothing to remove.
-        try:
-            # `missing_ok=True` unlinks directly rather than checking existence
-            # first: a pre-check would be a second `stat` that can itself fail
-            # on an over-long temp path.
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-        except OSError as error:
-            if completed:
-                raise SubmitRefusal(
-                    "the submission manifest was sealed or reused, but its temporary file could "
-                    "not be removed; it must not be reported complete"
-                ) from error
+    return True
 
 
 def _existing_record_state(path: Path, expected: bytes) -> Literal["matches", "differs", "unknown"]:

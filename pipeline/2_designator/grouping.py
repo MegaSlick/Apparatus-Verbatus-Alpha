@@ -33,6 +33,7 @@ from typing import Any, TypedDict
 
 from geometry import BP_DENOMINATOR, Bounds
 
+from common.contracts.canonical import is_plain_int
 from common.contracts.errors import ContractError
 
 
@@ -49,14 +50,10 @@ class ActGroup(TypedDict):
 # value.
 
 
-def _plain_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 def _check_margin(margin_px: int, page_w: int) -> None:
     """The one margin predicate both `assign_columns` and `group_page` hold,
     so the two call sites cannot drift apart."""
-    if not _plain_int(margin_px) or not (0 < margin_px < page_w):
+    if not is_plain_int(margin_px) or not (0 < margin_px < page_w):
         raise ContractError(f"margin {margin_px}px is not between 0 and page width {page_w}")
 
 
@@ -89,7 +86,7 @@ def _check_page_spanning_area_bp(page_spanning_area_bp: int) -> None:
     """The one bound both `group_page` and `partition_page_spanning` hold, so
     the two callers refuse an identical set of values.
     """
-    if not _plain_int(page_spanning_area_bp) or not (0 < page_spanning_area_bp <= BP_DENOMINATOR):
+    if not is_plain_int(page_spanning_area_bp) or not (0 < page_spanning_area_bp <= BP_DENOMINATOR):
         raise ContractError(
             f"page-spanning area {page_spanning_area_bp} is not an integer in "
             f"1..{BP_DENOMINATOR} basis points"
@@ -255,7 +252,7 @@ def group_page(
         ("anchor reach", anchor_reach_px),
         ("brace minimum height", brace_min_height_px),
     ):
-        if not _plain_int(value) or value < 0:
+        if not is_plain_int(value) or value < 0:
             raise ContractError(f"{name} {value}px is not a non-negative integer")
     _check_margin(margin_px, page_w)
     _check_page_spanning_area_bp(page_spanning_area_bp)
@@ -360,7 +357,7 @@ def find_continuation_candidate(
         ("page A edge reach", edge_reach_a_px),
         ("page B edge reach", edge_reach_b_px),
     ):
-        if not _plain_int(value) or value < 0:
+        if not is_plain_int(value) or value < 0:
             raise ContractError(f"{name} {value}px is not a non-negative integer")
     if not page_a_groups or not page_b_groups:
         return []
@@ -416,9 +413,9 @@ def fallback_tiles(
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no area to tile")
-    if not _plain_int(bands) or bands <= 0:
+    if not is_plain_int(bands) or bands <= 0:
         raise ContractError(f"a fallback grid of {bands} bands cuts nothing")
-    if not _plain_int(overlap_px) or overlap_px < 0:
+    if not is_plain_int(overlap_px) or overlap_px < 0:
         raise ContractError(f"fallback overlap {overlap_px} is not a non-negative integer")
     if bands > page_h:
         # Not silently clamped: a zero-height band is not a crop, and the

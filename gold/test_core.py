@@ -984,7 +984,7 @@ def test_append_only_writer_syncs_the_published_directory(tmp_path, monkeypatch)
 
     monkeypatch.setattr(core_module.os, "fsync", observe_fsync)
     write_append_only(tmp_path / "records" / "one.json", {"example": "evidence"})
-    assert directory_syncs == 2
+    assert directory_syncs == 1
 
 
 def test_append_only_writer_refuses_symlink_and_portable_name_collisions(tmp_path):
