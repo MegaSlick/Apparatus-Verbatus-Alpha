@@ -139,6 +139,11 @@ def test_asserted_reasons_reads_every_spelling_of_parametrize_names(names):
     assert asserted_reasons(source) == {"empty-rows"}
 
 
+def test_asserted_reasons_ignores_a_non_string_match():
+    source = "pytest.raises(ValueError, match=None)\n"
+    assert asserted_reasons(source) == set()
+
+
 def test_a_refusal_carries_its_reason_and_refuses_an_undeclared_one():
     error = Refusal("empty-rows: detail")
     assert (error.reason, str(error)) == ("empty-rows", "empty-rows: detail")

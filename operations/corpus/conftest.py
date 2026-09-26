@@ -37,8 +37,9 @@ def asserted_reasons(source: str) -> set[str]:
             for keyword in node.keywords:
                 value = keyword.value
                 if keyword.arg == "match" and isinstance(value, ast.Constant):
-                    if value.value.startswith("^") and value.value.endswith(":"):
-                        found.add(value.value[1:-1])
+                    text = value.value
+                    if isinstance(text, str) and text.startswith("^") and text.endswith(":"):
+                        found.add(text[1:-1])
         if func.attr == "parametrize" and len(node.args) > 1:
             names, cases = node.args[0], node.args[1]
             if _parameter_names(names)[-1:] == ["reason"] and isinstance(

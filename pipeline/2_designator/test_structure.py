@@ -239,6 +239,14 @@ def test_two_components_sharing_a_top_left_origin_still_sort_deterministically()
         assert label_components(reordered, gap_tolerance_px=0) == components
 
 
+def test_the_reference_labeller_refuses_what_the_production_one_refuses():
+    assert label_components_reference(set(), gap_tolerance_px=0) == []
+    with pytest.raises(ContractError, match="negative"):
+        label_components_reference({(0, 0)}, gap_tolerance_px=-1)
+    with pytest.raises(ContractError, match="negative"):
+        label_components({(0, 0)}, gap_tolerance_px=-1)
+
+
 # --- primary vs secondary sensitivity ----------------------------------------
 
 

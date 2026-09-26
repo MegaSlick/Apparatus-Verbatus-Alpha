@@ -411,7 +411,17 @@ def test_a_local_path_escaping_the_model_root_refuses_without_touching_the_netwo
 def test_every_refusal_this_package_raises_is_a_member_of_the_closed_taxonomy():
     """A new failure mode has to be spelled as one of these, so a reader of the
     seven doors above can be sure the list is the whole list."""
+    import common.chairs.errors as errors_module
     from common.chairs.errors import ALL_REFUSAL_TYPES
+
+    declared = {
+        value
+        for value in vars(errors_module).values()
+        if isinstance(value, type)
+        and issubclass(value, errors_module.ChairRefusal)
+        and value is not errors_module.ChairRefusal
+    }
+    assert declared == set(ALL_REFUSAL_TYPES)
 
     for refusal in ALL_REFUSAL_TYPES:
         error = refusal("attestator_1", "a concrete difference")
