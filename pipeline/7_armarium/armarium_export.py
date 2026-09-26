@@ -1416,7 +1416,7 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
     if joins and not (
         isinstance(act_pages, dict)
         and all(
-            isinstance(pages, list) and all(_is_integer(page) for page in pages)
+            isinstance(pages, list) and all(is_plain_int(page) for page in pages)
             for pages in act_pages.values()
         )
     ):
@@ -1449,7 +1449,7 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
                 and set(side) <= set(outcomes)
                 for side in sides
             )
-            or not all(_is_integer(page) for page in pages)
+            or not all(is_plain_int(page) for page in pages)
             or pages[1] != pages[0] + 1
             or any(
                 page not in act_pages.get(act_keys[act_id], [])
