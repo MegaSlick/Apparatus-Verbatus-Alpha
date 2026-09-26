@@ -11,7 +11,6 @@ import json
 import os
 import stat
 import sys
-import tempfile
 import tomllib
 import unicodedata
 import warnings
@@ -35,6 +34,7 @@ from common.corpus_register import (
     refuse_capture_preference,
     validate_register_bytes,
 )
+from common.durability import PublishedUnsettled, atomic_create, atomic_replace
 from common.imaging import ENCODER_LOSSLESS_MODES
 from operations.triage.instrument import (
     EVIDENCE_MANIFEST_SCHEMA,
@@ -1077,43 +1077,15 @@ def commit_confirmed_production(
 
 def _atomic_write_canonical(path: Path, value: Mapping[str, Any]) -> None:
     """Publish one complete Door document, never a partially written JSON file."""
-    data = canonical_bytes(value)
-    temporary: Path | None = None
-    published = False
-    failure: ProducerRefusal | None = None
-    cause: OSError | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
-        temporary = Path(temporary_name)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        published = True
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except OSError as error:
-        state = "was published but is not proven durable" if published else "was not published"
-        failure = ProducerRefusal(f"confirmed triage document {path} {state}")
-        cause = error
-    cleanup_error = _temporary_cleanup_error(temporary)
-    if failure is not None:
-        if cleanup_error is not None:
-            failure.add_note(
-                f"confirmed triage document temporary {temporary} also could not be removed: "
-                f"{cleanup_error}"
-            )
-        raise failure from cause
-    if cleanup_error is not None:
+        atomic_replace(path, canonical_bytes(value))
+    except PublishedUnsettled as error:
         raise ProducerRefusal(
-            f"confirmed triage document {path} was published and is durable; only the "
-            f"temporary {temporary} could not be removed. Remove it; do not rewrite the document"
-        ) from cleanup_error
+            f"confirmed triage document {path} was published but is not proven durable"
+        ) from error
+    except OSError as error:
+        raise ProducerRefusal(f"confirmed triage document {path} was not published") from error
 
 
 def _case_insensitive_path_key(path: Path) -> str:
@@ -1177,75 +1149,34 @@ def _canonical_distinct_destinations(**paths: Path) -> dict[str, Path]:
 def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
     """Create one immutable evidence name, accepting only a byte-identical retry."""
     data = canonical_bytes(value)
-    temporary: Path | None = None
-    published = False
-    failure: ProducerRefusal | None = None
-    cause: OSError | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
-        temporary = Path(temporary_name)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
+        atomic_create(path, data)
+    except FileExistsError:
         try:
-            os.link(temporary, path)
-        except FileExistsError:
-            try:
-                existing = _read_existing_immutable(path, len(data))
-            except OSError as error:
-                # The reason is carried, and the one recoverable cause is named. An
-                # earlier attempt that died between its `os.link` and its cleanup
-                # leaves this record with a second name — its own `.tmp-` sibling —
-                # and the unaliased check then refuses the byte-identical retry this
-                # function documents. "Choose a new path" is the wrong instruction
-                # for that case: the bytes on disk are already correct, and removing
-                # the leftover sibling restores the retry. Nothing is removed here,
-                # because a second link this code did not make is exactly the live
-                # mutation channel into immutable evidence the check exists to catch.
-                raise ProducerRefusal(
-                    f"confirmation authority path {path} already exists but cannot be verified "
-                    f"({error}); nothing was overwritten. If an earlier publish was interrupted, "
-                    f"a .{path.name}.tmp-* sibling in {path.parent} is a second name for this "
-                    "record: remove it and retry. Otherwise choose a new readable authority path."
-                ) from error
-            if existing != data:
-                raise ProducerRefusal(
-                    f"confirmation authority path {path} already contains different immutable "
-                    "evidence; nothing was overwritten. Choose a new authority path."
-                ) from None
-        published = True
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except ProducerRefusal as error:
-        failure = error
-    except OSError as error:
-        state = "was published but is not proven durable" if published else "was not published"
-        failure = ProducerRefusal(f"confirmation authority record {path} {state}")
-        cause = error
-    cleanup_error = _temporary_cleanup_error(temporary)
-    if failure is not None:
-        if cleanup_error is not None:
-            failure.add_note(
-                f"confirmation authority record temporary {temporary} also could not be "
-                f"removed: {cleanup_error}"
-            )
-        if cause is not None:
-            raise failure from cause
-        raise failure
-    if cleanup_error is not None:
-        # The temporary here is a second *link* to the published record rather than a
-        # spare copy, so leaving it named is not tidiness: the unaliased check refuses
-        # every later byte-identical retry while it survives.
+            existing = _read_existing_immutable(path, len(data))
+        except OSError as error:
+            # An earlier attempt that died between its link and its cleanup leaves a
+            # `.tmp-` sibling as a second name, which the unaliased check refuses. Nothing
+            # is removed here: an alias this code did not make is what that check catches.
+            raise ProducerRefusal(
+                f"confirmation authority path {path} already exists but cannot be verified "
+                f"({error}); nothing was overwritten. If an earlier publish was interrupted, "
+                f"a .{path.name}.tmp-* sibling in {path.parent} is a second name for this "
+                "record: remove it and retry. Otherwise choose a new readable authority path."
+            ) from error
+        if existing != data:
+            raise ProducerRefusal(
+                f"confirmation authority path {path} already contains different immutable "
+                "evidence; nothing was overwritten. Choose a new authority path."
+            ) from None
+    except PublishedUnsettled as error:
         raise ProducerRefusal(
-            f"confirmation authority record {path} was published and is durable; only the "
-            f"temporary {temporary} could not be removed, and it is a second name for that "
-            "record: remove it, or no retry of this publish can be verified"
-        ) from cleanup_error
+            f"confirmation authority record {path} exists but its directory entry is not "
+            "proven durable"
+        ) from error
+    except OSError as error:
+        raise ProducerRefusal(f"confirmation authority record {path} was not published") from error
 
 
 def _read_existing_immutable(path: Path, expected_size: int) -> bytes:
@@ -1285,14 +1216,3 @@ def _read_direct_regular_bytes(path: Path, maximum: int) -> bytes:
     if len(data) > maximum:
         raise OSError(f"input exceeds the {maximum}-byte limit")
     return data
-
-
-def _temporary_cleanup_error(path: Path | None) -> OSError | None:
-    """Return cleanup failure so the named operation refusal remains primary."""
-    if path is None:
-        return None
-    try:
-        path.unlink(missing_ok=True)
-    except OSError as error:
-        return error
-    return None

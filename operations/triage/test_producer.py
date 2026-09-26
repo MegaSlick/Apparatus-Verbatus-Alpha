@@ -942,26 +942,6 @@ def test_a_refused_confirmed_commit_wrote_nothing_it_disowned(
     )
 
 
-def test_temporary_cleanup_failure_does_not_mask_a_producer_refusal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    original_unlink = Path.unlink
-
-    def fail_replace(_source, _target):
-        raise OSError("simulated publish refusal")
-
-    def fail_temporary_unlink(path, *args, **kwargs):
-        if ".tmp-" in path.name:
-            raise OSError("simulated cleanup refusal")
-        return original_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(producer_module.os, "replace", fail_replace)
-    monkeypatch.setattr(Path, "unlink", fail_temporary_unlink)
-    with pytest.raises(ProducerRefusal, match="was not published") as refusal:
-        producer_module._atomic_write_canonical(tmp_path / "manifest.json", {"schema": "test"})
-    assert any("also could not be removed" in note for note in refusal.value.__notes__)
-
-
 def test_subset_confirmation_cannot_regress_a_grown_membership_or_door_cluster(tmp_path: Path):
     frames = [frame("63"), frame("64"), frame("65")]
     confirmed, recipe, manifest, evidence = confirmation(frames)

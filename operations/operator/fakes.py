@@ -16,7 +16,6 @@ import tempfile
 from pathlib import Path
 from typing import BinaryIO
 
-from common.durability import sync_directory
 from operations.pod.fake_provider import FakeProvider
 from operations.pod.models import PodCreateRequest, PodRecord
 from operations.pod.transfer import RemoteObject, TransferTarget
@@ -138,7 +137,6 @@ class LocalFixtureObjectStore(TransferTarget):
                 # then replace would let two racing writers each see it absent
                 # and each replace the other, with the refusal below never firing.
                 os.link(temporary, target)
-                sync_directory(target.parent, strict=True)
             except FileExistsError:
                 try:
                     existing = os.open(
@@ -158,12 +156,6 @@ class LocalFixtureObjectStore(TransferTarget):
                         raise RuntimeError(
                             "fixture object already exists with different bytes"
                         ) from None
-                try:
-                    sync_directory(target.parent, strict=True)
-                except OSError as error:
-                    raise RuntimeError(
-                        "fixture object exists but its directory entry could not be made durable"
-                    ) from error
             self.puts.append(key)
         finally:
             temporary.unlink(missing_ok=True)
@@ -188,7 +180,6 @@ class LocalFixtureObjectStore(TransferTarget):
                 os.link(temporary, target)
             except FileExistsError:
                 return
-            sync_directory(target.parent, strict=True)
             self.puts.append(key)
         finally:
             temporary.unlink(missing_ok=True)

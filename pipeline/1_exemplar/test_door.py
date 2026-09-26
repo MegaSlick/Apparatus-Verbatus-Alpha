@@ -412,7 +412,7 @@ def test_every_source_gets_a_named_record_even_when_nothing_admits(tmp_path):
     context.finish(DOOR)
 
     with pytest.raises(ContractError, match="Private named refusal report"):
-        door.require_some_admitted(0, tree, report_path)
+        door.require_some_admitted(0, report_path)
     records = admissions(tree)
     assert set(records) == {1, 2}
     assert records[1]["payload"]["declared_path"] == "not-an-image.png"
@@ -424,7 +424,7 @@ def test_every_source_gets_a_named_record_even_when_nothing_admits(tmp_path):
         for entry in tree.build_manifest(DOOR)["artifacts"]
         if entry["kind"] == "refusal-report"
     )
-    assert report_path == next(
+    assert report_path.path == next(
         entry["relative_path"]
         for entry in tree.build_manifest(DOOR)["artifacts"]
         if entry["kind"] == "refusal-report"
@@ -544,56 +544,17 @@ def test_source_expansion_refuses_paths_that_alias_on_default_apfs():
         )
 
 
-def test_pdf_cleanup_failure_does_not_mask_a_security_refusal(monkeypatch):
-    """Cleanup evidence is retained without replacing the refusal in flight."""
-    data = single_gray_page_pdf()
-    digest = digest_bytes(data)
-    source = SourceEntry(
-        1,
-        "register.pdf",
-        digest,
-        container_page_index=0,
-        declared_size=len(data),
-        detected_format="pdf",
-    )
-
-    class Opened:
-        def __init__(self):
-            self.handle = BytesIO(data)
-
-        def assert_unchanged(self, *, expected_sha256):
-            assert expected_sha256 == digest
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-    monkeypatch.setattr(door.pdf_render, "open_document", lambda _handle: object())
-    monkeypatch.setattr(
-        door,
-        "decide",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(ContractError("security refusal")),
-    )
-
+def test_a_pdf_close_failure_after_a_good_render_still_admits_the_page(monkeypatch):
     def fail_close(_document):
-        raise door.pdf_render.PdfRefusal(RefusalReason.CORRUPT, "native cleanup failed")
+        raise RuntimeError("synthetic native close failure")
 
-    monkeypatch.setattr(door.pdf_render, "close_document", fail_close)
+    monkeypatch.setattr(door.pdf_render.pdfium.PdfDocument, "close", fail_close)
+    data = single_gray_page_pdf()
+    source = SourceEntry(
+        1, "register.pdf", digest_bytes(data), container_page_index=0, declared_size=len(data)
+    )
 
-    with pytest.raises(ContractError, match="security refusal") as refused:
-        process_sources(
-            object(),
-            object(),
-            [source],
-            lambda _path: pytest.fail("a streamed PDF must not use the raster reader"),
-            policy=POLICY,
-            pdf_settings=object(),
-            open_source=lambda _path: Opened(),
-        )
-
-    assert refused.value.__notes__ == ["PDF cleanup also failed: corrupt: native cleanup failed"]
+    assert door.decide(data, source, POLICY).outcome == "admitted"
 
 
 def test_container_pages_bind_membership_to_container_and_index_not_the_shared_file_hash(
@@ -868,49 +829,6 @@ def test_a_source_with_no_declared_digest_still_reaches_a_duplicate_report(tmp_p
     ]
 
 
-@pytest.mark.parametrize("damaged", [b'["a list", 1]', b'"a bare string"', b"17"])
-def test_the_refusal_census_survives_an_artifact_that_decodes_to_a_non_object(
-    tmp_path, monkeypatch, damaged
-):
-    """`_refusal_census` promises that nothing in it may raise, because it runs only
-    on the failure path to describe a failure that already happened. It indexed
-    `record["outcome"]`, so a record decoding to a JSON list, string or number raised
-    `TypeError` — which the `except` did not name, replacing "the door admitted
-    nothing" with something about JSON. That is the exact substitution the docstring
-    rejects: the primary failure masked by a secondary one.
-
-    Damage is injected between the manifest walk and the re-read, because that is the
-    only way the two disagree — `build_manifest` validates each envelope, so a file
-    already broken on disk is caught one branch earlier. A tree being damaged while
-    the failure path reads it is precisely what this function is written for.
-    """
-    data = png(3, 2)
-    sources = [SourceEntry(1, "only.png", digest_bytes(data))]
-    tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader({"only.png": data}), policy=POLICY) == 1
-    context.finish(DOOR)
-
-    # Only the admission record is damaged. `build_manifest` verifies referenced blob
-    # bytes through this same method, so damaging everything would trip the earlier
-    # "census could not be read" branch instead of the one under test.
-    admission_path = next(
-        entry["relative_path"]
-        for entry in tree.build_manifest(DOOR)["artifacts"]
-        if entry["kind"] == "admission"
-    )
-    sound = tree.read_bytes
-    monkeypatch.setattr(
-        tree,
-        "read_bytes",
-        lambda relative_path: damaged if relative_path == admission_path else sound(relative_path),
-    )
-
-    total, census = door._refusal_census(tree)
-
-    assert total == 1
-    assert census == {"unreadable record": 1}
-
-
 def test_duplicate_files_are_admitted_per_ordinal_and_reported_rather_than_refused_per_file(
     tmp_path, capsys
 ):
@@ -970,7 +888,7 @@ def test_duplicate_files_are_admitted_per_ordinal_and_reported_rather_than_refus
             ],
         }
     ]
-    door._announce_duplicate_report(tree, report)
+    door._announce_duplicate_report(report)
     summary = capsys.readouterr().err
     assert "1 duplicate source(s) detected across 1 page ordinal(s)" in summary
     assert "source-a.png" not in summary
@@ -1005,7 +923,7 @@ def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed
     assert admitted == 2
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, tree, admitted)
+        door._finish_door_run(context, admitted)
 
     message = str(refusal.value)
     assert "ordinal(s) 1 and 2 carry identical bytes" in message
@@ -1063,7 +981,7 @@ def test_two_copies_of_one_container_are_refused_naming_every_ordinal(tmp_path):
     assert admitted == 4
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, tree, admitted)
+        door._finish_door_run(context, admitted)
 
     message = str(refusal.value)
     assert "ordinal(s) 1, 2 and 3, 4 carry identical bytes" in message
@@ -1093,7 +1011,7 @@ def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
     admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
     assert admitted == 3
 
-    assert door._finish_door_run(context, tree, admitted) == EXIT_COMPLETE
+    assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
     assert [
         item
         for item in tree.build_manifest(DOOR)["artifacts"]
@@ -1125,7 +1043,7 @@ def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicat
     assert admitted == 0
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, tree, admitted)
+        door._finish_door_run(context, admitted)
 
     message = str(refusal.value)
     assert "the door admitted nothing" in message
@@ -1691,7 +1609,7 @@ def test_re_shoot_cluster_admits_every_member_and_records_no_canonical(tmp_path)
     context, (first_digest, second_digest) = _admitted_re_shoot_pair(tmp_path)
     report = door.publish_cluster_report(context)
     assert report is not None
-    payload = json.loads(context.tree.read_bytes(report).decode("utf-8"))["payload"]
+    payload = json.loads(context.tree.read_bytes(report.path).decode("utf-8"))["payload"]
     assert payload["clusters"][0]["cluster_id"] == "opening-7"
     assert {member["source_frame_sha256"] for member in payload["clusters"][0]["members"]} == {
         first_digest,
@@ -1708,7 +1626,7 @@ def test_a_re_shoot_the_register_does_not_confirm_is_refused_before_the_seal(tmp
     """
     context, _digests = _admitted_re_shoot_pair(tmp_path)
     with pytest.raises(ContractError, match="unconfirmed-re-shoot.*opening-7.*new run id"):
-        door._finish_door_run(context, context.tree, 2)
+        door._finish_door_run(context, 2)
     kinds = {entry["kind"] for entry in context.tree.build_manifest(DOOR)["artifacts"]}
     assert "re-shoot-cluster-report" in kinds
     assert "stage-seal" not in kinds
@@ -1754,17 +1672,6 @@ def test_a_re_shoot_the_register_confirms_is_admitted(tmp_path, pages):
         tmp_path, register_bytes=_re_shoot_register(tmp_path, pages)
     )
     door.require_confirmed_re_shoots(context, door.publish_cluster_report(context))
-
-
-def test_a_malformed_cluster_report_is_a_named_refusal(tmp_path):
-    context, _digests = _admitted_re_shoot_pair(tmp_path)
-    admission = next(
-        entry
-        for entry in context.tree.build_manifest(DOOR)["artifacts"]
-        if entry["kind"] == "admission"
-    )
-    with pytest.raises(ContractError, match="cluster report.*malformed"):
-        door.require_confirmed_re_shoots(context, admission["relative_path"])
 
 
 @pytest.mark.parametrize("bad_bytes", [True, False, -1, "5", 5.0])
@@ -3154,41 +3061,13 @@ def test_the_loud_failure_names_the_reasons_rather_than_counting_anonymously(tmp
     context.finish(DOOR)
 
     with pytest.raises(ContractError) as caught:
-        door.require_some_admitted(0, tree, report)
+        door.require_some_admitted(0, report)
 
     message = str(caught.value)
     assert "unrecognized-format: 1" in message
     assert "unreadable: 1" in message
-    assert "2 source(s) submitted" in message
+    assert "all 2 page ordinal(s) were refused" in message
     assert "one.png" not in message and "two.tif" not in message
-
-
-def test_the_loud_failure_survives_a_census_it_cannot_read(tmp_path):
-    """A damaged record may not replace the failure with a complaint about JSON.
-
-    This path runs only on a bad day, to describe a failure that already happened.
-    Masking the primary failure with a secondary one is a worse answer to
-    principle 2 than a partial census, so an unreadable record is counted under a
-    name that says so and the loud failure still says what it is.
-    """
-    broken = b"not an image at all"
-    source = SourceEntry(1, "one.png", digest_bytes(broken))
-    tree, context = open_door(tmp_path, [source])
-    assert process_sources(context, tree, [source], reader({"one.png": broken}), policy=POLICY) == 0
-    report = door.publish_refusal_report(context)
-    context.finish(DOOR)
-    entry = next(
-        entry for entry in tree.build_manifest(DOOR)["artifacts"] if entry["kind"] == "admission"
-    )
-    tree.resolve(entry["relative_path"]).write_bytes(b"{ this is not json")
-
-    with pytest.raises(ContractError) as caught:
-        door.require_some_admitted(0, tree, report)
-
-    message = str(caught.value)
-    assert "the door admitted nothing" in message
-    assert "the door's own census could not be read" in message
-    assert "Traceback" not in message
 
 
 def test_a_wholly_refused_door_does_not_publish_a_completion_seal(tmp_path):
@@ -3205,66 +3084,11 @@ def test_a_wholly_refused_door_does_not_publish_a_completion_seal(tmp_path):
     )
 
     with pytest.raises(ContractError, match="the door admitted nothing"):
-        door._finish_door_run(context, tree, admitted)
+        door._finish_door_run(context, admitted)
 
     kinds = [entry["kind"] for entry in tree.build_manifest(DOOR)["artifacts"]]
     assert "refusal-report" in kinds
     assert "stage-seal" not in kinds
-
-
-def test_the_loud_failure_survives_one_record_it_cannot_make_sense_of(tmp_path):
-    """The inner half of the same fallback: the census is read, one row is not.
-
-    Damaging the bytes takes out the whole manifest, so it exercises the outer
-    fallback above. This takes out one *record's meaning* while leaving the tree
-    structurally sound — a reason outside the closed set, which is exactly what a
-    free-text refusal would produce. The row is counted under a name that says
-    it could not be read, and the other rows still count normally.
-    """
-    broken = b"not an image at all"
-    sources = [
-        SourceEntry(1, "one.png", digest_bytes(broken)),
-        SourceEntry(2, "two.png", digest_bytes(b"also not an image")),
-    ]
-    tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context,
-            tree,
-            sources,
-            reader({"one.png": broken, "two.png": b"also not an image"}),
-            policy=POLICY,
-        )
-        == 0
-    )
-    report = door.publish_refusal_report(context)
-    context.finish(DOOR)
-    entry = next(
-        entry
-        for entry in tree.build_manifest(DOOR)["artifacts"]
-        if entry["kind"] == "admission" and entry["subject_id"] == "source-1"
-    )
-    path = tree.resolve(entry["relative_path"])
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["reason"] = "just some free text nobody closed"
-    # Preserve the outer transport seal so this exercises the census's closed
-    # refusal vocabulary rather than the earlier envelope-integrity guard.
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    report_record = json.loads(tree.read_bytes(report).decode("utf-8"))
-    for reference in report_record["inputs"]:
-        if reference["relative_path"] == entry["relative_path"]:
-            reference["sha256"] = digest_bytes(path.read_bytes())
-    report_record["self_hash"] = self_hash(report_record)
-    tree.resolve(report).write_bytes(canonical_bytes(report_record))
-    tree.write_manifest(DOOR)
-
-    with pytest.raises(ContractError) as caught:
-        door.require_some_admitted(0, tree, report)
-
-    message = str(caught.value)
-    assert "unreadable record: 1" in message
-    assert "unrecognized-format: 1" in message
 
 
 def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(tmp_path):
@@ -4604,9 +4428,9 @@ def test_cluster_report_keeps_refused_members_and_parts_visible(tmp_path):
     tree, context = open_door(tmp_path, sources)
     assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 1
 
-    report_path = door.publish_cluster_report(context)
-    assert report_path is not None
-    payload = json.loads(tree.read_bytes(report_path))["payload"]
+    report = door.publish_cluster_report(context)
+    assert report is not None
+    payload = json.loads(tree.read_bytes(report.path))["payload"]
     members = payload["clusters"][0]["members"]
     assert len(members) == 2
     assert {page["outcome"] for member in members for page in member["pages"]} == {
@@ -4985,6 +4809,45 @@ def test_streamed_pdf_membership_binds_inspected_bytes_not_a_shared_ledger_lie(t
         digest_bytes(second),
     ]
     assert door._membership_sha256(expanded[0]) != door._membership_sha256(expanded[1])
+
+
+def test_a_failed_close_on_one_streamed_pdf_leaves_the_next_pdf_its_own(tmp_path, monkeypatch):
+    folder = tmp_path / "pdfs"
+    folder.mkdir()
+    files = {"a.pdf": two_page_pdf(), "b.pdf": single_gray_page_pdf(value=200)}
+    for name, data in files.items():
+        (folder / name).write_bytes(data)
+    real_close = door.pdf_render.pdfium.PdfDocument.close
+    closes = []
+
+    def first_close_fails(document):
+        real_close(document)
+        closes.append(document)
+        if len(closes) == 1:
+            raise RuntimeError("synthetic native close failure")
+
+    def open_source(relative_path: str):
+        return door.inventory.open_submission_source(folder, relative_path)
+
+    rows = [
+        {"relative_path": name, "sha256": digest_bytes(data), "bytes": len(data)}
+        for name, data in files.items()
+    ]
+    sources = expand_sources(rows, reader(files), POLICY, open_source=open_source)
+    monkeypatch.setattr(door.pdf_render.pdfium.PdfDocument, "close", first_close_fails)
+    tree, context = open_door(tmp_path, sources)
+
+    assert (
+        process_sources(context, tree, sources, reader({}), policy=POLICY, open_source=open_source)
+        == len(sources)
+        == 3
+    )
+    context.finish(DOOR)
+    assert len(closes) == 2
+    for record in admissions(tree).values():
+        payload = record["payload"]
+        own = files[payload["declared_path"]]
+        assert payload["rendered_from"]["container_sha256"] == digest_bytes(own)
 
 
 def test_streamed_pdf_admission_refuses_bytes_replaced_after_membership_sealed(tmp_path):

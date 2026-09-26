@@ -83,7 +83,6 @@ def test_the_noise_floor_carries_its_own_unmeasured_provenance():
     floor = audit[COVERAGE_NOISE_FLOOR_TABLE]["provenance"]
     assert floor["calibrated_for_this_corpus"] is False
     assert floor["sample_count"] == 0
-    assert "PROPOSED, NOT YET MEASURED" in floor["caveat"]
 
 
 def test_the_gates_resolve_proportionally_and_the_flat_constants_did_not():

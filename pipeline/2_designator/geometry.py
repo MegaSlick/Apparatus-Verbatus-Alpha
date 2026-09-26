@@ -25,7 +25,7 @@ from typing import Any, Final, TypedDict
 
 from common.background import round_half_up_bp
 from common.calibration import calibrated_claim_has_sample_evidence
-from common.contracts.canonical import digest_of
+from common.contracts.canonical import digest_of, is_plain_int
 from common.contracts.errors import ContractError
 from common.sealed_config import read_sealed_toml
 
@@ -64,16 +64,11 @@ class Bounds(TypedDict):
     h: int
 
 
-def _is_plain_int(value: Any) -> bool:
-    """An `int` that is not a `bool` (`bool` is an `int` subclass in Python)."""
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 def validate_bounds(bounds: Any, width: int, height: int, what: str) -> None:
     """Refuse a rectangle that does not belong to its declared pixel space."""
     if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
         raise ContractError(f"{what} is not a closed x/y/w/h rectangle")
-    if not all(_is_plain_int(bounds[field]) for field in ("x", "y", "w", "h")):
+    if not all(is_plain_int(bounds[field]) for field in ("x", "y", "w", "h")):
         raise ContractError(f"{what} has a non-integer coordinate")
     x, y, w, h = (bounds[field] for field in ("x", "y", "w", "h"))
     if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > width or y + h > height:
@@ -81,7 +76,7 @@ def validate_bounds(bounds: Any, width: int, height: int, what: str) -> None:
 
 
 def _validate_dimensions(width: Any, height: Any, what: str) -> None:
-    if not _is_plain_int(width) or not _is_plain_int(height) or width <= 0 or height <= 0:
+    if not is_plain_int(width) or not is_plain_int(height) or width <= 0 or height <= 0:
         raise ContractError(f"{what} {width}x{height} does not have positive integer dimensions")
 
 
@@ -105,7 +100,7 @@ def load_padding_config(path: str | Path = DEFAULT_PADDING_CONFIG_PATH) -> dict[
         )
     values = {name: padding.get(name) for name in _PADDING_FIELDS}
     invalid = [
-        name for name in _PADDING_FIELDS if not _is_plain_int(values[name]) or values[name] < 0
+        name for name in _PADDING_FIELDS if not is_plain_int(values[name]) or values[name] < 0
     ]
     if invalid:
         raise ContractError(
@@ -141,7 +136,7 @@ def _load_padding_provenance(provenance: Any) -> dict[str, Any]:
             raise ContractError(
                 f"the padding configuration's provenance field {field!r} is not a non-empty string"
             )
-    if not _is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
+    if not is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
         raise ContractError(
             "the padding configuration's provenance sample_count is not a non-negative integer"
         )
@@ -259,8 +254,8 @@ def from_model_space(
             raise ContractError(f"scale has no {axis!r} ratio")
         numerator, denominator = ratio.get("numerator"), ratio.get("denominator")
         if (
-            not _is_plain_int(numerator)
-            or not _is_plain_int(denominator)
+            not is_plain_int(numerator)
+            or not is_plain_int(denominator)
             or numerator <= 0
             or denominator <= 0
         ):
@@ -294,7 +289,7 @@ def verify_isotropic(
     would not, and a distorted geometry used anyway is refused rather than
     left for a human to notice later.
     """
-    if not _is_plain_int(tolerance_bp) or tolerance_bp < 0:
+    if not is_plain_int(tolerance_bp) or tolerance_bp < 0:
         raise ContractError(
             f"anisotropy tolerance {tolerance_bp!r} is not a non-negative plain integer"
         )
@@ -306,8 +301,8 @@ def verify_isotropic(
         numerator = ratio.get("numerator")
         denominator = ratio.get("denominator")
         if (
-            not _is_plain_int(numerator)
-            or not _is_plain_int(denominator)
+            not is_plain_int(numerator)
+            or not is_plain_int(denominator)
             or numerator <= 0
             or denominator <= 0
         ):

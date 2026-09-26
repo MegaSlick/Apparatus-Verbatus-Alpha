@@ -25,6 +25,7 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Protocol
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.durability import atomic_create, atomic_replace
 
 from .errors import ChairRefusal, DigestMismatchRefusal
 from .manifests import (
@@ -1267,21 +1268,10 @@ def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any
 def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) -> None:
     """Publish ``payload`` at ``destination`` without ever overwriting a difference.
 
-    A hard link is an atomic create on the target filesystem: the temporary is
-    fully written first, then either acquires the final name or the link raises
-    ``FileExistsError`` without touching the competing file. Reused verbatim from
-    the identical-bytes-reuse, differing-bytes-refusal custody rule
-    ``common/runtree/store.py::_atomic_create`` already applies to run artifacts,
-    so the model store's evidence keeps the one rule this system settled on.
-
-    Every filesystem failure along that path is a refusal against a named chair,
-    not a bare ``OSError``: a read-only store, a full disk, and a name already
-    taken by a directory are exactly the conditions this writer exists to fail
-    on, and ``errors.py`` calls its list "the complete public taxonomy" —
-    ``manifests.file_size`` records the same reasoning for the read side.
+    Every filesystem failure is a refusal against a named chair, not a bare
+    ``OSError``: ``errors.py`` calls its list "the complete public taxonomy".
     """
 
-    temporary: Path | None = None
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         if _is_irregular(destination):
@@ -1291,21 +1281,10 @@ def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) 
                 "is not a regular file; "
                 "publication never replaces existing evidence",
             )
-        # A unique per-call temporary, exactly as `_write_temporary` makes one
-        # for run artifacts: a PID-derived name collides between two calls in
-        # one process, and a crashed earlier call could leave its name taken.
-        descriptor, raw_temporary = tempfile.mkstemp(
-            prefix=f".{destination.name}.candidate-", dir=destination.parent
-        )
-        temporary = Path(raw_temporary)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
         try:
-            os.link(temporary, destination)
+            atomic_create(destination, payload, strict=False)
         except FileExistsError:
-            # `read_bytes` may raise in its own right — the taken name can be a
-            # directory — and that is caught below as the publication failure
-            # it is.
+            # The taken name can be a directory; that `read_bytes` failure is caught below.
             if destination.read_bytes() != payload:
                 raise DigestMismatchRefusal(
                     chair,
@@ -1316,35 +1295,18 @@ def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) 
         raise DigestMismatchRefusal(
             chair, f"cannot publish {label} at {destination}: {error}"
         ) from error
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def _move_active_record(destination: Path, archive: Path) -> None:
     """Atomically point the active name at an already-immutable record version."""
 
-    temporary: Path | None = None
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        # A unique per-call temporary for the same reason `_publish_once` makes
-        # one: two writers in one process sharing a PID-derived name would let
-        # writer B's bytes take the active name while writer A returns its own
-        # digest — a silently wrong active record, not a loud refusal.
-        descriptor, raw_temporary = tempfile.mkstemp(
-            prefix=f".{destination.name}.active-", dir=destination.parent
-        )
-        temporary = Path(raw_temporary)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(archive.read_bytes())
-        os.replace(temporary, destination)
+        atomic_replace(destination, archive.read_bytes(), strict=False)
     except OSError as error:
         raise DigestMismatchRefusal(
             "model-store", f"cannot publish active download_record.json: {error}"
         ) from error
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def _current_v1_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:

@@ -32,7 +32,6 @@ from typing import Any, Final
 
 from geometry import (
     _PROVENANCE_FIELDS,
-    _is_plain_int,
     _pad_amount,
     _validate_dimensions,
 )
@@ -50,6 +49,7 @@ from common.background import (  # noqa: F401
     validate_background_table,
 )
 from common.calibration import calibrated_claim_has_sample_evidence
+from common.contracts.canonical import is_plain_int
 from common.contracts.errors import ContractError
 from common.residual_ink import validate_coverage_audit_table
 from common.sealed_config import read_sealed_toml
@@ -158,7 +158,7 @@ def load_grouping_config(
         # fallback_bands may not be zero: a grid of no bands would let a page
         # with no found structure reach witnesses with no crop at all.
         floor = 1 if name == "fallback_bands" else 0
-        if not _is_plain_int(value) or value < floor:
+        if not is_plain_int(value) or value < floor:
             shape = "positive" if floor else "non-negative"
             raise ContractError(f"the grouping configuration's {name} is not a {shape} integer")
         counts[name] = value
@@ -229,7 +229,7 @@ def _load_residual_presentation(table: Any) -> dict[str, Any]:
             f"field(s) {missing}"
         )
     values = {name: table[name] for name in _RESIDUAL_PRESENTATION_FIELDS}
-    invalid = [name for name, value in values.items() if not _is_plain_int(value) or value < 0]
+    invalid = [name for name, value in values.items() if not is_plain_int(value) or value < 0]
     if invalid:
         raise ContractError(
             "the grouping configuration's [grouping.residual_presentation] has invalid "
@@ -255,7 +255,7 @@ def _load_closed_int_table(table: Any, fields: tuple[str, ...], what: str) -> di
     if missing:
         raise ContractError(f"the grouping configuration's {what} is missing field(s) {missing}")
     values = {name: table[name] for name in fields}
-    invalid = [name for name in fields if not _is_plain_int(values[name]) or values[name] < 0]
+    invalid = [name for name in fields if not is_plain_int(values[name]) or values[name] < 0]
     if invalid:
         raise ContractError(
             f"the grouping configuration's {what} has invalid non-negative integer "
@@ -298,7 +298,7 @@ def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
             raise ContractError(
                 f"the grouping configuration's {where} field {field!r} is not a non-empty string"
             )
-    if not _is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
+    if not is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
         raise ContractError(
             f"the grouping configuration's {where} sample_count is not a non-negative integer"
         )
@@ -342,7 +342,7 @@ def _load_continuation(table: Any) -> dict[str, Any]:
         )
     values = {name: table[name] for name in _CONTINUATION_BP_FIELDS}
     reach = values["page_edge_reach_bp"]
-    if not _is_plain_int(reach):
+    if not is_plain_int(reach):
         raise ContractError(
             "the grouping configuration's [grouping.continuation] page_edge_reach_bp is not an "
             "integer"
@@ -386,7 +386,7 @@ def _load_page_area_bp(table: Any) -> dict[str, Any]:
     values = {}
     for name in _PAGE_AREA_BP_FIELDS:
         value = table[name]
-        if not _is_plain_int(value) or not (0 < value <= _BASIS_POINTS):
+        if not is_plain_int(value) or not (0 < value <= _BASIS_POINTS):
             raise ContractError(
                 f"the grouping configuration's [grouping.page_area_bp] {name} is {value!r}, "
                 f"which is not an integer in 1..{_BASIS_POINTS} basis points; at or below zero "
