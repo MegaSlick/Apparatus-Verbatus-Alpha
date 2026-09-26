@@ -344,6 +344,8 @@ def continuation_join_row(
 ) -> dict[str, Any]:
     """One continuation candidate as a text-free join row over the delivered literals."""
     literal = bool(_literal_formats_in(selected_formats))
+    # Only these two formats carry a reconstruction; the database has no table for one yet.
+    writes = bool({"jsonl", "text-bundle"} & set(selected_formats))
 
     def side_sha256(act_ids: list[str]) -> str | None:
         if literal and len(act_ids) == 1 and act_ids[0] in delivered_texts:
@@ -360,8 +362,8 @@ def continuation_join_row(
         reason = "head-not-delivered"
     elif tail_act_ids[0] not in delivered_texts:
         reason = "tail-not-delivered"
-    elif not literal:
-        reason = "no-literal-format-selected"
+    elif not writes:
+        reason = "no-reconstruction-format-selected"
     else:
         reason = None
     return {
@@ -383,8 +385,13 @@ def continuation_join_row(
 def _doubt(layer: Any) -> dict[str, int]:
     """How much doubt a literal carries, so a join never reads cleaner than its halves."""
     layer = layer if isinstance(layer, dict) else {}
+    assessment = layer.get("assessment")
     return {
-        kind: len(layer.get(kind) or []) for kind in ("uncertain_spans", "gaps", "self_revisions")
+        **{
+            kind: len(layer.get(kind) or [])
+            for kind in ("uncertain_spans", "gaps", "self_revisions")
+        },
+        "assessment": assessment.get("state") if isinstance(assessment, dict) else None,
     }
 
 
@@ -1409,6 +1416,14 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
     outcomes = _act_outcome_sources(sources)
     act_keys = {act_id: outcome["act_key"] for act_id, outcome in outcomes.items()}
     act_pages = sources["aggregate_basis"].get("act_pages") or {}
+    if joins and not (
+        isinstance(act_pages, dict)
+        and all(
+            isinstance(pages, list) and all(_is_integer(page) for page in pages)
+            for pages in act_pages.values()
+        )
+    ):
+        raise SchemaRefusal("the package's act page attribution is not lists of page ordinals")
     literal_formats = _literal_formats_in(formats.formats)
     literals = (
         {
@@ -1431,7 +1446,12 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
         if (
             not _is_line_safe_identity(join["join_id"])
             or join["join_id"] in join_ids
-            or not all(isinstance(side, list) and set(side) <= set(outcomes) for side in sides)
+            or not all(
+                isinstance(side, list)
+                and all(isinstance(act_id, str) for act_id in side)
+                and set(side) <= set(outcomes)
+                for side in sides
+            )
             or not all(_is_integer(page) for page in pages)
             or pages[1] != pages[0] + 1
             or any(
@@ -1476,15 +1496,13 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
 
 def _verify_text_bundle_joins(root, sources, joins, reconstructions, act_keys) -> None:
     """Each RECONSTRUCTED section line for line, and each act section's own notes."""
-    expected_sections = {
-        record["join_id"]: _reconstruction_section(record, act_keys) for record in reconstructions
-    }
+    citations = _act_citation_sources(sources)
     expected_notes = _join_notes(joins, act_keys)
-    sections: dict[str, list[str]] = {}
     folders = {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
     for folder in sorted(folders):
         lines = [*_package_lines(root / _text_member_path(folder), "text bundle"), ""]
         act_id, act_notes, index = None, None, 0
+        sections: dict[str, list[str]] = {}
         while index < len(lines):
             line = lines[index]
             if act_notes is not None and (not line or line.startswith("## ")):
@@ -1497,10 +1515,8 @@ def _verify_text_bundle_joins(root, sources, joins, reconstructions, act_keys) -
                 end = next((at for at in range(index, len(lines)) if not lines[at]), len(lines))
                 block = lines[index : end + 1]
                 join_id = line.removeprefix("## RECONSTRUCTED ").removesuffix(" (not an act)")
-                if sections.setdefault(join_id, block) != block:
-                    raise SchemaRefusal(
-                        "a text-bundle RECONSTRUCTED section appears twice, unequal"
-                    )
+                if sections.setdefault(join_id, block) is not block:
+                    raise SchemaRefusal("a text-bundle RECONSTRUCTED section appears twice")
                 index = end + 1
                 continue
             if line.startswith("act-id: "):
@@ -1510,10 +1526,19 @@ def _verify_text_bundle_joins(root, sources, joins, reconstructions, act_keys) -
                     raise SchemaRefusal("a text-bundle continuation line sits outside its section")
                 act_notes.append(line)
             index += 1
-    if sections != expected_sections:
-        raise SchemaRefusal(
-            "a text-bundle RECONSTRUCTED section does not recompute from its join and literals"
-        )
+        expected_sections = {
+            record["join_id"]: _reconstruction_section(record, act_keys)
+            for record in reconstructions
+            if folder
+            in {
+                _source_folder_for_declared_path(region["declared_path"])
+                for region in citations[record["head_act_id"]]["source_regions"]
+            }
+        }
+        if sections != expected_sections:
+            raise SchemaRefusal(
+                "a text-bundle RECONSTRUCTED section does not recompute from its join and literals"
+            )
 
 
 INK_MAP_DENOMINATOR: Final = "ink-map sealed pages"
@@ -2490,7 +2515,7 @@ def _text_bundle_members(
     acts: tuple[dict[str, Any]],
     source_rows: list[dict[str, Any]],
     joins: tuple[dict[str, Any], ...] = (),
-    reconstructions: list[dict[str, Any]] = (),
+    reconstructions: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
 
