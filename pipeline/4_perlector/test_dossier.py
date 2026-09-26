@@ -15,7 +15,8 @@ from PIL import Image
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_text, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
+from common.contracts.identities import artifact_id
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR
 from common.imaging import dimensions
 from common.runtree.store import RunTree
 from common.stage import StageContext
@@ -638,9 +639,7 @@ def test_a_page_render_refuses_page_bytes_swapped_after_the_artifact_check(evide
     """The Perlector's page view is rendered only from bytes checked against the seal."""
     context, act_id, act_key, regions, testimonia = evidence
     page_id = regions[0]["transform"]["source_page_id"]
-    page = context.tree.read_artifact(
-        dossier.EXEMPLAR, "page", dossier.artifact_id(dossier.EXEMPLAR, "page", page_id)
-    )
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
     image_path = page["payload"]["image_path"]
     other = BytesIO()
     Image.new("L", (200, 260), color=7).save(other, format="PNG")

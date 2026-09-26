@@ -166,6 +166,14 @@ def sealed_page_bytes(tree: RunTree, page: dict[str, Any], *, what: str = "") ->
     return data
 
 
+def read_sealed_page(
+    tree: RunTree, page_id: str, *, what: str = ""
+) -> tuple[dict[str, Any], bytes]:
+    """One Exemplar page artifact and its pixels, read once through `sealed_page_bytes`."""
+    page = tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    return page, sealed_page_bytes(tree, page, what=what)
+
+
 def _page_origin(source_digest: str, rendered: Any) -> dict[str, Any]:
     """Build page identity only from a complete, typed render origin."""
     if rendered is None:

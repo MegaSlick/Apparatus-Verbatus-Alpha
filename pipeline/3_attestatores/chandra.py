@@ -32,9 +32,7 @@ import feeding
 from common import chandra_layout
 from common.chandra_presentation import presented_transform, render_page
 from common.contracts.errors import SchemaRefusal
-from common.contracts.identities import artifact_id
-from common.contracts.stages import EXEMPLAR
-from common.exemplar_boundary import sealed_page_bytes
+from common.exemplar_boundary import read_sealed_page
 from common.imaging import dimensions
 from common.native_witness import validate_presented
 
@@ -217,11 +215,7 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
         return presentation
     transform = presentation["transform"]
     page_id = transform["source_page_id"]
-    page_bytes = sealed_page_bytes(
-        context.tree,
-        context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id)),
-        what="Chandra",
-    )
+    _, page_bytes = read_sealed_page(context.tree, page_id, what="Chandra")
     # Keep bounds failures as SchemaRefusals, not crop_png's bare ValueError.
     validate_presented(presentation, page_size=dimensions(page_bytes))
     bounds = dict(transform["bounds"])

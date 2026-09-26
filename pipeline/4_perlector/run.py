@@ -66,7 +66,7 @@ from common.contracts.errors import (  # noqa: E402
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.outcomes import ATTACHMENT_BASES, page_attachment_basis  # noqa: E402
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.corpus_register import refuse_capture_preference  # noqa: E402
 from common.cross_capture_autopsia import (  # noqa: E402
     atomic_delivered_pixels,
@@ -74,7 +74,7 @@ from common.cross_capture_autopsia import (  # noqa: E402
     validate_autopsia,
 )
 from common.decoding import load_decoding_policy  # noqa: E402
-from common.exemplar_boundary import sealed_page_bytes, verify_exemplar_crop_lineage  # noqa: E402
+from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
@@ -516,8 +516,7 @@ def _region_reference(region: dict) -> dict[str, str]:
 def _validate_presented_page(context, payload: dict, presented: dict) -> None:
     """Bind a witness's presentation and observed geometry to its sealed Exemplar page."""
     page_id = presented.get("source_page_id")
-    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    page_bytes = sealed_page_bytes(context.tree, page)
+    page, page_bytes = read_sealed_page(context.tree, page_id)
     page_size = dimensions(page_bytes)
     validate_native_witness_geometry(payload, page_size=page_size)
     validate_presented_page_binding(

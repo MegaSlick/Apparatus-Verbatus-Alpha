@@ -81,7 +81,11 @@ from common.contracts.serving import (  # noqa: E402
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
-from common.exemplar_boundary import sealed_page_bytes, verify_exemplar_crop_lineage  # noqa: E402
+from common.exemplar_boundary import (  # noqa: E402
+    read_sealed_page,
+    sealed_page_bytes,
+    verify_exemplar_crop_lineage,
+)
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     PAGE_TESTIMONIUM_REQUIRED_FIELDS,
@@ -510,8 +514,7 @@ def _sealed_source_page(
 ) -> tuple[dict[str, Any], bytes, tuple[int, int]]:
     """The sealed Exemplar page, exact verified bytes used, and decoded size."""
     page_id = presented["source_page_id"]
-    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    page_bytes = sealed_page_bytes(context.tree, page)
+    page, page_bytes = read_sealed_page(context.tree, page_id)
     return page, page_bytes, dimensions(page_bytes)
 
 

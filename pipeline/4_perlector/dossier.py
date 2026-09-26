@@ -25,9 +25,7 @@ from common.chairs.models import ChairIdentity
 from common.chandra_native_retry import named_trace_summary
 from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.identities import artifact_id
-from common.contracts.stages import EXEMPLAR
-from common.exemplar_boundary import sealed_page_bytes
+from common.exemplar_boundary import read_sealed_page
 from common.imaging import crop_png, dimensions, encode_grayscale_png_deterministic
 from common.native_witness import REPORTED_BOUNDS_SOURCES
 from common.stage import WITNESS_READING_OUTCOMES
@@ -164,10 +162,7 @@ def build_page_render(context, *, source_page_id: str, source_page_ordinal: int)
     """The downscaled page render for one act's page, with its transform recorded
     (ARCHITECTURE invariant 3: the exact image shown is reproducible from the
     Exemplar plus the recorded transforms)."""
-    page = context.tree.read_artifact(
-        EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", source_page_id)
-    )
-    page_bytes = sealed_page_bytes(context.tree, page)
+    page, page_bytes = read_sealed_page(context.tree, source_page_id)
     try:
         downscaled, transform = _downscale_page(page_bytes, maximum_edge=PAGE_CONTEXT_MAX_EDGE)
     except (OSError, ValueError, Image.DecompressionBombError) as error:
