@@ -1304,29 +1304,40 @@ def test_a_refusal_after_report_path_validation_writes_a_durable_reason(
 def test_a_stale_bootstrap_argument_is_a_durable_refusal(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     clock = Clock()
-    argv = _argv(ws, extra=("--placement-config", "config/pod_placement.toml"))
+    argv = _argv(ws, extra=("--placement-config", "config/pod_placement.toml", "--extra=hunter2"))
 
     exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
 
     assert exit_code == 2
-    record = json.loads(ws.report_path.read_text(encoding="utf-8"))
-    assert "unrecognized arguments: --placement-config" in record["reason"]
+    reason = json.loads(ws.report_path.read_text(encoding="utf-8"))["reason"]
+    assert "--extra, --placement-config" in reason
+    assert "hunter2" not in reason and "pod_placement.toml" not in reason
 
 
-def test_configuration_refuses_a_placement_table_outside_the_checkout(
+def test_an_argv_parse_error_is_a_durable_refusal(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    argv = _argv(ws, extra=("--interval-seconds", "soon", "-h"))
+
+    exit_code = main(argv, environ=_environ(Clock()), actions_factory=_never_called)
+
+    assert exit_code == 2
+    assert "bootstrap argv" in json.loads(ws.report_path.read_text(encoding="utf-8"))["reason"]
+
+
+def test_configuration_refuses_a_placement_table_symlinked_out_of_the_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
-    elsewhere = tmp_path / "elsewhere" / "pod_placement.toml"
-    elsewhere.parent.mkdir()
+    elsewhere = tmp_path / "elsewhere.toml"
     elsewhere.write_bytes(ws.placement_config.read_bytes())
-    monkeypatch.setattr(bootstrap_main, "DEFAULT_POD_PLACEMENT_CONFIG_PATH", elsewhere)
+    ws.placement_config.unlink()
+    ws.placement_config.symlink_to(elsewhere)
 
     with pytest.raises(BootstrapStepFailure) as refusal:
         bootstrap_main._build_configuration_validation(plan)()
 
     assert refusal.value.step is BootstrapStep.CONFIGURATION
-    assert "outside the checked-out repository" in refusal.value.detail
+    assert "is not the checked-out repository's" in refusal.value.detail
 
 
 def test_a_placement_value_changed_after_a_green_bootstrap_refuses_the_resume(
@@ -1428,7 +1439,7 @@ def test_configuration_names_an_unreadable_selected_source_and_its_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attribute: str, label: str
 ) -> None:
     ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
-    selected = getattr(plan, attribute, ws.placement_config)
+    selected = ws.placement_config if attribute == "placement_config" else getattr(plan, attribute)
     assert isinstance(selected, Path)
     selected.unlink()
 
@@ -1459,7 +1470,7 @@ def test_configuration_refuses_semantic_selected_source_before_later_work(
     named_source: str,
 ) -> None:
     ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
-    selected = getattr(plan, attribute, ws.placement_config)
+    selected = ws.placement_config if attribute == "placement_config" else getattr(plan, attribute)
     assert isinstance(selected, Path)
     selected.write_text(contents, encoding="utf-8")
     actions = _configuration_actions(plan)

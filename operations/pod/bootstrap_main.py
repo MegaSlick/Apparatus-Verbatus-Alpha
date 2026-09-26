@@ -9,8 +9,8 @@ hold loop here.  A red bootstrap step exits non-zero at once, which is the
 correct immediate close for pod_timer to act on.
 
 Composition is deliberately **tracked**: every pinned input this process needs
-is an explicit flag, never an inferred default, so a request file that built
-this command names exactly what ran.  ``ChairCacheBootstrapAction`` is
+is an explicit flag, except the placement table, which is always the checkout's
+own ``config/pod_placement.toml`` because that is the table the stages seal.  ``ChairCacheBootstrapAction`` is
 constructed here in the tracked tree, wired with ``refetch_same_pin=None``
 (see the comment beside that call below), so the at-most-one same-pin
 re-fetch itself still does not ship.
@@ -72,8 +72,8 @@ startup refusal: holding with no bound cannot be tested and cannot be trusted.
 
 **A refusal leaves a durable reason, not just a stderr line nobody can read
 after the container is gone.**  Once ``--report-path`` has passed containment,
-every later refusal best-effort writes its reason there before exiting
-(principle 2 -- nothing is lost silently).  Two refusals necessarily precede
+every later refusal, an unparseable argv included, best-effort writes its
+reason there before exiting (principle 2 -- nothing is lost silently).  Two refusals necessarily precede
 a usable report path and stay stderr-only residue: the credential-argv scan
 (before argv is even parsed) and ``--report-path`` itself failing containment.
 
@@ -484,6 +484,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = _RefusingParser(
         description="Verbatus pod-side bootstrap-and-hold service",
         allow_abbrev=False,
+        add_help=False,
     )
     parser.add_argument("--volume-mount-path", required=True)
     parser.add_argument("--report-path", type=Path, required=True)
@@ -577,6 +578,17 @@ def _factory(reference: str) -> Callable[[], object]:
     return getattr(importlib.import_module(module_name), name)
 
 
+def _launch_report_path(args: argparse.Namespace, environment: Mapping[str, str] | None) -> Path:
+    if not PurePosixPath(args.volume_mount_path).is_absolute():
+        raise PlanRefusal("--volume-mount-path must be an absolute path")
+    report_path = _require_contained(
+        args.report_path, Path(args.volume_mount_path), "--report-path"
+    )
+    launch_token = (environment or {}).get("VERBATUS_LAUNCH_TOKEN") or None
+    _require_launch_token_named(report_path, launch_token, "--report-path", report_path=report_path)
+    return report_path
+
+
 def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None = None) -> Plan:
     """Validate every argument and combination before anything runs or holds.
 
@@ -590,11 +602,8 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
     """
 
     volume_mount_path = Path(args.volume_mount_path)
-    if not PurePosixPath(args.volume_mount_path).is_absolute():
-        raise PlanRefusal("--volume-mount-path must be an absolute path")
-    report_path = _require_contained(args.report_path, volume_mount_path, "--report-path")
+    report_path = _launch_report_path(args, environment)
     launch_token = (environment or {}).get("VERBATUS_LAUNCH_TOKEN") or None
-    _require_launch_token_named(report_path, launch_token, "--report-path", report_path=report_path)
 
     plan_supplied = [
         name for name in _PLAN_ONLY_FLAGS if getattr(args, name, None) not in (None, [])
@@ -1352,12 +1361,12 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 "then resume this journal before any environment or model work.",
             ) from error
         placement = DEFAULT_POD_PLACEMENT_CONFIG_PATH.resolve()
-        if not placement.is_relative_to(plan.repository.resolve()):
+        pinned = plan.repository.resolve() / "config" / "pod_placement.toml"
+        if placement != pinned:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
-                f"placement table {placement} is outside the checked-out repository "
-                f"{plan.repository}; preflight and the stages would not read the pinned "
-                "commit's table",
+                f"placement table {placement} is not the checked-out repository's {pinned}; "
+                "preflight and the stages would not read the pinned commit's table",
                 "Start bootstrap_main from the checked-out repository's own environment, "
                 "then resume this journal.",
             )
@@ -1365,9 +1374,7 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
             serving_source = _read_configuration_source(
                 plan.serving_recipes_config, "serving catalogue"
             )
-            placement_source = _read_configuration_source(
-                DEFAULT_POD_PLACEMENT_CONFIG_PATH, "placement table"
-            )
+            placement_source = _read_configuration_source(placement, "placement table")
         except ContractError as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
@@ -1390,12 +1397,12 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 "this journal before any environment or model work.",
             ) from error
         try:
-            load_placement_table(DEFAULT_POD_PLACEMENT_CONFIG_PATH, source_bytes=placement_source)
+            load_placement_table(placement, source_bytes=placement_source)
             _, placement_sha256 = parse_sealed_toml(placement_source, "placement table")
         except (PlacementRefusal, ContractError) as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
-                f"placement table {DEFAULT_POD_PLACEMENT_CONFIG_PATH} could not be parsed: {error}",
+                f"placement table {placement} could not be parsed: {error}",
                 "Repair or restore the named placement table at the pinned commit, then resume "
                 "this journal before any environment or model work.",
             ) from error
@@ -1412,7 +1419,7 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                     "sha256": serving_sha256,
                 },
                 "placement_config": {
-                    "path": str(DEFAULT_POD_PLACEMENT_CONFIG_PATH),
+                    "path": str(placement),
                     "sha256": placement_sha256,
                 },
             },
@@ -1560,13 +1567,22 @@ def prepare(
 
     argv = list(raw_argv)
     refuse_credential_looking_argv(argv)
-    args, unknown = build_parser().parse_known_args(argv)
-    plan = resolve_plan(args, environment)
+    head = _RefusingParser(add_help=False, allow_abbrev=False)
+    head.add_argument("--volume-mount-path", required=True)
+    head.add_argument("--report-path", type=Path, required=True)
+    report_path = _launch_report_path(head.parse_known_args(argv)[0], environment)
+    try:
+        args, unknown = build_parser().parse_known_args(argv)
+    except PlanRefusal as refusal:
+        refusal.report_path = report_path
+        raise
     if unknown:
+        names = sorted({item.split("=", 1)[0] for item in unknown if item.startswith("-")})
         raise PlanRefusal(
-            "bootstrap argv: unrecognized arguments: " + " ".join(unknown),
-            report_path=plan.report_path,
+            "bootstrap argv: unrecognized argument(s) " + (", ".join(names) or "(values only)"),
+            report_path=report_path,
         )
+    plan = resolve_plan(args, environment)
     try:
         write_probe(plan.volume_mount_path)
         scrubbed = scrub_environment(environment, keep=plan.keep_env)

@@ -236,7 +236,9 @@ correct immediate close.
 - **Refusals come before any action**: a journal or report path outside the mounted volume;
   a lockfile that is not the checkout's `uv.lock`; a volume that fails a real write-and-read
   probe (it never creates the mount point it requires); a missing hard deadline; a
-  credential-looking argv value. The environment is scrubbed by the shared credential-shaped
+  credential-looking argv value; an unknown or unparseable argument, named without its value.
+  `CONFIGURATION` refuses a placement table that is not the checkout's own
+  `config/pod_placement.toml`, a symlink out included. The environment is scrubbed by the shared credential-shaped
   predicate, except an explicit `--keep-env` allowlist.
 - **`--dry-run`** validates and prints the plan without running; it does not mean "against
   fakes", because a fake-actions flag in a production entrypoint is a green journal waiting
