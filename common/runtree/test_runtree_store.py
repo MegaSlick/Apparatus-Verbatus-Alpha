@@ -2537,7 +2537,7 @@ def test_a_filesystem_that_will_not_persist_a_name_refuses_the_publication(
         getattr(runtree_store, publish)(target, b'{"a":1}')
 
     assert "will not persist a directory entry" in str(refused.value)
-    assert "artifact.json is published" in str(refused.value)
+    assert "artifact.json is in the run root" in str(refused.value)
     # And it really is published: the caller may retry, and the retry publishes
     # identical bytes rather than finding a half-written file.
     assert target.read_bytes() == b'{"a":1}'

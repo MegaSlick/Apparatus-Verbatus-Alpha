@@ -498,6 +498,6 @@ def _atomic_write(path: Path, data: bytes) -> None:
             f"structural reconciliation output {path} was replaced but is not proven durable"
         ) from error
     except OSError as error:
-        refusal = ReconciliationRefusal(f"structural reconciliation output {path} was not replaced")
-        refusal.__notes__ = list(getattr(error, "__notes__", ()))
-        raise refusal from error
+        raise ReconciliationRefusal(
+            f"structural reconciliation output {path} was not replaced"
+        ) from error

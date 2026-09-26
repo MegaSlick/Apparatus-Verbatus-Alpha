@@ -267,11 +267,6 @@ def atomic_create(target: Path, data: bytes) -> bool:
             "content. Evidence is never overwritten (principle 4): the existing "
             "record was not touched, and a changed submission needs its own path"
         ) from None
-    except durability.PublishedUnsettled as error:
-        raise SubmitRefusal(
-            "the submission manifest was sealed, but its temporary file could not be "
-            "removed; it must not be reported complete"
-        ) from error
     except OSError as error:
         # Unhandled, it escaped `main()` as a traceback printing the manifest path,
         # which the data-handling policy's logging rule forbids.

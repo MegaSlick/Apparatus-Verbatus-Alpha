@@ -8,6 +8,7 @@ visibility only. Whole-bytes path writers share these; dir_fd and streamed ones 
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import tempfile
@@ -50,10 +51,10 @@ class HardLinkUnsupported(OSError):
 
 
 class PublishedUnsettled(OSError):
-    """The bytes hold their final name, but a step after publication failed.
+    """The final name exists, but a strict sync could not prove its directory entry.
 
-    That step is the directory sync or removing the temporary's second link, so a
-    caller must not report the write as absent: a retry would find it.
+    It holds this call's bytes or, when it already existed, another writer's
+    uncompared bytes; either way a caller must not report it absent.
     """
 
 
@@ -66,7 +67,8 @@ def atomic_create(path: Path, data: bytes, *, strict: bool = True) -> None:
     """Create ``path`` holding ``data``, or raise ``FileExistsError`` and keep the winner.
 
     A hard link is the atomic create; ``O_EXCL`` would name the file before its bytes
-    are in it. ``strict=False`` makes the directory sync best effort (``sync_directory``).
+    are in it. ``PublishedUnsettled`` replaces ``FileExistsError`` when the winner's
+    directory entry cannot be proved. ``strict=False`` makes that sync best effort.
     """
     _publish(path, data, create=True, strict=strict)
 
@@ -91,7 +93,7 @@ def _publish(path: Path, data: bytes, *, create: bool, strict: bool) -> None:
                 os.link(temporary, path)
             except FileExistsError:
                 # The retry path: this call proved nothing yet about the winner's entry.
-                _settle(path, None, strict)
+                _sync(path, strict, "already exists")
                 raise
             except OSError as error:
                 if error.errno in _NO_HARD_LINKS:
@@ -103,21 +105,19 @@ def _publish(path: Path, data: bytes, *, create: bool, strict: bool) -> None:
                         "directory holding it has to be on a filesystem that supports it",
                     ) from error
                 raise
-    except BaseException as failure:
-        try:
+    finally:
+        # Best effort: readers ignore `.tmp-` names, so a leftover is harmless.
+        with contextlib.suppress(OSError):
             temporary.unlink(missing_ok=True)
-        except OSError as cleanup:
-            failure.add_note(f"temporary {temporary} also could not be removed: {cleanup}")
-        raise
-    _settle(path, temporary if create else None, strict)
+    _sync(path, strict, "is published")
 
 
-def _settle(path: Path, temporary: Path | None, strict: bool) -> None:
+def _sync(path: Path, strict: bool, state: str) -> None:
     try:
-        if temporary is not None:
-            temporary.unlink()
         sync_directory(path.parent, strict=strict)
     except OSError as error:
         raise PublishedUnsettled(
-            error.errno, f"{path} is published but not settled: {error.strerror or error}"
+            error.errno,
+            f"{path} {state} but its directory entry is not proven durable: "
+            f"{error.strerror or error}",
         ) from error

@@ -178,22 +178,6 @@ def test_an_interrupt_after_the_link_leaves_the_published_file(
     assert target.read_bytes() == b'{"grant":"one"}'
 
 
-def test_a_failed_cleanup_is_noted_on_the_error_it_did_not_replace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def refuse(*_arguments: object) -> None:
-        raise OSError("injected link failure")
-
-    def refuse_unlink(_path: Path, *_arguments: object, **_keywords: object) -> None:
-        raise OSError("injected cleanup failure")
-
-    monkeypatch.setattr(durability.os, "link", refuse)
-    monkeypatch.setattr(Path, "unlink", refuse_unlink)
-    with pytest.raises(OSError, match="injected link failure") as failure:
-        durability.atomic_create(tmp_path / "grant.json", b"{}")
-    assert any("also could not be removed" in note for note in failure.value.__notes__)
-
-
 def test_a_temporary_that_cannot_be_created_is_not_a_taken_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

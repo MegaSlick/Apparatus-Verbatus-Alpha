@@ -50,6 +50,9 @@ def atomic_write(path: Path, payload: bytes) -> None:
 def exclusive_write(path: Path, payload: bytes, *, strict: bool = False) -> None:
     """Create ``path`` with ``payload`` durably, or raise ``FileExistsError``.
 
+    ``PublishedUnsettled`` (an ``OSError``) instead means the name exists but its
+    directory entry is unproved; callers stay fail-closed on it.
+
     A record whose *existence* is the fact kept -- a spent authorization, a boot
     that happened -- needs the create itself to be the exclusion. ``strict=True``
     is for money evidence, which must refuse unless the directory entry is proved.

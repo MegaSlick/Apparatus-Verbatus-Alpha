@@ -1473,8 +1473,8 @@ def _run_root_refusals(target: Path) -> Iterator[None]:
     except PublishedUnsettled as error:
         raise SchemaRefusal(
             f"the run root at {target.parent} is on a filesystem that will not persist a "
-            f"directory entry ({error.strerror}); {target.name} is published but its name "
-            "is not proved to survive a power loss, and the run root has to be on a "
+            f"directory entry ({error.strerror}); {target.name} is in the run root but its "
+            "name is not proved to survive a power loss, and the run root has to be on a "
             "filesystem that supports it"
         ) from error
 
