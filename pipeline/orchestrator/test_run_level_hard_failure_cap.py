@@ -18,7 +18,6 @@ alongside the forged failures, so these tests also stand as the end-to-end
 proof that a real truncation does not, by itself, move the tally.
 """
 
-import importlib.util
 import os
 import subprocess
 import sys
@@ -32,18 +31,12 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, DOOR, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 from common.stage import _stage_seal_payload, latest_attempt
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
-STAGES_THROUGH_PERLECTOR = (
-    "pipeline/1_exemplar/door.py",
-    "pipeline/1_exemplar/run.py",
-    "pipeline/1_ink_map/run.py",
-    "pipeline/2_designator/run.py",
-    "pipeline/3_attestatores/run.py",
-    "pipeline/4_perlector/run.py",
-)
+STAGES_THROUGH_PERLECTOR = programs_through("perlector")
 
 
 def call_stage(
@@ -300,14 +293,6 @@ def test_a_real_truncated_reading_alone_never_mentions_the_cap(tmp_path):
 # digest with it. So the sequencing itself is driven directly instead.
 
 
-def _load_orchestrator():
-    path = ROOT / "pipeline/orchestrator/run.py"
-    spec = importlib.util.spec_from_file_location("orchestrator_hard_failure_cap", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _breach(checkpoint_name: str) -> dict:
     return {
         "threshold": 2,
@@ -328,7 +313,7 @@ def test_a_breach_first_seen_at_a_stage_boundary_stops_the_rest_of_the_sequence(
     "the stage after the breach was never invoked" is the assertion that matters,
     not merely the exit code.
     """
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     invoked: list[str] = []
     monkeypatch.setattr(
         orchestrator, "invoke", lambda program, _args, **_extra: invoked.append(program)
@@ -373,7 +358,7 @@ def test_a_breach_inside_a_recovery_round_stops_before_the_archetypus(monkeypatc
     that is going wrong is most likely to cross the cap — and the one caller
     whose halt return `main` has to honour before establishing any text.
     """
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     invoked: list[str] = []
     monkeypatch.setattr(
         orchestrator, "invoke", lambda program, _args, **_extra: invoked.append(program)
@@ -471,13 +456,13 @@ def test_a_hard_failure_policy_swapped_between_orchestrations_is_refused_on_resu
     )
     assert first.returncode == 0, first.stderr
 
-    # A comment-only edit: the threshold is ruled and `RULED_THRESHOLD`
-    # refuses to move either way, so the swap this seal has to catch is any change
-    # to the bytes at all -- which is exactly what a digest says and what a reader
-    # of `config_digest` alone could not attribute to this file.
-    policy.write_text(
-        _shipped_hard_failure() + "\n# a byte this run never sealed\n", encoding="utf-8"
-    )
+    # The threshold is ruled and `RULED_THRESHOLD` refuses to move either way, so
+    # the swap moves one [[kind]] to the end: a value change the resolved policy
+    # sorts away, which only this file's seal can attribute.
+    first_kind = '[[kind]]\nstage = "perlector"\noutcome = "failed"\n'
+    shipped = _shipped_hard_failure()
+    assert first_kind in shipped
+    policy.write_text(shipped.replace(first_kind, "", 1) + "\n" + first_kind, encoding="utf-8")
     # The refusal must arrive before any stage is re-entered: a tree byte moving
     # under the resumed invocation would mean work was spent under the unsealed
     # cap before the proof fired.

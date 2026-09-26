@@ -23,7 +23,6 @@ where they really are subprocesses.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -36,21 +35,11 @@ from common.chairs import (
     exercise_contract,
 )
 from common.chairs.conftest import DeterministicChairRegistry
+from conftest import load_stage, stage_programs
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_CONFIG = ROOT / "config" / "models.toml"
 FIXTURE_ROOT = ROOT / "proof"
-STAGE_PATHS = {
-    "door": "pipeline/1_exemplar/door.py",
-    "exemplar": "pipeline/1_exemplar/run.py",
-    "ink-map": "pipeline/1_ink_map/run.py",
-    "designator": "pipeline/2_designator/run.py",
-    "attestatores": "pipeline/3_attestatores/run.py",
-    "perlector": "pipeline/4_perlector/run.py",
-    "recensor": "pipeline/5_recensor/run.py",
-    "archetypus": "pipeline/6_archetypus/run.py",
-    "armarium": "pipeline/7_armarium/run.py",
-}
 # Every stage opens its context through the seam, including the pure consumers:
 # they resolve identities while validating the provenance their producers wrote,
 # so the whole skeleton has to receive the same implementation rather than
@@ -62,16 +51,6 @@ CHAIRS_THE_SKELETON_CALLS = {
     "attestator_3",
     "perlector",
 }
-
-
-def _load_stage(name: str):
-    path = ROOT / STAGE_PATHS[name]
-    spec = importlib.util.spec_from_file_location(f"seat_parameterization_{name}", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _invoke(module, monkeypatch, arguments: list[str], registry_factory) -> int:
@@ -98,8 +77,8 @@ def test_the_full_skeleton_runs_over_both_chair_implementations(
         str(MODELS_CONFIG),
     ]
 
-    for name in STAGE_PATHS:
-        module = _load_stage(name)
+    for name, program in stage_programs().items():
+        module = load_stage(Path(program).parent.name, Path(program).stem)
         assert _invoke(module, monkeypatch, arguments, registry_factory) == 0, (
             f"{name} did not complete over the {implementation} implementation"
         )
@@ -139,8 +118,13 @@ def test_the_deterministic_implementation_really_answered_for_every_chair_the_st
         str(MODELS_CONFIG),
     ]
 
-    for name in STAGE_PATHS:
-        _invoke(_load_stage(name), monkeypatch, arguments, lambda _: fake)
+    for program in stage_programs().values():
+        _invoke(
+            load_stage(Path(program).parent.name, Path(program).stem),
+            monkeypatch,
+            arguments,
+            lambda _: fake,
+        )
 
     called = {role for _, role in fake.calls}
     assert CHAIRS_THE_SKELETON_CALLS <= called

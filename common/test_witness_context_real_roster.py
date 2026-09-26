@@ -25,6 +25,7 @@ from common.chairs.errors import ConfigurationRefusal
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
+from common.sealed_config import read_sealed_toml
 from common.stage import run_config_bindings, validate_witness_context_bindings
 from common.witness_context import validate_witness_context_configuration
 
@@ -35,6 +36,10 @@ FIXTURE_CONTEXT = ROOT / "config" / "witness_context.toml"
 REAL_CONTEXT = ROOT / "config" / "witness_context-real.toml"
 
 _FIXTURE_SENTENCE = "a synthetic fixture witness; no real training domain applies"
+
+
+def _seal(path):
+    return read_sealed_toml(path, "witness-context declaration")[1]
 
 
 def _bindings(models_config: Path, witness_context_config: Path) -> dict:
@@ -146,7 +151,7 @@ def test_edge_whitespace_cannot_disguise_a_known_fixture_sentence(tmp_path):
             "attestator_3": "an operator-authored third witness",
         },
     )
-    assert digest_bytes(copied.read_bytes()) != digest_bytes(FIXTURE_CONTEXT.read_bytes())
+    assert _seal(copied) != _seal(FIXTURE_CONTEXT)
 
     with pytest.raises(ContractError, match="attestator_2.*shipped-fixture identity projection"):
         _bindings(REAL_ROSTER, copied)
@@ -210,8 +215,8 @@ def test_a_formatting_only_match_keeps_the_selected_declaration_bytes_as_evidenc
     )
 
     assert validation.profile == "shipped-fixture"
-    assert validation.source_sha256 == digest_bytes(copied.read_bytes())
-    assert validation.source_sha256 != digest_bytes(FIXTURE_CONTEXT.read_bytes())
+    assert validation.source_sha256 == _seal(copied)
+    assert validation.source_sha256 != _seal(FIXTURE_CONTEXT)
 
 
 def test_the_refusal_names_the_chairs_and_the_declaration_it_refused():
@@ -352,7 +357,7 @@ def test_a_recognized_profile_keeps_coverage_but_skips_an_explicit_absence():
         nuda_approval_ref="",
         perlector_instrument_per_mille=0,
         perlector_instrument_approval_ref="",
-    ) == digest_bytes(REAL_CONTEXT.read_bytes())
+    ) == _seal(REAL_CONTEXT)
 
 
 def test_mixed_custom_known_and_absent_roles_preserve_the_narrow_contract(tmp_path):
@@ -382,7 +387,7 @@ def test_mixed_custom_known_and_absent_roles_preserve_the_narrow_contract(tmp_pa
         shipped_config_root=ROOT / "config",
     )
 
-    assert validation.source_sha256 == digest_bytes(mixed.read_bytes())
+    assert validation.source_sha256 == _seal(mixed)
     assert validation.profile == "mixed"
     assert dict(validation.role_profiles) == {
         "attestator_1": "operator-authored",
@@ -428,8 +433,8 @@ def test_a_real_run_seals_the_real_declarations_bytes():
         perlector_instrument_approval_ref="",
     )
 
-    assert sealed == digest_bytes(REAL_CONTEXT.read_bytes())
-    assert sealed != digest_bytes(FIXTURE_CONTEXT.read_bytes())
+    assert sealed == _seal(REAL_CONTEXT)
+    assert sealed != _seal(FIXTURE_CONTEXT)
 
 
 def test_a_fixture_run_still_seals_the_fixture_declaration():
@@ -444,7 +449,7 @@ def test_a_fixture_run_still_seals_the_fixture_declaration():
         perlector_instrument_approval_ref="",
     )
 
-    assert sealed == digest_bytes(FIXTURE_CONTEXT.read_bytes())
+    assert sealed == _seal(FIXTURE_CONTEXT)
 
 
 def test_a_custom_declaration_remains_operator_authored_and_changes_the_config_digest(tmp_path):
@@ -500,4 +505,4 @@ def test_a_roster_without_witness_roles_records_that_absence(tmp_path):
     assert validation.declared_roles == ()
     assert validation.verified_present_roles == ()
     assert validation.role_profiles == ()
-    assert validation.source_sha256 == digest_bytes(b"")
+    assert validation.source_sha256 == digest_bytes(b"{}")

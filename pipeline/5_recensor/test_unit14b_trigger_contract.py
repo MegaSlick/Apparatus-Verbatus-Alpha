@@ -9,14 +9,12 @@ most one act-scoped recovery request.
 from __future__ import annotations
 
 import ast
-import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from common.background import DEFAULT_BACKGROUND_CONFIG_PATH
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.residual_ink import (
     MINIMUM_INK_PIXELS_FIELD,
@@ -24,6 +22,8 @@ from common.residual_ink import (
     load_coverage_audit_config,
     resolve_coverage_audit_policy,
 )
+from common.sealed_config import read_sealed_toml
+from conftest import load_stage
 
 # The sealed noise floor, read from `[coverage_audit.noise_floor]` the way the
 # stage reads it, so a stimulus anchored on this name moves with the sealed
@@ -32,22 +32,14 @@ MINIMUM_INK_PIXELS = load_coverage_audit_config()["coverage_audit"]["minimum_ink
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
-EXPECTED_BACKGROUND_SHA256 = digest_bytes(DEFAULT_BACKGROUND_CONFIG_PATH.read_bytes())
-
-
-def _recensor():
-    spec = importlib.util.spec_from_file_location("recensor_u14b_trigger", RECENSOR)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+EXPECTED_BACKGROUND_SHA256 = read_sealed_toml(DEFAULT_BACKGROUND_CONFIG_PATH, "config")[1]
 
 
 # The live trigger expression calls `declared_recovery` -- a named function, not
 # a bare subscript, since it must also answer `False` with no scenario at all
 # (`declared_scenario` is `None` on a real submission). The isolated `eval`
 # below needs that one name resolvable, exactly as it needs `bool`.
-_RECENSOR_MODULE = _recensor()
+_RECENSOR_MODULE = load_stage("5_recensor")
 
 
 def _tree(source: str | None = None) -> ast.Module:
@@ -274,7 +266,7 @@ def test_each_forbidden_witness_trigger_cannot_request_recovery_even_with_ink(fo
     its own box. Only the ink presence changes the result; the forbidden field
     never does, whichever way it points.
     """
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 5, "h": 5}
     observation = {"kind": "unrouted-observation", "bounds": box, **forbidden}
     # The inked half below only records a request while this box clears the
@@ -305,7 +297,7 @@ def test_a_two_chair_disagreement_is_refused_through_the_real_gate_by_hand():
     Both boxes sit outside every proposal but contain no measured ink, so their
     disagreement cannot authorize recovery.
     """
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     chair_1_box = {"x": 0, "y": 0, "w": 4, "h": 4}
     chair_2_box = {"x": 6, "y": 0, "w": 4, "h": 4}
     observations = [
@@ -322,7 +314,7 @@ def test_a_two_chair_disagreement_is_refused_through_the_real_gate_by_hand():
 
 def test_ink_below_the_minimum_pixel_floor_still_refuses():
     """A pointer with a trace of ink, short of `MINIMUM_INK_PIXELS`, is not evidence."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     # One pixel short of the floor, derived rather than written out: a changed
     # floor must move this box with it, not silently invert what the test proves.
     box = {"x": 0, "y": 0, "w": MINIMUM_INK_PIXELS - 1, "h": 1}
@@ -343,7 +335,7 @@ def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice()
     Python reads as nearly the whole page. A full ink map then made a witness
     pointer that touches no page pixel clear the recovery threshold.
     """
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     page = {"x": 0, "y": 0, "w": 40, "h": 40}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(40, 40, [page])}))
     observation = {
@@ -359,7 +351,7 @@ def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice()
 
 
 def test_a_partly_out_of_page_observation_publishes_only_canonical_geometry():
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     page = {"x": 0, "y": 0, "w": 40, "h": 40}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(40, 40, [page])}))
     observation = {
@@ -385,7 +377,7 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
     recorded, so one may overlap a later recovery crop. Ink in that overlap is
     already covered and cannot fund another recovery.
     """
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 10, "h": 10}  # 100 px, well past MINIMUM_INK_PIXELS
     observation = {"kind": "unrouted-observation", "bounds": box}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
@@ -424,7 +416,7 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
 
 def test_two_overlapping_cut_regions_do_not_subtract_their_shared_pixels_twice():
     """Acts cut on one page may overlap; the mask is a union, not a sum."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 10, "h": 10}
     observation = {"kind": "unrouted-observation", "bounds": box}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
@@ -441,7 +433,7 @@ def test_unordered_ink_runs_are_refused_rather_than_double_counted():
     Overlapping runs would be counted twice and could manufacture the ink
     confirmation this gate exists to require.
     """
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     forged = _ink_map(20, 20, [])
     forged["rows"][0] = [[0, 10], [5, 10]]
     with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
@@ -457,14 +449,14 @@ def test_unordered_ink_runs_are_refused_rather_than_double_counted():
 )
 def test_invalid_ink_map_dimensions_are_refused_instead_of_read_as_empty(evidence):
     """Zero and boolean dimensions cannot turn malformed evidence into no ink."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
         recensor.ink_map_by_page(_FakeContext({1: evidence}))
 
 
 def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():
     """Missing evidence is an accounting refusal, never silently read as zero ink."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 5, "h": 5}
     observation = {"kind": "unrouted-observation", "bounds": box}
     maps = recensor.ink_map_by_page(_FakeContext({2: _ink_map(20, 20, [box])}))
@@ -511,7 +503,7 @@ def test_a_retained_observation_with_no_readable_bounds_is_refused_not_skipped(o
     refuses, and the one this gate exists to catch for every other malformed
     shape it reads (dimensions, rows, runs, missing map).
     """
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 5, "h": 5}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
     with pytest.raises(
@@ -602,7 +594,7 @@ def test_the_page_bound_is_counted_from_the_tree_not_from_this_pass():
     act spend the grant one round later, which is the same two requests with a
     round between them.
     """
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     context = _RequestContext(
         [
             _request("r1", "act-1", recensor.COVERAGE_OBSERVATION_ORIGIN),
@@ -614,7 +606,7 @@ def test_the_page_bound_is_counted_from_the_tree_not_from_this_pass():
 
 def test_two_observation_funded_requests_on_one_page_are_refused_not_collapsed():
     """The read-side bound is an invariant, not a lossy set conversion."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     context = _RequestContext(
         [
             _request("r1", "act-1", recensor.COVERAGE_OBSERVATION_ORIGIN),
@@ -627,7 +619,7 @@ def test_two_observation_funded_requests_on_one_page_are_refused_not_collapsed()
 
 def test_a_declared_request_does_not_spend_the_observation_grant_beside_it():
     """The causal origin is the declared route when both routes are present."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
     assert (
         recensor.recovery_request_origin(declared=True, outside_ink_requests=confirmed)
@@ -640,14 +632,14 @@ def test_a_declared_request_does_not_spend_the_observation_grant_beside_it():
 
 
 def test_a_request_origin_with_no_cause_refuses_instead_of_guessing():
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     with pytest.raises(FatalAccounting, match="neither a declared nor an ink-confirmed origin"):
         recensor.recovery_request_origin(declared=False, outside_ink_requests=[])
 
 
 def test_a_second_request_is_replaced_by_a_loud_hold_not_an_acceptance():
     """The one-grant bound preserves the unresolved pointer as a live hold."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
     outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, {1})
     assert outcome == "held-for-review"
@@ -733,7 +725,7 @@ def test_real_route_uses_the_same_budget_hold_when_recovery_is_not_admitted():
     an operator looking for a budget to raise. The evidence itself stays visible
     either way: a still-confirmed pointer never reaches an accepted review.
     """
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
 
     outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, set())
@@ -750,14 +742,14 @@ def test_real_route_uses_the_same_budget_hold_when_recovery_is_not_admitted():
 
 def test_observation_hold_has_no_ingress_parameter():
     """The shared grant state is identical for fixture and real measured routes."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
     assert recensor.unresolved_observation_hold(confirmed, 1, set())[0] == "held-for-review"
 
 
 def test_a_recovery_request_with_no_recorded_origin_is_refused():
     """The bound counts a recorded fact; an unrecorded one is not resolved."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     context = _RequestContext([_request("r1", "act-1", None)])
     with pytest.raises(FatalAccounting, match="names no recorded origin"):
         recensor.observation_funded_pages(context, ACTS)
@@ -765,7 +757,7 @@ def test_a_recovery_request_with_no_recorded_origin_is_refused():
 
 def test_a_recovery_request_for_an_unexpected_act_is_refused():
     """A request whose act is outside the seal cannot be counted onto a page."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     context = _RequestContext([_request("r1", "act-9", recensor.COVERAGE_OBSERVATION_ORIGIN)])
     with pytest.raises(FatalAccounting, match="outside the proposal seal"):
         recensor.observation_funded_pages(context, ACTS)
@@ -773,7 +765,7 @@ def test_a_recovery_request_for_an_unexpected_act_is_refused():
 
 def test_the_mask_argument_has_no_fail_open_default():
     """Omitting the cut mask restores the pre-fix over-count; it must not be optional."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 10, "h": 10}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
     # Bound to the signature. A bare `TypeError` also matches one raised while
@@ -791,7 +783,7 @@ def test_the_noise_floor_argument_has_no_fail_open_default():
     run's seal rather than from a module constant; a default here would let a
     caller fund recovery under a floor the run never sealed.
     """
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 10, "h": 10}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
     with pytest.raises(TypeError, match="minimum_ink_pixels"):
@@ -872,7 +864,7 @@ def _sealed_page(digest):
 
 
 def test_the_capture_digest_map_is_the_sealed_pages_own_verified_digest():
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     assert recensor.capture_digest_by_page({1: _sealed_page(_DIGEST)}) == {1: _DIGEST}
 
 
@@ -880,13 +872,13 @@ def test_the_capture_digest_map_is_the_sealed_pages_own_verified_digest():
 def test_a_page_with_no_lowercase_capture_digest_is_a_named_accounting_refusal(digest):
     """Never a `KeyError` and never a refusal naming the caller's request: a
     digest this stage cannot state is a failure of its own evidence."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     with pytest.raises(FatalAccounting, match="page 1 carries no lowercase capture digest"):
         recensor.capture_digest_by_page({1: _sealed_page(digest)})
 
 
 def test_a_page_outside_the_capture_digest_map_refuses_by_name_before_the_gate():
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     digests = recensor.capture_digest_by_page({1: _sealed_page(_DIGEST)})
     assert recensor.capture_digest_for(digests, 1, "act-1") == _DIGEST
     with pytest.raises(FatalAccounting, match="act act-1's recovery request names source page 2"):

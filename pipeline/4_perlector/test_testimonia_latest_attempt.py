@@ -8,7 +8,6 @@ chair-identity boundary no live producer reaches yet either.
 """
 
 import copy
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -22,20 +21,13 @@ from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
 from common.runtree.store import RunTree
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 MODELS_CONFIG = ROOT / "config" / "models.toml"
 
 
-def _load_perlector():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("perlector_testimonia_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-perlector = _load_perlector()
+perlector = load_stage("4_perlector")
 
 
 class _Context:
@@ -284,13 +276,7 @@ def test_perlector_refuses_a_missing_witness_before_publishing_any_reading(
     before the first publication.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-    ):
+    for program in programs_through("attestatores"):
         result = subprocess.run(
             [
                 sys.executable,

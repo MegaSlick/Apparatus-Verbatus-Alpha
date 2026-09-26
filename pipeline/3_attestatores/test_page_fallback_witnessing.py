@@ -13,26 +13,15 @@ halves live in `pipeline/orchestrator/test_orchestrator_acceptance.py`
 (`ink-free-page` and `ink-free-page-unwitnessed`).
 """
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import ACT_CLASSES, act_id
 from common.stage import fallback_page_act_key, page_residual_act_key
+from conftest import load_stage
 
-
-def _load_attestatores():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("attestatores_fallback_witnessing", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-attestatores = _load_attestatores()
+attestatores = load_stage("3_attestatores")
 
 CHAIR = "attestator_1"
 FALLBACK_KEY = fallback_page_act_key(3)

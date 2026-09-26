@@ -46,6 +46,7 @@ from .bootstrap import (
     SubprocessBootstrapActions,
     verify_image_contract,
 )
+from .conftest import NO_OP_BOOTSTRAP, timer_start_command
 from .controllers import ControllerResult, ControllerState, LaptopSupervisor, PodDeadmanTimer
 from .fake_provider import FakeProvider
 from .launch import (
@@ -332,21 +333,7 @@ def request(clock: Clock, *, gpu: str = "fake-48gb", lifetime: int = 300) -> Pod
         template="pinned-template",
         volume_id="test-volume",
         volume_mount_path="/workspace/private",
-        docker_start_cmd=(
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "operations.pod.provider_runpod:timer_context_from_environment",
-            "--bootstrap-command-json",
-            # PLACEHOLDER: bootstrap.py is a library module with no __main__, so
-            # this exits 0 immediately.  Tests rely on that to drill the
-            # completed-early close path; it is not a template for a real
-            # request file, which needs a long-running bootstrap/service entrypoint.
-            '["python","-m","operations.pod.bootstrap"]',
-            "--report-path",
-            "/workspace/private/pod-runtime-report.json",
-        ),
+        docker_start_cmd=timer_start_command("/workspace/private/pod-runtime-report.json"),
         hard_deadline=clock.now() + timedelta(seconds=lifetime),
         repository_commit="b" * 40,
         metadata={BILLING_CUTOFF_MARGIN_ENV: "3600"},
@@ -3498,28 +3485,16 @@ def test_report_path_binding_also_binds_a_nested_equals_form_report_path() -> No
 
 
 def test_report_path_binding_leaves_a_nested_command_with_no_report_path_alone() -> None:
-    """A nested argv that never reads a report path (the library-module
-    placeholder ``request()`` uses below) is returned unchanged rather than
-    having a path invented for it."""
+    """A nested argv that never reads a report path (the no-op placeholder
+    ``request()`` uses) is returned unchanged rather than having a path
+    invented for it."""
 
     token = "a" * 32
-    command = (
-        "python",
-        "-m",
-        "operations.pod.pod_timer",
-        "--timer-factory",
-        "operations.pod.provider_runpod:timer_context_from_environment",
-        "--bootstrap-command-json",
-        json.dumps(["python", "-m", "operations.pod.bootstrap"]),
-        "--report-path",
-        "/workspace/private/pod-runtime-report.json",
-    )
+    command = timer_start_command("/workspace/private/pod-runtime-report.json")
 
     bound = _bind_report_path_to_launch(command, token)
 
-    assert bound[bound.index("--bootstrap-command-json") + 1] == json.dumps(
-        ["python", "-m", "operations.pod.bootstrap"]
-    )
+    assert bound[bound.index("--bootstrap-command-json") + 1] == NO_OP_BOOTSTRAP
 
 
 def test_an_altered_lease_is_refused_rather_than_acted_on(tmp_path: Path) -> None:
@@ -4265,7 +4240,7 @@ def test_pod_timer_requires_bootstrap_and_persists_a_red_bootstrap_close_report(
     report_path = tmp_path / "pod-report.json"
     result = run_with_bootstrap(
         TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         interval_seconds=1,
@@ -4304,7 +4279,7 @@ def test_a_pre_delete_breadcrumb_says_a_close_was_attempted_from_inside_the_pod(
     report_path = tmp_path / "pod-report.json"
     run_with_bootstrap(
         TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         interval_seconds=1,
@@ -4443,7 +4418,7 @@ def test_a_failed_breadcrumb_is_named_in_the_durable_report_the_close_files(
 
     run_with_bootstrap(
         context,
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         interval_seconds=1,
@@ -4474,7 +4449,7 @@ def test_an_ordinary_close_leaves_no_breadcrumb_failure_field_at_all(tmp_path: P
 
     run_with_bootstrap(
         context,
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         interval_seconds=1,
@@ -4546,17 +4521,7 @@ def test_credential_shaped_metadata_is_refused_by_bare_key_and_token_markers(fie
             image="registry.example/verbatus@sha256:" + "a" * 64,
             volume_id="test-volume",
             volume_mount_path="/workspace/private",
-            docker_start_cmd=(
-                "python",
-                "-m",
-                "operations.pod.pod_timer",
-                "--timer-factory",
-                "operations.pod.provider_runpod:timer_context_from_environment",
-                "--bootstrap-command-json",
-                '["python","-m","operations.pod.bootstrap"]',
-                "--report-path",
-                "/workspace/private/pod-runtime-report.json",
-            ),
+            docker_start_cmd=timer_start_command("/workspace/private/pod-runtime-report.json"),
             hard_deadline=clock.now() + timedelta(seconds=5),
             repository_commit="b" * 40,
             metadata={field: "should-never-be-accepted"},
@@ -4956,7 +4921,7 @@ def test_pod_timer_bootstrap_failed_to_start_records_its_own_reason_not_a_write_
     ):
         run_with_bootstrap(
             TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-            bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+            bootstrap_command_json=NO_OP_BOOTSTRAP,
             report_path=report_path,
             popen=failing_popen,  # type: ignore[arg-type]
         )
@@ -4987,7 +4952,7 @@ def test_pod_timer_report_write_failure_immediately_closes_and_never_returns_gre
     with pytest.raises(RuntimeError, match="immediate close result is verified, never green"):
         run_with_bootstrap(
             TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-            bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+            bootstrap_command_json=NO_OP_BOOTSTRAP,
             report_path=blocked_parent / "report.json",
             popen=lambda argv: RunningChild(),  # type: ignore[arg-type]
         )
@@ -5060,7 +5025,7 @@ def test_pod_timer_closes_when_bootstrap_exits_early_to_avoid_idle_spend(tmp_pat
     report_path = tmp_path / "early-exit-report.json"
     result = run_with_bootstrap(
         TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         popen=lambda argv: CompletedChild(),  # type: ignore[arg-type]
     )
@@ -6821,7 +6786,7 @@ def test_pod_timer_expiry_with_a_running_child_closes_verified(tmp_path: Path) -
     report_path = tmp_path / "expiry-report.json"
     result = run_with_bootstrap(
         TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         popen=lambda argv: RunningChild(),  # type: ignore[arg-type]
@@ -6852,7 +6817,7 @@ def test_pod_timer_reattempts_a_red_close_a_bounded_number_of_times(tmp_path: Pa
     report_path = tmp_path / "red-report.json"
     result = run_with_bootstrap(
         TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         popen=lambda argv: RunningChild(),  # type: ignore[arg-type]
@@ -7456,7 +7421,7 @@ def test_a_red_bootstrap_close_report_carries_the_same_identity(tmp_path: Path) 
     report_path = tmp_path / "ack-bootstrap-failed-report.json"
     run_with_bootstrap(
         context,
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         interval_seconds=1,
@@ -7486,7 +7451,7 @@ def test_a_completed_early_close_report_carries_the_same_identity(tmp_path: Path
     report_path = tmp_path / "ack-completed-early-report.json"
     run_with_bootstrap(
         context,
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         popen=lambda argv: CompletedChild(),  # type: ignore[arg-type]
     )
@@ -7514,7 +7479,7 @@ def test_the_final_hard_deadline_expiry_report_carries_the_same_identity(tmp_pat
     report_path = tmp_path / "ack-expiry-report.json"
     result = run_with_bootstrap(
         context,
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         popen=lambda argv: RunningChild(),  # type: ignore[arg-type]
@@ -7700,16 +7665,8 @@ def test_a_pending_create_lease_report_cannot_prove_a_pod(tmp_path: Path) -> Non
         image="registry.example/verbatus@sha256:" + "a" * 64,
         volume_id="test-volume",
         volume_mount_path="/workspace/private",
-        docker_start_cmd=(
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "operations.pod.provider_runpod:timer_context_from_environment",
-            "--bootstrap-command-json",
-            '["python","-m","operations.pod.bootstrap"]',
-            "--report-path",
-            f"/workspace/private/pod-runtime-report-{launch_token}.json",
+        docker_start_cmd=timer_start_command(
+            f"/workspace/private/pod-runtime-report-{launch_token}.json"
         ),
         hard_deadline=hard_deadline,
         repository_commit="b" * 40,

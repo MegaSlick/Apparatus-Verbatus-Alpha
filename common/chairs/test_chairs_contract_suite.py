@@ -24,6 +24,7 @@ from common.chairs.errors import ProtocolClauseRefusal, UnresolvedChairRefusal
 from common.chairs.models import AbsentChair, ChairIdentity, VerifiedSnapshot
 from common.chairs.protocol import ChairProtocol, exercise_contract
 from common.chairs.receipts import build_receipt
+from conftest import code_text
 
 from .conftest import (
     DeterministicChairRegistry,
@@ -77,18 +78,15 @@ def test_neither_implementation_imports_or_delegates_to_the_other():
     """Independence measured on the implementations, not on the files holding
     them: `conftest.py` imports `ChairRegistry` for the *other* tests' plumbing,
     which says nothing about whether the deterministic chair leans on it."""
-    import inspect
-
     import common.chairs.registry as registry_module
 
-    body = inspect.getsource(DeterministicChairRegistry)
-    body = body[body.index('"""', body.index('"""') + 3) + 3 :]  # past the class docstring
+    body = code_text(DeterministicChairRegistry)
 
     assert "common.chairs.registry" not in body
     assert "ChairRegistry(" not in body
     assert not issubclass(DeterministicChairRegistry, registry_module.ChairRegistry)
-    assert "conftest" not in inspect.getsource(registry_module)
-    assert "Deterministic" not in inspect.getsource(registry_module)
+    assert "conftest" not in code_text(registry_module)
+    assert "Deterministic" not in code_text(registry_module)
 
 
 # --- resolve ------------------------------------------------------------------------

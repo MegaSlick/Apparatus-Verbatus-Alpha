@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
 import json
 import subprocess
 import sys
@@ -28,6 +27,7 @@ from common.perlector_audit import (
     validate_truncation_record,
 )
 from common.runtree.store import RunTree
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -44,7 +44,7 @@ def test_witness_derived_location_classes_remain_the_one_open_class():
 
 def test_flag_location_basis_names_only_witnesses_that_located_a_frozen_diff():
     """An agreeing witness is evidence, but it did not locate the diff flag."""
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     text = "alpha beta"
     flags = [{"class": "testimony-diff", "location": {"start": 6, "end": 10}}]
     dossier = {
@@ -78,7 +78,7 @@ def test_flag_location_basis_names_only_witnesses_that_located_a_frozen_diff():
 
 
 def test_audit_draft_requires_location_basis_exactly_when_testimony_located_a_flag():
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     policy = {"schema": audit.SCHEMA, "sha256": "a" * 64, "approval_ref": "approved"}
     draft = {
         "act_key": "a1",
@@ -142,7 +142,7 @@ def test_the_flag_location_basis_names_only_the_chairs_that_departed():
     on, and a claim about something nobody measured. A chair whose report is
     not a string at all is not a departure either, and is passed over.
     """
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     dossier = _dossier(
         ("attestator_1", "the reading", "own-report"),
         ("attestator_2", "a departure", "own-report"),
@@ -170,7 +170,7 @@ def test_two_witnesses_departing_at_the_same_span_both_appear_in_the_basis():
     function a single qualifying witness -- so this is the one case that
     proves a second, equally-located dissent is retained rather than dropped.
     """
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     dossier = _dossier(
         ("attestator_1", "the reading", "own-report"),
         ("attestator_2", "a departure", "own-report"),
@@ -196,7 +196,7 @@ def test_two_witnesses_departing_at_the_same_span_both_appear_in_the_basis():
 
 def test_a_page_slice_derivation_is_named_as_the_double_derivation_it_is():
     """§4.6: a page-slice diff is recorded with its derivation, never bare."""
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     dossier = _dossier(("attestator_2", "a departure", "page-slice"))
     span = audit.text_change_span("the reading", "a departure")
     flags = [{"class": "testimony-diff", "location": {"start": span[0], "end": span[1]}}]
@@ -219,7 +219,7 @@ def test_no_departure_means_no_witness_derived_location_at_all():
     would pass however the dossier were read; both calls are kept because the
     early return is also worth pinning.
     """
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     dossier = _dossier(("attestator_1", "the reading", "own-report"))
     agreeing_span = audit.text_change_span("the reading", "the reading")
     flags = [
@@ -241,7 +241,7 @@ def test_a_departure_at_an_unflagged_span_is_not_named_as_a_basis():
     spans and flagged spans differ, so a row invented at an unflagged span
     could never reach disk; the producer must not offer one either.
     """
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     dossier = _dossier(("attestator_2", "a departure", "own-report"))
     flags = [{"class": "testimony-diff", "location": {"start": 0, "end": 1}}]
     assert perlector.flag_location_basis(dossier, flags, semi_final_text="the reading") == []
@@ -251,33 +251,7 @@ def test_a_departure_at_an_unflagged_span_is_not_named_as_a_basis():
 # proof needs the stage's own `main()` in this process — that is the only way to
 # hold the reader object it actually called — so the evidence it reads must be
 # built by the real chain first, exactly as the Sol-S2 demonstration built it.
-CHAIN_THROUGH_ATTESTATORES = (
-    "pipeline/1_exemplar/door.py",
-    "pipeline/1_exemplar/run.py",
-    "pipeline/1_ink_map/run.py",
-    "pipeline/2_designator/run.py",
-    "pipeline/3_attestatores/run.py",
-)
-
-
-def _recensor():
-    spec = importlib.util.spec_from_file_location(
-        "r5b_recensor_consumer", ROOT / "pipeline" / "5_recensor" / "run.py"
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _perlector():
-    spec = importlib.util.spec_from_file_location(
-        "r5b_perlector_schema", ROOT / "pipeline" / "4_perlector" / "run.py"
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+CHAIN_THROUGH_ATTESTATORES = programs_through("attestatores")
 
 
 def _run(root: Path, *extra: str, scenario: str = "happy"):
@@ -430,7 +404,7 @@ class _CapturingReader:
 
 def _perlector_with_capturing_reader(root: Path, scenario: str, monkeypatch):
     """Run the real Perlector stage in this process, holding every reader call."""
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     declared = perlector.FixtureReader
     calls: list[dict] = []
     monkeypatch.setattr(
@@ -843,7 +817,7 @@ def test_fixture_exercises_a_changed_reproof_with_its_triggering_flag_class(tmp_
     # The exact declared result, not merely "something changed": any wrong
     # changed text would otherwise pass this end-to-end pin.
     assert final["payload"]["text"] == "SYNTHETIC ACT ONE alpha beta gamma!"
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     assert final["payload"]["self_revision"] == perlector.departures(
         final["payload"]["text"], prior["payload"]["text"]
     )
@@ -867,7 +841,7 @@ def test_perlectio_schema_refuses_a_directional_reproof_prompt(tmp_path):
     final = _records(RunTree(tmp_path / "runs", "r"), "perlectio")[0]
     payload = copy.deepcopy(final["payload"])
     payload["audit"]["reproofs"][0]["prompt"] = "The reading is wrong; replace it with gamma."
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     # Thread the sealed protocol: since R5a, a payload carrying a protocol
     # record refuses an unthreaded validation call before this test's own
     # boundary is reached.
@@ -925,7 +899,7 @@ def test_recovery_flag_pass_merges_sibling_rows_before_the_page_calculation(monk
     `test_recovery_sibling_context_is_sealed_and_never_republished` below is
     what proves they come from sealed artifacts, so deleting that test is what
     would lose the sealing coverage, not this one."""
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     recovered = [
         {
             "act_id": "a2",
@@ -1007,7 +981,7 @@ def test_audit_page_ids_is_the_canonical_set_regardless_of_traversal_order():
     page_id left the closed field sets with it), and duplicate and
     conflicting-ordinal protections stand on their own checks.
     """
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     bases = [
         {"source_page_ordinal": 2, "source_page_id": "primary-page"},
         {"source_page_ordinal": 1, "source_page_id": "earlier-continuation"},
@@ -1021,7 +995,7 @@ def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
     result = _run(tmp_path / "runs", scenario="review")
     assert result.returncode == 3, result.stderr
     tree = RunTree(tmp_path / "runs", "r")
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     readings = _records(tree, "perlectio")
     # More than one act may reach ordinal two; sealed act identities, not the
     # ordinal alone, distinguish the recovery from its sibling.
@@ -1086,7 +1060,7 @@ def test_recovery_selects_a_sibling_reaching_the_page_only_by_continuation(tmp_p
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr
     tree = RunTree(tmp_path / "runs", "r")
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     sibling = next(
         record
         for record in _records(tree, "perlectio")
@@ -1309,7 +1283,7 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
     nobody established, and the re-proof's own engine stop reason was dropped
     on the floor.
     """
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     complete = {
         "classification": "complete",
         "signals": {
@@ -1457,7 +1431,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
             text="abc",
             flag_text="abc",
         )
-    outcome, reason = _recensor().review_route_from_findings(
+    outcome, reason = load_stage("5_recensor").review_route_from_findings(
         testimony_shortfall=False,
         audit_unresolved=finding["unresolved"],
         under_witnessed=False,
@@ -1476,7 +1450,9 @@ def test_recensor_refuses_a_forged_audit_reference(tmp_path):
     forged["payload"]["audit"]["finding_ref"] = forged["payload"]["audit"]["draft_ref"]
 
     with pytest.raises(SchemaRefusal, match="not required 'perlector'/'audit-finding'"):
-        _recensor().audit_state(SimpleNamespace(tree=tree), forged, final["subject_id"])
+        load_stage("5_recensor").audit_state(
+            SimpleNamespace(tree=tree), forged, final["subject_id"]
+        )
 
 
 def test_a_not_run_perlectio_has_no_audit_chain_and_is_not_a_traceback():
@@ -1508,7 +1484,9 @@ def test_a_not_run_perlectio_has_no_audit_chain_and_is_not_a_traceback():
     # produced one, so the refusal cannot come from a lookup that half-ran.
     # `None`, never `False`: no audit exists, which is a different recorded
     # fact from "audited, resolved".
-    assert _recensor().audit_state(SimpleNamespace(tree=None), not_run, "act-1") is None
+    assert (
+        load_stage("5_recensor").audit_state(SimpleNamespace(tree=None), not_run, "act-1") is None
+    )
 
 
 def test_the_order_flag_fires_from_real_crop_geometry_not_the_declared_order():
@@ -1521,7 +1499,7 @@ def test_the_order_flag_fires_from_real_crop_geometry_not_the_declared_order():
     so the repair is pinned here: two acts declared in the seal's order but cut
     the other way up the page must both raise `order`.
     """
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
 
     def row(act_id, *, order, y):
         return perlector._audit_semi_final(
@@ -1965,7 +1943,7 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
     """
     root = tmp_path / "runs"
     _chain_through_attestatores(root, scenario)
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     declared = perlector.FixtureReader
     reproofed: list[str] = []
 
@@ -2063,7 +2041,7 @@ def test_a_wrong_location_reproof_becomes_an_act_local_failure(tmp_path, monkeyp
     """An escape is refused on the escape, not on why the call stopped."""
     root = tmp_path / "runs"
     _chain_through_attestatores(root, "audit-change")
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     declared = perlector.FixtureReader
     reproofed: list[str] = []
 
@@ -2124,7 +2102,7 @@ def test_a_wrong_location_reproof_becomes_an_act_local_failure(tmp_path, monkeyp
 def test_a_malformed_reproof_reply_becomes_a_retained_failed_act(tmp_path, monkeypatch):
     root = tmp_path / "runs"
     _chain_through_attestatores(root, "audit-change")
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     declared = perlector.FixtureReader
 
     class MalformedReader:
@@ -2168,7 +2146,7 @@ def test_a_malformed_reproof_reply_becomes_a_retained_failed_act(tmp_path, monke
 def test_a_non_json_whitespace_reproof_becomes_an_act_local_failure(tmp_path, monkeypatch):
     root = tmp_path / "runs"
     _chain_through_attestatores(root, "audit-change")
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     declared = perlector.FixtureReader
     reproofed: list[str] = []
 
@@ -2227,7 +2205,7 @@ def test_failed_reproof_flows_to_held_review_and_partial_export(tmp_path, monkey
     """
     root = tmp_path / "runs"
     _chain_through_attestatores(root, "audit-change")
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     declared = perlector.FixtureReader
     reproofed: list[str] = []
 
@@ -2565,7 +2543,7 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
     }
     assert validate_truncation_record(one, label="x")["classification"] == "unknown"
     # The producer's instrument decides with the same shared rule.
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     measured = perlector.truncation.classify(
         "alpha beta-",
         region_pixels=_TEST_REGION_PIXELS,
@@ -2669,7 +2647,7 @@ def test_a_fixture_may_declare_pass_bs_word_and_the_reproofs_word_for_one_act():
 
 def test_the_recensor_routes_on_the_examination_and_refuses_a_contradicting_boolean():
     """Finding 4: the boolean is derived from the examination; where both arrive they agree."""
-    recensor = _recensor()
+    recensor = load_stage("5_recensor")
     with pytest.raises(ContractError, match="derives True"):
         recensor.review_route_from_findings(
             testimony_shortfall=False,
@@ -2766,7 +2744,7 @@ def test_an_acts_region_is_the_union_of_its_crops_not_their_sum():
     held every recovered act: fixture a1's recovered attempt measured 41,412
     px for an 18,612 px crop inside a 22,800 px recrop. Regions on different
     pages never overlap and still add."""
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
 
     def basis(page, x, y, w, h):
         return {"source_page_id": page, "transform": {"bounds": {"x": x, "y": y, "w": w, "h": h}}}
@@ -2785,7 +2763,7 @@ def test_an_acts_region_is_the_union_of_its_crops_not_their_sum():
 
 def test_the_audited_truncation_takes_an_already_measured_record_without_remeasuring():
     """The branch production uses: the re-proof's own measurement is passed through."""
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     measured = perlector.truncation.classify(
         "alpha beta gamma",
         region_pixels=_TEST_REGION_PIXELS,
@@ -2867,7 +2845,7 @@ def test_an_emptied_reproof_is_re_measured_beside_the_text_it_publishes():
     """
     import ast
 
-    source = Path(_perlector().__file__).read_text(encoding="utf-8")
+    source = Path(load_stage("4_perlector").__file__).read_text(encoding="utf-8")
     module = ast.parse(source)
     read_the_acts = next(
         node

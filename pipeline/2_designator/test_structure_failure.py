@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from _test_support import load_designator
 
 from common.contracts.approval import (
     ApprovalRefusal,
@@ -28,21 +27,18 @@ from common.contracts.errors import ContractError
 from common.contracts.stages import ARMARIUM, DESIGNATOR
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def _shipped_background_policy(width: int, height: int):
-    grouping_config = _load_designator().grouping_config
+    grouping_config = load_stage("2_designator").grouping_config
     return grouping_config.resolve_background_policy(
         grouping_config.load_grouping_config(ROOT / "config" / "designator_grouping.toml"),
         width,
         height,
     )
-
-
-def _load_designator():
-    return load_designator("designator_structure_failure_under_test")
 
 
 class _Context:
@@ -60,7 +56,7 @@ def test_the_designator_reads_its_ingress_route_off_the_context_it_was_handed(mo
     follows the context. A regression that read argv instead would pass a
     test that handed both the same record.
     """
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     handed = []
 
     class _Opened:
@@ -107,13 +103,13 @@ def test_the_designator_reads_its_ingress_route_off_the_context_it_was_handed(mo
 
 
 def test_a_failure_for_another_scenario_is_not_this_runs_failure():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     fixture = {"structure_failure": [{"scenario": "other", "page_ordinal": 1, "reason_code": "x"}]}
     assert designator.structure_failures(_Context(fixture, "happy"), {1: {}}) == {}
 
 
 def test_a_failure_for_this_scenario_is_read_by_page_ordinal():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     fixture = {"structure_failure": [{"scenario": "s", "page_ordinal": 2, "reason_code": "why"}]}
     assert designator.structure_failures(_Context(fixture, "s"), {1: {}, 2: {}}) == {2: "why"}
 
@@ -122,13 +118,13 @@ def test_a_failure_naming_a_page_this_run_never_sealed_is_not_counted_twice():
     """The Exemplar's own refusal already accounts for an unsealed page;
     holding it again would put two holds on one loss.
     """
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     fixture = {"structure_failure": [{"scenario": "s", "page_ordinal": 9, "reason_code": "why"}]}
     assert designator.structure_failures(_Context(fixture, "s"), {1: {}}) == {}
 
 
 def test_two_declared_failures_for_one_page_refuse_rather_than_pick_one():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     fixture = {
         "structure_failure": [
             {"scenario": "s", "page_ordinal": 1, "reason_code": "first"},
@@ -166,7 +162,7 @@ def test_two_declared_failures_for_one_page_refuse_rather_than_pick_one():
     ],
 )
 def test_a_malformed_declared_failure_is_refused(row, refusal):
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     with pytest.raises(ContractError, match=refusal):
         designator.structure_failures(_Context({"structure_failure": [row]}, "s"), {1: {}})
 
@@ -348,15 +344,11 @@ def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     """
 
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = _run_program(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _designator_context(root, designator)
 
     # infer_background_evidence, not infer_background: that's what run.py
@@ -446,11 +438,7 @@ def test_faint_ink_outside_primary_proposals_withholds_complete_exit(tmp_path, m
     from proof.synthetic_pages import page_bytes
 
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = _run_program(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -462,7 +450,7 @@ def test_faint_ink_outside_primary_proposals_withholds_complete_exit(tmp_path, m
     rows[200][5] = faint  # outside the continuation crop on page 2
     page_with_faint_ink = encode_grayscale_png(width, height, rows)
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _designator_context(root, designator)
     _substitute_page_pixels(designator, monkeypatch, 2, page_with_faint_ink)
 
@@ -623,15 +611,11 @@ def _payloads(context, kind):
 
 def test_initial_pass_resolves_structure_provenance_once_for_all_crops(tmp_path, monkeypatch):
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = _run_program(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _designator_context(root, designator)
     context_type = type(context)
     real_write = context_type.write_serving_receipt
@@ -651,15 +635,11 @@ def test_initial_pass_resolves_structure_provenance_once_for_all_crops(tmp_path,
 def blank_first_page_run(tmp_path, monkeypatch):
     """One Designator pass whose page 1 has no ink on it at all."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = _run_program(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _designator_context(root, designator)
     _substitute_page_pixels(designator, monkeypatch, 1, _flat_page_png(200, 260, 230))
 
@@ -882,15 +862,11 @@ def test_the_missed_act_refusal_still_fires_where_detection_actually_ran(tmp_pat
     happened.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = _run_program(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _designator_context(root, designator)
     marked = _page_with_one_mark_png(200, 260, 230, {"x": 4, "y": 240, "w": 8, "h": 8}, 30)
     _substitute_page_pixels(designator, monkeypatch, 1, marked)
@@ -960,7 +936,7 @@ def test_designator_refuses_two_proposals_with_identical_bounds_on_one_page():
     """The new act identity has no ordinal fallback for coincident proposals."""
     from types import SimpleNamespace
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = SimpleNamespace(
         fixture={
             "act": [

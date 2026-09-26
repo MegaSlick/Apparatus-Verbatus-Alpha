@@ -229,8 +229,9 @@ correct immediate close.
   `config/serving_recipes_real.toml` and `config/witness_context-real.toml` together. The
   journaled `CONFIGURATION` step, after checkout and before anything is synced, fetched or
   served, matches each role's shipped witness declaration to its source and binds the four
-  config paths and digests into its receipt. A resume with a changed selection fails there
-  (restore it or start a new journal). A custom roster needs an operator-authored
+  config paths and seals into its receipt. A resume with a changed selection fails there
+  (restore it or start a new journal); a journal whose receipt is
+  `pod-bootstrap-configuration.v1` bound raw file bytes and is refused by schema. A custom roster needs an operator-authored
   declaration.
 - **Refusals come before any action**: a journal or report path outside the mounted volume;
   a lockfile that is not the checkout's `uv.lock`; a volume that fails a real write-and-read

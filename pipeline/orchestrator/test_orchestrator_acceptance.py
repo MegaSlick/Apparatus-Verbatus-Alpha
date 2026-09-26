@@ -11,7 +11,6 @@ asserts an exact expected count.
 """
 
 import hashlib
-import importlib.util
 import json
 import shutil
 import sqlite3
@@ -55,6 +54,7 @@ from common.fixture_identity import page_identity
 from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
+from common.sealed_config import read_sealed_toml
 from common.stage import (
     DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     EXIT_FATAL,
@@ -68,6 +68,7 @@ from common.stage import (
     stage_parser,
     verify_final_seal,
 )
+from conftest import load_stage, programs_through, stage_programs
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 from operations.operator import surface, volume_s3
 from operations.operator.custody import credential_free_environment
@@ -84,32 +85,9 @@ FIXTURE = "synthetic-two-page-v0"
 NUDA_APPROVAL_SUBJECT = "lectio-nuda-sampling-design.v1"
 
 
-def _load_recensor():
-    path = ROOT / "pipeline/5_recensor/run.py"
-    spec = importlib.util.spec_from_file_location("recensor_run_acceptance", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-RECENSOR_RUN = _load_recensor()
+RECENSOR_RUN = load_stage("5_recensor")
 NO_PAGE_CONSERVATION = RECENSOR_RUN.NO_PAGE_CONSERVATION
 NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
-
-
-def _perlector_dissent():
-    """The Perlector's own `dissent` module, loaded the way `_load_recensor` is.
-
-    Imported by path rather than by name: `pipeline/4_perlector` is a
-    numeric-prefixed directory its own stage program adds to `sys.path`, and
-    this suite must not acquire that path as a side effect of a comparison it
-    makes in one test.
-    """
-    path = ROOT / "pipeline/4_perlector/dissent.py"
-    spec = importlib.util.spec_from_file_location("perlector_dissent_acceptance", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 # Each digest covers a whole run tree's relative-path -> file-digest inventory. A
@@ -123,9 +101,9 @@ def _perlector_dissent():
 # or went missing, which is a real change to explain, not a golden update.
 #
 # Things that move the digests without any change in behaviour:
-#   - any byte of a config file the run seals, comments included: `run.json`
-#     seals each such file's bytes, so its prose is part of the configuration a
-#     run is bound to;
+#   - any value in a config file the run seals, provenance prose included: a
+#     TOML file's seal covers what it says (comments and layout move nothing),
+#     and a non-TOML sealed file's bytes;
 #   - any code change in `pipeline/4_perlector/prompts.py`, whose code digest is
 #     sealed into every prompt record;
 #   - any string sealed into a record or the export manifest.
@@ -138,8 +116,8 @@ def _perlector_dissent():
 # second recovery round.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "2345bb42b814ba8ea2f00b939a5944e2887a8f4f712ce3ef36883b2eb04c6377"
-REVIEW_RUN_TREE_DIGEST = "9204e5639abb9f81e6c4b52aa1e798c0fde0e82a4fe5d1721f733dae015a69d9"
+HAPPY_RUN_TREE_DIGEST = "4e1e9b7edeff070dbe6efa9df3d3195343a92c6236bd11817fb1f86e464c9c6e"
+REVIEW_RUN_TREE_DIGEST = "a27596771b9b68a33e535089e5679e996c62d99b17e855ae329d39289f7def27"
 
 
 def orchestrate(
@@ -338,15 +316,6 @@ REAL_INGRESS_FLAGS = frozenset(
 )
 
 
-def _orchestrator_module(name: str):
-    path = ROOT / "pipeline" / "orchestrator" / "run.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
     return dict(
         run_root=tmp_path / "runs",
@@ -414,7 +383,7 @@ def test_every_stage_receives_the_runs_selected_serving_recipes_catalogue(monkey
     catalogue unreachable through the only program that invokes the stages.
     """
 
-    orchestrator = _orchestrator_module("orchestrator_serving_recipes_argv")
+    orchestrator = load_stage("orchestrator")
     observed: list[list[str]] = []
     monkeypatch.setattr(
         orchestrator.subprocess,
@@ -485,15 +454,16 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
         witness_context_config_path=witness_context,
     )
     assert run_record["config_digest"] == expected["config_digest"]
-    assert expected["serving_config_inputs"]["serving_recipes_sha256"] == digest_bytes(
-        recipes.read_bytes()
+    assert (
+        expected["serving_config_inputs"]["serving_recipes_sha256"]
+        == read_sealed_toml(recipes, "serving recipes")[1]
     )
 
 
 def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
     """No stage after the Door receives a second path to source material."""
 
-    orchestrator = _orchestrator_module("orchestrator_real_ingress_argv")
+    orchestrator = load_stage("orchestrator")
     observed: list[list[str]] = []
 
     def record(command, **_kwargs):  # type: ignore[no-untyped-def]
@@ -545,7 +515,7 @@ def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
 def test_orchestrator_stage_children_do_not_receive_upload_only_credentials(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    orchestrator = _orchestrator_module("orchestrator_stage_environment")
+    orchestrator = load_stage("orchestrator")
     observed_environment: dict[str, str] = {}
     monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "upload-access-secret")
     monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "upload-secret-secret")
@@ -568,7 +538,7 @@ def test_orchestrator_stage_children_do_not_receive_upload_only_credentials(
 def test_invoke_refuses_a_caller_relative_path_instead_of_resolving_it_late(monkeypatch, tmp_path):
     """Direct invocation must not reinterpret caller paths under the child's cwd."""
 
-    orchestrator = _orchestrator_module("orchestrator_relative_argv_guard")
+    orchestrator = load_stage("orchestrator")
     invoked: list[list[str]] = []
     monkeypatch.setattr(
         orchestrator.subprocess,
@@ -604,7 +574,7 @@ def test_invoke_refuses_a_caller_relative_path_instead_of_resolving_it_late(monk
 def test_orchestrator_default_data_gate_policy_is_the_gates_own(tmp_path):
     """The common-only import boundary requires duplicate constants to reconcile."""
 
-    orchestrator = _orchestrator_module("orchestrator_default_policy")
+    orchestrator = load_stage("orchestrator")
     assert orchestrator.DEFAULT_DATA_GATE_POLICY_PATH == gate.DEFAULT_POLICY_PATH
     resolved = orchestrator.resolve_caller_paths(
         Namespace(
@@ -637,7 +607,7 @@ def test_orchestrator_upload_credentials_are_the_transfers_own(
     evidence.
     """
 
-    orchestrator = _orchestrator_module("orchestrator_transfer_credentials")
+    orchestrator = load_stage("orchestrator")
     assert orchestrator._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
     assert surface._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
     # The names are the transfer's own defaults, not a set that merely happens to
@@ -668,7 +638,7 @@ def test_orchestrator_and_surface_strip_every_provider_credential(
     operator's confined children to.
     """
 
-    orchestrator = _orchestrator_module("orchestrator_provider_credentials")
+    orchestrator = load_stage("orchestrator")
     representative_names = (
         "RUNPOD_API_KEY",
         "HF_TOKEN",
@@ -845,16 +815,7 @@ def invoke_stage(
 
 @pytest.mark.parametrize(
     "program",
-    (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-        "pipeline/6_archetypus/run.py",
-        "pipeline/7_armarium/run.py",
-    ),
+    [program for name, program in stage_programs().items() if name != ATTESTATORES],
 )
 def test_only_attestatores_accepts_the_shared_chair_argument(tmp_path, program):
     """A stage must never report success while ignoring an operator's chair."""
@@ -870,12 +831,7 @@ def test_only_attestatores_accepts_the_shared_chair_argument(tmp_path, program):
 
 def _run_through_designator(root: Path, run_id: str = "r", scenario: str = "happy") -> None:
     """Run Door, Exemplar, and Designator, refusing a partial setup loudly."""
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-    ):
+    for program in programs_through("designator"):
         result = invoke_stage(root, run_id, scenario, program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -883,15 +839,7 @@ def _run_through_designator(root: Path, run_id: str = "r", scenario: str = "happ
 def run_through_recensor(
     run_root: Path, run_id: str, scenario: str = "happy", *, allow_held: bool = False
 ) -> None:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs_through("recensor"):
         result = invoke_stage(run_root, run_id, scenario, program)
         expected = {0, 3} if allow_held else {0}
         assert result.returncode in expected, f"{program}: {result.stderr}"
@@ -2564,12 +2512,7 @@ def test_a_held_act_on_a_re_shoot_page_is_never_sent_to_recovery(tmp_path):
 def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_path):
     """The fixture's a2 cannot silently disappear from the downstream denominator."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-    ):
+    for program in programs_through("designator"):
         result = invoke_stage(root, "r", "happy", program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     tree = RunTree(root, "r")
@@ -2956,14 +2899,7 @@ def test_a_conservation_residual_the_seal_never_minted_is_refused(tmp_path):
 
 def test_recensor_refuses_duplicate_witness_attempt_ordinals_instead_of_selecting_one(tmp_path):
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
+    for program in programs_through("perlector"):
         result = invoke_stage(root, "r", "happy", program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     tree = RunTree(root, "r")
@@ -3697,14 +3633,7 @@ def test_perlector_refuses_a_tampered_testimonium_model_provenance(tmp_path):
 def test_a_perlectio_retains_digest_checked_testimonia_it_used(tmp_path):
     """Changing a witness record after reading must stop the next real consumer."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
+    for program in programs_through("perlector"):
         result = invoke_stage(root, "r", "happy", program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -3730,14 +3659,7 @@ def test_a_perlectio_retains_digest_checked_testimonia_it_used(tmp_path):
 def test_recensor_refuses_a_completed_perlectio_without_an_object_region_basis(tmp_path):
     """A resealed malformed payload is an accounting refusal, never a traceback."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
+    for program in programs_through("perlector"):
         result = invoke_stage(root, "r", "happy", program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     tree = RunTree(root, "r")
@@ -5091,7 +5013,7 @@ def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_v
     # `is_comparable` is False — so what lifted it above is the view
     # `dissent_testimonia` builds, not a relaxed rule.
     assert "comparison_reported" not in testimonium["payload"]
-    assert _perlector_dissent().is_comparable(testimonium) is False
+    assert load_stage("4_perlector", "dissent").is_comparable(testimonium) is False
     # The capability decides the comparison route and nothing else: the outcome,
     # the class, and the coverage count are what they would be without it.
     assert testimonium["outcome"] == "read"
@@ -5837,12 +5759,7 @@ def test_the_recensor_refuses_a_continuation_claim_with_one_region(tmp_path):
     tree holds only one proposal region — drift, tampering, or a future bug —
     the Recensor holds the act rather than accepting a half reading."""
     root = tmp_path / "runs"
-    for name, program in (
-        ("door", "pipeline/1_exemplar/door.py"),
-        ("exemplar", "pipeline/1_exemplar/run.py"),
-        ("ink-map", "pipeline/1_ink_map/run.py"),
-        ("designator", "pipeline/2_designator/run.py"),
-    ):
+    for program in programs_through("designator"):
         result = subprocess.run(
             [
                 sys.executable,
@@ -5858,7 +5775,7 @@ def test_the_recensor_refuses_a_continuation_claim_with_one_region(tmp_path):
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0, f"{name}: {result.stderr}"
+        assert result.returncode == 0, f"{program}: {result.stderr}"
 
     tree = RunTree(root, "r")
     continuations = [
@@ -6031,14 +5948,7 @@ def test_the_recensor_refuses_a_testimonium_from_a_chair_the_run_never_sealed(tm
     `under_witnessed` came back False on a run that was genuinely short a witness.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
+    for program in programs_through("perlector"):
         result = subprocess.run(
             [
                 sys.executable,

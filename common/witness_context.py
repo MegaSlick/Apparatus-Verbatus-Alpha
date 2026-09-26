@@ -6,15 +6,14 @@ the chair model contract, and imports no image, serving, or stage dependency.
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from common.chairs.config import load_models_toml
 from common.chairs.errors import ConfigurationRefusal
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
-from common.contracts.canonical import digest_bytes
+from common.contracts.errors import ContractError
+from common.sealed_config import read_sealed_toml
 
 _TRAINING_DOMAIN_FIELDS = {"training_domain"}
 _SHIPPED_PROFILES = (
@@ -31,7 +30,7 @@ def _comparable_sentence(value: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class WitnessContextValidation:
-    """The declaration bytes and role-level shipped identity profiles they matched."""
+    """The declaration's seal and the role-level shipped identity profiles it matched."""
 
     source_sha256: str
     profile: str
@@ -49,24 +48,15 @@ class WitnessContextValidation:
         }
 
 
-def _read_declaration(path: Path) -> tuple[bytes, dict[str, dict[str, str]]]:
+def read_witness_context_declaration(path: str | Path) -> tuple[dict[str, dict[str, str]], str]:
+    """One witness-context declaration, checked to its closed shape, with its seal."""
     try:
-        source = path.read_bytes()
-    except OSError as error:
-        raise ConfigurationRefusal(
-            "witness-context", f"declaration {path} could not be read: {error}"
-        ) from error
-    try:
-        parsed: Any = tomllib.loads(source.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ConfigurationRefusal(
-            "witness-context", f"declaration {path} could not be parsed: {error}"
-        ) from error
-    if not isinstance(parsed, dict):
-        raise ConfigurationRefusal("witness-context", f"declaration {path} is not an object")
+        parsed, digest = read_sealed_toml(path, "witness-context declaration")
+    except ContractError as error:
+        raise ConfigurationRefusal("witness-context", str(error)) from error
     for role, entry in sorted(parsed.items()):
         if (
-            not isinstance(role, str)
+            not role
             or not isinstance(entry, dict)
             or set(entry) != _TRAINING_DOMAIN_FIELDS
             or not isinstance(entry.get("training_domain"), str)
@@ -74,10 +64,9 @@ def _read_declaration(path: Path) -> tuple[bytes, dict[str, dict[str, str]]]:
         ):
             raise ConfigurationRefusal(
                 "witness-context",
-                f"entry for {role!r} in {path} is not a closed table with only a non-blank "
-                "training_domain",
+                f"entry for {role!r} in {path} is not the closed, non-blank training_domain record",
             )
-    return source, parsed
+    return parsed, digest
 
 
 def _identity_projection(identity: ChairIdentity) -> dict[str, str]:
@@ -104,7 +93,7 @@ def validate_witness_context_configuration(
     """
 
     selected_path = Path(witness_context_path)
-    source, declaration = _read_declaration(selected_path)
+    declaration, digest = read_witness_context_declaration(selected_path)
     expected_roles = set(models.witness_chairs)
     missing = sorted(expected_roles - set(declaration))
     if missing:
@@ -123,7 +112,7 @@ def validate_witness_context_configuration(
     config_root = Path(shipped_config_root)
     shipped_profiles: list[tuple[str, dict[str, dict[str, str]], ModelsConfig]] = []
     for profile, declaration_name, roster_name in _SHIPPED_PROFILES:
-        _, shipped_declaration = _read_declaration(config_root / declaration_name)
+        shipped_declaration, _ = read_witness_context_declaration(config_root / declaration_name)
         roster_path = config_root / roster_name
         try:
             shipped_roster = load_models_toml(roster_path)
@@ -203,7 +192,7 @@ def validate_witness_context_configuration(
         profile = "mixed"
 
     return WitnessContextValidation(
-        source_sha256=digest_bytes(source),
+        source_sha256=digest,
         profile=profile,
         declared_roles=tuple(sorted(declaration)),
         verified_present_roles=tuple(verified),

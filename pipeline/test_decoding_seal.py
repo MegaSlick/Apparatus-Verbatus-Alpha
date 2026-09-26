@@ -20,10 +20,10 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.canonical import digest_bytes
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy
 from common.runtree.store import RunTree
-from conftest import tree_snapshot
+from common.sealed_config import read_sealed_toml
+from conftest import programs_through, tree_snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = ROOT / "proof"
@@ -51,12 +51,7 @@ def invoke_stage(run_root: Path, program: str, **extra) -> subprocess.CompletedP
 
 def _through_designator(tmp_path: Path) -> tuple[Path, RunTree]:
     run_root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-    ):
+    for program in programs_through("designator"):
         result = invoke_stage(run_root, program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     return run_root, RunTree(run_root, "decoding")
@@ -68,7 +63,7 @@ def test_a_run_seals_the_exact_decoding_bytes_it_was_created_under(tmp_path):
     run = tree.read_run()
 
     _policy, digest = load_decoding_policy()
-    assert digest == digest_bytes(DEFAULT_DECODING_CONFIG_PATH.read_bytes())
+    assert digest == read_sealed_toml(DEFAULT_DECODING_CONFIG_PATH, "decoding")[1]
     # Filed under the name its points of use ask for, and inside the digest of
     # everything that shapes the run -- so a candidate policy file can be proved
     # against the tree without trusting its filename or parsed values.

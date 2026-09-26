@@ -14,7 +14,6 @@ invocation happened to establish. An index checked only against the writer's own
 list would agree with itself about an act the writer had skipped.
 """
 
-import importlib.util
 import json
 import subprocess
 import sys
@@ -33,19 +32,12 @@ from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
 from common.stage import load_fixture
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_archetypus():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("archetypus_run_under_test_index", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-archetypus = _load_archetypus()
+archetypus = load_stage("6_archetypus")
 
 
 class _Context:

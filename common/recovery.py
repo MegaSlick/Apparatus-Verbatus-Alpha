@@ -6,13 +6,12 @@ configuration, not a stage-local convenience file read from whichever current
 directory happened to launch a command.
 """
 
-import tomllib
 from pathlib import Path
 from typing import Any, Final
 
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import attempt_id
+from common.sealed_config import read_sealed_toml
 
 DEFAULT_RECOVERY_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "recovery.toml"
 
@@ -33,17 +32,13 @@ RECOVERY_KINDS: Final = {
 
 def load_recovery_policy(path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH) -> dict[str, Any]:
     """Read one policy, validate its bounds, and return its resolved record."""
-    path = Path(path)
-    try:
-        data = path.read_bytes()
-        config = tomllib.loads(data.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(
-            f"the recovery configuration at {path} could not be read as a policy: {error}"
-        ) from error
-    budget = config.get("budget") if isinstance(config, dict) else None
+    config, digest = read_sealed_toml(path, "recovery configuration", {"absolute_cap", "budget"})
+    budget = config.get("budget")
     if not isinstance(budget, dict):
         raise ContractError("the recovery configuration has no [budget] table")
+    unknown = sorted(set(budget) - set(RECOVERY_KINDS.values()))
+    if unknown:
+        raise ContractError(f"the recovery configuration's [budget] has unknown field(s) {unknown}")
     required = ("absolute_cap", "fallback_recrop", "page_level_reread")
     values = {
         "absolute_cap": config.get("absolute_cap"),
@@ -71,7 +66,7 @@ def load_recovery_policy(path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH) -> dic
             f"of {values['absolute_cap']}. The cap is a ruling, not a default"
         )
     return {
-        "config_sha256": digest_bytes(data),
+        "config_sha256": digest,
         "absolute_cap": values["absolute_cap"],
         "fallback_recrop": values["fallback_recrop"],
         "page_level_reread": values["page_level_reread"],

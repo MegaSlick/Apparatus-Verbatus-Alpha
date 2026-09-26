@@ -6,10 +6,7 @@ point of this module, and a test that trusted the same claimed list the
 reconciliation is supposed to be checking would not be testing anything.
 """
 
-import importlib.util
 import random
-import sys
-from pathlib import Path
 
 import pytest
 from _test_support import label_components_reference
@@ -21,6 +18,7 @@ from structure import (
 )
 
 from common.contracts.errors import ContractError
+from conftest import load_stage
 
 BACKGROUND = 230
 INK = 40
@@ -31,32 +29,8 @@ GAP_TOLERANCE_PX = 3
 REVIEW_PRIORITY_MIN_DIMENSION_PX = 6
 
 
-def _load_designator_run():
-    """Load this directory's ``run.py`` by path, under a unique module name.
-
-    A bare ``from run import ...`` would collide with other stages' own
-    top-level ``run`` modules once tests share a session.
-    """
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("designator_run_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    original_path = list(sys.path)
-    try:
-        sys.path.insert(0, str(path.parent))
-        spec.loader.exec_module(module)
-    finally:
-        sys.path[:] = original_path
-    return module
-
-
 def blank_rows(width: int, height: int) -> list[bytearray]:
     return [bytearray([BACKGROUND] * width) for _ in range(height)]
-
-
-def test_loading_the_designator_run_module_does_not_change_import_search_order():
-    before = list(sys.path)
-    _load_designator_run()
-    assert sys.path == before
 
 
 def paint_rect(rows: list[bytearray], x: int, y: int, w: int, h: int, value: int = INK) -> None:
@@ -568,7 +542,7 @@ def test_two_residual_components_sharing_a_bounding_box_are_refused_before_eithe
     components sharing a bounding box would mint as one act, losing the other.
     Refused by name, before any hold is published.
     """
-    _publish_residual_holds = _load_designator_run()._publish_residual_holds
+    _publish_residual_holds = load_stage("2_designator", isolate_path=True)._publish_residual_holds
 
     shared = {"x": 4, "y": 4, "w": 6, "h": 6}
     components = [

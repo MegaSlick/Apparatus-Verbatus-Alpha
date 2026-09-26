@@ -26,6 +26,7 @@ from common.chairs.errors import ConfigurationRefusal
 from common.contracts.approval import ApprovalRecordReference
 from common.contracts.canonical import canonical_bytes
 from operations.pod import supervise as pod_supervise
+from operations.pod.conftest import timer_start_command
 from operations.pod.fake_provider import FakeProvider
 from operations.pod.launch import LaunchResult, LaunchState
 from operations.pod.lease import LeaseStore
@@ -83,17 +84,7 @@ def _request(*, name: str = "operator-test") -> PodCreateRequest:
         image="registry.example/verbatus@sha256:" + "a" * 64,
         volume_id="fixture-volume",
         volume_mount_path="/workspace/private",
-        docker_start_cmd=(
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "operations.pod.provider_runpod:timer_context_from_environment",
-            "--bootstrap-command-json",
-            '["python","-m","operations.pod.bootstrap"]',
-            "--report-path",
-            "/workspace/private/pod-runtime-report.json",
-        ),
+        docker_start_cmd=timer_start_command("/workspace/private/pod-runtime-report.json"),
         hard_deadline=START + timedelta(seconds=900),
         repository_commit="b" * 40,
         template="fixture-template",
@@ -2157,17 +2148,7 @@ def _request_json(tmp_path: Path, **overrides: object) -> Path:
         "image": "registry.example/verbatus@sha256:" + "a" * 64,
         "volume_id": "fixture-volume",
         "volume_mount_path": "/workspace/private",
-        "docker_start_cmd": [
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "operations.pod.provider_runpod:timer_context_from_environment",
-            "--bootstrap-command-json",
-            '["python","-m","operations.pod.bootstrap"]',
-            "--report-path",
-            "/workspace/private/pod-runtime-report.json",
-        ],
+        "docker_start_cmd": list(timer_start_command("/workspace/private/pod-runtime-report.json")),
         "hard_deadline": "2026-08-09T12:15:00Z",
         "repository_commit": "b" * 40,
         "template": "fixture-template",

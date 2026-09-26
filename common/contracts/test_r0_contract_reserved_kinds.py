@@ -21,14 +21,12 @@ the real validation surface, and require a named refusal.
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import ContractError
 from common.contracts.stages import ATTESTATORES
+from conftest import load_stage
 
 # Every kind name the contract note defers past R0, by name, mapped to a stage whose
 # outcome vocabulary it could plausibly ride (so `classify()` inside `build_envelope`
@@ -111,29 +109,8 @@ def test_the_reserved_kind_refusal_branch_itself_still_refuses(monkeypatch):
 # `witness_reported` untouched -- nothing there checks the *value*, only that the JSON
 # shape is recordable.
 
-ROOT = Path(__file__).resolve().parents[2]
 
-
-def _stage_module(name: str, path: Path):
-    """Load one numeric-directory stage program by an unpolluted, unique name.
-
-    Never a bare ``import run`` — this repository's stage directories are not
-    packages, and several of them define a module literally named ``run``. A plain
-    import would risk resolving to whichever same-named module Python's import
-    cache already holds from an earlier test file in the same session, silently
-    testing the wrong stage. Mirrors `pipeline/orchestrator/test_terminal_guards.py`'s
-    own `_stage_module` helper.
-    """
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-attestatores_run = _stage_module(
-    "r0_reserved_kinds_attestatores", ROOT / "pipeline" / "3_attestatores" / "run.py"
-)
+attestatores_run = load_stage("3_attestatores")
 
 
 def test_a_witness_confidence_value_outside_the_closed_ordinal_set_is_refused():

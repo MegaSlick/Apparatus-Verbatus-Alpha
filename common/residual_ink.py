@@ -28,7 +28,6 @@ A page whose background the shared inference refuses raises
 publishing a zero nobody measured (principle 8).
 """
 
-import tomllib
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
@@ -42,9 +41,9 @@ from common.background import (
 )
 from common.calibration import calibrated_claim_has_sample_evidence
 from common.components import label_component_runs
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.imaging import Bounds, grayscale_rows
+from common.sealed_config import read_sealed_toml
 
 #: Sealed, not a constant, so it is inside every run's config digest.
 MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
@@ -259,21 +258,12 @@ def validate_coverage_noise_floor_table(
 def load_coverage_audit_config(
     path: str | Path = DEFAULT_COVERAGE_AUDIT_CONFIG_PATH,
 ) -> dict[str, Any]:
-    """The sealed coverage-audit policy and the digest of the bytes it came from.
+    """The sealed coverage-audit policy and the seal of the file it came from.
 
     Refused loudly rather than defaulted: a gate silently taken as unlimited
     would change which pages are held with no config line saying so.
     """
-    path = Path(path)
-    try:
-        data = path.read_bytes()
-        config = tomllib.loads(data.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(
-            f"the coverage-audit configuration at {path} could not be read: {error}"
-        ) from error
-    if not isinstance(config, dict):
-        raise ContractError("the coverage-audit configuration is not a table")
+    config, digest = read_sealed_toml(path, "coverage-audit configuration")
     grouping = config.get("grouping")
     if not isinstance(grouping, dict):
         raise ContractError("the coverage-audit configuration has no [grouping] table")
@@ -307,7 +297,7 @@ def load_coverage_audit_config(
         where=f"[coverage_audit.{COVERAGE_NOISE_FLOOR_TABLE}.provenance]",
     )
     return {
-        "config_sha256": digest_bytes(data),
+        "config_sha256": digest,
         "coverage_audit": values,
         "page_spanning_area_bp": spanning,
         "gap_tolerance_px": gap,

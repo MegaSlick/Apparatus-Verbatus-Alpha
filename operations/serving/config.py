@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import json
 import re
-import tomllib
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -49,8 +48,10 @@ from common.chairs.models import (
     is_witness_role,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.errors import ContractError
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS
 from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA as CONFIG_INPUTS_SCHEMA
+from common.sealed_config import read_sealed_toml
 
 from .errors import ServingConfigurationError
 
@@ -321,11 +322,11 @@ class ServingConfigInputs:
 
         if recipes_sha256 != self.serving_recipes_sha256:
             raise ServingConfigurationError(
-                "serving recipes bytes differ from the run-sealed serving configuration"
+                "serving recipes differ from the run-sealed serving configuration"
             )
         if placement_sha256 != self.pod_placement_sha256:
             raise ServingConfigurationError(
-                "pod placement bytes differ from the run-sealed serving configuration"
+                "pod placement differs from the run-sealed serving configuration"
             )
 
 
@@ -334,15 +335,10 @@ def load_serving_recipes(path: str | Path) -> ServingRecipes:
 
     source = Path(path)
     try:
-        source_bytes = source.read_bytes()
-        raw = tomllib.loads(source_bytes.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raw, digest = read_sealed_toml(source, "serving recipes")
+    except ContractError as error:
         raise ServingConfigurationError(f"cannot read serving recipes {source}: {error}") from error
-    return parse_serving_recipes(
-        raw,
-        source_path=source,
-        source_sha256=digest_bytes(source_bytes),
-    )
+    return parse_serving_recipes(raw, source_path=source, source_sha256=digest)
 
 
 def parse_serving_recipes(

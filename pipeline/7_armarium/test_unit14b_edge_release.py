@@ -6,14 +6,12 @@ cannot release anything, and duplicate page findings are refused because row
 order cannot decide the hold.
 """
 
-import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from common.background import load_background_config, resolve_background_policy
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import DESIGNATOR, INK_MAP
 from common.residual_ink import (
@@ -23,30 +21,12 @@ from common.residual_ink import (
     load_coverage_audit_config,
     resolve_coverage_audit_policy,
 )
+from common.sealed_config import read_sealed_toml
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 GROUPING_CONFIG = ROOT / "config/designator_grouping.toml"
-GROUPING_CONFIG_DIGEST = digest_bytes(GROUPING_CONFIG.read_bytes())
-
-
-def _armarium():
-    spec = importlib.util.spec_from_file_location(
-        "armarium_u14b_edge_release", ROOT / "pipeline/7_armarium/run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-def _ink_map():
-    spec = importlib.util.spec_from_file_location(
-        "ink_map_for_edge_reconciliation", ROOT / "pipeline/1_ink_map/run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+GROUPING_CONFIG_DIGEST = read_sealed_toml(GROUPING_CONFIG, "config")[1]
 
 
 _RUNS = {"schema": "ink-runs.v2", "width": 40, "height": 2, "rows": [[], []]}
@@ -156,14 +136,14 @@ SEALED_ONE = _sealed_census()
 
 def test_a_mapped_page_records_the_measurement_nobody_took_as_absence():
     """Principle 8: `remeasured: None`, never a reassuring row of zeros."""
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     rows = armarium.ink_map_page_rows(_context({INK_MAP: [_ink_record("a", 1)]}), SEALED_ONE, {})
     assert rows == ({"ordinal": 1, "initial_outcome": "mapped", "remeasured": None},)
 
 
 def test_retained_dimensions_must_match_the_sealed_exemplar_pixels():
     """Self-consistent runs for another canvas cannot control this page's hold."""
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     evidence = {"schema": "ink-runs.v2", "width": 20, "height": 2, "rows": [[], []]}
     record = _ink_record("wrong-canvas", 1, evidence=evidence)
     with pytest.raises(FatalAccounting, match="does not reconcile with its retained") as refusal:
@@ -176,7 +156,7 @@ def test_retained_dimensions_must_match_the_sealed_exemplar_pixels():
     "defect", ["base-era", "wrong-seal", "missing-background-field", "array-source"]
 )
 def test_a_measured_ink_map_payload_must_name_the_current_background_contract(defect):
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     record = _ink_record("a", 1)
     payload = record["payload"]
     if defect == "base-era":
@@ -198,7 +178,7 @@ def test_a_measured_ink_map_payload_must_name_the_current_background_contract(de
 
 def test_a_flagged_page_is_re_measured_against_the_crops_actually_cut():
     """The release is the same measure the map made, over the real crop set."""
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     context = _context({INK_MAP: [_ink_record("a", 1, "unclaimed-edge-ink", _FLAGGED_RUNS)]})
     held = armarium.ink_map_page_rows(context, SEALED_ONE, {})
     assert held[0]["remeasured"]["outside_ink_pixels"] == 80
@@ -213,7 +193,7 @@ def test_a_flagged_page_is_re_measured_against_the_crops_actually_cut():
 
 def test_a_partial_claim_releases_nothing_it_did_not_actually_cover():
     """A crop over half the flagged ink leaves the rest outside, and held."""
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     context = _context({INK_MAP: [_ink_record("a", 1, "unclaimed-edge-ink", _FLAGGED_RUNS)]})
     rows = armarium.ink_map_page_rows(context, SEALED_ONE, {1: [{"x": 0, "y": 0, "w": 20, "h": 2}]})
     assert rows[0]["remeasured"]["outside_ink_pixels"] == 40
@@ -222,8 +202,8 @@ def test_a_partial_claim_releases_nothing_it_did_not_actually_cover():
 
 def test_same_outcome_run_loss_is_refused_before_a_crop_can_release_it():
     """A shorter retained run cannot silently replace the producer's count."""
-    armarium = _armarium()
-    ink_map = _ink_map()
+    armarium = load_stage("7_armarium")
+    ink_map = load_stage("1_ink_map")
     width = height = 100
     rows = [bytearray([230] * width) for _ in range(height)]
     rows[0][:80] = bytearray([0] * 80)
@@ -299,7 +279,7 @@ def test_same_outcome_run_loss_is_refused_before_a_crop_can_release_it():
     ],
 )
 def test_the_published_edge_summary_is_closed_typed_and_run_bound(defect, value):
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     edge = _edge_for_runs(_RUNS)
     if defect == "missing-field":
         del edge["named_finding"]
@@ -343,8 +323,8 @@ def test_the_published_edge_summary_is_closed_typed_and_run_bound(defect, value)
 
 def test_a_structural_component_may_contain_no_ink_at_the_audits_stricter_contrast():
     """The Designator's component margin and the audit's ink contrast stay distinct."""
-    armarium = _armarium()
-    ink_map = _ink_map()
+    armarium = load_stage("7_armarium")
+    ink_map = load_stage("1_ink_map")
     width = height = 100
     rows = [bytearray([230] * width) for _ in range(height)]
     for coordinate in range(width):
@@ -391,7 +371,7 @@ def test_a_structural_component_may_contain_no_ink_at_the_audits_stricter_contra
 
 
 def test_retained_ink_runs_are_a_closed_record():
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     evidence = {**_RUNS, "unreviewed": 0}
     record = _ink_record("damaged", 1, evidence=evidence, edge=_edge_for_runs(_RUNS))
     with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
@@ -400,7 +380,7 @@ def test_retained_ink_runs_are_a_closed_record():
 
 def test_two_ink_map_records_for_one_page_are_refused_rather_than_resolved():
     """A duplicate in the settled inventory cannot make walk order decide the hold."""
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     context = _context({INK_MAP: [_ink_record("a", 1), _ink_record("b", 1)]})
     with pytest.raises(FatalAccounting, match="repeats page ordinal 1"):
         armarium.ink_map_page_rows(context, SEALED_ONE, {})
@@ -408,14 +388,14 @@ def test_two_ink_map_records_for_one_page_are_refused_rather_than_resolved():
 
 def test_an_ink_map_page_outside_the_sealed_census_is_refused():
     """The Ink Map and sealed page census must name the same page set."""
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     context = _context({INK_MAP: [_ink_record("a", 1), _ink_record("b", 2)]})
     with pytest.raises(FatalAccounting, match="denominator does not match"):
         armarium.ink_map_page_rows(context, SEALED_ONE, {})
 
 
 def test_an_unknown_ink_map_outcome_is_refused_rather_than_read_as_mapped():
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     context = _context({INK_MAP: [_ink_record("a", 1, "some-later-outcome")]})
     with pytest.raises(FatalAccounting, match="unknown page finding outcome"):
         armarium.ink_map_page_rows(context, SEALED_ONE, {})
@@ -435,7 +415,7 @@ def test_an_ink_map_outcome_must_match_its_retained_ink_runs(outcome, evidence, 
     unit. Trusting ``mapped`` without reading them made malformed evidence and
     real flagging ink equally disappear from the export boundary.
     """
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     context = _context({INK_MAP: [_ink_record("a", 1, outcome, evidence)]})
     with pytest.raises(
         FatalAccounting,
@@ -446,7 +426,7 @@ def test_an_ink_map_outcome_must_match_its_retained_ink_runs(outcome, evidence, 
 
 def test_a_mapped_page_with_unreadable_retained_runs_is_refused_by_name():
     """The clear outcome has the same evidence-validation duty as a hold."""
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     malformed = {"schema": "ink-runs.v2", "width": 40, "height": 2, "rows": [[]]}
     context = _context({INK_MAP: [_ink_record("a", 1, "mapped", malformed)]})
     with pytest.raises(
@@ -461,7 +441,7 @@ def test_a_mapped_page_with_unreadable_retained_runs_is_refused_by_name():
 
 
 def test_a_page_ordinal_that_is_not_an_integer_is_refused():
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     context = _context({INK_MAP: [_ink_record("a", True)]})
     with pytest.raises(FatalAccounting, match="without an integer page ordinal"):
         armarium.ink_map_page_rows(context, SEALED_ONE, {})
@@ -475,7 +455,7 @@ def test_a_crop_that_no_longer_verifies_cannot_release_an_edge_finding(monkeypat
     claims to be a crop of. A region whose lineage no longer checks out would
     otherwise release a page on pixels nobody can prove were ever cut.
     """
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     region = {
         "artifact_id": "region-1",
         "subject_id": "act-1",
@@ -502,7 +482,7 @@ def test_a_crop_that_no_longer_verifies_cannot_release_an_edge_finding(monkeypat
 
 def test_a_verified_region_with_no_bounds_is_refused_not_skipped(monkeypatch):
     """A region that verifies but states no rectangle releases nothing silently."""
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     region = {
         "artifact_id": "region-1",
         "subject_id": "act-1",
@@ -526,7 +506,7 @@ def test_an_unmeasurable_page_stays_in_the_denominator_and_can_never_be_held():
     for the same principle 8 reason a `mapped` page does, only more strongly:
     here nothing was measured at all.
     """
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     record = {
         "artifact_id": "a",
         "outcome": "ink-not-measurable",
@@ -592,7 +572,7 @@ def test_an_unmeasurable_page_stays_in_the_denominator_and_can_never_be_held():
     ],
 )
 def test_an_unmeasurable_ink_map_payload_must_be_closed_before_export(payload):
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     record = {"artifact_id": "a", "outcome": "ink-not-measurable", "payload": payload}
     expected = (
         "without an integer page ordinal"
@@ -604,7 +584,7 @@ def test_an_unmeasurable_ink_map_payload_must_be_closed_before_export(payload):
 
 
 def test_an_unmeasurable_ink_map_payload_must_match_the_run_seal():
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     record = {
         "artifact_id": "a",
         "outcome": "ink-not-measurable",
@@ -664,7 +644,7 @@ def test_evidence_with_impossible_dimensions_is_refused_by_the_named_refusal(dim
     outer refusal tells an operator which artifact to restore rather than
     exposing a raw page-geometry error.
     """
-    armarium = _armarium()
+    armarium = load_stage("7_armarium")
     evidence = {"schema": "ink-runs.v2", "rows": [[], []], **dimensions}
     context = _context({INK_MAP: [_ink_record("a", 1, "unclaimed-edge-ink", evidence)]})
     with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):

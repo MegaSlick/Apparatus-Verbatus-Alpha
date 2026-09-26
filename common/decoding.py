@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import math
-import tomllib
 from pathlib import Path
-from typing import Any, Final, Mapping
+from typing import Any, Mapping
 
 from common.chandra_native_retry import validate_policy_record
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
+from common.sealed_config import read_sealed_toml
 
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
-MAX_DECODING_CONFIG_BYTES: Final = 64 * 1024
 _LOAD_RECOVERY = (
     " No run or stage artifact was written. Restore or correct the decoding file and retry"
 )
@@ -21,37 +19,13 @@ _LOAD_RECOVERY = (
 def load_decoding_policy(
     path: str | Path = DEFAULT_DECODING_CONFIG_PATH,
 ) -> tuple[dict[str, Any], str]:
-    """Read the closed policy and the digest of the exact bytes used."""
+    """Read the closed policy and its seal."""
     try:
-        with Path(path).open("rb") as handle:
-            raw = handle.read(MAX_DECODING_CONFIG_BYTES + 1)
-    except OSError as error:
-        raise ContractError(
-            f"decoding configuration at {path} could not be read: {error}.{_LOAD_RECOVERY}"
-        ) from error
-    if len(raw) > MAX_DECODING_CONFIG_BYTES:
-        raise ContractError(
-            f"decoding configuration at {path} exceeds the "
-            f"{MAX_DECODING_CONFIG_BYTES}-byte limit; a run policy is bounded "
-            f"metadata, not a corpus payload.{_LOAD_RECOVERY}"
-        )
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ContractError(
-            f"decoding configuration at {path} is not UTF-8: {error}.{_LOAD_RECOVERY}"
-        ) from error
-    try:
-        policy = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as error:
-        raise ContractError(
-            f"decoding configuration at {path} is not valid TOML: {error}.{_LOAD_RECOVERY}"
-        ) from error
-    try:
+        policy, digest = read_sealed_toml(path, "decoding configuration")
         _validate_decoding_policy(policy)
     except ContractError as error:
         raise ContractError(f"{error}.{_LOAD_RECOVERY}") from error
-    return policy, digest_bytes(raw)
+    return policy, digest
 
 
 def _validate_decoding_policy(policy: Any) -> None:

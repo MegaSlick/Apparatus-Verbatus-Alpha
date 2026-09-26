@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
 import json
 import subprocess
 import sys
@@ -18,6 +17,7 @@ from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.native_witness import partition_disagreement
 from common.runtree.store import RunTree
 from common.stage import stage_parser
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -41,24 +41,9 @@ def invoke(
 
 
 def through_perlector(root: Path, run_id: str, scenario: str) -> None:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
+    for program in programs_through("perlector"):
         result = invoke(root, run_id, scenario, program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
-
-
-def _load_recensor():
-    path = ROOT / "pipeline/5_recensor/run.py"
-    spec = importlib.util.spec_from_file_location("recensor_receipt_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _recensor_args(root: Path, run_id: str):
@@ -127,7 +112,7 @@ def test_recensor_rederives_page_attachment_over_the_sealed_proposal_both_ways(
     """
     root = tmp_path / "runs"
     through_perlector(root, "attachment-drift", "happy")
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     context = recensor.open_context(_recensor_args(root, "attachment-drift"), RECENSOR)
     act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
     assert (
@@ -233,7 +218,7 @@ def test_recensor_rederives_act_scoped_attachment_instead_of_trusting_its_label(
 ):
     root = tmp_path / "runs"
     through_perlector(root, "act-attachment-drift", "happy")
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     context = recensor.open_context(_recensor_args(root, "act-attachment-drift"), RECENSOR)
     act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
     original = context.tree.read_artifact
@@ -284,7 +269,7 @@ def test_recensor_rederives_act_scoped_attachment_instead_of_trusting_its_label(
 
 
 def test_page_attachment_merge_keeps_the_contributing_page_that_attached():
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     # `comparable` travels with `attached` in every fact the caller builds, and
     # the merge now reads both. Supplied here rather than defaulted inside the
     # helper: a missing predicate silently read as False is the substitution
@@ -321,7 +306,7 @@ def test_recensor_uses_the_page_attempt_outcome_for_page_geometry(tmp_path, monk
     """
     root = tmp_path / "runs"
     through_perlector(root, "page-outcome", "happy")
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     context = recensor.open_context(_recensor_args(root, "page-outcome"), RECENSOR)
     act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
     original_artifact = context.tree.read_artifact
@@ -366,7 +351,7 @@ def test_recensor_uses_the_page_attempt_outcome_for_page_geometry(tmp_path, monk
 def test_recensor_refuses_a_native_capture_attributed_to_another_adapter(tmp_path, monkeypatch):
     root = tmp_path / "runs"
     through_perlector(root, "capture-adapter", "happy")
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     context = recensor.open_context(_recensor_args(root, "capture-adapter"), RECENSOR)
     act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
     original = context.tree.read_artifact_reference
@@ -394,7 +379,7 @@ def test_recensor_names_an_absent_chair_that_still_carries_a_native_capture(tmp_
     """
     root = tmp_path / "runs"
     through_perlector(root, "absent-capture", "happy")
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     context = recensor.open_context(_recensor_args(root, "absent-capture"), RECENSOR)
     act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
     original = context.registry.resolve
@@ -422,7 +407,7 @@ def test_recensor_refuses_a_partition_whose_retained_responses_are_not_inputs(
     """
     root = tmp_path / "runs"
     through_perlector(root, "partition-inputs", "happy")
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     context = recensor.open_context(_recensor_args(root, "partition-inputs"), RECENSOR)
     act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
     original = context.tree.read_artifact_reference
@@ -445,7 +430,7 @@ def test_recensor_rederives_a_native_projection_from_the_retained_raw_response(
 ):
     root = tmp_path / "runs"
     through_perlector(root, "capture-projection", "happy")
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     context = recensor.open_context(_recensor_args(root, "capture-projection"), RECENSOR)
     act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
     original = context.tree.read_artifact_reference
@@ -519,7 +504,7 @@ def test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_denominato
     assert invoke(root, "manifest", "happy", "pipeline/5_recensor/run.py").returncode == 0
     tree = RunTree(root, "manifest")
     tree.resolve(tree.manifest_path(RECENSOR)).write_text("{}", encoding="utf-8")
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     args = _recensor_args(root, "manifest")
     context = recensor.open_context(args, RECENSOR)
 
@@ -531,7 +516,7 @@ def test_a_refused_partition_receipt_does_not_publish_a_completion_seal(tmp_path
     """Receipt reconciliation is part of closing, not work after the checkpoint."""
     root = tmp_path / "runs"
     through_perlector(root, "receipt-refusal", "happy")
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
 
     def refuse_receipt(_context, _budget):
         raise FatalAccounting("partition receipt refused at close")
@@ -872,7 +857,7 @@ def test_a_review_whose_stored_coverage_disagrees_with_disk_is_refused(tmp_path)
     # instead of the coverage-drift check this test targets.
     tree.write_manifest(RECENSOR)
 
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     args = _recensor_args(root, "coverage-drift")
     context = recensor.open_context(args, RECENSOR)
 
@@ -924,7 +909,7 @@ def test_a_recensor_review_for_an_act_nobody_proposed_is_a_fatal_imbalance(tmp_p
     # first and mask the denominator refusal this test is about.
     tree.write_manifest(RECENSOR)
 
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     args = _recensor_args(root, "fabricated")
     context = recensor.open_context(args, RECENSOR)
 

@@ -2,7 +2,6 @@
 
 import ast
 import copy
-import importlib.util
 import inspect
 import json
 import shutil
@@ -21,22 +20,14 @@ from common.contracts.outcomes import witness_coverage
 from common.contracts.stages import ATTESTATORES, DESIGNATOR
 from common.runtree.store import RunTree
 from common.stage import latest_per_chair
+from conftest import load_stage, programs_through
 
 EXPECTED_MANIFEST_CALLS = 7
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_attestatores():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("attestatores_retention_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-attestatores = _load_attestatores()
+attestatores = load_stage("3_attestatores")
 
 
 @pytest.mark.parametrize(
@@ -110,12 +101,7 @@ def run_to_designator(
 ) -> tuple[Path, RunTree]:
     run_root = tmp_path / "runs"
     extra = {} if models_config is None else {"models_config": models_config}
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-    ):
+    for program in programs_through("designator"):
         result = invoke_stage(
             run_root, "retention", scenario, program, fixture_root=fixture_root, **extra
         )

@@ -27,7 +27,6 @@ therefore run the consuming stages, not only this one.
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -37,21 +36,13 @@ import pytest
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
 from common.stage import StageContext
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = ROOT / "proof"
 
 
-def _load_perlector():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("perlector_resume_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-perlector = _load_perlector()
+perlector = load_stage("4_perlector")
 
 
 def invoke_stage(
@@ -77,13 +68,7 @@ def invoke_stage(
 
 
 def _through_attestatores(root: Path, run_id: str, scenario: str = "happy") -> RunTree:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-    ):
+    for program in programs_through("attestatores"):
         result = invoke_stage(root, run_id, scenario, program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     return RunTree(root, run_id)

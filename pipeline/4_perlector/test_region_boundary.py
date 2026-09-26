@@ -1,7 +1,6 @@
 """The Perlector accepts only crops bound to their actual sealed Exemplar page."""
 
 import copy
-import importlib.util
 import subprocess
 import sys
 from io import BytesIO
@@ -20,19 +19,12 @@ from common.imaging import crop_png, dimensions
 from common.native_witness import partition_disagreement
 from common.runtree.store import RunTree
 from common.stage import load_fixture
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_perlector():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("perlector_run_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-perlector = _load_perlector()
+perlector = load_stage("4_perlector")
 
 
 class _Context:

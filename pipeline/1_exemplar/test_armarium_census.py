@@ -6,7 +6,6 @@ does not claim a real Designator model, so fabricating all later act artifacts j
 to reach an export would prove the wrong thing.
 """
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -21,24 +20,15 @@ from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import ARMARIUM, DESIGNATOR, DOOR
 from common.runtree.store import RunTree
 from common.stage import StageContext, adapter_recipe_for, load_fixture, run_config_bindings
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
 
 
-def _armarium_module():
-    spec = importlib.util.spec_from_file_location(
-        "armarium_system03_test", ROOT / "pipeline" / "7_armarium" / "run.py"
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_page_attribution_requires_verified_designator_crop_lineage(monkeypatch):
     """A raw region ordinal cannot itself prove a sealed page was marked out."""
-    armarium = _armarium_module()
+    armarium = load_stage("7_armarium")
 
     class Tree:
         def build_manifest(self, stage):
@@ -65,7 +55,7 @@ def test_page_attribution_requires_verified_designator_crop_lineage(monkeypatch)
 
 def test_an_outstanding_recovery_is_not_called_an_accepted_act_without_an_archetypus(monkeypatch):
     """The terminal message must name outstanding recovery, not a false acceptance."""
-    armarium = _armarium_module()
+    armarium = load_stage("7_armarium")
     review = {"outcome": "recovery-requested", "artifact_id": "review-1"}
     monkeypatch.setattr(
         armarium,
@@ -175,7 +165,7 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
         args=None,
         registry=None,
     )
-    armarium = _armarium_module()
+    armarium = load_stage("7_armarium")
     census = armarium.page_census(armarium_context)
     assert [census[ordinal]["container_page_index"] for ordinal in sorted(census)] == [0, 1]
     assert {row["declared_path"] for row in census.values()} == {"iPhone/FS-88.pdf"}

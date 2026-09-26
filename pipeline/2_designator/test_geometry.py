@@ -423,7 +423,7 @@ def test_load_padding_config_refuses_an_unknown_top_level_table(tmp_path):
 def test_load_padding_config_refuses_malformed_toml_syntax(tmp_path):
     path = tmp_path / "padding.toml"
     path.write_text("[padding]\ntop_bp = 600\nbottom_bp = [unterminated\n", encoding="utf-8")
-    with pytest.raises(ContractError, match="could not be read"):
+    with pytest.raises(ContractError, match="not valid TOML"):
         load_padding_config(path)
 
 

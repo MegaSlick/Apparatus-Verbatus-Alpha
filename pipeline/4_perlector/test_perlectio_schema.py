@@ -9,7 +9,6 @@ and remove one thing from it at a time.
 """
 
 import copy
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -19,20 +18,13 @@ import pytest
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
-def _load_perlector():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("perlector_schema_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-perlector = _load_perlector()
+perlector = load_stage("4_perlector")
 
 
 @pytest.fixture(scope="module")
