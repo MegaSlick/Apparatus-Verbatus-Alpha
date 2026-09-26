@@ -197,23 +197,14 @@ def test_the_rendered_request_loads_through_cli_request_once_every_value_is_supp
     )
     assert not rendered.refused
 
-    raw = pod_request(
-        rendered.card,
-        image="registry.example/verbatus@sha256:" + "a" * 64,
-        volume_id="volume-1",
-        repository_commit="b" * 40,
-        hard_deadline=hard_deadline,
-    )
-    # The metadata placeholder the rendering prints is deliberately left as it
-    # stands: it is the one field the earlier version of this test replaced,
-    # which meant the printed document was never the document that was loaded.
+    printed = rendered.text.split("```json\n", 1)[1].split("\n```", 1)[0]
     # The launch seals the real margin from the spend policy on every create,
-    # so the placeholder is a non-blank string `_request` must accept.
-    assert raw["metadata"] == {
+    # so the printed placeholder is a non-blank string `_request` must accept.
+    assert json.loads(printed)["metadata"] == {
         "VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS": "<the sealed policy value>"
     }
     path = tmp_path / "boot-a.json"
-    path.write_text(json.dumps(raw), encoding="utf-8")
+    path.write_text(printed, encoding="utf-8")
 
     request = _request(path)
 

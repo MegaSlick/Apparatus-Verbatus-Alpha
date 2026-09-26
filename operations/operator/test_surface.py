@@ -633,9 +633,7 @@ def test_status_reads_a_supervisor_identity_without_writing_its_lock(tmp_path: P
     lease_id = lease_path.stem
     leases_root = lease_path.parent
 
-    pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
-    )
+    pod_supervise.establish_identity(leases_root, lease_id, now=lambda: START, pid=os.getpid())
     pod_supervise.release_lock(leases_root, lease_id)
     supervisors_dir = leases_root / "supervisors"
     # `establish_identity` above created the lock file as its own side
@@ -674,9 +672,7 @@ def test_status_survives_a_read_only_supervisors_directory_with_no_lock_file(
     lease_id = lease_path.stem
     leases_root = lease_path.parent
 
-    pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
-    )
+    pod_supervise.establish_identity(leases_root, lease_id, now=lambda: START, pid=os.getpid())
     pod_supervise.release_lock(leases_root, lease_id)
     supervisors_dir = leases_root / "supervisors"
     (supervisors_dir / f"supervisor-{lease_id}.lock").unlink()
@@ -1601,6 +1597,14 @@ def test_unobservable_balance_has_its_own_three_part_operator_refusal(tmp_path: 
     assert "repair the named balance source" in rendered
     receipt = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
     assert receipt["state"] == LaunchState.REFUSED_BALANCE_UNOBSERVABLE.value
+
+
+def test_a_spend_lock_failure_is_not_reported_as_an_unobservable_balance(
+    tmp_path: Path,
+) -> None:
+    result = LaunchResult(LaunchState.REFUSED_SPEND_LOCK_UNAVAILABLE, detail="lock failed")
+
+    assert _surface(tmp_path)._launch_error(result).code is ErrorCode.SPEND_LOCK_UNAVAILABLE
 
 
 def test_balance_floor_has_its_own_three_part_operator_refusal(tmp_path: Path) -> None:
@@ -5289,7 +5293,7 @@ def test_status_reports_a_running_supervisor_its_last_tick_and_the_volume_rate(
     leases_root = lease_path.parent
 
     identity = pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+        leases_root, lease_id, now=lambda: START, pid=os.getpid()
     )
     pod_supervise.record_tick(
         pod_supervise.identity_path(leases_root, lease_id),
@@ -5329,7 +5333,7 @@ def test_status_reports_a_crashed_supervisor_as_absent_even_with_a_live_identity
     leases_root = lease_path.parent
 
     identity = pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+        leases_root, lease_id, now=lambda: START, pid=os.getpid()
     )
     pod_supervise.record_tick(
         pod_supervise.identity_path(leases_root, lease_id),
@@ -5368,7 +5372,7 @@ def test_status_reports_unknown_never_running_when_the_ownership_lock_cannot_be_
     leases_root = lease_path.parent
 
     identity = pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+        leases_root, lease_id, now=lambda: START, pid=os.getpid()
     )
     pod_supervise.record_tick(
         pod_supervise.identity_path(leases_root, lease_id),
@@ -5407,7 +5411,7 @@ def test_status_reports_unreadable_when_the_ownership_lock_check_raises(
     leases_root = lease_path.parent
 
     identity = pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+        leases_root, lease_id, now=lambda: START, pid=os.getpid()
     )
     pod_supervise.record_tick(
         pod_supervise.identity_path(leases_root, lease_id),
@@ -5444,9 +5448,7 @@ def test_status_never_calls_the_provider_while_reading_supervisor_telemetry(
     lease_path = _open_lease_path(surface, provider, spend)
     lease_id = lease_path.stem
     leases_root = lease_path.parent
-    pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
-    )
+    pod_supervise.establish_identity(leases_root, lease_id, now=lambda: START, pid=os.getpid())
     provider.calls.clear()
 
     _surface(tmp_path, provider=provider).status()
@@ -5471,7 +5473,7 @@ def test_status_never_prints_the_supervisor_owner_token(tmp_path: Path) -> None:
     leases_root = lease_path.parent
 
     identity = pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+        leases_root, lease_id, now=lambda: START, pid=os.getpid()
     )
     pod_supervise.record_tick(
         pod_supervise.identity_path(leases_root, lease_id),

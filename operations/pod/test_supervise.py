@@ -1165,9 +1165,7 @@ def test_a_reused_pid_after_reboot_does_not_block_a_legitimate_restart(tmp_path:
     # an unrelated live process that now happens to hold that number.
     supervise.release_lock(tmp_path, LEASE_ID)
 
-    second = supervise.establish_identity(
-        tmp_path, LEASE_ID, now=clock.now, pid=1000, pid_alive=lambda pid: True
-    )
+    second = supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
     assert second.owner_token == first.owner_token
     assert second.pid == 1000
 
