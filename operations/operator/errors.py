@@ -32,6 +32,7 @@ class ErrorCode(StrEnum):
     SAFETY_CHECK_FAILED = "safety-check-failed"
     LAUNCH_UNRESOLVED = "launch-unresolved"
     LAUNCH_ALREADY_IN_FLIGHT = "launch-already-in-flight"
+    SPEND_LOCK_UNAVAILABLE = "spend-lock-unavailable"
     ACTIVE_POD_REQUIRES_CLOSE = "active-pod-requires-close"
     ADOPTION_REFUSED = "adoption-refused"
     PAID_ACTION_REFUSED = "paid-action-refused"
@@ -157,6 +158,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Launch could not prove that its fixture pod is safely accounted for.",
         "It is not called ready, and a provider request may already have occurred.",
         "Do not launch again. Run `verbatus status`, preserve the saved receipt, and resolve the named close evidence before retrying.",
+    ),
+    ErrorCode.SPEND_LOCK_UNAVAILABLE: ErrorCopy(
+        "Launch could not take the spend-reservation lock, usually because another launch holds it.",
+        "This attempt sent no paid provider action and spent nothing.",
+        "Wait for the other launch to finish, or check for a stuck launch process and the lock error in the saved detail, then preview launch again; this is safe.",
     ),
     ErrorCode.LAUNCH_ALREADY_IN_FLIGHT: ErrorCopy(
         "Another Verbatus window is already part-way through a paid launch.",

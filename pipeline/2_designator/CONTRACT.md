@@ -683,7 +683,7 @@ padding, geometry and grouping policies, the per-page ink analysis,
 conservation, the residual holds, the once-only seal and the exit rule. What
 replaces the fixture's declared acts is one call per sealed page through
 `operations/serving/client.py::ChairClient`, built by
-`structure_pass.default_serving_factory` in production and injected by a test
+`operations/serving/assembly.py::stage_chair_client` in production and injected by a test
 (`main(serving_factory=...)`) exactly as the Attestatores and the Perlector
 inject theirs.
 

@@ -740,7 +740,7 @@ card.
 `serving_mode_for` for the `(serving_recipe, chair, tier)` row in the catalogue named by
 `--serving-recipes-config`, whose digest is already inside `config_digest` through
 `serving_config_inputs`. No new configuration key was added and none is planned:
-`bound_serving_recipes` refuses a catalogue whose bytes are not the ones the run sealed,
+`operations/serving/assembly.py` refuses catalogue or placement bytes the run did not seal,
 so the posture cannot be moved after the run was bound. `--placement-tier` must be
 supplied beside a live catalogue and is deliberately *not* sealed — it is a measured
 runtime fact of the card, and the receipt records the caps that actually bound the
