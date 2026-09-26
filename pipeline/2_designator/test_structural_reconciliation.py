@@ -6,14 +6,9 @@ when detection found nothing worth calling a match.
 """
 
 import pytest
-from _test_support import load_designator
 
 from common.contracts.errors import ContractError
-
-
-def _load_designator():
-    return load_designator("designator_structural_reconciliation_under_test")
-
+from conftest import load_stage
 
 # grouping.group_page takes these as resolved keywords, not module defaults;
 # spelled out here so these tests keep exercising the fixed geometry they were
@@ -39,20 +34,20 @@ def _group(bounds: dict, body_members=()) -> dict:
 
 
 def test_overlap_area_of_disjoint_rectangles_is_zero():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     a = {"x": 0, "y": 0, "w": 10, "h": 10}
     b = {"x": 20, "y": 20, "w": 10, "h": 10}
     assert designator._overlap_area(a, b) == 0
 
 
 def test_overlap_area_of_identical_rectangles_is_their_area():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     a = {"x": 5, "y": 5, "w": 10, "h": 8}
     assert designator._overlap_area(a, dict(a)) == 80
 
 
 def test_match_picks_the_group_with_the_most_overlap_not_the_first():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     declared = {"x": 0, "y": 0, "w": 10, "h": 10}
     small_overlap = _group({"x": 8, "y": 8, "w": 10, "h": 10})
     large_overlap = _group({"x": 0, "y": 0, "w": 10, "h": 10})
@@ -61,7 +56,7 @@ def test_match_picks_the_group_with_the_most_overlap_not_the_first():
 
 
 def test_match_refuses_when_no_detected_group_covers_at_least_half_the_declared_area():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     declared = {"x": 0, "y": 0, "w": 100, "h": 100}
     barely_touching = _group({"x": 95, "y": 95, "w": 10, "h": 10})  # 5x5 = 25px overlap of 10000
     with pytest.raises(ContractError, match="structural grouping found no detected region"):
@@ -69,7 +64,7 @@ def test_match_refuses_when_no_detected_group_covers_at_least_half_the_declared_
 
 
 def test_match_refuses_when_no_group_exists_at_all():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     declared = {"x": 0, "y": 0, "w": 10, "h": 10}
     with pytest.raises(ContractError, match="structural grouping found no detected region"):
         designator._match_structural_group([], declared, "test act")
@@ -77,7 +72,7 @@ def test_match_refuses_when_no_group_exists_at_all():
 
 def test_match_accepts_a_group_covering_exactly_half_the_declared_area():
     """The boundary itself: half is the accepted floor, not the refused ceiling."""
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     declared = {"x": 0, "y": 0, "w": 10, "h": 10}  # area 100
     half = _group({"x": 0, "y": 0, "w": 10, "h": 5})  # area 50, overlap 50
     assert designator._match_structural_group([half], declared, "test act") is half
@@ -86,7 +81,7 @@ def test_match_accepts_a_group_covering_exactly_half_the_declared_area():
 def test_match_breaks_a_tied_full_bounds_overlap_by_the_groups_own_body_members():
     """A shared tall anchor makes both groups' union bounds identical, so
     each group's own body text, not the shared anchor, must break the tie."""
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     shared_bounds = {"x": 0, "y": 0, "w": 20, "h": 20}  # both groups tie here
     group_a = _group(shared_bounds, [{"bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}])
     group_b = _group(shared_bounds, [{"bounds": {"x": 0, "y": 10, "w": 10, "h": 10}}])
@@ -108,7 +103,7 @@ def test_two_declared_acts_cannot_both_claim_one_detected_group():
     """
     import grouping
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
 
     def component(x, y, w, h):
         return {"bounds": {"x": x, "y": y, "w": w, "h": h}, "pixel_count": w * h}
@@ -140,7 +135,7 @@ def test_two_declared_acts_cannot_both_claim_one_detected_group():
 
 def test_one_act_may_claim_its_own_group_twice_without_refusing_itself():
     """A same-act second claim is not a second claimant."""
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     group = _group({"x": 0, "y": 0, "w": 10, "h": 10})
     analysis: dict = {}
     designator._claim_structural_group(analysis, group, "a1", "act a1")
@@ -151,7 +146,7 @@ def test_brace_linked_acts_each_claim_their_own_group():
     """The named brace fixture stays legal: two groups sharing one anchor."""
     import grouping
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
 
     def component(x, y, w, h):
         return {"bounds": {"x": x, "y": y, "w": w, "h": h}, "pixel_count": w * h}
@@ -172,7 +167,7 @@ def test_brace_linked_acts_each_claim_their_own_group():
 
 def test_match_refuses_when_body_members_cannot_break_the_tie_either():
     """Equal evidence has no measured basis for selecting either group."""
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     declared = {"x": 0, "y": 0, "w": 10, "h": 10}
     first = _group({"x": 0, "y": 0, "w": 10, "h": 10})
     second = _group({"x": 0, "y": 0, "w": 10, "h": 10})
@@ -181,7 +176,7 @@ def test_match_refuses_when_body_members_cannot_break_the_tie_either():
 
 
 def test_match_refuses_a_group_missing_its_body_evidence():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     declared = {"x": 0, "y": 0, "w": 10, "h": 10}
     incomplete = {
         "bounds": dict(declared),

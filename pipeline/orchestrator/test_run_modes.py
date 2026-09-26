@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -252,9 +252,7 @@ def test_every_mode_checkpoints_a_held_member_before_it_stops(monkeypatch, tmp_p
     The two-act fixture cannot organically cross the cap mid-sequence, so this
     test must inject the otherwise unreachable boundary state.
     """
-    spec = importlib.util.spec_from_file_location("orchestrator_run_modes", ORCHESTRATOR)
-    orchestrator = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(orchestrator)
+    orchestrator = load_stage("orchestrator")
     args = argparse.Namespace(run_root=str(tmp_path), run_id="r")
     breach = {
         "threshold": 2,

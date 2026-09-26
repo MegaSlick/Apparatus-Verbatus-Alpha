@@ -1,7 +1,6 @@
 """R5a prior-draft protocol: distinct passes, refusal gate, and fixture signal."""
 
 import copy
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -21,20 +20,13 @@ from common.contracts.identities import perlector_attempt_id
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
 from common.stage import load_fixture, run_config_bindings
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
-def _load_perlector():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("perlector_prior_protocol_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-perlector = _load_perlector()
+perlector = load_stage("4_perlector")
 
 
 def sampling_approval_records(scenario, *extra) -> dict:

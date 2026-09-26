@@ -22,24 +22,16 @@ that puts an offset on either side of `<`, `>`, or `abs()`, exactly as
 """
 
 import ast
-import importlib.util
 import inspect
 import textwrap
 from pathlib import Path
 
+from conftest import load_stage
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_perlector():
-    spec = importlib.util.spec_from_file_location(
-        "perlector_edge_deltas_under_test", ROOT / "pipeline/4_perlector/run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-perlector = _load_perlector()
+perlector = load_stage("4_perlector")
 
 
 def _derivation_tree() -> ast.Module:

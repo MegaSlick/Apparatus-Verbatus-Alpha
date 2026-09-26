@@ -2,7 +2,6 @@
 
 import copy
 import dataclasses
-import importlib.util
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -19,32 +18,14 @@ from common.contracts.stages import ATTESTATORES, EXEMPLAR
 from common.imaging import encode_grayscale_png_deterministic
 from common.native_witness import validate_presented_page_binding
 from common.witness_adapters import KNOWN_WITNESS_ADAPTER_NAMES
+from conftest import load_stage
 
 STAGE = Path(__file__).resolve().parent
 ROOT = STAGE.parent.parent
 
 
-def _load_local_adapters():
-    path = STAGE / "witness_adapters.py"
-    spec = importlib.util.spec_from_file_location("attestatores_witness_adapters", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    # Snapshot rather than `remove`: the stage directory is already on the path
-    # once `run.py` has been imported, and value-based removal takes the first
-    # occurrence -- that module's entry, not the one inserted here.
-    original_path = list(sys.path)
-    sys.path.insert(0, str(STAGE))
-    try:
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(spec.name, None)
-        sys.path[:] = original_path
-    return module
-
-
 def test_every_declared_adapter_has_a_runnable_fixture_shape():
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     assert set(adapters.RUNNABLE_ADAPTERS) == KNOWN_WITNESS_ADAPTER_NAMES
     spec = adapters.resolve_runnable_adapter("churro.v1")
     assert spec is adapters.RUNNABLE_ADAPTERS["churro.v1"]
@@ -114,7 +95,7 @@ def test_no_runnable_adapter_lets_a_caller_relabel_its_retention(name):
     The refusal is at the signature, before any model view is inspected, which
     is why DAI is covered without building its own closed view shape.
     """
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     spec = adapters.resolve_runnable_adapter(name)
 
     with pytest.raises(TypeError, match="unexpected keyword argument 'adapter'"):
@@ -134,7 +115,7 @@ def test_retention_is_bound_to_the_resolved_adapter_and_cannot_be_relabeled(name
     The two adapters whose model view is a plain mapping are checked end to end;
     DAI's view has its own closed schema and is exercised in its own cases.
     """
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     spec = adapters.resolve_runnable_adapter(name)
     blobs: list[bytes] = []
 
@@ -195,7 +176,7 @@ def test_dai_crop_resize_is_a_rederivable_adapter_crop_and_preserves_uncertainty
     page = encode_grayscale_png_deterministic(3_000, 2, [bytearray(3_000), bytearray(3_000)])
     context = _DaiContext(page)
     source = _dai_region(3_000, 2)
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     adapter = adapters.resolve_runnable_adapter("dai.v1")
     presented = adapter.present(context, source)
 
@@ -231,7 +212,7 @@ def test_dai_readback_refuses_an_aspect_valid_size_its_ceiling_recipe_cannot_pro
     page = encode_grayscale_png_deterministic(3_000, 2, [bytearray(3_000), bytearray(3_000)])
     context = _DaiContext(page)
     source = _dai_region(3_000, 2)
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     presented = adapters.resolve_runnable_adapter("dai.v1").present(context, source)
     adapters.validate_adapter_presentation("dai.v1", source, presented)
 
@@ -249,7 +230,7 @@ def test_dai_readback_refuses_a_same_page_crop_other_than_its_assigned_proposal(
     page = encode_grayscale_png_deterministic(3_000, 2, [bytearray(3_000), bytearray(3_000)])
     context = _DaiContext(page)
     source = _dai_region(3_000, 2)
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     forged = adapters.resolve_runnable_adapter("dai.v1").present(
         context, _dai_region(2_999, 2, x=1)
     )
@@ -276,7 +257,7 @@ def test_dai_crop_refuses_bytes_swapped_after_page_artifact_verification():
         return page_record
 
     context.tree.read_artifact = verified_before_swap
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
 
     with pytest.raises(SchemaRefusal, match="changed between artifact verification and crop use"):
         adapters.resolve_runnable_adapter("dai.v1").present(context, _dai_region(20, 10))
@@ -294,7 +275,7 @@ def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
     """
     context = _DaiContext(_dai_page(20, 10))
     context.tree.read_artifact = lambda *_args: {"payload": payload}
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
 
     with pytest.raises(SchemaRefusal, match="no image path to crop"):
         adapters.resolve_runnable_adapter("dai.v1").present(context, _dai_region(20, 10))
@@ -302,7 +283,7 @@ def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
 
 
 def test_the_registry_binds_the_native_intake_contract_seams():
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
     # Quantization is data beside the five operations; `takes_page_size` says
     # whether this adapter's `observe` accepts the sealed page's own size, and
@@ -448,7 +429,7 @@ def test_a_callable_binding_that_raises_at_import_fails_loudly_without_fallback(
     # attribute this module takes off `feeding`. What is pinned is unchanged --
     # a broken binding propagates out of import with no fallback.
     with pytest.raises(RuntimeError, match="fixture callable import failed at dai_prompt"):
-        _load_local_adapters()
+        load_stage("3_attestatores", "witness_adapters", isolate_path=True)
 
 
 @pytest.mark.parametrize(
@@ -456,7 +437,7 @@ def test_a_callable_binding_that_raises_at_import_fails_loudly_without_fallback(
     ("", " ", None, "churro.v2", pytest.param(10**5000, id="huge-int")),
 )
 def test_local_callable_resolution_refuses_missing_or_unknown_names(name):
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     with pytest.raises(adapters.AdapterRefusal) as caught:
         adapters.resolve_runnable_adapter(name)
     assert caught.value.name == name
@@ -470,7 +451,7 @@ def test_local_callable_resolution_refuses_missing_or_unknown_names(name):
 
 
 def test_a_non_string_adapter_with_a_broken_repr_still_gets_the_named_refusal():
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
 
     class BrokenRepr:
         def __repr__(self):
@@ -485,7 +466,7 @@ def test_a_non_string_adapter_with_a_broken_repr_still_gets_the_named_refusal():
 
 
 def test_a_shared_name_without_a_runnable_binding_refuses_with_the_repair(monkeypatch):
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     monkeypatch.delitem(adapters.RUNNABLE_ADAPTERS, "churro.v1")
 
     with pytest.raises(adapters.AdapterRefusal) as caught:
@@ -588,7 +569,7 @@ def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
 ):
     page = _dai_page(width, height, mode)
     context = _DaiContext(page)
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
 
     presented = adapters.resolve_runnable_adapter("dai.v1").present(
         context, _dai_region(width, height)
@@ -630,7 +611,7 @@ def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
 )
 def test_a_proposal_box_past_the_page_edge_is_refused_by_name(width, height, x, y):
     page = _dai_page(2_000, 1_000)
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     context = _DaiContext(page)
 
     with pytest.raises(SchemaRefusal, match="falls outside the sealed source page"):
@@ -662,7 +643,7 @@ def test_the_shipped_roster_declares_the_framing_it_is_already_asking_in():
     repository's.
     """
 
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     config = _roster()
     assert dict(config.witness_framings) == {"attestator_3": "registry-v0.3.0"}
     assert adapters.framing_for(config, "attestator_3") == "registry-v0.3.0"
@@ -673,7 +654,7 @@ def test_a_chair_whose_adapter_has_one_framing_names_none():
     """`None` rather than an invented name: there is nothing to choose, and the
     capture's own prompt bytes already say what was asked."""
 
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     assert adapters.framing_for(_roster(), "attestator_1") is None
     assert adapters.framing_for(_roster(), "attestator_2") is None
 
@@ -682,12 +663,12 @@ def test_the_default_is_resolved_and_recorded_even_when_the_roster_names_none():
     """A Testimonium that recorded a framing only when someone happened to name
     one could not be compared across runs."""
 
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     assert adapters.framing_for(_roster({}), "attestator_3") == "registry-v0.3.0"
 
 
 def test_a_roster_naming_a_framing_no_adapter_declares_is_refused_before_the_run_opens():
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     with pytest.raises(SchemaRefusal, match="has no framing named"):
         adapters.validate_runnable_adapter_bindings(
             _roster({"attestator_3": "churro-xml-template.v1"})
@@ -695,7 +676,7 @@ def test_a_roster_naming_a_framing_no_adapter_declares_is_refused_before_the_run
 
 
 def test_a_roster_framing_a_single_framing_adapter_is_refused_by_name():
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     with pytest.raises(SchemaRefusal, match="declares only one framing"):
         adapters.validate_runnable_adapter_bindings(_roster({"attestator_2": "registry-v0.3.0"}))
 
@@ -743,7 +724,7 @@ def test_churro_presents_the_vendors_own_prepared_page_and_it_re_derives(width, 
     page = _dai_page(width, height)
     context = _DaiContext(page)
     source = _churro_page_presentation(width, height, page)
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
 
     presented = adapters.resolve_runnable_adapter("churro.v1").present(context, source)
 
@@ -786,7 +767,7 @@ def test_a_churro_presentation_the_vendors_fit_rule_cannot_produce_is_refused_at
     page = _dai_page(3_000, 2)
     context = _DaiContext(page)
     source = _churro_page_presentation(3_000, 2, page)
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     presented = adapters.resolve_runnable_adapter("churro.v1").present(context, source)
 
     forged = copy.deepcopy(presented)
@@ -812,7 +793,7 @@ def test_a_colour_conversion_that_cannot_run_is_named_rather_than_raised_through
     page = _dai_page(20, 10)
     context = _DaiContext(page)
     source = _churro_page_presentation(20, 10, page)
-    adapters = _load_local_adapters()
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
 
     def refusing_conversion(_png_bytes):
         raise ValueError("image mode 'CMYK' is not a mode a sealed crop arrives in")

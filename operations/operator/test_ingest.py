@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-import inspect
 import io
 import json
 import os
@@ -16,6 +15,7 @@ import pytest
 from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_of
+from conftest import code_text
 from operations.operator import cli, custody, ingest, ingest_worker
 from operations.operator.ingest_protocol import EXPECTED_DIGEST_FIELDS
 from operations.submit import gate, inventory
@@ -611,7 +611,7 @@ def test_ingest_presenter_has_no_image_or_producer_writer_and_uses_the_custody_s
     property, checked by observing it rather than by matching a keyword
     argument's spelling.
     """
-    source = inspect.getsource(ingest)
+    source = code_text(ingest)
     assert "operations.triage" not in source
     assert "operations.submit" not in source
     assert ingest.run_confined is custody.run_confined
@@ -1062,11 +1062,10 @@ def test_the_double_click_route_reaches_the_one_confined_ingest_implementation(
     it" is this unit's exit and a divergent second implementation is precisely how
     the interactive route would come to hold weaker guarantees than the verb one.
     """
-    source = inspect.getsource(cli)
-    assert source.count("ingest_in_custody(") == 1
+    assert code_text(cli).count("ingest_in_custody(") == 1
     # The interactive branch supplies flags to the parser and nothing else: it
     # never reaches the worker, the custody seam, or a path of its own.
-    interactive = inspect.getsource(cli._interactive_arguments)
+    interactive = code_text(cli._interactive_arguments)
     assert "ingest_in_custody" not in interactive
     assert "run_confined" not in interactive
 

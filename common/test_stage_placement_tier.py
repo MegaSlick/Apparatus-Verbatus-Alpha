@@ -12,24 +12,15 @@ staying out of the sealed digests.
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 from argparse import Namespace
 from pathlib import Path
 
 from common.chairs.registry import ChairRegistry
 from common.stage import load_fixture, run_config_bindings, stage_parser
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def _orchestrator_module(name: str):
-    path = ROOT / "pipeline" / "orchestrator" / "run.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
@@ -91,7 +82,7 @@ def test_orchestrator_forwards_placement_tier_only_when_set(tmp_path):
     parsed namespace, so a regression that stops `invoke` from reading the
     attribute cannot pass by accident.
     """
-    orchestrator = _orchestrator_module("orchestrator_placement_tier_argv")
+    orchestrator = load_stage("orchestrator")
     observed: list[list[str]] = []
 
     def fake_run(command, **_kwargs):
@@ -119,7 +110,7 @@ def test_orchestrator_forwards_placement_tier_only_when_set(tmp_path):
 
 
 def test_orchestrator_forwards_cache_root_to_every_stage(tmp_path):
-    orchestrator = _orchestrator_module("orchestrator_cache_root_argv")
+    orchestrator = load_stage("orchestrator")
     observed: list[list[str]] = []
 
     def fake_run(command, **_kwargs):

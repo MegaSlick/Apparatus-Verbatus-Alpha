@@ -22,7 +22,6 @@ stays unchanged.
 """
 
 import copy
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -31,6 +30,7 @@ import pytest
 
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR
 from common.native_witness import partition_disagreement
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline/orchestrator/run.py"
@@ -38,16 +38,6 @@ FIXTURE = "synthetic-two-page-v0"
 # The one shipped scenario carrying a real unclaimed witness observation, which
 # is what makes the witness side of the perturbation observable at all.
 SCENARIO = "coverage-recovery"
-
-
-def _load_recensor():
-    spec = importlib.util.spec_from_file_location(
-        "recensor_u14b_denominators", ROOT / "pipeline/5_recensor/run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
 
 
 def _context(recensor, root: Path, run_id: str):
@@ -123,7 +113,7 @@ def test_moving_a_chairs_boxes_moves_no_ink_number_and_no_act(run_root, monkeypa
     witness box is moved onto exactly the rows that shrink uncovered, so a leak
     between the two denominators would change the number this asserts is equal.
     """
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     context = _context(recensor, run_root, "r")
     target, page = _region_to_shrink(recensor, context)
 
@@ -282,7 +272,7 @@ def test_moving_a_sealed_cut_moves_the_ink_numbers_and_nothing_upstream(run_root
     9's map, which was measured before any proposal existed and cannot depend on
     what was later cut.
     """
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     baseline_context = _context(recensor, run_root, "r")
     before = _denominators(recensor, baseline_context)
 

@@ -13,7 +13,6 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from _test_support import load_designator
 from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, self_hash
@@ -22,6 +21,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR, INK_MAP
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, EXIT_HELD, open_context, stage_parser
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -248,21 +248,13 @@ def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(
     assert snapshot(tree.root) == before
 
 
-def _load_designator():
-    return load_designator("designator_toctou_under_test")
-
-
 def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tmp_path):
     """The upfront boundary check runs once; this proves a page's bytes
     changing on disk after that check but before this page's own later read
     is still caught.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = subprocess.run(
             [
                 sys.executable,
@@ -280,7 +272,7 @@ def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tm
         )
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     args = stage_parser("toctou acceptance").parse_args(
         ["--run-root", str(root), "--run-id", "r", "--scenario", "happy"]
     )

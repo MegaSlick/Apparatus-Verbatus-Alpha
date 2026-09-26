@@ -11,7 +11,6 @@ running the real Exemplar, so what is under test is the handoff rather than a
 hand-written approximation of it.
 """
 
-import importlib.util
 import json
 import subprocess
 import sys
@@ -33,6 +32,7 @@ from common.exemplar_boundary import verify_sealed_page_pixels
 from common.imaging import encode_image_deterministic
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, StageContext
+from conftest import load_stage
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,25 +42,7 @@ INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 
 
-def _load_exemplar_run():
-    """Load this directory's ``run.py`` under an unambiguous module name.
-
-    Every pipeline stage has a top-level module called ``run``.  A bare import
-    therefore returns whichever stage pytest happened to collect first, making
-    this module pass or fail with test ordering instead of the code under test.
-    """
-    spec = importlib.util.spec_from_file_location("exemplar_run_under_test", EXEMPLAR_CLI)
-    module = importlib.util.module_from_spec(spec)
-    original_path = list(sys.path)
-    try:
-        sys.path.insert(0, str(EXEMPLAR_CLI.parent))
-        spec.loader.exec_module(module)
-    finally:
-        sys.path[:] = original_path
-    return module
-
-
-_EXEMPLAR_RUN = _load_exemplar_run()
+_EXEMPLAR_RUN = load_stage("1_exemplar", isolate_path=True)
 SEAL_SUBJECT = _EXEMPLAR_RUN.SEAL_SUBJECT
 _page_payload = _EXEMPLAR_RUN._page_payload
 
@@ -552,12 +534,6 @@ def test_a_sealed_page_is_named_by_the_digest_that_was_actually_admitted(tmp_pat
     record = tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", expected))
     assert record["outcome"] == "sealed"
     assert record["payload"]["ordinal"] == 1
-
-
-def test_loading_the_exemplar_run_module_does_not_change_import_search_order():
-    before = list(sys.path)
-    _load_exemplar_run()
-    assert sys.path == before
 
 
 def test_a_pdf_page_rendered_below_its_run_target_says_so_in_the_sealed_page_record():

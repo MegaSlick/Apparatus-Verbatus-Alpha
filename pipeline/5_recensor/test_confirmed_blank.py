@@ -18,7 +18,6 @@ dissenting witness holds the act for a human rather than being outvoted.
 """
 
 import ast
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -29,19 +28,12 @@ from common.contracts.errors import FatalAccounting
 from common.contracts.outcomes import witness_coverage
 from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.runtree.store import RunTree
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_module(relative_path: str, name: str):
-    path = ROOT / relative_path
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-RECENSOR_RUN = _load_module("pipeline/5_recensor/run.py", "recensor_run_confirmed_blank")
+RECENSOR_RUN = load_stage("5_recensor")
 
 _CONFIRMED_BLANK_REASON = (
     "the Perlector's own reading found no-readable-text, and every witness that actually read "
@@ -73,15 +65,7 @@ def _invoke(root: Path, run_id: str, scenario: str, program: str) -> subprocess.
 
 # One runner for both stop points: the stage list and exit-code contract live
 # in exactly one place, so the two entry helpers below cannot drift apart.
-_STAGES_THROUGH_RECENSOR = (
-    "pipeline/1_exemplar/door.py",
-    "pipeline/1_exemplar/run.py",
-    "pipeline/1_ink_map/run.py",
-    "pipeline/2_designator/run.py",
-    "pipeline/3_attestatores/run.py",
-    "pipeline/4_perlector/run.py",
-    "pipeline/5_recensor/run.py",
-)
+_STAGES_THROUGH_RECENSOR = programs_through("recensor")
 
 
 def _run_through(

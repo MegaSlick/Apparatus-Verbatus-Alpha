@@ -5,7 +5,6 @@ derived from the joined text rather than the number of attempts.
 """
 
 import ast
-import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,17 +12,9 @@ import pytest
 
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.errors import SchemaRefusal
+from conftest import load_stage
 
-
-def _load_attestatores():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("attestatores_page_join", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-attestatores = _load_attestatores()
+attestatores = load_stage("3_attestatores")
 Attempt = attestatores.Attempt
 
 

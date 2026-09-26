@@ -27,7 +27,6 @@ What is proven:
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import shutil
 import subprocess
@@ -44,6 +43,7 @@ from common.contracts.approval import real_ingress_record
 from common.contracts.errors import ContractError
 from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR, SEAL_PREDECESSORS
 from common.stage import EXIT_FATAL, REAL_SCENARIO, StageContext
+from conftest import load_stage
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,28 +60,9 @@ FIXTURE_PAGES = ROOT / "proof" / "fixtures" / "synthetic-two-page-v0"
 RUN_ID = "real-ingress-stages"
 
 
-def _load_stage(stage: str):
-    """Load one stage's `run.py` under a name that cannot collide with another's.
-
-    Each stage program inserts its own directory at the front of `sys.path` for
-    its sibling modules; the insertion is undone here so loading the Perlector
-    first cannot make the Recensor's siblings resolve to the wrong directory.
-    """
-    program = STAGE_PROGRAMS[stage]
-    spec = importlib.util.spec_from_file_location(f"{stage}_run_under_real_ingress_test", program)
-    module = importlib.util.module_from_spec(spec)
-    original_path = list(sys.path)
-    try:
-        sys.path.insert(0, str(program.parent))
-        spec.loader.exec_module(module)
-    finally:
-        sys.path[:] = original_path
-    return module
-
-
-PERLECTOR_RUN = _load_stage(PERLECTOR)
-RECENSOR_RUN = _load_stage(RECENSOR)
-ARCHETYPUS_RUN = _load_stage(ARCHETYPUS)
+PERLECTOR_RUN = load_stage("4_perlector", isolate_path=True)
+RECENSOR_RUN = load_stage("5_recensor", isolate_path=True)
+ARCHETYPUS_RUN = load_stage("6_archetypus", isolate_path=True)
 
 
 class _Opened(Exception):

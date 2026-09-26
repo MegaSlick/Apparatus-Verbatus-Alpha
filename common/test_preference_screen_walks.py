@@ -31,10 +31,9 @@ nothing. That is the half worth automating.
 
 import ast
 import contextlib
-import importlib.util
+import functools
 import re
 import signal
-import sys
 from pathlib import Path
 
 import pytest
@@ -42,6 +41,7 @@ import pytest
 from common import cross_capture_autopsia, cross_capture_dissent, physical_act_partition
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.corpus_register import refuse_capture_preference
+from conftest import load_stage
 from operations.operator import triage
 from operations.operator.triage import TriageRefusal
 
@@ -62,28 +62,11 @@ PATHOLOGICAL_DEPTH = 1_000_000
 FAMILY_DEPTH = 200_000
 
 
+@functools.cache
 def _dossier():
-    """The Perlector's dossier module, loaded from its unpackaged stage directory.
+    """Loaded on first use, so the pure AST tests here do not pay for PIL at import."""
+    return load_stage("4_perlector", "dossier")
 
-    `pipeline/4_perlector` is a stage directory rather than a package, and
-    `dossier.py` imports its sibling `regime`, so the directory goes on the path
-    the way `run.py` puts it there. Loaded once, on first use, so a file whose
-    other tests are pure AST reads does not pay for PIL at import time.
-    """
-    if _dossier.module is None:
-        stage = ROOT / "pipeline" / "4_perlector"
-        if str(stage) not in sys.path:
-            sys.path.insert(0, str(stage))
-        spec = importlib.util.spec_from_file_location(
-            "perlector_dossier_under_family_guard", stage / "dossier.py"
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        _dossier.module = module
-    return _dossier.module
-
-
-_dossier.module = None
 
 # Every runtime screen standing over principle 1, as (file, function). Each
 # walks a payload it does not control -- caller JSON, witness output, or a

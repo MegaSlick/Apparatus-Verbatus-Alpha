@@ -46,7 +46,6 @@ What is proven:
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import shutil
 import subprocess
@@ -57,6 +56,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from conftest import load_stage
 
 STAGE = Path(__file__).resolve().parent
 ROOT = STAGE.parents[1]
@@ -121,17 +122,7 @@ ACTS: tuple[tuple[int, dict[str, int], str], ...] = (
 )
 
 
-def _load_attestatores():
-    spec = importlib.util.spec_from_file_location(
-        "attestatores_real_ingress_under_test", STAGE / "run.py"
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-attestatores = _load_attestatores()
+attestatores = load_stage("3_attestatores")
 
 
 # ------------------------------ the real run tree ------------------------------

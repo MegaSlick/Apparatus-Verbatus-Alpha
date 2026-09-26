@@ -13,22 +13,18 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from _test_support import load_designator
 
 from common.contracts.errors import ContractError
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def _load_designator():
-    return load_designator("designator_secondary_proposer_under_test")
 
 
 # --- level 1: the pure candidate rule, no I/O at all ---------------------------
 
 
 def test_a_candidate_touching_no_claim_is_rescued():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     claimed = [{"act_id": "act_a", "bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}]
     candidates = [{"bounds": {"x": 100, "y": 100, "w": 5, "h": 5}, "pixel_count": 25}]
     assert designator._secondary_rescue_candidates(claimed, candidates) == [
@@ -37,14 +33,14 @@ def test_a_candidate_touching_no_claim_is_rescued():
 
 
 def test_a_candidate_already_inside_one_claim_is_not_a_rescue():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     claimed = [{"act_id": "act_a", "bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}]
     candidates = [{"bounds": {"x": 2, "y": 2, "w": 3, "h": 3}, "pixel_count": 9}]
     assert designator._secondary_rescue_candidates(claimed, candidates) == []
 
 
 def test_a_candidate_that_only_overlaps_one_claim_keeps_its_additional_coverage():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     claimed = [{"act_id": "act_a", "bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}]
     candidate = {"bounds": {"x": 8, "y": 2, "w": 6, "h": 3}, "pixel_count": 18}
     assert designator._secondary_rescue_candidates(claimed, [candidate]) == [
@@ -58,7 +54,7 @@ def test_a_candidate_spanning_two_claims_is_held_with_the_ambiguity_counted():
     states how many claims it touched, so a reviewer sees the ambiguity
     instead of an aborted stage.
     """
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     claimed = [
         {"act_id": "act_a", "bounds": {"x": 0, "y": 0, "w": 10, "h": 10}},
         {"act_id": "act_b", "bounds": {"x": 12, "y": 0, "w": 10, "h": 10}},
@@ -71,7 +67,7 @@ def test_a_candidate_spanning_two_claims_is_held_with_the_ambiguity_counted():
 
 def test_removing_the_proposer_from_a_candidate_set_never_changes_the_rescue_set_of_the_rest():
     """Recall added by one candidate never depends on whether another exists."""
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     claimed = [{"act_id": "act_a", "bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}]
     rescuable = {"bounds": {"x": 50, "y": 50, "w": 4, "h": 4}, "pixel_count": 16}
     already_covered = {"bounds": {"x": 1, "y": 1, "w": 2, "h": 2}, "pixel_count": 4}
@@ -123,11 +119,7 @@ def _designator_context(
 
 def _prepared_context(designator, root: Path, models_config: Path | None, description: str):
     """Run the Door and Exemplar, then open the matching Designator context."""
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = _run(program, root, models_config)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     return _designator_context(designator, root, models_config, description)
@@ -135,15 +127,10 @@ def _prepared_context(designator, root: Path, models_config: Path | None, descri
 
 def _populated_context(tmp_path, models_config: Path | None = None):
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-    ):
+    for program in programs_through("designator"):
         result = _run(program, root, models_config)
         assert result.returncode == 0, f"{program}: {result.stderr}"
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _designator_context(designator, root, models_config)
     return designator, context
 
@@ -391,7 +378,7 @@ def _configured_models_config(tmp_path: Path) -> Path:
 def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_authority(
     tmp_path, monkeypatch
 ):
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     root = tmp_path / "runs"
     models_config = _configured_models_config(tmp_path)
     context = _prepared_context(designator, root, models_config, "secondary held-exit test")
@@ -426,7 +413,7 @@ def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_
     was written, discarding every act's authoritative work over one ambiguous
     review-only box.
     """
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     root = tmp_path / "runs"
     models_config = _configured_models_config(tmp_path)
     context = _prepared_context(designator, root, models_config, "straddling rescue test")
@@ -483,7 +470,7 @@ def test_an_out_of_page_secondary_candidate_is_refused_as_a_contract_error(tmp_p
     Unreachable today (candidates come from the page's own pixel scan, always
     in-page by construction), but a real detector would not carry that guarantee.
     """
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     root = tmp_path / "runs"
     models_config = _configured_models_config(tmp_path)
     context = _prepared_context(

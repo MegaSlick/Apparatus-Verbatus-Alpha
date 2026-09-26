@@ -9,11 +9,11 @@ import sys
 from pathlib import Path
 
 import pytest
-from _test_support import load_designator
 
 from common.chairs.registry import ChairRegistry
 from common.contracts.errors import ContractError
 from common.stage import EXIT_FATAL, load_fixture, run_config_bindings
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_PADDING = ROOT / "config" / "designator_padding.toml"
@@ -77,11 +77,7 @@ def _invoke(program: str, root: Path, *extra: str) -> subprocess.CompletedProces
 def test_reusing_a_run_id_under_changed_padding_is_refused_before_a_crop_is_cut(tmp_path):
     """The whole point: the second geometry never reaches the tree at all."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = _invoke(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -109,15 +105,11 @@ def test_padding_rewritten_between_the_binding_check_and_its_use_is_refused(tmp_
     root = tmp_path / "runs"
     padding_path = tmp_path / "designator_padding.toml"
     shutil.copyfile(SHIPPED_PADDING, padding_path)
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = _invoke(program, root, "--designator-padding-config", str(padding_path))
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
-    designator = load_designator("designator_padding_toctou_under_test")
+    designator = load_stage("2_designator")
 
     args = stage_parser("padding TOCTOU test").parse_args(
         [
@@ -159,15 +151,11 @@ def test_grouping_rewritten_between_the_binding_check_and_its_use_is_refused(tmp
     root = tmp_path / "runs"
     grouping_path = tmp_path / "designator_grouping.toml"
     shutil.copyfile(SHIPPED_GROUPING, grouping_path)
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = _invoke(program, root, "--designator-grouping-config", str(grouping_path))
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
-    designator = load_designator("designator_grouping_toctou_under_test")
+    designator = load_stage("2_designator")
 
     args = stage_parser("grouping TOCTOU test").parse_args(
         [

@@ -26,7 +26,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from _test_support import load_designator
 
 import common.stage as stage_contract
 from common import chandra_layout, structure_answer
@@ -62,6 +61,7 @@ from common.stage import (
     open_stage_context,
     stage_parser,
 )
+from conftest import load_stage, programs_through
 from operations.serving.client import ChairClient
 from operations.serving.config import (
     ServingConfigInputs,
@@ -107,7 +107,7 @@ PAGE_ONE_ACTS = (
 PAGE_TWO_ACTS = (({"x": 20, "y": 20, "w": 160, "h": 60}, "SYNTHETIC ACT THREE theta iota"),)
 SCRIPTED_TEXTS = tuple(text for _bounds, text in PAGE_ONE_ACTS + PAGE_TWO_ACTS)
 
-designator = load_designator("designator_structure_pass_under_test")
+designator = load_stage("2_designator")
 structure_pass = designator.structure_pass
 
 
@@ -195,7 +195,7 @@ def _live_catalogue(destination: Path) -> Path:
 
 
 def _chain(root: Path, catalogue: Path, *extra: str) -> None:
-    for program in (DOOR_CLI, EXEMPLAR_CLI, INK_MAP_CLI):
+    for program in programs_through("ink-map"):
         result = subprocess.run(
             [
                 sys.executable,
@@ -214,7 +214,7 @@ def _chain(root: Path, catalogue: Path, *extra: str) -> None:
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0, f"{program.name}: {result.stderr}"
+        assert result.returncode == 0, f"{program}: {result.stderr}"
 
 
 @pytest.fixture(scope="module")
@@ -268,7 +268,7 @@ def _real_submission(base: Path, pages: dict[str, bytes], *argv: str) -> Path:
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0, f"{program.name}: {result.stderr}"
+        assert result.returncode == 0, f"{program}: {result.stderr}"
     return root
 
 
@@ -1842,7 +1842,7 @@ def test_the_ink_tripwire_tests_a_rectangle_at_the_pages_own_threshold():
     measurement. At the margin the page derives for itself, paper is paper:
     blank returns False, writing returns True.
     """
-    designator = load_designator("designator_touches_ink")
+    designator = load_stage("2_designator")
     blank = {"x": 30, "y": 30, "w": 40, "h": 20}
     writing = {"x": 88, "y": 68, "w": 24, "h": 14}
 
@@ -1862,7 +1862,7 @@ def test_the_ink_tripwire_returns_false_on_a_page_with_no_background():
     """`ink_margin` is `None` exactly where `background` is; the background
     check stops the subtraction from ever seeing that `None`.
     """
-    designator = load_designator("designator_touches_ink_unmeasured")
+    designator = load_stage("2_designator")
     analysis = {"background": None, "ink_margin": None, "rows": [], "components": []}
     assert (
         designator.structure_pass.touches_ink({"x": 0, "y": 0, "w": 5, "h": 5}, analysis) is False

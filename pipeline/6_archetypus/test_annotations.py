@@ -9,7 +9,6 @@ fifty gaps is ordinary material and anything that behaves acceptably at one gap
 and badly at fifty is a defect. Hence the multi-gap cases below.
 """
 
-import importlib.util
 import io
 import json
 import sqlite3
@@ -26,19 +25,9 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, RECENSOR
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
+from conftest import load_stage
 
-ROOT = Path(__file__).resolve().parents[2]
-
-
-def _load_archetypus():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("archetypus_run_under_test_annotations", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-archetypus = _load_archetypus()
+archetypus = load_stage("6_archetypus")
 
 REF_A = {
     "relative_path": "3_attestatores/artifacts/testimonium/art_aaaaaaaaaaaaaaaa.json",

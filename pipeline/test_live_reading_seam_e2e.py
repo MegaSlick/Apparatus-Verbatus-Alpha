@@ -63,7 +63,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import importlib.util
 import json
 import shutil
 import subprocess
@@ -73,6 +72,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[1]
 ATTESTATORES_DIR = ROOT / "pipeline" / "3_attestatores"
@@ -125,12 +126,7 @@ TIERS = ("generic-24gb", "generic-48gb", "generic-80gb-plus")
 WITNESS_CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
 LIVE_CHAIRS = (*WITNESS_CHAIRS, "perlector")
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
-CHAIN_TO_DESIGNATOR = (
-    "pipeline/1_exemplar/door.py",
-    "pipeline/1_exemplar/run.py",
-    "pipeline/1_ink_map/run.py",
-    "pipeline/2_designator/run.py",
-)
+CHAIN_TO_DESIGNATOR = programs_through("designator")
 TAIL_FROM_RECENSOR = (
     "pipeline/5_recensor/run.py",
     "pipeline/6_archetypus/run.py",
@@ -212,17 +208,8 @@ DAI_ACT_TWO = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 READING = "SYNTHETIC LIVE READING alpha beta gamma delta epsilon zeta eta theta iota kappa"
 
 
-def _load_stage(directory: Path, name: str):
-    """Load one stage program as a module, the way its own suite does."""
-    spec = importlib.util.spec_from_file_location(name, directory / "run.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-attestatores = _load_stage(ATTESTATORES_DIR, "e2e_attestatores_under_test")
-perlector = _load_stage(PERLECTOR_DIR, "e2e_perlector_under_test")
+attestatores = load_stage("3_attestatores")
+perlector = load_stage("4_perlector")
 
 
 # ------------------------------ the tmp catalogue -----------------------------

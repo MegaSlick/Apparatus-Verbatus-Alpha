@@ -14,8 +14,6 @@ terminal`) plus once end to end over the real two-act fixture.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
@@ -23,20 +21,12 @@ import pytest
 from common.contracts.errors import FatalAccounting
 from common.contracts.stages import DESIGNATOR, RECENSOR
 from common.runtree.store import RunTree
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_recensor():
-    path = ROOT / "pipeline/5_recensor/run.py"
-    spec = importlib.util.spec_from_file_location("recensor_continuation_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(path.parent))
-    spec.loader.exec_module(module)
-    return module
-
-
-recensor = _load_recensor()
+recensor = load_stage("5_recensor")
 
 
 def _region(*, act_id: str, origin: str, ordinal: int, page_ordinal: int) -> dict:
@@ -167,15 +157,7 @@ def _invoke(root, run_id, scenario, program):
 
 
 def _run_through_recensor(root: Path, run_id: str, scenario: str) -> None:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs_through("recensor"):
         _invoke(root, run_id, scenario, program)
 
 

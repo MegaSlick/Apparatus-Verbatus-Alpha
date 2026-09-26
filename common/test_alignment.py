@@ -18,6 +18,7 @@ from common.alignment import (
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
+from conftest import load_stage
 
 
 def test_markup_view_strips_tags_with_offsets_and_explicit_loss():
@@ -710,13 +711,6 @@ def test_bracket_marker_view_refuses_non_text_input():
 
 
 def test_feedings_uncertainty_tokens_are_the_contracts():
-    import importlib.util
-
-    feeding_path = (
-        Path(__file__).resolve().parents[1] / "pipeline" / "3_attestatores" / "feeding.py"
-    )
-    spec = importlib.util.spec_from_file_location("alignment_test_feeding", feeding_path)
-    feeding_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(feeding_module)
+    feeding_module = load_stage("3_attestatores", "feeding")
 
     assert UNCERTAINTY_TOKENS == feeding_module._UNCERTAINTY_TOKENS

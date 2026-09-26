@@ -7,25 +7,15 @@ would leave a malformed roster able to erase page coverage without
 contradicting any attachment in the run tree.
 """
 
-import importlib.util
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import SchemaRefusal
+from conftest import load_stage
 
-
-def _load_perlector():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("perlector_page_witness_declaration", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-perlector = _load_perlector()
+perlector = load_stage("4_perlector")
 
 
 class _UnhashableString(str):

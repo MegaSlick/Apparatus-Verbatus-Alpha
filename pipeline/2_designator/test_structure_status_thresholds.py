@@ -19,26 +19,17 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from _test_support import load_designator
-
 from common.contracts.stages import DESIGNATOR
 from common.imaging import encode_grayscale_png, grayscale_rows
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_GROUPING_CONFIG = ROOT / "config" / "designator_grouping.toml"
 
 
-def _load_designator():
-    return load_designator("designator_structure_status_thresholds_under_test")
-
-
 def _base_run(root: Path) -> None:
     """Door, Exemplar and Ink Map on the shipped policy, so real pages exist."""
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = subprocess.run(
             [
                 sys.executable,
@@ -79,7 +70,7 @@ def test_each_status_publishes_the_thresholds_and_dimensions_its_page_ran_at(tmp
 
     root = tmp_path / "runs"
     _base_run(root)
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _designator_context(root, designator)
     designator.initial_pass(context)
 
@@ -183,7 +174,7 @@ def test_a_page_held_before_analysis_publishes_no_thresholds_and_no_dimensions()
     """
     import grouping_config
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _Recorder()
     thresholds = grouping_config.resolve_thresholds(
         grouping_config.load_grouping_config(str(SHIPPED_GROUPING_CONFIG)), 200, 260
@@ -228,7 +219,7 @@ def test_two_pages_of_different_size_each_publish_their_own_numbers():
     """
     import grouping_config
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _Recorder()
     policy = grouping_config.load_grouping_config(str(SHIPPED_GROUPING_CONFIG))
     small = grouping_config.resolve_thresholds(policy, 200, 260)
@@ -309,7 +300,7 @@ def test_analyze_page_uses_its_derived_margin_for_real_decoded_pixels(monkeypatc
     """
     import grouping_config
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     width = height = 100
     rows = [bytearray([230]) * width for _ in range(height)]
     # The 5x5 dark mark sets dark_mode=90; the 3x3 shade at 200 sits above the

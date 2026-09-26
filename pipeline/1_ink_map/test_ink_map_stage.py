@@ -1,6 +1,5 @@
 """The early ink map is evidence over pages, before any proposal exists."""
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -15,19 +14,13 @@ from common.contracts.outcomes import OutcomeClass, classify, terminal_category
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, INK_MAP
 from common.imaging import encode_grayscale_png
 from common.runtree.store import RunTree
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load(relative_path: str, name: str):
-    spec = importlib.util.spec_from_file_location(name, ROOT / relative_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-INK_MAP_RUN = _load("pipeline/1_ink_map/run.py", "ink_map_run_test")
-RECENSOR_RUN = _load("pipeline/5_recensor/run.py", "recensor_run_same_measure_test")
+INK_MAP_RUN = load_stage("1_ink_map")
+RECENSOR_RUN = load_stage("5_recensor")
 
 
 def _invoke(root: Path, program: str) -> None:

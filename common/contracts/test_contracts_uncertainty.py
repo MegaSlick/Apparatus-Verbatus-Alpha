@@ -11,16 +11,13 @@ every other suite in this repository.
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
 from common.contracts import uncertainty as canonical_uncertainty
 from common.contracts.errors import SchemaRefusal
 from common.contracts.uncertainty import from_perlectio, utf8_round_trip, validate
+from conftest import load_stage
 
-ROOT = Path(__file__).resolve().parents[2]
 # Every layer below carries the reader's own assessment, which the canonical
 # schema closed over (finding F2): the
 # two span layers alone cannot say whether an empty list is "no doubt" or "no
@@ -31,10 +28,7 @@ _EMPTY = {"uncertain_spans": [], "gaps": [], "self_revisions": [], "assessment":
 
 
 def test_source_revision_vocabulary_matches_the_perlector_producer() -> None:
-    path = ROOT / "pipeline/4_perlector/dissent.py"
-    spec = importlib.util.spec_from_file_location("perlector_dissent_contract_drift", path)
-    dissent = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(dissent)
+    dissent = load_stage("4_perlector", "dissent")
 
     produced = dissent.departures("a", "b")
 
