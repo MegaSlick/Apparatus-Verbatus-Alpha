@@ -20,7 +20,7 @@ from common.chandra_custody import (  # noqa: F401  (re-export)
     read_retained_chandra_response,
     retain_chandra_response,
 )
-from common.contracts.canonical import digest_of
+from common.contracts.canonical import digest_of, is_plain_int
 from common.contracts.envelope import build_envelope, validate_envelope
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -49,10 +49,6 @@ class Bounds(TypedDict):
     y: int
     w: int
     h: int
-
-
-def _integer(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _sha(value: object, what: str) -> str:
@@ -107,7 +103,7 @@ def _validate_geometry_policy(value: object) -> dict[str, Any]:
         "half_tile_vertical_offset_px",
         "horizontal_overlap_px",
     ):
-        if not _integer(surya[field]) or surya[field] <= 0:
+        if not is_plain_int(surya[field]) or surya[field] <= 0:
             raise SchemaRefusal(f"Surya policy {field} is not a positive integer")
     if surya["half_tile_vertical_offset_px"] * 2 != surya["tile_height_px"]:
         raise SchemaRefusal("Surya vertical offset does not equal half the sealed tile height")
@@ -155,7 +151,12 @@ def _polygon_points(value: object, what: str) -> list[dict[str, int]]:
     points = []
     for item in value:
         point = _closed(item, {"x", "y"}, what)
-        if not _integer(point["x"]) or not _integer(point["y"]) or point["x"] < 0 or point["y"] < 0:
+        if (
+            not is_plain_int(point["x"])
+            or not is_plain_int(point["y"])
+            or point["x"] < 0
+            or point["y"] < 0
+        ):
             raise SchemaRefusal(f"{what} is not non-negative integer page geometry")
         points.append({"x": point["x"], "y": point["y"]})
     if len({(point["x"], point["y"]) for point in points}) < 3:
@@ -172,7 +173,7 @@ def _polygon(value: object, page_w: int, page_h: int, what: str) -> list[dict[st
 
 def _score_bp(value: object, what: str) -> int:
     """One basis-point confidence predicate, asked wherever a score arrives."""
-    if not _integer(value) or not 0 <= value <= 10_000:
+    if not is_plain_int(value) or not 0 <= value <= 10_000:
         raise SchemaRefusal(f"{what} is not an integer basis-point confidence")
     return value
 
@@ -237,7 +238,7 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
         record["source"] not in _SOURCES
         or not isinstance(record["page_id"], str)
         or not record["page_id"]
-        or not _integer(record["page_ordinal"])
+        or not is_plain_int(record["page_ordinal"])
         or record["page_ordinal"] < 0
     ):
         raise SchemaRefusal("raw proposal has invalid source or page lineage")
@@ -251,13 +252,13 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
         "raw proposal transform",
     )
     page_w, page_h = transform["page_width_px"], transform["page_height_px"]
-    if not _integer(page_w) or not _integer(page_h) or page_w <= 0 or page_h <= 0:
+    if not is_plain_int(page_w) or not is_plain_int(page_h) or page_w <= 0 or page_h <= 0:
         raise SchemaRefusal("raw proposal transform has invalid page size")
     for axis in ("scale_x", "scale_y"):
         scale = _closed(transform[axis], {"numerator", "denominator"}, f"raw proposal {axis}")
         if (
-            not _integer(scale["numerator"])
-            or not _integer(scale["denominator"])
+            not is_plain_int(scale["numerator"])
+            or not is_plain_int(scale["denominator"])
             or scale["numerator"] <= 0
             or scale["denominator"] <= 0
         ):
@@ -292,7 +293,7 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
     if (
         not isinstance(record["observed_ordinals"], list)
         or not record["observed_ordinals"]
-        or any(not _integer(value) or value < 0 for value in record["observed_ordinals"])
+        or any(not is_plain_int(value) or value < 0 for value in record["observed_ordinals"])
         or record["observed_ordinals"] != sorted(set(record["observed_ordinals"]))
     ):
         raise SchemaRefusal(
@@ -326,7 +327,7 @@ def validate_occlusion(payload: object) -> dict[str, Any]:
         or not record["occlusion_id"]
         or not isinstance(record["page_id"], str)
         or not record["page_id"]
-        or not _integer(record["page_ordinal"])
+        or not is_plain_int(record["page_ordinal"])
         or record["page_ordinal"] < 0
     ):
         raise SchemaRefusal("occlusion lacks page lineage")
@@ -545,7 +546,7 @@ def chandra_layout(
         if (
             not isinstance(box, list)
             or len(box) != 4
-            or any(not _integer(value) or not 0 <= value <= 1000 for value in box)
+            or any(not is_plain_int(value) or not 0 <= value <= 1000 for value in box)
         ):
             raise SchemaRefusal("Chandra bbox is not four integer 0-1000 coordinates")
         x0, y0, x1, y1 = box

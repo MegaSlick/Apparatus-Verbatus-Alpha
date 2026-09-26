@@ -22,7 +22,7 @@ import math
 from typing import Any, Final
 
 from common.contracts import uncertainty
-from common.contracts.canonical import code_digest, digest_bytes, digest_of, is_sha256
+from common.contracts.canonical import code_digest, digest_bytes, digest_of, is_plain_int, is_sha256
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import (
@@ -338,14 +338,10 @@ def reproof_plan(
     ]
 
 
-def _integer(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 def _valid_span(start: Any, end: Any, text_length: int | None) -> bool:
     return (
-        _integer(start)
-        and _integer(end)
+        is_plain_int(start)
+        and is_plain_int(end)
         and 0 <= start <= end
         and (text_length is None or end <= text_length)
     )
@@ -822,7 +818,7 @@ def validate_audit_request(payload: Any) -> dict[str, Any]:
         raise SchemaRefusal("an audit request does not declare the audit-request schema")
     if not isinstance(value["act_key"], str) or not value["act_key"]:
         raise SchemaRefusal("an audit request has no act identity")
-    if not _integer(value["attempt_ordinal"]) or value["attempt_ordinal"] < 1:
+    if not is_plain_int(value["attempt_ordinal"]) or value["attempt_ordinal"] < 1:
         raise SchemaRefusal("an audit request has no integer attempt ordinal")
     validate_input_refs([value["draft_ref"]])
     # `validate_input_refs` ignores extra keys, which would ride into the digest
@@ -1036,9 +1032,9 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
         or value["page_ids"] != sorted(value["page_ids"])
     ):
         raise SchemaRefusal("an audit record has no act identity or canonical page set")
-    if not _integer(value["attempt_ordinal"]) or value["attempt_ordinal"] < 1:
+    if not is_plain_int(value["attempt_ordinal"]) or value["attempt_ordinal"] < 1:
         raise SchemaRefusal("an audit record has no integer attempt ordinal")
-    if not _integer(value["round_cap"]) or value["round_cap"] < 0:
+    if not is_plain_int(value["round_cap"]) or value["round_cap"] < 0:
         raise SchemaRefusal("an audit record has no integer round cap")
     if not isinstance(value["policy"], dict) or set(value["policy"]) != {
         "schema",
@@ -1560,7 +1556,7 @@ def _basis_page_ids(payload: dict[str, Any], act_id: str) -> list[str]:
         ordinal = region.get("source_page_ordinal") if isinstance(region, dict) else None
         page_id = region.get("source_page_id") if isinstance(region, dict) else None
         if (
-            not _integer(ordinal)
+            not is_plain_int(ordinal)
             or not isinstance(page_id, str)
             or not page_id
             or (ordinal in pages_by_ordinal and pages_by_ordinal[ordinal] != page_id)

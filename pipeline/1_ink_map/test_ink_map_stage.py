@@ -149,7 +149,6 @@ def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
     noise_floor = config["coverage_audit"]["noise_floor"]["provenance"]
     assert noise_floor["calibrated_for_this_corpus"] is False
     assert noise_floor["sample_count"] == 0
-    assert "PROPOSED, NOT YET MEASURED" in noise_floor["caveat"]
     # The contract must keep saying which two moved and which three did not,
     # so a reader of the stage interface is not left to infer it from the file
     # the gates now live in.

@@ -36,7 +36,7 @@ from common.background import (  # noqa: E402
 )
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.canonical import digest_bytes, is_sha256  # noqa: E402
+from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256  # noqa: E402
 from common.contracts.errors import (  # noqa: E402
     ContractError,
     FatalAccounting,
@@ -171,17 +171,12 @@ def _records_of_kind(context, stage: str, kind: str) -> Iterator[dict]:
 _BOX_SIDES = ("x", "y", "w", "h")
 
 
-def _plain_int(value) -> bool:
-    """An int that is not a bool: JSON `true` would otherwise pass as 1."""
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 def _int_box(bounds) -> bool:
     """Exactly the keys x, y, w, h, each a plain int."""
     return (
         isinstance(bounds, dict)
         and set(bounds) == set(_BOX_SIDES)
-        and all(_plain_int(bounds[side]) for side in _BOX_SIDES)
+        and all(is_plain_int(bounds[side]) for side in _BOX_SIDES)
     )
 
 
@@ -291,7 +286,7 @@ def _proposal_geometry_by_page(context, act_id: str) -> dict[int, dict]:
         transform = facts["transform"]
         bounds = transform.get("bounds") if isinstance(transform, dict) else None
         if (
-            not _plain_int(ordinal)
+            not is_plain_int(ordinal)
             or not isinstance(facts["source_page_id"], str)
             or not facts["source_page_id"]
             or not _page_rect(bounds)
@@ -618,7 +613,7 @@ def act_attachment_facts(
             )
         page_ordinal = entry.get("page_ordinal")
         if page_witness:
-            if not _plain_int(page_ordinal):
+            if not is_plain_int(page_ordinal):
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} has no integer page ordinal; its "
                     "attachment cannot be placed; restore the contributing page identity"
@@ -1174,9 +1169,9 @@ def recovery_state(context, act_id: str, budget: dict) -> dict:
         if (
             matching_request is None
             or request_ref not in review.get("inputs", [])
-            or not _plain_int(review_ordinal)
+            or not is_plain_int(review_ordinal)
             or review.get("attempt_id") != attempt_id(act_id, "recense", review_ordinal)
-            or not _plain_int(request_ordinal)
+            or not is_plain_int(request_ordinal)
         ):
             raise FatalAccounting(
                 f"recovery-requested review of {act_id} has no exact matching recovery request"
@@ -1358,9 +1353,9 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
         # All four numbers: `residual_ink` indexes each, and a bare dict would fail by
         # traceback.
         if (
-            not _plain_int(ordinal)
+            not is_plain_int(ordinal)
             or not isinstance(bounds, dict)
-            or not all(_plain_int(bounds.get(side)) for side in _BOX_SIDES)
+            or not all(is_plain_int(bounds.get(side)) for side in _BOX_SIDES)
         ):
             raise FatalAccounting(
                 f"Designator region {record.get('artifact_id')} has an invalid transform"
@@ -1383,7 +1378,7 @@ def _source_rows(run: dict) -> dict[int, dict]:
         if not isinstance(row, dict):
             raise FatalAccounting("run.json carries a source-manifest row that is not an object")
         ordinal = row.get("ordinal")
-        if not _plain_int(ordinal):
+        if not is_plain_int(ordinal):
             raise FatalAccounting(
                 "run.json carries a source-manifest row without an integer ordinal"
             )
@@ -1405,7 +1400,7 @@ def sealed_page_images(context) -> dict[int, dict]:
         if record["outcome"] != "sealed":
             continue
         ordinal = record["payload"].get("ordinal")
-        if not _plain_int(ordinal):
+        if not is_plain_int(ordinal):
             raise FatalAccounting(
                 f"Exemplar page {record.get('artifact_id')} carries no integer ordinal"
             )
@@ -1571,7 +1566,7 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
         payload = _payload(record, "ink-map")
         ordinal = payload.get("page_ordinal")
         evidence = payload.get("edge_findings")
-        if not _plain_int(ordinal):
+        if not is_plain_int(ordinal):
             raise FatalAccounting(
                 "ink-map has a record without an integer page ordinal. The Recensor cannot bind "
                 "its ink evidence to a sealed page. Restore the sealed Ink Map inventory or "
@@ -1664,9 +1659,9 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
     """
     width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
     if (
-        not _plain_int(width)
+        not is_plain_int(width)
         or width <= 0
-        or not _plain_int(height)
+        or not is_plain_int(height)
         or height <= 0
         or not isinstance(rows, list)
         or len(rows) != height
@@ -1694,7 +1689,7 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
         previous_end = 0
         ink_spans: list[tuple[int, int]] = []
         for run in row:
-            if not isinstance(run, list) or len(run) != 2 or not all(_plain_int(v) for v in run):
+            if not isinstance(run, list) or len(run) != 2 or not all(is_plain_int(v) for v in run):
                 raise FatalAccounting(
                     "ink-map edge findings contain a malformed run. Its ink count cannot be "
                     "measured reliably, so it cannot authorize recovery. Restore the sealed "
@@ -1943,7 +1938,7 @@ def unresolved_observation_hold(
 
 def _require_reconciled_pixels(ordinal: int, pixel_counts: dict) -> tuple[int, int, int]:
     """Pixel-count typing and `claimed + residual == total`, shared by every page shape."""
-    if any(not _plain_int(count) or count < 0 for count in pixel_counts.values()):
+    if any(not is_plain_int(count) or count < 0 for count in pixel_counts.values()):
         raise FatalAccounting(
             f"Designator conservation page {ordinal} has malformed measured pixel "
             "counts; total, claimed, and residual must be non-negative integers"
@@ -1990,7 +1985,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             "residual_pixel_count",
         )
         pixel_counts = {field: payload.get(field) for field in pixel_count_fields}
-        if not _plain_int(ordinal) or not isinstance(measurable, bool) or ordinal in findings:
+        if not is_plain_int(ordinal) or not isinstance(measurable, bool) or ordinal in findings:
             raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
         if enumeration not in RESIDUAL_ENUMERATIONS:
             raise FatalAccounting(
@@ -2028,7 +2023,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         if not isinstance(components, list):
             raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
         declared_count = payload.get("residual_component_count")
-        if not _plain_int(declared_count) or declared_count != len(components):
+        if not is_plain_int(declared_count) or declared_count != len(components):
             raise FatalAccounting(
                 f"Designator conservation page {ordinal} names residual_component_count "
                 f"{declared_count!r} but lists {len(components)} residual components; the count "
@@ -2042,7 +2037,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         for index, component in enumerate(components):
             bounds = component.get("bounds") if isinstance(component, dict) else None
             pixel_count = component.get("pixel_count") if isinstance(component, dict) else None
-            if not _int_box(bounds) or not _plain_int(pixel_count) or pixel_count < 0:
+            if not _int_box(bounds) or not is_plain_int(pixel_count) or pixel_count < 0:
                 raise FatalAccounting(
                     f"Designator conservation page {ordinal} residual component {index} "
                     "is malformed"
@@ -2120,13 +2115,13 @@ def _aggregate_page_conservation(
             f"aggregate Designator conservation page {ordinal} has no complete retained partition"
         )
     width, height = payload.get("page_width"), payload.get("page_height")
-    if any(not _plain_int(value) or value <= 0 for value in (width, height)):
+    if any(not is_plain_int(value) or value <= 0 for value in (width, height)):
         raise FatalAccounting(
             f"aggregate Designator conservation page {ordinal} has no positive page geometry"
         )
     policy = sealed_residual_presentation_policy(context)
     if any(
-        not _plain_int(payload.get(name)) or payload.get(name) != value
+        not is_plain_int(payload.get(name)) or payload.get(name) != value
         for name, value in policy.items()
     ):
         raise FatalAccounting(
@@ -2138,7 +2133,9 @@ def _aggregate_page_conservation(
         payload.get("residual_aggregated_component_count"),
         payload.get("residual_component_count"),
     )
-    if any(not _plain_int(value) or value < 0 for value in declared_counts) or declared_counts != (
+    if any(
+        not is_plain_int(value) or value < 0 for value in declared_counts
+    ) or declared_counts != (
         len(promoted),
         len(aggregate),
         len(promoted) + len(aggregate),
@@ -2156,7 +2153,7 @@ def _aggregate_page_conservation(
                 not _page_rect(bounds)
                 or bounds["x"] + bounds["w"] > width
                 or bounds["y"] + bounds["h"] > height
-                or not _plain_int(pixels)
+                or not is_plain_int(pixels)
                 or pixels < 0
                 or pixels > bounds["w"] * bounds["h"]
             ):
@@ -2269,7 +2266,7 @@ def _withheld_page_conservation(
         )
     count = payload.get("residual_component_count")
     bound = payload.get("max_residual_components")
-    if any(not _plain_int(value) or value < 0 for value in (count, bound)):
+    if any(not is_plain_int(value) or value < 0 for value in (count, bound)):
         raise FatalAccounting(
             f"withheld Designator conservation page {ordinal} names no integer residual "
             "component count and no integer bound it was judged against"
@@ -2347,7 +2344,7 @@ def current_page_testimonia(context) -> dict[tuple[int, str], dict]:
         ordinal, chair = payload.get("page_ordinal"), payload.get("chair")
         # A boolean ordinal hashes as its integer counterpart, so accepting one
         # here would merge page `true` into page 1 before currency is derived.
-        if not _plain_int(ordinal) or not isinstance(chair, str):
+        if not is_plain_int(ordinal) or not isinstance(chair, str):
             raise FatalAccounting("page Testimonium has no textual page identity")
         records.setdefault((ordinal, chair), []).append(record)
     return {
@@ -2427,7 +2424,7 @@ def reconcile_page_roles(
             if not isinstance(row, dict) or not row.get("page_witness"):
                 continue
             ordinal = row.get("page_ordinal")
-            if not _plain_int(ordinal):
+            if not is_plain_int(ordinal):
                 raise FatalAccounting(
                     f"act {act_id} page-witness attachment carries no integer page ordinal; "
                     "its page Testimonium cannot be addressed; restore the contributing page"
@@ -2525,7 +2522,7 @@ def _proposal_pages_of_acts(context) -> tuple[dict[int, list[dict]], dict[int, l
             if payload.get("origin") != "proposal" or not isinstance(transform, dict):
                 continue
             ordinal = transform.get("source_page_ordinal")
-            if not _plain_int(ordinal):
+            if not is_plain_int(ordinal):
                 raise FatalAccounting(
                     f"Designator region of {act['act_id']} has no integer page ordinal; its "
                     "page testimony cannot be grouped; restore the region's sealed transform"
@@ -2601,7 +2598,7 @@ def _aligned_spans(rows: list[tuple[str, dict]]) -> tuple[list[tuple[int, int, s
         ):
             span = alignment.get("witness_span")
             if not isinstance(span, dict) or not all(
-                _plain_int(span.get(k)) for k in ("start", "end")
+                is_plain_int(span.get(k)) for k in ("start", "end")
             ):
                 raise FatalAccounting("attached page witness has malformed alignment span")
             spans.append((span["start"], span["end"], act_id))

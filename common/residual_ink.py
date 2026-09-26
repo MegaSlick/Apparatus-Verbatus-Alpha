@@ -15,13 +15,14 @@ would restate it rather than check it.
 
 The page-spanning component the Designator withholds from grouping
 (`pipeline/2_designator/grouping.partition_page_spanning`) held 35 to 87 per
-cent of audited ink on 44 real pages, and counting it flagged every page. It is
-re-derived here from the same bytes at the page's own derived margin (the
-Designator's record carries only whole-page boxes, which mask nothing). At this
-module's looser contrast the writing merged into it and hid missed ink on 41 of
-44 real pages, so the two passes use two contrasts; unifying them is open. It is taken
-out of `total_ink_pixels` and `outside_ink_pixels`; `page_ink_pixels` and
-`page_spanning_ink_pixels` keep the whole-page figure on the record.
+cent of audited ink on 44 real pages, so counting it flagged every page. It is
+re-derived here at the page's own derived margin, because the Designator's record
+carries only whole-page boxes, and taken out of `total_ink_pixels` and
+`outside_ink_pixels`; `page_ink_pixels` and `page_spanning_ink_pixels` keep the
+whole-page figure. At this module's looser contrast it swallowed writing and hid
+missed ink on 41 of 44 real pages; a single contrast is welcome if
+`test_writing_touching_a_faint_page_spanning_line_is_still_counted_outside_coverage`
+still passes.
 
 A page whose background the shared inference refuses raises
 `BackgroundInferenceRefusal` here too; the caller records it rather than
@@ -40,7 +41,8 @@ from common.background import (
     round_half_up_bp,
 )
 from common.calibration import calibrated_claim_has_sample_evidence
-from common.components import label_component_runs
+from common.components import label_component_runs, runs_in_row
+from common.contracts.canonical import is_plain_int
 from common.contracts.errors import ContractError
 from common.imaging import Bounds, grayscale_rows
 from common.sealed_config import read_sealed_toml
@@ -156,7 +158,7 @@ def validate_provenance_block(provenance: Any, *, where: str) -> dict[str, Any]:
             raise ContractError(
                 f"the grouping configuration's {where} field {field!r} is not a non-empty string"
             )
-    if not _plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
+    if not is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
         raise ContractError(
             f"the grouping configuration's {where} sample_count is not a non-negative integer"
         )
@@ -172,10 +174,6 @@ def validate_provenance_block(provenance: Any, *, where: str) -> dict[str, Any]:
             "sample_count is zero"
         )
     return dict(provenance)
-
-
-def _plain_int(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]") -> dict[str, int]:
@@ -203,7 +201,7 @@ def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]"
             table[COVERAGE_NOISE_FLOOR_TABLE], where=f"{where[:-1]}.{COVERAGE_NOISE_FLOOR_TABLE}]"
         )
     )
-    if not _plain_int(values[SUBSTANTIAL_INK_AREA_BP_FIELD]) or not (
+    if not is_plain_int(values[SUBSTANTIAL_INK_AREA_BP_FIELD]) or not (
         0 < values[SUBSTANTIAL_INK_AREA_BP_FIELD] <= BASIS_POINTS
     ):
         raise ContractError(
@@ -211,7 +209,7 @@ def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]"
             f"basis-point integer in 1..{BASIS_POINTS}; a gate of zero "
             "flags every page that carries a single unclaimed pixel and says nothing"
         )
-    if not _plain_int(values[EDGE_BAND_BP_FIELD]) or not (
+    if not is_plain_int(values[EDGE_BAND_BP_FIELD]) or not (
         0 < values[EDGE_BAND_BP_FIELD] < BASIS_POINTS // 2
     ):
         raise ContractError(
@@ -239,12 +237,12 @@ def validate_coverage_noise_floor_table(
     if missing:
         raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
     values = {name: table[name] for name in COVERAGE_NOISE_FLOOR_FIELDS}
-    if not _plain_int(values[MINIMUM_INK_PIXELS_FIELD]) or values[MINIMUM_INK_PIXELS_FIELD] <= 0:
+    if not is_plain_int(values[MINIMUM_INK_PIXELS_FIELD]) or values[MINIMUM_INK_PIXELS_FIELD] <= 0:
         raise ContractError(
             f"the grouping configuration's {where} {MINIMUM_INK_PIXELS_FIELD} is not a positive "
             "integer; a floor of zero flags every page that carries a single stray pixel"
         )
-    if not _plain_int(values[MINIMUM_FRACTION_OUTSIDE_BP_FIELD]) or not (
+    if not is_plain_int(values[MINIMUM_FRACTION_OUTSIDE_BP_FIELD]) or not (
         0 < values[MINIMUM_FRACTION_OUTSIDE_BP_FIELD] <= BASIS_POINTS
     ):
         raise ContractError(
@@ -277,12 +275,12 @@ def load_coverage_audit_config(
         )
     spanning = page_area.get("page_spanning_area_bp")
     gap = absolute.get("gap_tolerance_px")
-    if not _plain_int(spanning) or not 0 < spanning <= BASIS_POINTS:
+    if not is_plain_int(spanning) or not 0 < spanning <= BASIS_POINTS:
         raise ContractError(
             "the coverage-audit configuration's [grouping.page_area_bp] page_spanning_area_bp "
             f"is not a basis-point integer in 1..{BASIS_POINTS}"
         )
-    if not _plain_int(gap) or gap < 0:
+    if not is_plain_int(gap) or gap < 0:
         raise ContractError(
             "the coverage-audit configuration's [grouping.absolute] gap_tolerance_px is not a "
             "non-negative integer"
@@ -316,7 +314,7 @@ def resolve_coverage_audit_policy(
     the gate to zero and flag every stray pixel. Both resolutions use
     `common.background.round_half_up_bp`, the one basis-point rounding rule.
     """
-    if not _plain_int(width) or not _plain_int(height) or width <= 0 or height <= 0:
+    if not is_plain_int(width) or not is_plain_int(height) or width <= 0 or height <= 0:
         raise ContractError(f"page {width}x{height} does not have positive integer dimensions")
     audit = config["coverage_audit"]
     return {
@@ -413,22 +411,6 @@ def page_background(
     }
 
 
-def _runs_in_row(bits: bytes, width: int) -> list[tuple[int, int]]:
-    """One translated 0/1 scanline as maximal half-open ink runs."""
-    runs: list[tuple[int, int]] = []
-    start = 0
-    while start < width:
-        start = bits.find(1, start)
-        if start < 0:
-            break
-        end = bits.find(0, start)
-        if end < 0:
-            end = width
-        runs.append((start, end))
-        start = end
-    return runs
-
-
 def page_spanning_components(
     width: int,
     height: int,
@@ -455,7 +437,7 @@ def page_spanning_components(
     table = bytes(1 if value <= threshold else 0 for value in range(256))
     runs_by_row: dict[int, list[tuple[int, int]]] = {}
     for y, row in enumerate(rows):
-        runs = _runs_in_row(bytes(row.translate(table)), width)
+        runs = runs_in_row(row.translate(table))
         if runs:
             runs_by_row[y] = runs
     area = width * height
@@ -612,10 +594,7 @@ def ink_runs_from_rows(
             spanning_mask, y, width
         )
         encoded.append(
-            [
-                [start, end - start]
-                for start, end in _runs_in_row(bits.to_bytes(width, "big"), width)
-            ]
+            [[start, end - start] for start, end in runs_in_row(bits.to_bytes(width, "big"))]
         )
     return {"schema": INK_RUNS_SCHEMA, "width": width, "height": height, "rows": encoded}
 
@@ -636,9 +615,9 @@ def edge_ink_from_runs(
         raise ValueError("ink-run evidence is not a closed record")
     width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
     if (
-        not _plain_int(width)
+        not is_plain_int(width)
         or width <= 0
-        or not _plain_int(height)
+        or not is_plain_int(height)
         or height <= 0
         or not isinstance(rows, list)
         or len(rows) != height
@@ -683,7 +662,7 @@ def _validated_runs(row: Any, width: int) -> list[tuple[int, int]]:
     runs: list[tuple[int, int]] = []
     previous_end = 0
     for run in row:
-        if not isinstance(run, list) or len(run) != 2 or not all(_plain_int(v) for v in run):
+        if not isinstance(run, list) or len(run) != 2 or not all(is_plain_int(v) for v in run):
             raise ValueError("ink-run evidence has a malformed run")
         start, length = run
         end = start + length
@@ -782,7 +761,7 @@ def reconcile_edge_finding_with_runs(
 
     for field in _EDGE_COUNT_FIELDS:
         value = finding[field]
-        if not _plain_int(value):
+        if not is_plain_int(value):
             raise ContractError(f"the ink-map edge finding {field} is not a plain integer")
         floor = 1 if field in {"substantial_ink_pixels", "edge_band_pixels"} else 0
         if value < floor:
@@ -818,7 +797,7 @@ def reconcile_edge_finding_with_runs(
             component["w"],
             component["h"],
         )
-        if not all(_plain_int(value) for value in (x, y, component_width, component_height)):
+        if not all(is_plain_int(value) for value in (x, y, component_width, component_height)):
             raise ContractError("the ink-map edge finding has non-integer component bounds")
         if (
             x < 0
