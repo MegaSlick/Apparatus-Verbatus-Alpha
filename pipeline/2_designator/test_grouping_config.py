@@ -612,7 +612,7 @@ def test_negative_max_residual_components_refused(tmp_path):
 
 
 def test_bool_max_residual_components_refused(tmp_path):
-    # bool is an int subclass in Python; _is_plain_int must reject it explicitly.
+    # bool is an int subclass in Python; is_plain_int must reject it explicitly.
     body = _valid_toml().replace("max_residual_components = 2000", "max_residual_components = true")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="non-negative integer"):
