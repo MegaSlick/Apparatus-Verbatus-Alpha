@@ -125,7 +125,6 @@ from .records import (
 )
 from .volume_cost import volume_cost_lines
 from .volume_s3 import (
-    TRANSFER_CREDENTIAL_ENV,
     S3VolumeObjectReader,
     S3VolumeTarget,
     VolumeSpec,
@@ -141,7 +140,6 @@ MAX_NOTIFY_MESSAGE_CHARACTERS = 500
 otherwise build one entry per page with no ceiling at all."""
 # Named once, so the fault drill and its real-ingress guard cannot drift apart.
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
-_TRANSFER_CREDENTIAL_ENV = TRANSFER_CREDENTIAL_ENV
 _COPY_CHUNK_BYTES = 1024 * 1024
 FETCH_RUN_PREFIX = DEFAULT_RUNS_DIRECTORY
 """Where `pod_run` writes run trees on the volume, relative to its mount:
