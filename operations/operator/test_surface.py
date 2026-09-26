@@ -5846,6 +5846,9 @@ def test_no_serving_stage_spells_its_own_log_directory() -> None:
     for relative in sorted(_SERVING_STAGE_SOURCES.values()):
         source = (ROOT / relative).read_text(encoding="utf-8")
         assert "stage_chair_client" in source, f"{relative} builds its own chair client"
+        assert "ServingManager(" not in source and "ChairClient(" not in source, (
+            f"{relative} builds its own manager or client instead of stage_chair_client"
+        )
         assert '"serving-logs"' not in source and "'serving-logs'" not in source, (
             f"{relative} spells the serving-log directory for itself; the store owns it"
         )

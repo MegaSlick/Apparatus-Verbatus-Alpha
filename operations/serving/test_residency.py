@@ -61,6 +61,10 @@ def test_every_serving_caller_takes_the_one_pod_wide_lease_path() -> None:
         assert "POD_RESIDENCY_LOCK_PATH" in source or "stage_chair_client" in source, (
             f"{relative} serves a chair but does not name the one pod-wide lease path"
         )
+        if relative.startswith("pipeline/"):
+            assert "ServingManager(" not in source and "ChairClient(" not in source, (
+                f"{relative} builds its own manager or client instead of stage_chair_client"
+            )
         # `chosen.residency_lock` is `bootstrap_main`'s injection seam, whose
         # own default is the constant; every other spelling is a second
         # boundary, and a second boundary is no boundary.
