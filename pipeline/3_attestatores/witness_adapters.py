@@ -122,7 +122,7 @@ class RunnableAdapter:
 
 
 def _retain_dai_model_view(
-    tree: Any,
+    context: Any,
     *,
     view: dict[str, Any],
     raw_response: bytes,
@@ -133,7 +133,7 @@ def _retain_dai_model_view(
     """Retain one DAI view without letting its registry identity be relabeled."""
 
     return feeding.retain_model_view(
-        tree,
+        context,
         adapter="dai.v1",
         view=view,
         raw_response=raw_response,
@@ -160,6 +160,7 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     page_bytes = sealed_page_bytes(
         context.tree,
         context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id)),
+        what="DAI",
     )
     # Keep bounds failures as SchemaRefusals, not crop_png's bare ValueError.
     validate_presented(presentation, page_size=dimensions(page_bytes))

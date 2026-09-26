@@ -729,7 +729,7 @@ def live_attempt_from_response(
     # fixture-placeholder parser may not run (a served chair answering in a
     # shape it was never asked in is a named surprise, not a reading).
     capture = adapter.retain(
-        context.tree,
+        context,
         view=view,
         raw_response=response.content.encode("utf-8"),
         transport_stop_reason=transport_stop_reason,
@@ -798,7 +798,7 @@ def captured_page_attempt(
     # fixture-placeholder parser may not run (a served chair answering in a
     # shape it was never asked in is a named surprise, not a reading).
     capture = adapter.retain(
-        context.tree,
+        context,
         view=view,
         raw_response=response.content.encode("utf-8"),
         transport_stop_reason=transport_stop_reason,

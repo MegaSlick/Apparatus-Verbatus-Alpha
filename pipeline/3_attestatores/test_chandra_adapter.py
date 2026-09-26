@@ -169,7 +169,7 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
 
     raw = b'{"unknown":"shape"}'
     record = feeding.retain_model_view(
-        Tree(),
+        _Context(tree=Tree()),
         adapter="chandra.v1",
         view={},
         raw_response=raw,
@@ -192,7 +192,7 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
 def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_path):
     attestatores = _load_stage_module("run")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
-    context = SimpleNamespace(
+    context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="shape-surprise",
         fixture={
@@ -226,7 +226,7 @@ def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_pat
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     tree = RunTree(tmp_path / "runs", "r")
     raw = b'{"schema":"fixture-chandra-response.v1","markdown":"actual","blocks":[]}'
-    context = SimpleNamespace(
+    context = _Context(
         tree=tree,
         scenario="mismatch",
         fixture={
@@ -263,7 +263,7 @@ def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_pat
 def test_chandra_malformed_capabilities_fail_only_that_retained_attempt(tmp_path):
     attestatores = _load_stage_module("run")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
-    context = SimpleNamespace(
+    context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="bad-capabilities",
         fixture={
@@ -416,7 +416,7 @@ def test_fixture_raw_response_cannot_be_silently_discarded(
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     if adapter_name != resolved.witness_adapter:
         resolved = replace(resolved, witness_adapter=adapter_name)
-    context = SimpleNamespace(
+    context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="bad-raw",
         fixture={
@@ -465,7 +465,7 @@ def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary
         load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"],
         witness_adapter="churro.v1",
     )
-    context = SimpleNamespace(
+    context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="bad-raw",
         fixture={
@@ -494,7 +494,7 @@ def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary
 def test_empty_fixture_raw_response_cannot_be_silently_discarded(tmp_path):
     attestatores = _load_stage_module("run")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
-    context = SimpleNamespace(
+    context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="bad-empty-raw",
         fixture={
@@ -904,7 +904,7 @@ def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record
         b'"blocks":[{"bbox":[0,0,"bad",1]}]}'
     )
     retained = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": {"instruction": "x"}},
         raw_response=raw,
@@ -1577,7 +1577,7 @@ def test_an_unplaced_block_keeps_its_text_and_its_finding_and_reports_no_box():
     ]
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
         raw_response=body,
@@ -1622,7 +1622,7 @@ def test_a_degenerate_chandra_reading_is_a_finding_and_a_partial_stop_reason():
     tree = _PageTree(_page_png(200, 260))
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
         raw_response=body,
@@ -1651,7 +1651,7 @@ def test_an_honest_chandra_reading_carries_no_repetition_finding():
     tree = _PageTree(_page_png(200, 260))
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
         raw_response=body,
@@ -1678,7 +1678,7 @@ def test_a_repeated_tail_under_an_unplaceable_shape_keeps_the_parse_outcome():
     tree = _PageTree(_page_png(200, 260))
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
         raw_response=body,
@@ -1706,7 +1706,7 @@ def test_a_body_past_the_grammars_ceiling_says_the_scan_did_not_run():
     tree = _PageTree(_page_png(200, 260))
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
         raw_response=body,
@@ -1739,7 +1739,7 @@ def test_the_placeholder_posture_is_scanned_for_repetition_too():
     tree = _PageTree(_page_png(200, 260))
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": dict(chandra.FIXTURE_PROMPT)},
         raw_response=body,
@@ -1768,7 +1768,7 @@ def test_the_committed_fixture_placeholder_can_never_be_retained_from_a_served_c
 
     assert chandra.parse_fixture_placeholder(body) == "placeholder"
     offline = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": dict(chandra.FIXTURE_PROMPT)},
         raw_response=body,
@@ -1782,7 +1782,7 @@ def test_the_committed_fixture_placeholder_can_never_be_retained_from_a_served_c
 
     with pytest.raises(SchemaRefusal, match="placeholder parser"):
         feeding.retain_model_view(
-            tree,
+            _Context(tree=tree),
             adapter="chandra.v1",
             view={"prompt": chandra.prompt()},
             raw_response=body,
@@ -1793,7 +1793,7 @@ def test_the_committed_fixture_placeholder_can_never_be_retained_from_a_served_c
     # And under the live grammar the same bytes are a named surprise rather than
     # a reading: the layout reader can place nothing in a JSON object.
     served = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt()},
         raw_response=body,

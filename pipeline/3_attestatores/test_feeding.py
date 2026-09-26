@@ -39,6 +39,7 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, writing_directory
 from common.native_witness import CHURRO_MAX_RESPONSE_BYTES, validate_vendor_identity
 from common.runtree.store import BLOBS_DIR
+from common.stage import StageContext
 
 
 def _load_attestatores():
@@ -68,6 +69,12 @@ def _chair(role: str, *, adapter: str = "churro.v1", scope: str = "page") -> Cha
         witness_adapter=adapter,
         witness_scope=scope,
     )
+
+
+class _Context(SimpleNamespace):
+    stage = ATTESTATORES
+    sealed = False
+    retain = StageContext.retain
 
 
 class _Tree:
@@ -118,7 +125,7 @@ def test_churro_records_its_declared_bound_and_detects_repetition_after_complete
     tree = _Tree()
     raw = b"a" * 72
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=raw,
@@ -146,7 +153,7 @@ def test_an_undecodable_churro_capture_records_uninspected_without_claiming_repe
     an uninspected capture is a recorded fact, not a detected failure."""
     tree = _Tree()
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=b"\xff\xfe not utf-8 at all",
@@ -209,7 +216,7 @@ def test_the_runnable_parser_names_are_exactly_the_ones_the_capture_contract_adm
 def test_the_one_churro_parser_name_runs_and_no_other_does():
     tree = _Tree()
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=_DOCUMENT,
@@ -220,7 +227,7 @@ def test_the_one_churro_parser_name_runs_and_no_other_does():
     for retired in ("churro", "json", "html"):
         with pytest.raises(SchemaRefusal, match="does not run for adapter"):
             retain_model_view(
-                tree,
+                _Context(tree=tree),
                 adapter="churro.v1",
                 view=_churro_view(),
                 raw_response=_DOCUMENT,
@@ -237,7 +244,7 @@ def test_the_vendor_pin_travels_on_every_churro_capture_beside_the_model_identit
     """
     tree = _Tree()
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=_DOCUMENT,
@@ -258,7 +265,7 @@ def test_the_vendor_pin_travels_on_every_churro_capture_beside_the_model_identit
     # A prompt no vendor artifact supplied leaves the field honestly absent
     # rather than naming a provenance for bytes nobody carried.
     unpinned = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view={"prompt": {"system": "a framing of our own"}, "generation": churro_generation()},
         raw_response=_DOCUMENT,
@@ -281,7 +288,7 @@ def test_churro_reads_the_vendor_grammar_without_discarding_the_raw_response():
         b"<Body><Line>verbatim</Line></Body></Page></HistoricalDocument>"
     )
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=raw,
@@ -302,7 +309,7 @@ def test_the_grammars_own_findings_reach_the_capture_beside_the_repetition_scan(
     """
     tree = _Tree()
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=b"<output>retained history</output>",
@@ -317,7 +324,7 @@ def test_a_body_that_offers_the_grammar_and_will_not_parse_is_a_retained_failure
     tree = _Tree()
     raw = b"<HistoricalDocument><Page><Body><Line>cut off mid-element"
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=raw,
@@ -334,7 +341,7 @@ def test_churro_parse_normalization_is_harmless_because_raw_bytes_are_retained()
     tree = _Tree()
     raw = b"<output>line one\r\nRen&#233;</output>"
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=raw,
@@ -350,7 +357,7 @@ def test_an_oversized_churro_response_is_retained_but_never_parsed_or_scanned():
     raw = b"<output>" + b"x" * CHURRO_MAX_RESPONSE_BYTES + b"</output>"
 
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=raw,
@@ -383,7 +390,7 @@ def test_repetition_detection_observes_only_bytes_already_captured(monkeypatch):
 
     monkeypatch.setattr(feeding, "detect_repetition", detector)
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=raw,
@@ -403,7 +410,7 @@ def test_repetition_is_detected_in_a_COMPLETE_churro_response_and_reads_the_tran
     )
 
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=raw,
@@ -433,7 +440,7 @@ def test_an_unparseable_capture_is_still_inspected_for_repetition_on_its_raw_byt
     raw = b"<HistoricalDocument><Page><Body><Line>" + (clause * 6).encode("utf-8")
 
     record = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
         raw_response=raw,
@@ -451,7 +458,7 @@ def test_an_unparseable_capture_is_still_inspected_for_repetition_on_its_raw_byt
 def test_churro_page_capture_is_full_page_xml_and_surfaces_transport_truncation():
     attestatores = _load_attestatores()
     tree = _Tree()
-    context = SimpleNamespace(
+    context = _Context(
         tree=tree,
         scenario="churro-native",
         fixture={
@@ -492,7 +499,7 @@ def test_churro_page_capture_keeps_repetition_finding_after_raw_capture(monkeypa
         "<HistoricalDocument><Page><Body><Line>complete captured text</Line>"
         "</Body></Page></HistoricalDocument>"
     )
-    context = SimpleNamespace(
+    context = _Context(
         tree=tree,
         scenario="churro-native",
         fixture={
@@ -541,7 +548,7 @@ def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordabl
     attestatores = _load_attestatores()
     tree = _Tree()
     raw = "<HistoricalDocument><Page><Body><Line>unterminated"
-    context = SimpleNamespace(
+    context = _Context(
         tree=tree,
         scenario="churro-native",
         fixture={
@@ -574,7 +581,7 @@ def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
     attestatores = _load_attestatores()
 
     def _capture(raw: str, stop: str):
-        context = SimpleNamespace(
+        context = _Context(
             tree=_Tree(),
             scenario="churro-native",
             fixture={
@@ -688,7 +695,7 @@ def test_churro_declaration_preflight_allows_one_default_overridden_by_one_scena
             "transport_stop_reason": "eos",
         },
     ]
-    context = SimpleNamespace(
+    context = _Context(
         scenario="churro-native",
         witness_chairs=["attestator_1"],
         registry=SimpleNamespace(config=SimpleNamespace(chairs={"attestator_1": chair})),
@@ -719,7 +726,7 @@ def test_churro_declaration_preflight_names_malformed_transport_facts_even_for_a
     }
     mutate(row)
     absent = AbsentChair(role="attestator_3", reason="fixture absence")
-    context = SimpleNamespace(
+    context = _Context(
         scenario="churro-native",
         witness_chairs=["attestator_3"],
         registry=SimpleNamespace(config=SimpleNamespace(chairs={"attestator_3": absent})),
@@ -732,7 +739,7 @@ def test_churro_declaration_preflight_names_malformed_transport_facts_even_for_a
 def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
     attestatores = _load_attestatores()
     chair = _chair("attestator_1", adapter="not-churro.v1")
-    context = SimpleNamespace(
+    context = _Context(
         scenario="churro-native",
         witness_chairs=["attestator_1"],
         registry=SimpleNamespace(config=SimpleNamespace(chairs={"attestator_1": chair})),
@@ -774,7 +781,7 @@ def test_one_scenarios_declared_response_is_not_another_scenarios_default():
             "transport_stop_reason": "eos",
         },
     ]
-    context = SimpleNamespace(scenario="happy", fixture={"churro_page_response": rows})
+    context = _Context(scenario="happy", fixture={"churro_page_response": rows})
     assert attestatores.churro_page_capture(context, 1, "attestator_1") is None
 
     context.scenario = "churro-native"
@@ -1151,7 +1158,7 @@ def test_dai_retention_refuses_an_image_limits_digest_that_was_not_compared():
         generation_config_ref=_ref("models/dai/generation_config.json"),
     )
     valid = retain_model_view(
-        _Tree(),
+        _Context(tree=_Tree()),
         adapter="dai.v1",
         view=view,
         raw_response=b"native DAI text",
@@ -1165,7 +1172,7 @@ def test_dai_retention_refuses_an_image_limits_digest_that_was_not_compared():
 
     with pytest.raises(SchemaRefusal, match="image-limits digest does not match"):
         retain_model_view(
-            tree,
+            _Context(tree=tree),
             adapter="dai.v1",
             view=view,
             raw_response=b"native DAI text",
@@ -1420,7 +1427,7 @@ def test_model_view_refuses_a_parser_it_cannot_run_instead_of_recording_pending(
     tree = _Tree()
     with pytest.raises(SchemaRefusal, match="does not run for adapter"):
         retain_model_view(
-            tree,
+            _Context(tree=tree),
             adapter="dai-atr.v1",
             view={},
             raw_response=b"native DAI text",
@@ -1429,7 +1436,7 @@ def test_model_view_refuses_a_parser_it_cannot_run_instead_of_recording_pending(
         )
     assert tree.blobs == {}
     unparsed = retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="dai-atr.v1",
         view={},
         raw_response=b"native DAI text",
@@ -1450,3 +1457,17 @@ def test_stage_major_execution_refuses_a_schedule_that_returns_to_a_prior_chair(
     with pytest.raises(SchemaRefusal, match="returns to an unloaded chair"):
         execute_stage_major_schedule(tampered, residency=residency, serve=lambda *_: None)
     assert residency.resident is None
+
+
+def test_a_raw_chair_response_is_not_stored_after_the_seal():
+    tree = _Tree()
+    with pytest.raises(SchemaRefusal, match="storing a raw chair response afterwards"):
+        retain_model_view(
+            _Context(tree=tree, sealed=True),
+            adapter="churro.v1",
+            view=_churro_view(),
+            raw_response=_DOCUMENT,
+            transport_stop_reason="eos",
+            parser="xml",
+        )
+    assert tree.blobs == {}

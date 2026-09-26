@@ -2624,11 +2624,11 @@ def test_a_custody_refusal_holds_that_page_instead_of_aborting_the_run(
     original = structure_pass.retain_chandra_response
     calls: list[int] = []
 
-    def refusing(tree, response, receipt_ref, *, page_id, page_ordinal):
+    def refusing(context, response, receipt_ref, *, page_id, page_ordinal):
         calls.append(page_ordinal)
         if page_ordinal == 2:
             raise SchemaRefusal("Chandra custody receipt was not issued for chair 'x'")
-        return original(tree, response, receipt_ref, page_id=page_id, page_ordinal=page_ordinal)
+        return original(context, response, receipt_ref, page_id=page_id, page_ordinal=page_ordinal)
 
     monkeypatch.setattr(structure_pass, "retain_chandra_response", refusing)
     _endpoint, exit_code = _run_designator(

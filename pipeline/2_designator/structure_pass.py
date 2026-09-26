@@ -1209,7 +1209,7 @@ def ask_page(
     custody_problem: str | None = None
     try:
         custody = retain_chandra_response(
-            context.tree,
+            context,
             response.raw_response,
             dict(client.handle.receipt_reference),
             page_id=page_id,

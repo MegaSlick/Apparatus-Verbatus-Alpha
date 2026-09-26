@@ -120,7 +120,7 @@ def test_no_runnable_adapter_lets_a_caller_relabel_its_retention(name):
 
     with pytest.raises(TypeError, match="unexpected keyword argument 'adapter'"):
         spec.retain(
-            SimpleNamespace(put_blob=lambda _stage, payload: None),
+            _DaiContext(tree=SimpleNamespace(put_blob=lambda _stage, payload: None)),
             adapter="another.v1",
             view={"kind": "fixture"},
             raw_response=b"<output>text</output>",
@@ -144,7 +144,7 @@ def test_retention_is_bound_to_the_resolved_adapter_and_cannot_be_relabeled(name
         return "a" * 64, SimpleNamespace(relative_path="blobs/a")
 
     retained = spec.retain(
-        SimpleNamespace(put_blob=put_blob),
+        _DaiContext(tree=SimpleNamespace(put_blob=put_blob)),
         view={"kind": "fixture"},
         raw_response=b"<output>text</output>",
         transport_stop_reason="complete",
@@ -192,8 +192,8 @@ class _DaiContext:
     sealed = False
     retain = StageContext.retain
 
-    def __init__(self, page_bytes):
-        self.tree = _DaiTree(page_bytes)
+    def __init__(self, page_bytes=b"", tree=None):
+        self.tree = tree or _DaiTree(page_bytes)
 
 
 def test_dai_crop_resize_is_a_rederivable_adapter_crop_and_preserves_uncertainty_tokens():

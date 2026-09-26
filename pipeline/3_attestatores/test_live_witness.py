@@ -2164,7 +2164,7 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
     assert chandra.parse_fixture_placeholder(body.encode("utf-8")) == "chandra text"
     with pytest.raises(SchemaRefusal, match="placeholder parser"):
         chandra.retain(
-            tree,
+            _Context(tree=tree),
             view={"prompt": chandra.prompt()},
             raw_response=body.encode("utf-8"),
             transport_stop_reason="stop",

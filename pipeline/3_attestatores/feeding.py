@@ -19,7 +19,6 @@ from typing import Any, Callable, Final, Iterator, Mapping
 from common import chandra_layout
 from common.contracts.canonical import digest_of
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES
 from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
     churro_capture_system_prompt,
@@ -561,7 +560,7 @@ def _record_post_hoc_repetition(
 
 
 def retain_model_view(
-    tree: Any,
+    context: Any,
     *,
     adapter: str,
     view: dict[str, Any],
@@ -575,7 +574,7 @@ def retain_model_view(
     ``served`` says the bytes came off a chair that actually answered rather
     than the committed fixture; it decides only whether Chandra's
     fixture-placeholder parser may run. Retention is posture-blind: the bytes
-    are published to the tree before any parser runs.
+    are stored before any parser runs.
     """
     if not isinstance(adapter, str) or not adapter:
         raise SchemaRefusal("model-view adapter is blank")
@@ -599,12 +598,11 @@ def retain_model_view(
         )
     if adapter == "dai.v1":
         validate_dai_model_view(view)
-    raw_digest, published = tree.put_blob(ATTESTATORES, raw_response)
     record: dict[str, Any] = {
         "schema": "attestatores-model-view.v1",
         "adapter": adapter,
         "view": view,
-        "raw_response_ref": {"relative_path": published.relative_path, "sha256": raw_digest},
+        "raw_response_ref": context.retain(raw_response, "a raw chair response"),
         "transport_stop_reason": transport_stop_reason,
         # Overwritten below if this boundary finds a more honest reason to give.
         "stop_reason": transport_stop_reason,

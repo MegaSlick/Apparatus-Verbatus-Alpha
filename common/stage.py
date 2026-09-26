@@ -750,9 +750,9 @@ class StageContext:
             payload = canonical_bytes(value)
         except (TypeError, ValueError) as error:
             raise SchemaRefusal(f"{label} is not canonical JSON data: {error}") from error
-        return self.retain(payload)
+        return self.retain(payload, label)
 
-    def retain(self, data: bytes) -> dict[str, str]:
+    def retain(self, data: bytes, label: str = "a blob") -> dict[str, str]:
         """Store bytes in this stage's blob directory and return their reference.
 
         Refused after the seal, like `publish`: the blob directory is in the
@@ -761,7 +761,7 @@ class StageContext:
         """
         if self.sealed:
             raise SchemaRefusal(
-                f"{self.stage} has sealed its completion boundary; storing a blob afterwards "
+                f"{self.stage} has sealed its completion boundary; storing {label} afterwards "
                 "would make its witnessed blob inventory false"
             )
         digest, result = self.tree.put_blob(self.stage, data)

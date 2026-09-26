@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 from geometry_layer import (
@@ -24,8 +25,9 @@ from geometry_layer import (
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import writing_directory
+from common.contracts.stages import DESIGNATOR, writing_directory
 from common.runtree.store import BLOBS_DIR
+from common.stage import StageContext
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
 # Derived exactly as the custody module derives its prefix, so this fixture
@@ -240,6 +242,12 @@ def test_chandra_split_refuses_text_and_only_preserves_geometry_reference():
         )
 
 
+class _Context(SimpleNamespace):
+    stage = DESIGNATOR
+    sealed = False
+    retain = StageContext.retain
+
+
 class _FixtureTree:
     """Mimics the real run tree's numbered stage directories, not the bare
     stage name -- a fixture writing to `"designator/blobs/…"` instead of the
@@ -275,7 +283,7 @@ def test_one_chandra_response_has_one_receipt_and_two_consumable_references():
     tree = _FixtureTree()
     body = b'{"regions":[{"text":"R3-only custody"}]}'
     stored = retain_chandra_response(
-        tree, body, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+        _Context(tree=tree), body, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
     )
     response_ref, custody_ref = stored["response_ref"], stored["custody_ref"]
     assert response_ref["relative_path"] in tree.blobs
@@ -308,7 +316,7 @@ def test_one_chandra_response_has_one_receipt_and_two_consumable_references():
 def test_chandra_custody_refuses_a_forged_blob_reference():
     tree = _FixtureTree()
     stored = retain_chandra_response(
-        tree, b"fixture", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+        _Context(tree=tree), b"fixture", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
     )
     forged = {**stored["response_ref"], "sha256": "0" * 64}
     with pytest.raises(SchemaRefusal, match="names a different response"):
@@ -339,7 +347,11 @@ def test_chandra_custody_refuses_a_reference_whose_blob_is_gone(removed):
     """
     tree = _FixtureTree()
     stored = retain_chandra_response(
-        tree, b"a response later removed", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+        _Context(tree=tree),
+        b"a response later removed",
+        RECEIPT,
+        page_id=PAGE_ID,
+        page_ordinal=PAGE_ORDINAL,
     )
     del tree.blobs[stored[removed]["relative_path"]]
     with pytest.raises(SchemaRefusal, match="could not be read"):
@@ -363,7 +375,7 @@ def test_chandra_custody_retains_a_pathologically_nested_response_unparsed():
     tree = _FixtureTree()
     nested = (b"[" * 10_000) + (b"]" * 10_000)
     stored = retain_chandra_response(
-        tree, nested, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+        _Context(tree=tree), nested, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
     )
 
     assert (
@@ -387,7 +399,7 @@ def test_chandra_custody_refuses_a_pathologically_nested_binding():
     """
     tree = _FixtureTree()
     stored = retain_chandra_response(
-        tree,
+        _Context(tree=tree),
         b"a response paired with a hostile binding",
         RECEIPT,
         page_id=PAGE_ID,
@@ -417,7 +429,7 @@ def test_chandra_custody_refuses_to_retain_under_a_non_designator_receipt():
     tree = _FixtureTree(receipt_chair="attestator_1")
     with pytest.raises(SchemaRefusal, match="designator_structure"):
         retain_chandra_response(
-            tree,
+            _Context(tree=tree),
             b"a response served under the wrong chair",
             RECEIPT,
             page_id=PAGE_ID,
@@ -443,7 +455,7 @@ def test_chandra_custody_refuses_a_malformed_page_identity_before_writing(
     tree = _FixtureTree()
     with pytest.raises(SchemaRefusal, match=message):
         retain_chandra_response(
-            tree,
+            _Context(tree=tree),
             b"a response under a broken identity",
             RECEIPT,
             page_id=page_id,
@@ -456,7 +468,11 @@ def test_chandra_custody_refuses_a_response_that_is_not_bytes_before_writing():
     tree = _FixtureTree()
     with pytest.raises(SchemaRefusal, match=r"^Chandra raw response is not bytes$"):
         retain_chandra_response(
-            tree, "a str response", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+            _Context(tree=tree),
+            "a str response",
+            RECEIPT,
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
         )
     assert tree.blobs == {}, "nothing may be sealed for a response of the wrong type"
 
@@ -471,17 +487,23 @@ def test_chandra_custody_refuses_to_retain_a_response_that_is_itself_a_binding()
     """
     tree = _FixtureTree()
     honest = retain_chandra_response(
-        tree, b"an honest response", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+        _Context(tree=tree),
+        b"an honest response",
+        RECEIPT,
+        page_id=PAGE_ID,
+        page_ordinal=PAGE_ORDINAL,
     )
     minted = tree.blobs[honest["custody_ref"]["relative_path"]]
     with pytest.raises(SchemaRefusal, match="itself a custody binding"):
-        retain_chandra_response(tree, minted, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL)
+        retain_chandra_response(
+            _Context(tree=tree), minted, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+        )
     # Only the exact canonical form is a binding; ordinary Chandra bytes that
     # merely mention the schema are still an ordinary response.
     mentions = b'{"html":"<p>chandra-custody-binding.v1</p>"}'
     assert (
         retain_chandra_response(
-            tree, mentions, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+            _Context(tree=tree), mentions, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
         )["response_ref"]["relative_path"]
         in tree.blobs
     )
@@ -490,7 +512,7 @@ def test_chandra_custody_refuses_to_retain_a_response_that_is_itself_a_binding()
 def test_chandra_custody_refuses_a_receipt_reused_with_a_different_response():
     tree = _FixtureTree()
     first = retain_chandra_response(
-        tree,
+        _Context(tree=tree),
         b"the first Chandra call's response",
         RECEIPT,
         page_id=PAGE_ID,
@@ -502,7 +524,7 @@ def test_chandra_custody_refuses_a_receipt_reused_with_a_different_response():
         "sha256": "e" * 64,
     }
     second = retain_chandra_response(
-        tree,
+        _Context(tree=tree),
         b"a second, unrelated response",
         other_receipt,
         page_id=PAGE_ID,
@@ -1323,3 +1345,16 @@ def test_two_proposals_with_the_same_box_are_an_ambiguity_not_an_invented_hierar
         row["proposal_id"] for row in proposals
     }
     assert {row["outer"] for row in with_outer["containment"]} == {bigger["proposal_id"]}
+
+
+def test_chandra_custody_is_not_stored_after_the_seal():
+    tree = _FixtureTree()
+    with pytest.raises(SchemaRefusal, match="storing a Chandra raw response afterwards"):
+        retain_chandra_response(
+            _Context(tree=tree, sealed=True),
+            b"a late response",
+            RECEIPT,
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+        )
+    assert tree.blobs == {}

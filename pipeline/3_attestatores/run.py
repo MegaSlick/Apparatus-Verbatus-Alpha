@@ -2160,7 +2160,7 @@ def captured_churro_page_attempt(
         )
     adapter = witness_adapters.resolve_runnable_adapter(adapter_name)
     capture = adapter.retain(
-        context.tree,
+        context,
         # Churro fixture rows are real vendor-grammar answers, so the view records
         # the adapter's own prompt; no framing, as no request was made.
         view={"prompt": adapter.prompt(), "generation": feeding.churro_generation()},
@@ -2333,7 +2333,7 @@ def _fixture_raw_response_attempt(
         )
     adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
     retained = adapter.retain(
-        context.tree,
+        context,
         # The fixture's frozen prompt, not `adapter.prompt()`: this view is sealed
         # into pinned fixture bytes, and the served prompt must be free to change
         # without moving them.
