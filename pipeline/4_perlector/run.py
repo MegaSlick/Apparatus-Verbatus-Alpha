@@ -66,7 +66,7 @@ from common.contracts.errors import (  # noqa: E402
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.outcomes import ATTACHMENT_BASES, page_attachment_basis  # noqa: E402
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.corpus_register import refuse_capture_preference  # noqa: E402
 from common.cross_capture_autopsia import (  # noqa: E402
     atomic_delivered_pixels,
@@ -74,7 +74,7 @@ from common.cross_capture_autopsia import (  # noqa: E402
     validate_autopsia,
 )
 from common.decoding import load_decoding_policy  # noqa: E402
-from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
@@ -516,8 +516,7 @@ def _region_reference(region: dict) -> dict[str, str]:
 def _validate_presented_page(context, payload: dict, presented: dict) -> None:
     """Bind a witness's presentation and observed geometry to its sealed Exemplar page."""
     page_id = presented.get("source_page_id")
-    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    page, page_bytes = read_sealed_page(context.tree, page_id)
     page_size = dimensions(page_bytes)
     validate_native_witness_geometry(payload, page_size=page_size)
     validate_presented_page_binding(
@@ -1702,7 +1701,7 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
             manager=manager,
             identity=chair,
             tier=tier,
-            retain=partial(retain_chair_bytes, context),
+            retain=context.retain,
             decoding_config_sha256=decoding_config_sha256,
             record_temperature=record_temperature,
             # `ChairClient.__enter__` passes a plain dict, which is what
@@ -1711,21 +1710,6 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
         )
 
     return factory
-
-
-def retain_chair_bytes(context, data: bytes) -> dict[str, str]:
-    """Store one chair response or call record under its own digest.
-
-    The client retains before it parses (principle 2). Refused after the seal, which
-    witnessed this stage's blob inventory; a later write would make it false.
-    """
-    if context.sealed:
-        raise SchemaRefusal(
-            "the Perlector has sealed its completion boundary; retaining a chair response "
-            "afterwards would make its witnessed blob inventory false"
-        )
-    digest, result = context.tree.put_blob(context.stage, data)
-    return {"relative_path": result.relative_path, "sha256": digest}
 
 
 def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict[str, str]]:

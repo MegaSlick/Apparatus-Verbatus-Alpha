@@ -29,7 +29,7 @@ import feeding
 
 from common import churro_document
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES
+from common.exemplar_boundary import read_sealed_page
 from common.imaging import convert_png_to_rgb, crop_png, dimensions, resize_png_lanczos
 from common.imaging_ports import resize_to_fit_churro
 from common.native_witness import parse_churro_response, validate_presented
@@ -138,7 +138,7 @@ def parse(raw_response: bytes, *, system_prompt: str | None = None) -> Any:
 
 
 def retain(
-    tree: Any,
+    context: Any,
     *,
     view: dict[str, Any],
     raw_response: bytes,
@@ -154,7 +154,7 @@ def retain(
     (principle 6). Chandra's and DAI's wrappers pin their names the same way.
     """
     return feeding.retain_model_view(
-        tree,
+        context,
         adapter="churro.v1",
         view=view,
         raw_response=raw_response,
@@ -187,7 +187,7 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
         return presentation
     transform = presentation["transform"]
     page_id = transform["source_page_id"]
-    page_bytes = feeding.sealed_page_bytes(context, page_id, what="Churro")
+    _, page_bytes = read_sealed_page(context.tree, page_id, what="Churro")
     # Keep bounds failures as SchemaRefusals, not crop_png's bare ValueError.
     validate_presented(presentation, page_size=dimensions(page_bytes))
     bounds = dict(transform["bounds"])
@@ -202,13 +202,13 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
             f"Churro's presented page cannot be converted to RGB, which is half of the vendor's "
             f"own prepare_ocr_image and cannot be recorded as having run: {error}"
         ) from error
-    digest, published = context.tree.put_blob(ATTESTATORES, model_image)
+    published = context.retain(model_image)
     return {
         "kind": "adapter-crop",
         "source_page_id": page_id,
         "source_page_ordinal": transform["source_page_ordinal"],
-        "image_path": published.relative_path,
-        "image_sha256": digest,
+        "image_path": published["relative_path"],
+        "image_sha256": published["sha256"],
         "transform": presented_transform(
             page_id,
             transform["source_page_ordinal"],

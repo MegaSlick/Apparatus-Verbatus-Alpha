@@ -232,7 +232,7 @@ class StructureWorld:
 
     Deliberately close to `structure_pass.default_serving_factory`: the same
     manager, the same real `StageContextReceiptPublisher`, the same
-    `retain_chair_bytes` into the Designator's own blob area, the same receipt
+    `StageContext.retain` into the Designator's own blob area, the same receipt
     re-read through the tree. The launcher, the transport and the package
     inspector are the fakes; nothing else is.
     """
@@ -269,7 +269,7 @@ class StructureWorld:
             manager=manager,
             identity=identity,
             tier=tier,
-            retain=lambda data: structure_pass.retain_chair_bytes(context, data),
+            retain=context.retain,
             decoding_config_sha256=decoding_sha256,
             record_temperature=structure_pass.executable_temperature(policy),
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),

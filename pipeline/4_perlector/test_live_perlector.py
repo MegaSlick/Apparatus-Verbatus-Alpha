@@ -269,7 +269,7 @@ def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lo
     """The `(context, chair, tier) -> ChairClient` seam `main` injects against.
 
     Deliberately close to `run.default_serving_factory`: the same manager, the
-    same real `StageContextReceiptPublisher`, the same `retain_chair_bytes` into
+    same real `StageContextReceiptPublisher`, the same `StageContext.retain` into
     the stage's own blob area, the same receipt re-read through the tree. Only
     the launcher, the transport and the package inspector are fakes — the three
     things that would otherwise need a card.
@@ -293,7 +293,7 @@ def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lo
             manager=manager,
             identity=chair,
             tier=tier,
-            retain=lambda data: perlector.retain_chair_bytes(context, data),
+            retain=context.retain,
             decoding_config_sha256=decoding_sha256,
             record_temperature=decoding_policy["reading_of_record"]["temperature"],
             read_receipt=context.tree.read_run_receipt,
@@ -1164,12 +1164,6 @@ def test_an_absent_chair_that_attempted_a_reading_cannot_carry_a_receipt():
             attempted=True,
             receipt_ref={"relative_path": "receipts/sha256/x.json", "sha256": "a" * 64},
         )
-
-
-def test_retaining_a_chair_response_after_the_seal_is_refused():
-    """The stage's blob inventory is what its completion seal witnessed."""
-    with pytest.raises(SchemaRefusal, match="witnessed blob inventory false"):
-        perlector.retain_chair_bytes(SimpleNamespace(sealed=True), b"{}")
 
 
 def test_two_digests_for_one_input_path_are_refused():
