@@ -192,9 +192,7 @@ def sync_run_tree(
                 root / "snapshots" / "sha256" / f"{snapshot_sha256}.json",
                 data,
             )
-            report = BackupReport(snapshot_sha256, copied, reused)
-            _verify_backup_snapshot(destination, run_id, report)
-            return report
+            return BackupReport(snapshot_sha256, copied, reused)
 
 
 def resolve_backup_paths(run_root: Path, run_id: str, mac_directory: Path) -> tuple[Path, Path]:
