@@ -236,7 +236,7 @@ def _refusal() -> str:
             "`config/spend.toml` is in state `unconfigured`. Nothing below it can be",
             "derived, so this is a refusal rather than a request with blanks in it:",
             "a request whose ceilings are placeholders would read as a plan.",
-            "The ceilings and the card are the project lead's to set (AGENTS.md).",
+            "The ceilings and the card are the project lead's to set.",
             "",
             "What has to exist before this file can render a request:",
             "",

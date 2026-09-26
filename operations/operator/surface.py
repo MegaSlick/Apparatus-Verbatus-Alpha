@@ -2039,10 +2039,11 @@ class OperatorSurface:
             return OperatorError(ErrorCode.BALANCE_FLOOR_REACHED, detail=detail)
         if result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE:
             return OperatorError(ErrorCode.BALANCE_UNOBSERVABLE, detail=detail)
+        if result.state is LaunchState.REFUSED_SPEND_LOCK_UNAVAILABLE:
+            return OperatorError(ErrorCode.SPEND_LOCK_UNAVAILABLE, detail=detail)
         if result.state in {
             LaunchState.REFUSED_SHUTDOWN_NOT_READY,
             LaunchState.REFUSED_CONTROLLER_NOT_READY,
-            LaunchState.REFUSED_SPEND_LOCK_UNAVAILABLE,
             LaunchState.LEASE_FAILURE,
         }:
             return OperatorError(ErrorCode.SAFETY_CHECK_FAILED, detail=detail)

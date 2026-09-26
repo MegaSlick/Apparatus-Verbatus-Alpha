@@ -1604,7 +1604,7 @@ def test_a_spend_lock_failure_is_not_reported_as_an_unobservable_balance(
 ) -> None:
     result = LaunchResult(LaunchState.REFUSED_SPEND_LOCK_UNAVAILABLE, detail="lock failed")
 
-    assert _surface(tmp_path)._launch_error(result).code is ErrorCode.SAFETY_CHECK_FAILED
+    assert _surface(tmp_path)._launch_error(result).code is ErrorCode.SPEND_LOCK_UNAVAILABLE
 
 
 def test_balance_floor_has_its_own_three_part_operator_refusal(tmp_path: Path) -> None:
