@@ -14,9 +14,6 @@ directly, bypassing the scenario driver's own limit, exactly the way a bug
 upstream of that check would.
 """
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
 from common.contracts.envelope import build_envelope
@@ -25,8 +22,7 @@ from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import RECENSOR
 from common.recovery import FALLBACK_RECROP
 from common.runtree.store import RunTree
-
-ROOT = Path(__file__).resolve().parents[2]
+from conftest import load_stage
 
 CONFIG_DIGEST = "f" * 64
 RECIPES = {"recensor": "fake-recensor-v0"}
@@ -48,15 +44,6 @@ BUDGET = {
     "page_level_reread": 0,
     "allowed": 3,
 }
-
-
-def _load_recensor():
-    spec = importlib.util.spec_from_file_location(
-        "recensor_absolute_cap_under_test", ROOT / "pipeline/5_recensor/run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _publish_recovery_request(tree: RunTree, act_id: str, ordinal: int) -> None:
@@ -156,7 +143,7 @@ def _minimal_tree(tmp_path) -> RunTree:
 
 
 def test_exactly_the_sealed_cap_reconciles_cleanly(tmp_path):
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     tree = _minimal_tree(tmp_path)
     for ordinal in range(1, BUDGET["absolute_cap"] + 1):
         _publish_recovery_request(tree, "act_1", ordinal)
@@ -166,7 +153,7 @@ def test_exactly_the_sealed_cap_reconciles_cleanly(tmp_path):
 
 
 def test_a_request_above_the_sealed_cap_is_refused_at_the_accounting_boundary(tmp_path):
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     tree = _minimal_tree(tmp_path)
     for ordinal in range(1, BUDGET["absolute_cap"] + 2):  # one past the cap
         _publish_recovery_request(tree, "act_1", ordinal)

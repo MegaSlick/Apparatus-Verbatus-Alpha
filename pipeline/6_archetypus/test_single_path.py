@@ -31,6 +31,7 @@ from common.contracts.stages import ARCHETYPUS, ATTESTATORES, PERLECTOR, RECENSO
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
 from common.witness_regime import pseudonym_for
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -783,13 +784,7 @@ def test_two_groups_naming_one_crop_path_collapse_to_a_single_input():
     pins the collapse plus the no-distinct-input-dropped half so the defence
     cannot rot unnoticed.
     """
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "archetypus_direct_inputs_under_test", ROOT / "pipeline" / "6_archetypus" / "run.py"
-    )
-    archetypus = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(archetypus)
+    archetypus = load_stage("6_archetypus")
 
     shared = {"relative_path": "2_designator/blobs/ab/cdef", "sha256": "a" * 64}
     other = {"relative_path": "4_perlector/artifacts/reading.json", "sha256": "b" * 64}

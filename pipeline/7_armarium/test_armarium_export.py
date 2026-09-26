@@ -61,13 +61,13 @@ from common.residual_ink import (
     resolve_coverage_audit_policy,
 )
 from common.runtree.store import RunTree
+from common.sealed_config import read_sealed_toml
 from common.stage import REAL_SCENARIO, StageContext
+from conftest import load_stage
 
 TEXT_REGISTER = "text/_source_folder/register/readings.txt"
 ROOT = Path(__file__).resolve().parents[2]
-ARMARIUM_CLI = ROOT / "pipeline" / "7_armarium" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
-INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
 ORCHESTRATOR_CLI = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
@@ -552,8 +552,8 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
     admitted. This proves the verifier/crop-reader/terminal integration, not an
     end-to-end identity link between Exemplar pixels and Ink Map evidence.
     """
-    armarium = _armarium_run_module()
-    ink_map = _ink_map_run_module()
+    armarium = load_stage("7_armarium")
+    ink_map = load_stage("1_ink_map", isolate_path=True)
     run_root = tmp_path / "runs"
     result = subprocess.run(
         [
@@ -607,7 +607,7 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
     assert page_bytes != sealed_page_bytes
     page_digest = digest_bytes(page_bytes)
     grouping_path = ROOT / "config" / "designator_grouping.toml"
-    grouping_digest = digest_bytes(grouping_path.read_bytes())
+    grouping_digest = read_sealed_toml(grouping_path, "config")[1]
     background_config = load_background_config(grouping_path)
     coverage_config = load_coverage_audit_config(grouping_path)
     background_policy = resolve_background_policy(background_config, width, height)
@@ -2063,18 +2063,6 @@ def test_a_manifest_run_binding_naming_a_non_sha256_submission_is_refused(tmp_pa
         verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
 
 
-def _armarium_run_module():
-    """Load `run.py` under a private name, mirroring `test_export.py`'s idiom.
-
-    Never a bare ``import run``: several stage directories define a module by
-    that name, and the import cache would decide which one this test got.
-    """
-    spec = importlib.util.spec_from_file_location("armarium_run_under_test_identity", ARMARIUM_CLI)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _designator_run_module():
     """Load Designator without leaving its bare sibling aliases in the session."""
     spec = importlib.util.spec_from_file_location(
@@ -2110,21 +2098,6 @@ def _designator_run_module():
     return module
 
 
-def _ink_map_run_module():
-    """Load the Ink Map entry point without retaining its path insertion."""
-    spec = importlib.util.spec_from_file_location(
-        "ink_map_run_for_armarium_visibility_test", INK_MAP_CLI
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    original_path = list(sys.path)
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.path[:] = original_path
-    return module
-
-
 def test_export_run_identity_never_touches_the_refusing_fixture_accessor_on_a_real_run():
     """The unit's central claim, pinned rather than asserted only in prose and CONTRACT.md.
 
@@ -2133,7 +2106,7 @@ def test_export_run_identity_never_touches_the_refusing_fixture_accessor_on_a_re
     from `submission_identity(context.run)` first, this would raise a
     `ContractError` instead of returning a `submission_id`-shaped identity.
     """
-    armarium = _armarium_run_module()
+    armarium = load_stage("7_armarium")
     run = {
         "ingress": real_ingress_record(),
         "source_manifest": [{"ledger_sha256": "a" * 64}],
@@ -2158,7 +2131,7 @@ def test_export_run_identity_never_touches_the_refusing_fixture_accessor_on_a_re
 
 def test_export_run_identity_reads_the_declared_fixture_id_on_a_fixture_run():
     """The fixture route is unchanged: the identity is the loaded declaration's own."""
-    armarium = _armarium_run_module()
+    armarium = load_stage("7_armarium")
     context = StageContext(
         tree=None,
         run={},
@@ -4290,8 +4263,8 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
 ):
     """The stricter audit can refuse while Designator truthfully remains measured."""
     designator = _designator_run_module()
-    ink_map = _ink_map_run_module()
-    armarium = _armarium_run_module()
+    ink_map = load_stage("1_ink_map", isolate_path=True)
+    armarium = load_stage("7_armarium")
 
     width = height = 100
     rows = [bytearray([30]) * width for _ in range(90)]
@@ -4331,7 +4304,7 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
 
     designator_context = DesignatorContext()
     grouping_path = ROOT / "config" / "designator_grouping.toml"
-    grouping_digest = digest_bytes(grouping_path.read_bytes())
+    grouping_digest = read_sealed_toml(grouping_path, "config")[1]
     grouping_policy = designator.grouping_config.load_grouping_config(grouping_path)
     assert grouping_policy["config_sha256"] == grouping_digest
     analysis = designator._analyze_page({}, designator_context, 1, page_record, grouping_policy)
@@ -4506,7 +4479,7 @@ def test_a_real_background_refusal_reaches_the_complete_export_as_not_measured(
 ):
     """Real pixels drive the conservation record the export qualifies itself with."""
     designator = _designator_run_module()
-    armarium = _armarium_run_module()
+    armarium = load_stage("7_armarium")
 
     width = height = 100
     rows = [bytearray([30]) * width for _ in range(80)]

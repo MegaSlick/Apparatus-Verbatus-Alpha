@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import errno
 import hashlib
-import importlib.util
 import json
 import os
 import signal
@@ -18,14 +17,10 @@ import pytest
 
 from common.contracts.errors import SchemaRefusal
 from common.runtree.store import RunTree
+from conftest import load_stage
 from operations.operator.backup import _is_publication_temporary, sync_run_tree
 
-# Stage code may not import `pipeline` by dotted path; the boundary test permits
-# an explicit path load for a same-stage test helper.
-_ACCEPTANCE_PATH = Path(__file__).resolve().parent / "test_orchestrator_acceptance.py"
-_spec = importlib.util.spec_from_file_location("orchestrator_acceptance_helpers", _ACCEPTANCE_PATH)
-_acceptance = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_acceptance)
+_acceptance = load_stage("orchestrator", "test_orchestrator_acceptance")
 snapshot = _acceptance.snapshot
 file_identities = _acceptance.file_identities
 is_immutable_evidence = _acceptance.is_immutable_evidence

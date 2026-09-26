@@ -15,12 +15,10 @@ manipulation can still cross it." This walks `ast.Import`/`ast.ImportFrom`
 nodes and literal `import_module("...")` / `__import__("...")` calls, so it sees a deferred import
 inside a function exactly like a top-level one. It does NOT decide a nonliteral
 dynamic module name, an aliased loader, or an `importlib.util.spec_from_file_location(...)` call.
-Every stage's own test
-suite already uses exactly that mechanism, under a synthetic module name, to
-load a sibling stage's `run.py` for cross-stage boundary testing (e.g.
-`pipeline/4_perlector/test_region_boundary.py` loading Attestatores) -- a
-deliberate, visible, single-purpose load, not the accidental bare `import`
-this test exists to catch.
+Tests load a stage's modules that way on purpose, through the root conftest's
+`load_stage` (e.g. `pipeline/4_perlector/test_region_boundary.py` loading
+Attestatores) -- a deliberate, visible, single-purpose load, not the accidental
+bare `import` this test exists to catch.
 
 **What this does not catch.** Every stage's entry file is named `run.py`, so
 "does a bare `import run` reach this stage's own file or some other stage's" is

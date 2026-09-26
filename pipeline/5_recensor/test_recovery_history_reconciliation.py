@@ -28,6 +28,7 @@ from common.perlector_audit import (
 )
 from common.recovery import FALLBACK_RECROP
 from common.runtree.store import RunTree
+from conftest import programs_through
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,14 +53,7 @@ def invoke(
 
 
 def through_perlector(root: Path, run_id: str, scenario: str) -> None:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
+    for program in programs_through("perlector"):
         result = invoke(root, run_id, scenario, program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 

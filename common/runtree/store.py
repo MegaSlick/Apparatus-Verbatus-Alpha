@@ -77,6 +77,7 @@ from common.durability import (
     atomic_create,
     atomic_replace,
 )
+from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, require_seal_method
 
 RUN_FILE: Final = "run.json"
 MANIFEST_FILE: Final = "manifest.json"
@@ -285,6 +286,7 @@ class RunTree:
                     "point of use could ask for"
                 )
             authority[_SEALED_CONFIG_DIGESTS_FIELD] = dict(sorted(sealed_config_digests.items()))
+            authority[SEAL_METHOD_FIELD] = SEAL_METHOD
         if repository_commit is not None:
             if not is_hf_revision(repository_commit):
                 raise SchemaRefusal(
@@ -1410,9 +1412,16 @@ def _verify_compatible_reuse(tree: RunTree, run_id: str, authority: dict[str, An
             f"run {run_id!r} was written under schema {existing.get('schema')!r} and this is "
             f"{authority['schema']!r}; the two describe different shapes and cannot share a tree"
         ) from None
+    if _SEALED_CONFIG_DIGESTS_FIELD in existing:
+        require_seal_method(existing, f"run {run_id!r}")
     optional_bound_fields = tuple(
         field
-        for field in (_INGRESS_FIELD, _RENDER_SETTINGS_FIELD, _SEALED_CONFIG_DIGESTS_FIELD)
+        for field in (
+            _INGRESS_FIELD,
+            _RENDER_SETTINGS_FIELD,
+            _SEALED_CONFIG_DIGESTS_FIELD,
+            SEAL_METHOD_FIELD,
+        )
         if field in authority or field in existing
     )
     differing = [

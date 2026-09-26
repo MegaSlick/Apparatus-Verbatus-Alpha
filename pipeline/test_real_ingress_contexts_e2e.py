@@ -67,7 +67,6 @@ What this module proves that no other suite in the section can:
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import shutil
 import subprocess
@@ -76,6 +75,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from conftest import load_stage
 
 PIPELINE = Path(__file__).resolve().parent
 ROOT = PIPELINE.parents[0]
@@ -149,7 +150,7 @@ from common.stage import (  # noqa: E402
 # byte for a file, and for the roster a record that moves without its membership
 # moving — the case `run.json`'s `witness_chairs` cannot see. Imported rather
 # than rewritten, so the unit and the end-to-end move the same bytes.
-from common.test_stage_real_ingress import _appended, _moved_models_config  # noqa: E402
+from common.test_stage_real_ingress import _moved, _moved_models_config  # noqa: E402
 
 MODELS_CONFIG = ROOT / "config" / "models.toml"
 DESIGNATOR_CLI = PIPELINE / "2_designator" / "run.py"
@@ -166,28 +167,7 @@ SEAL_REFUSING_STAGES = (ARCHETYPUS, ARMARIUM)
 ACT_KEYS = tuple(key for _ordinal, _bounds, key in ACTS)
 
 
-def _load_program(program: Path, name: str):
-    """Load one stage program as a module, the sanctioned cross-stage way.
-
-    `pipeline/test_stage_import_boundaries.py` names `spec_from_file_location`
-    under a synthetic module name as the deliberate, visible load a boundary
-    test may make; the Armarium is loaded here for one function of its own,
-    `export_run_identity`, which is where a real run's export identity is
-    actually decided.
-    """
-    spec = importlib.util.spec_from_file_location(name, program)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    original_path = list(sys.path)
-    try:
-        sys.path.insert(0, str(program.parent))
-        spec.loader.exec_module(module)
-    finally:
-        sys.path[:] = original_path
-    return module
-
-
-armarium = _load_program(PIPELINE / "7_armarium" / "run.py", "e2e_armarium_under_test")
+armarium = load_stage("7_armarium", isolate_path=True)
 
 
 # --------------------------------- driving ----------------------------------
@@ -395,11 +375,20 @@ def test_opening_every_real_context_writes_nothing(real_run, tmp_path):
 @pytest.mark.parametrize(
     ("flag", "value", "named"),
     [
-        ("--decoding-config", lambda tmp: _appended(tmp, DEFAULT_DECODING_CONFIG_PATH), "decoding"),
+        (
+            "--decoding-config",
+            lambda tmp: _moved(tmp, DEFAULT_DECODING_CONFIG_PATH, "seed = 20260820", "seed = 1"),
+            "decoding",
+        ),
         ("--models-config", _moved_models_config, "models"),
         (
             "--formats-config",
-            lambda tmp: _appended(tmp, DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH),
+            lambda tmp: _moved(
+                tmp,
+                DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
+                "embed_pixels = false",
+                "embed_pixels = true",
+            ),
             "armarium-formats",
         ),
         ("--witness-context", lambda _tmp: "blinded", "run-policy"),

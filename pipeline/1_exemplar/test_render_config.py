@@ -1,7 +1,6 @@
 """The PDF target is run configuration; safety bounds remain renderer code."""
 
 import ast
-import importlib.util
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -16,17 +15,10 @@ from synthetic_sources import content_page_pdf
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.runtree.store import RunTree
+from common.sealed_config import parse_sealed_toml, read_sealed_toml
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def _exemplar_module():
-    spec = importlib.util.spec_from_file_location(
-        "exemplar_render_config_test", Path(__file__).resolve().parent / "run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_the_shipped_default_is_documented_run_configuration():
@@ -128,7 +120,7 @@ def test_exemplar_refuses_a_page_target_that_disagrees_with_run_authority():
     }
 
     with pytest.raises(ContractError, match="sealed pixel recipe"):
-        _exemplar_module()._verify_render_contract(
+        load_stage("1_exemplar")._verify_render_contract(
             rendered.contract,
             0,
             {"geometry": {"width": rendered.width, "height": rendered.height}},
@@ -158,7 +150,7 @@ def test_exemplar_accepts_the_lossless_tiff_contract_for_high_precision_fanned_p
         ).outcome
         == "admitted"
     )
-    _exemplar_module()._verify_render_contract(
+    load_stage("1_exemplar")._verify_render_contract(
         contract,
         1,
         {"geometry": {"width": geometry.width, "height": geometry.height}},
@@ -194,7 +186,7 @@ def test_exemplar_accepts_a_premultiplied_alpha_contract_the_renderer_actually_p
         "mode_transform": f"convert-to-{expected_mode.lower()}",
     }
 
-    _exemplar_module()._verify_render_contract(
+    load_stage("1_exemplar")._verify_render_contract(
         contract,
         0,
         {"geometry": {"width": 2, "height": 2}},
@@ -219,7 +211,7 @@ def test_exemplar_refuses_a_premultiplied_alpha_contract_claiming_the_wrong_conv
     }
 
     with pytest.raises(ContractError, match="changes its mode conversion"):
-        _exemplar_module()._verify_render_contract(
+        load_stage("1_exemplar")._verify_render_contract(
             contract,
             0,
             {"geometry": {"width": 2, "height": 2}},
@@ -270,14 +262,14 @@ def test_run_override_is_sealed_in_authority_and_changed_resume_writes_nothing(
     assert after == before
 
 
-def test_the_policy_is_read_once_so_its_digest_is_of_the_bytes_that_were_parsed(tmp_path):
+def test_the_policy_is_read_once_so_its_seal_is_of_the_table_that_was_parsed(tmp_path):
     """`config_sha256` names the file as read, not the settings as resolved."""
     configured = tmp_path / "render.toml"
     configured.write_bytes(b"[pdf]\ntarget_dpi = 240\n")
     binding = render_config.load_pdf_render_binding(configured, minimum_dpi=72)
 
     assert binding.settings.configured_target_dpi == 240
-    assert binding.config_sha256 == digest_bytes(configured.read_bytes())
+    assert binding.config_sha256 == read_sealed_toml(configured, "render policy")[1]
     # The CLI override moves the target without moving the file: the digest still
     # answers "which pdf_render.toml did this run parse", which is the question a
     # point-of-use recheck asks.
@@ -347,11 +339,11 @@ def test_a_render_policy_rewritten_while_the_door_binds_cannot_split_the_run(tmp
         ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).config,
         load_fixture(str(ROOT / "proof")),
         "happy",
-        pdf_render_config_sha256=digest_bytes(original),
+        pdf_render_config_sha256=parse_sealed_toml(original, "render policy")[1],
     )
     assert run["config_digest"] == expected["config_digest"]
     assert run["sealed_config_digests"] == expected["sealed_config_digests"]
-    assert run["sealed_config_digests"]["pdf-render"] == digest_bytes(original)
+    assert run["sealed_config_digests"]["pdf-render"] == parse_sealed_toml(original, "x")[1]
 
 
 def test_both_door_entry_points_seal_the_settings_they_actually_parsed():

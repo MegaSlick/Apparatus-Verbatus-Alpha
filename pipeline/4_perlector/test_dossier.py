@@ -3,7 +3,6 @@ blinded regime that a named dossier would show.
 """
 
 import copy
-import importlib.util
 import subprocess
 import sys
 from io import BytesIO
@@ -18,19 +17,12 @@ from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
 from common.imaging import dimensions
 from common.runtree.store import RunTree
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_perlector():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("perlector_dossier_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-perlector = _load_perlector()
+perlector = load_stage("4_perlector")
 dossier = perlector.dossier_module
 
 
@@ -58,13 +50,7 @@ def evidence(tmp_path_factory):
     """A real run through the Attestatores, so the dossier is built over real
     regions and real testimonia rather than hand-built stand-ins."""
     root = tmp_path_factory.mktemp("dossier") / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-    ):
+    for program in programs_through("attestatores"):
         result = subprocess.run(
             [
                 sys.executable,

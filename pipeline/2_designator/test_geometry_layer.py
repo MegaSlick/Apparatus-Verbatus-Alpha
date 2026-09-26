@@ -26,6 +26,7 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import writing_directory
 from common.runtree.store import BLOBS_DIR
+from common.sealed_config import read_sealed_toml
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
 # Derived exactly as the custody module derives its prefix, so this fixture
@@ -60,7 +61,7 @@ def _detector_that_only_sees_its_own_tile(polygon, score=lambda tile: 9000):
 def test_sealed_policy_exposes_integer_surya_sizing_and_yolo_rectification_toggle():
     policy = load_geometry_policy()
     # Must be the same raw bytes common/stage.py seals, or an unchanged file refuses.
-    assert policy["config_sha256"] == digest_bytes(DEFAULT_POLICY_PATH.read_bytes())
+    assert policy["config_sha256"] == read_sealed_toml(DEFAULT_POLICY_PATH, "geometry")[1]
     assert policy["surya"]["tile_height_px"] == 1400
     assert policy["surya"]["half_tile_vertical_offset_px"] == 700
     assert policy["surya"]["horizontal_overlap_px"] == 700

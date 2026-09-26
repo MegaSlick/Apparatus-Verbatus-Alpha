@@ -62,6 +62,8 @@ from typing import Any
 
 import pytest
 
+from conftest import load_stage, programs_through
+
 ROOT = Path(__file__).resolve().parents[1]
 DESIGNATOR_DIR = ROOT / "pipeline" / "2_designator"
 # The Designator program imports its own directory's modules by bare name, the
@@ -85,7 +87,6 @@ from test_live_reading_seam_e2e import (  # noqa: E402
     ReaderWorld,
     RecordingEndpoint,
     WitnessWorld,
-    _load_stage,
     _toml_profile,
     _vllm_row,
     act_records,
@@ -136,14 +137,10 @@ from operations.serving.manager import ServingManager, StageContextReceiptPublis
 from operations.serving.residency import FileResidencyLease  # noqa: E402
 from proof.synthetic_pages import PAGE_BREAK_PAGES, render_page  # noqa: E402
 
-designator = _load_stage(DESIGNATOR_DIR, "structure_chair_e2e_designator")
+designator = load_stage("2_designator")
 structure_pass = designator.structure_pass
 
-CHAIN_TO_INK_MAP = (
-    "pipeline/1_exemplar/door.py",
-    "pipeline/1_exemplar/run.py",
-    "pipeline/1_ink_map/run.py",
-)
+CHAIN_TO_INK_MAP = programs_through("ink-map")
 TAIL_FROM_RECENSOR = (
     "pipeline/5_recensor/run.py",
     "pipeline/6_archetypus/run.py",

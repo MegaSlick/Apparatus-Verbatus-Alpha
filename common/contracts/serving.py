@@ -7,7 +7,8 @@ somewhere neither depends on the other's package.
 
 from typing import Final
 
-SERVING_CONFIG_INPUTS_SCHEMA: Final = "serving-config-inputs.v1"
+# v2: the two digests are the files' seals (`common/sealed_config.py`); v1 hashed raw bytes.
+SERVING_CONFIG_INPUTS_SCHEMA: Final = "serving-config-inputs.v2"
 SERVING_CONFIG_INPUTS_FIELDS: Final = frozenset(
     {"schema", "serving_recipes_sha256", "pod_placement_sha256"}
 )

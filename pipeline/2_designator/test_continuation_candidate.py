@@ -19,7 +19,6 @@ import pytest
 from test_page_residual_bound import (
     _base_run,
     _designator_context,
-    _load_designator,
     _records,
     _substitute_page_pixels,
 )
@@ -39,6 +38,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import DESIGNATOR
 from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE
+from conftest import load_stage
 from proof.synthetic_pages import PAGE_BREAK_PAGES, render_page
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -256,7 +256,7 @@ def test_a_resumed_pass_publishes_the_same_candidate_once(live_run, tmp_path, mo
 
 
 def _fixture_pass(tmp_path: Path, monkeypatch, *, drop_declared_continuation: bool):
-    fixture_designator = _load_designator()
+    fixture_designator = load_stage("2_designator")
     root = tmp_path / "runs"
     grouping_config = ROOT / "config" / "designator_grouping.toml"
     _base_run(root, grouping_config)

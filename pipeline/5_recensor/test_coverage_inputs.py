@@ -1,6 +1,5 @@
 """Focused audit tests for R6's new geometry and testimony coverage inputs."""
 
-import importlib.util
 import tracemalloc
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,28 +7,21 @@ from types import SimpleNamespace
 import pytest
 
 import common.stage as STAGE_MODULE
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.identities import attempt_id
 from common.native_witness import partition_disagreement
+from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, read_sealed_toml
 from common.stage import (
     RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATION_WITHHELD,
 )
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_recensor():
-    path = ROOT / "pipeline/5_recensor/run.py"
-    spec = importlib.util.spec_from_file_location("recensor_run_coverage_inputs", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-RUN = _load_recensor()
+RUN = load_stage("5_recensor")
 
 
 class _ArtifactTree:
@@ -283,7 +275,8 @@ def _aggregate_context(record):
     context = _context(record)
     context.args = SimpleNamespace(designator_grouping_config=str(config))
     context.run = {
-        "sealed_config_digests": {"designator-grouping": digest_bytes(config.read_bytes())}
+        "sealed_config_digests": {"designator-grouping": read_sealed_toml(config, "config")[1]},
+        SEAL_METHOD_FIELD: SEAL_METHOD,
     }
     return context
 

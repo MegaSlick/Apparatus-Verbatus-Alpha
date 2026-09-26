@@ -46,6 +46,7 @@ from .bootstrap import (
     SubprocessBootstrapActions,
     verify_image_contract,
 )
+from .conftest import NO_OP_BOOTSTRAP, timer_start_command
 from .controllers import ControllerResult, ControllerState, LaptopSupervisor, PodDeadmanTimer
 from .fake_provider import FakeProvider
 from .launch import (
@@ -76,13 +77,7 @@ from .models import (
     SpendRefusal,
     validate_pod_report_identity,
 )
-from .notify_bridge import (
-    NOTIFY_SCRIPT,
-    NOTIFY_SUPPRESSED_MARKER,
-    NotifyOutcome,
-    shell_notifier,
-    silent,
-)
+from .notify_bridge import NotifyOutcome, silent
 from .pod_timer import (
     _CLOSE_ATTEMPTS,
     TimerContext,
@@ -338,21 +333,7 @@ def request(clock: Clock, *, gpu: str = "fake-48gb", lifetime: int = 300) -> Pod
         template="pinned-template",
         volume_id="test-volume",
         volume_mount_path="/workspace/private",
-        docker_start_cmd=(
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "operations.pod.provider_runpod:timer_context_from_environment",
-            "--bootstrap-command-json",
-            # PLACEHOLDER: bootstrap.py is a library module with no __main__, so
-            # this exits 0 immediately.  Tests rely on that to drill the
-            # completed-early close path; it is not a template for a real
-            # request file, which needs a long-running bootstrap/service entrypoint.
-            '["python","-m","operations.pod.bootstrap"]',
-            "--report-path",
-            "/workspace/private/pod-runtime-report.json",
-        ),
+        docker_start_cmd=timer_start_command("/workspace/private/pod-runtime-report.json"),
         hard_deadline=clock.now() + timedelta(seconds=lifetime),
         repository_commit="b" * 40,
         metadata={BILLING_CUTOFF_MARGIN_ENV: "3600"},
@@ -2717,7 +2698,7 @@ def test_a_spend_warning_that_never_reached_the_phone_is_recorded_not_swallowed(
     ceilings = record["ceilings"]
     assert isinstance(ceilings, dict)
     assert ceilings["alert_notifications"] == [
-        "Phone notification: NOT DELIVERED (no topic configured). The result above still stands."
+        "Phone notification: NOT DELIVERED (no topic configured). The recorded result is unchanged."
     ]
 
 
@@ -2739,7 +2720,7 @@ def test_a_broken_notifier_is_recorded_and_still_cannot_fail_the_preview(tmp_pat
     ceilings = result.preview.to_record()["spend"]["ceilings"]  # type: ignore[index]
     assert ceilings["alert_notifications"] == [  # type: ignore[index]
         "Phone notification: NOT DELIVERED (the notifier raised: RuntimeError). "
-        "The result above still stands."
+        "The recorded result is unchanged."
     ]
 
 
@@ -2786,88 +2767,6 @@ def test_safe_balance_without_an_alert_episode_writes_no_debounce_state(tmp_path
 
     assert result.state is LaunchState.PREVIEW
     assert not lease_root.exists()
-
-
-def test_pod_shell_notifier_keeps_the_reason_notify_sh_printed() -> None:
-    """The script's reason distinguishes a missing topic from an ntfy refusal."""
-
-    def runner(command, **kwargs):  # type: ignore[no-untyped-def]
-        del command, kwargs
-        return subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="notify: NOT DELIVERED (start) — no topic\n"
-        )
-
-    outcome = shell_notifier(runner=runner)("Spend warning: balance is low.")
-
-    assert outcome == NotifyOutcome(True, False, "notify: NOT DELIVERED (start) — no topic")
-    assert outcome.line().startswith("Phone notification: NOT DELIVERED")
-
-
-def test_pod_shell_notifier_reports_the_test_sink_as_suppressed_never_as_sent() -> None:
-    """Exit 0 plus the marker is "swallowed by the sink", not "on his phone".
-
-    `notify.sh` exits 0 under the reserved test topic on purpose -- a guard must
-    not change what the suites it protects measure -- so this bridge read that 0
-    as delivery and printed "Phone notification: sent." for a spend warning no
-    phone ever saw. The marker on stdout is the only thing separating the two.
-    """
-
-    def runner(command, **kwargs):  # type: ignore[no-untyped-def]
-        del command, kwargs
-        return subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="NOTIFY_SUPPRESSED verbatus-test-sink\n", stderr=""
-        )
-
-    outcome = shell_notifier(runner=runner)("Spend warning: balance is low.")
-
-    assert outcome.attempted
-    assert not outcome.delivered
-    assert outcome.suppressed
-    assert outcome.detail == "NOTIFY_SUPPRESSED verbatus-test-sink"
-    assert outcome.line() == "Phone notification: suppressed (test sink)."
-    assert "sent" not in outcome.line()
-
-
-def test_pod_shell_notifier_still_reports_a_real_success_as_delivered() -> None:
-    """The counterfactual: exit 0 without the marker must not become suppressed."""
-
-    for stdout in ("", "\n", "some unrelated chatter\n"):
-
-        def runner(command, _stdout=stdout, **kwargs):  # type: ignore[no-untyped-def]
-            del command, kwargs
-            return subprocess.CompletedProcess(args=[], returncode=0, stdout=_stdout, stderr="")
-
-        outcome = shell_notifier(runner=runner)("Spend warning: balance is low.")
-
-        assert outcome == NotifyOutcome(True, True, "delivered")
-        assert not outcome.suppressed
-        assert outcome.line() == "Phone notification: sent."
-
-
-def test_the_marker_word_the_pod_bridge_reads_is_the_one_the_script_prints() -> None:
-    """Two languages, neither able to import the other, one typo apart from a
-    silent return to "sent." for a notification that never left the machine."""
-
-    source = NOTIFY_SCRIPT.read_text(encoding="utf-8")
-    assert f"printf '{NOTIFY_SUPPRESSED_MARKER} %s\\n' \"$topic\"" in source
-
-
-def test_pod_shell_notifier_reports_a_timeout_and_a_refused_message_honestly() -> None:
-    def timing_out(command, **kwargs):  # type: ignore[no-untyped-def]
-        del command
-        raise subprocess.TimeoutExpired(cmd="sh", timeout=kwargs["timeout"])
-
-    timed_out = shell_notifier(runner=timing_out)("Spend warning: balance is low.")
-    assert timed_out == NotifyOutcome(
-        True, False, "the notification command did not answer within 10 seconds"
-    )
-
-    def unreachable(command, **kwargs):  # type: ignore[no-untyped-def]
-        del command, kwargs
-        raise AssertionError("a malformed message must never reach the script")
-
-    refused = shell_notifier(runner=unreachable)("two\nlines")
-    assert refused == NotifyOutcome(False, False, "the message was not one non-empty line")
 
 
 def test_the_pod_cli_does_not_page_a_phone_unless_asked() -> None:
@@ -3586,28 +3485,16 @@ def test_report_path_binding_also_binds_a_nested_equals_form_report_path() -> No
 
 
 def test_report_path_binding_leaves_a_nested_command_with_no_report_path_alone() -> None:
-    """A nested argv that never reads a report path (the library-module
-    placeholder ``request()`` uses below) is returned unchanged rather than
-    having a path invented for it."""
+    """A nested argv that never reads a report path (the no-op placeholder
+    ``request()`` uses) is returned unchanged rather than having a path
+    invented for it."""
 
     token = "a" * 32
-    command = (
-        "python",
-        "-m",
-        "operations.pod.pod_timer",
-        "--timer-factory",
-        "operations.pod.provider_runpod:timer_context_from_environment",
-        "--bootstrap-command-json",
-        json.dumps(["python", "-m", "operations.pod.bootstrap"]),
-        "--report-path",
-        "/workspace/private/pod-runtime-report.json",
-    )
+    command = timer_start_command("/workspace/private/pod-runtime-report.json")
 
     bound = _bind_report_path_to_launch(command, token)
 
-    assert bound[bound.index("--bootstrap-command-json") + 1] == json.dumps(
-        ["python", "-m", "operations.pod.bootstrap"]
-    )
+    assert bound[bound.index("--bootstrap-command-json") + 1] == NO_OP_BOOTSTRAP
 
 
 def test_an_altered_lease_is_refused_rather_than_acted_on(tmp_path: Path) -> None:
@@ -4353,7 +4240,7 @@ def test_pod_timer_requires_bootstrap_and_persists_a_red_bootstrap_close_report(
     report_path = tmp_path / "pod-report.json"
     result = run_with_bootstrap(
         TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         interval_seconds=1,
@@ -4392,7 +4279,7 @@ def test_a_pre_delete_breadcrumb_says_a_close_was_attempted_from_inside_the_pod(
     report_path = tmp_path / "pod-report.json"
     run_with_bootstrap(
         TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         interval_seconds=1,
@@ -4531,7 +4418,7 @@ def test_a_failed_breadcrumb_is_named_in_the_durable_report_the_close_files(
 
     run_with_bootstrap(
         context,
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         interval_seconds=1,
@@ -4562,7 +4449,7 @@ def test_an_ordinary_close_leaves_no_breadcrumb_failure_field_at_all(tmp_path: P
 
     run_with_bootstrap(
         context,
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         interval_seconds=1,
@@ -4634,17 +4521,7 @@ def test_credential_shaped_metadata_is_refused_by_bare_key_and_token_markers(fie
             image="registry.example/verbatus@sha256:" + "a" * 64,
             volume_id="test-volume",
             volume_mount_path="/workspace/private",
-            docker_start_cmd=(
-                "python",
-                "-m",
-                "operations.pod.pod_timer",
-                "--timer-factory",
-                "operations.pod.provider_runpod:timer_context_from_environment",
-                "--bootstrap-command-json",
-                '["python","-m","operations.pod.bootstrap"]',
-                "--report-path",
-                "/workspace/private/pod-runtime-report.json",
-            ),
+            docker_start_cmd=timer_start_command("/workspace/private/pod-runtime-report.json"),
             hard_deadline=clock.now() + timedelta(seconds=5),
             repository_commit="b" * 40,
             metadata={field: "should-never-be-accepted"},
@@ -5044,7 +4921,7 @@ def test_pod_timer_bootstrap_failed_to_start_records_its_own_reason_not_a_write_
     ):
         run_with_bootstrap(
             TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-            bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+            bootstrap_command_json=NO_OP_BOOTSTRAP,
             report_path=report_path,
             popen=failing_popen,  # type: ignore[arg-type]
         )
@@ -5075,7 +4952,7 @@ def test_pod_timer_report_write_failure_immediately_closes_and_never_returns_gre
     with pytest.raises(RuntimeError, match="immediate close result is verified, never green"):
         run_with_bootstrap(
             TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-            bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+            bootstrap_command_json=NO_OP_BOOTSTRAP,
             report_path=blocked_parent / "report.json",
             popen=lambda argv: RunningChild(),  # type: ignore[arg-type]
         )
@@ -5148,7 +5025,7 @@ def test_pod_timer_closes_when_bootstrap_exits_early_to_avoid_idle_spend(tmp_pat
     report_path = tmp_path / "early-exit-report.json"
     result = run_with_bootstrap(
         TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         popen=lambda argv: CompletedChild(),  # type: ignore[arg-type]
     )
@@ -6909,7 +6786,7 @@ def test_pod_timer_expiry_with_a_running_child_closes_verified(tmp_path: Path) -
     report_path = tmp_path / "expiry-report.json"
     result = run_with_bootstrap(
         TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         popen=lambda argv: RunningChild(),  # type: ignore[arg-type]
@@ -6940,7 +6817,7 @@ def test_pod_timer_reattempts_a_red_close_a_bounded_number_of_times(tmp_path: Pa
     report_path = tmp_path / "red-report.json"
     result = run_with_bootstrap(
         TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         popen=lambda argv: RunningChild(),  # type: ignore[arg-type]
@@ -7544,7 +7421,7 @@ def test_a_red_bootstrap_close_report_carries_the_same_identity(tmp_path: Path) 
     report_path = tmp_path / "ack-bootstrap-failed-report.json"
     run_with_bootstrap(
         context,
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         interval_seconds=1,
@@ -7574,7 +7451,7 @@ def test_a_completed_early_close_report_carries_the_same_identity(tmp_path: Path
     report_path = tmp_path / "ack-completed-early-report.json"
     run_with_bootstrap(
         context,
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         popen=lambda argv: CompletedChild(),  # type: ignore[arg-type]
     )
@@ -7602,7 +7479,7 @@ def test_the_final_hard_deadline_expiry_report_carries_the_same_identity(tmp_pat
     report_path = tmp_path / "ack-expiry-report.json"
     result = run_with_bootstrap(
         context,
-        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
         report_path=report_path,
         sleeper=clock.sleep,
         popen=lambda argv: RunningChild(),  # type: ignore[arg-type]
@@ -7788,16 +7665,8 @@ def test_a_pending_create_lease_report_cannot_prove_a_pod(tmp_path: Path) -> Non
         image="registry.example/verbatus@sha256:" + "a" * 64,
         volume_id="test-volume",
         volume_mount_path="/workspace/private",
-        docker_start_cmd=(
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "operations.pod.provider_runpod:timer_context_from_environment",
-            "--bootstrap-command-json",
-            '["python","-m","operations.pod.bootstrap"]',
-            "--report-path",
-            f"/workspace/private/pod-runtime-report-{launch_token}.json",
+        docker_start_cmd=timer_start_command(
+            f"/workspace/private/pod-runtime-report-{launch_token}.json"
         ),
         hard_deadline=hard_deadline,
         repository_commit="b" * 40,
@@ -8043,7 +7912,7 @@ def _stub_balance_notifications(monkeypatch: pytest.MonkeyPatch) -> list[dict[st
     ``set_balance_notify`` -- every account-balance observation the launch
     makes. A green create against ``FakeProvider`` observes the balance three
     times, so a test that stubs only ``notify_launch`` still reaches
-    ``notify_hooks.notify_balance``, whose ``default_runner`` is the real
+    ``notify_hooks.notify_balance``, whose default runner is the real
     ``subprocess.run`` on the real ``operations/notify/notify.sh``.
 
     That is not hypothetical. Three tests here did exactly that, and the first

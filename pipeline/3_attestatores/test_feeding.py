@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 import time
@@ -39,14 +38,7 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, writing_directory
 from common.native_witness import CHURRO_MAX_RESPONSE_BYTES, validate_vendor_identity
 from common.runtree.store import BLOBS_DIR
-
-
-def _load_attestatores():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("attestatores_churro_capture", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from conftest import load_stage
 
 
 def _ref(path: str, digest: str = "a" * 64) -> dict[str, str]:
@@ -449,7 +441,7 @@ def test_an_unparseable_capture_is_still_inspected_for_repetition_on_its_raw_byt
 
 
 def test_churro_page_capture_is_full_page_xml_and_surfaces_transport_truncation():
-    attestatores = _load_attestatores()
+    attestatores = load_stage("3_attestatores")
     tree = _Tree()
     context = SimpleNamespace(
         tree=tree,
@@ -486,7 +478,7 @@ def test_churro_page_capture_is_full_page_xml_and_surfaces_transport_truncation(
 
 
 def test_churro_page_capture_keeps_repetition_finding_after_raw_capture(monkeypatch):
-    attestatores = _load_attestatores()
+    attestatores = load_stage("3_attestatores")
     tree = _Tree()
     raw = (
         "<HistoricalDocument><Page><Body><Line>complete captured text</Line>"
@@ -538,7 +530,7 @@ def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordabl
     reading-order text the paper-era harness itself expected, and throwing a
     page of ink away over an unclosed tag is the loss goal 2 refuses.
     """
-    attestatores = _load_attestatores()
+    attestatores = load_stage("3_attestatores")
     tree = _Tree()
     raw = "<HistoricalDocument><Page><Body><Line>unterminated"
     context = SimpleNamespace(
@@ -571,7 +563,7 @@ def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordabl
 
 
 def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
-    attestatores = _load_attestatores()
+    attestatores = load_stage("3_attestatores")
 
     def _capture(raw: str, stop: str):
         context = SimpleNamespace(
@@ -619,7 +611,7 @@ def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
 
 
 def test_a_declared_response_no_page_chair_could_be_asked_for_is_refused():
-    attestatores = _load_attestatores()
+    attestatores = load_stage("3_attestatores")
 
     def _context(chair: str, page_ordinal: int, chairs: dict):
         return SimpleNamespace(
@@ -671,7 +663,7 @@ def test_a_declared_response_no_page_chair_could_be_asked_for_is_refused():
 
 
 def test_churro_declaration_preflight_allows_one_default_overridden_by_one_scenario_row():
-    attestatores = _load_attestatores()
+    attestatores = load_stage("3_attestatores")
     chair = _chair("attestator_1")
     rows = [
         {
@@ -710,7 +702,7 @@ def test_churro_declaration_preflight_allows_one_default_overridden_by_one_scena
 def test_churro_declaration_preflight_names_malformed_transport_facts_even_for_an_absent_chair(
     mutate, message
 ):
-    attestatores = _load_attestatores()
+    attestatores = load_stage("3_attestatores")
     row = {
         "page_ordinal": 1,
         "chair": "attestator_3",
@@ -730,7 +722,7 @@ def test_churro_declaration_preflight_names_malformed_transport_facts_even_for_a
 
 
 def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
-    attestatores = _load_attestatores()
+    attestatores = load_stage("3_attestatores")
     chair = _chair("attestator_1", adapter="not-churro.v1")
     context = SimpleNamespace(
         scenario="churro-native",
@@ -757,7 +749,7 @@ def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
 
 
 def test_one_scenarios_declared_response_is_not_another_scenarios_default():
-    attestatores = _load_attestatores()
+    attestatores = load_stage("3_attestatores")
     rows = [
         {
             "scenario": "churro-native",

@@ -49,8 +49,8 @@ script printed nothing at all on success, so a caller reading silence after a st
 earlier command in the same chain could not tell "delivered" from "hung" — one session
 read the silence as failure twice and sent the same `done` ping three times for one
 close. Before resending anything, read this line (or the topic's own delivery log), never
-the absence of output. The bridges are unaffected: they key on the exit code and on
-`NOTIFY_SUPPRESSED` on stdout, and this line never reaches that stream.
+the absence of output. `operations/notify/client.py` is unaffected: it keys on the exit
+code and on `NOTIFY_SUPPRESSED` on stdout, and this line never reaches that stream.
 
 ## The topic is a bearer secret
 
@@ -96,20 +96,21 @@ protects measure — several assert on delivered versus `NOT DELIVERED` — and 
 that constrains its subject is what GOVERNANCE 10 refuses. The swallowed message goes to
 stderr instead, so a leak stays visible without being fatal.
 
-**And exit 0 alone was a second lie.** Every Python bridge over this script —
-`operations/pod/notify_bridge.py`, `operations/pod/notify_hooks.py`,
-`operations/operator/notify_bridge.py` — mapped exit 0 to `delivered=True`, so under the
-sink each of them printed "Phone notification: sent." for a notification that never left
-the machine. The exit code still stays 0, for the reason above; the distinction is carried
-on **stdout**, which nothing else in this script writes to: one stable line,
+**And exit 0 alone was a second lie.** Python callers once mapped exit 0 to
+`delivered=True`, so under the sink they printed "Phone notification: sent." for a
+notification that never left the machine. The exit code still stays 0, for the reason
+above; the distinction is carried on **stdout**, which nothing else in this script writes
+to: one stable line,
 
     NOTIFY_SUPPRESSED verbatus-test-sink
 
-Each bridge reads that marker word and returns a third state — `attempted=True`,
-`delivered=False`, `suppressed=True` — whose printed line is "Phone notification:
-suppressed (test sink)." The bridges match the marker word and never the topic, which is
-normally a bearer secret; the topic is safe to print in that one line because control
-reaches it only when the topic is exactly the reserved public constant.
+Every Python caller goes through one client, `operations/notify/client.py`, which reads
+that marker word and returns a third state — `attempted=True`, `delivered=False`,
+`suppressed=True` — whose printed line is "Phone notification: suppressed (test sink)."
+The client matches the marker word and never the topic, which is normally a bearer
+secret; the topic is safe to print in that one line because control reaches it only when
+the topic is exactly the reserved public constant. `test_notify.py` runs the real script
+through the client to prove the two agree.
 
 The sink is a backstop, not the seam. A test that reaches this script at all is still a
 defect: inject a fake runner, or use the `silent` notifier.

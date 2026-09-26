@@ -1,12 +1,19 @@
 """Fixtures shared by tests that cross pipeline stage directories."""
 
+import ast
+import functools
 import hashlib
+import importlib.util
+import inspect
 import json
 import os
 import shutil
 import stat
+import sys
+import textwrap
 import tomllib
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -14,6 +21,75 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.stage import _stage_seal_payload, latest_attempt
 
 ROOT = Path(__file__).resolve().parent
+
+
+def load_stage(stage: str, module: str = "run", *, isolate_path: bool = False) -> ModuleType:
+    """A fresh copy of `pipeline/<stage>/<module>.py`, left out of `sys.modules`.
+
+    Stage folders are numbered, not packages, and every entry file is `run.py`,
+    so a bare import would bind whichever stage the import cache met first. The
+    module is registered only while it executes, because a `slots=True`
+    dataclass looks itself up there. `isolate_path` restores `sys.path`
+    afterwards, so later bare imports cannot resolve into the stage directory.
+    """
+    path = ROOT / "pipeline" / stage / f"{module}.py"
+    spec = importlib.util.spec_from_file_location(f"{stage}_{module}_under_test", path)
+    loaded = importlib.util.module_from_spec(spec)
+    original_path = list(sys.path)
+    sys.modules[spec.name] = loaded
+    try:
+        if isolate_path:
+            sys.path.insert(0, str(path.parent))
+        spec.loader.exec_module(loaded)
+    finally:
+        del sys.modules[spec.name]
+        if isolate_path:
+            sys.path[:] = original_path
+    return loaded
+
+
+def code_text(source: object) -> str:
+    """The code of a module, class, function or source string, without comments or docstrings.
+
+    Tests that read source must not be satisfied or broken by prose about it.
+    """
+    text = source if isinstance(source, str) else inspect.getsource(source)
+    tree = ast.parse(textwrap.dedent(text))
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (
+            body
+            and isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+    return ast.unparse(tree)
+
+
+@functools.cache
+def stage_programs() -> dict[str, str]:
+    """The orchestrator's own stage programs, by stage name, in flow order."""
+    programs = load_stage("orchestrator").STAGE_PROGRAMS
+    assert list(programs) == [
+        "door",
+        "exemplar",
+        "ink-map",
+        "designator",
+        "attestatores",
+        "perlector",
+        "recensor",
+        "archetypus",
+        "armarium",
+    ], "a stage was added to or dropped from the orchestrator's sequence"
+    return programs
+
+
+def programs_through(last: str) -> tuple[str, ...]:
+    """The stage programs from the Door through `last`, in flow order."""
+    names = list(stage_programs())
+    return tuple(stage_programs()[name] for name in names[: names.index(last) + 1])
 
 
 def tree_snapshot(root: Path) -> dict[str, str]:

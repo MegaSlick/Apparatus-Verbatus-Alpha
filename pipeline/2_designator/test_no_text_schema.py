@@ -12,15 +12,11 @@ import sys
 from pathlib import Path
 
 import pytest
-from _test_support import load_designator
 
 from common.contracts.errors import ContractError
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def _load_designator():
-    return load_designator("designator_no_text_schema_under_test")
 
 
 # --- the mechanical check, direct --------------------------------------------
@@ -30,20 +26,20 @@ def _load_designator():
     "forbidden_key", ["text", "reported", "transcription", "content", "reading"]
 )
 def test_a_forbidden_content_key_is_refused_at_the_top_level(forbidden_key):
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     with pytest.raises(ContractError, match="carries no text"):
         designator._refuse_text_fields({forbidden_key: "SYNTHETIC ACT ONE alpha beta gamma"})
 
 
 @pytest.mark.parametrize("forbidden_key", ["Text", "TRANSCRIPTION", "Chosen", "PIVOT"])
 def test_forbidden_keys_cannot_bypass_the_boundary_by_changing_case(forbidden_key):
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     with pytest.raises(ContractError, match="carries no text"):
         designator._refuse_text_fields({forbidden_key: "leaked"})
 
 
 def test_an_unknown_text_synonym_cannot_enter_the_closed_act_group_contract():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     payload = {
         "act_key": "a1",
         "declared_bounds": {"x": 1, "y": 2, "w": 3, "h": 4},
@@ -66,7 +62,7 @@ def test_an_unknown_text_synonym_cannot_enter_the_closed_act_group_contract():
     "forbidden_key", ["text", "reported", "transcription", "content", "reading"]
 )
 def test_a_forbidden_content_key_is_refused_at_any_depth(forbidden_key):
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     nested = {
         "continuation": {
             "detected_bounds": {"x": 1, "y": 2, "w": 3, "h": 4},
@@ -81,7 +77,7 @@ def test_a_forbidden_content_key_is_refused_at_any_depth(forbidden_key):
     "forbidden_key", ["text", "reported", "transcription", "content", "reading"]
 )
 def test_a_forbidden_content_key_is_refused_inside_a_list(forbidden_key):
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     nested = {
         "body_members": [{"bounds": {"x": 0, "y": 0, "w": 1, "h": 1}, forbidden_key: "leaked"}]
     }
@@ -91,7 +87,7 @@ def test_a_forbidden_content_key_is_refused_inside_a_list(forbidden_key):
 
 def test_geometry_and_rationale_fields_are_not_forbidden():
     """A code-generated rationale is not a transcription and must not be refused."""
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     payload = {
         "act_key": "a1",
         "declared_bounds": {"x": 20, "y": 20, "w": 160, "h": 80},
@@ -109,12 +105,7 @@ def test_geometry_and_rationale_fields_are_not_forbidden():
 
 def test_a_real_act_group_artifact_carries_no_forbidden_field(tmp_path):
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-    ):
+    for program in programs_through("designator"):
         result = subprocess.run(
             [
                 sys.executable,
@@ -135,7 +126,7 @@ def test_a_real_act_group_artifact_carries_no_forbidden_field(tmp_path):
     from common.contracts.stages import DESIGNATOR
     from common.runtree.store import RunTree
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     tree = RunTree(root, "r")
     act_groups = [
         tree.read_artifact(DESIGNATOR, "act-group", entry["artifact_id"])
@@ -150,15 +141,11 @@ def test_a_real_act_group_artifact_carries_no_forbidden_field(tmp_path):
 def test_deleting_the_check_lets_a_forged_text_field_publish_uninspected(tmp_path):
     """Proves the guard guards something: without it, a `text` field publishes
     cleanly, since nothing else in the schema forbids an extra key."""
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     from common.contracts.canonical import digest_of
 
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = subprocess.run(
             [
                 sys.executable,

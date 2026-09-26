@@ -32,7 +32,6 @@ which moves the pinned digests for a case the fixture does not otherwise need.
 """
 
 import copy
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +41,7 @@ import pytest
 from common.contracts.errors import FatalAccounting
 from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.runtree.store import RunTree
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline/orchestrator/run.py"
@@ -49,15 +49,6 @@ FIXTURE = "synthetic-two-page-v0"
 SCENARIO = "happy"
 PAGE_CHAIR = "attestator_1"
 ACT_CHAIR = "attestator_2"
-
-
-def _load_recensor():
-    spec = importlib.util.spec_from_file_location(
-        "recensor_comparability_under_test", ROOT / "pipeline/5_recensor/run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _orchestrate(run_root: Path, run_id: str):
@@ -86,7 +77,7 @@ def context_and_act(tmp_path):
     root = tmp_path / "runs"
     result = _orchestrate(root, "comparability")
     assert result.returncode == 0, result.stderr
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     args = recensor.stage_parser("comparability floor test").parse_args(
         [
             "--run-root",

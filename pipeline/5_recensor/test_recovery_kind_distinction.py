@@ -9,7 +9,6 @@ supposed to mean. `recovery_kind` on the request/review payload, and the
 per-kind budget in `recovery_state`, are that fix.
 """
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +21,7 @@ from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import DESIGNATOR, RECENSOR
 from common.recovery import FALLBACK_RECROP, PAGE_LEVEL_REREAD
 from common.runtree.store import RunTree
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -38,14 +38,6 @@ BUDGET = {
     "page_level_reread": 1,
     "allowed": 2,
 }
-
-
-def _load_module(relative_path: str, name: str):
-    path = ROOT / relative_path
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _invoke(root: Path, run_id: str, scenario: str, program: str) -> None:
@@ -68,15 +60,7 @@ def _invoke(root: Path, run_id: str, scenario: str, program: str) -> None:
 
 
 def _run_through_recensor(root: Path, run_id: str, scenario: str) -> None:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs_through("recensor"):
         _invoke(root, run_id, scenario, program)
 
 
@@ -211,7 +195,7 @@ def test_recovery_state_refuses_a_request_with_no_recognized_kind(tmp_path):
     default to whichever operation happens to run first."""
     from common.contracts.errors import FatalAccounting
 
-    recensor = _load_module("pipeline/5_recensor/run.py", "recensor_missing_kind_under_test")
+    recensor = load_stage("5_recensor")
     tree = _minimal_tree(tmp_path)
     _publish_recovery_request(tree, "act_1", {"recovery_kind": "not-a-real-kind"})
 
@@ -220,7 +204,7 @@ def test_recovery_state_refuses_a_request_with_no_recognized_kind(tmp_path):
 
 
 def test_recovery_state_accepts_both_real_kinds(tmp_path):
-    recensor = _load_module("pipeline/5_recensor/run.py", "recensor_both_kinds_under_test")
+    recensor = load_stage("5_recensor")
     tree = _minimal_tree(tmp_path)
     act_id = "act_1"
     perlectio_ref = {
@@ -319,15 +303,10 @@ def test_the_designator_refuses_to_answer_a_non_recrop_recovery_kind(tmp_path, m
     faked and everything upstream of it (a real seal, a real act) stays real.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-    ):
+    for program in programs_through("designator"):
         _invoke(root, "r", "review", program)
 
-    designator = _load_module("pipeline/2_designator/run.py", "designator_kind_refusal_under_test")
+    designator = load_stage("2_designator")
 
     from common.stage import open_context, stage_parser
 

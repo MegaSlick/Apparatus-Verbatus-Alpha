@@ -9,7 +9,6 @@ proposal and represents overlap and occlusion as review facts.
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 from typing import Any, Callable, Final, TypedDict
 
@@ -21,11 +20,12 @@ from common.chandra_custody import (  # noqa: F401  (re-export)
     read_retained_chandra_response,
     retain_chandra_response,
 )
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import digest_of
 from common.contracts.envelope import build_envelope, validate_envelope
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import DESIGNATOR
+from common.sealed_config import read_sealed_toml
 
 POLICY_SCHEMA: Final = "designator-geometry-policy.v1"
 RAW_PROPOSAL_SCHEMA: Final = "designator-raw-proposal.v1"
@@ -74,13 +74,12 @@ def _closed(value: object, fields: set[str], what: str) -> dict[str, Any]:
 def load_geometry_policy(path: str | Path = DEFAULT_POLICY_PATH) -> dict[str, Any]:
     """Load the sealed integer/toggle policy; unknown knobs fail closed."""
     try:
-        data = Path(path).read_bytes()
-        document = tomllib.loads(data.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        document, digest = read_sealed_toml(path, "geometry policy")
+    except ContractError as error:
         raise SchemaRefusal(f"geometry policy at {path} cannot be read: {error}") from error
     document = _closed(document, {"geometry"}, "geometry policy document")
     policy = _validate_geometry_policy(document["geometry"])
-    return {"config_sha256": digest_bytes(data), **policy}
+    return {"config_sha256": digest, **policy}
 
 
 def _validate_geometry_policy(value: object) -> dict[str, Any]:

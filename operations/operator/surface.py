@@ -32,7 +32,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final, Iterator, Protocol, Sequence
 
-from common.chairs.config import load_models_toml
+from common.chairs.config import load_models_toml, parse_models_config
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, validate_run_id
@@ -46,6 +46,7 @@ from common.runtree.store import (
     SERVING_LOGS_DIR,
     RunTree,
 )
+from common.sealed_config import read_sealed_toml
 from common.stage import load_fixture
 from common.witness_context import validate_witness_context_configuration
 from operations.pod.arming import ControllerArming, ControllerReadiness
@@ -76,7 +77,6 @@ from operations.pod.models import (
     require_billing_cutoff_margin_seconds,
     require_utc,
 )
-from operations.pod.notify_bridge import NotifyOutcome as PodNotifyOutcome
 from operations.pod.pod_run import DEFAULT_RUNS_DIRECTORY
 from operations.pod.preflight import (
     CacheMismatch,
@@ -342,18 +342,26 @@ class FixtureBootstrapActions:
         root = self.surface.workspace
         config_root = root / "config"
         shipped_config_root = Path(__file__).resolve().parents[2] / "config"
+        models_path = config_root / "models.toml"
+        models_raw, models_sha256 = read_sealed_toml(models_path, "models.toml")
         validation = validate_witness_context_configuration(
-            load_models_toml(config_root / "models.toml"),
+            parse_models_config(models_raw, source_path=models_path),
             config_root / "witness_context.toml",
             shipped_config_root=shipped_config_root,
         )
+        seals = {
+            "models_config": models_sha256,
+            "witness_context_config": validation.source_sha256,
+        }
+        for name, filename in (
+            ("serving_recipes_config", "serving_recipes.toml"),
+            ("placement_config", "pod_placement.toml"),
+        ):
+            seals[name] = read_sealed_toml(config_root / filename, filename)[1]
         return {
             "schema": CONFIGURATION_RECEIPT_SCHEMA,
             "bindings": {
-                name: {
-                    "path": str(config_root / filename),
-                    "sha256": sha256_file(config_root / filename),
-                }
+                name: {"path": str(config_root / filename), "sha256": seals[name]}
                 for name, filename in (
                     ("models_config", "models.toml"),
                     ("witness_context_config", "witness_context.toml"),
@@ -2748,15 +2756,17 @@ class OperatorSurface:
             )
         self.present(outcome.line())
 
-    def _notify_spend(self, message: str) -> PodNotifyOutcome:
+    def _notify_spend(self, message: str) -> notify_bridge.NotifyOutcome:
         """Adapt the event-aware notifier without letting failure gate spend."""
 
         one_line = " ".join(message.split()) or "no spend-warning detail recorded"
         try:
             outcome = self.notifier("milestone", one_line)
         except Exception as error:  # a broken notifier is not a spend gate
-            return PodNotifyOutcome(True, False, f"the notifier raised: {type(error).__name__}")
-        return PodNotifyOutcome(outcome.attempted, outcome.delivered, outcome.detail)
+            return notify_bridge.NotifyOutcome(
+                True, False, f"the notifier raised: {type(error).__name__}"
+            )
+        return outcome
 
     def _show_close(self, report: CloseReport, receipt: Path) -> None:
         self._present_captured_cost(report)

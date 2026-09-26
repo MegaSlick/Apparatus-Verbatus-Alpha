@@ -10,6 +10,7 @@ import pytest
 from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.sealed_config import parse_sealed_toml
 from operations.pod.test_bootstrap_main import PROVEN_TIER, _serving_workspace
 
 from .config import parse_serving_recipes
@@ -46,9 +47,9 @@ def _qualification_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict[str, o
     recipes_bytes = recipes_config.read_bytes()
     placement_bytes = ws.placement_config.read_bytes()
     config_inputs = {
-        "schema": "serving-config-inputs.v1",
-        "serving_recipes_sha256": digest_bytes(recipes_bytes),
-        "pod_placement_sha256": digest_bytes(placement_bytes),
+        "schema": "serving-config-inputs.v2",
+        "serving_recipes_sha256": parse_sealed_toml(recipes_bytes, "recipes")[1],
+        "pod_placement_sha256": parse_sealed_toml(placement_bytes, "placement")[1],
     }
     models = load_models_toml(ws.models_config)
     profile_rows = tomllib.loads(recipes_bytes.decode("utf-8"))["profiles"]
@@ -489,7 +490,9 @@ def test_qualification_refuses_partial_or_red_evidence(tmp_path: Path) -> None:
 
 def test_qualification_refuses_changed_source_or_artifact_bytes(tmp_path: Path) -> None:
     paths, wrapper = _qualification_fixture(tmp_path)
-    paths["placement"].write_bytes(paths["placement"].read_bytes() + b"\n")
+    paths["placement"].write_bytes(
+        paths["placement"].read_bytes().replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+    )
     with pytest.raises(QualificationRefusal, match="inputs do not match"):
         _qualify(paths)
 

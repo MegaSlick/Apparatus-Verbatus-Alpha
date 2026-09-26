@@ -15,6 +15,7 @@ from common.contracts.errors import ApprovalRefusal
 from common.contracts.stages import STAGES
 from common.runtree.store import RunTree
 from common.stage import ALWAYS_HELD_BOUNDARIES, RUN_MODES, held_advance_boundaries
+from conftest import code_text
 from operations.operator.errors import ErrorCode, OperatorError
 
 from . import advance, cli, review
@@ -171,7 +172,9 @@ def test_the_attestatores_holds_after_it_has_already_sealed_its_boundary() -> No
     # The end-of-run tally hold seals the boundary before it returns
     # EXIT_HELD, since a hold with no seal leaves no witnessed boundary for
     # the person-held advance to pass.
-    source = (ROOT / "pipeline" / "3_attestatores" / "run.py").read_text(encoding="utf-8")
+    source = code_text(
+        (ROOT / "pipeline" / "3_attestatores" / "run.py").read_text(encoding="utf-8")
+    )
     final_tally = source.rindex("Attestatores attempt tally UNKNOWN")
     sealed_at = source.index("context.seal_boundary()", final_tally)
     held_return = source.index("return EXIT_HELD", final_tally)

@@ -10,16 +10,15 @@ from __future__ import annotations
 import html
 import signal
 import threading
-import tomllib
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Final
 
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
+from common.sealed_config import read_sealed_toml
 
 DEFAULT_ALIGNMENT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "alignment.toml"
 
@@ -254,11 +253,7 @@ def bracket_marker_view(raw: str) -> dict[str, Any]:
 def load_alignment_limits(
     path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
 ) -> tuple[AlignmentLimits, str]:
-    try:
-        raw = Path(path).read_bytes()
-        record = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(f"alignment configuration at {path} could not be read") from error
+    record, digest = read_sealed_toml(path, "alignment configuration")
     if (
         set(record) != {"limits"}
         or not isinstance(record["limits"], dict)
@@ -276,7 +271,7 @@ def load_alignment_limits(
         for value in values.values()
     ):
         raise ContractError("alignment limits must be positive integers")
-    return AlignmentLimits(**values), digest_bytes(raw)
+    return AlignmentLimits(**values), digest
 
 
 def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) -> dict[str, Any]:

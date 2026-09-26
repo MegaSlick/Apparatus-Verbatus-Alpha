@@ -10,23 +10,12 @@ gap) and its success path (a forged review that does carry that evidence) live
 in `pipeline/orchestrator/test_orchestrator_acceptance.py`.
 """
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
 from common.contracts.errors import SchemaRefusal
+from conftest import load_stage
 
-
-def _load_archetypus():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("archetypus_run_under_test_status", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-archetypus = _load_archetypus()
+archetypus = load_stage("6_archetypus")
 
 REF = {"relative_path": "5_recensor/artifacts/review/art_0000000000000000.json", "sha256": "a" * 64}
 

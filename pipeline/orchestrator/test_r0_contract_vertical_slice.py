@@ -38,6 +38,7 @@ from common.stage import (
     load_fixture,
     run_config_bindings,
 )
+from conftest import programs_through
 from conftest import rebind_stage_seal_artifact as _rebind_stage_seal
 from conftest import rewitness_stage_boundary as _rewitness_stage_boundary
 
@@ -597,13 +598,7 @@ def test_perlector_consumes_the_page_testimonium_named_by_an_act_attachment(
     existed.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-    ):
+    for program in programs_through("attestatores"):
         result = invoke_stage(root, "page-custody", "happy", program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -634,13 +629,7 @@ def test_perlector_consumes_the_page_testimonium_named_by_an_act_attachment(
 
 
 def _through_attestatores(root: Path, run_id: str, scenario: str = "happy") -> RunTree:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-    ):
+    for program in programs_through("attestatores"):
         result = invoke_stage(root, run_id, scenario, program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     return RunTree(root, run_id)

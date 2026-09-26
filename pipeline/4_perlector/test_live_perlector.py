@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import ast
 import copy
-import importlib.util
 import json
 import shutil
 import subprocess
@@ -40,7 +39,9 @@ from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.decoding import load_decoding_policy
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
+from common.sealed_config import read_sealed_toml
 from common.stage import StageContext
+from conftest import load_stage, programs_through
 from operations.serving.client import ChairClient, ServingModeRefusal
 from operations.serving.config import (
     ServingConfigInputs,
@@ -63,13 +64,7 @@ from operations.serving.manager import ServingManager, StageContextReceiptPublis
 from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
 ROOT = Path(__file__).resolve().parents[2]
-CHAIN_THROUGH_ATTESTATORES = (
-    "pipeline/1_exemplar/door.py",
-    "pipeline/1_exemplar/run.py",
-    "pipeline/1_ink_map/run.py",
-    "pipeline/2_designator/run.py",
-    "pipeline/3_attestatores/run.py",
-)
+CHAIN_THROUGH_ATTESTATORES = programs_through("attestatores")
 TIER = "generic-48gb"
 SERVED_MODEL_ID = "perlector-under-test"
 # Long enough that `truncation.is_length_suspicious` never fires on this
@@ -81,17 +76,7 @@ SERVED_MODEL_ID = "perlector-under-test"
 READING = "SYNTHETIC LIVE READING alpha beta gamma delta epsilon zeta eta theta iota kappa"
 
 
-def _perlector():
-    spec = importlib.util.spec_from_file_location(
-        "live_perlector_under_test", ROOT / "pipeline" / "4_perlector" / "run.py"
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-perlector = _perlector()
+perlector = load_stage("4_perlector")
 
 
 def _perlector_identity():
@@ -423,9 +408,9 @@ def _mode_arguments(catalogue: Path, tier: str | None):
     placement = ROOT / "config" / "pod_placement.toml"
     context = SimpleNamespace(
         serving_config_inputs={
-            "schema": "serving-config-inputs.v1",
-            "serving_recipes_sha256": digest_bytes(Path(catalogue).read_bytes()),
-            "pod_placement_sha256": digest_bytes(placement.read_bytes()),
+            "schema": "serving-config-inputs.v2",
+            "serving_recipes_sha256": read_sealed_toml(catalogue, "recipes")[1],
+            "pod_placement_sha256": read_sealed_toml(placement, "placement")[1],
         }
     )
     args = SimpleNamespace(serving_recipes_config=str(catalogue), placement_tier=tier)
@@ -465,7 +450,9 @@ def test_a_catalogue_that_is_not_the_sealed_one_is_refused(chained_run, tmp_path
     """
     _root, catalogue = chained_run
     substitute = tmp_path / "substituted.toml"
-    substitute.write_bytes(Path(catalogue).read_bytes() + b"\n# a byte that moved\n")
+    moved = Path(catalogue).read_bytes().replace(b"offline walking-skeleton", b"moved", 1)
+    assert moved != Path(catalogue).read_bytes()
+    substitute.write_bytes(moved)
     context, args = _mode_arguments(catalogue, TIER)
     args.serving_recipes_config = str(substitute)
     with pytest.raises(perlector.ContractError, match="not the catalogue this run sealed"):

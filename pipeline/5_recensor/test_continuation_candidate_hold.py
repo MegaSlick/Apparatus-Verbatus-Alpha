@@ -6,11 +6,12 @@ a decision for review; it holds both acts so neither is delivered as a whole
 act, and the export says partial.
 """
 
-import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
+
+from conftest import load_stage
 
 PIPELINE = Path(__file__).resolve().parents[1]
 for directory in (PIPELINE, PIPELINE / "2_designator"):
@@ -65,15 +66,7 @@ def test_both_acts_are_read_then_held_and_the_export_is_partial(tmp_path):
     assert export["payload"]["aggregate"]["status"] == "partial"
 
 
-def _load_recensor():
-    path = PIPELINE / "5_recensor" / "run.py"
-    spec = importlib.util.spec_from_file_location("recensor_candidate_refs_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-recensor = _load_recensor()
+recensor = load_stage("5_recensor")
 
 
 class _Context:

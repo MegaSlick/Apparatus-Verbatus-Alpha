@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
@@ -35,49 +34,10 @@ from common.native_witness import (
     validate_presented_page_binding,
 )
 from common.runtree.store import RunTree
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE = Path(__file__).resolve().parent
-
-
-def _load_stage_module(name: str):
-    """Load a stage-local module under a unique name.
-
-    A bare `import run` (or `import feeding`) answers from `sys.modules` first,
-    so a module cached by another stage can win regardless of `sys.path` order.
-    Unique spec names keep this test bound to the Attestatores file it names.
-    """
-    spec = importlib.util.spec_from_file_location(f"attestatores_{name}", STAGE / f"{name}.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_adapter_registry():
-    """`witness_adapters.py`, loaded the way its own suite loads it.
-
-    Its `RunnableAdapter` is a `slots=True` dataclass, and building one of those
-    re-creates the class and reaches for `sys.modules[cls.__module__]` to rebind
-    the name. Under `_load_stage_module`'s spec name that entry does not exist,
-    so the import fails inside `dataclasses` rather than anywhere this module
-    could name -- hence the registration around `exec_module`, and the stage
-    directory on the path so its bare sibling imports resolve.
-    """
-    spec = importlib.util.spec_from_file_location(
-        "attestatores_witness_adapters_under_chandra_test", STAGE / "witness_adapters.py"
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    original_path = list(sys.path)
-    sys.path.insert(0, str(STAGE))
-    try:
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(spec.name, None)
-        sys.path[:] = original_path
-    return module
 
 
 def _presented():
@@ -97,7 +57,7 @@ def _presented():
 
 
 def test_chandra_quantizes_retained_float_boxes_by_its_declared_rule():
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     raw = (
         b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
         b'"blocks":[{"bbox":[20.25,20.5,180.0,100.1]}]}'
@@ -148,13 +108,13 @@ def test_fixture_run_retains_chandra_bytes_and_names_an_unverified_shape(tmp_pat
         assert digest_bytes(tree.read_bytes(raw["relative_path"])) == raw["sha256"]
         assert payload["provenance"]["resolved_identity"] is not None
         assert payload["adapter_metadata"] == {
-            "geometry_quantization": _load_stage_module("chandra").QUANTIZATION_RULE
+            "geometry_quantization": load_stage("3_attestatores", "chandra").QUANTIZATION_RULE
         }
         assert payload["observed"][0]["bounds_source"] == "native"
 
 
 def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path):
-    feeding = _load_stage_module("feeding")
+    feeding = load_stage("3_attestatores", "feeding")
 
     class Tree:
         def __init__(self):
@@ -181,7 +141,7 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
         "parser": "json",
         "outcome": "unverified-response-schema",
     }
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     assert chandra.parse_fixture_placeholder(
         b'{"schema":"fixture-chandra-response.v1","markdown":"text",'
         b'"blocks":[{"bbox":[0,0,"bad",1]}]}'
@@ -189,7 +149,7 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
 
 
 def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_path):
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     context = SimpleNamespace(
         tree=RunTree(tmp_path / "runs", "r"),
@@ -221,7 +181,7 @@ def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_pa
 
 
 def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_path):
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     tree = RunTree(tmp_path / "runs", "r")
     raw = b'{"schema":"fixture-chandra-response.v1","markdown":"actual","blocks":[]}'
@@ -260,7 +220,7 @@ def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_pat
 
 
 def test_chandra_malformed_capabilities_fail_only_that_retained_attempt(tmp_path):
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     context = SimpleNamespace(
         tree=RunTree(tmp_path / "runs", "r"),
@@ -295,7 +255,7 @@ def test_chandra_malformed_capabilities_fail_only_that_retained_attempt(tmp_path
 
 
 def test_chandra_conflicting_text_fields_and_huge_coordinates_are_named():
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     assert chandra.parse_fixture_placeholder(
         b'{"schema":"fixture-chandra-response.v1","markdown":"one","text":"two","blocks":[]}'
     ) == {"parse_outcome": "conflicting-text-fields"}
@@ -311,7 +271,7 @@ def test_chandra_conflicting_text_fields_and_huge_coordinates_are_named():
 
 
 def test_chandra_bounds_native_json_before_decode_and_geometry_expansion(monkeypatch):
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
 
     monkeypatch.setattr(chandra, "MAX_RESPONSE_BYTES", 8)
     assert chandra.parse_fixture_placeholder(b"123456789") == {
@@ -341,7 +301,7 @@ def test_chandra_names_excessive_json_nesting_with_a_fixed_outcome(monkeypatch):
     directly here instead, so the name this adapter answers with is the thing
     under test.
     """
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
 
     def _exhausts_the_stack(_text):
         raise RecursionError("maximum recursion depth exceeded while decoding")
@@ -360,7 +320,7 @@ def test_chandra_never_lets_a_huge_json_integer_literal_escape():
     `json.JSONDecodeError` -- once a literal crosses it, and `_decode` must
     still land on its own named refusal rather than let that escape (G13).
     """
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     huge_integer = b"9" * 4301
     raw = (
         b'{"schema":"fixture-chandra-response.v1","markdown":"x","blocks":[],"extra":'
@@ -372,7 +332,7 @@ def test_chandra_never_lets_a_huge_json_integer_literal_escape():
 
 
 def test_chandra_never_lets_a_deep_document_or_a_non_byte_input_escape():
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     nested = (
         b'{"schema":"fixture-chandra-response.v1","markdown":"x","blocks":[],"extra":'
         + b"[" * 10_000
@@ -395,7 +355,7 @@ def test_chandra_never_lets_a_deep_document_or_a_non_byte_input_escape():
 
 
 def test_an_unverified_chandra_wire_shape_cannot_acquire_fixture_geometry():
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     raw = b'{"markdown":"plausible live response","blocks":[{"bbox":[0,0,100,100]}]}'
     assert chandra.parse_fixture_placeholder(raw) == {"parse_outcome": "unverified-response-schema"}
     assert chandra.observe(_presented(), raw) == []
@@ -411,7 +371,7 @@ def test_an_unverified_chandra_wire_shape_cannot_acquire_fixture_geometry():
 def test_fixture_raw_response_cannot_be_silently_discarded(
     tmp_path, adapter_name, raw_response, message
 ):
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     if adapter_name != resolved.witness_adapter:
         resolved = replace(resolved, witness_adapter=adapter_name)
@@ -456,7 +416,7 @@ def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary
     is the check, and it fires where the set widens rather than at whatever
     later reads the misfiled record.
     """
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
     monkeypatch.setattr(
         attestatores, "FIXTURE_NATIVE_RESPONSE_ADAPTERS", frozenset({"chandra.v1", "churro.v1"})
     )
@@ -491,7 +451,7 @@ def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary
 
 
 def test_empty_fixture_raw_response_cannot_be_silently_discarded(tmp_path):
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     context = SimpleNamespace(
         tree=RunTree(tmp_path / "runs", "r"),
@@ -577,7 +537,7 @@ def test_overlapping_native_blocks_are_both_retained_as_reported_geometry():
     or prefer between them -- the pipeline retains every reported box and lets
     the partition record hold the competing pairings (principle 1).
     """
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     raw = (
         b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
         b'"blocks":[{"bbox":[10,10,100,100]},{"bbox":[50,50,150,150]}]}'
@@ -609,7 +569,7 @@ def test_a_degenerate_native_box_is_named_and_derives_no_geometry(bbox):
     `parse` names the whole malformed response while `observe` emits no partial
     geometry that could look like a complete partition.
     """
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     raw = json.dumps(
         {"schema": "fixture-chandra-response.v1", "markdown": "one", "blocks": [{"bbox": bbox}]}
     ).encode("utf-8")
@@ -626,7 +586,7 @@ def test_one_degenerate_box_does_not_let_its_neighbours_pass_unnamed():
     whole in its blob either way, so nothing is lost; what changes is whether the
     derived layer claims to be the witness's full report.
     """
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     raw = json.dumps(
         {
             "schema": "fixture-chandra-response.v1",
@@ -647,7 +607,7 @@ def test_reading_order_is_the_response_order_and_no_other_key_reorders_it():
     positions the response gave, and the unread key survives verbatim in the
     retained blob without affecting this adapter's declared order.
     """
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     raw = json.dumps(
         {
             "schema": "fixture-chandra-response.v1",
@@ -675,8 +635,8 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
     list.  Clamping would instead hand a fallback crop retrospective witness
     coverage it never received.
     """
-    chandra = _load_stage_module("chandra")
-    attestatores = _load_stage_module("run")
+    chandra = load_stage("3_attestatores", "chandra")
+    attestatores = load_stage("3_attestatores")
     raw = b'{"schema":"fixture-chandra-response.v1","markdown":"two","blocks":[{"bbox":[10,10,100,100]},{"bbox":[0,0,200.2,260.0]}]}'
     raw_ref = {
         "relative_path": "3_attestatores/blobs/sha256/" + digest_bytes(raw),
@@ -768,8 +728,8 @@ def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot
     record. The page writer must dedupe by the finding's own identity --
     `(response_sha256, ordinal)` -- exactly as it already dedupes response refs.
     """
-    chandra = _load_stage_module("chandra")
-    attestatores = _load_stage_module("run")
+    chandra = load_stage("3_attestatores", "chandra")
+    attestatores = load_stage("3_attestatores")
     raw = b'{"schema":"fixture-chandra-response.v1","markdown":"two","blocks":[{"bbox":[10,10,100,100]},{"bbox":[0,0,200.2,260.0]}]}'
     raw_ref = {
         "relative_path": "3_attestatores/blobs/sha256/" + digest_bytes(raw),
@@ -856,8 +816,8 @@ def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot
     ],
 )
 def test_an_overshoot_cannot_hide_malformed_observation_facts(field, value, message):
-    chandra = _load_stage_module("chandra")
-    attestatores = _load_stage_module("run")
+    chandra = load_stage("3_attestatores", "chandra")
+    attestatores = load_stage("3_attestatores")
     observed = chandra.observe(
         _presented(),
         b'{"schema":"fixture-chandra-response.v1","markdown":"one","blocks":[{"bbox":[0,0,200.2,260.0]}]}',
@@ -873,7 +833,7 @@ def test_an_overshoot_cannot_hide_malformed_observation_facts(field, value, mess
 
 
 def test_an_in_page_observation_keeps_its_supported_text_span():
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
     observed = [
         {
             "ordinal": 0,
@@ -894,8 +854,8 @@ def test_an_in_page_observation_keeps_its_supported_text_span():
 
 
 def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record(tmp_path):
-    feeding = _load_stage_module("feeding")
-    attestatores = _load_stage_module("run")
+    feeding = load_stage("3_attestatores", "feeding")
+    attestatores = load_stage("3_attestatores")
 
     tree = RunTree(tmp_path / "runs", "r")
     raw = (
@@ -931,7 +891,9 @@ def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record
         unpresented_regions=[],
         outcome="read",
         raw_response_ref=retained["raw_response_ref"],
-        adapter_metadata={"geometry_quantization": _load_stage_module("chandra").QUANTIZATION_RULE},
+        adapter_metadata={
+            "geometry_quantization": load_stage("3_attestatores", "chandra").QUANTIZATION_RULE
+        },
     )
     assert payload["payload"] == {"parse_outcome": "malformed-block-geometry"}
     assert payload["raw_response_ref"] == retained["raw_response_ref"]
@@ -940,9 +902,9 @@ def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record
 
 
 def test_an_unknown_quantization_rule_is_refused_by_name(tmp_path):
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
 
-    chandra_rule = _load_stage_module("chandra").QUANTIZATION_RULE
+    chandra_rule = load_stage("3_attestatores", "chandra").QUANTIZATION_RULE
     attestatores.validate_adapter_metadata(
         {"adapter_metadata": {"geometry_quantization": chandra_rule}}
     )
@@ -953,8 +915,8 @@ def test_an_unknown_quantization_rule_is_refused_by_name(tmp_path):
 
 
 def test_quantization_metadata_belongs_to_the_recorded_adapter_and_blob():
-    attestatores = _load_stage_module("run")
-    chandra_rule = _load_stage_module("chandra").QUANTIZATION_RULE
+    attestatores = load_stage("3_attestatores")
+    chandra_rule = load_stage("3_attestatores", "chandra").QUANTIZATION_RULE
     payload = {
         "provenance": {"resolved_identity": {"witness_adapter": "churro.v1"}},
         "adapter_metadata": {"geometry_quantization": chandra_rule},
@@ -996,13 +958,13 @@ def test_quantization_metadata_belongs_to_the_recorded_adapter_and_blob():
     ),
 )
 def test_retained_response_reference_is_the_exact_lowercase_digest_path(reference):
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
     with pytest.raises(SchemaRefusal, match="Attestatores blob reference"):
         attestatores.validate_raw_response_ref(reference)
 
 
 def test_act_tally_rechecks_retained_response_bytes(tmp_path):
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
     tree = RunTree(tmp_path / "runs", "r")
     raw = b"retained response"
     digest, published = tree.put_blob(ATTESTATORES, raw)
@@ -1014,7 +976,7 @@ def test_act_tally_rechecks_retained_response_bytes(tmp_path):
 
 
 def test_resume_collision_compares_native_response_digest_not_only_parsed_text():
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
     sealed_ref = {
         "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
         "sha256": "a" * 64,
@@ -1107,7 +1069,7 @@ def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp
         for reference in refs:
             assert digest_bytes(tree.read_bytes(reference["relative_path"])) == reference["sha256"]
         assert payload["adapter_metadata"] == {
-            "geometry_quantization": _load_stage_module("chandra").QUANTIZATION_RULE
+            "geometry_quantization": load_stage("3_attestatores", "chandra").QUANTIZATION_RULE
         }
         assert payload["provenance"]["resolved_identity"] is not None
 
@@ -1209,7 +1171,7 @@ def test_a_page_witness_that_mixed_reported_geometry_with_an_echo_is_refused_by_
     indistinguishable from a complete one (principle 2), which is why the
     behaviour is pinned rather than left to the adapters' current manners.
     """
-    attestatores = _load_stage_module("run")
+    attestatores = load_stage("3_attestatores")
     echo = {
         "ordinal": 0,
         "bounds": {"x": 0, "y": 0, "w": 4, "h": 4},
@@ -1302,7 +1264,7 @@ def test_chandra_asks_a_served_chair_in_the_carried_vendor_prompt_bytes():
     the vendor commit, restated on the record every reading carries, so a
     Testimonium says which vendor pin its prompt came from (principle 6).
     """
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
 
     assert chandra.prompt() == {"user": chandra_layout.OCR_LAYOUT_PROMPT}
     assert chandra.vendor_identity() == {
@@ -1330,8 +1292,8 @@ def test_chandra_presents_a_page_at_the_size_its_own_vendor_rule_chooses():
     the sealed page and compares digests, so this asserts the recorded recipe is
     executable rather than merely well-formed (ARCHITECTURE invariant 3).
     """
-    chandra = _load_stage_module("chandra")
-    adapters = _load_adapter_registry()
+    chandra = load_stage("3_attestatores", "chandra")
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     page = _page_png(200, 260)
     context = SimpleNamespace(tree=_PageTree(page))
     source = _page_presentation(page, 200, 260)
@@ -1381,7 +1343,7 @@ def test_the_presented_page_is_the_vendors_own_convert_then_resize_order():
     crop, so a future edit that reverses them inside `present` fails here rather
     than only in a digest nobody can read.
     """
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     page = _page_png(200, 260)
     context = SimpleNamespace(tree=_PageTree(page))
 
@@ -1444,8 +1406,8 @@ def test_a_chandra_presentation_that_is_not_the_vendors_own_size_is_refused_at_r
     own rule picked it -- otherwise a record could carry the vendor's operation
     name over an image the vendor's code would never have produced.
     """
-    chandra = _load_stage_module("chandra")
-    adapters = _load_adapter_registry()
+    chandra = load_stage("3_attestatores", "chandra")
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     page = _page_png(200, 260)
     context = SimpleNamespace(tree=_PageTree(page))
     source = _page_presentation(page, 200, 260)
@@ -1465,8 +1427,8 @@ def test_a_chandra_act_view_keeps_the_crop_it_was_given_and_mints_no_resize():
     Designator crop. Minting the vendor's resize recipe over those pixels would
     record a preprocessing step that never ran, on an image nobody sent.
     """
-    chandra = _load_stage_module("chandra")
-    adapters = _load_adapter_registry()
+    chandra = load_stage("3_attestatores", "chandra")
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     page = _page_png(200, 260)
     context = SimpleNamespace(tree=_PageTree(page))
     region = {
@@ -1502,7 +1464,7 @@ def test_a_layout_answer_reads_as_page_text_with_one_box_per_placed_block():
     each observation's span indexes the page text `parse` returns for the same
     bytes -- checked against the closed observed contract rather than asserted.
     """
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     body = (
         '<div data-bbox="100 77 900 385" data-label="Text">ACT ONE alpha</div>\n'
         '<div data-bbox="100 462 900 846" data-label="Text">ACT TWO beta</div>'
@@ -1533,7 +1495,7 @@ def test_a_layout_answer_reads_as_page_text_with_one_box_per_placed_block():
 
 
 def test_a_layout_answer_carrying_page_geometry_is_refused_without_the_sealed_page_size():
-    chandra = _load_stage_module("chandra")
+    chandra = load_stage("3_attestatores", "chandra")
     body = b'<div data-bbox="100 77 900 385" data-label="Text">ACT ONE</div>'
 
     with pytest.raises(SchemaRefusal, match="pass page_size"):
@@ -1549,8 +1511,8 @@ def test_an_unplaced_block_keeps_its_text_and_its_finding_and_reports_no_box():
     finding on the retained capture, and no rectangle is published for it
     (principle 2 and principle 8).
     """
-    chandra = _load_stage_module("chandra")
-    feeding = _load_stage_module("feeding")
+    chandra = load_stage("3_attestatores", "chandra")
+    feeding = load_stage("3_attestatores", "feeding")
     body = (
         '<div data-bbox="1_0 2 3 4" data-label="Text">unplaced but read</div>\n'
         '<div data-bbox="100 462 900 846" data-label="Text">ACT TWO beta</div>\n'
@@ -1608,8 +1570,8 @@ def test_a_degenerate_chandra_reading_is_a_finding_and_a_partial_stop_reason():
     of these bytes is `</div>` and the tail of the reading is the repeated
     phrase, and the finding names which view it looked at.
     """
-    chandra = _load_stage_module("chandra")
-    feeding = _load_stage_module("feeding")
+    chandra = load_stage("3_attestatores", "chandra")
+    feeding = load_stage("3_attestatores", "feeding")
     stuck = "the same clause repeated over and over " * 12
     body = f'<div data-bbox="100 100 900 900" data-label="Text">{stuck}</div>'.encode("utf-8")
     tree = _PageTree(_page_png(200, 260))
@@ -1635,8 +1597,8 @@ def test_a_degenerate_chandra_reading_is_a_finding_and_a_partial_stop_reason():
 
 
 def test_an_honest_chandra_reading_carries_no_repetition_finding():
-    chandra = _load_stage_module("chandra")
-    feeding = _load_stage_module("feeding")
+    chandra = load_stage("3_attestatores", "chandra")
+    feeding = load_stage("3_attestatores", "feeding")
     body = (
         b'<div data-bbox="100 100 900 400" data-label="Text">the first act, read plainly</div>'
         b'<div data-bbox="100 420 900 900" data-label="Text">the second, different act</div>'
@@ -1665,8 +1627,8 @@ def test_a_repeated_tail_under_an_unplaceable_shape_keeps_the_parse_outcome():
     `findings` either way, so nothing is lost by the ordering (principle 2).
     The raw bytes are what was inspected, because no parse produced a text.
     """
-    chandra = _load_stage_module("chandra")
-    feeding = _load_stage_module("feeding")
+    chandra = load_stage("3_attestatores", "chandra")
+    feeding = load_stage("3_attestatores", "feeding")
     body = ("nothing here is a layout block at all, over and over " * 8).encode("utf-8")
     tree = _PageTree(_page_png(200, 260))
 
@@ -1693,8 +1655,8 @@ def test_a_body_past_the_grammars_ceiling_says_the_scan_did_not_run():
     tail would spend exactly the memory the ceiling exists to refuse. The
     capture says the scan did not run instead of saying nothing.
     """
-    chandra = _load_stage_module("chandra")
-    feeding = _load_stage_module("feeding")
+    chandra = load_stage("3_attestatores", "chandra")
+    feeding = load_stage("3_attestatores", "feeding")
     body = b"x" * (chandra.MAX_RESPONSE_BYTES + 1)
     tree = _PageTree(_page_png(200, 260))
 
@@ -1723,8 +1685,8 @@ def test_the_placeholder_posture_is_scanned_for_repetition_too():
     the fixture's placeholder rows are read by a parser of this repository's own
     -- so a stuck placeholder is recorded stuck rather than silently clean.
     """
-    chandra = _load_stage_module("chandra")
-    feeding = _load_stage_module("feeding")
+    chandra = load_stage("3_attestatores", "chandra")
+    feeding = load_stage("3_attestatores", "feeding")
     stuck = "over and over and over again " * 12
     body = json.dumps(
         {"schema": chandra.FIXTURE_RESPONSE_SCHEMA, "markdown": stuck, "blocks": []}
@@ -1754,8 +1716,8 @@ def test_the_committed_fixture_placeholder_can_never_be_retained_from_a_served_c
     capture written under it could never be re-derived as the grammar the
     chair was actually asked in.
     """
-    chandra = _load_stage_module("chandra")
-    feeding = _load_stage_module("feeding")
+    chandra = load_stage("3_attestatores", "chandra")
+    feeding = load_stage("3_attestatores", "feeding")
     body = b'{"schema":"fixture-chandra-response.v1","markdown":"placeholder","blocks":[]}'
     tree = _PageTree(_page_png(200, 260))
 

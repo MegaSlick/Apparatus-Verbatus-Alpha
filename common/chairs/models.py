@@ -248,11 +248,11 @@ class ModelsConfig:
     def models_digest(self) -> str:
         """A canonical digest of the model configuration's run-shaping facts.
 
-        A convenience digest no run binding consumes. `config_digest` covers the
-        same ground by embedding `to_record()` itself, beside the fixture and the
-        scenario, because a digest that dropped those would let the same run id be
-        reopened under a different scenario; see
-        `common/stage.py::run_config_bindings`.
+        Sealed as `models` on real ingress, where later stages cannot recompute
+        `config_digest`. The fixture route binds `to_record()` inside
+        `config_digest` instead, beside the fixture and the scenario, because a
+        digest that dropped those would let the same run id be reopened under a
+        different scenario; see `common/stage.py::run_config_bindings`.
         """
 
         return digest_of(self.to_record())

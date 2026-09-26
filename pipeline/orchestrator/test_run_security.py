@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import importlib.util
 import os
 import subprocess
 from pathlib import Path
@@ -13,16 +12,10 @@ import pytest
 
 from common.contracts.errors import ContractError
 from common.contracts.outcomes import ArmariumCategory
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
-
-
-def _load_orchestrator():
-    spec = importlib.util.spec_from_file_location("orchestrator_run_security", ORCHESTRATOR)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _invoke_args(tmp_path: Path) -> argparse.Namespace:
@@ -70,7 +63,7 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
 
 
 def test_invoke_forwards_explicit_mechanics_qualification_to_stage(tmp_path, monkeypatch):
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     observed = {}
 
     def completed(command, **kwargs):
@@ -87,7 +80,7 @@ def test_invoke_forwards_explicit_mechanics_qualification_to_stage(tmp_path, mon
 
 def test_child_python_ignores_an_injected_pythonpath_sitecustomize(tmp_path, monkeypatch):
     """No environment module executes before a stage reaches its refusal boundary."""
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     marker = tmp_path / "sitecustomize-ran"
     (tmp_path / "sitecustomize.py").write_text(
         f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
@@ -102,7 +95,7 @@ def test_child_python_ignores_an_injected_pythonpath_sitecustomize(tmp_path, mon
 
 
 def test_invoke_inherits_streams_instead_of_buffering_unbounded_stage_output(tmp_path, monkeypatch):
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     observed = {}
 
     def completed(command, **kwargs):
@@ -119,7 +112,7 @@ def test_invoke_inherits_streams_instead_of_buffering_unbounded_stage_output(tmp
 
 def test_terminal_report_refuses_delivered_over_partial_aggregate():
     """A contradictory record never becomes a successful complete report."""
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     export = {
         "outcome": ArmariumCategory.DELIVERED.value,
         "payload": {"aggregate": {"status": "partial", "reasons": ["act remains held"]}},
@@ -131,7 +124,7 @@ def test_terminal_report_refuses_delivered_over_partial_aggregate():
 
 def test_terminal_report_turns_malformed_reasons_into_a_named_refusal():
     """Untrusted terminal bytes cannot replace the refusal with a TypeError traceback."""
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     export = {
         "outcome": ArmariumCategory.HELD_FOR_REVIEW.value,
         "payload": {"aggregate": {"status": "partial", "reasons": [None]}},
@@ -200,7 +193,7 @@ def test_the_stand_in_namespace_mirrors_the_argv_surface_it_claims_to():
 
 
 def test_an_interrupt_mid_write_leaves_the_journal_and_no_temporary(tmp_path, monkeypatch):
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     journal = tmp_path / "timing.json"
     journal.write_bytes(b"{}")
 

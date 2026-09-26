@@ -44,7 +44,7 @@ from common.runtree.store import (
     RunTree,
     _default_corpus_frame_membership,
 )
-from conftest import tree_snapshot
+from conftest import code_text, tree_snapshot
 
 PAGE_BYTES = b"synthetic page one"
 SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTES), "ordinal": 1}]
@@ -2051,7 +2051,7 @@ def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
     constructors `inventory_scope()` is derived from. A new writer that invents a
     path fails here even though no test calls it.
     """
-    source = inspect.getsource(runtree_store.RunTree)
+    source = code_text(runtree_store.RunTree)
     constructors = set(re.findall(r"self\._publish_bytes\(\s*self\.(\w+)\(", source))
     indirect = set(
         re.findall(r"(\w+)\s*=\s*self\.(?:artifact_path|manifest_path|index_path)\(", source)
@@ -2063,7 +2063,7 @@ def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
         "inventory_scope() is derived from artifact_path/blob_path/manifest_path/index_path/"
         "receipt_path and cannot name another"
     )
-    receipt_writer = inspect.getsource(runtree_store.RunTree.write_recensor_partition_receipt)
+    receipt_writer = code_text(runtree_store.RunTree.write_recensor_partition_receipt)
     assert (
         "recensor_partition_receipt_path" in receipt_writer and "_atomic_write" in receipt_writer
     ), (
@@ -2071,7 +2071,7 @@ def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
         "publication; a replace-in-place writer is invisible to the _publish_bytes scan above, "
         "so this is the only thing that keeps it from becoming a hidden unscoped write"
     )
-    index_writer = inspect.getsource(runtree_store.RunTree.write_index)
+    index_writer = code_text(runtree_store.RunTree.write_index)
     assert "index_path" in index_writer and "_atomic_write" in index_writer, (
         "the rewritable derived index must use its named path constructor and atomic "
         "publication; write_index is the third replace-in-place writer the _publish_bytes "

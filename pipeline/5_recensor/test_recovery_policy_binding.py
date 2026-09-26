@@ -22,7 +22,6 @@ orchestrator's dispatch, which is not a stage and proves it against the digests
 from __future__ import annotations
 
 import ast
-import importlib.util
 import shutil
 import subprocess
 import sys
@@ -35,19 +34,13 @@ from common.contracts.errors import ContractError
 from common.contracts.stages import RECENSOR
 from common.recovery import load_recovery_policy
 from common.runtree.store import RunTree
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_RECOVERY = ROOT / "config" / "recovery.toml"
 
 # The stages that must run before the Recensor has anything to review.
-BEFORE_RECENSOR = (
-    "pipeline/1_exemplar/door.py",
-    "pipeline/1_exemplar/run.py",
-    "pipeline/1_ink_map/run.py",
-    "pipeline/2_designator/run.py",
-    "pipeline/3_attestatores/run.py",
-    "pipeline/4_perlector/run.py",
-)
+BEFORE_RECENSOR = programs_through("perlector")
 
 
 def _invoke(program: str, root: Path, run_id: str, scenario: str, recovery: Path):
@@ -76,14 +69,6 @@ def _through_perlector(root: Path, run_id: str, scenario: str, recovery: Path) -
     for program in BEFORE_RECENSOR:
         result = _invoke(program, root, run_id, scenario, recovery)
         assert result.returncode == 0, f"{program}: {result.stderr}"
-
-
-def _load(name: str, relative: str):
-    path = ROOT / relative
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _spent_policy(text: str) -> str:
@@ -124,7 +109,7 @@ def test_a_policy_swapped_after_the_binding_check_never_reaches_a_published_revi
     sealed = load_recovery_policy(recovery_path)
     assert sealed["allowed"] == 2, "this test's premise is a run sealed with a spendable budget"
 
-    recensor = _load("recensor_recovery_binding_under_test", "pipeline/5_recensor/run.py")
+    recensor = load_stage("5_recensor")
     original = recovery_path.read_text(encoding="utf-8")
     bind = recensor.open_stage_context
 
@@ -272,7 +257,7 @@ def test_the_orchestrator_refuses_to_dispatch_recovery_under_an_unsealed_policy(
         _invoke("pipeline/5_recensor/run.py", root, "happy", "happy", recovery_path).returncode == 0
     )
 
-    orchestrator = _load("orchestrator_recovery_binding_under_test", "pipeline/orchestrator/run.py")
+    orchestrator = load_stage("orchestrator")
     args = SimpleNamespace(run_root=str(root), run_id="happy", recovery_config=str(recovery_path))
     assert orchestrator.drive_recovery(args, hard_failure_policy={}) is None
 
