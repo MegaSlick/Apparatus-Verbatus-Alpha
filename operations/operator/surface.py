@@ -2042,6 +2042,7 @@ class OperatorSurface:
         if result.state in {
             LaunchState.REFUSED_SHUTDOWN_NOT_READY,
             LaunchState.REFUSED_CONTROLLER_NOT_READY,
+            LaunchState.REFUSED_SPEND_LOCK_UNAVAILABLE,
             LaunchState.LEASE_FAILURE,
         }:
             return OperatorError(ErrorCode.SAFETY_CHECK_FAILED, detail=detail)

@@ -1599,6 +1599,14 @@ def test_unobservable_balance_has_its_own_three_part_operator_refusal(tmp_path: 
     assert receipt["state"] == LaunchState.REFUSED_BALANCE_UNOBSERVABLE.value
 
 
+def test_a_spend_lock_failure_is_not_reported_as_an_unobservable_balance(
+    tmp_path: Path,
+) -> None:
+    result = LaunchResult(LaunchState.REFUSED_SPEND_LOCK_UNAVAILABLE, detail="lock failed")
+
+    assert _surface(tmp_path)._launch_error(result).code is ErrorCode.SAFETY_CHECK_FAILED
+
+
 def test_balance_floor_has_its_own_three_part_operator_refusal(tmp_path: Path) -> None:
     surface = _surface(tmp_path)
     surface.provider.set_account_balance("50.00")
