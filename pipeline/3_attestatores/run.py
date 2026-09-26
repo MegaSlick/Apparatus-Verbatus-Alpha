@@ -119,6 +119,7 @@ from common.stage import (  # noqa: E402
 )
 from operations.serving.assembly import (  # noqa: E402
     bound_serving_recipes,
+    retain_chair_bytes,
     stage_chair_client,
 )
 from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
@@ -3818,12 +3819,6 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
     )
 
 
-def retained_blob_ref(context, data: bytes) -> dict[str, str]:
-    """Retain bytes in this stage's own content-addressed blob store."""
-    digest, published = context.tree.put_blob(ATTESTATORES, data)
-    return {"relative_path": published.relative_path, "sha256": digest}
-
-
 def attempt_from_live(live: live_witness.LiveAttempt) -> Attempt:
     """Convert one `LiveAttempt` into the `Attempt` every write path shares."""
     return Attempt(
@@ -4430,7 +4425,7 @@ def _chandra_application_refusal_attempt(
     reason = _CHANDRA_APPLICATION_REFUSAL_PREFIX + str(error)
     if attempt is not None:
         return attempt._replace(outcome="failed", reason=reason)
-    model_output_ref = retained_blob_ref(context, response.content.encode("utf-8"))
+    model_output_ref = retain_chair_bytes(context, response.content.encode("utf-8"))
     return Attempt(
         outcome="failed",
         native_payload=None,
@@ -4809,7 +4804,7 @@ def _publish_chandra_intent(
         }
         for digest in dispatch.request.image_sha256s
     ]
-    request_body_ref = retained_blob_ref(context, dispatch.body)
+    request_body_ref = retain_chair_bytes(context, dispatch.body)
     payload = {
         "schema": CHANDRA_INTENT_SCHEMA,
         "recipe": chandra_recipe_record(),

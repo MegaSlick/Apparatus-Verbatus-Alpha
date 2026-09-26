@@ -682,7 +682,7 @@ class WitnessWorld:
             manager=manager,
             identity=identity,
             tier=tier,
-            retain=lambda data: attestatores.retained_blob_ref(context, data),
+            retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=self.decoding_sha256,
             record_temperature=0,
             # Bare, not through a converter: `ChairClient.__enter__` normalizes
