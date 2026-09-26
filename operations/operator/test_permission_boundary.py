@@ -24,6 +24,7 @@ from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARMARIUM
 from common.runtree.store import RunTree
+from conftest import code_text
 from operations.operator import advance, advance_worker, cli, console, custody, review
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.review import ReviewProjection
@@ -2713,7 +2714,7 @@ def test_only_the_advance_module_may_reach_the_approval_builder_or_writer():
 
 def test_the_advance_module_names_no_approval_action_but_advance():
     """Statically: no other action word is even present to be selected."""
-    source = inspect.getsource(advance)
+    source = code_text(advance)
     assert advance.ADVANCE_ACTION == "advance"
     for other in ("exclusion", "salvage-promotion"):
         assert other not in source

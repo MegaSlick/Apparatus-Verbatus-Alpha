@@ -1,13 +1,16 @@
 """Fixtures shared by tests that cross pipeline stage directories."""
 
+import ast
 import functools
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import shutil
 import stat
 import sys
+import textwrap
 import tomllib
 from pathlib import Path
 from types import ModuleType
@@ -43,6 +46,26 @@ def load_stage(stage: str, module: str = "run", *, isolate_path: bool = False) -
         if isolate_path:
             sys.path[:] = original_path
     return loaded
+
+
+def code_text(source: object) -> str:
+    """The code of a module, class, function or source string, without comments or docstrings.
+
+    Tests that read source must not be satisfied or broken by prose about it.
+    """
+    text = source if isinstance(source, str) else inspect.getsource(source)
+    tree = ast.parse(textwrap.dedent(text))
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (
+            body
+            and isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+    return ast.unparse(tree)
 
 
 @functools.cache
