@@ -14,6 +14,7 @@ import os
 import secrets
 import stat
 import unicodedata
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -1705,14 +1706,9 @@ def _read_existing_at(directory_descriptor: int, name: str, maximum: int) -> byt
             after.st_ctime_ns,
         ):
             raise OSError(errno.EBUSY, "existing target changed while it was read")
-    except BaseException:
-        try:
+    finally:
+        with suppress(OSError):
             os.close(descriptor)
-        except OSError:
-            pass
-        raise
-    else:
-        os.close(descriptor)
     return data
 
 
@@ -1778,44 +1774,18 @@ def write_append_only(
             "existing name; the corpus must have one portable spelling per record",
         )
 
-        no_follow = getattr(os, "O_NOFOLLOW", None)
-        if no_follow is None:
-            raise SchemaRefusal("safe gold publication requires O_NOFOLLOW support")
-        temporary = ""
-        temporary_descriptor: int | None = None
-        for _attempt in range(100):
-            candidate = f".gold-{secrets.token_hex(16)}"
-            try:
-                temporary_descriptor = os.open(
-                    candidate,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow,
-                    0o600,
-                    dir_fd=directory_descriptor,
-                )
-            except FileExistsError:
-                continue
-            temporary = candidate
-            break
-        if temporary_descriptor is None:
-            raise SchemaRefusal(
-                f"the gold output directory {target.parent} could not allocate a unique "
-                "temporary name after 100 attempts"
-            )
+        temporary = f".gold-{secrets.token_hex(16)}"
+        temporary_descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_descriptor,
+        )
         try:
             with os.fdopen(temporary_descriptor, "wb") as stream:
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
-        except BaseException:
-            try:
-                os.unlink(temporary, dir_fd=directory_descriptor)
-            except OSError:
-                # A cleanup failure must not replace the write/refusal that caused
-                # this path. The unpredictable dot-file is not published evidence.
-                pass
-            raise
-
-        try:
             try:
                 # Both names are resolved relative to the directory inode the caller
                 # locked (or this function opened), never by rewalking its spelling.
@@ -1851,26 +1821,11 @@ def write_append_only(
                     ) from error
                 raise
             os.fsync(directory_descriptor)
-        except BaseException:
-            try:
+        finally:
+            with suppress(OSError):
                 os.unlink(temporary, dir_fd=directory_descriptor)
-            except OSError:
-                # Preserve the security refusal or publication failure. A cleanup
-                # error must not turn it into an unrelated generic exception.
-                pass
-            raise
-        else:
-            os.unlink(temporary, dir_fd=directory_descriptor)
-            os.fsync(directory_descriptor)
-    except BaseException:
+    finally:
         if owns_directory:
-            try:
+            with suppress(OSError):
                 os.close(directory_descriptor)
-            except OSError:
-                # As above, a close failure cannot mask a security refusal.
-                pass
-        raise
-    else:
-        if owns_directory:
-            os.close(directory_descriptor)
     return target
