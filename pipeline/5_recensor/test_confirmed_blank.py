@@ -289,39 +289,61 @@ def _name_every_act_as_candidate(named, context, proposed):
 
 
 _HOLD_CAUSES = {
-    "cross-capture-read-not-built": lambda mp: mp.setattr(
-        RECENSOR_RUN,
-        "cross_capture_hold_of",
-        lambda *_: RECENSOR_RUN.CROSS_CAPTURE_READ_NOT_BUILT,
-    ),
-    "continuation-shortfall": lambda mp: mp.setattr(
-        RECENSOR_RUN, "reconcile_continuation", lambda *_: True
-    ),
-    "flagged-page": lambda mp: _wrap(mp, "page_coverage_for", _flag_every_page),
-    "testimony-shortfall": lambda mp: _wrap(mp, "testimony_content_findings", _testimony_shortfall),
-    "cross-capture-occluded-everywhere": lambda mp: mp.setattr(
-        RECENSOR_RUN, "cross_capture_review_causes", lambda *_: (True, None)
-    ),
-    "cross-capture-unresolved": lambda mp: mp.setattr(
-        RECENSOR_RUN, "cross_capture_review_causes", lambda *_: (False, True)
-    ),
-    "declared-unreconciled": lambda mp: mp.setattr(
-        RECENSOR_RUN, "declared_unreconciled", lambda *_: True
-    ),
-    "continuation-candidate": lambda mp: _wrap(
-        mp, "continuation_candidate_refs", _name_every_act_as_candidate
-    ),
-    "observation-grant-spent": lambda mp: (
-        mp.setattr(
+    "cross-capture-read-not-built": (
+        lambda mp: mp.setattr(
             RECENSOR_RUN,
-            "unclaimed_ink_observations",
-            lambda *_, **__: [{"bounds": [0, 0, 1, 1]}],
+            "cross_capture_hold_of",
+            lambda *_: RECENSOR_RUN.CROSS_CAPTURE_READ_NOT_BUILT,
         ),
-        mp.setattr(RECENSOR_RUN, "observation_funded_pages", lambda *_: {1}),
+        "no read across a physical page's captures is built yet",
     ),
-    "recovery-budget-spent": lambda mp: (
-        mp.setattr(RECENSOR_RUN, "declared_recovery", lambda *_: True),
-        mp.setattr(RECENSOR_RUN, "recovery_kind_budget", lambda *_: 0),
+    "continuation-shortfall": (
+        lambda mp: mp.setattr(RECENSOR_RUN, "reconcile_continuation", lambda *_: True),
+        "blocked because the seal claims a continuation",
+    ),
+    "flagged-page": (
+        lambda mp: _wrap(mp, "page_coverage_for", _flag_every_page),
+        "blocked because page(s) [1] carry ink outside every region currently cut",
+    ),
+    "testimony-shortfall": (
+        lambda mp: _wrap(mp, "testimony_content_findings", _testimony_shortfall),
+        "testimony coverage is incomplete at the whole-page level",
+    ),
+    "cross-capture-occluded-everywhere": (
+        lambda mp: mp.setattr(RECENSOR_RUN, "cross_capture_review_causes", lambda *_: (True, None)),
+        "found occluded; recropping cannot reveal ink",
+    ),
+    "cross-capture-unresolved": (
+        lambda mp: mp.setattr(
+            RECENSOR_RUN, "cross_capture_review_causes", lambda *_: (False, True)
+        ),
+        "cross-capture visible-surface union does not yet reach",
+    ),
+    "declared-unreconciled": (
+        lambda mp: mp.setattr(RECENSOR_RUN, "declared_unreconciled", lambda *_: True),
+        "the act did not reconcile and needs a human",
+    ),
+    "continuation-candidate": (
+        lambda mp: _wrap(mp, "continuation_candidate_refs", _name_every_act_as_candidate),
+        "blocked because the Designator's geometry names this act in a continuation candidate",
+    ),
+    "observation-grant-spent": (
+        lambda mp: (
+            mp.setattr(
+                RECENSOR_RUN,
+                "unclaimed_ink_observations",
+                lambda *_, **__: [{"bounds": [0, 0, 1, 1]}],
+            ),
+            mp.setattr(RECENSOR_RUN, "observation_funded_pages", lambda *_: {1}),
+        ),
+        "blocked because Unit 9 still confirms ink",
+    ),
+    "recovery-budget-spent": (
+        lambda mp: (
+            mp.setattr(RECENSOR_RUN, "declared_recovery", lambda *_: True),
+            mp.setattr(RECENSOR_RUN, "recovery_kind_budget", lambda *_: 0),
+        ),
+        "blocked because fallback-recrops use 0 of their budget of 0",
     ),
 }
 
@@ -329,15 +351,41 @@ _HOLD_CAUSES = {
 @pytest.mark.parametrize("cause", sorted(_HOLD_CAUSES))
 def test_every_hold_cause_holds_a_corroborated_blank(tmp_path, monkeypatch, cause):
     """`confirmed-blank` is terminal and COMPLETED-class, so every cause that holds a read
-    act must also hold an otherwise unanimously corroborated `no-readable-text` act."""
+    act must also hold an otherwise unanimously corroborated `no-readable-text` act, and
+    the hold names that cause."""
     root = tmp_path / "runs"
     _run_through_perlector(root, "r", "confirmed-blank")
-    _HOLD_CAUSES[cause](monkeypatch)
+    inject, fragment = _HOLD_CAUSES[cause]
+    inject(monkeypatch)
 
     assert _run_recensor_in_process(monkeypatch, root) == 3
     review = _review_of(RunTree(root, "r"), "a1")
     assert review["outcome"] == "held-for-review"
     assert "blank_evidence" not in review["payload"]
+    reason = review["payload"]["reason"]
+    assert fragment in reason
+    if cause != "cross-capture-read-not-built":
+        assert reason.startswith(
+            "the latest reading is 'no-readable-text' (unresolved); accepting would "
+            "establish text that nobody successfully read; its corroboration is blocked because "
+        )
+
+
+@pytest.mark.parametrize(
+    ("used_total", "budget", "named"),
+    [
+        (
+            0,
+            {"allowed": 0, "absolute_cap": 3},
+            "recoveries use 0 of the act's pooled allowance of 0",
+        ),
+        (0, {"allowed": 2, "absolute_cap": 0}, "recoveries use 0 of the absolute cap of 0"),
+    ],
+)
+def test_a_recovery_hold_names_the_limit_that_refused_it(used_total, budget, named):
+    outcome, reason = RECENSOR_RUN.recovery_limit_hold(0, 1, used_total, budget)
+    assert outcome == "held-for-review"
+    assert reason.startswith(named)
 
 
 def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):

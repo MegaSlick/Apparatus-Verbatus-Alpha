@@ -1896,6 +1896,26 @@ def recovery_request_origin(*, declared: bool, outside_ink_requests: list) -> st
     )
 
 
+def recovery_limit_hold(
+    used_fallback: int, allowed_fallback: int, used_total: int, budget: dict
+) -> tuple[str, str] | None:
+    """The hold for a wanted recrop that a recovery limit refused, naming that limit."""
+    limits = (
+        ("fallback-recrops", used_fallback, "their budget", allowed_fallback),
+        ("recoveries", used_total, "the act's pooled allowance", budget["allowed"]),
+        ("recoveries", used_total, "the absolute cap", budget["absolute_cap"]),
+    )
+    for what, used, name, limit in limits:
+        if used >= limit:
+            return (
+                "held-for-review",
+                f"{what} use {used} of {name} of {limit}; a page-level reread is not a "
+                "substitute and remains unimplemented, so the act is held rather than "
+                "re-rolled because recovery recovers coverage and never quality",
+            )
+    return None
+
+
 def unresolved_observation_hold(
     outside_ink_requests: list,
     page_ordinal: int,
@@ -3689,13 +3709,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 findings_route,
                 observation_hold,
                 wants_recovery
-                and (
-                    "held-for-review",
-                    f"fallback-recrops use {used_fallback} of their budget of "
-                    f"{allowed_fallback}; a page-level reread is not a substitute and remains "
-                    "unimplemented, so the act is held rather than re-rolled because recovery "
-                    "recovers coverage and never quality",
-                ),
+                and recovery_limit_hold(used_fallback, allowed_fallback, used_total, budget),
             )
             if cause
         ]
@@ -3745,8 +3759,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 }
             else:
                 route_reason = (
-                    f"; its corroboration is blocked because {findings_route[1]}"
-                    if findings_route is not None
+                    f"; its corroboration is blocked because {hold_causes[0][1]}"
+                    if hold_causes
                     else ""
                 )
                 outcome, reason = (
