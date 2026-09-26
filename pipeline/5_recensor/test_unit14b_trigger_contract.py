@@ -651,12 +651,6 @@ def test_a_second_request_is_replaced_by_a_loud_hold_not_an_acceptance():
 
     source = RECENSOR.read_text(encoding="utf-8")
     assert source.count("observation_hold = unresolved_observation_hold(") == 1
-    assert (
-        source.count(
-            "elif observation_hold is not None:\n            outcome, reason = observation_hold"
-        )
-        == 1
-    ), "the live terminal route no longer turns the unresolved pointer into a loud hold"
 
 
 def _live_publication_gate(source: str | None = None):

@@ -17,7 +17,6 @@ nothing; the witnesses only corroborate or contradict that finding, and a single
 dissenting witness holds the act for a human rather than being outvoted.
 """
 
-import ast
 import subprocess
 import sys
 from pathlib import Path
@@ -203,21 +202,7 @@ def test_confirmed_blank_discloses_each_unavailable_ink_instrument(
             RECENSOR_RUN, "geometry_coverage_inputs", geometry_with_unavailable_conservation
         )
 
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            str(ROOT / "pipeline/5_recensor/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "confirmed-blank",
-        ],
-    )
-
-    assert RECENSOR_RUN.main() == 0
+    assert _run_recensor_in_process(monkeypatch, root) == 0
     review = _review_of(RunTree(root, "r"), "a1")
     payload = review["payload"]
     assert review["outcome"] == "confirmed-blank"
@@ -237,81 +222,168 @@ def test_confirmed_blank_discloses_each_unavailable_ink_instrument(
         assert payload["geometry_coverage"]["ink_measurable"] is False
 
 
-def _decision_chain_causes() -> list[str]:
-    """The cause variables the Recensor's act-outcome chain decides on, in order."""
-    module = ast.parse((ROOT / "pipeline" / "5_recensor" / "run.py").read_text(encoding="utf-8"))
-    main = next(
-        node
-        for node in ast.walk(module)
-        if isinstance(node, ast.FunctionDef) and node.name == "main"
+def _run_recensor_in_process(monkeypatch, root: Path) -> int:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline/5_recensor/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "confirmed-blank",
+        ],
     )
-    for node in ast.walk(main):
-        if not isinstance(node, ast.If):
-            continue
-        chain, cursor = [], node
-        while isinstance(cursor, ast.If):
-            chain.append(cursor)
-            cursor = (
-                cursor.orelse[0]
-                if len(cursor.orelse) == 1 and isinstance(cursor.orelse[0], ast.If)
-                else None
+    return RECENSOR_RUN.main()
+
+
+def _wrap(monkeypatch, name, change):
+    measured = getattr(RECENSOR_RUN, name)
+    monkeypatch.setattr(RECENSOR_RUN, name, lambda *args: change(measured(*args), *args))
+
+
+def _flag_every_page(coverage, *_):
+    return {**coverage, "flagged_pages": coverage["checked_pages"]}
+
+
+def _testimony_shortfall(findings, *_):
+    findings[1]["shortfall"] = True
+    findings[1]["by_chair"]["attestator_1"]["uncovered_non_whitespace"] = {
+        "ranges": [{"start": 0, "end": 1}],
+        "count": 1,
+    }
+    return findings
+
+
+def _name_every_act_as_candidate(named, context, proposed):
+    return {
+        act_id: [
+            context.artifact_ref(
+                RECENSOR_RUN.DESIGNATOR,
+                "region",
+                RECENSOR_RUN.artifacts_for(context, RECENSOR_RUN.DESIGNATOR, "region", act_id)[0][
+                    "artifact_id"
+                ],
             )
-        names = [
-            sorted({n.id for n in ast.walk(branch.test) if isinstance(n, ast.Name)})
-            for branch in chain
         ]
-        if any("observation_hold" in group for group in names) and len(chain) > 3:
-            return [", ".join(group) for group in names]
-    raise AssertionError("the act-outcome decision chain was not found in the Recensor's main()")
+        for act_id in proposed
+    }
 
 
-def test_the_blank_seal_consults_every_page_level_cause_the_chain_would_hold_on():
-    """`confirmed-blank` is COMPLETED-class and terminal, so it must outrank nothing.
+_HOLD_CAUSES = {
+    "cross-capture-read-not-built": (
+        lambda mp: mp.setattr(
+            RECENSOR_RUN,
+            "cross_capture_hold_of",
+            lambda *_: RECENSOR_RUN.CROSS_CAPTURE_READ_NOT_BUILT,
+        ),
+        "no read across a physical page's captures is built yet",
+    ),
+    "continuation-shortfall": (
+        lambda mp: mp.setattr(RECENSOR_RUN, "reconcile_continuation", lambda *_: True),
+        "blocked because the seal claims a continuation",
+    ),
+    "flagged-page": (
+        lambda mp: _wrap(mp, "page_coverage_for", _flag_every_page),
+        "blocked because page(s) [1] carry ink outside every region currently cut",
+    ),
+    "testimony-shortfall": (
+        lambda mp: _wrap(mp, "testimony_content_findings", _testimony_shortfall),
+        "testimony coverage is incomplete at the whole-page level",
+    ),
+    "cross-capture-occluded-everywhere": (
+        lambda mp: mp.setattr(RECENSOR_RUN, "cross_capture_review_causes", lambda *_: (True, None)),
+        "found occluded; recropping cannot reveal ink",
+    ),
+    "cross-capture-unresolved": (
+        lambda mp: mp.setattr(
+            RECENSOR_RUN, "cross_capture_review_causes", lambda *_: (False, True)
+        ),
+        "cross-capture visible-surface union does not yet reach",
+    ),
+    "declared-unreconciled": (
+        lambda mp: mp.setattr(RECENSOR_RUN, "declared_unreconciled", lambda *_: True),
+        "the act did not reconcile and needs a human",
+    ),
+    "continuation-candidate": (
+        lambda mp: _wrap(mp, "continuation_candidate_refs", _name_every_act_as_candidate),
+        "blocked because the Designator's geometry names this act in a continuation candidate",
+    ),
+    "observation-grant-spent": (
+        lambda mp: (
+            mp.setattr(
+                RECENSOR_RUN,
+                "unclaimed_ink_observations",
+                lambda *_, **__: [{"bounds": [0, 0, 1, 1]}],
+            ),
+            mp.setattr(RECENSOR_RUN, "observation_funded_pages", lambda *_: {1}),
+        ),
+        "blocked because Unit 9 still confirms ink",
+    ),
+    "recovery-budget-spent": (
+        lambda mp: (
+            mp.setattr(RECENSOR_RUN, "declared_recovery", lambda *_: True),
+            mp.setattr(RECENSOR_RUN, "recovery_kind_budget", lambda *_: 0),
+        ),
+        "blocked because fallback-recrops use 0 of their budget of 0",
+    ),
+}
 
-    The corroboration gate's own comment states the rule: a hold cause that
-    appears only in the chain below is a cause this seal silently overrides. The
-    rule was stated for three causes and then a fourth, `observation_hold`, was
-    added to the chain without being added to the gate -- so an act whose page
-    still carried ink Unit 9 measured outside every cut could be sealed complete,
-    provided the page's one recovery grant was already spent and the witnesses
-    corroborated the Perlector's absence. That is the missed act goal 2 puts
-    above every other failure, reached through a terminal COMPLETED outcome.
 
-    The chain order is asserted too, and deliberately: this is the second time a
-    cause has been added below the gate without reaching it. A fifth cause fails
-    here, naming the gate it has to be reasoned about, instead of silently
-    inheriting the same defect.
+@pytest.mark.parametrize("cause", sorted(_HOLD_CAUSES))
+def test_every_hold_cause_holds_a_corroborated_blank(tmp_path, monkeypatch, cause):
+    """`confirmed-blank` is terminal and COMPLETED-class, so every cause that holds a read
+    act must also hold an otherwise unanimously corroborated `no-readable-text` act, and
+    the hold names that cause."""
+    root = tmp_path / "runs"
+    _run_through_perlector(root, "r", "confirmed-blank")
+    inject, fragment = _HOLD_CAUSES[cause]
+    inject(monkeypatch)
 
-    `wants_recovery` is the one chain cause the gate does not consult, and that
-    is not an oversight this test should paper over: it is a request the stage
-    can still publish, not evidence it has already measured and cannot act on.
-    """
-    causes = _decision_chain_causes()
-    assert causes == [
-        "OutcomeClass, reading_class",
-        "isinstance, latest_payload, str",
-        "continuation_shortfall",
-        "flagged_pages",
-        "findings_route",
-        "observation_hold",
-        "wants_recovery",
-    ], causes
-
-    source = (ROOT / "pipeline" / "5_recensor" / "run.py").read_text(encoding="utf-8")
-    module = ast.parse(source)
-    gate = next(
-        node
-        for node in ast.walk(module)
-        if isinstance(node, ast.BoolOp)
-        and "no-readable-text" in ast.unparse(node)
-        and "corroborat" not in ast.unparse(node)
-    )
-    consulted = {node.id for node in ast.walk(gate) if isinstance(node, ast.Name)}
-    for cause in ("continuation_shortfall", "flagged_pages", "findings_route", "observation_hold"):
-        assert cause in consulted, (
-            f"the blank-seal corroboration gate does not consult {cause}, so a terminal "
-            "confirmed-blank can be sealed over evidence the chain below would have held on"
+    assert _run_recensor_in_process(monkeypatch, root) == 3
+    review = _review_of(RunTree(root, "r"), "a1")
+    assert review["outcome"] == "held-for-review"
+    assert "blank_evidence" not in review["payload"]
+    reason = review["payload"]["reason"]
+    assert fragment in reason
+    if cause != "cross-capture-read-not-built":
+        assert reason.startswith(
+            "the latest reading is 'no-readable-text' (unresolved); accepting would "
+            "establish text that nobody successfully read; its corroboration is blocked because "
         )
+
+
+def test_a_hold_does_not_skip_the_fatal_on_unrecorded_witness_evidence(tmp_path, monkeypatch):
+    root = tmp_path / "runs"
+    _run_through_perlector(root, "r", "confirmed-blank")
+    _HOLD_CAUSES["recovery-budget-spent"][0](monkeypatch)
+    _wrap(
+        monkeypatch,
+        "chair_read_evidence",
+        lambda evidence, *_: {**evidence, "attestator_2": {"regions": True, "receipt": False}},
+    )
+
+    with pytest.raises(FatalAccounting, match=r"attestator_2 has no serving receipt"):
+        _run_recensor_in_process(monkeypatch, root)
+
+
+@pytest.mark.parametrize(
+    ("used_total", "budget", "named"),
+    [
+        (
+            0,
+            {"allowed": 0, "absolute_cap": 3},
+            "recoveries use 0 of the act's pooled allowance of 0",
+        ),
+        (0, {"allowed": 2, "absolute_cap": 0}, "recoveries use 0 of the absolute cap of 0"),
+    ],
+)
+def test_a_recovery_hold_names_the_limit_that_refused_it(used_total, budget, named):
+    outcome, reason = RECENSOR_RUN.recovery_limit_hold(0, 1, used_total, budget)
+    assert outcome == "held-for-review"
+    assert reason.startswith(named)
 
 
 def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):
@@ -358,21 +430,7 @@ def test_no_readable_text_hold_names_the_testimony_shortfall_that_blocked_its_se
         return findings
 
     monkeypatch.setattr(RECENSOR_RUN, "testimony_content_findings", findings_with_shortfall)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            str(ROOT / "pipeline/5_recensor/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "confirmed-blank",
-        ],
-    )
-
-    assert RECENSOR_RUN.main() == 3
+    assert _run_recensor_in_process(monkeypatch, root) == 3
     review = _review_of(RunTree(root, "r"), "a1")
     reason = review["payload"]["reason"]
     assert review["outcome"] == "held-for-review"

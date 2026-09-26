@@ -11,11 +11,7 @@ one short line, three times in a lease's life --
 - each balance observation: the balance and the spend rate the observer
   reported
 
--- exactly as `operations/pod/notify_bridge.py` already does for spend-floor
-warnings, and reusing that module's `NotifyOutcome` shape so a caller reading
-either seam's result reads the same fields. `notify_bridge.py` is left
-untouched: it is a narrower seam (one warning kind, gated behind `--notify`
-and opt-in `silent` by default) and this module does not change its contract.
+-- through `operations/notify/client.py`.
 
 **Never a secret, never a URL.** Every message is checked before the shell
 call: a word naming a secret, any piece `common.credentials` reads as
@@ -27,95 +23,23 @@ never raised -- it comes back as an ordinary `NotifyOutcome(attempted=False,
 close or launch path that was about to report it.
 
 **A failed ping cannot prevent a close.** Every function here returns a
-`NotifyOutcome` rather than raising for a transport failure, a timeout, or a
-non-zero exit from `notify.sh` -- the caller logs `.detail` in the durable
-receipt (principle 2: nothing is lost silently) and moves on. Only a
-malformed message (not one non-empty line) or a message this module refuses
-on sight is reported the same way, never as an exception.
+`NotifyOutcome` and never raises; the caller logs `.detail` in the durable
+receipt (principle 2: nothing is lost silently) and moves on.
 """
 
 from __future__ import annotations
 
 import re
-import subprocess
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable, Final, Sequence
+from typing import Final
 
 from common.credentials import notification_carries_credential
+from operations.notify import client
+from operations.notify.client import NotifyOutcome, Runner
 
-ROOT: Final = Path(__file__).resolve().parents[2]
-NOTIFY_SCRIPT: Final = ROOT / "operations" / "notify" / "notify.sh"
-NOTIFY_TIMEOUT_SECONDS: Final = 10.0
 NOTIFY_EVENT: Final = "milestone"
 """Every hook here reports a fact, not a question -- `operations/notify/README.md`'s
 table reserves `decision` for something that needs an answer, and none of launch,
 close, or a balance reading does."""
-
-
-NOTIFY_SUPPRESSED_MARKER: Final = "NOTIFY_SUPPRESSED"
-"""`notify.sh` prints this word, then the reserved topic, on stdout and exits 0
-when the test sink swallowed the notification instead of posting it.
-
-Mapping that exit 0 to `delivered` would report "Phone notification: sent."
-for a notification that never left the machine. The exit code stays 0 on
-purpose -- suites assert on delivered versus NOT DELIVERED outcomes and a
-guard must not change what its subject measures -- so the marker is what
-separates the two, on the one stream this script writes nothing else to. The
-word is matched, not the topic: the topic is normally a bearer secret and no
-bridge carries it."""
-
-
-def _suppression_marker(stdout: str | None) -> str | None:
-    """The marker line if the sink swallowed this notification, else `None`."""
-
-    for line in (stdout or "").splitlines():
-        stripped = line.strip()
-        if stripped == NOTIFY_SUPPRESSED_MARKER or stripped.startswith(
-            f"{NOTIFY_SUPPRESSED_MARKER} "
-        ):
-            return stripped[:160]
-    return None
-
-
-@dataclass(frozen=True, slots=True)
-class NotifyOutcome:
-    """Same shape as `notify_bridge.NotifyOutcome`, defined again rather than
-    imported: that module is a distinct, narrower seam (spend-floor warnings
-    only) and this one must not gain a dependency on it to change its own
-    behavior."""
-
-    attempted: bool
-    delivered: bool
-    detail: str
-    suppressed: bool = False
-    """The test sink swallowed it: attempted, not delivered, and not a failure.
-
-    A third state rather than a reworded failure. `delivered=False` alone would
-    report the sink as a delivery problem in a record an operator reads for real
-    ones, and `delivered=True` is the lie this field exists to stop."""
-
-    def line(self) -> str:
-        if not self.attempted:
-            return f"Phone notification: not sent ({self.detail})."
-        if self.suppressed:
-            return "Phone notification: suppressed (test sink)."
-        if self.delivered:
-            return "Phone notification: sent."
-        return (
-            f"Phone notification: NOT DELIVERED ({self.detail}). Nothing else was changed by this."
-        )
-
-
-Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
-
-
-def default_runner(argv: Sequence[str]) -> subprocess.CompletedProcess:
-    """The real script: `sh operations/notify/notify.sh <event> "<message>"`."""
-
-    return subprocess.run(
-        list(argv), capture_output=True, text=True, check=False, timeout=NOTIFY_TIMEOUT_SECONDS
-    )
 
 
 # A scheme-less host+path -- a console link, or a bare notification-service
@@ -139,48 +63,14 @@ def _unsafe_reason(message: str) -> str | None:
 
 
 def _send(message: str, *, runner: Runner) -> NotifyOutcome:
-    if "\n" in message or "\x00" in message or not message.strip():
-        return NotifyOutcome(False, False, "the message was not one non-empty line")
     unsafe = _unsafe_reason(message)
     if unsafe is not None:
         return NotifyOutcome(False, False, unsafe)
-    try:
-        result = runner(["sh", str(NOTIFY_SCRIPT), NOTIFY_EVENT, message])
-    except subprocess.TimeoutExpired:
-        return NotifyOutcome(
-            True,
-            False,
-            f"the notification command did not answer within {NOTIFY_TIMEOUT_SECONDS:g} seconds",
-        )
-    except OSError as error:
-        return NotifyOutcome(True, False, f"the notification command could not run: {error}")
-    except Exception as error:  # noqa: BLE001 -- "never raised" is the promise; contain, don't propagate
-        # `subprocess.run(..., text=True)` decodes strictly and can raise
-        # `UnicodeDecodeError` on the child's own stderr/stdout, whose `repr`
-        # embeds the offending bytes -- unbounded, that can run to tens of
-        # thousands of characters. Bound it the same way the returncode path
-        # below bounds the child's own reason, so a broken pipe never blows
-        # up the printed record.
-        detail = f"the notification command failed unexpectedly: {error!r}"
-        if len(detail) > 160:
-            detail = f"{detail[:160]} (reason truncated at 160 characters)"
-        return NotifyOutcome(True, False, detail)
-    if result.returncode == 0:
-        marker = _suppression_marker(result.stdout)
-        if marker is not None:
-            return NotifyOutcome(True, False, marker, suppressed=True)
-        return NotifyOutcome(True, True, "delivered")
-    # Preserve notify.sh's bounded one-line reason so the recorded failure
-    # distinguishes a missing topic, malformed message, and ntfy refusal --
-    # matching notify_bridge.shell_notifier's own truncation bound.
-    detail = " ".join((result.stderr or result.stdout or "no reason given").split())
-    if len(detail) > 160:
-        detail = f"{detail[:160]} (reason truncated at 160 characters)"
-    return NotifyOutcome(True, False, detail)
+    return client.send(NOTIFY_EVENT, message, runner=runner)
 
 
 def notify_launch(
-    *, lease_id: str, card: str, max_hourly_usd: object, runner: Runner = default_runner
+    *, lease_id: str, card: str, max_hourly_usd: object, runner: Runner = client.run
 ) -> NotifyOutcome:
     """One line at launch: which lease, which card, what ceiling governs it."""
 
@@ -193,7 +83,7 @@ def notify_close(
     lease_id: str,
     verified_state: str,
     billed_seconds: object,
-    runner: Runner = default_runner,
+    runner: Runner = client.run,
 ) -> NotifyOutcome:
     """One line at close: which lease, the verified state, the billed window.
 
@@ -221,7 +111,7 @@ def notify_balance(
     balance_usd: object,
     spend_rate_usd_per_hr: object,
     lease_id: str | None = None,
-    runner: Runner = default_runner,
+    runner: Runner = client.run,
 ) -> NotifyOutcome:
     """One line per observation: the balance and spend rate the observer reported.
 
