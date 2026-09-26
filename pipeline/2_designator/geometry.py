@@ -20,14 +20,14 @@ float, because `common/contracts/canonical.py` refuses a float anywhere a
 payload is canonicalized.
 """
 
-import tomllib
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
 from common.background import round_half_up_bp
 from common.calibration import calibrated_claim_has_sample_evidence
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError
+from common.sealed_config import read_sealed_toml
 
 DEFAULT_PADDING_CONFIG_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "designator_padding.toml"
@@ -93,22 +93,7 @@ def load_padding_config(path: str | Path = DEFAULT_PADDING_CONFIG_PATH) -> dict[
     proposal region, so a reviewer sees the padding's source on the evidence
     itself rather than only in a repository file they may never open.
     """
-    path = Path(path)
-    try:
-        data = path.read_bytes()
-        config = tomllib.loads(data.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(
-            f"the padding configuration at {path} could not be read: {error}"
-        ) from error
-    if not isinstance(config, dict):
-        raise ContractError("the padding configuration is not a table")
-    unexpected_top_level = sorted(set(config) - {"padding"})
-    if unexpected_top_level:
-        raise ContractError(
-            "the padding configuration has unknown top-level field(s) "
-            f"{unexpected_top_level}; an unread policy table cannot be applied"
-        )
+    config, digest = read_sealed_toml(path, "padding configuration", {"padding"})
     padding = config.get("padding")
     if not isinstance(padding, dict):
         raise ContractError("the padding configuration has no [padding] table")
@@ -127,7 +112,7 @@ def load_padding_config(path: str | Path = DEFAULT_PADDING_CONFIG_PATH) -> dict[
             f"the padding configuration has invalid non-negative integer field(s) {invalid}"
         )
     provenance = _load_padding_provenance(padding.get("provenance"))
-    return {"config_sha256": digest_bytes(data), "provenance": provenance, **values}
+    return {"config_sha256": digest, "provenance": provenance, **values}
 
 
 def _load_padding_provenance(provenance: Any) -> dict[str, Any]:

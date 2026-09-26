@@ -4,7 +4,6 @@ import argparse
 import json
 import stat
 import sys
-import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence
 
@@ -13,6 +12,7 @@ from common.chairs.models import ChairIdentity, is_sha256
 from common.chairs.receipts import validate_receipt
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
+from common.sealed_config import parse_sealed_toml
 from operations.pod.durable import exclusive_write
 
 from .config import (
@@ -73,18 +73,19 @@ def qualification_candidates(
     placement_bytes = _read_bytes(placement_config, "placement table")
     models_bytes = _read_bytes(models_config, "model roster")
     config_inputs = _object(preflight.get("serving_config_inputs"), "serving config inputs")
+    try:
+        recipes_raw, recipes_sha256 = parse_sealed_toml(recipes_bytes, "serving recipes")
+        _, placement_sha256 = parse_sealed_toml(placement_bytes, "placement table")
+    except ContractError as error:
+        raise QualificationRefusal(f"serving configuration cannot be parsed: {error}") from error
     expected_inputs = {
         "schema": "serving-config-inputs.v1",
-        "serving_recipes_sha256": digest_bytes(recipes_bytes),
-        "pod_placement_sha256": digest_bytes(placement_bytes),
+        "serving_recipes_sha256": recipes_sha256,
+        "pod_placement_sha256": placement_sha256,
     }
     if config_inputs != expected_inputs:
         raise QualificationRefusal("preflight serving inputs do not match the supplied files")
 
-    try:
-        recipes_raw = tomllib.loads(recipes_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise QualificationRefusal(f"serving recipes cannot be parsed: {error}") from error
     try:
         parse_serving_recipes(
             recipes_raw,

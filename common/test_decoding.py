@@ -165,7 +165,7 @@ def test_a_malformed_variance_experiment_is_refused(change):
 @pytest.mark.parametrize(
     ("body", "message"),
     [
-        (b"\xff", "not UTF-8"),
+        (b"\xff", "not valid UTF-8"),
         (b'schema = "decoding.v1"\n[', "not valid TOML"),
     ],
 )

@@ -40,6 +40,7 @@ from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.decoding import load_decoding_policy
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
+from common.sealed_config import read_sealed_toml
 from common.stage import StageContext
 from operations.serving.client import ChairClient, ServingModeRefusal
 from operations.serving.config import (
@@ -424,8 +425,8 @@ def _mode_arguments(catalogue: Path, tier: str | None):
     context = SimpleNamespace(
         serving_config_inputs={
             "schema": "serving-config-inputs.v1",
-            "serving_recipes_sha256": digest_bytes(Path(catalogue).read_bytes()),
-            "pod_placement_sha256": digest_bytes(placement.read_bytes()),
+            "serving_recipes_sha256": read_sealed_toml(catalogue, "recipes")[1],
+            "pod_placement_sha256": read_sealed_toml(placement, "placement")[1],
         }
     )
     args = SimpleNamespace(serving_recipes_config=str(catalogue), placement_tier=tier)
@@ -465,7 +466,9 @@ def test_a_catalogue_that_is_not_the_sealed_one_is_refused(chained_run, tmp_path
     """
     _root, catalogue = chained_run
     substitute = tmp_path / "substituted.toml"
-    substitute.write_bytes(Path(catalogue).read_bytes() + b"\n# a byte that moved\n")
+    moved = Path(catalogue).read_bytes().replace(b"offline walking-skeleton", b"moved", 1)
+    assert moved != Path(catalogue).read_bytes()
+    substitute.write_bytes(moved)
     context, args = _mode_arguments(catalogue, TIER)
     args.serving_recipes_config = str(substitute)
     with pytest.raises(perlector.ContractError, match="not the catalogue this run sealed"):

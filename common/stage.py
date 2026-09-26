@@ -107,6 +107,7 @@ from common.recovery import (
     recovery_kind_budget,
 )
 from common.runtree.store import PublishResult, RunTree, _inode_identity
+from common.sealed_config import read_sealed_toml, require_sealed_config
 from common.witness_adapters import validate_witness_adapter_bindings
 from common.witness_context import validate_witness_context_configuration
 
@@ -161,38 +162,14 @@ REAL_SCENARIO: Final = "real-submission"
 # may not import a stage.
 REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v5"
 
-MAX_TRIAGE_MODES_CONFIG_BYTES: Final = 64 * 1024
 
-
-def _read_triage_modes_config(path: str | Path) -> bytes:
-    """Read one bounded config body through the descriptor that supplied it."""
-    try:
-        with Path(path).open("rb") as handle:
-            raw = handle.read(MAX_TRIAGE_MODES_CONFIG_BYTES + 1)
-    except OSError as error:
-        raise ContractError(f"triage modes configuration at {path} could not be read") from error
-    if len(raw) > MAX_TRIAGE_MODES_CONFIG_BYTES:
-        raise ContractError(
-            "triage modes configuration at "
-            f"{path} exceeds the {MAX_TRIAGE_MODES_CONFIG_BYTES}-byte limit"
-        )
-    return raw
-
-
-def _validate_triage_modes_config(raw: bytes, path: str | Path) -> None:
-    """The closed triage-mode schema, checked in one place.
+def load_triage_modes(path: str | Path) -> str:
+    """Read the closed triage-mode vocabulary and return its seal.
 
     Used at binding and at the point of use, so a run cannot seal a vocabulary
     that a later stage then refuses.
     """
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ContractError(f"triage modes configuration at {path} is not valid UTF-8") from error
-    try:
-        record = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as error:
-        raise ContractError(f"triage modes configuration at {path} is not valid TOML") from error
+    record, digest = read_sealed_toml(path, "triage modes configuration")
     if set(record) != set(TRIAGE_MODES) or any(
         not isinstance(policy, dict)
         or set(policy) != {"review_at_or_below_confidence"}
@@ -201,6 +178,7 @@ def _validate_triage_modes_config(raw: bytes, path: str | Path) -> None:
         for policy in record.values()
     ):
         raise ContractError("triage modes configuration has the wrong closed schema")
+    return digest
 
 
 # Outcomes where a chair actually served, so a serving receipt exists.  Shared
@@ -353,30 +331,6 @@ class StageChairProtocol(ChairProtocol, Protocol):
 # verified but not named, so a reader of the run tree could not say which policy
 # governed it.
 SEALED_CONFIG_DIGESTS_FIELD: Final = "sealed_config_digests"
-
-
-def require_sealed_config(
-    sealed_config_digests: Mapping[str, str],
-    name: str,
-    observed_sha256: str,
-    owner: str = "this run",
-) -> None:
-    """Refuse a configuration whose bytes changed after this run bound them.
-
-    An absent name (never sealed) and a changed file are reported differently.
-    """
-    sealed = sealed_config_digests.get(name)
-    if sealed is None:
-        raise ContractError(
-            f"{owner} sealed no digest for the {name} configuration, so the bytes "
-            "a stage just read cannot be proven to be the ones this run is bound to"
-        )
-    if sealed != observed_sha256:
-        raise ContractError(
-            f"the {name} configuration changed between this run's binding check and the "
-            f"read that used it: bound {sealed}, read {observed_sha256}. A stage may not "
-            "work under a policy the run never sealed"
-        )
 
 
 def run_sealed_config_digests(run: Mapping[str, Any]) -> dict[str, str]:
@@ -1674,42 +1628,39 @@ def run_config_bindings(
             )
         pdf_render_config_digest = pdf_render_config_sha256
     else:
-        pdf_render_config_digest = _read_config_digest(
+        pdf_render_config_digest = read_sealed_toml(
             pdf_render_config_path, "PDF render configuration"
-        )
-    perlector_protocol_config_digest = _read_config_digest(
+        )[1]
+    perlector_protocol_config_digest = read_sealed_toml(
         perlector_protocol_config_path, "Perlector protocol configuration"
-    )
-    perlector_audit_config_digest = _read_config_digest(
+    )[1]
+    perlector_audit_config_digest = read_sealed_toml(
         perlector_audit_config_path, "Perlector audit configuration"
-    )
-    padding_config_digest = _read_config_digest(
+    )[1]
+    padding_config_digest = read_sealed_toml(
         designator_padding_config_path, "Designator padding configuration"
-    )
-    geometry_config_digest = _read_config_digest(
+    )[1]
+    geometry_config_digest = read_sealed_toml(
         designator_geometry_config_path, "Designator geometry configuration"
-    )
-    # Hashed only: its schema lives in a stage module `common/` may not import,
+    )[1]
+    # Sealed only: its schema lives in a stage module `common/` may not import,
     # so a malformed file is refused when the Designator loads it.
-    grouping_config_digest = _read_config_digest(
+    grouping_config_digest = read_sealed_toml(
         designator_grouping_config_path, "Designator grouping configuration"
-    )
+    )[1]
     _, alignment_config_digest = load_alignment_limits(alignment_config_path)
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
     )
     _decoding_policy, decoding_config_digest = load_decoding_policy(decoding_config_path)
-    # Validated, not merely hashed, so a bad file is refused before any write.
-    triage_modes_raw = _read_triage_modes_config(triage_modes_config_path)
-    _validate_triage_modes_config(triage_modes_raw, triage_modes_config_path)
-    triage_modes_config_digest = digest_bytes(triage_modes_raw)
+    triage_modes_config_digest = load_triage_modes(triage_modes_config_path)
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
-    serving_recipes_config_digest = _read_config_digest(
+    serving_recipes_config_digest = read_sealed_toml(
         serving_recipes_config_path, "serving recipes configuration"
-    )
-    pod_placement_config_digest = _read_config_digest(
+    )[1]
+    pod_placement_config_digest = read_sealed_toml(
         pod_placement_config_path, "pod placement configuration"
-    )
+    )[1]
     serving_config_inputs = {
         "schema": SERVING_CONFIG_INPUTS_SCHEMA,
         "serving_recipes_sha256": serving_recipes_config_digest,
@@ -1788,14 +1739,6 @@ def run_config_bindings(
     }
 
 
-def _read_config_digest(path: str | Path, description: str) -> str:
-    """Digest one configuration file's bytes, refusing an unreadable one by name."""
-    try:
-        return digest_bytes(Path(path).read_bytes())
-    except OSError as error:
-        raise ContractError(f"the {description} binding at {path} could not be read") from error
-
-
 # Sealed by the Door from a Door-only flag: later stages can require the name
 # but not recompute its value.
 _REAL_DOOR_ONLY_SEALED_NAMES: Final = ("data-handling",)
@@ -1823,15 +1766,13 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
         DEFAULT_CORPUS_FRAME_CONFIG_PATH
     )
     _decoding_policy, decoding_config_digest = load_decoding_policy(args.decoding_config)
-    triage_modes_raw = _read_triage_modes_config(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
-    _validate_triage_modes_config(triage_modes_raw, DEFAULT_TRIAGE_MODES_CONFIG_PATH)
     armarium_formats_digest, armarium_formats = bind_armarium_formats(args.formats_config)
-    serving_recipes_config_digest = _read_config_digest(
+    serving_recipes_config_digest = read_sealed_toml(
         args.serving_recipes_config, "serving recipes configuration"
-    )
-    pod_placement_config_digest = _read_config_digest(
+    )[1]
+    pod_placement_config_digest = read_sealed_toml(
         DEFAULT_POD_PLACEMENT_CONFIG_PATH, "pod placement configuration"
-    )
+    )[1]
     recovery_policy = load_recovery_policy(args.recovery_config)
     hard_failure_policy = load_hard_failure_policy(args.hard_failure_config)
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
@@ -1845,28 +1786,28 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
             "pod_placement_sha256": pod_placement_config_digest,
         },
         "sealed_config_digests": {
-            "designator-padding": _read_config_digest(
+            "designator-padding": read_sealed_toml(
                 args.designator_padding_config, "Designator padding configuration"
-            ),
-            "designator-geometry": _read_config_digest(
+            )[1],
+            "designator-geometry": read_sealed_toml(
                 args.designator_geometry_config, "Designator geometry configuration"
-            ),
-            "designator-grouping": _read_config_digest(
+            )[1],
+            "designator-grouping": read_sealed_toml(
                 args.designator_grouping_config, "Designator grouping configuration"
-            ),
+            )[1],
             "alignment": alignment_config_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
-            "perlector-protocol": _read_config_digest(
+            "perlector-protocol": read_sealed_toml(
                 args.perlector_protocol_config, "Perlector protocol configuration"
-            ),
-            "perlector-audit": _read_config_digest(
+            )[1],
+            "perlector-audit": read_sealed_toml(
                 args.perlector_audit_config, "Perlector audit configuration"
-            ),
-            "pdf-render": _read_config_digest(args.pdf_render_config, "PDF render configuration"),
+            )[1],
+            "pdf-render": read_sealed_toml(args.pdf_render_config, "PDF render configuration")[1],
             "recovery": recovery_policy["config_sha256"],
             "hard-failure": hard_failure_policy["config_sha256"],
-            "triage-modes": digest_bytes(triage_modes_raw),
+            "triage-modes": load_triage_modes(DEFAULT_TRIAGE_MODES_CONFIG_PATH),
             "serving-recipes": serving_recipes_config_digest,
             "pod-placement": pod_placement_config_digest,
             "models": models.models_digest,
@@ -1888,20 +1829,14 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
 
 
 def load_corpus_frame_policy(path: str | Path) -> tuple[dict[str, int], str]:
-    """Read the bounded corpus-frame policy from the bytes a run seals."""
-    try:
-        raw = Path(path).read_bytes()
-        record = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(
-            f"corpus-frame shard configuration at {path} could not be read"
-        ) from error
+    """Read the bounded corpus-frame policy and its seal."""
+    record, digest = read_sealed_toml(path, "corpus-frame shard configuration")
     if set(record) != {"max_pages_per_shard"}:
         raise ContractError("corpus-frame shard configuration has the wrong closed schema")
     limit = record["max_pages_per_shard"]
     if not is_plain_int(limit) or not 1 <= limit <= 1000:
         raise ContractError("corpus-frame max_pages_per_shard must be an integer in [1, 1000]")
-    return {"max_pages_per_shard": limit}, digest_bytes(raw)
+    return {"max_pages_per_shard": limit}, digest
 
 
 def require_corpus_frame_shard(
@@ -1934,21 +1869,18 @@ def require_triage_modes(
     sealed_config_digests: Mapping[str, str],
     path: str | Path | None = None,
 ) -> None:
-    """Refuse mode schema or bytes that differ from the run's sealed vocabulary."""
+    """Refuse a mode schema or content that differs from the run's sealed vocabulary."""
     if path is None:
         path = DEFAULT_TRIAGE_MODES_CONFIG_PATH
-    raw = _read_triage_modes_config(path)
     bound = sealed_config_digests.get("triage-modes")
     if bound is None:
         raise ContractError("this run sealed no digest for the triage modes configuration")
-    observed = digest_bytes(raw)
+    observed = load_triage_modes(path)
     if bound != observed:
-        # Before parsing, so a TOML error cannot mask the unsealed-bytes refusal.
         raise ContractError(
             "the triage modes configuration changed between run binding and its "
-            f"point-of-use check: this run sealed {bound}, and {path} now hashes to {observed}"
+            f"point-of-use check: this run sealed {bound}, and {path} now seals to {observed}"
         )
-    _validate_triage_modes_config(raw, path)
 
 
 # The roles addressed by name beside the witnesses, kept here so
@@ -3279,20 +3211,18 @@ def _verify_aggregated_page_is_held_as_one_item(
 
 
 def sealed_residual_presentation_policy(context) -> dict[str, int]:
-    """Read the two aggregate floors from the exact grouping bytes this run sealed."""
+    """Read the two aggregate floors from the grouping policy this run sealed."""
     path = Path(
         getattr(getattr(context, "args", None), "designator_grouping_config", None)
         or DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH
     )
     try:
-        raw = path.read_bytes()
-        document = tomllib.loads(raw.decode("utf-8"))
+        document, observed_digest = read_sealed_toml(path, "Designator grouping configuration")
         table = document["grouping"]["residual_presentation"]
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, KeyError, TypeError) as error:
+    except (ContractError, KeyError, TypeError) as error:
         raise FatalAccounting(
             "the sealed Designator grouping policy has no readable residual presentation table"
         ) from error
-    observed_digest = digest_bytes(raw)
     require_sealed_config(
         run_sealed_config_digests(context.run),
         "designator-grouping",

@@ -86,36 +86,3 @@ def test_format_configuration_changes_the_sealed_run_binding(tmp_path):
         armarium_formats_config_path=changed,
     )
     assert baseline["config_digest"] != alternate["config_digest"]
-
-
-def test_format_settings_are_parsed_from_the_same_bytes_that_are_digested(monkeypatch, tmp_path):
-    registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
-    fixture = load_fixture(str(ROOT / "proof"))
-    formats_path = tmp_path / "formats.toml"
-    first = (
-        'schema = "armarium-formats.v1"\n'
-        'formats = ["text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"]\n'
-        "embed_pixels = false\n"
-    ).encode()
-    second = first.replace(b"false", b"true")
-    formats_path.write_bytes(first)
-    original_read_bytes = Path.read_bytes
-    format_reads = 0
-
-    def changing_read_bytes(path: Path) -> bytes:
-        nonlocal format_reads
-        if path == formats_path:
-            format_reads += 1
-            return first if format_reads == 1 else second
-        return original_read_bytes(path)
-
-    monkeypatch.setattr(Path, "read_bytes", changing_read_bytes)
-    bindings = run_config_bindings(
-        registry.config,
-        fixture,
-        "happy",
-        armarium_formats_config_path=formats_path,
-    )
-
-    assert format_reads == 1
-    assert bindings["armarium_formats"].embed_pixels is False

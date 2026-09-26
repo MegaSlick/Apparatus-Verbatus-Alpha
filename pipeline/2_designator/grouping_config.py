@@ -26,7 +26,6 @@ value derives a different margin per page's own contrast without weakening
 the rule above.
 """
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -51,9 +50,9 @@ from common.background import (  # noqa: F401
     validate_background_table,
 )
 from common.calibration import calibrated_claim_has_sample_evidence
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.residual_ink import validate_coverage_audit_table
+from common.sealed_config import read_sealed_toml
 
 DEFAULT_GROUPING_CONFIG_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "designator_grouping.toml"
@@ -136,23 +135,7 @@ def load_grouping_config(
     Every field is refused loudly rather than defaulted, matching
     `load_padding_config`.
     """
-    path = Path(path)
-    try:
-        data = path.read_bytes()
-        config = tomllib.loads(data.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(
-            f"the grouping configuration at {path} could not be read: {error}"
-        ) from error
-    if not isinstance(config, dict):
-        raise ContractError("the grouping configuration is not a table")
-
-    unexpected_top_level = sorted(set(config) - set(_TOP_LEVEL_TABLES))
-    if unexpected_top_level:
-        raise ContractError(
-            "the grouping configuration has unknown top-level field(s) "
-            f"{unexpected_top_level}; an unread policy table cannot be applied"
-        )
+    config, digest = read_sealed_toml(path, "grouping configuration", _TOP_LEVEL_TABLES)
     grouping = config.get("grouping")
     if not isinstance(grouping, dict):
         raise ContractError("the grouping configuration has no [grouping] table")
@@ -212,7 +195,7 @@ def load_grouping_config(
     provenance = _load_provenance(grouping.get("provenance"), "[grouping.provenance]")
 
     return {
-        "config_sha256": digest_bytes(data),
+        "config_sha256": digest,
         **counts,
         **{name: residual_presentation[name] for name in _RESIDUAL_PRESENTATION_FIELDS},
         "residual_presentation": residual_presentation,

@@ -51,7 +51,7 @@ def test_a_different_padding_policy_is_a_different_run_configuration(tmp_path):
 
 def test_an_unreadable_padding_policy_is_refused_rather_than_defaulted(tmp_path):
     """A padding file nobody can read is not a run with no padding."""
-    with pytest.raises(ContractError, match="padding configuration binding"):
+    with pytest.raises(ContractError, match="padding configuration at .* could not be read"):
         _bindings(tmp_path / "absent.toml")
 
 

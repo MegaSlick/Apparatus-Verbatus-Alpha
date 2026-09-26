@@ -82,6 +82,7 @@ from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
+from common.sealed_config import read_sealed_toml  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
     DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
@@ -97,6 +98,7 @@ from common.stage import (  # noqa: E402
     adapter_recipe_for,
     load_corpus_frame_policy,
     load_fixture,
+    load_triage_modes,
     real_run_policy_digest,
     refuse_halted_run,
     require_corpus_frame_shard,
@@ -1918,9 +1920,15 @@ def real_submission(args, registry) -> int:
         args.formats_config,
         pdf_render_config_sha256=pdf_render_binding.config_sha256,
         data_handling_config_sha256=data_policy_binding.config_sha256,
-        designator_padding_config_sha256=_padding_config_digest(args.designator_padding_config),
-        designator_geometry_config_sha256=_geometry_config_digest(args.designator_geometry_config),
-        designator_grouping_config_sha256=_grouping_config_digest(args.designator_grouping_config),
+        designator_padding_config_sha256=read_sealed_toml(
+            args.designator_padding_config, "Designator padding configuration"
+        )[1],
+        designator_geometry_config_sha256=read_sealed_toml(
+            args.designator_geometry_config, "Designator geometry configuration"
+        )[1],
+        designator_grouping_config_sha256=read_sealed_toml(
+            args.designator_grouping_config, "Designator grouping configuration"
+        )[1],
         alignment_config_path=args.alignment_config,
         serving_recipes_config_path=args.serving_recipes_config,
         triage_document_digests=triage_digests,
@@ -2042,30 +2050,6 @@ def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> N
     )
 
 
-def _config_digest(path: str | Path, label: str) -> str:
-    try:
-        return digest_bytes(Path(path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            f"the {label} configuration binding at {path} could not be read"
-        ) from error
-
-
-# The Designator rechecks padding and geometry at point of use, so a real run
-# that never sealed them would refuse there.
-def _padding_config_digest(path: str) -> str:
-    return _config_digest(path, "Designator padding")
-
-
-def _geometry_config_digest(path: str) -> str:
-    return _config_digest(path, "Designator geometry")
-
-
-def _grouping_config_digest(path: str) -> str:
-    """Hashed here and parsed by the Designator, because a stage may not import another's module."""
-    return _config_digest(path, "Designator grouping")
-
-
 def _real_bindings(
     models,
     ledger,
@@ -2106,8 +2090,12 @@ def _real_bindings(
     """
     validate_witness_adapter_bindings(models)
     # Bound as on the fixture path, so a changed serving catalogue changes `config_digest`.
-    serving_recipes_config_digest = _config_digest(serving_recipes_config_path, "serving recipes")
-    pod_placement_config_digest = _config_digest(pod_placement_config_path, "pod placement")
+    serving_recipes_config_digest = read_sealed_toml(
+        serving_recipes_config_path, "serving recipes configuration"
+    )[1]
+    pod_placement_config_digest = read_sealed_toml(
+        pod_placement_config_path, "pod placement configuration"
+    )[1]
     witness_context_declaration_sha256 = validate_witness_context_bindings(
         models,
         witness_context=witness_context,
@@ -2125,15 +2113,15 @@ def _real_bindings(
     corpus_frame_policy, corpus_frame_config_sha256 = load_corpus_frame_policy(
         corpus_frame_config_path
     )
-    perlector_protocol_config_sha256 = _config_digest(
-        perlector_protocol_config_path, "Perlector protocol"
-    )
-    perlector_audit_config_sha256 = _config_digest(perlector_audit_config_path, "Perlector audit")
+    perlector_protocol_config_sha256 = read_sealed_toml(
+        perlector_protocol_config_path, "Perlector protocol configuration"
+    )[1]
+    perlector_audit_config_sha256 = read_sealed_toml(
+        perlector_audit_config_path, "Perlector audit configuration"
+    )[1]
     # The shared default that `require_triage_modes` also reads; a second
     # spelling could drift and refuse every triage run as "changed".
-    triage_modes_config_sha256 = _config_digest(
-        Path(DEFAULT_TRIAGE_MODES_CONFIG_PATH), "triage modes"
-    )
+    triage_modes_config_sha256 = load_triage_modes(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(

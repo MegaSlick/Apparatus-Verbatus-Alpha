@@ -16,7 +16,6 @@ from types import SimpleNamespace
 import pytest
 
 from common.background import DEFAULT_BACKGROUND_CONFIG_PATH
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.residual_ink import (
     MINIMUM_INK_PIXELS_FIELD,
@@ -24,6 +23,7 @@ from common.residual_ink import (
     load_coverage_audit_config,
     resolve_coverage_audit_policy,
 )
+from common.sealed_config import read_sealed_toml
 
 # The sealed noise floor, read from `[coverage_audit.noise_floor]` the way the
 # stage reads it, so a stimulus anchored on this name moves with the sealed
@@ -32,7 +32,7 @@ MINIMUM_INK_PIXELS = load_coverage_audit_config()["coverage_audit"]["minimum_ink
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
-EXPECTED_BACKGROUND_SHA256 = digest_bytes(DEFAULT_BACKGROUND_CONFIG_PATH.read_bytes())
+EXPECTED_BACKGROUND_SHA256 = read_sealed_toml(DEFAULT_BACKGROUND_CONFIG_PATH, "config")[1]
 
 
 def _recensor():

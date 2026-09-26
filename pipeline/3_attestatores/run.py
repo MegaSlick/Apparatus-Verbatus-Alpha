@@ -100,6 +100,7 @@ from common.native_witness import (
     validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
 )
 from common.request_capacity import RequestCapacityRefusal  # noqa: E402
+from common.sealed_config import read_sealed_toml
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -3778,15 +3779,13 @@ def bound_serving_recipes(context) -> ServingRecipes:
         )
     try:
         recipes = load_serving_recipes(context.args.serving_recipes_config)
-        placement_bytes = Path(DEFAULT_POD_PLACEMENT_CONFIG_PATH).read_bytes()
+        _, placement_sha256 = read_sealed_toml(
+            DEFAULT_POD_PLACEMENT_CONFIG_PATH, "pod placement configuration"
+        )
         ServingConfigInputs.from_record(dict(context.serving_config_inputs)).require_loaded(
             recipes_sha256=recipes.source_sha256,
-            placement_sha256=digest_bytes(placement_bytes),
+            placement_sha256=placement_sha256,
         )
-    except OSError as error:
-        raise ContractError(
-            f"the sealed serving configuration could not be read: {error}"
-        ) from error
     except ServingError as error:
         raise ContractError(f"the sealed serving configuration was refused: {error}") from error
     return recipes

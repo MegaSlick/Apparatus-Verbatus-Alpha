@@ -10,6 +10,7 @@ import gc
 import inspect
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -50,6 +51,7 @@ from common.contracts.identities import physical_page_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.corpus_register import append_records, empty_register, members_of, register_digest
 from common.runtree.store import RunTree
+from common.sealed_config import read_sealed_toml
 from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
@@ -101,15 +103,15 @@ def _sealed_binding_digests() -> dict[str, str]:
             minimum_dpi=door.pdf_render.MIN_RENDER_DPI
         ).config_sha256,
         "data_handling_config_sha256": gate.load_policy_binding().config_sha256,
-        "designator_padding_config_sha256": door._padding_config_digest(
-            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
-        ),
-        "designator_geometry_config_sha256": door._geometry_config_digest(
-            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
-        ),
-        "designator_grouping_config_sha256": door._grouping_config_digest(
-            DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH
-        ),
+        "designator_padding_config_sha256": read_sealed_toml(
+            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH, "Designator padding configuration"
+        )[1],
+        "designator_geometry_config_sha256": read_sealed_toml(
+            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH, "Designator geometry configuration"
+        )[1],
+        "designator_grouping_config_sha256": read_sealed_toml(
+            DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH, "Designator grouping configuration"
+        )[1],
     }
 
 
@@ -1957,7 +1959,9 @@ def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
 
     other = tmp_path / "serving_recipes_other.toml"
     other.write_bytes(
-        Path(door.DEFAULT_SERVING_RECIPES_CONFIG_PATH).read_bytes() + b"\n# a different catalogue\n"
+        Path(door.DEFAULT_SERVING_RECIPES_CONFIG_PATH)
+        .read_bytes()
+        .replace(b"offline walking-skeleton", b"a different catalogue", 1)
     )
     changed = door._real_bindings(
         *common, serving_recipes_config_path=other, **_sealed_binding_digests()
@@ -3378,7 +3382,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         "'data-handling' entry naming the caller-selected policy that gated admission"
     )
     triage_modes = ROOT / "config" / "triage_modes.toml"
-    assert sealed.get("triage-modes") == digest_bytes(triage_modes.read_bytes()), (
+    assert sealed.get("triage-modes") == read_sealed_toml(triage_modes, "triage modes")[1], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'triage-modes' entry for the mode vocabulary a real triage manifest uses"
     )
@@ -3401,9 +3405,9 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     )
     expected_policy = door.real_run_policy_digest(
         witness_context="named",
-        witness_context_declaration_sha256=digest_bytes(
-            Path(door.DEFAULT_WITNESS_CONTEXT_CONFIG_PATH).read_bytes()
-        ),
+        witness_context_declaration_sha256=read_sealed_toml(
+            door.DEFAULT_WITNESS_CONTEXT_CONFIG_PATH, "witness context"
+        )[1],
         nuda_per_mille=0,
         nuda_approval_ref="",
         perlector_instrument_per_mille=0,
@@ -3496,11 +3500,16 @@ def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config
     assert fixture_bindings["sealed_config_digests"]["designator-grouping"] == bound
 
     edited = tmp_path / "designator_grouping.toml"
-    edited.write_bytes(
-        DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH.read_bytes()
-        + b"\n# a comment added after this run bound the file\n"
+    edited.write_text(
+        re.sub(
+            r"(?m)^(\w+ = )(\d+)$",
+            lambda value: f"{value[1]}{int(value[2]) + 1}",
+            DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH.read_text(encoding="utf-8"),
+            count=1,
+        ),
+        encoding="utf-8",
     )
-    rewritten = door._grouping_config_digest(str(edited))
+    rewritten = read_sealed_toml(edited, "Designator grouping configuration")[1]
     assert rewritten != bound, "the edited policy must actually differ, or this proves nothing"
     with pytest.raises(ContractError, match="designator-grouping configuration changed") as drift:
         require_sealed_config(sealed, "designator-grouping", rewritten)
@@ -3653,8 +3662,9 @@ def test_a_real_admission_names_the_data_handling_policy_that_governed_it(tmp_pa
 
     run = RunTree(run_root, "named-policy").read_run()
     assert run["sealed_config_digests"]["data-handling"] == digest_bytes(policy_path.read_bytes())
-    assert run["sealed_config_digests"]["pdf-render"] == digest_bytes(
-        (ROOT / "config" / "pdf_render.toml").read_bytes()
+    assert (
+        run["sealed_config_digests"]["pdf-render"]
+        == read_sealed_toml(ROOT / "config" / "pdf_render.toml", "pdf render")[1]
     )
     assert run["sealed_config_digests"]["recovery"] == door.load_recovery_policy()["config_sha256"]
 
@@ -4687,7 +4697,7 @@ def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(
     with pytest.raises(ContractError, match="changed between run binding") as refusal:
         require_triage_modes(bindings["sealed_config_digests"], edited)
     assert bindings["sealed_config_digests"]["triage-modes"] in str(refusal.value)
-    assert digest_bytes(edited.read_bytes()) in str(refusal.value)
+    assert read_sealed_toml(edited, "triage modes")[1] in str(refusal.value)
 
 
 def test_a_run_sealed_before_the_repair_is_refused_by_name_not_by_key_error():
@@ -4817,8 +4827,9 @@ def test_the_real_door_seals_and_proves_triage_modes_on_a_run_that_carries_geome
     )
     run = RunTree(run_root, "triage-geometry").read_run()
     sealed = run_sealed_config_digests(run)
-    assert sealed["triage-modes"] == digest_bytes(
-        (Path(door.ROOT) / "config" / "triage_modes.toml").read_bytes()
+    assert (
+        sealed["triage-modes"]
+        == read_sealed_toml(Path(door.ROOT) / "config" / "triage_modes.toml", "triage modes")[1]
     )
     require_triage_modes(sealed)
     # The fixed run-authority shape binds recipe bytes only through config_digest and

@@ -471,13 +471,13 @@ def test_a_hard_failure_policy_swapped_between_orchestrations_is_refused_on_resu
     )
     assert first.returncode == 0, first.stderr
 
-    # A comment-only edit: the threshold is ruled and `RULED_THRESHOLD`
-    # refuses to move either way, so the swap this seal has to catch is any change
-    # to the bytes at all -- which is exactly what a digest says and what a reader
-    # of `config_digest` alone could not attribute to this file.
-    policy.write_text(
-        _shipped_hard_failure() + "\n# a byte this run never sealed\n", encoding="utf-8"
-    )
+    # The threshold is ruled and `RULED_THRESHOLD` refuses to move either way, so
+    # the swap moves one [[kind]] to the end: a value change the resolved policy
+    # sorts away, which only this file's seal can attribute.
+    first_kind = '[[kind]]\nstage = "perlector"\noutcome = "failed"\n'
+    shipped = _shipped_hard_failure()
+    assert first_kind in shipped
+    policy.write_text(shipped.replace(first_kind, "", 1) + "\n" + first_kind, encoding="utf-8")
     # The refusal must arrive before any stage is re-entered: a tree byte moving
     # under the resumed invocation would mean work was spent under the unsealed
     # cap before the proof fired.

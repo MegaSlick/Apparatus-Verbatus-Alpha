@@ -19,12 +19,12 @@ it reads the sealed policy's own bytes and takes everything else as arguments.
 """
 
 import re
-import tomllib
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
-from common.contracts.canonical import digest_bytes, is_plain_int
+from common.contracts.canonical import is_plain_int
 from common.contracts.errors import ContractError
+from common.sealed_config import read_sealed_toml
 
 # Fraction points below a page's inferred background value, deducted from it to
 # get the level at or below which a pixel counts as ink.
@@ -707,21 +707,12 @@ def load_background_config(
     silently taken as unlimited would change what an audit calls ink with
     nobody able to point at a config line that said so.
     """
-    path = Path(path)
-    try:
-        data = path.read_bytes()
-        config = tomllib.loads(data.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(
-            f"the background configuration at {path} could not be read: {error}"
-        ) from error
-    if not isinstance(config, dict):
-        raise ContractError("the background configuration is not a table")
+    config, digest = read_sealed_toml(path, "background configuration")
     grouping = config.get("grouping")
     if not isinstance(grouping, dict):
         raise ContractError("the background configuration has no [grouping] table")
     return {
-        "config_sha256": digest_bytes(data),
+        "config_sha256": digest,
         "background": validate_background_table(grouping.get("background")),
     }
 

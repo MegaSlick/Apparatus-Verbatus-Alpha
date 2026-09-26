@@ -30,6 +30,7 @@ from grouping_config import (
 
 from common.contracts.errors import ContractError
 from common.imaging import dimensions
+from common.sealed_config import read_sealed_toml
 
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "proof" / "fixtures" / "synthetic-two-page-v0"
 
@@ -69,12 +70,10 @@ def test_fixture_pages_measure_200x260():
 # --- load_grouping_config: happy path ---------------------------------------
 
 
-def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
+def test_default_config_loads_and_carries_the_seal_of_its_own_file():
     config = load_grouping_config()
-    raw = DEFAULT_GROUPING_CONFIG_PATH.read_bytes()
-    from common.contracts.canonical import digest_bytes
 
-    assert config["config_sha256"] == digest_bytes(raw)
+    assert config["config_sha256"] == read_sealed_toml(DEFAULT_GROUPING_CONFIG_PATH, "x")[1]
     assert config["max_residual_components"] == 2000
     assert config["max_secondary_proposals"] == 2000
     assert config["fallback_bands"] == 4
@@ -653,7 +652,7 @@ def test_unreadable_path_refused(tmp_path):
 
 def test_malformed_toml_refused(tmp_path):
     path = _write(tmp_path, "not [ valid toml")
-    with pytest.raises(ContractError, match="could not be read"):
+    with pytest.raises(ContractError, match="not valid TOML"):
         load_grouping_config(path)
 
 

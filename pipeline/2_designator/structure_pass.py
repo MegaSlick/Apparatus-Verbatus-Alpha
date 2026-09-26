@@ -84,7 +84,7 @@ from common.chandra_presentation import (
     presented_transform,
     render_page,
 )
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import digest_of
 from common.contracts.envelope import verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
@@ -98,6 +98,7 @@ from common.request_capacity import (
     sealed_prompt_tokens,
     sendable_max_tokens,
 )
+from common.sealed_config import read_sealed_toml
 from common.stage import (
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     DESIGNATOR_CHAIR,
@@ -254,15 +255,13 @@ def bound_serving_recipes(context: Any, recipes_path: str | Path) -> ServingReci
         )
     try:
         recipes = load_serving_recipes(recipes_path)
-        placement_bytes = Path(DEFAULT_POD_PLACEMENT_CONFIG_PATH).read_bytes()
+        _, placement_sha256 = read_sealed_toml(
+            DEFAULT_POD_PLACEMENT_CONFIG_PATH, "pod placement configuration"
+        )
         ServingConfigInputs.from_record(dict(context.serving_config_inputs)).require_loaded(
             recipes_sha256=recipes.source_sha256,
-            placement_sha256=digest_bytes(placement_bytes),
+            placement_sha256=placement_sha256,
         )
-    except OSError as error:
-        raise ContractError(
-            f"the sealed serving configuration could not be read: {error}"
-        ) from error
     except ServingError as error:
         raise ContractError(f"the sealed serving configuration was refused: {error}") from error
     return recipes

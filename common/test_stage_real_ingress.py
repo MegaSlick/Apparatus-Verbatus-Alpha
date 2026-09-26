@@ -952,20 +952,32 @@ def _moved_models_config(tmp_path: Path) -> Path:
     return path
 
 
-def _appended(tmp_path: Path, source: Path) -> Path:
+def _moved(tmp_path: Path, source: Path, old: str, new: str) -> Path:
+    """One value the run never sealed."""
+    live = source.read_text(encoding="utf-8")
+    assert old in live
     copy = tmp_path / source.name
-    copy.write_bytes(source.read_bytes() + b"\n# one byte the run never sealed\n")
+    copy.write_text(live.replace(old, new, 1), encoding="utf-8")
     return copy
 
 
 @pytest.mark.parametrize(
     ("flag", "value", "named"),
     [
-        ("--decoding-config", lambda tmp: _appended(tmp, DEFAULT_DECODING_CONFIG_PATH), "decoding"),
+        (
+            "--decoding-config",
+            lambda tmp: _moved(tmp, DEFAULT_DECODING_CONFIG_PATH, "seed = 20260820", "seed = 1"),
+            "decoding",
+        ),
         ("--models-config", _moved_models_config, "models"),
         (
             "--formats-config",
-            lambda tmp: _appended(tmp, DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH),
+            lambda tmp: _moved(
+                tmp,
+                DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
+                "embed_pixels = false",
+                "embed_pixels = true",
+            ),
             "armarium-formats",
         ),
         ("--witness-context", lambda _tmp: "blinded", "run-policy"),

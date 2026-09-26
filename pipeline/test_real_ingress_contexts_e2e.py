@@ -149,7 +149,7 @@ from common.stage import (  # noqa: E402
 # byte for a file, and for the roster a record that moves without its membership
 # moving — the case `run.json`'s `witness_chairs` cannot see. Imported rather
 # than rewritten, so the unit and the end-to-end move the same bytes.
-from common.test_stage_real_ingress import _appended, _moved_models_config  # noqa: E402
+from common.test_stage_real_ingress import _moved, _moved_models_config  # noqa: E402
 
 MODELS_CONFIG = ROOT / "config" / "models.toml"
 DESIGNATOR_CLI = PIPELINE / "2_designator" / "run.py"
@@ -395,11 +395,20 @@ def test_opening_every_real_context_writes_nothing(real_run, tmp_path):
 @pytest.mark.parametrize(
     ("flag", "value", "named"),
     [
-        ("--decoding-config", lambda tmp: _appended(tmp, DEFAULT_DECODING_CONFIG_PATH), "decoding"),
+        (
+            "--decoding-config",
+            lambda tmp: _moved(tmp, DEFAULT_DECODING_CONFIG_PATH, "seed = 20260820", "seed = 1"),
+            "decoding",
+        ),
         ("--models-config", _moved_models_config, "models"),
         (
             "--formats-config",
-            lambda tmp: _appended(tmp, DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH),
+            lambda tmp: _moved(
+                tmp,
+                DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
+                "embed_pixels = false",
+                "embed_pixels = true",
+            ),
             "armarium-formats",
         ),
         ("--witness-context", lambda _tmp: "blinded", "run-policy"),

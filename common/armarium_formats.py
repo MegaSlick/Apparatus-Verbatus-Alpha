@@ -7,13 +7,12 @@ not included because those remain the project lead's decisions.
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.errors import SchemaRefusal
+from common.sealed_config import read_sealed_toml
 
 FORMAT_SCHEMA: Final = "armarium-formats.v1"
 KNOWN_FORMATS: Final = frozenset(
@@ -84,32 +83,11 @@ def armarium_formats_from_record(record: object, *, source: str = "record") -> A
     return ArmariumFormats(tuple(formats), record["embed_pixels"])
 
 
-def parse_armarium_formats_bytes(data: bytes, *, source: str | Path = "bytes") -> ArmariumFormats:
-    """Parse precisely the bytes whose digest is sealed into a run authority."""
-    label = str(source)
-    if not isinstance(data, bytes):
-        raise SchemaRefusal(f"Armarium formats configuration {label} is not bytes")
-    try:
-        raw = tomllib.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise SchemaRefusal(f"Armarium formats configuration {label} could not be read") from error
-    return armarium_formats_from_record(raw, source=f"configuration {label}")
-
-
 def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
-    """Read, digest and parse one formats configuration for a run binding.
+    """Read, seal and parse one formats configuration for a run binding.
 
-    The digest is over exactly the bytes read here, before parsing -- the same bytes a
-    sealed run's ``config_digest`` must be reproducible from. Reading the file twice,
-    once to digest and once to parse, would let the two disagree.
-
-    This is deliberately the only reader: nothing may bind a format selection without
-    also digesting the bytes it came from.
+    The only reader: nothing may bind a format selection without also sealing
+    the table it came from, and both come from one read.
     """
-    try:
-        data = Path(path).read_bytes()
-    except OSError as error:
-        raise ContractError(
-            f"the Armarium formats configuration binding at {path} could not be read"
-        ) from error
-    return digest_bytes(data), parse_armarium_formats_bytes(data, source=path)
+    raw, digest = read_sealed_toml(path, "Armarium formats configuration")
+    return digest, armarium_formats_from_record(raw, source=f"configuration {path}")

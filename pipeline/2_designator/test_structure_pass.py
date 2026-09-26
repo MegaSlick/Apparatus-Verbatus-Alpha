@@ -50,6 +50,7 @@ from common.imaging import dimensions
 from common.imaging_ports import scale_to_fit_chandra
 from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 from common.runtree.store import RECEIPTS_DIR, RunTree
+from common.sealed_config import read_sealed_toml
 from common.stage import (
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -462,8 +463,8 @@ def _mode_arguments(catalogue: Path, tier: str | None):
     context = SimpleNamespace(
         serving_config_inputs={
             "schema": "serving-config-inputs.v1",
-            "serving_recipes_sha256": digest_bytes(Path(catalogue).read_bytes()),
-            "pod_placement_sha256": digest_bytes(placement.read_bytes()),
+            "serving_recipes_sha256": read_sealed_toml(catalogue, "recipes")[1],
+            "pod_placement_sha256": read_sealed_toml(placement, "placement")[1],
         },
         registry=ChairRegistry.from_toml(str(MODELS_CONFIG)),
     )
@@ -492,7 +493,9 @@ def test_a_live_row_selects_the_live_pass_only_with_the_measured_tier(chained_ru
 def test_a_catalogue_that_is_not_the_sealed_one_is_refused(chained_run, tmp_path: Path):
     _root, catalogue = chained_run
     substitute = tmp_path / "substituted.toml"
-    substitute.write_bytes(Path(catalogue).read_bytes() + b"\n# a byte that moved\n")
+    moved = Path(catalogue).read_bytes().replace(b"offline walking-skeleton", b"moved", 1)
+    assert moved != Path(catalogue).read_bytes()
+    substitute.write_bytes(moved)
     context, args = _mode_arguments(catalogue, TIER)
     args.serving_recipes_config = str(substitute)
     with pytest.raises(ContractError, match="serving configuration was refused"):

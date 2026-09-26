@@ -13,9 +13,9 @@ from types import SimpleNamespace
 import pytest
 from _test_support import load_designator
 
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.stages import DESIGNATOR
+from common.sealed_config import read_sealed_toml
 from common.stage import EXIT_COMPLETE, EXIT_FATAL, EXIT_HELD
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -201,7 +201,11 @@ def _coverage_evidence_case():
     context = SimpleNamespace(
         tree=_EvidenceTree(testimony, ink_map),
         args=SimpleNamespace(designator_grouping_config=str(config)),
-        run={"sealed_config_digests": {"designator-grouping": digest_bytes(config.read_bytes())}},
+        run={
+            "sealed_config_digests": {
+                "designator-grouping": read_sealed_toml(config, "grouping")[1]
+            }
+        },
     )
     context.require_sealed_config = lambda name, digest: (
         None

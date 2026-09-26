@@ -24,6 +24,7 @@ from typing import Callable
 import pytest
 
 from common.contracts.errors import ContractError
+from common.sealed_config import read_sealed_toml
 
 from . import bootstrap_main
 from .bootstrap import CONFIGURATION_RECEIPT_SCHEMA, BootstrapStep, BootstrapStepFailure
@@ -1091,7 +1092,7 @@ def test_an_explicit_malformed_context_is_refused_by_configuration_after_checkou
         bootstrap_main._build_configuration_validation(plan)()
 
     assert refusal.value.step is BootstrapStep.CONFIGURATION
-    assert "not a closed table" in refusal.value.detail
+    assert "not the closed, non-blank training_domain record" in refusal.value.detail
 
 
 # --- the chair cache is built lazily, only when CHAIR_CACHE actually runs ---
@@ -1347,7 +1348,7 @@ def _configuration_actions(
     )
 
 
-def test_configuration_receipt_binds_every_selected_path_and_raw_digest(tmp_path: Path) -> None:
+def test_configuration_receipt_binds_every_selected_path_and_seal(tmp_path: Path) -> None:
     _ws, plan = _checked_out_configuration_plan(tmp_path)
 
     receipt = bootstrap_main._build_configuration_validation(plan)()
@@ -1363,7 +1364,7 @@ def test_configuration_receipt_binds_every_selected_path_and_raw_digest(tmp_path
         assert selected is not None
         assert bindings[name] == {  # type: ignore[index]
             "path": str(selected),
-            "sha256": hashlib.sha256(selected.read_bytes()).hexdigest(),
+            "sha256": read_sealed_toml(selected, "configuration")[1],
         }
 
 
@@ -1493,7 +1494,9 @@ def test_a_same_path_serving_byte_change_refuses_before_a_partial_resume(tmp_pat
 
     assert plan.serving_recipes_config is not None
     plan.serving_recipes_config.write_bytes(
-        plan.serving_recipes_config.read_bytes() + b"\n# changed after CONFIGURATION\n"
+        plan.serving_recipes_config.read_bytes().replace(
+            b'description = "', b'description = "changed after CONFIGURATION: ', 1
+        )
     )
     resumed_actions = _configuration_actions(plan)
     resumed = bootstrap_main.run_bootstrap(

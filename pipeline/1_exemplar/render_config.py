@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 from typing import Final, NamedTuple
 
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
+from common.sealed_config import read_sealed_toml
 
 DEFAULT_RENDER_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[2] / "config" / "pdf_render.toml"
@@ -34,7 +33,7 @@ class PdfRenderSettings(NamedTuple):
 
 
 class PdfRenderBinding(NamedTuple):
-    """One run's resolved render target and the digest of the bytes it came from.
+    """One run's resolved render target and the seal of the policy it came from.
 
     The two travel together because they must be of the *same read*. The door used
     to parse the settings here and then let `run_config_bindings` open the file
@@ -55,21 +54,18 @@ def load_pdf_render_binding(
     target_override: int | None = None,
     minimum_dpi: int,
 ) -> PdfRenderBinding:
-    """Read the policy once; parse and hash those same bytes.
+    """Read the policy once; parse and seal that one read.
 
-    `config_sha256` is the digest of the file as read, not of the resolved
+    `config_sha256` is the seal of the file as read, not of the resolved
     settings: `--pdf-target-dpi` may override the configured target, and the run
     seals the override separately. What this digest answers is "which
     `pdf_render.toml` did this run parse", which is the question a point-of-use
     recheck asks.
     """
     try:
-        raw = Path(path).read_bytes()
-        document = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise RenderConfigRefusal(
-            f"the PDF render config at {path} could not be read: {error}"
-        ) from error
+        document, digest = read_sealed_toml(path, "PDF render config")
+    except ContractError as error:
+        raise RenderConfigRefusal(str(error)) from error
     table = document.get("pdf")
     if set(document) != {"pdf"} or not isinstance(table, dict) or set(table) != {"target_dpi"}:
         raise RenderConfigRefusal(f"{path} must contain exactly one [pdf] table with target_dpi")
@@ -79,7 +75,7 @@ def load_pdf_render_binding(
         raise RenderConfigRefusal(f"{source} must be a positive whole DPI")
     return PdfRenderBinding(
         PdfRenderSettings(configured, max(configured, minimum_dpi), minimum_dpi),
-        digest_bytes(raw),
+        digest,
     )
 
 

@@ -1200,9 +1200,10 @@ pads with, and a rewrite landing between those two reads passed everything —
 the binding comparison saw the old bytes, every crop was cut from the new ones,
 and the run exited complete having captured every act under a policy `run.json`
 never sealed. `StageContext.require_sealed_config` closes that window at the
-point of use: `run_config_bindings` now hands back the digest each configuration
-file's binding was taken over, and the stage refuses unless the bytes it read
-are the bytes that were bound. The precondition is local write access to the
+point of use: `run_config_bindings` hands back each configuration file's seal
+(`common/sealed_config.py`: the digest of what the file says, so a comment edit
+moves none), and the stage refuses unless the policy it read seals to the one
+that was bound. The precondition is local write access to the
 configuration path during a run — the same class of precondition as the sealed-
 page-pixel re-check above, and closed the same way.
 

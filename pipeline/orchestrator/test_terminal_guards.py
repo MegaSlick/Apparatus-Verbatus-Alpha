@@ -30,6 +30,7 @@ from common.residual_ink import (
     resolve_coverage_audit_policy,
 )
 from common.runtree.store import RunTree
+from common.sealed_config import read_sealed_toml
 from common.stage import (
     EXIT_COMPLETE,
     EXIT_FATAL,
@@ -122,11 +123,19 @@ class _RecordingContext:
         # double refuse drift or an unsealed name instead of bypassing that
         # boundary.
         self.sealed_config_digests = {
-            "designator-padding": digest_bytes(self.args.designator_padding_config.read_bytes()),
-            "designator-geometry": digest_bytes(self.args.designator_geometry_config.read_bytes()),
-            "designator-grouping": digest_bytes(self.args.designator_grouping_config.read_bytes()),
-            "perlector-audit": digest_bytes(self.perlector_audit_config_path.read_bytes()),
-            "perlector-protocol": digest_bytes(self.args.perlector_protocol_config.read_bytes()),
+            "designator-padding": read_sealed_toml(self.args.designator_padding_config, "config")[
+                1
+            ],
+            "designator-geometry": read_sealed_toml(self.args.designator_geometry_config, "config")[
+                1
+            ],
+            "designator-grouping": read_sealed_toml(self.args.designator_grouping_config, "config")[
+                1
+            ],
+            "perlector-audit": read_sealed_toml(self.perlector_audit_config_path, "config")[1],
+            "perlector-protocol": read_sealed_toml(self.args.perlector_protocol_config, "config")[
+                1
+            ],
         }
 
         # Build the mapped page with the same policies, measures, and canonical

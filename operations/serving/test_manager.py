@@ -41,6 +41,7 @@ from common.chairs.models import (
 from common.chairs.receipts import build_receipt
 from common.chairs.registry import ChairRegistry
 from common.runtree.store import RunTree
+from common.sealed_config import parse_sealed_toml, read_sealed_toml
 from common.stage import StageContext, run_config_bindings
 from operations.pod.preflight import (
     GpuProfile,
@@ -811,8 +812,8 @@ def sealed_config_inputs(root: Path) -> dict[str, str]:
     """The exact configuration projection a real ``open_context`` would supply."""
 
     return ServingConfigInputs(
-        hashlib.sha256((root / "config/serving_recipes.toml").read_bytes()).hexdigest(),
-        hashlib.sha256((root / "config/pod_placement.toml").read_bytes()).hexdigest(),
+        read_sealed_toml(root / "config/serving_recipes.toml", "recipes")[1],
+        read_sealed_toml(root / "config/pod_placement.toml", "placement")[1],
     ).to_record()
 
 
@@ -3341,10 +3342,14 @@ def test_pod_assembly_refuses_recipe_or_placement_path_substitution_before_effec
     copied_recipes = tmp_path / "recipes.toml"
     copied_placement = tmp_path / "placement.toml"
     copied_recipes.write_bytes(
-        (root / "config/serving_recipes.toml").read_bytes() + b"\n# altered\n"
+        (root / "config/serving_recipes.toml")
+        .read_bytes()
+        .replace(b"offline walking-skeleton", b"altered walking-skeleton", 1)
     )
     copied_placement.write_bytes(
-        (root / "config/pod_placement.toml").read_bytes() + b"\n# altered\n"
+        (root / "config/pod_placement.toml")
+        .read_bytes()
+        .replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
     )
 
     with pytest.raises(ServingConfigurationError, match="recipes bytes differ"):
@@ -3446,8 +3451,8 @@ def test_bound_configuration_parses_the_snapshot_it_digested_not_a_second_read(
 
     _, placement, _ = _load_bound_configuration(
         sealed_config_inputs=ServingConfigInputs(
-            hashlib.sha256(recipes_path.read_bytes()).hexdigest(),
-            hashlib.sha256(sealed).hexdigest(),
+            read_sealed_toml(recipes_path, "recipes")[1],
+            parse_sealed_toml(sealed, "placement")[1],
         ).to_record(),
         recipes_path=recipes_path,
         placement_path=placement_path,
@@ -3703,7 +3708,7 @@ def test_serving_recipe_and_placement_bytes_are_bound_into_the_run_configuration
         pod_placement_config_path=copied_placement,
     )["config_digest"]
     copied_recipes.write_bytes(
-        copied_recipes.read_bytes() + b"\n# different exact serving profile catalogue\n"
+        copied_recipes.read_bytes().replace(b"offline walking-skeleton", b"another catalogue", 1)
     )
     second = run_config_bindings(
         models,
@@ -3714,7 +3719,7 @@ def test_serving_recipe_and_placement_bytes_are_bound_into_the_run_configuration
     )["config_digest"]
     assert first != second
     copied_placement.write_bytes(
-        copied_placement.read_bytes() + b"\n# different exact placement catalogue\n"
+        copied_placement.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
     )
     third = run_config_bindings(
         models,

@@ -20,7 +20,6 @@ which includes the witness roster the run was authorized with, not only the acts
 """
 
 import sys
-import tomllib
 import unicodedata
 from pathlib import Path
 from typing import Final
@@ -87,6 +86,7 @@ from common.residual_ink import (  # noqa: E402
     reconcile_edge_finding_with_runs,
     resolve_coverage_audit_policy,
 )
+from common.sealed_config import read_sealed_toml
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -931,14 +931,13 @@ def _config_provenance(context, name: str, path, table: str) -> dict:
     file.
     """
     try:
-        data = Path(path).read_bytes()
-        context.require_sealed_config(name, digest_bytes(data))
-        record = tomllib.loads(data.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        record, digest = read_sealed_toml(path, f"sealed {name} configuration")
+    except ContractError as error:
         raise FatalAccounting(
             f"the sealed configuration at {path} could not be read for its calibration "
             "provenance; the export may not report a caveat it did not read"
         ) from error
+    context.require_sealed_config(name, digest)
     provenance = record.get(table, {}).get("provenance")
     if not isinstance(provenance, dict) or "calibrated_for_this_corpus" not in provenance:
         raise FatalAccounting(
@@ -996,14 +995,15 @@ def geometry_calibration_rows(context) -> list[dict]:
 def sealed_audit_round_cap(context) -> int:
     """The `round_cap` this run sealed, which decides whether a span can exist."""
     try:
-        data = Path(context.perlector_audit_config_path).read_bytes()
-        context.require_sealed_config("perlector-audit", digest_bytes(data))
-        record = tomllib.loads(data.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        record, digest = read_sealed_toml(
+            context.perlector_audit_config_path, "sealed Perlector audit policy"
+        )
+    except ContractError as error:
         raise FatalAccounting(
             "the sealed Perlector audit policy could not be read; the export cannot say "
             "whether an uncertain span was reachable on this run"
         ) from error
+    context.require_sealed_config("perlector-audit", digest)
     cap = record.get("round_cap")
     if not isinstance(cap, int) or isinstance(cap, bool):
         raise FatalAccounting("the sealed Perlector audit policy declares no integer round cap")
