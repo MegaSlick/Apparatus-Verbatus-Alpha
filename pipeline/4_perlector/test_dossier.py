@@ -18,6 +18,7 @@ from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
 from common.imaging import dimensions
 from common.runtree.store import RunTree
+from common.stage import StageContext
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,6 +36,10 @@ dossier = perlector.dossier_module
 
 
 class _Context:
+    stage = PERLECTOR
+    sealed = False
+    retain = StageContext.retain
+
     def __init__(self, tree, witness_context="named"):
         self.tree = tree
         self.run = tree.read_run()
@@ -627,3 +632,33 @@ def test_published_perlectio_binds_page_context_and_its_source_as_direct_inputs(
                 "relative_path": page_render["image_path"],
                 "sha256": page_render["image_sha256"],
             } in reading["inputs"]
+
+
+def test_a_page_render_refuses_page_bytes_swapped_after_the_artifact_check(evidence, monkeypatch):
+    """The Perlector's page view is rendered only from bytes checked against the seal."""
+    context, act_id, act_key, regions, testimonia = evidence
+    page_id = regions[0]["transform"]["source_page_id"]
+    page = context.tree.read_artifact(
+        dossier.EXEMPLAR, "page", dossier.artifact_id(dossier.EXEMPLAR, "page", page_id)
+    )
+    image_path = page["payload"]["image_path"]
+    other = BytesIO()
+    Image.new("L", (200, 260), color=7).save(other, format="PNG")
+    read_bytes, read_artifact = context.tree.read_bytes, context.tree.read_artifact
+
+    def verified_before_swap(*args):
+        record = read_artifact(*args)
+        monkeypatch.setattr(
+            context.tree,
+            "read_bytes",
+            lambda path: other.getvalue() if path == image_path else read_bytes(path),
+        )
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact", verified_before_swap)
+    with pytest.raises(SchemaRefusal, match="no longer matches"):
+        dossier.build_page_render(
+            context,
+            source_page_id=page_id,
+            source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
+        )

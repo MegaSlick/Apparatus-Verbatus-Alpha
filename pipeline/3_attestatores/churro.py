@@ -29,6 +29,9 @@ import feeding
 
 from common import churro_document
 from common.contracts.errors import SchemaRefusal
+from common.contracts.identities import artifact_id
+from common.contracts.stages import EXEMPLAR
+from common.exemplar_boundary import sealed_page_bytes
 from common.imaging import convert_png_to_rgb, crop_png, dimensions, resize_png_lanczos
 from common.imaging_ports import resize_to_fit_churro
 from common.native_witness import parse_churro_response, validate_presented
@@ -186,7 +189,10 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
         return presentation
     transform = presentation["transform"]
     page_id = transform["source_page_id"]
-    page_bytes = feeding.sealed_page_bytes(context, page_id, what="Churro")
+    page_bytes = sealed_page_bytes(
+        context.tree,
+        context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id)),
+    )
     # Keep bounds failures as SchemaRefusals, not crop_png's bare ValueError.
     validate_presented(presentation, page_size=dimensions(page_bytes))
     bounds = dict(transform["bounds"])

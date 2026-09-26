@@ -17,10 +17,9 @@ from types import MappingProxyType
 from typing import Any, Callable, Final, Iterator, Mapping
 
 from common import chandra_layout
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import digest_of
 from common.contracts.errors import SchemaRefusal
-from common.contracts.identities import artifact_id
-from common.contracts.stages import ATTESTATORES, EXEMPLAR
+from common.contracts.stages import ATTESTATORES
 from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
     churro_capture_system_prompt,
@@ -513,32 +512,6 @@ def dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
         target_width = max(1, math.floor(target_width / beta))
         target_height = max(1, math.floor(target_height / beta))
     return target_width, target_height
-
-
-def sealed_page_bytes(context: Any, page_id: str, *, what: str) -> bytes:
-    """The sealed Exemplar page's exact bytes, read once and digest-bound.
-
-    Shared by all three adapters' crop step so a filesystem swap cannot cross
-    the interval between the artifact check and the imaging call that uses it.
-
-    ``what`` names the adapter in every refusal, so an operator is sent to the
-    chair whose presentation could not be built.
-    """
-
-    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    payload = page.get("payload")
-    image_path = payload.get("image_path") if isinstance(payload, dict) else None
-    if not isinstance(image_path, str) or not image_path:
-        raise SchemaRefusal(f"{what}'s sealed source page has no image path to crop")
-    try:
-        page_bytes = context.tree.read_bytes(image_path)
-    except OSError as error:
-        raise SchemaRefusal(f"{what} sealed page bytes could not be read: {error}") from error
-    if digest_bytes(page_bytes) != payload.get("source_sha256"):
-        raise SchemaRefusal(
-            f"{what} sealed page bytes changed between artifact verification and crop use"
-        )
-    return page_bytes
 
 
 def _record_post_hoc_repetition(

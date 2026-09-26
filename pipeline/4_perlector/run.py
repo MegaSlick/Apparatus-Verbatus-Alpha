@@ -74,7 +74,7 @@ from common.cross_capture_autopsia import (  # noqa: E402
     validate_autopsia,
 )
 from common.decoding import load_decoding_policy  # noqa: E402
-from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.exemplar_boundary import sealed_page_bytes, verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
@@ -517,7 +517,7 @@ def _validate_presented_page(context, payload: dict, presented: dict) -> None:
     """Bind a witness's presentation and observed geometry to its sealed Exemplar page."""
     page_id = presented.get("source_page_id")
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    page_bytes = sealed_page_bytes(context.tree, page)
     page_size = dimensions(page_bytes)
     validate_native_witness_geometry(payload, page_size=page_size)
     validate_presented_page_binding(

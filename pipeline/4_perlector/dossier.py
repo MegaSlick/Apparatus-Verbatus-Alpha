@@ -27,6 +27,7 @@ from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR
+from common.exemplar_boundary import sealed_page_bytes
 from common.imaging import crop_png, dimensions, encode_grayscale_png_deterministic
 from common.native_witness import REPORTED_BOUNDS_SOURCES
 from common.stage import WITNESS_READING_OUTCOMES
@@ -166,10 +167,7 @@ def build_page_render(context, *, source_page_id: str, source_page_ordinal: int)
     page = context.tree.read_artifact(
         EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", source_page_id)
     )
-    source_path = page["payload"].get("image_path")
-    if not isinstance(source_path, str) or not source_path:
-        raise SchemaRefusal("a sealed Exemplar page carries no image to render page context from")
-    page_bytes = context.tree.read_bytes(source_path)
+    page_bytes = sealed_page_bytes(context.tree, page)
     try:
         downscaled, transform = _downscale_page(page_bytes, maximum_edge=PAGE_CONTEXT_MAX_EDGE)
     except (OSError, ValueError, Image.DecompressionBombError) as error:
@@ -182,7 +180,10 @@ def build_page_render(context, *, source_page_id: str, source_page_ordinal: int)
         "source_page_ordinal": source_page_ordinal,
         # The sealed page this render was derived from, named so the derivation
         # can be checked rather than believed.
-        "source": context.input_ref(source_path),
+        "source": {
+            "relative_path": page["payload"]["image_path"],
+            "sha256": page["payload"]["source_sha256"],
+        },
         "image_path": published["relative_path"],
         "image_sha256": published["sha256"],
         "transform": transform,

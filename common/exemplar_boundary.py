@@ -142,6 +142,29 @@ def verify_sealed_page_pixels(
     return page_bytes
 
 
+def sealed_page_bytes(tree: RunTree, page: dict[str, Any]) -> bytes:
+    """Read a sealed Exemplar page's pixels once, checked against its sealed digest.
+
+    Image work must use these same bytes: a second read reopens the gap a swap
+    between check and use would cross.
+    """
+    payload = page.get("payload")
+    image_path = payload.get("image_path") if isinstance(payload, dict) else None
+    if not isinstance(image_path, str) or not image_path:
+        raise SchemaRefusal("a sealed Exemplar page has no image path")
+    try:
+        data = tree.read_bytes(image_path)
+    except OSError as error:
+        raise SchemaRefusal(f"sealed Exemplar page bytes could not be read: {error}") from error
+    actual = digest_bytes(data)
+    if actual != payload.get("source_sha256"):
+        raise SchemaRefusal(
+            f"sealed Exemplar page {image_path} no longer matches its sealed digest: "
+            f"read {actual}, sealed {payload.get('source_sha256')}"
+        )
+    return data
+
+
 def _page_origin(source_digest: str, rendered: Any) -> dict[str, Any]:
     """Build page identity only from a complete, typed render origin."""
     if rendered is None:

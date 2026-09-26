@@ -36,6 +36,9 @@ import feeding
 from common import imaging_ports
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
 from common.contracts.errors import SchemaRefusal
+from common.contracts.identities import artifact_id
+from common.contracts.stages import EXEMPLAR
+from common.exemplar_boundary import sealed_page_bytes
 from common.imaging import crop_png, dimensions, resize_png_lanczos
 from common.native_witness import validate_presented
 from common.witness_adapters import AdapterRefusal, resolve_witness_adapter_name
@@ -154,7 +157,10 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
         raise SchemaRefusal("DAI accepts an act proposal region, not a page presentation")
     source_transform = presentation["transform"]
     page_id = source_transform["source_page_id"]
-    page_bytes = feeding.sealed_page_bytes(context, page_id, what="DAI")
+    page_bytes = sealed_page_bytes(
+        context.tree,
+        context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id)),
+    )
     # Keep bounds failures as SchemaRefusals, not crop_png's bare ValueError.
     validate_presented(presentation, page_size=dimensions(page_bytes))
     bounds = dict(source_transform["bounds"])

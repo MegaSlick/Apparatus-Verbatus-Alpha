@@ -81,7 +81,7 @@ from common.contracts.serving import (  # noqa: E402
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
-from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.exemplar_boundary import sealed_page_bytes, verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     PAGE_TESTIMONIUM_REQUIRED_FIELDS,
@@ -370,7 +370,7 @@ def presentation_for_page(
             "pixels; no witness can be shown a page that was never admitted"
         )
     image_path = page["payload"]["image_path"]
-    page_bytes = _verified_page_bytes(context, page)
+    page_bytes = sealed_page_bytes(context.tree, page)
     width, height = dimensions(page_bytes)
     return {
         "kind": "page",
@@ -511,34 +511,8 @@ def _sealed_source_page(
     """The sealed Exemplar page, exact verified bytes used, and decoded size."""
     page_id = presented["source_page_id"]
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    page_bytes = _verified_page_bytes(context, page)
+    page_bytes = sealed_page_bytes(context.tree, page)
     return page, page_bytes, dimensions(page_bytes)
-
-
-def _verified_page_bytes(context, page: dict[str, Any]) -> bytes:
-    """Read once and bind the exact page bytes that image operations will use.
-
-    Digesting the same bytes object that is decoded closes the check/use gap a
-    second read of the blob would open.
-    """
-    payload = page.get("payload")
-    if not isinstance(payload, dict):
-        raise SchemaRefusal("a sealed Exemplar page has no object payload")
-    image_path = payload.get("image_path")
-    expected_digest = payload.get("source_sha256")
-    if not isinstance(image_path, str) or not image_path:
-        raise SchemaRefusal("a sealed Exemplar page has no image path")
-    try:
-        page_bytes = context.tree.read_bytes(image_path)
-    except OSError as error:
-        raise SchemaRefusal(f"sealed Exemplar page bytes could not be read: {error}") from error
-    actual_digest = digest_bytes(page_bytes)
-    if actual_digest != expected_digest:
-        raise SchemaRefusal(
-            "sealed Exemplar page bytes changed between artifact verification and image use: "
-            f"digest {actual_digest}, not {expected_digest}"
-        )
-    return page_bytes
 
 
 def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:

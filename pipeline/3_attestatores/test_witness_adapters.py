@@ -283,7 +283,7 @@ def test_dai_crop_refuses_bytes_swapped_after_page_artifact_verification():
     context.tree.read_artifact = verified_before_swap
     adapters = _load_local_adapters()
 
-    with pytest.raises(SchemaRefusal, match="changed between artifact verification and crop use"):
+    with pytest.raises(SchemaRefusal, match="no longer matches its sealed digest"):
         adapters.resolve_runnable_adapter("dai.v1").present(context, _dai_region(20, 10))
     assert context.tree.blobs == {}
 
@@ -292,7 +292,7 @@ def test_dai_crop_refuses_bytes_swapped_after_page_artifact_verification():
 def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
     """A sealed page with no path to read is a held attempt, not a KeyError.
 
-    The stage's own `_verified_page_bytes` already names this failure; a bare
+    `sealed_page_bytes` names this failure; a bare
     `KeyError` out of the adapter boundary would reach the operator as an
     unclassified traceback, and the attempt would not be held with a reason
     (principle 2).
@@ -301,7 +301,7 @@ def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
     context.tree.read_artifact = lambda *_args: {"payload": payload}
     adapters = _load_local_adapters()
 
-    with pytest.raises(SchemaRefusal, match="no image path to crop"):
+    with pytest.raises(SchemaRefusal, match="no image path"):
         adapters.resolve_runnable_adapter("dai.v1").present(context, _dai_region(20, 10))
     assert context.tree.blobs == {}
 
