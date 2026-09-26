@@ -235,17 +235,16 @@ def live_run(chained_run, tmp_path: Path) -> tuple[Path, Path]:
     return root, catalogue
 
 
-@pytest.fixture(scope="module")
-def real_template(tmp_path_factory) -> Path:
-    """One real submission of the fixture pages, carried to the Ink Map's
-    seal under the committed fixture catalogue.
+def _real_submission(base: Path, pages: dict[str, bytes], *argv: str) -> Path:
+    """Door, Exemplar and Ink Map as programs over a real submission of `pages`.
+
+    `argv` goes to all three, since each later open rechecks what the Door sealed.
     """
-    base = tmp_path_factory.mktemp("real-designator-template")
     approved = base / "approved-storage"
     source = approved / "submitted-pages"
     source.mkdir(parents=True)
-    for name in ("page-1.png", "page-2.png"):
-        shutil.copyfile(FIXTURE_PAGES / name, source / name)
+    for name, data in pages.items():
+        (source / name).write_bytes(data)
     policy = json.loads(gate.DEFAULT_POLICY_PATH.read_text(encoding="utf-8"))
     policy["storage_roots"] = [str(approved)]
     policy_path = base / "data-gate-policy.json"
@@ -253,35 +252,35 @@ def real_template(tmp_path_factory) -> Path:
     ledger = approved / "submission-ledger.json"
     submit.submit(source, ledger, policy_path=policy_path)
     root = approved / "runs"
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(DOOR_CLI),
-            "--run-root",
-            str(root),
-            "--run-id",
-            RUN_ID,
-            "--submission-folder",
-            str(source),
-            "--submission-manifest",
-            str(ledger),
-            "--data-gate-policy",
-            str(policy_path),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
+    door_argv = (
+        "--submission-folder",
+        str(source),
+        "--submission-manifest",
+        str(ledger),
+        "--data-gate-policy",
+        str(policy_path),
     )
-    assert result.returncode == 0, result.stderr
-    for program in (EXEMPLAR_CLI, INK_MAP_CLI):
+    for program, extra in ((DOOR_CLI, door_argv), (EXEMPLAR_CLI, ()), (INK_MAP_CLI, ())):
         result = subprocess.run(
-            [sys.executable, str(program), "--run-root", str(root), "--run-id", RUN_ID],
+            [sys.executable, str(program), "--run-root", str(root), "--run-id", RUN_ID]
+            + [*extra, *argv],
             cwd=ROOT,
             capture_output=True,
             text=True,
         )
         assert result.returncode == 0, f"{program.name}: {result.stderr}"
     return root
+
+
+@pytest.fixture(scope="module")
+def real_template(tmp_path_factory) -> Path:
+    """One real submission of the fixture pages, carried to the Ink Map's
+    seal under the committed fixture catalogue.
+    """
+    return _real_submission(
+        tmp_path_factory.mktemp("real-designator-template"),
+        {name: (FIXTURE_PAGES / name).read_bytes() for name in ("page-1.png", "page-2.png")},
+    )
 
 
 # --- driving the stage -----------------------------------------------------------

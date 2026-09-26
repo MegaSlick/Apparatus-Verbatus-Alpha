@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from common.test_credentials import FILES_AND_HOSTS, OPAQUE, PASSING_VALUES, SHAPED_VALUES
+
 from . import notify_hooks
 from .notify_hooks import (
     NOTIFY_SCRIPT,
@@ -121,7 +123,7 @@ def test_notify_balance_reads_as_account_scoped_with_no_lease() -> None:
     "card",
     [
         # Vendor-prefix cases below are deliberately shorter than a real key of
-        # that shape: `_looks_like_credential_word`'s prefix check does not
+        # that shape: the shared prefix check does not
         # care about length, but the repository's own ingress scanner
         # (`.githooks/check_ingress.py`) pattern-matches a *real-length* key
         # and would refuse to let this file be committed at all otherwise.
@@ -146,6 +148,91 @@ def test_a_credential_shaped_value_is_refused_before_sending(card: str) -> None:
     assert not outcome.delivered
     assert "credential" in outcome.detail
     assert runner.calls == [], "a refused message must never reach the shell"
+
+
+@pytest.mark.parametrize("value", SHAPED_VALUES)
+def test_every_boundary_refuses_or_removes_a_credential_shape(value: str) -> None:
+    from operations.serving.manager import _redacted
+
+    from .fixture import SCRUBBED, _scrub
+
+    runner = FakeRunner()
+    assert not notify_launch(lease_id="l", card=value, max_hourly_usd="1", runner=runner).attempted
+    assert _scrub({"message": f"started {value}"}, "body", []) == {"message": SCRUBBED}
+    redacted = _redacted(f"INFO started {value} ok")
+    assert value not in redacted
+    assert "K7MDENG" not in redacted and "3xK9pLm2Qz" not in redacted
+
+
+def test_the_fixture_scrubs_a_secret_named_inside_a_string() -> None:
+    from .fixture import SCRUBBED, _scrub
+
+    scrubbed: list[str] = []
+    assert _scrub({"args": "run password=Abc123xyz98"}, "body", scrubbed) == {"args": SCRUBBED}
+    assert scrubbed == ["body.args"]
+
+
+@pytest.mark.parametrize("value", PASSING_VALUES)
+def test_every_boundary_passes_an_identifier(value: str) -> None:
+    from operations.serving.manager import _redacted
+
+    from .bootstrap_main import refuse_credential_looking_argv
+    from .fixture import _scrub
+
+    assert notify_close(
+        lease_id=value, verified_state="ok", billed_seconds=1, runner=FakeRunner()
+    ).delivered
+    assert _scrub({"message": value}, "body", []) == {"message": value}
+    refuse_credential_looking_argv(["--run-id", value])
+    assert _redacted(f"INFO {value}") == f"INFO {value}"
+
+
+@pytest.mark.parametrize("value", FILES_AND_HOSTS)
+def test_a_file_or_host_passes_argv_and_logs_but_not_notifications_or_fixtures(value: str) -> None:
+    from operations.serving.manager import _redacted
+
+    from .bootstrap_main import refuse_credential_looking_argv
+    from .fixture import SCRUBBED, _scrub
+
+    assert not notify_launch(
+        lease_id="l", card=value, max_hourly_usd="1", runner=FakeRunner()
+    ).attempted
+    assert _scrub({"message": value}, "body", []) == {"message": SCRUBBED}
+    refuse_credential_looking_argv(["--run-id", value])
+    assert _redacted(f"INFO {value}") == f"INFO {value}"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "sk-not-a-real-key",
+        "aB3fG9kL2mN7pQ5rS8tU1v",
+        "abcdefghij.klmnopqrst.uvwxyz1234",
+        "/workspace/abcdefghij.klmnopqrst.uvwxyz1234/report.json",
+        "/workspace/sk-not-a-real-key/report.json",
+        "https://user" + ":" + OPAQUE + "@example.invalid/x",
+        f"https://example.invalid/x?key={OPAQUE}",
+    ],
+)
+def test_the_argv_refusal_refuses_a_bare_secret_or_a_prefixed_or_dotted_segment(value: str) -> None:
+    from .bootstrap_main import PlanRefusal, refuse_credential_looking_argv
+
+    with pytest.raises(PlanRefusal, match="looks like a credential"):
+        refuse_credential_looking_argv(["--run-id", value])
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/tmp/pytest-of-runner/pytest-341/test_hold_survives_a_completed0/volume",
+        "/var/folders/wv/yt31hyzs7cgf7xs7mn8xnlpw0000gn/T/volume",
+        "/workspace/runs/recordgold-pilot-2026-09-25/",
+    ],
+)
+def test_the_argv_refusal_passes_run_folders_and_temp_directories(value: str) -> None:
+    from .bootstrap_main import refuse_credential_looking_argv
+
+    refuse_credential_looking_argv(["--volume-mount-path", value])
 
 
 @pytest.mark.parametrize(

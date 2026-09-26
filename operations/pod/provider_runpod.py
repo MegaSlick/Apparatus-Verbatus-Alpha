@@ -78,6 +78,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Final, Mapping, Protocol
 
+from common.credentials import looks_like_credential_field
+
 from ..http_deadline import DeadlineExceeded, call_within_deadline, recording_opener
 from . import notify_hooks
 from .controllers import PodDeadmanTimer
@@ -100,7 +102,6 @@ from .models import (
     ProviderStatus,
     TerminateRefused,
     as_decimal,
-    looks_like_credential_field,
     parse_billing_cutoff_margin_seconds,
     require_utc,
     utc_now,

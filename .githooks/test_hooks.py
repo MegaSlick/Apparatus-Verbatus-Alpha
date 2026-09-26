@@ -435,3 +435,74 @@ def test_merge_path_runs_the_same_precommit_boundary(tmp_path):
     blocked = git(repo, "merge", "--no-edit", "--no-ff", "work/second", check=False)
     assert blocked.returncode != 0
     assert "commit on main" in blocked.stderr
+
+
+def stub_ingress(repo, *, message=0, ref_fields=0, staged=0):
+    """A check_ingress.py that exits with the given status for each mode it is run in."""
+    (repo / ".githooks" / "check_ingress.py").write_text(
+        "import sys\n"
+        "sys.stdin.buffer.read() if '--ref-fields' in sys.argv else None\n"
+        f"codes = {{'--message-file': {message}, '--ref-fields': {ref_fields}, "
+        f"'--staged': {staged}}}\n"
+        "raise SystemExit(next(codes[a] for a in sys.argv if a in codes))\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("codes", "refusal"),
+    [
+        ({"message": 1}, "matched a recognized credential pattern"),
+        ({"message": 2}, "exited 2, meaning it could not run"),
+        ({"ref_fields": 1}, "author or committer header matched"),
+        ({"ref_fields": 2}, "headers could not be checked"),
+    ],
+)
+def test_commit_message_hook_refuses_on_every_nonzero_ingress_status(tmp_path, codes, refusal):
+    repo = make_commit_message_repo(tmp_path / "repo")
+    stub_ingress(repo, **codes)
+    result = run_commit_message_in(repo, "add a note\n")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert refusal in result.stderr
+
+
+def test_commit_message_hook_refuses_when_the_ingress_check_is_missing(tmp_path):
+    repo = make_commit_message_repo(tmp_path / "repo")
+    (repo / ".githooks" / "check_ingress.py").unlink()
+    result = run_commit_message_in(repo, "add a note\n")
+    assert result.returncode == 1
+    assert "is missing" in result.stderr
+
+
+def test_pre_commit_refuses_when_the_ingress_check_cannot_run(tmp_path):
+    repo = make_precommit_repo(tmp_path / "repo")
+    stub_ingress(repo, staged=2)
+    assert run_hook(repo, "pre-commit").returncode == 1
+    (repo / ".githooks" / "check_ingress.py").unlink()
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1
+    assert "is missing" in result.stderr
+
+
+def test_pre_merge_commit_refuses_when_pre_commit_fails_or_is_missing(tmp_path):
+    repo = make_precommit_repo(tmp_path / "repo")
+    copy_hooks(repo, "pre-merge-commit")
+    stub_ingress(repo, staged=2)
+    assert run_hook(repo, "pre-merge-commit").returncode == 1
+    stub_ingress(repo)
+    assert run_hook(repo, "pre-merge-commit").returncode == 0
+    (repo / ".githooks" / "pre-commit").unlink()
+    result = run_hook(repo, "pre-merge-commit")
+    assert result.returncode == 1
+    assert "is missing" in result.stderr
+
+
+def test_pre_commit_scans_the_index_not_the_working_copy(tmp_path):
+    repo = make_precommit_repo(tmp_path / "repo")
+    (repo / "config.txt").write_text(f"token = {SAMPLE_SECRET}\n")
+    git(repo, "add", "config.txt")
+    (repo / "config.txt").write_text("clean\n")
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1
+    assert "[runpod-api-key]" in result.stdout + result.stderr
+    git(repo, "add", "config.txt")
+    assert run_hook(repo, "pre-commit").returncode == 0

@@ -49,6 +49,7 @@ from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP, RECENSOR  # noqa: E402
+from common.credentials import looks_like_credential_env  # noqa: E402
 from common.durability import sync_directory  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -131,26 +132,6 @@ _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_
 # monotonic reading names no instant a reader could compare across records.
 _clock = time.monotonic
 STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v1"
-# Duplicated from `operations.operator.custody.PROVIDER_ENV_PREFIXES` and
-# `operations.pod.models.looks_like_credential_field`'s marker scan, for the
-# identical reason and closed the identical way (reconciled by the same test
-# named above, widened to cover this). These names withhold every other
-# provider credential (RUNPOD_API_KEY: pod creation, i.e. money; HF_TOKEN;
-# AWS_*; ...) from a subprocess that decodes attacker-supplied PDFs, TIFFs,
-# HEICs and PNGs and talks to the serving endpoint -- at least as hostile a
-# boundary as `operations.operator.custody.credential_free_environment`
-# already confines the operator's console/backup/advance/ScanTailor children
-# to. This is that same predicate, held to it by the widened test rather than
-# imported, because this module imports only `common/`.
-_PROVIDER_ENV_PREFIXES = ("RUNPOD_", "AWS_", "HF_", "HUGGINGFACE_")
-_CREDENTIAL_NAME_MARKERS = ("key", "secret", "password", "credential", "bearer", "token")
-
-
-def _looks_like_provider_credential(name: str) -> bool:
-    normalized = name.lower().replace("-", "_")
-    return any(name.startswith(prefix) for prefix in _PROVIDER_ENV_PREFIXES) or any(
-        marker in normalized for marker in _CREDENTIAL_NAME_MARKERS
-    )
 
 
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
@@ -206,9 +187,7 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
 def stage_environment() -> dict[str, str]:
     """Keep stage runtime settings, but drop every provider credential (F016)."""
     return {
-        name: value
-        for name, value in os.environ.items()
-        if not _looks_like_provider_credential(name)
+        name: value for name, value in os.environ.items() if not looks_like_credential_env(name)
     }
 
 

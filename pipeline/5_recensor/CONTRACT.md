@@ -158,6 +158,20 @@ region ids. Reporting the second shape as empty was a defect that dropped a flag
 only evidence whenever the held act was the one act touching it; it is fixed
 now.
 
+**A continuation candidate holds every act it names.** The Designator publishes
+`continuation-candidate` (not authoritative) for each crossing its geometry shows
+between adjacent pages with no declared continuation. `continuation_candidate_refs`
+reads every such record and refuses by name one that is malformed, is not
+`authoritative: false`, or names an act the proposal seal does not propose (so a
+Designator-held act is never named). Each named act is read, then held by
+`review_route_from_findings(continuation_candidate=True)`: a head alone is a
+truncation and a tail alone has no heading. When another cause holds the act
+first, its reason still names the candidate. Every review of a named act,
+`recovery-requested` included, lists every naming candidate as inputs and as
+`payload["continuation_candidate_refs"]`, so an act that ends one break and
+opens the next cites both; the field is absent on a review no candidate names. The link stays unmade and no act is merged; the
+export is partial until a review decides.
+
 ## `kind="review"`
 
 Every readable-act review payload has `act_key`, `attempt_ordinal`, coverage,
@@ -169,7 +183,11 @@ recorded nowhere at all.
 The Perlectio reference is both a payload fact and a direct input: it names
 exactly the reading the review assessed. Ordinary terminal records use
 `accepted` or `held-for-review`; held Designator acts instead directly input
-their hold evidence.
+their hold evidence. An act the Perlector held with `hold.code =
+"cross-capture-read-not-built"` is terminal here too: never sent to recovery, it gets a
+`held-for-review` review whose inputs are that `not-run` Perlectio and its cut crops,
+with `perlectio_ref`, the hold code and remedy in `reason`, `recoveries_used = 0`, and
+`null` audit, uncertainty and cross-capture coverage.
 
 **`attempt_ordinal` is minted from the review's own content, not counted from
 recovery requests.** `current_review` (`pipeline/5_recensor/run.py`)

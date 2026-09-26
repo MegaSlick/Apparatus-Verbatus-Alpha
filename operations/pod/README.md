@@ -431,7 +431,7 @@ reviewed values.
 Appends every provider exchange (method, path, bodies, status, transport failure) through
 `fixture.py`'s recorder as JSON lines (0600, fsynced, never truncated), so a drill leaves a
 replayable fixture (04-6). Credential-shaped values under either shared predicate
-(`models.looks_like_credential_field`, `models.looks_like_credential_value`) and the launch
+(`common.credentials.looks_like_credential_field`, `looks_like_credential_value`) and the launch
 token are replaced, and the record says `verbatim: false` with each scrubbed path. A
 provider without `record_exchanges` — the fake — refuses the flag by name before any
 preview, except under `close`, which records the unhonoured flag and still stops the meter.

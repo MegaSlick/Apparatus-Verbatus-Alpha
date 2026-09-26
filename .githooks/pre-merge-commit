@@ -1,6 +1,5 @@
 #!/bin/sh
-# git does not run pre-commit for a clean merge, so this hook runs it instead:
-# a merge commit gets the same main-branch refusal and staged-content scan.
+# git skips pre-commit for a clean merge, so a merge commit runs it here.
 
 hook="$(dirname "$0")/pre-commit"
 if [ ! -f "$hook" ]; then

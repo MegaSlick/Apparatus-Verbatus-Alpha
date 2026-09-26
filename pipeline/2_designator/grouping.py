@@ -4,9 +4,8 @@ Principle 1: nothing here scores, ranks or elects among candidate regions by
 quality. Every decision is a deterministic partition or overlap test over
 fixed geometry -- a component belongs to a column because of where it sits, a
 body run splits because a boundary crosses it, an anchor attaches because
-y-ranges overlap -- and where one group must be picked from several
-(`find_continuation_candidate`), the pick is the extremal one by position,
-never a score. `test_grouping.py` proves the whole pass is input-order
+y-ranges overlap -- and `find_continuation_candidate` pairs every edge group
+it finds rather than picking one. `test_grouping.py` proves the whole pass is input-order
 invariant, which an election could never be.
 
 Two columns only: a narrow left-hand *margin* column (names, numbered markers,
@@ -337,23 +336,25 @@ def find_continuation_candidate(
     *,
     edge_reach_a_px: int,
     edge_reach_b_px: int,
-) -> dict[str, Any] | None:
-    """A page-break continuation candidate, found by geometry alone.
+) -> list[dict[str, Any]]:
+    """Every page-break continuation candidate between two pages, by geometry alone.
 
-    The trailing group on page A must touch the page's bottom edge, the
-    leading group on page B must touch its top edge, carry no anchor of its
-    own (an anchored group is a new act) and share a column with the trailing
-    group. These are position tests only; whether the content actually
-    continues is the Recensor's judgement, not this function's.
+    Each group on page A that reaches the bottom edge is paired with each group
+    on page B that reaches the top edge, carries no anchor of its own (an
+    anchored group is a new act) and shares a column with it. Every edge group
+    is considered, so a folio number, catchword or second column at an edge
+    cannot hide a crossing beside it. Pairs come back in page position order.
+    These are position tests only; whether the content actually continues is a
+    review decision, not this function's.
 
     `edge_reach_a_px` and `edge_reach_b_px` are each page's own resolved edge
     reach: one shared value would silently assume the two pages share a height.
 
     The column-share test takes no slack: two x-ranges share a column only
-    when they actually meet, since this check is recorded rather than gating
-    (`run.py::_publish_act_group`), so a miss under-corroborates rather than
-    losing a continuation outright. Any future slack goes into config in
-    basis points, never as a default here.
+    when they actually meet. A candidate holds both acts for review, so a miss
+    here delivers a split act unflagged; whether real pages need slack is
+    unmeasured. Any slack goes into config in basis points, never as a default
+    here.
     """
     for name, value in (
         ("page A edge reach", edge_reach_a_px),
@@ -362,24 +363,33 @@ def find_continuation_candidate(
         if not _plain_int(value) or value < 0:
             raise ContractError(f"{name} {value}px is not a non-negative integer")
     if not page_a_groups or not page_b_groups:
-        return None
-    trailing = max(page_a_groups, key=lambda group: group["bounds"]["y"] + group["bounds"]["h"])
-    leading = min(page_b_groups, key=lambda group: group["bounds"]["y"])
-    trailing_bottom = trailing["bounds"]["y"] + trailing["bounds"]["h"]
-    if page_a_h - trailing_bottom > edge_reach_a_px:
-        return None
-    if leading["bounds"]["y"] > edge_reach_b_px:
-        return None
-    if leading["anchors"]:
-        return None
-    # Direct non-empty-intersection test, not `_intervals_overlap(..., 0)`:
-    # that helper treats touching endpoints as overlap, but two columns that
-    # merely touch (`[40,100)` beside `[100,160)`) share no pixel here.
-    trailing_x0, trailing_x1 = _x_range(trailing)
-    leading_x0, leading_x1 = _x_range(leading)
-    if trailing_x0 >= leading_x1 or leading_x0 >= trailing_x1:
-        return None
-    return {"page_a_group": trailing, "page_b_group": leading}
+        return []
+    trailing = [
+        group
+        for group in page_a_groups
+        if page_a_h - (group["bounds"]["y"] + group["bounds"]["h"]) <= edge_reach_a_px
+    ]
+    leading = [
+        group
+        for group in page_b_groups
+        if group["bounds"]["y"] <= edge_reach_b_px and not group["anchors"]
+    ]
+    pairs = []
+    for group_a in sorted(trailing, key=_position):
+        # Direct non-empty-intersection test, not `_intervals_overlap(..., 0)`:
+        # that helper treats touching endpoints as overlap, but two columns that
+        # merely touch (`[40,100)` beside `[100,160)`) share no pixel here.
+        a0, a1 = _x_range(group_a)
+        for group_b in sorted(leading, key=_position):
+            b0, b1 = _x_range(group_b)
+            if a0 < b1 and b0 < a1:
+                pairs.append({"page_a_group": group_a, "page_b_group": group_b})
+    return pairs
+
+
+def _position(group: ActGroup) -> tuple[int, int, int, int]:
+    bounds = group["bounds"]
+    return bounds["x"], bounds["y"], bounds["w"], bounds["h"]
 
 
 # The predetermined fallback crop grid, for a page with no eligible structural

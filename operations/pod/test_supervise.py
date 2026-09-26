@@ -1135,7 +1135,7 @@ def test_an_errored_pod_closes_now_even_while_its_launch_is_arming(tmp_path: Pat
 
 
 def test_identity_telemetry_never_carries_a_credential_shaped_field(tmp_path: Path) -> None:
-    from .models import looks_like_credential_field
+    from common.credentials import looks_like_credential_field
 
     clock = Clock()
     ident = supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
