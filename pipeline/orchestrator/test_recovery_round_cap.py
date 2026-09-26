@@ -1,15 +1,12 @@
 """The orchestrator's own recovery-round ceiling is a watched refusal."""
 
-import importlib.util
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from common.contracts.approval import real_ingress_record
 from common.contracts.errors import ContractError
-
-ROOT = Path(__file__).resolve().parents[2]
+from conftest import load_stage
 
 # A stand-in digest for the run-sealed recovery policy. The dispatcher proves the
 # policy it reads against the digests the run authority recorded, so a stub that
@@ -52,21 +49,13 @@ def _sealed_policy(**fields):
 def test_a_dispatch_under_a_policy_the_run_never_sealed_refuses(monkeypatch):
     """The unit half of the orchestrator's point-of-use recheck: the run
     authority names one digest, the file on disk carries another."""
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     monkeypatch.setattr(orchestrator, "RunTree", _sealed_run_tree("2" * 64))
     monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: _sealed_policy())
     args = SimpleNamespace(run_root="unused", run_id="unused", recovery_config="unused")
 
     with pytest.raises(ContractError, match="recovery configuration changed between"):
         orchestrator.drive_recovery(args, hard_failure_policy={})
-
-
-def _load_orchestrator():
-    path = ROOT / "pipeline/orchestrator/run.py"
-    spec = importlib.util.spec_from_file_location("orchestrator_round_cap_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_orchestrator_stops_when_recovery_remains_outstanding_at_the_absolute_cap(monkeypatch):
@@ -77,7 +66,7 @@ def test_orchestrator_stops_when_recovery_remains_outstanding_at_the_absolute_ca
     owns.  It proves the orchestrator cannot spin indefinitely if a future
     recovery producer legitimately asks again.
     """
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     calls = []
     monkeypatch.setattr(orchestrator, "RunTree", _sealed_run_tree())
     monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: _sealed_policy())
@@ -109,7 +98,7 @@ def test_an_unimplemented_page_level_request_is_not_silently_dispatched_as_a_rec
     under the wrong name: the whole batch's kinds are checked first, so half a
     recovery round is never left behind by the refusal.
     """
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     calls = []
     monkeypatch.setattr(orchestrator, "RunTree", _sealed_run_tree())
     monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: _sealed_policy())
@@ -139,7 +128,7 @@ def test_a_recovery_checkpoint_waits_for_each_owner_stage_batch(monkeypatch):
     section boundaries — never between two acts of the same batch, where a second
     already-approved request would be stranded without its owning stage's answer.
     """
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     calls = []
     checkpoints = []
     outstanding = iter(
@@ -177,7 +166,7 @@ def test_a_recovery_checkpoint_waits_for_each_owner_stage_batch(monkeypatch):
 
 def test_a_measured_real_recovery_dispatches_each_owner_stage(monkeypatch):
     """A real measured request passes the retained payload into the screen."""
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     calls = []
     payload = {
         "origin": "coverage-observation",
@@ -214,7 +203,7 @@ def test_a_breached_checkpoint_ends_the_recovery_round_where_it_was_found(monkey
     The Designator section here finishes — its two recrops were already dispatched
     — and the reread and re-review that would have followed never happen.
     """
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     calls = []
     breach = {"threshold": 2, "count": 3, "breached": True, "by_kind": {}, "checkpoint": None}
     monkeypatch.setattr(orchestrator, "RunTree", _sealed_run_tree())
@@ -255,7 +244,7 @@ def test_a_legacy_real_ingress_recrop_is_refused_and_recorded_before_anything_is
     request remains visible rather than being silently treated as a modern real
     recrop.
     """
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     calls = []
     monkeypatch.setattr(
         orchestrator,
@@ -306,7 +295,7 @@ def test_the_dispatch_screen_answers_each_cause_by_its_own_name():
     so a kind nothing can dispatch is reported as that on either route rather
     than blamed on the submission carrying it.
     """
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     assert orchestrator.undispatchable_recovery_reason("fallback-recrop", real_route=False) is None
     assert "no dispatch for" in orchestrator.undispatchable_recovery_reason(
         "page-level-reread", real_route=False
@@ -317,7 +306,7 @@ def test_the_dispatch_screen_answers_each_cause_by_its_own_name():
 
 
 def test_real_measured_recrop_is_dispatchable_but_legacy_real_request_is_refused():
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     measured = {
         "origin": "coverage-observation",
         "recovery_bounds": {"x": 1, "y": 2, "w": 3, "h": 4},

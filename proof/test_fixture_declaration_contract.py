@@ -10,8 +10,6 @@ retain one reading with the same response shape as its base declaration.
 from __future__ import annotations
 
 import copy
-import importlib.util
-import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -23,10 +21,10 @@ from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import SchemaRefusal
 from common.stage import fallback_page_act_key
+from conftest import load_stage
 
 PROOF_ROOT = Path(__file__).resolve().parent
 ROOT = PROOF_ROOT.parent
-STAGE = ROOT / "pipeline" / "3_attestatores"
 MODELS_CONFIG = ROOT / "config" / "models.toml"
 
 # The declaration tables that name one chair's response to one act. Each carries
@@ -38,22 +36,6 @@ RESPONSE_TABLES = ("testimony", "witness_empty", "witness_failure", "witness_not
 GEOMETRY_BEARING_KEYS = ("blocks", "observed", "x", "y", "w", "h")
 
 
-def _load_local_adapters():
-    """Load the non-package stage registry with its sibling imports resolvable."""
-    path = STAGE / "witness_adapters.py"
-    spec = importlib.util.spec_from_file_location("attestatores_witness_adapters", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(STAGE))
-    try:
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(spec.name, None)
-        sys.path.remove(str(STAGE))
-    return module
-
-
 @pytest.fixture(scope="module")
 def skeleton() -> dict[str, Any]:
     with open(PROOF_ROOT / "skeleton_fixture.toml", "rb") as handle:
@@ -62,7 +44,7 @@ def skeleton() -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def adapters():
-    return _load_local_adapters()
+    return load_stage("3_attestatores", "witness_adapters", isolate_path=True)
 
 
 @pytest.fixture(scope="module")

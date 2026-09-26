@@ -10,7 +10,6 @@ dropping either active capture.
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
 import sqlite3
 import sys
@@ -19,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -59,30 +60,6 @@ from common.physical_act_partition import (  # noqa: E402
 FIXTURE = Path(__file__).with_name("fixtures") / "two-capture-leaf-cluster.json"
 ARCHETYPUS_RUN = ROOT / "pipeline" / "6_archetypus" / "run.py"
 ARMARIUM_RUN = ROOT / "pipeline" / "7_armarium" / "run.py"
-ARMARIUM_DIR = ARMARIUM_RUN.parent
-ARMARIUM_EXPORT = ARMARIUM_DIR / "armarium_export.py"
-
-
-def _module(name: str, path: Path):
-    # The Armarium dir is on sys.path only while the module executes its own
-    # sibling imports; left in place, a later bare `import run` elsewhere in
-    # the session could load the Armarium's run.py instead of its own stage's.
-    added = str(ARMARIUM_DIR) not in sys.path
-    if added:
-        sys.path.insert(0, str(ARMARIUM_DIR))
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[name] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        sys.modules.pop(name, None)
-        raise
-    finally:
-        if added and str(ARMARIUM_DIR) in sys.path:
-            sys.path.remove(str(ARMARIUM_DIR))
-    return module
 
 
 def _fixture() -> dict[str, Any]:
@@ -591,9 +568,9 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
     (joint_call,) = [call for call in reader.calls if call["pass_kind"] == "perlectio"]
     assert len(joint_call["region_images"]) == 2
 
-    archetypus = _module("u19d_archetypus", ARCHETYPUS_RUN)
-    armarium = _module("u19d_armarium", ARMARIUM_RUN)
-    armarium_export = _module("u19d_armarium_bundle", ARMARIUM_EXPORT)
+    archetypus = load_stage("6_archetypus", isolate_path=True)
+    armarium = load_stage("7_armarium", isolate_path=True)
+    armarium_export = load_stage("7_armarium", "armarium_export", isolate_path=True)
     ArmariumProjection = armarium_export.ArmariumProjection
     build_armarium_bundle = armarium_export.build_armarium_bundle
 
@@ -1018,7 +995,7 @@ def test_logical_establishment_retains_every_joint_autopsia_crop(tmp_path):
     autopsia, blobs = _autopsia(fixture, partition)
     _reader, passes = _read(fixture, autopsia, blobs)
     inputs = _reading_inputs(fixture, logical_act, autopsia, passes["perlectio"]["result"]["text"])
-    archetypus = _module("u19d_complete_region_basis", ARCHETYPUS_RUN)
+    archetypus = load_stage("6_archetypus", isolate_path=True)
 
     incomplete_perlectio = {
         **inputs["accepted_perlectio"],
@@ -1068,7 +1045,7 @@ def test_logical_establishment_refuses_capacity_and_review_holds_by_their_real_c
     autopsia, blobs = _autopsia(fixture, partition)
     _reader, passes = _read(fixture, autopsia, blobs)
     inputs = _reading_inputs(fixture, logical_act, autopsia, passes["perlectio"]["result"]["text"])
-    archetypus = _module("u19d_capacity_review_refusals", ARCHETYPUS_RUN)
+    archetypus = load_stage("6_archetypus", isolate_path=True)
 
     not_run = {
         "config_digest": "a" * 64,
@@ -1152,7 +1129,7 @@ def test_an_occlusion_finding_cannot_hide_inside_a_review_labelled_accepted(tmp_
         **inputs["accepted_review"],
         "payload": {**inputs["accepted_review"]["payload"], "cross_capture_coverage": occluded},
     }
-    archetypus = _module("u19d_occlusion_review_refusal", ARCHETYPUS_RUN)
+    archetypus = load_stage("6_archetypus", isolate_path=True)
     with pytest.raises(SchemaRefusal, match="occluded-everywhere.*review item"):
         archetypus.establish_logical_record(
             partition=partition,
@@ -1215,8 +1192,8 @@ def test_an_occlusion_finding_cannot_hide_inside_a_review_labelled_accepted(tmp_
             ),
         )
 
-    armarium = _module("u19d_occlusion_review_export", ARMARIUM_RUN)
-    armarium_export = _module("u19d_occlusion_bundle", ARMARIUM_EXPORT)
+    armarium = load_stage("7_armarium", isolate_path=True)
+    armarium_export = load_stage("7_armarium", "armarium_export", isolate_path=True)
     ArmariumProjection = armarium_export.ArmariumProjection
     build_armarium_bundle = armarium_export.build_armarium_bundle
 
@@ -1388,7 +1365,7 @@ def test_dissent_reference_and_views_must_be_the_sibling_of_the_joint_read(tmp_p
     autopsia, blobs = _autopsia(fixture, partition)
     _reader, passes = _read(fixture, autopsia, blobs)
     inputs = _reading_inputs(fixture, logical_act, autopsia, passes["perlectio"]["result"]["text"])
-    archetypus = _module("u19d_dissent_binding_refusals", ARCHETYPUS_RUN)
+    archetypus = load_stage("6_archetypus", isolate_path=True)
 
     with pytest.raises(SchemaRefusal, match="dissent.*exact bytes.*reference"):
         archetypus.establish_logical_record(
@@ -1516,8 +1493,8 @@ def test_one_active_capture_after_retraction_still_establishes_and_projects_one_
     _reader, passes = _read(fixture, autopsia, blobs)
     inputs = _reading_inputs(fixture, logical_act, autopsia, passes["perlectio"]["result"]["text"])
     assert inputs["cross_capture_dissent"]["pairs"] == []
-    archetypus = _module("u19d_one_active_archetypus", ARCHETYPUS_RUN)
-    armarium = _module("u19d_one_active_armarium", ARMARIUM_RUN)
+    archetypus = load_stage("6_archetypus", isolate_path=True)
+    armarium = load_stage("7_armarium", isolate_path=True)
     established = archetypus.establish_logical_record(
         partition=partition, logical_act=logical_act, **inputs
     )
@@ -1571,7 +1548,7 @@ def test_an_instrument_arm_reading_cannot_establish_a_logical_act(tmp_path):
     autopsia, blobs = _autopsia(fixture, partition)
     _reader, passes = _read(fixture, autopsia, blobs)
     inputs = _reading_inputs(fixture, logical_act, autopsia, passes["perlectio"]["result"]["text"])
-    archetypus = _module("u19d_instrument_arm_archetypus", ARCHETYPUS_RUN)
+    archetypus = load_stage("6_archetypus", isolate_path=True)
     for kind in (None, "lectio-prior", "lectio-nuda", "primed-without-prior"):
         payload = {**inputs["accepted_perlectio"]["payload"]}
         if kind is None:
@@ -1619,8 +1596,8 @@ def test_a_resealed_logical_record_cannot_forge_identity_or_member_conservation(
     (logical_act,) = partition["logical_acts"]
     autopsia, blobs = _autopsia(fixture, partition)
     _reader, passes = _read(fixture, autopsia, blobs)
-    archetypus = _module("u19d_resealed_archetypus", ARCHETYPUS_RUN)
-    armarium = _module("u19d_resealed_armarium", ARMARIUM_RUN)
+    archetypus = load_stage("6_archetypus", isolate_path=True)
+    armarium = load_stage("7_armarium", isolate_path=True)
     established = archetypus.establish_logical_record(
         partition=partition,
         logical_act=logical_act,
@@ -1685,7 +1662,7 @@ def test_a_partition_row_cannot_be_stapled_onto_a_reading_that_never_saw_its_cap
     """
     fixture = _fixture()
     register_path, physical_page, _physical_act = _register(tmp_path, fixture)
-    archetypus = _module("u19d_archetypus_boundary", ARCHETYPUS_RUN)
+    archetypus = load_stage("6_archetypus", isolate_path=True)
 
     partition = _partition(register_path, fixture, physical_page, captures=fixture["captures"])
     (logical_act,) = partition["logical_acts"]
@@ -1813,7 +1790,7 @@ def test_logical_act_export_conserves_each_member_exactly_once(tmp_path):
     carry distinct identities and one terminal category each, so every other
     check in the export passes and the same ink leaves three times.
     """
-    armarium_export = _module("u19d_conservation_bundle", ARMARIUM_EXPORT)
+    armarium_export = load_stage("7_armarium", "armarium_export", isolate_path=True)
     ArmariumProjection = armarium_export.ArmariumProjection
     _validate_logical_act_conservation = armarium_export._validate_logical_act_conservation
 
@@ -1823,8 +1800,8 @@ def test_logical_act_export_conserves_each_member_exactly_once(tmp_path):
     (logical_act,) = partition["logical_acts"]
     autopsia, blobs = _autopsia(fixture, partition)
     _reader, passes = _read(fixture, autopsia, blobs)
-    archetypus = _module("u19d_archetypus_export", ARCHETYPUS_RUN)
-    armarium = _module("u19d_armarium_export", ARMARIUM_RUN)
+    archetypus = load_stage("6_archetypus", isolate_path=True)
+    armarium = load_stage("7_armarium", isolate_path=True)
     established = archetypus.establish_logical_record(
         partition=partition,
         logical_act=logical_act,

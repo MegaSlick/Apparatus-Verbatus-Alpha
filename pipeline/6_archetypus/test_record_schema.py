@@ -10,9 +10,7 @@ field at a time, and it is checked mechanically rather than by reading the
 constructor.
 """
 
-import importlib.util
 import inspect
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -22,17 +20,9 @@ from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.outcomes import VOCABULARIES
 from common.contracts.stages import PERLECTOR
 from common.contracts.uncertainty import from_perlectio
+from conftest import load_stage
 
-
-def _load_archetypus():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("archetypus_run_under_test_schema", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-archetypus = _load_archetypus()
+archetypus = load_stage("6_archetypus")
 
 ACT = {"act_id": "act_0000000000000001", "act_key": "a1", "page_id": "pg_0000000000000001"}
 READING_REF = {"relative_path": "4_perlector/artifacts/perlectio/art_b.json", "sha256": "b" * 64}

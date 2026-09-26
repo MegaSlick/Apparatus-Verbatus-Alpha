@@ -1,7 +1,5 @@
 """Witness geometry may flag unproposed ink but cannot establish act coverage."""
 
-import importlib.util
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,18 +9,9 @@ from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
 from common.runtree.store import RECEIPTS_DIR, RunTree
 from common.stage import NUDA_APPROVAL_SUBJECT
+from conftest import load_stage
 
-
-def _load_perlector():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("perlector_native_observation", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-perlector = _load_perlector()
+perlector = load_stage("4_perlector")
 
 
 def test_approval_discovery_does_not_open_a_symlink_outside_the_run_tree(tmp_path):

@@ -1,7 +1,6 @@
 """Attestatores refuses an unverified crop before a chair is asked to read it."""
 
 import copy
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -13,19 +12,12 @@ from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import DESIGNATOR
 from common.runtree.store import RunTree
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_attestatores():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("attestatores_run_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-attestatores = _load_attestatores()
+attestatores = load_stage("3_attestatores")
 
 
 class _Context:

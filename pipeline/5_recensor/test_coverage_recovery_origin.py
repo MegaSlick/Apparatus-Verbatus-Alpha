@@ -42,7 +42,6 @@ per-origin allowance would hide inside it.
 """
 
 import copy
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -57,6 +56,7 @@ from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR
 from common.native_witness import partition_disagreement
 from common.recovery import FALLBACK_RECROP
 from common.runtree.store import RunTree
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline/orchestrator/run.py"
@@ -266,7 +266,7 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
     result = _orchestrate(root, "recovery-only", scenario=origin_scenario)
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "recovery-only")
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     args = recensor.stage_parser("coverage attachment test").parse_args(
         [
             "--run-root",
@@ -418,15 +418,6 @@ def test_the_refusal_does_not_depend_on_the_recovery_budget(tmp_path, policy, ru
     assert _retained_observations(tree)
 
 
-def _load_recensor():
-    spec = importlib.util.spec_from_file_location(
-        "recensor_coverage_origin_under_test", ROOT / "pipeline/5_recensor/run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 class _MiniContext:
     def __init__(self, tree: RunTree):
         self.tree = tree
@@ -531,7 +522,7 @@ _MIXED_ORIGINS = (COVERAGE_ORIGIN, DECLARED_ORIGIN, COVERAGE_ORIGIN, DECLARED_OR
 
 def test_both_recovery_origins_spend_the_same_bounded_pool(tmp_path):
     """Mixed origins must reconcile against one cap of three."""
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     tree = _minimal_tree(tmp_path)
     for ordinal, reason in enumerate(_MIXED_ORIGINS[: BUDGET["absolute_cap"]], start=1):
         _seed_request(tree, "act_1", ordinal, reason)
@@ -548,7 +539,7 @@ def test_both_recovery_origins_spend_the_same_bounded_pool(tmp_path):
 
 def test_a_fourth_request_of_either_origin_is_refused_above_the_cap(tmp_path):
     """A coverage origin buys no allowance above the shared cap."""
-    recensor = _load_recensor()
+    recensor = load_stage("5_recensor")
     tree = _minimal_tree(tmp_path)
     for ordinal, reason in enumerate(_MIXED_ORIGINS, start=1):
         _seed_request(tree, "act_1", ordinal, reason)

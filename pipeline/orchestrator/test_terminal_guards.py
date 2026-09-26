@@ -6,7 +6,6 @@ publication: that is precisely why the terminal boundary must reject it rather
 than relying on an earlier stage never to produce it.
 """
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -39,21 +38,13 @@ from common.stage import (
     require_sealed_config,
     run_config_bindings,
 )
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
 
 
-def _stage_module(name: str, path: Path):
-    """Load one numeric-directory stage without treating it as a package."""
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-INK_MAP_RUN = _stage_module("ink_map_terminal_fixture", ROOT / "pipeline" / "1_ink_map" / "run.py")
+INK_MAP_RUN = load_stage("1_ink_map")
 
 
 def _parser_stub():
@@ -388,9 +379,7 @@ def test_exemplar_never_seals_a_corpus_with_only_refused_sources(tmp_path):
 
 def test_archetypus_refuses_to_resurrect_a_designator_held_act(monkeypatch):
     """A synthetic accepted review cannot establish a seal-held act."""
-    archetypus = _stage_module(
-        "archetypus_terminal_guard_test", ROOT / "pipeline" / "6_archetypus" / "run.py"
-    )
+    archetypus = load_stage("6_archetypus")
     context = _RecordingContext()
     held = {
         "act_id": "act_held",
@@ -426,9 +415,7 @@ def test_archetypus_refuses_to_resurrect_a_designator_held_act(monkeypatch):
 
 def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(monkeypatch):
     """A delivered category may not override a held Designator seal entry."""
-    armarium = _stage_module(
-        "armarium_terminal_guard_test", ROOT / "pipeline" / "7_armarium" / "run.py"
-    )
+    armarium = load_stage("7_armarium")
     context = _RecordingContext()
     held = {
         "act_id": "act_held",
@@ -465,9 +452,7 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     monkeypatch,
 ):
     """Control: the Armarium test's fake context is not a permanently failing stub."""
-    armarium = _stage_module(
-        "armarium_terminal_guard_control_test", ROOT / "pipeline" / "7_armarium" / "run.py"
-    )
+    armarium = load_stage("7_armarium")
     context = _RecordingContext()
     proposed = {
         "act_id": "act_proposed",
@@ -530,9 +515,7 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
     Reaching it through `main` needs the stub, because both categories it requires
     come from upstream outcomes no stage emits yet.
     """
-    armarium = _stage_module(
-        "armarium_ledger_status_test", ROOT / "pipeline" / "7_armarium" / "run.py"
-    )
+    armarium = load_stage("7_armarium")
     context = _RecordingContext()
     proposed = {
         "act_id": "act_proposed",
@@ -587,9 +570,7 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
     no reading to substitute for it, so the category and the evidence
     disagreeing is a fatal imbalance rather than a row with an empty text field.
     """
-    armarium = _stage_module(
-        "armarium_delivered_without_record_test", ROOT / "pipeline" / "7_armarium" / "run.py"
-    )
+    armarium = load_stage("7_armarium")
     context = _RecordingContext()
     proposed = {
         "act_id": "act_proposed",
@@ -627,9 +608,7 @@ def test_the_orchestrator_reports_the_armariums_own_terminal_outcome():
     orchestrator is what a person actually runs. A bundle saying `partial` on its
     own face printed `complete` and exited 0.
     """
-    orchestrator = _stage_module(
-        "orchestrator_terminal_report_test", ROOT / "pipeline" / "orchestrator" / "run.py"
-    )
+    orchestrator = load_stage("orchestrator")
     reconciled_aggregate = {"status": "complete", "reasons": []}
 
     status, lines = orchestrator.terminal_report(
@@ -666,8 +645,6 @@ def test_the_orchestrator_reports_the_armariums_own_terminal_outcome():
 
 
 def test_armarium_refuses_the_currently_unsupported_exclusion_path():
-    armarium = _stage_module(
-        "armarium_exclusion_approval_test", ROOT / "pipeline" / "7_armarium" / "run.py"
-    )
+    armarium = load_stage("7_armarium")
     with pytest.raises(ApprovalRefusal, match="approval-record reference"):
         armarium.exclusion_approval_ref({}, ArmariumCategory.EXCLUDED_WITH_APPROVAL)

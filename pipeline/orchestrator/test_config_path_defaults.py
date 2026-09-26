@@ -6,13 +6,12 @@ caller's boundary; fixture ingress must leave it absent.
 """
 
 import argparse
-import importlib.util
 import os
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
+from conftest import load_stage
 
 # Every listed value is sealed by digest; exceptions are classified below.
 SEALED_CONFIG_FLAGS = (
@@ -43,12 +42,7 @@ SEALED_PATH_FLAG_SUFFIXES = ("-config", "-policy")
 
 def _orchestrator_defaults() -> dict[str, object]:
     """Capture every default from `main`'s otherwise inaccessible parser."""
-    spec = importlib.util.spec_from_file_location(
-        "orchestrator_config_defaults", ROOT / "pipeline" / "orchestrator" / "run.py"
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = load_stage("orchestrator")
     captured: dict[str, object] = {}
     real_parse_args = argparse.ArgumentParser.parse_args
 

@@ -11,12 +11,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from _test_support import load_designator
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.stages import DESIGNATOR
 from common.stage import EXIT_COMPLETE, EXIT_FATAL, EXIT_HELD
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,15 +42,7 @@ def _run(program: str, root: Path, *extra: str) -> subprocess.CompletedProcess:
 
 def test_recovering_the_same_act_twice_refuses_rather_than_cutting_a_duplicate(tmp_path):
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs_through("recensor"):
         result = _run(program, root)
         assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
@@ -117,11 +109,7 @@ def test_an_unrecognized_operation_refuses_rather_than_running_initial_pass(tmp_
     """A typo of "recover" must not silently fall through to a full initial
     pass -- it must be refused as the unrecognized operation it is."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = _run(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -131,10 +119,6 @@ def test_an_unrecognized_operation_refuses_rather_than_running_initial_pass(tmp_
     assert not (root / "r" / "2_designator" / "artifacts").exists(), (
         "an unrecognized operation must refuse before any region or seal is written"
     )
-
-
-def _load_designator():
-    return load_designator("designator_recovery_under_test")
 
 
 class _EvidenceTree:
@@ -225,7 +209,7 @@ def _coverage_evidence_case():
 
 
 def test_real_recovery_recomputes_exact_digest_linked_ink_evidence():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context, request, payload = _coverage_evidence_case()
 
     designator._verify_coverage_recovery_evidence(
@@ -235,7 +219,7 @@ def test_real_recovery_recomputes_exact_digest_linked_ink_evidence():
 
 def test_real_recovery_reaches_the_crop_without_reading_fixture(monkeypatch):
     """The real recovery route must not touch the fixture-only accessor."""
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     act_id = "real-act"
     bounds = {"x": 0, "y": 0, "w": 5, "h": 5}
 
@@ -300,7 +284,7 @@ def test_real_recovery_reaches_the_crop_without_reading_fixture(monkeypatch):
     "tamper", ["ink-count", "observation-bounds", "ink-map-ref", "blank-map", "prior-cover"]
 )
 def test_real_recovery_refuses_tampered_coverage_evidence(tamper):
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context, request, payload = _coverage_evidence_case()
     if tamper == "ink-count":
         payload["outside_ink_pixels"] = 24
@@ -352,22 +336,14 @@ def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_p
     the loaded fixture object instead, one layer inside the CLI.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs_through("recensor"):
         result = _run(program, root)
         assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import DESIGNATOR, RECENSOR
     from common.runtree.store import RunTree
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     tree = RunTree(root, "r")
     review = next(
         record
@@ -421,22 +397,14 @@ def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_pat
     which `run_stage` doesn't turn into `EXIT_FATAL` the way other refusals are.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs_through("recensor"):
         result = _run(program, root)
         assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import RECENSOR
     from common.runtree.store import RunTree
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     tree = RunTree(root, "r")
     review = next(
         record
@@ -474,22 +442,14 @@ def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_pat
 def test_recovery_resolves_the_act_through_the_verified_denominator(tmp_path):
     """A mutated fixture is refused while re-verifying the seal, before any cut."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs_through("recensor"):
         result = _run(program, root)
         assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import RECENSOR
     from common.runtree.store import RunTree
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     tree = RunTree(root, "r")
     review = next(
         record
@@ -512,22 +472,14 @@ def test_recovery_resolves_the_act_through_the_verified_denominator(tmp_path):
 def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first(tmp_path):
     """A recovery request may not pick one of several fixture rectangles by order."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs_through("recensor"):
         result = _run(program, root)
         assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import RECENSOR
     from common.runtree.store import RunTree
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     tree = RunTree(root, "r")
     review = next(
         record
@@ -555,22 +507,14 @@ def test_a_recrop_strictly_inside_the_existing_crop_refuses_by_name(tmp_path):
     smaller crop wearing recovery's name.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs_through("recensor"):
         result = _run(program, root)
         assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import DESIGNATOR, RECENSOR
     from common.runtree.store import RunTree
 
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     tree = RunTree(root, "r")
     review = next(
         record
@@ -627,14 +571,14 @@ def test_a_recrop_strictly_inside_the_existing_crop_refuses_by_name(tmp_path):
 
 
 def test_an_empty_cover_set_leaves_the_whole_rectangle_uncovered():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     assert designator._uncovered_area({"x": 3, "y": 4, "w": 10, "h": 20}, []) == 200
 
 
 def test_uncovered_area_counts_exactly_the_pixels_no_cover_holds():
     """Against a brute-force pixel set, so an off-by-one in the grid doesn't
     just agree with itself."""
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     target = {"x": 0, "y": 0, "w": 9, "h": 7}
     covers = [
         {"x": -3, "y": 2, "w": 6, "h": 3},
@@ -661,7 +605,7 @@ def test_a_single_pixel_outside_every_cover_is_enough_coverage_to_recover():
     """The guard's threshold is one pixel, not a fraction: a recrop that
     widens by a hair still widens. The covers here leave exactly ONE pixel.
     """
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     target = {"x": 0, "y": 0, "w": 10, "h": 10}
     all_but_corner = [
         {"x": 0, "y": 0, "w": 10, "h": 9},
@@ -679,7 +623,7 @@ def test_two_covers_that_only_jointly_contain_the_rectangle_still_leave_nothing(
     any single existing region" check would call this recrop new coverage and
     let it spend the budget on pixels the act already has.
     """
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     target = {"x": 0, "y": 0, "w": 10, "h": 10}
     left = {"x": 0, "y": 0, "w": 5, "h": 10}
     right = {"x": 5, "y": 0, "w": 5, "h": 10}
@@ -691,7 +635,7 @@ def test_two_covers_that_only_jointly_contain_the_rectangle_still_leave_nothing(
 def test_overlapping_covers_are_not_double_counted():
     """Two covers overlapping each other must not subtract the shared pixels
     twice and report a rectangle as more covered than it is."""
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     target = {"x": 0, "y": 0, "w": 10, "h": 10}
     covers = [{"x": 0, "y": 0, "w": 6, "h": 10}, {"x": 4, "y": 0, "w": 5, "h": 10}]
     assert designator._uncovered_area(target, covers) == 10
@@ -714,7 +658,7 @@ def test_coverage_is_scoped_to_the_page_being_recropped():
     geometry: counting one page's rectangle as coverage of another's would
     refuse a legitimate recrop, spending the recovery budget on nothing.
     """
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     near = _region_record(1, "page_one", {"x": 0, "y": 0, "w": 10, "h": 10})
     far = _region_record(2, "page_two", {"x": 0, "y": 0, "w": 10, "h": 10})
     assert designator._coverage_on_page([near, far], 1, "page_one") == [
@@ -727,21 +671,13 @@ def test_coverage_requires_the_page_identity_and_not_only_its_ordinal():
     """An ordinal is a position in one run's corpus; two different pages
     carry the same one, so page identity is what says these are the same pixels.
     """
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     same_ordinal_other_page = _region_record(1, "page_elsewhere", {"x": 0, "y": 0, "w": 4, "h": 4})
     assert designator._coverage_on_page([same_ordinal_other_page], 1, "page_one") == []
 
 
 def _review_run_to_recensor(root: Path) -> None:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs_through("recensor"):
         result = _run(program, root)
         assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
@@ -797,7 +733,7 @@ def test_a_degenerate_recovery_rectangle_is_refused_as_a_rectangle(tmp_path, bou
     """
     root = tmp_path / "runs"
     _review_run_to_recensor(root)
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     act_id, request_id = _recovery_target(root)
 
     context = _designator_context(designator, root)
@@ -820,7 +756,7 @@ def test_a_non_integer_recovery_coordinate_refuses_as_a_contract_error(tmp_path)
     """
     root = tmp_path / "runs"
     _review_run_to_recensor(root)
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     act_id, request_id = _recovery_target(root)
 
     context = _designator_context(designator, root)

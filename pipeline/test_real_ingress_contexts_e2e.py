@@ -67,7 +67,6 @@ What this module proves that no other suite in the section can:
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import shutil
 import subprocess
@@ -76,6 +75,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from conftest import load_stage
 
 PIPELINE = Path(__file__).resolve().parent
 ROOT = PIPELINE.parents[0]
@@ -166,28 +167,7 @@ SEAL_REFUSING_STAGES = (ARCHETYPUS, ARMARIUM)
 ACT_KEYS = tuple(key for _ordinal, _bounds, key in ACTS)
 
 
-def _load_program(program: Path, name: str):
-    """Load one stage program as a module, the sanctioned cross-stage way.
-
-    `pipeline/test_stage_import_boundaries.py` names `spec_from_file_location`
-    under a synthetic module name as the deliberate, visible load a boundary
-    test may make; the Armarium is loaded here for one function of its own,
-    `export_run_identity`, which is where a real run's export identity is
-    actually decided.
-    """
-    spec = importlib.util.spec_from_file_location(name, program)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    original_path = list(sys.path)
-    try:
-        sys.path.insert(0, str(program.parent))
-        spec.loader.exec_module(module)
-    finally:
-        sys.path[:] = original_path
-    return module
-
-
-armarium = _load_program(PIPELINE / "7_armarium" / "run.py", "e2e_armarium_under_test")
+armarium = load_stage("7_armarium", isolate_path=True)
 
 
 # --------------------------------- driving ----------------------------------

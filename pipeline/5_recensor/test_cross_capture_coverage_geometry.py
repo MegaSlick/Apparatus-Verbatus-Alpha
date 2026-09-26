@@ -9,7 +9,6 @@ gate.
 from __future__ import annotations
 
 import ast
-import importlib.util
 from pathlib import Path
 
 import pytest
@@ -17,6 +16,7 @@ import pytest
 from common.contracts.errors import FatalAccounting
 from common.contracts.stages import DESIGNATOR
 from common.cross_capture_autopsia import build_autopsia
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
@@ -26,14 +26,6 @@ EXPECTED_RECOVERY_GATES = 1
 
 A = "a" * 64
 B = "b" * 64
-
-
-def _recensor():
-    spec = importlib.util.spec_from_file_location("recensor_u19c_geometry", RECENSOR)
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(module)
-    return module
 
 
 def _region_record(*, region_id, image_path, page_id, ordinal, bounds):
@@ -146,7 +138,7 @@ def _view(*, view_id, physical_page_id, source_sha256, page_id, local_act_id):
 
 
 def test_no_cross_capture_presentation_means_no_survey():
-    module = _recensor()
+    module = load_stage("5_recensor")
     context = _FakeContext({})
     assert module.act_cross_capture_coverage(context, "act_x", {"dossier": {}}) is None
     assert module.act_cross_capture_coverage(context, "act_x", {}) is None
@@ -154,7 +146,7 @@ def test_no_cross_capture_presentation_means_no_survey():
 
 def test_occluded_everywhere_reaches_its_named_finding_on_a_real_singleton_survey():
     """The finding must be derived from sealed geometry, not fixture cells."""
-    module = _recensor()
+    module = load_stage("5_recensor")
     bounds = {"x": 10, "y": 10, "w": 40, "h": 40}
     context = _FakeContext(
         {
@@ -197,7 +189,7 @@ def test_occluded_everywhere_reaches_its_named_finding_on_a_real_singleton_surve
 
 def test_no_occlusion_survey_is_unresolved_not_visible():
     """An absent survey is no evidence of a visible surface."""
-    module = _recensor()
+    module = load_stage("5_recensor")
     bounds = {"x": 0, "y": 0, "w": 20, "h": 20}
     context = _FakeContext(
         {
@@ -240,7 +232,7 @@ def test_no_occlusion_survey_is_unresolved_not_visible():
 
 def test_an_unsurveyed_act_is_recorded_but_does_not_hold_the_act():
     """Instrument absence is recorded without becoming a finding about ink."""
-    module = _recensor()
+    module = load_stage("5_recensor")
     coverage = {
         "act_state": "unresolved",
         "findings": [{"code": "capture-visibility-unresolved", "physical_page_id": "ppg_a"}],
@@ -273,7 +265,7 @@ def test_an_unsurveyed_act_is_recorded_but_does_not_hold_the_act():
 
 def test_a_measured_gap_beside_an_unmeasured_capture_still_holds():
     """One measured gap makes the component a real shortfall."""
-    module = _recensor()
+    module = load_stage("5_recensor")
     coverage = {
         "act_state": "unresolved",
         "findings": [{"code": "capture-visibility-unresolved", "physical_page_id": "ppg_a"}],
@@ -301,7 +293,7 @@ def test_a_measured_gap_beside_an_unmeasured_capture_still_holds():
 
 def test_occluded_everywhere_on_one_component_is_named_even_beside_a_full_one():
     """A component finding must survive a less-specific aggregate state."""
-    module = _recensor()
+    module = load_stage("5_recensor")
     coverage = {
         "act_state": "unresolved",
         "findings": [{"code": "occluded-everywhere", "physical_page_id": "ppg_b"}],
@@ -335,7 +327,7 @@ def test_occluded_everywhere_on_one_component_is_named_even_beside_a_full_one():
 
 def test_two_captures_of_one_physical_page_cannot_union_without_a_registration():
     """Capture-local cells are incomparable without a sealed registration."""
-    module = _recensor()
+    module = load_stage("5_recensor")
     context = _FakeContext(
         {
             "region_a": (
@@ -410,7 +402,7 @@ def test_two_captures_of_one_physical_page_cannot_union_without_a_registration()
 
 def test_an_occluded_row_carries_the_occlusion_records_it_rests_on():
     """An occlusion claim must retain every supporting artifact reference."""
-    module = _recensor()
+    module = load_stage("5_recensor")
     context = _FakeContext(
         {
             "region_1": (
@@ -467,7 +459,7 @@ def test_a_component_cannot_take_one_members_expected_surface_for_the_others(mon
     exhausted two-item iterator, failing with StopIteration rather than
     reporting anything about coverage.
     """
-    module = _recensor()
+    module = load_stage("5_recensor")
     context = _FakeContext(
         {
             "region_a": (
@@ -592,7 +584,7 @@ def test_the_recovery_gate_consults_no_cross_capture_fact():
 def test_a_below_ink_occlusion_does_not_occlude_the_real_survey():
     """z_relationship positively proving the occluder sits behind the ink:
     the one relationship the adapter must NOT treat as occluding."""
-    module = _recensor()
+    module = load_stage("5_recensor")
     context = _FakeContext(
         {
             "region_1": (
@@ -646,7 +638,7 @@ def test_a_below_ink_occlusion_does_not_occlude_the_real_survey():
 def test_malformed_sealed_occlusion_facts_are_named_accounting_refusals(
     polygon, z_relationship, message
 ):
-    module = _recensor()
+    module = load_stage("5_recensor")
     context = _FakeContext(
         {
             "region_1": (
@@ -689,7 +681,7 @@ def test_an_occlusion_record_with_no_valid_page_id_is_a_named_refusal_not_a_drop
     that was never surveyed -- that silently routes an unclaimed occluder into
     "no shortfall". `occlusion_records_by_page` must refuse by name instead.
     """
-    module = _recensor()
+    module = load_stage("5_recensor")
     context = _FakeContext(
         {
             "occ_1": (
@@ -704,7 +696,7 @@ def test_an_occlusion_record_with_no_valid_page_id_is_a_named_refusal_not_a_drop
 
 
 def test_an_act_absent_from_its_own_readings_autopsia_refuses():
-    module = _recensor()
+    module = load_stage("5_recensor")
     context = _FakeContext({})
     latest_payload = _autopsia_dossier(
         logical_act_id="act_x",
@@ -723,7 +715,7 @@ def test_an_act_absent_from_its_own_readings_autopsia_refuses():
 
 
 def test_dossier_and_autopsia_cannot_name_different_logical_acts():
-    module = _recensor()
+    module = load_stage("5_recensor")
     context = _FakeContext({})
     latest_payload = _autopsia_dossier(
         logical_act_id="pac_sealed",
@@ -784,7 +776,7 @@ def test_a_view_spanning_two_pages_is_unmeasured_not_measured_on_a_merged_grid()
     The honest record is that the instrument did not measure this view, which
     is the shape the unresolved state already carries.
     """
-    module = _recensor()
+    module = load_stage("5_recensor")
     bounds = {"x": 0, "y": 0, "w": 20, "h": 20}
     view = _view(
         view_id="view_1",

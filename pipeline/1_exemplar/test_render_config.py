@@ -1,7 +1,6 @@
 """The PDF target is run configuration; safety bounds remain renderer code."""
 
 import ast
-import importlib.util
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -16,17 +15,9 @@ from synthetic_sources import content_page_pdf
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.runtree.store import RunTree
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def _exemplar_module():
-    spec = importlib.util.spec_from_file_location(
-        "exemplar_render_config_test", Path(__file__).resolve().parent / "run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_the_shipped_default_is_documented_run_configuration():
@@ -128,7 +119,7 @@ def test_exemplar_refuses_a_page_target_that_disagrees_with_run_authority():
     }
 
     with pytest.raises(ContractError, match="sealed pixel recipe"):
-        _exemplar_module()._verify_render_contract(
+        load_stage("1_exemplar")._verify_render_contract(
             rendered.contract,
             0,
             {"geometry": {"width": rendered.width, "height": rendered.height}},
@@ -158,7 +149,7 @@ def test_exemplar_accepts_the_lossless_tiff_contract_for_high_precision_fanned_p
         ).outcome
         == "admitted"
     )
-    _exemplar_module()._verify_render_contract(
+    load_stage("1_exemplar")._verify_render_contract(
         contract,
         1,
         {"geometry": {"width": geometry.width, "height": geometry.height}},
@@ -194,7 +185,7 @@ def test_exemplar_accepts_a_premultiplied_alpha_contract_the_renderer_actually_p
         "mode_transform": f"convert-to-{expected_mode.lower()}",
     }
 
-    _exemplar_module()._verify_render_contract(
+    load_stage("1_exemplar")._verify_render_contract(
         contract,
         0,
         {"geometry": {"width": 2, "height": 2}},
@@ -219,7 +210,7 @@ def test_exemplar_refuses_a_premultiplied_alpha_contract_claiming_the_wrong_conv
     }
 
     with pytest.raises(ContractError, match="changes its mode conversion"):
-        _exemplar_module()._verify_render_contract(
+        load_stage("1_exemplar")._verify_render_contract(
             contract,
             0,
             {"geometry": {"width": 2, "height": 2}},

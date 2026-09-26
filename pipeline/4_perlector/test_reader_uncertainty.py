@@ -12,7 +12,6 @@ text separately -- never only that producer and validator agree on a boolean.
 from __future__ import annotations
 
 import dataclasses
-import importlib.util
 import io
 import json
 import re
@@ -31,6 +30,7 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
 from common.contracts.uncertainty import from_perlectio
 from common.runtree.store import RunTree
+from conftest import load_stage
 from operations.operator import review_text
 from operations.operator.review import ReadOnlyRun
 
@@ -40,15 +40,6 @@ ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 A1_TEXT = "SYNTHETIC ACT ONE alpha beta gamma"
 A1_DOUBT = {"start": 29, "end": 34, "alternatives": ["gamna", "gaMma"], "confidence": "low"}
 A1_GAP = {"position": "internal", "start": 23, "end": 23, "witness_evidence": []}
-
-
-def _perlector():
-    spec = importlib.util.spec_from_file_location(
-        "reader_uncertainty_perlector", ROOT / "pipeline" / "4_perlector" / "run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _run(root: Path, scenario: str, *extra: str) -> subprocess.CompletedProcess[str]:
@@ -102,7 +93,7 @@ def _export(tree: RunTree) -> tuple[dict, dict, list[dict]]:
 
 
 def test_a_reader_with_no_assessment_key_is_read_as_not_assessed_never_confident():
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     record = perlector._assessed({"text": "alpha", "stop_reason": "stop"}, text="alpha")
     assert record["state"] == "not-assessed"
     assert record["uncertain_spans"] == [] and record["gaps"] == []
@@ -110,7 +101,7 @@ def test_a_reader_with_no_assessment_key_is_read_as_not_assessed_never_confident
 
 
 def test_unicode_offsets_anchor_by_code_point_and_a_repeated_word_by_position():
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     text = "né le dix août né à Rouen"  # 'né' twice; accents are one code point each
     second = text.index("né", 1)
     report = {
@@ -239,7 +230,7 @@ def test_a_report_the_schema_cannot_anchor_becomes_a_visible_malformed_record(
     report, text, problem_fragment
 ):
     """Refused reports are retained as faults with empty layers, never as confidence."""
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     record = perlector._assessed({"text": text, "assessment": report}, text=text)
     assert record["state"] == "malformed"
     assert record["uncertain_spans"] == [] and record["gaps"] == []
@@ -495,7 +486,7 @@ def test_the_union_keeps_every_entry_including_an_exact_repeat():
     so this case is unreachable end to end; the rule is asked here rather than
     left as a branch nothing measures (principle 8).
     """
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     projected = {"start": 3, "end": 7, "alternatives": [], "confidence": "low"}
     repeat = {"start": 3, "end": 7, "alternatives": [], "confidence": "low"}
     overlapping = {"start": 5, "end": 9, "alternatives": ["x"], "confidence": "high"}
@@ -558,7 +549,7 @@ def test_an_emptied_reading_re_asks_the_report_instead_of_emptying_it_under_asse
     re-proof path is named as untested. The Pass-B half of the same rubric IS
     driven end to end, by `reader-doubt-unreadable` above.
     """
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     whole_act = [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}]
     report = {
         "state": "assessed",
@@ -621,7 +612,7 @@ def test_the_instrument_records_carry_the_doubt_report_too(tmp_path):
     independent review of 2026-09-11).
     """
     root = tmp_path / "runs"
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     sampled = (
         "--nuda-per-mille",
         "1000",
@@ -790,7 +781,7 @@ def test_the_producer_refuses_a_sealed_doubt_report_it_would_never_have_written(
     Before this, a malformed record published here, reached the Recensor as
     state `None` -- no hold -- and failed at the Archetypus.
     """
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
     payload = {"uncertainty_assessment": assessment, "uncertain_spans": [], "gaps": []}
 
     with pytest.raises(SchemaRefusal, match=re.escape(expected)):
@@ -824,7 +815,7 @@ def test_an_instrument_record_may_not_publish_a_layer_its_state_denies(payload, 
     """Asked only where there is no audit behind the record, because there every
     span is the reader's own -- the established Perlectio's layer is a union
     only `validate_chain` can take apart."""
-    perlector = _perlector()
+    perlector = load_stage("4_perlector")
 
     # The real closed field sets, not invented ones: if a record kind ever
     # gained or lost `audit`, this test moves with it.

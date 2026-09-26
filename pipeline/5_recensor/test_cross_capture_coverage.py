@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from common.cross_capture_coverage import (
     capture_specific_recovery,
     same_chair_witness_floor,
 )
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "pipeline/4_perlector/fixtures/two-capture-leaf-cluster.json"
@@ -337,12 +337,7 @@ def test_negative_cell_coordinates_are_named_schema_refusals():
 
 
 def test_cross_capture_visibility_cannot_be_passed_to_unit14b_page_denominators():
-    spec = importlib.util.spec_from_file_location(
-        "recensor_19c", ROOT / "pipeline/5_recensor/run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(module)
+    module = load_stage("5_recensor")
     # Walk the nested code objects too. `co_names` lists only the names one
     # code object references, so reaching cross-capture visibility from a scope
     # compiled separately walked straight past this guard -- and that is the

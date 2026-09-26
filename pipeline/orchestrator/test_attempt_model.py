@@ -43,6 +43,7 @@ from common.stage import (
     load_fixture,
     load_recovery_policy,
 )
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -244,15 +245,9 @@ def test_the_perlector_derives_its_ordinal_from_the_shared_recovery_reader(tmp_p
     that closed vocabulary moves all four stages at once — rather than out of a
     private `== "recovery"` comparison that scores every unknown value zero.
     """
-    import importlib.util
-
     from common.contracts.errors import FatalAccounting
 
-    spec = importlib.util.spec_from_file_location(
-        "perlector_attempt_model_under_test", ROOT / "pipeline" / "4_perlector" / "run.py"
-    )
-    perlector = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(perlector)
+    perlector = load_stage("4_perlector")
 
     def region(origin):
         return {"payload": {"origin": origin}}

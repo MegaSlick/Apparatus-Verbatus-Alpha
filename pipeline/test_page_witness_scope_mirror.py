@@ -5,28 +5,16 @@ separate. They must still derive identical answers and refusals from the same
 sealed authority.
 """
 
-import importlib.util
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.errors import SchemaRefusal
+from conftest import load_stage
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def _load(stage: str, alias: str):
-    path = ROOT / "pipeline" / stage / "run.py"
-    spec = importlib.util.spec_from_file_location(alias, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-ATTESTATORES = _load("3_attestatores", "attestatores_scope_mirror")
-PERLECTOR = _load("4_perlector", "perlector_scope_mirror")
+ATTESTATORES = load_stage("3_attestatores")
+PERLECTOR = load_stage("4_perlector")
 READERS = (
     ATTESTATORES.declared_page_witness_chairs,
     PERLECTOR.declared_page_witness_chairs,

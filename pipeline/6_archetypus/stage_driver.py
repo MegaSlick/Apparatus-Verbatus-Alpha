@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from conftest import programs_through
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -32,14 +34,6 @@ def invoke(
 
 
 def run_through_recensor(root: Path, run_id: str, scenario: str = "happy") -> None:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs_through("recensor"):
         result = invoke(root, run_id, scenario, program)
         assert result.returncode in (0, 3), f"{program}: {result.stderr}"

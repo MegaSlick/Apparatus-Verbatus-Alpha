@@ -26,6 +26,7 @@ from pathlib import Path
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.runtree.store import RunTree
+from conftest import programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 PAGE_CHAIR = "attestator_1"
@@ -51,13 +52,7 @@ def _invoke(run_root: Path, run_id: str, program: str):
 
 
 def _through_attestatores(run_root: Path, run_id: str) -> RunTree:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-    ):
+    for program in programs_through("attestatores"):
         result = _invoke(run_root, run_id, program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     return RunTree(run_root, run_id)

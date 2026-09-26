@@ -9,13 +9,11 @@ The A4 case itself is the last test in the file, marked `full`: an 8.7
 megapixel pure-Python structure scan does not belong in the everyday leg.
 """
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from _test_support import load_designator
 
 from common.contracts.stages import DESIGNATOR
 from common.imaging import encode_grayscale_png, grayscale_rows
@@ -24,6 +22,7 @@ from common.stage import (
     RESIDUAL_ENUMERATION_COMPLETE,
     page_residual_act_key,
 )
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_GROUPING_CONFIG = ROOT / "config" / "designator_grouping.toml"
@@ -35,19 +34,6 @@ SHIPPED_GROUPING_CONFIG = ROOT / "config" / "designator_grouping.toml"
 _SCATTER_X = range(2, 198, 10)
 _SCATTER_Y = range(240, 259, 10)
 _SCATTER_INK = 40
-
-
-def _load_designator():
-    return load_designator("designator_page_residual_bound_under_test")
-
-
-def _load_recensor():
-    path = ROOT / "pipeline/5_recensor/run.py"
-    spec = importlib.util.spec_from_file_location("recensor_aggregate_handoff", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
 
 
 def _grouping_config_with_bound(
@@ -105,11 +91,7 @@ def _base_run(root: Path, grouping_config: Path) -> None:
     sealed inputs moved, so giving them different policies would trip
     IncompatibleReuse rather than test anything.
     """
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-    ):
+    for program in programs_through("ink-map"):
         result = subprocess.run(
             [
                 sys.executable,
@@ -202,7 +184,7 @@ def _pass_over_scattered_page(
         root.parent, bound, promote_all_components=promote_all_components
     )
     _base_run(root, grouping_config)
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _designator_context(root, designator, grouping_config)
     _substitute_page_pixels(designator, monkeypatch, ordinal, page_png)
     held = designator.initial_pass(context)
@@ -267,7 +249,7 @@ def test_small_residuals_are_retained_as_accounting_not_fictitious_acts(tmp_path
         encoding="utf-8",
     )
     _base_run(tmp_path / "runs", grouping_config)
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _designator_context(tmp_path / "runs", designator, grouping_config)
     _substitute_page_pixels(designator, monkeypatch, 1, _scattered_page_png())
     assert designator.initial_pass(context) is True
@@ -286,14 +268,14 @@ def test_small_residuals_are_retained_as_accounting_not_fictitious_acts(tmp_path
     page_rows = [row for row in rows if row["act_key"] == page_residual_act_key(1)]
     assert len(page_rows) == 1 and page_rows[0]["outcome"] == "held"
 
-    finding = _load_recensor().geometry_coverage_inputs(context)[1]
+    finding = load_stage("5_recensor").geometry_coverage_inputs(context)[1]
     assert finding["residual_enumeration"] == RESIDUAL_ENUMERATION_AGGREGATED
     assert finding["residual_component_count"] == len(aggregate)
     assert finding["page_residual_act_count"] == 1
 
 
 def test_residual_at_either_presentation_threshold_is_promoted():
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     policy = designator.grouping_config.load_grouping_config(SHIPPED_GROUPING_CONFIG)
     thresholds = designator.grouping_config.resolve_thresholds(policy, 200, 260)
     pixel_equal = {"bounds": {"x": 0, "y": 0, "w": 1, "h": 1}, "pixel_count": 500}
@@ -338,7 +320,7 @@ def test_the_shipped_bound_holds_no_fixture_page(tmp_path, monkeypatch):
     """
     root = tmp_path / "runs"
     _base_run(root, SHIPPED_GROUPING_CONFIG)
-    designator = _load_designator()
+    designator = load_stage("2_designator")
     context = _designator_context(root, designator, SHIPPED_GROUPING_CONFIG)
     held = designator.initial_pass(context)
 

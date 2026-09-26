@@ -23,6 +23,7 @@ import ast
 from pathlib import Path
 
 from common.test_unit19_no_picker import FORBIDDEN_CALLS, SHAPE_ONE_WORDS
+from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parent.parent
 DISSENT_SOURCE = ROOT / "common" / "cross_capture_dissent.py"
@@ -227,12 +228,7 @@ def test_the_logical_projection_carries_no_member_act_rows_beside_its_subject(mo
     # display.py, and a leaked path entry would let any later test in the
     # session import the Armarium's module under a generic name.
     monkeypatch.syspath_prepend(str(ARMARIUM_SOURCE.parent))
-    import importlib.util  # noqa: PLC0415
-
-    spec = importlib.util.spec_from_file_location("u19d_no_picker_armarium", ARMARIUM_SOURCE)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
+    module = load_stage("7_armarium")
 
     from common.contracts.canonical import digest_of, self_hash  # noqa: PLC0415
     from common.contracts.errors import SchemaRefusal  # noqa: PLC0415

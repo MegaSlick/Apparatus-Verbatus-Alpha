@@ -25,7 +25,6 @@ boundary named in CONTRACT.md.
 """
 
 import copy
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -49,19 +48,12 @@ from common.residual_ink import (
     resolve_coverage_audit_policy,
 )
 from common.runtree.store import RunTree
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_module(relative_path: str, name: str):
-    path = ROOT / relative_path
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-RUN = _load_module("pipeline/5_recensor/run.py", "recensor_run_residual_ink_wiring")
+RUN = load_stage("5_recensor")
 MINIMUM_INK_PIXELS = load_coverage_audit_config()["coverage_audit"][MINIMUM_INK_PIXELS_FIELD]
 
 
@@ -100,12 +92,7 @@ def _invoke(root: Path, run_id: str, scenario: str, program: str) -> None:
 
 def _built_through_designator(tmp_path, scenario="happy"):
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-    ):
+    for program in programs_through("designator"):
         _invoke(root, "r", scenario, program)
     return RunTree(root, "r")
 
@@ -356,14 +343,7 @@ def test_a_flagged_page_holds_every_act_that_touches_it_through_main(tmp_path, m
     this module, applied here to drive the wiring rather than the arithmetic.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
+    for program in programs_through("perlector"):
         _invoke(root, "r", "happy", program)
 
     # `main` now hands the verified sealed-page map down rather than letting
@@ -422,14 +402,7 @@ def test_a_second_recensor_pass_that_clears_a_flag_does_not_collide_with_the_fir
     changing while its ordinal does not.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
+    for program in programs_through("perlector"):
         _invoke(root, "r", "happy", program)
 
     def flags_every_page(context, unused_sealed_pages=None):
@@ -491,14 +464,7 @@ def test_an_unmeasurable_page_qualifies_an_otherwise_accepted_reason_through_mai
     tmp_path, monkeypatch
 ):
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
+    for program in programs_through("perlector"):
         _invoke(root, "r", "happy", program)
 
     def unmeasurable_pages(context, unused_sealed_pages=None):
@@ -616,7 +582,7 @@ def test_an_unmeasurable_page_confirms_no_witness_pointer_and_authorizes_no_reco
 
 def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monkeypatch):
     """A real refused PNG crosses the producer/consumer boundary unchanged."""
-    ink_map = _load_module("pipeline/1_ink_map/run.py", "ink_map_real_refusal_for_recensor")
+    ink_map = load_stage("1_ink_map")
     rows = [bytearray([30] * 100) for _ in range(100)]
     for y in range(80, 100):
         rows[y] = bytearray([220] * 100)
@@ -693,7 +659,7 @@ def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monk
 
 def test_ink_map_by_page_accepts_the_actual_measured_record_from_the_ink_map(monkeypatch):
     """A producer record proves the measured envelope before the consumer reads runs."""
-    ink_map = _load_module("pipeline/1_ink_map/run.py", "ink_map_real_measurement_for_recensor")
+    ink_map = load_stage("1_ink_map")
     rows = [bytearray([220] * 100) for _ in range(100)]
     for y in range(80, 100):
         rows[y] = bytearray([0] * 100)

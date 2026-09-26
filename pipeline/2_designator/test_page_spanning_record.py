@@ -17,12 +17,12 @@ from test_page_residual_bound import (
     _conservation_for,
     _designator_context,
     _grouping_config_with_bound,
-    _load_designator,
     _records,
     _substitute_page_pixels,
 )
 
 from common.imaging import encode_grayscale_png, grayscale_rows
+from conftest import load_stage
 
 # 12px keeps the page majority-paper (background inference unaffected) while
 # leaving 8px of paper past the sealed gap_tolerance_px, so the frame labels
@@ -71,7 +71,7 @@ def frame_only_pass(tmp_path_factory):
         root = tmp_path_factory.mktemp("frame-only") / "runs"
         grouping_config = _grouping_config_with_bound(root.parent, 2000)
         _base_run(root, grouping_config)
-        designator = _load_designator()
+        designator = load_stage("2_designator")
         context = _designator_context(root, designator, grouping_config)
         page = _frame_only_page_png()
         _substitute_page_pixels(designator, monkeypatch, 1, page)
@@ -113,7 +113,7 @@ def framed_pass(tmp_path_factory):
         # The shipped residual-component bound (2000); page-spanning remains 5000.
         grouping_config = _grouping_config_with_bound(root.parent, 2000)
         _base_run(root, grouping_config)
-        designator = _load_designator()
+        designator = load_stage("2_designator")
         context = _designator_context(root, designator, grouping_config)
         _substitute_page_pixels(designator, monkeypatch, 1, _framed_page_png())
         held = designator.initial_pass(context)

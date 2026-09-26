@@ -15,6 +15,7 @@ import pytest
 
 from common.contracts.stages import RECENSOR
 from common.runtree.store import RunTree
+from conftest import programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -26,14 +27,7 @@ def test_a_genuinely_zero_budget_holds_the_act_and_names_it_spent(tmp_path):
         "absolute_cap = 3\n[budget]\nfallback_recrop = 0\npage_level_reread = 0\n",
         encoding="utf-8",
     )
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
+    for program in programs_through("perlector"):
         result = subprocess.run(
             [
                 sys.executable,
@@ -93,14 +87,7 @@ def test_a_page_level_allowance_never_becomes_a_fallback_recrop(tmp_path):
         "absolute_cap = 3\n[budget]\nfallback_recrop = 0\npage_level_reread = 1\n",
         encoding="utf-8",
     )
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
+    for program in programs_through("perlector"):
         result = subprocess.run(
             [
                 sys.executable,

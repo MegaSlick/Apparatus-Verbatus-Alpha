@@ -16,24 +16,11 @@ picker over one witness's text (principle 1) wearing an alignment's
 clothes.
 """
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
+from conftest import load_stage
 
-
-def _load_stage():
-    spec = importlib.util.spec_from_file_location(
-        "attestatores_ambiguity_under_test", ROOT / "pipeline/3_attestatores/run.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-stage = _load_stage()
+stage = load_stage("3_attestatores")
 
 
 def _entry(

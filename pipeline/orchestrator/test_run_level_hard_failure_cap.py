@@ -18,7 +18,6 @@ alongside the forged failures, so these tests also stand as the end-to-end
 proof that a real truncation does not, by itself, move the tally.
 """
 
-import importlib.util
 import os
 import subprocess
 import sys
@@ -32,18 +31,12 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, DOOR, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 from common.stage import _stage_seal_payload, latest_attempt
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
-STAGES_THROUGH_PERLECTOR = (
-    "pipeline/1_exemplar/door.py",
-    "pipeline/1_exemplar/run.py",
-    "pipeline/1_ink_map/run.py",
-    "pipeline/2_designator/run.py",
-    "pipeline/3_attestatores/run.py",
-    "pipeline/4_perlector/run.py",
-)
+STAGES_THROUGH_PERLECTOR = programs_through("perlector")
 
 
 def call_stage(
@@ -300,14 +293,6 @@ def test_a_real_truncated_reading_alone_never_mentions_the_cap(tmp_path):
 # digest with it. So the sequencing itself is driven directly instead.
 
 
-def _load_orchestrator():
-    path = ROOT / "pipeline/orchestrator/run.py"
-    spec = importlib.util.spec_from_file_location("orchestrator_hard_failure_cap", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _breach(checkpoint_name: str) -> dict:
     return {
         "threshold": 2,
@@ -328,7 +313,7 @@ def test_a_breach_first_seen_at_a_stage_boundary_stops_the_rest_of_the_sequence(
     "the stage after the breach was never invoked" is the assertion that matters,
     not merely the exit code.
     """
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     invoked: list[str] = []
     monkeypatch.setattr(
         orchestrator, "invoke", lambda program, _args, **_extra: invoked.append(program)
@@ -373,7 +358,7 @@ def test_a_breach_inside_a_recovery_round_stops_before_the_archetypus(monkeypatc
     that is going wrong is most likely to cross the cap — and the one caller
     whose halt return `main` has to honour before establishing any text.
     """
-    orchestrator = _load_orchestrator()
+    orchestrator = load_stage("orchestrator")
     invoked: list[str] = []
     monkeypatch.setattr(
         orchestrator, "invoke", lambda program, _args, **_extra: invoked.append(program)

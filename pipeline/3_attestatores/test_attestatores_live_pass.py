@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import importlib.util
 import json
 import shutil
 import signal
@@ -37,6 +36,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from conftest import load_stage, programs_through
 
 STAGE = Path(__file__).resolve().parent
 ROOT = STAGE.parents[1]
@@ -147,16 +148,7 @@ DAI_ACT_ONE = "SYNTHETIC ACT ONE alpha beta"
 DAI_ACT_TWO = "SYNTHETIC ACT TWO delta epsiIon zeta eta"
 
 
-def _load_attestatores():
-    path = STAGE / "run.py"
-    spec = importlib.util.spec_from_file_location("attestatores_live_pass_under_test", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-attestatores = _load_attestatores()
+attestatores = load_stage("3_attestatores")
 
 
 # --------------------------- the sealed live catalogue ------------------------
@@ -375,12 +367,7 @@ def _carried_to_the_designator_boundary(
     )
     models = committed_models_config()
     run_root = work / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/1_ink_map/run.py",
-        "pipeline/2_designator/run.py",
-    ):
+    for program in programs_through("designator"):
         _invoke_stage(program, run_root=run_root, catalogue=catalogue, models=models)
     _policy, decoding_sha256 = load_decoding_policy(ROOT / "config" / "decoding.toml")
     return SimpleNamespace(
