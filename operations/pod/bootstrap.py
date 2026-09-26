@@ -30,8 +30,12 @@ BOOTSTRAP_SCHEMA = "pod-bootstrap.v3"
 steps complete without ever validating the checked-out roster/declaration
 pair. It cannot be resumed under the stronger order and is refused by schema.
 """
-CONFIGURATION_RECEIPT_SCHEMA = "pod-bootstrap-configuration.v1"
-"""The checked-out selections re-read before any completed bootstrap is reused."""
+CONFIGURATION_RECEIPT_SCHEMA = "pod-bootstrap-configuration.v2"
+"""The checked-out selections re-read before any completed bootstrap is reused.
+
+v2 binds each file's seal (`common/sealed_config.py`) where v1 bound raw bytes, so
+a v1 journal is refused by schema rather than as a changed configuration.
+"""
 _CONFIGURATION_BINDINGS = {
     "models_config",
     "witness_context_config",
@@ -772,6 +776,11 @@ def _configuration_receipt_problem(receipt: object) -> str | None:
 
     if not isinstance(receipt, dict):
         return "receipt is not an object"
+    if receipt.get("schema") == "pod-bootstrap-configuration.v1":
+        return (
+            "it is 'pod-bootstrap-configuration.v1', which bound raw file bytes, not the "
+            "seals this bootstrap compares; start a new journal"
+        )
     required = {"schema", "bindings", "witness_context_validation"}
     if set(receipt) != required or receipt.get("schema") != CONFIGURATION_RECEIPT_SCHEMA:
         return f"receipt must be a closed {CONFIGURATION_RECEIPT_SCHEMA!r} object"

@@ -1353,7 +1353,7 @@ def test_configuration_receipt_binds_every_selected_path_and_seal(tmp_path: Path
 
     receipt = bootstrap_main._build_configuration_validation(plan)()
 
-    assert receipt["schema"] == "pod-bootstrap-configuration.v1"
+    assert receipt["schema"] == "pod-bootstrap-configuration.v2"
     bindings = receipt["bindings"]
     for name, selected in (
         ("models_config", plan.models_config),
@@ -1556,6 +1556,27 @@ def test_a_completed_receipt_missing_one_binding_fails_closed(tmp_path: Path) ->
 
     assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
     assert "lacks the required binding" in (resumed.detail or "")
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+
+
+def test_a_journal_bound_under_the_raw_byte_receipt_is_refused_by_schema(tmp_path: Path) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path)
+    first = bootstrap_main.run_bootstrap(
+        plan, now=lambda: START, actions_factory=lambda selected: _configuration_actions(plan)
+    )
+    assert not isinstance(first, int) and first.green
+
+    journal = json.loads(ws.journal.read_text(encoding="utf-8"))
+    journal["receipts"]["configuration"]["schema"] = "pod-bootstrap-configuration.v1"
+    ws.journal.write_text(json.dumps(journal), encoding="utf-8")
+    resumed_actions = _configuration_actions(plan)
+    resumed = bootstrap_main.run_bootstrap(
+        plan, now=lambda: START, actions_factory=lambda selected: resumed_actions
+    )
+
+    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert "pod-bootstrap-configuration.v1" in (resumed.detail or "")
+    assert "differ" not in (resumed.detail or "")
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
 
 
