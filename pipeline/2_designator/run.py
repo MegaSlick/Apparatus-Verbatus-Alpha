@@ -66,7 +66,6 @@ from common.exemplar_boundary import (  # noqa: E402
 from common.fixture_identity import act_bounds, act_identity, page_identity  # noqa: E402
 from common.imaging import crop_png, dimensions, grayscale_rows  # noqa: E402
 from common.recovery import FALLBACK_RECROP  # noqa: E402
-from common.sealed_config import read_sealed_toml
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
@@ -2306,13 +2305,8 @@ def _sealed_designator_policies(context) -> tuple[dict, dict]:
     """
     padding = geometry.load_padding_config(context.args.designator_padding_config)
     context.require_sealed_config("designator-padding", padding["config_sha256"])
-    geometry_layer.load_geometry_policy(context.args.designator_geometry_config)
-    context.require_sealed_config(
-        "designator-geometry",
-        read_sealed_toml(
-            context.args.designator_geometry_config, "Designator geometry configuration"
-        )[1],
-    )
+    geometry_policy = geometry_layer.load_geometry_policy(context.args.designator_geometry_config)
+    context.require_sealed_config("designator-geometry", geometry_policy["config_sha256"])
     grouping_policy = grouping_config.load_grouping_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", grouping_policy["config_sha256"])
     return padding, grouping_policy
