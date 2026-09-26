@@ -16,6 +16,7 @@ from combined import run_logical_passes  # noqa: E402
 
 from common.contracts.canonical import digest_bytes, digest_of  # noqa: E402
 from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
+from common.contracts.stages import PERLECTOR  # noqa: E402
 from common.cross_capture_autopsia import (  # noqa: E402
     OVER_CAPACITY,
     assemble_reader_input,
@@ -27,6 +28,7 @@ from common.cross_capture_autopsia import (  # noqa: E402
     validate_autopsia,
 )
 from common.physical_act_partition import source_ledger_from_run  # noqa: E402
+from common.stage import StageContext  # noqa: E402
 
 A, B = "a" * 64, "b" * 64
 REF = {"relative_path": "blobs/x", "sha256": "c" * 64}
@@ -454,6 +456,10 @@ class _Tree:
 
 
 class _Context:
+    stage = PERLECTOR
+    sealed = False
+    retain = StageContext.retain
+
     def __init__(self):
         self.tree = _Tree()
         self.run = {

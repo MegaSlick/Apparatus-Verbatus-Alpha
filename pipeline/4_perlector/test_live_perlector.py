@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -42,6 +43,7 @@ from common.runtree.store import SERVING_LOGS_DIR, RunTree
 from common.sealed_config import read_sealed_toml
 from common.stage import StageContext
 from conftest import load_stage, programs_through
+from operations.serving.assembly import retain_chair_bytes, stage_chair_client
 from operations.serving.client import ChairClient, ServingModeRefusal
 from operations.serving.config import (
     ServingConfigInputs,
@@ -268,7 +270,7 @@ class _TreeBlobs:
 def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lock: Path):
     """The `(context, chair, tier) -> ChairClient` seam `main` injects against.
 
-    Deliberately close to `run.default_serving_factory`: the same manager, the
+    Deliberately close to `stage_chair_client`: the same manager, the
     same real `StageContextReceiptPublisher`, the same `retain_chair_bytes` into
     the stage's own blob area, the same receipt re-read through the tree. Only
     the launcher, the transport and the package inspector are fakes — the three
@@ -293,7 +295,7 @@ def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lo
             manager=manager,
             identity=chair,
             tier=tier,
-            retain=lambda data: perlector.retain_chair_bytes(context, data),
+            retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
             record_temperature=decoding_policy["reading_of_record"]["temperature"],
             read_receipt=context.tree.read_run_receipt,
@@ -455,7 +457,19 @@ def test_a_catalogue_that_is_not_the_sealed_one_is_refused(chained_run, tmp_path
     substitute.write_bytes(moved)
     context, args = _mode_arguments(catalogue, TIER)
     args.serving_recipes_config = str(substitute)
-    with pytest.raises(perlector.ContractError, match="not the catalogue this run sealed"):
+    with pytest.raises(
+        perlector.ContractError,
+        match=r"refused for .*substituted\.toml .*rerun with the files this run sealed",
+    ):
+        perlector.perlector_serving_mode(context, args, _perlector_identity())
+
+
+def test_a_placement_table_that_is_not_the_sealed_one_is_refused(chained_run):
+    """The Perlector proves the placement bytes too, as the other serving stages do."""
+    _root, catalogue = chained_run
+    context, args = _mode_arguments(catalogue, TIER)
+    context.serving_config_inputs["pod_placement_sha256"] = "1" * 64
+    with pytest.raises(perlector.ContractError, match="pod placement differs from the run-sealed"):
         perlector.perlector_serving_mode(context, args, _perlector_identity())
 
 
@@ -1168,8 +1182,10 @@ def test_an_absent_chair_that_attempted_a_reading_cannot_carry_a_receipt():
 
 def test_retaining_a_chair_response_after_the_seal_is_refused():
     """The stage's blob inventory is what its completion seal witnessed."""
-    with pytest.raises(SchemaRefusal, match="witnessed blob inventory false"):
-        perlector.retain_chair_bytes(SimpleNamespace(sealed=True), b"{}")
+    context = SimpleNamespace(sealed=True, stage=PERLECTOR)
+    context.retain = partial(StageContext.retain, context)
+    with pytest.raises(SchemaRefusal, match="storing a chair response afterwards"):
+        retain_chair_bytes(context, b"{}")
 
 
 def test_two_digests_for_one_input_path_are_refused():
@@ -1324,8 +1340,8 @@ def test_a_failed_chair_shutdown_stops_the_pass_before_the_seal_is_written(
     )
 
 
-def test_default_serving_factory_logs_under_the_run_tree_and_leases_off_it(live_run, monkeypatch):
-    """`default_serving_factory` is the only path a real run takes, and nothing
+def test_stage_chair_client_logs_under_the_run_tree_and_leases_off_it(live_run, monkeypatch):
+    """`stage_chair_client` is the only path a real run takes, and nothing
     else in this suite ever constructs it -- the injected `_serving_factory`
     above deliberately diverges on the two things production alone decides:
     where the serving log directory and the pod-GPU residency lease live.
@@ -1364,13 +1380,13 @@ def test_default_serving_factory_logs_under_the_run_tree_and_leases_off_it(live_
         args, PERLECTOR, registry_factory=ChairRegistry.from_toml
     )
     decoding_policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
-    recipes = load_serving_recipes(catalogue)
-    factory = perlector.default_serving_factory(
-        recipes,
+    client = stage_chair_client(
+        context,
+        _perlector_identity(),
+        TIER,
         decoding_config_sha256=decoding_sha256,
         record_temperature=decoding_policy["reading_of_record"]["temperature"],
     )
-    client = factory(context, _perlector_identity(), TIER)
     tree_root = context.tree.root
     assert client._manager.log_root.is_relative_to(tree_root)
     assert client._manager.log_root.name == SERVING_LOGS_DIR

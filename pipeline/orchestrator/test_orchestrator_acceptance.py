@@ -601,7 +601,7 @@ def test_orchestrator_upload_credentials_are_the_transfers_own(
     green -- a live secret in the environment of the process that decodes
     caller-supplied material.
 
-    Comparing the three sets is not enough on its own: three constants can agree
+    Comparing the sets is not enough on its own: constants can agree
     perfectly while a helper has stopped consulting its own. So each helper is
     run against an environment holding every name, and what it returns is the
     evidence.
@@ -609,7 +609,6 @@ def test_orchestrator_upload_credentials_are_the_transfers_own(
 
     orchestrator = load_stage("orchestrator")
     assert orchestrator._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
-    assert surface._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
     # The names are the transfer's own defaults, not a set that merely happens to
     # match them today.
     spec = volume_s3.VolumeSpec(datacenter_id="EU-CZ-1", volume_id="volume")

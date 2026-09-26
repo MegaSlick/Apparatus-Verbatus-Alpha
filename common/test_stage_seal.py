@@ -181,10 +181,10 @@ def test_a_stage_refuses_a_blob_whose_content_does_not_match_its_name(tmp_path):
     assert not _stage_records(tree, ATTESTATORES, "stage-seal")
 
 
-def test_serving_evidence_cannot_be_stored_after_the_boundary_is_sealed(tmp_path):
+def test_a_blob_cannot_be_stored_after_the_boundary_is_sealed(tmp_path):
     """The post-seal guard covers blobs, not only artifacts.
 
-    `_write_serving_blob` goes through `tree.put_blob` into the stage's own blob
+    `retain` goes through `tree.put_blob` into the stage's own blob
     directory — the one `_stage_blob_inventory` walks and whose digest the seal
     carries. A write afterwards makes the witnessed inventory false, and the
     symptom lands on the wrong stage: the next consumer refuses with "its named
@@ -197,7 +197,8 @@ def test_serving_evidence_cannot_be_stored_after_the_boundary_is_sealed(tmp_path
     context.seal_boundary()
 
     with pytest.raises(SchemaRefusal, match="witnessed blob inventory false"):
-        context._write_serving_blob({"chair": "attestator_1"}, "a serving launch audit")
+        context.retain(b"a chair response after the seal")
+    assert _stage_blob_inventory(tree, ATTESTATORES) == []
 
     # What the guard prevents: the same bytes written straight to the store leave
     # the stored seal answering for an inventory that is no longer on disk.

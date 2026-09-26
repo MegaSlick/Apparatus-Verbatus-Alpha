@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
+from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import DESIGNATOR, writing_directory
@@ -45,12 +45,6 @@ _BINDING_FIELDS = frozenset(
 )
 
 
-def _sha(value: Any, what: str) -> str:
-    if not is_sha256(value):
-        raise SchemaRefusal(f"{what} is not a lowercase sha256")
-    return value
-
-
 def custody_reference(value: object, prefix: str, what: str) -> dict[str, str]:
     """A closed digest reference that must name the given custody root."""
     reference = digest_ref(value, what)
@@ -60,7 +54,7 @@ def custody_reference(value: object, prefix: str, what: str) -> dict[str, str]:
 
 
 def retain_chandra_response(
-    tree: Any,
+    context: Any,
     response: bytes,
     receipt_ref: dict[str, str],
     *,
@@ -81,16 +75,15 @@ def retain_chandra_response(
         raise SchemaRefusal("Chandra raw response is not bytes")
     # Before any bytes are written: a binding sealed under a receipt the reader
     # will refuse is unreadable custody, not custody.
-    _validated_designator_receipt(tree, receipt)
+    _validated_designator_receipt(context.tree, receipt)
     # Bindings and responses share one blob namespace, so a response that *is*
     # a canonical binding could otherwise be read back as proof of a pairing
     # nothing recorded. Refusing it holds this module's own writer to that;
     # it does not bind a caller who writes blobs through the tree directly.
     if _is_custody_binding(response):
         raise SchemaRefusal("Chandra raw response is itself a custody binding record")
-    digest, published = tree.put_blob(DESIGNATOR, response)
     response_ref = custody_reference(
-        {"relative_path": published.relative_path, "sha256": digest},
+        context.retain(response, "a Chandra raw response"),
         RESPONSE_BLOB_PREFIX,
         "Chandra response reference",
     )
@@ -103,9 +96,8 @@ def retain_chandra_response(
             "response_sha256": response_ref["sha256"],
         }
     )
-    binding_digest, binding_published = tree.put_blob(DESIGNATOR, binding)
     custody_ref = custody_reference(
-        {"relative_path": binding_published.relative_path, "sha256": binding_digest},
+        context.retain(binding, "a Chandra custody binding"),
         RESPONSE_BLOB_PREFIX,
         "Chandra custody binding reference",
     )

@@ -20,7 +20,7 @@ from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ApprovalRefusal, ContractError, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
+from common.contracts.stages import ARMARIUM, DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.residual_ink import (
     edge_ink,
     ink_runs_from_rows,
@@ -76,6 +76,9 @@ def _accepted_review() -> dict:
 
 class _RecordingContext:
     """Just enough sealed-context surface for terminal-only stage paths."""
+
+    stage = ARMARIUM
+    retain = StageContext.retain
 
     def __init__(self) -> None:
         self.published: list[dict] = []
