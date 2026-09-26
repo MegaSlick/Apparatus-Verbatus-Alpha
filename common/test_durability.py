@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import errno
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -200,3 +202,10 @@ def test_a_taken_name_whose_entry_cannot_be_proved_is_not_reported_as_taken(
 )
 def test_a_real_name_is_never_a_temporary(name: str) -> None:
     assert not durability.is_temporary_name(name)
+
+
+def test_an_interrupted_publication_leaves_a_temporary_name(tmp_path) -> None:
+    descriptor, raw = tempfile.mkstemp(prefix=".record.json.tmp-", dir=tmp_path)
+    os.close(descriptor)
+    assert durability.is_temporary_name(Path(raw).name)
+    assert durability.is_temporary_name(".abc123.tmp-x")
