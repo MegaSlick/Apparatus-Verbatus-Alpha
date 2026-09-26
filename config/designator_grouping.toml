@@ -118,7 +118,7 @@
 #   ink_margin_bp          how far below the inferred paper value that ink
 #                          threshold sits, as a fraction of the distance between
 #                          the page's OWN two grey-level population modes --
-#                          floored at structure.PRIMARY_MARGIN. Not a bound: it
+#                          floored at background.PRIMARY_MARGIN. Not a bound: it
 #                          refuses nothing and decides no outcome, it sets the
 #                          level every ink count on the page is taken at. A fixed
 #                          offset was wrong here because a photographed leaf's
@@ -134,7 +134,7 @@
 # two of them, not of a page, so they never resolve to pixels:
 # max_interior_dark_bp of the interior band's own pixels, max_ink_bp of the whole
 # page's, ink_margin_bp of two modes' separation in grey levels. band_bp and
-# max_interior_dark_bp are read only where `infer_background` would otherwise have
+# max_interior_dark_bp are read only where `infer_background_evidence` would otherwise have
 # refused -- an ordinary scan whose modal pixel is its paper never reaches them --
 # while max_ink_bp and ink_margin_bp are read on every page that gets a paper
 # value at all. **The dark population measured by the interior-mode branch is
@@ -142,7 +142,7 @@
 # as ink by the structure scan and by conservation alike. The published
 # `dark_distribution` records its sampled band/page counts without treating them
 # as a bezel, a paper region, or a region to remove. See
-# pipeline/2_designator/structure.py::_dark_distribution.
+# common/background.py::_dark_distribution.
 #
 # Three bare integer counts live at the top of `[grouping]` (not basis points,
 # not sub-table fields), because none of them is a length and none has a page
@@ -172,12 +172,11 @@
 # `pipeline/2_designator/CONTRACT.md` for the reasoning and the remainder.
 #
 # **Two constants deliberately do NOT live here and never will:**
-# `structure.PRIMARY_MARGIN` (20) and `structure.SECONDARY_MARGIN` (2) are
+# `common/background.py`'s `PRIMARY_MARGIN` (20) and `SECONDARY_MARGIN` (2) are
 # absolute 8-bit ink-intensity offsets, not page geometry -- scaling either by a
 # page dimension is meaningless, and `common/test_designator_recensor_ink_calibration.py`
-# is an AST pin that reads `SECONDARY_MARGIN` as a source literal in
-# `structure.py` and cross-checks it against the Recensor's own contrast
-# constant. Moving it into a per-run config value would make that
+# pins that `conservation.reconcile` defaults to `SECONDARY_MARGIN` and that the
+# Recensor's own contrast constant, read as a source literal, is at least it. Moving it into a per-run config value would make that
 # cross-stage invariant unenforceable statically -- a sealed run could carry
 # a margin the Recensor would then call ink what the Designator dismissed,
 # which is the one direction of ink loss `conservation.py` names as unsafe.
@@ -187,13 +186,13 @@
 # `[grouping.background] ink_margin_bp` is not one of them and does not weaken
 # that rule. It carries no grey level of its own: it is the fraction of the
 # distance between a page's *own* two grey-level population modes that
-# `structure._derived_ink_margin` deducts from the inferred paper value, floored
+# `background._derived_ink_margin` deducts from the inferred paper value, floored
 # at `PRIMARY_MARGIN`. The same sealed 3333 derives a margin of 46 on this
 # repository's fixture page and 71 on a photographed register opening, because
 # those pages have different contrast and not because anything here changed. The
 # invariant the AST pin protects is between the Recensor's contrast constant and
 # `SECONDARY_MARGIN`, and `SECONDARY_MARGIN` is not derived, so the pin still
-# reads two literals and compares them.
+# compares two fixed constants.
 
 [grouping]
 # Legacy compatibility ceiling for reading pre-aggregation conservation records.
