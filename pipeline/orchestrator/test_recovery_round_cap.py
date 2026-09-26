@@ -6,6 +6,7 @@ import pytest
 
 from common.contracts.approval import real_ingress_record
 from common.contracts.errors import ContractError
+from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD
 from conftest import load_stage
 
 # A stand-in digest for the run-sealed recovery policy. The dispatcher proves the
@@ -29,7 +30,10 @@ def _sealed_run_tree(
 
     class _Tree:
         def read_run(self):
-            run = {"sealed_config_digests": {"recovery": sealed_recovery_sha}}
+            run = {
+                "sealed_config_digests": {"recovery": sealed_recovery_sha},
+                SEAL_METHOD_FIELD: SEAL_METHOD,
+            }
             if ingress is not None:
                 run["ingress"] = ingress
             return run

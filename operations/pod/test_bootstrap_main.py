@@ -24,6 +24,7 @@ from typing import Callable
 import pytest
 
 from common.contracts.errors import ContractError
+from common.sealed_config import read_sealed_toml
 
 from . import bootstrap_main
 from .bootstrap import CONFIGURATION_RECEIPT_SCHEMA, BootstrapStep, BootstrapStepFailure
@@ -1091,7 +1092,7 @@ def test_an_explicit_malformed_context_is_refused_by_configuration_after_checkou
         bootstrap_main._build_configuration_validation(plan)()
 
     assert refusal.value.step is BootstrapStep.CONFIGURATION
-    assert "not a closed table" in refusal.value.detail
+    assert "not the closed, non-blank training_domain record" in refusal.value.detail
 
 
 # --- the chair cache is built lazily, only when CHAIR_CACHE actually runs ---
@@ -1347,12 +1348,12 @@ def _configuration_actions(
     )
 
 
-def test_configuration_receipt_binds_every_selected_path_and_raw_digest(tmp_path: Path) -> None:
+def test_configuration_receipt_binds_every_selected_path_and_seal(tmp_path: Path) -> None:
     _ws, plan = _checked_out_configuration_plan(tmp_path)
 
     receipt = bootstrap_main._build_configuration_validation(plan)()
 
-    assert receipt["schema"] == "pod-bootstrap-configuration.v1"
+    assert receipt["schema"] == "pod-bootstrap-configuration.v2"
     bindings = receipt["bindings"]
     for name, selected in (
         ("models_config", plan.models_config),
@@ -1363,7 +1364,7 @@ def test_configuration_receipt_binds_every_selected_path_and_raw_digest(tmp_path
         assert selected is not None
         assert bindings[name] == {  # type: ignore[index]
             "path": str(selected),
-            "sha256": hashlib.sha256(selected.read_bytes()).hexdigest(),
+            "sha256": read_sealed_toml(selected, "configuration")[1],
         }
 
 
@@ -1493,7 +1494,9 @@ def test_a_same_path_serving_byte_change_refuses_before_a_partial_resume(tmp_pat
 
     assert plan.serving_recipes_config is not None
     plan.serving_recipes_config.write_bytes(
-        plan.serving_recipes_config.read_bytes() + b"\n# changed after CONFIGURATION\n"
+        plan.serving_recipes_config.read_bytes().replace(
+            b'description = "', b'description = "changed after CONFIGURATION: ', 1
+        )
     )
     resumed_actions = _configuration_actions(plan)
     resumed = bootstrap_main.run_bootstrap(
@@ -1553,6 +1556,28 @@ def test_a_completed_receipt_missing_one_binding_fails_closed(tmp_path: Path) ->
 
     assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
     assert "lacks the required binding" in (resumed.detail or "")
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+
+
+def test_a_journal_bound_under_the_raw_byte_receipt_is_refused_by_schema(tmp_path: Path) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path)
+    first = bootstrap_main.run_bootstrap(
+        plan, now=lambda: START, actions_factory=lambda selected: _configuration_actions(plan)
+    )
+    assert not isinstance(first, int) and first.green
+
+    journal = json.loads(ws.journal.read_text(encoding="utf-8"))
+    journal["receipts"]["configuration"]["schema"] = "pod-bootstrap-configuration.v1"
+    ws.journal.write_text(json.dumps(journal), encoding="utf-8")
+    resumed_actions = _configuration_actions(plan)
+    resumed = bootstrap_main.run_bootstrap(
+        plan, now=lambda: START, actions_factory=lambda selected: resumed_actions
+    )
+
+    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert "predates seal method v2" in (resumed.detail or "")
+    assert "lacks the required binding" not in (resumed.detail or "")
+    assert f"move {ws.journal} aside" in (resumed.remediation or "")
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
 
 

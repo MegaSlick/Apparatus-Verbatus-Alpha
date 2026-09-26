@@ -61,6 +61,7 @@ from common.residual_ink import (
     resolve_coverage_audit_policy,
 )
 from common.runtree.store import RunTree
+from common.sealed_config import read_sealed_toml
 from common.stage import REAL_SCENARIO, StageContext
 from conftest import load_stage
 
@@ -606,7 +607,7 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
     assert page_bytes != sealed_page_bytes
     page_digest = digest_bytes(page_bytes)
     grouping_path = ROOT / "config" / "designator_grouping.toml"
-    grouping_digest = digest_bytes(grouping_path.read_bytes())
+    grouping_digest = read_sealed_toml(grouping_path, "config")[1]
     background_config = load_background_config(grouping_path)
     coverage_config = load_coverage_audit_config(grouping_path)
     background_policy = resolve_background_policy(background_config, width, height)
@@ -4303,7 +4304,7 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
 
     designator_context = DesignatorContext()
     grouping_path = ROOT / "config" / "designator_grouping.toml"
-    grouping_digest = digest_bytes(grouping_path.read_bytes())
+    grouping_digest = read_sealed_toml(grouping_path, "config")[1]
     grouping_policy = designator.grouping_config.load_grouping_config(grouping_path)
     assert grouping_policy["config_sha256"] == grouping_digest
     analysis = designator._analyze_page({}, designator_context, 1, page_record, grouping_policy)

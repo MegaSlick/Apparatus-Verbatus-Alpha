@@ -1866,12 +1866,28 @@ def test_bound_serving_recipes_refuses_a_catalogue_it_cannot_read(tmp_path):
     context = SimpleNamespace(
         args=SimpleNamespace(serving_recipes_config=str(tmp_path / "absent.toml")),
         serving_config_inputs={
-            "schema": "serving-config-inputs.v1",
+            "schema": "serving-config-inputs.v2",
             "serving_recipes_sha256": "0" * 64,
             "pod_placement_sha256": "1" * 64,
         },
     )
     with pytest.raises(ContractError, match="serving configuration"):
+        attestatores.bound_serving_recipes(context)
+
+
+def test_bound_serving_recipes_names_an_unreadable_placement_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(attestatores, "DEFAULT_POD_PLACEMENT_CONFIG_PATH", tmp_path / "absent.toml")
+    context = SimpleNamespace(
+        args=SimpleNamespace(serving_recipes_config=str(ROOT / "config" / "serving_recipes.toml")),
+        serving_config_inputs={
+            "schema": "serving-config-inputs.v2",
+            "serving_recipes_sha256": "0" * 64,
+            "pod_placement_sha256": "1" * 64,
+        },
+    )
+    with pytest.raises(
+        ContractError, match="sealed serving configuration was refused: .*pod placement"
+    ):
         attestatores.bound_serving_recipes(context)
 
 

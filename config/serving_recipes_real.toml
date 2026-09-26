@@ -134,7 +134,7 @@
 # Rows cover every configured chair in models-real.toml at every tier in
 # pod_placement.toml.  The secondary proposer has no row because it is absent
 # there by ruling of 2026-08-12, and an absent chair needs no coverage.
-# The common stage parser seals the selected catalogue's exact bytes, so using
+# The common stage parser seals the selected catalogue's content, so using
 # this catalogue cannot silently share a run authority with the fixture-only
 # catalogue.
 #

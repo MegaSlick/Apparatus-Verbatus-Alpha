@@ -8,7 +8,7 @@ import pytest
 
 from common.chairs.models import is_witness_role
 from common.chairs.registry import ChairRegistry
-from common.contracts.canonical import digest_bytes
+from common.sealed_config import read_sealed_toml
 from common.stage import load_fixture, run_config_bindings, stage_parser
 from operations.serving.config import (
     SCHEMA,
@@ -46,11 +46,13 @@ def test_serving_recipes_flag_defaults_to_fixture_catalogue_and_selects_real_byt
         models, fixture, "happy", serving_recipes_config_path=selected.serving_recipes_config
     )
 
-    assert baseline["serving_config_inputs"]["serving_recipes_sha256"] == digest_bytes(
-        fixture_catalogue.read_bytes()
+    assert (
+        baseline["serving_config_inputs"]["serving_recipes_sha256"]
+        == read_sealed_toml(fixture_catalogue, "serving recipes")[1]
     )
-    assert alternate["serving_config_inputs"]["serving_recipes_sha256"] == digest_bytes(
-        real_catalogue.read_bytes()
+    assert (
+        alternate["serving_config_inputs"]["serving_recipes_sha256"]
+        == read_sealed_toml(real_catalogue, "serving recipes")[1]
     )
     assert baseline["config_digest"] != alternate["config_digest"]
 

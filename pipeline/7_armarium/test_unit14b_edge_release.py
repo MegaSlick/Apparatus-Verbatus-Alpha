@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import pytest
 
 from common.background import load_background_config, resolve_background_policy
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import DESIGNATOR, INK_MAP
 from common.residual_ink import (
@@ -22,11 +21,12 @@ from common.residual_ink import (
     load_coverage_audit_config,
     resolve_coverage_audit_policy,
 )
+from common.sealed_config import read_sealed_toml
 from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 GROUPING_CONFIG = ROOT / "config/designator_grouping.toml"
-GROUPING_CONFIG_DIGEST = digest_bytes(GROUPING_CONFIG.read_bytes())
+GROUPING_CONFIG_DIGEST = read_sealed_toml(GROUPING_CONFIG, "config")[1]
 
 
 _RUNS = {"schema": "ink-runs.v2", "width": 40, "height": 2, "rows": [[], []]}

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 from typing import Any, Final
 
 from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.approval import ApprovalRecordBinding
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError
+from common.sealed_config import read_sealed_toml
 from common.stage import PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT
 
 SELECTION_RULE: Final = "digest-threshold-over-frame-page-seed-act.v1"
@@ -116,14 +116,8 @@ def validate_truncation_table(table: Any) -> dict[str, Any]:
 
 
 def load(path: str | Path) -> tuple[dict[str, Any], str]:
-    """Read the exact policy bytes a Perlector pass will use."""
-    try:
-        raw = Path(path).read_bytes()
-        record = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(
-            f"the Perlector protocol declaration at {path} could not be read"
-        ) from error
+    """Read the policy a Perlector pass will use, with its seal."""
+    record, digest = read_sealed_toml(path, "Perlector protocol declaration")
     if set(record) != _FIELDS or not all(isinstance(record[key], str) for key in _STRING_FIELDS):
         raise ContractError("the Perlector protocol declaration is not its closed schema")
     record[TRUNCATION_TABLE] = validate_truncation_table(record[TRUNCATION_TABLE])
@@ -156,7 +150,7 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
             "what this pipeline says to a reader about its own prior draft is not a free-text "
             "configuration field"
         )
-    return record, digest_bytes(raw)
+    return record, digest
 
 
 def validate_control_per_mille(value: int) -> int:

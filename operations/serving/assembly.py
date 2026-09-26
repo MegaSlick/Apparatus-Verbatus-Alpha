@@ -11,7 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.errors import ContractError
+from common.sealed_config import parse_sealed_toml
 from operations.pod.preflight import (
     ChairCacheVerifier,
     GpuProfile,
@@ -201,7 +202,7 @@ def _load_bound_configuration(
 def _read_and_parse_placement(placement_path: str | Path) -> tuple[PlacementTable, str]:
     """Read the placement table once and parse those same bytes.
 
-    `PlacementTable` carries no digest of its own, so the digest and the parsed
+    `PlacementTable` carries no seal of its own, so the seal and the parsed
     table must come from one read; a second read could see a replaced file and
     seal a run to a placement it never parsed. Both the read and the parse are
     translated to `ServingConfigurationError`, the boundary's own vocabulary,
@@ -217,11 +218,12 @@ def _read_and_parse_placement(placement_path: str | Path) -> tuple[PlacementTabl
         ) from error
     try:
         placement = load_placement_table(placement_path, source_bytes=placement_bytes)
-    except PlacementRefusal as error:
+        _, placement_sha256 = parse_sealed_toml(placement_bytes, "placement table")
+    except (PlacementRefusal, ContractError) as error:
         raise ServingConfigurationError(
             f"cannot parse placement table {placement_path}: {error}"
         ) from error
-    return placement, digest_bytes(placement_bytes)
+    return placement, placement_sha256
 
 
 def _sealed_config_inputs(

@@ -4,15 +4,16 @@ import argparse
 import json
 import stat
 import sys
-import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence
 
-from common.chairs.config import load_models_toml
+from common.chairs.config import parse_models_config
 from common.chairs.models import ChairIdentity, is_sha256
 from common.chairs.receipts import validate_receipt
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
+from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA
+from common.sealed_config import parse_sealed_toml
 from operations.pod.durable import exclusive_write
 
 from .config import (
@@ -73,18 +74,20 @@ def qualification_candidates(
     placement_bytes = _read_bytes(placement_config, "placement table")
     models_bytes = _read_bytes(models_config, "model roster")
     config_inputs = _object(preflight.get("serving_config_inputs"), "serving config inputs")
+    try:
+        recipes_raw, recipes_sha256 = parse_sealed_toml(recipes_bytes, "serving recipes")
+        _, placement_sha256 = parse_sealed_toml(placement_bytes, "placement table")
+        models_raw, models_sha256 = parse_sealed_toml(models_bytes, "model roster")
+    except ContractError as error:
+        raise QualificationRefusal(f"serving configuration cannot be parsed: {error}") from error
     expected_inputs = {
-        "schema": "serving-config-inputs.v1",
-        "serving_recipes_sha256": digest_bytes(recipes_bytes),
-        "pod_placement_sha256": digest_bytes(placement_bytes),
+        "schema": SERVING_CONFIG_INPUTS_SCHEMA,
+        "serving_recipes_sha256": recipes_sha256,
+        "pod_placement_sha256": placement_sha256,
     }
     if config_inputs != expected_inputs:
         raise QualificationRefusal("preflight serving inputs do not match the supplied files")
 
-    try:
-        recipes_raw = tomllib.loads(recipes_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise QualificationRefusal(f"serving recipes cannot be parsed: {error}") from error
     try:
         parse_serving_recipes(
             recipes_raw,
@@ -98,7 +101,7 @@ def qualification_candidates(
         raise QualificationRefusal("serving recipes have no profile rows")
 
     try:
-        models = load_models_toml(models_config)
+        models = parse_models_config(models_raw, source_path=models_config)
     except ContractError as error:
         raise QualificationRefusal(f"model roster is invalid: {error}") from error
     identities = {
@@ -205,7 +208,7 @@ def qualification_candidates(
         "schema": SCHEMA,
         "report_sha256": digest_bytes(report_bytes),
         "source_inputs": {
-            "models_config_sha256": digest_bytes(models_bytes),
+            "models_config_sha256": models_sha256,
             **expected_inputs,
         },
         "measured": {

@@ -54,6 +54,7 @@ from common.fixture_identity import page_identity
 from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
+from common.sealed_config import read_sealed_toml
 from common.stage import (
     DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     EXIT_FATAL,
@@ -100,9 +101,9 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # or went missing, which is a real change to explain, not a golden update.
 #
 # Things that move the digests without any change in behaviour:
-#   - any byte of a config file the run seals, comments included: `run.json`
-#     seals each such file's bytes, so its prose is part of the configuration a
-#     run is bound to;
+#   - any value in a config file the run seals, provenance prose included: a
+#     TOML file's seal covers what it says (comments and layout move nothing),
+#     and a non-TOML sealed file's bytes;
 #   - any code change in `pipeline/4_perlector/prompts.py`, whose code digest is
 #     sealed into every prompt record;
 #   - any string sealed into a record or the export manifest.
@@ -115,8 +116,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # second recovery round.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "2345bb42b814ba8ea2f00b939a5944e2887a8f4f712ce3ef36883b2eb04c6377"
-REVIEW_RUN_TREE_DIGEST = "9204e5639abb9f81e6c4b52aa1e798c0fde0e82a4fe5d1721f733dae015a69d9"
+HAPPY_RUN_TREE_DIGEST = "4e1e9b7edeff070dbe6efa9df3d3195343a92c6236bd11817fb1f86e464c9c6e"
+REVIEW_RUN_TREE_DIGEST = "a27596771b9b68a33e535089e5679e996c62d99b17e855ae329d39289f7def27"
 
 
 def orchestrate(
@@ -453,8 +454,9 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
         witness_context_config_path=witness_context,
     )
     assert run_record["config_digest"] == expected["config_digest"]
-    assert expected["serving_config_inputs"]["serving_recipes_sha256"] == digest_bytes(
-        recipes.read_bytes()
+    assert (
+        expected["serving_config_inputs"]["serving_recipes_sha256"]
+        == read_sealed_toml(recipes, "serving recipes")[1]
     )
 
 

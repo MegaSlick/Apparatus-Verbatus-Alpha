@@ -95,7 +95,6 @@ import secrets
 import stat
 import sys
 import time
-import tomllib
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -121,6 +120,7 @@ from common.credentials import (
     argv_credential_piece,
     looks_like_credential_field,
 )
+from common.sealed_config import parse_sealed_toml
 from common.witness_context import validate_witness_context_configuration
 from operations.serving.assembly import ProfileProbe, assemble_serving_smoke_reader
 from operations.serving.config import (
@@ -1210,15 +1210,16 @@ def _build_preflight(
             registry.fetcher = VerifiedStoreFetcher({})
         else:
             registry.fetcher = chosen.fetcher_factory()
-        # One read each, digested from the bytes that are parsed: the serving
+        # One read each, sealed from the table that is parsed: the serving
         # assembly re-reads both files and refuses if what it parses does not
-        # digest to what is sealed here, so a substitution between the two
+        # seal to what is sealed here, so a substitution between the two
         # reads is a named refusal rather than a table the run never sealed.
         recipes = load_serving_recipes(recipes_config)
         try:
             placement_bytes = placement_config.read_bytes()
             placement = load_placement_table(placement_config, source_bytes=placement_bytes)
-        except (OSError, PlacementRefusal) as error:
+            _, placement_sha256 = parse_sealed_toml(placement_bytes, "placement table")
+        except (OSError, PlacementRefusal, ContractError) as error:
             raise BootstrapStepFailure(
                 BootstrapStep.PREFLIGHT,
                 f"placement table {placement_config} could not be read: {error}",
@@ -1230,7 +1231,7 @@ def _build_preflight(
                 f"serving catalogue {recipes_config} was loaded without a source digest",
                 "Load the catalogue from its file so its bytes can be sealed.",
             )
-        config_inputs = ServingConfigInputs(recipes.source_sha256, digest_bytes(placement_bytes))
+        config_inputs = ServingConfigInputs(recipes.source_sha256, placement_sha256)
         context = _PreflightContext(config_inputs.to_record(), registry)
         preflight_root = plan.preflight_root
         publisher = PodPreflightReceiptPublisher(preflight_root, context)
@@ -1340,12 +1341,9 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
             )
         try:
             models_source = _read_configuration_source(plan.models_config, "model roster")
-            try:
-                parsed_models = tomllib.loads(models_source.decode("utf-8"))
-            except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-                raise ContractError(
-                    f"model roster {plan.models_config} could not be parsed: {error}"
-                ) from error
+            parsed_models, models_sha256 = parse_sealed_toml(
+                models_source, f"model roster {plan.models_config}"
+            )
             models = parse_models_config(parsed_models, source_path=plan.models_config)
             validation = validate_witness_context_configuration(
                 models,
@@ -1373,13 +1371,13 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 "before any environment or model work.",
             ) from error
         try:
-            serving_raw = tomllib.loads(serving_source.decode("utf-8"))
+            serving_raw, serving_sha256 = parse_sealed_toml(serving_source, "serving catalogue")
             parse_serving_recipes(
                 serving_raw,
                 source_path=plan.serving_recipes_config,
-                source_sha256=digest_bytes(serving_source),
+                source_sha256=serving_sha256,
             )
-        except (UnicodeDecodeError, tomllib.TOMLDecodeError, ServingConfigurationError) as error:
+        except (ContractError, ServingConfigurationError) as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
                 f"selected serving catalogue {plan.serving_recipes_config} could not be parsed: {error}",
@@ -1388,7 +1386,8 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
             ) from error
         try:
             load_placement_table(plan.placement_config, source_bytes=placement_source)
-        except PlacementRefusal as error:
+            _, placement_sha256 = parse_sealed_toml(placement_source, "placement table")
+        except (PlacementRefusal, ContractError) as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
                 f"selected placement table {plan.placement_config} could not be parsed: {error}",
@@ -1398,15 +1397,19 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
         return {
             "schema": CONFIGURATION_RECEIPT_SCHEMA,
             "bindings": {
-                "models_config": _configuration_binding(plan.models_config, models_source),
+                "models_config": {"path": str(plan.models_config), "sha256": models_sha256},
                 "witness_context_config": {
                     "path": str(plan.witness_context_config),
                     "sha256": validation.source_sha256,
                 },
-                "serving_recipes_config": _configuration_binding(
-                    plan.serving_recipes_config, serving_source
-                ),
-                "placement_config": _configuration_binding(plan.placement_config, placement_source),
+                "serving_recipes_config": {
+                    "path": str(plan.serving_recipes_config),
+                    "sha256": serving_sha256,
+                },
+                "placement_config": {
+                    "path": str(plan.placement_config),
+                    "sha256": placement_sha256,
+                },
             },
             "witness_context_validation": validation.to_record(),
         }
@@ -1419,10 +1422,6 @@ def _read_configuration_source(path: Path, label: str) -> bytes:
         return path.read_bytes()
     except OSError as error:
         raise ContractError(f"{label} {path} could not be read: {error}") from error
-
-
-def _configuration_binding(path: Path, source: bytes) -> dict[str, str]:
-    return {"path": str(path), "sha256": digest_bytes(source)}
 
 
 def build_actions(plan: Plan) -> BootstrapActions:

@@ -17,12 +17,10 @@ instrument rather than a sealed claim about one.
 from __future__ import annotations
 
 import re
-import tomllib
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Final
 
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.perlector_audit import (  # noqa: F401  (re-export)
     AUDIT_PROMPT_SCHEMA,
@@ -49,6 +47,7 @@ from common.perlector_audit import (  # noqa: F401  (re-export)
     validate_finding,
     validate_perlectio_audit,
 )
+from common.sealed_config import read_sealed_toml
 
 _CONFIG_FIELDS: Final = frozenset(
     {"schema", "default_round_cap", "absolute_round_cap", "round_cap", "approval_ref"}
@@ -56,13 +55,7 @@ _CONFIG_FIELDS: Final = frozenset(
 
 
 def load(path: str | Path) -> tuple[dict[str, Any], str]:
-    try:
-        raw = Path(path).read_bytes()
-        policy = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(
-            f"the Perlector audit declaration at {path} could not be read"
-        ) from error
+    policy, digest = read_sealed_toml(path, "Perlector audit declaration")
     if (
         isinstance(policy, dict)
         and isinstance(policy.get("schema"), str)
@@ -121,7 +114,7 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
             "ever being run; raising it needs the multi-round pass, not only an approval "
             "reference"
         )
-    return policy, digest_bytes(raw)
+    return policy, digest
 
 
 def _flag(flag_class: str, start: int, end: int) -> dict[str, Any]:

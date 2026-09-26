@@ -14,7 +14,6 @@ must reproduce, but it carries no meaning and no reader may take one from it.
 from __future__ import annotations
 
 import copy
-import tomllib
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Final
@@ -30,6 +29,7 @@ from common.contracts.stages import EXEMPLAR, PERLECTOR
 from common.imaging import crop_png, dimensions, encode_grayscale_png_deterministic
 from common.native_witness import REPORTED_BOUNDS_SOURCES
 from common.stage import WITNESS_READING_OUTCOMES
+from common.witness_context import read_witness_context_declaration
 from common.witness_regime import NAMED, REGIMES, witness_label
 
 # A fixed bound, not configuration: the dossier's job is to hand the reader a
@@ -73,37 +73,11 @@ _FORBIDDEN_KEY_FRAGMENTS: Final = (
 def load_witness_context(path: Path) -> dict[str, dict[str, str]]:
     """Read the Perlector-owned factual-context declaration. Data, never code.
 
-    The path is always supplied, never defaulted: the run seals the digest of
-    one declaration file into `config_digest`, and a module-local default would
-    be a second answer to "which file" that could quietly build a dossier from
-    bytes the run was not sealed under.
+    The path is always supplied, never defaulted: the run seals one declaration
+    into `config_digest`, and a module-local default would be a second answer to
+    "which file".
     """
-    try:
-        with open(path, "rb") as handle:
-            raw = tomllib.load(handle)
-    # `UnicodeDecodeError` beside the others because `tomllib` decodes the bytes
-    # itself: a declaration file that is not valid UTF-8 raises it rather than
-    # `TOMLDecodeError`, and it escaped this handler as a raw traceback where
-    # every other malformed-file case is a named refusal. `common/stage.py`
-    # already catches it for the same reason.
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(
-            f"witness context declaration at {path} could not be read: {error}"
-        ) from error
-    for chair, entry in raw.items():
-        if (
-            not isinstance(chair, str)
-            or not chair
-            or not isinstance(entry, dict)
-            or set(entry) != {"training_domain"}
-            or not isinstance(entry.get("training_domain"), str)
-            or not entry["training_domain"].strip()
-        ):
-            raise ContractError(
-                f"witness context entry for {chair!r} is not the closed, non-blank "
-                "training_domain record"
-            )
-    return raw
+    return read_witness_context_declaration(path)[0]
 
 
 def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dict[str, Any]]:

@@ -48,6 +48,7 @@ from common.residual_ink import (
     resolve_coverage_audit_policy,
 )
 from common.runtree.store import RunTree
+from common.sealed_config import read_sealed_toml
 from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -590,7 +591,7 @@ def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monk
         "subject_id": "page-1",
         "payload": {"image_path": "page.png", "source_sha256": "0" * 64},
     }
-    expected_digest = digest_bytes(DEFAULT_BACKGROUND_CONFIG_PATH.read_bytes())
+    expected_digest = read_sealed_toml(DEFAULT_BACKGROUND_CONFIG_PATH, "config")[1]
 
     class ProducerContext:
         def __init__(self):
@@ -667,7 +668,7 @@ def test_ink_map_by_page_accepts_the_actual_measured_record_from_the_ink_map(mon
         "subject_id": "page-1",
         "payload": {"image_path": "page.png", "source_sha256": "0" * 64},
     }
-    expected_digest = digest_bytes(DEFAULT_BACKGROUND_CONFIG_PATH.read_bytes())
+    expected_digest = read_sealed_toml(DEFAULT_BACKGROUND_CONFIG_PATH, "config")[1]
 
     class ProducerContext:
         def __init__(self):

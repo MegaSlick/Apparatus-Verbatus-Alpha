@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.canonical import digest_bytes
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy
 from common.runtree.store import RunTree
+from common.sealed_config import read_sealed_toml
 from conftest import programs_through, tree_snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,7 +63,7 @@ def test_a_run_seals_the_exact_decoding_bytes_it_was_created_under(tmp_path):
     run = tree.read_run()
 
     _policy, digest = load_decoding_policy()
-    assert digest == digest_bytes(DEFAULT_DECODING_CONFIG_PATH.read_bytes())
+    assert digest == read_sealed_toml(DEFAULT_DECODING_CONFIG_PATH, "decoding")[1]
     # Filed under the name its points of use ask for, and inside the digest of
     # everything that shapes the run -- so a candidate policy file can be proved
     # against the tree without trusting its filename or parsed values.

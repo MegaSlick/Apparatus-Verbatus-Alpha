@@ -24,6 +24,7 @@ from common.residual_ink import (
     validate_coverage_audit_table,
     validate_coverage_noise_floor_table,
 )
+from common.sealed_config import read_sealed_toml
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,11 +49,10 @@ def _sealed() -> dict:
     return load_coverage_audit_config()
 
 
-def test_the_shipped_block_loads_with_the_digest_of_its_own_bytes():
+def test_the_shipped_block_loads_with_the_seal_of_its_own_file():
     config = _sealed()
-    from common.contracts.canonical import digest_bytes
 
-    assert config["config_sha256"] == digest_bytes(DEFAULT_COVERAGE_AUDIT_CONFIG_PATH.read_bytes())
+    assert config["config_sha256"] == read_sealed_toml(DEFAULT_COVERAGE_AUDIT_CONFIG_PATH, "x")[1]
     assert config["coverage_audit"] == SEALED_VALUES
     # The two Designator fields this audit resolves beside its own, out of the
     # same file: the component it takes out of its counts must be the component

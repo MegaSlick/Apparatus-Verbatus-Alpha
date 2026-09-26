@@ -215,7 +215,7 @@ def test_a_stage_context_with_no_run_sealed_serving_inputs_refuses_a_launch_audi
                 "chair": "attestator_1",
                 "started_at": "2026-08-09T12:00:00Z",
                 "configuration_inputs": {
-                    "schema": "serving-config-inputs.v1",
+                    "schema": "serving-config-inputs.v2",
                     "serving_recipes_sha256": "0" * 64,
                     "pod_placement_sha256": "0" * 64,
                 },

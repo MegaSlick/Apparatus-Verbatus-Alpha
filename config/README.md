@@ -53,7 +53,7 @@ design that would close the case are in `pipeline/3_attestatores/CONTRACT.md`.
 | Perlector protocol Pass-B fragment | the neutral form sealed in `perlector_protocol.toml` | **not a knob** — pinned to `protocol.PASS_B_FRAGMENT`; rewording is a reviewed two-file change | a B5a prompt-framing ablation the project lead records, which retires the pin rather than edits around it |
 | Perlector transcription instruction (`unproven-real-perlector`) | the pinned wording, with its `[[?]]` / `[[reading\|other]]` doubt marks, in `pipeline/4_perlector/prompts.py::TRANSCRIPTION_INSTRUCTION` | **not a knob** — pinned in code and sealed into every real Perlectio's prompt evidence; rewording is a reviewed two-file change, the same rule as the Pass-B fragment | a B5a prompt-framing ablation the project lead records, which retires the pin |
 
-The Pass-B fragment sits in `perlector_protocol.toml` so its exact bytes seal
+The Pass-B fragment sits in `perlector_protocol.toml` so its exact text seals
 into every run, not so a run may choose them. It is pinned in code because a
 free-text field there would leave principle 1 and principle 8's "the
 instrument may not constrain what it measures" resting on a phrase blacklist
@@ -84,7 +84,7 @@ ceiling remain in code; configuration cannot weaken them. The default is **unmea
 making it adjustable does not prove it suitable, and it should be checked against a
 real sample of real material (principle 10).
 
-The door reads this file exactly once and parses and hashes the same bytes
+The door reads this file exactly once and parses and seals that one read
 (`render_config.load_pdf_render_binding`). It used to resolve the settings and then
 let the binding step open the file again, so a rewrite between the two reads left a
 run whose `render_settings` recorded one target while its `config_digest` bound
@@ -142,8 +142,8 @@ model will fit. `models.toml`'s `serving_recipe` is only a family key; the servi
 manager requires exactly one profile for the triple `(serving_recipe, chair,
 measured placement tier)`. There is no nearest-tier or healthy-chair fallback.
 Every capacity value is a planning value until that exact identity/revision/profile
-has completed a real pod preflight. Its exact bytes are included in a run's
-`config_digest`, alongside the exact `pod_placement.toml` bytes, so changing a
+has completed a real pod preflight. Its seal is included in a run's
+`config_digest`, alongside the seal of `pod_placement.toml`, so changing a
 serving flag, tier threshold, or cap cannot silently reuse a run authority. The
 serving assembly receives those two run-sealed digests only through the active
 stage context and records them in its launch audit.
@@ -208,15 +208,28 @@ and could not be pinned by it from anywhere else:
 
 ## Sealed configuration
 
-A policy that shapes a run is **read once as bytes, parsed and hashed from those same
-bytes, sealed into the run, and required by digest at every point of use.** Sealing
-means two things together: the digest goes into `run.json`'s `config_digest`, so
-reusing a run id across a change is refused before anything is written; and it is
-recorded by name in the run authority's `sealed_config_digests`, so a reader holding
-only the tree can *name* the policy bytes that governed the run instead of merely
-testing a candidate file against one hash of everything.
+A policy that shapes a run is **read once, parsed, sealed into the run, and required
+by its seal at every point of use.** The seal of a TOML file is the SHA-256 of its
+parsed table written as sorted-key JSON (`common/sealed_config.py::read_sealed_toml`):
+what the file says, not how it is written. Comments, blank lines and key order are
+free to edit and move no seal; any value change moves it. `run.json` records the
+scheme as `sealed_config_method = "toml-sorted-json.v1"`. The tag versions the whole
+map, not only its TOML entries: `data-handling` (JSON) is still a digest of raw bytes,
+and the real-ingress `models` and `run-policy` are canonical digests of parsed
+records. A run without the tag sealed its TOML files by raw bytes and is
+refused by name as a seal-method change, never as drift. The serving inputs
+(`serving-config-inputs.v2`) and the pod bootstrap receipt
+(`pod-bootstrap-configuration.v2`) carry the same scheme in their schema. Sealing means
+two things together: the seal goes into `run.json`'s `config_digest`, so reusing a run id across a
+change is refused before anything is written; and it is recorded by name in the run
+authority's `sealed_config_digests`, so a reader holding only the tree can *name* the
+policy that governed the run instead of merely testing a candidate file against one
+hash of everything. `data_handling_policy.json` is the one sealed file that is not
+TOML, and it is still sealed by its bytes. `spend.toml` and the triage instrument
+declaration are TOML but are not sealed into a run: the spend display and the
+triage records carry a digest of their raw bytes instead.
 
-`common/stage.py::require_sealed_config` is the point-of-use comparison. A stage asks
+`common/sealed_config.py::require_sealed_config` is the point-of-use comparison. A stage asks
 through its `StageContext`; the orchestrator, which is not a stage, asks the run
 authority directly. A name that is sealed has a point of use that requires it, and a
 policy a stage needs the *values* of is carried already parsed rather than reopened —
@@ -225,10 +238,11 @@ policy a stage needs the *values* of is carried already parsed rather than reope
 
 Sealed names today: `designator-padding`, `designator-geometry`, `designator-grouping`,
 `alignment`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
-`pdf-render`, `recovery`, `hard-failure`, and — on real ingress only, because the
-fixture route is not gated — `data-handling`. `triage-modes` is likewise sealed into
-every run; Unit 6's pre-door producer/door seam must call `require_triage_modes` before
-using its vocabulary.
+`pdf-render`, `recovery`, `hard-failure` and `triage-modes` on every run (Unit 6's
+pre-door producer/door seam must call `require_triage_modes` before using its
+vocabulary). Real ingress adds `data-handling`, `serving-recipes`, `pod-placement`,
+`models`, `armarium-formats` and `run-policy`: the fixture route rechecks those facts
+through `config_digest`, which a later stage can recompute, and the real one cannot.
 
 ### `designator_grouping.toml`
 
@@ -279,11 +293,11 @@ and `designator-geometry` are. Its schema lives in
 `pipeline/2_designator/grouping_config.py`, and `common/` may never import a stage
 module (`common/README.md`, enforced through `ast` by
 `common/chairs/test_chairs_import_boundary.py`), nor may the Door reach across stage
-directories to it (`pipeline/test_stage_import_boundaries.py`). So run creation hashes
-the bytes and refuses an unreadable file, and the Designator does the parsing where the
+directories to it (`pipeline/test_stage_import_boundaries.py`). So run creation seals
+the file and refuses an unreadable one, and the Designator does the parsing where the
 loader already is: `initial_pass` calls `grouping_config.load_grouping_config` on the
 run's own `--designator-grouping-config`, validates it against the closed schema, and
-then proves it read the bound bytes through
+then proves it read the bound policy through
 `require_sealed_config("designator-grouping", …)` — before the stage marks anything
 out. A malformed policy is refused there by name, and a policy rewritten after the door
 bound it refuses as drift naming both digests. The sealed name has a reader, so it is
@@ -338,6 +352,6 @@ be known to decide whether a resumed run may re-enter a stage at all — and the
 for the whole run, so it is read once, held, and proved against the run authority at
 the first moment such an authority exists: the resume preflight. On a first run there
 is nothing to prove it against until the Door creates the authority, and the Door seals
-these digests from the same bytes. What the file *says* remains the project lead's: the
+these seals from the same read. What the file *says* remains the project lead's: the
 threshold and the `[[kind]]` list are both rulings. Sealing the file is engineering; changing its
 content is not.
