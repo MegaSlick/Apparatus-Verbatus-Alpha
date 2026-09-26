@@ -1,6 +1,6 @@
 """The content-addressed cache and the never-re-fetch request ledger.
 
-`SPEC.md` §5.1 ("Resumable / never re-fetch") is two stores with different keys:
+Resumable, never re-fetching, is two stores with different keys:
 
   cache/<response-sha256>.jpg      the bytes themselves, addressed by their own
                                     digest — two identifiers that return the same
@@ -15,8 +15,8 @@ network call: `load_request_record` returning non-`None` means "do not ask the
 server this question again." The response store is where the answer's bytes
 live; a request record and a response file are written only after a fetch has
 *fully* completed, so a run killed mid-body leaves neither — the request will be
-retried, not silently treated as answered (`SPEC.md` §5.1's "an interrupt loses
-at most one in-flight body").
+retried, not silently treated as answered: an interrupt loses at most one
+in-flight body.
 
 Both writes are atomic creates, never overwrites: `_write_new_file` hard-links a
 completed temp file onto its destination, which raises `FileExistsError`
@@ -46,6 +46,11 @@ CACHE_REFUSAL_REASONS = frozenset(
     }
 )
 
+
+class Refusal(CorpusRefusal):
+    reasons = CACHE_REFUSAL_REASONS
+
+
 # `os.link` on a cache root that cannot hold hard links (EPERM, EOPNOTSUPP,
 # ENOSYS — a filesystem with them disabled, or one that never supports them)
 # is a constraint on the cache root itself, not on the one file being written.
@@ -56,11 +61,11 @@ CACHE_REFUSAL_REASONS = frozenset(
 _NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 
 
-class CacheUnusable(CorpusRefusal):
+class CacheUnusable(Refusal):
     """The cache root itself cannot hold the store — not one page's problem."""
 
 
-# The general request-key formula from `SPEC.md` §5.1 covers every kind of
+# The request-key formula covers every kind of
 # request this package issues, not only image fetches. `info.json` has no
 # region/size/rotation/quality/format of its own, so it fills those fields with
 # the fixed sentinel `"info"` rather than omitting them — one formula, one
@@ -93,9 +98,7 @@ def compute_request_key(
 
 def _require_sha256(value: str, what: str) -> str:
     if not is_sha256(value):
-        raise CorpusRefusal(
-            f"malformed-digest: {what} {value!r} is not a lowercase sha256 hex digest"
-        )
+        raise Refusal(f"malformed-digest: {what} {value!r} is not a lowercase sha256 hex digest")
     return value
 
 
@@ -142,12 +145,12 @@ def load_request_record(cache_root: Path, request_key: str) -> dict[str, Any] | 
     try:
         record = json.loads(path.read_bytes())
     except ValueError as error:
-        raise CorpusRefusal(
+        raise Refusal(
             f"unreadable-request-record: {path} is not readable JSON ({error}); delete it "
             "to force a re-fetch"
         ) from error
     if not isinstance(record, dict):
-        raise CorpusRefusal(
+        raise Refusal(
             f"unreadable-request-record: {path} does not contain a JSON object; delete it "
             "to force a re-fetch"
         )
@@ -229,7 +232,7 @@ def write_request_record(cache_root: Path, request_key: str, record: dict[str, A
     path = request_record_path(cache_root, request_key)
     data = canonical_bytes(record)
     if not write_new_file(path, data):
-        raise CorpusRefusal(
+        raise Refusal(
             f"duplicate-request-record: {request_key!r} already has a recorded answer — "
             "never re-fetch means never re-record either; the caller should have checked "
             "load_request_record first"

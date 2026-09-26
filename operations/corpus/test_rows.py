@@ -9,18 +9,18 @@ reason it names.
 """
 
 import copy
-import re
-from pathlib import Path
 
 import pytest
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.canonical import self_hash as _self_hash
 from operations.corpus import CorpusRefusal
+from operations.corpus.conftest import asserted_reasons
 from operations.corpus.rows import (
     CORPUS_ID,
     ROW_REFUSAL_REASONS,
     SCHEMA,
+    Refusal,
     build_snapshot,
     validate_row,
     validate_snapshot,
@@ -127,18 +127,25 @@ def test_validate_row_refuses_a_text_sha256_mismatch():
         validate_row(row, 0)
 
 
-def test_every_declared_row_refusal_reason_is_exercised_here():
-    """`exercised` is read from this file's own `pytest.raises` calls, not hand-typed.
+def test_every_declared_row_refusal_reason_is_exercised_here(exercised_reasons):
+    assert exercised_reasons == ROW_REFUSAL_REASONS
 
-    A hand-typed set can drift from the tests it claims to describe: adding a
-    phantom reason, or deleting the test that exercises a real one, both leave a
-    hardcoded set green. Deriving it from the anchored `match="^reason:"`
-    patterns this file actually asserts makes the coverage check track the
-    tests themselves.
-    """
-    source = Path(__file__).read_text(encoding="utf-8")
-    exercised = set(re.findall(r'pytest\.raises\(CorpusRefusal, match="\^([a-z0-9-]+):"\)', source))
-    assert exercised == ROW_REFUSAL_REASONS
+
+@pytest.mark.parametrize(
+    "names", ['"value,reason"', '" value , reason "', '("value", "reason")', '["value", "reason"]']
+)
+def test_asserted_reasons_reads_every_spelling_of_parametrize_names(names):
+    source = f"@pytest.mark.parametrize({names}, [(1, 'empty-rows')])\ndef test(): pass\n"
+    assert asserted_reasons(source) == {"empty-rows"}
+
+
+def test_a_refusal_carries_its_reason_and_refuses_an_undeclared_one():
+    error = Refusal("empty-rows: detail")
+    assert (error.reason, str(error)) == ("empty-rows", "empty-rows: detail")
+    with pytest.raises(
+        TypeError, match="operations.corpus.rows declares no reason 'not-a-row-reason'"
+    ):
+        Refusal("not-a-row-reason: detail")
 
 
 # --- validate_snapshot: shape, schema, and uniqueness ----------------------------

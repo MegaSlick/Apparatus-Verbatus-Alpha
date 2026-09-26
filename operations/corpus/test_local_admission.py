@@ -18,7 +18,6 @@ assertions rather than from a hand-typed list (`test_rows.py`'s convention).
 
 from __future__ import annotations
 
-import ast
 import io
 import json
 from pathlib import Path
@@ -831,56 +830,6 @@ def test_the_command_line_refuses_the_held_split_without_its_flag(tmp_path):
         main([str(root), "--split", "test", "--output-dir", str(tmp_path / "out")])
 
 
-def _exercised_reasons() -> set[str]:
-    """Every reason this file actually asserts, read from its own syntax tree.
-
-    Three shapes carry a reason here: the second argument of an `_only_reason`
-    call (a ledger row), the anchored `match=` of a `pytest.raises` (a raised
-    refusal), and the reason column of a `parametrize` table (a raised or
-    recorded refusal, one per case). A regex over the source could not tell the
-    second argument of a call whose first argument itself contains commas, so
-    this reads the tree rather than the text.
-    """
-    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            func = node.func
-            if isinstance(func, ast.Name) and func.id == "_only_reason":
-                if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
-                    found.add(node.args[1].value)
-            if isinstance(func, ast.Attribute) and func.attr in ("raises", "parametrize"):
-                for keyword in node.keywords:
-                    if keyword.arg == "match" and isinstance(keyword.value, ast.Constant):
-                        found.add(keyword.value.value.lstrip("^").rstrip(":"))
-                if func.attr == "parametrize":
-                    # Only the reason column -- the last element of each case
-                    # tuple in a table whose parameter names end in "reason".
-                    # Taking every string in the table would count a reason that
-                    # merely appears beside an assertion as exercised by it
-                    names, cases = node.args[0], node.args[1]
-                    if not (
-                        isinstance(names, (ast.Tuple, ast.List))
-                        and isinstance(names.elts[-1], ast.Constant)
-                        and names.elts[-1].value == "reason"
-                        and isinstance(cases, (ast.List, ast.Tuple))
-                    ):
-                        continue
-                    for case in cases.elts:
-                        if isinstance(case, (ast.Tuple, ast.List)) and isinstance(
-                            case.elts[-1], ast.Constant
-                        ):
-                            found.add(case.elts[-1].value)
-    return found
-
-
-def test_every_declared_local_admission_reason_is_exercised_here():
-    """`exercised` is read from this file's own assertions, never hand-typed.
-
-    A hand-typed set can drift from the tests it claims to describe: a phantom
-    reason, or a deleted test, both leave it green. `test_rows.py` set this
-    convention and says why -- reasons had been "declared but never shown to
-    fire".
-    """
-    missing = LOCAL_ADMISSION_REFUSAL_REASONS - _exercised_reasons()
+def test_every_declared_local_admission_reason_is_exercised_here(exercised_reasons):
+    missing = LOCAL_ADMISSION_REFUSAL_REASONS - exercised_reasons
     assert missing == set(), f"declared but never shown to fire: {sorted(missing)}"

@@ -127,7 +127,7 @@ def test_refuse_held_out_page_refuses_a_pure_test_page_by_name():
 
 
 def test_refuse_held_out_page_refuses_a_val_page_that_also_carries_a_test_record():
-    # The scenario SPEC.md names explicitly: a page carrying both val and test
+    # A page carrying both val and test
     # records must be refused as cross-split-page, not merely as holdout-page.
     rows = [_row("v1", "val", VAL_PAGE_URL), _row("s1", "test", CROSS_SPLIT_URL_SAME_PAGE)]
     holdout = build_holdout(rows, SNAPSHOT_HASH)
@@ -247,6 +247,8 @@ def test_main_builds_and_writes_a_validated_holdout(tmp_path):
     assert holdout["schema"] == "recordgold-holdout.v1"
     assert output_path.exists()
     assert output_path.read_bytes() == canonical_bytes(holdout)
+    with pytest.raises(CorpusRefusal, match="^output-exists:"):
+        main(snapshot_path, output_path)
 
 
 def test_load_holdout_returns_a_byte_identical_validated_holdout(tmp_path):
