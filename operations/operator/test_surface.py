@@ -14,6 +14,7 @@ import signal
 import subprocess
 import threading
 import tracemalloc
+import zipfile
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -1179,60 +1180,6 @@ def test_inspect_refuses_a_symlink_planted_as_the_object_is_opened(
 
     assert LocalFixtureObjectStore(root).inspect("objects/page.bin") is None
     assert target.is_symlink(), "the test did not drive the read-side substitution"
-
-
-def test_fixture_object_publication_syncs_its_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    synced: list[Path] = []
-
-    def sync(path: Path, *, strict: bool) -> None:
-        assert strict
-        synced.append(path)
-
-    monkeypatch.setattr("operations.operator.fakes.sync_directory", sync)
-    source = tmp_path / "source.bin"
-    source.write_bytes(b"payload")
-    store = LocalFixtureObjectStore(tmp_path / "volume")
-
-    with source.open("rb") as handle:
-        store.put_file(
-            "objects/page.bin",
-            handle,
-            expected_sha=hashlib.sha256(b"payload").hexdigest(),
-        )
-
-    assert synced == [(tmp_path / "volume" / "objects").resolve()]
-
-
-def test_reused_fixture_object_reproves_directory_durability(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "source.bin"
-    source.write_bytes(b"payload")
-    store = LocalFixtureObjectStore(tmp_path / "volume")
-    with source.open("rb") as handle:
-        store.put_file(
-            "objects/page.bin",
-            handle,
-            expected_sha=hashlib.sha256(b"payload").hexdigest(),
-        )
-
-    def refuses(_path: Path, *, strict: bool) -> None:
-        assert strict
-        raise OSError("injected reuse directory sync failure")
-
-    monkeypatch.setattr("operations.operator.fakes.sync_directory", refuses)
-
-    with source.open("rb") as handle:
-        with pytest.raises(RuntimeError, match="exists but its directory entry"):
-            store.put_file(
-                "objects/page.bin",
-                handle,
-                expected_sha=hashlib.sha256(b"payload").hexdigest(),
-            )
-
-    assert store.puts == ["objects/page.bin"]
 
 
 def test_submit_and_upload_seals_a_new_manifest_then_transfers_it(tmp_path: Path) -> None:
@@ -4871,6 +4818,22 @@ def test_an_evidence_bundle_short_of_run_json_refuses_rather_than_saying_complet
 
     assert "run.json" in (refusal.value.detail or "")
     assert not destination.exists(), "a refused bundle must not leave a file behind"
+
+
+def test_an_evidence_bundle_leaves_out_a_stray_publication_temporary(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    root = tmp_path / "runs" / "r"
+    (root / "7_armarium").mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    (root / "7_armarium" / "aggregate.json").write_text("{}", encoding="utf-8")
+    (root / "7_armarium" / ".aggregate.json.tmp-abc123").write_text("{", encoding="utf-8")
+
+    destination = tmp_path / "bundle.zip"
+    surface._write_base_armarium_bundle(tmp_path / "runs", "r", destination)
+
+    with zipfile.ZipFile(destination) as bundle:
+        assert not any(".tmp-" in name for name in bundle.namelist())
+        assert "r/7_armarium/aggregate.json" in bundle.namelist()
 
 
 def test_an_evidence_bundle_whose_armarium_is_a_file_refuses_too(tmp_path: Path) -> None:

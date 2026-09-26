@@ -587,11 +587,6 @@ def _verify_admitted_blob(
     try:
         blob = tree.read_bytes(stored_at)
     except OSError as error:
-        # A *deleted* blob, where the branch below catches a *changed* one. Without
-        # this the stage died with a FileNotFoundError traceback and CPython's exit
-        # 1, where `common/stage.py` turns a ContractError into EXIT_FATAL (2) and
-        # says exit codes carry cause — while `_read_checked_admission` three
-        # functions up catches OSError for exactly this class of failure.
         raise ContractError(
             "an admitted blob could not be read; the bytes the door sealed are no "
             "longer in the run tree, and a page cannot be sealed over bytes nobody has"

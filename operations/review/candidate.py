@@ -11,10 +11,9 @@ import re
 import stat
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 
-from common.durability import sync_directory
+from common.durability import atomic_create
 
 GIT_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 GIT_ENV["GIT_NO_REPLACE_OBJECTS"] = "1"
@@ -104,52 +103,14 @@ def report_names(data: bytes, label: str, identity: str) -> bool:
     return re.search(expression, data) is not None
 
 
-def fsync_directory(directory: Path) -> None:
-    """Strict directory sync: a receipt may not claim a name that is not durable.
-
-    Delegates to the one implementation rather than being the third copy of it
-    (`common/durability.py`). The behaviour is unchanged — this function always
-    raised on a filesystem that refused, which is `strict=True`.
-    """
-
-    sync_directory(directory, strict=True)
-
-
 def publish_immutable(path: Path, data: bytes, noun: str) -> None:
     """Durably publish bytes once, or prove the existing immutable copy matches."""
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
-        raise ValueError(f"safe {noun} publication requires O_NOFOLLOW support")
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow
-    descriptor: int | None = None
-    created = False
     try:
-        descriptor = os.open(temporary, flags, 0o600)
-        created = True
-        with os.fdopen(descriptor, "wb", closefd=False) as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.close(descriptor)
-        descriptor = None
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            if read_regular_file(path, noun) != data:
-                raise ValueError(f"an immutable {noun} already exists at {path}") from None
-        fsync_directory(path.parent)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        if created:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
-            else:
-                fsync_directory(path.parent)
+        atomic_create(path, data)
+    except FileExistsError:
+        if read_regular_file(path, noun) != data:
+            raise ValueError(f"an immutable {noun} already exists at {path}") from None
 
 
 def receipt(

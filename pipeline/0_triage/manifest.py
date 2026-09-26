@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from typing import Any, Final
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
+from common.contracts.canonical import canonical_bytes, digest_bytes, is_plain_int, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import (
     MAX_TRIAGE_SPLIT_PARTS,
@@ -67,10 +67,6 @@ class _ClosedFixtureTreeBuilder(ET.TreeBuilder):
         raise SchemaRefusal("ScanTailor fixture declarations are outside the closed XML shape")
 
 
-def _plain_int(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 def _rectangle(
     value: Any,
     container: Mapping[str, int],
@@ -84,7 +80,7 @@ def _rectangle(
         raise SchemaRefusal(f"{what} must be a closed space/x/y/w/h rectangle")
     if value["space"] != space:
         raise SchemaRefusal(f"{what} must use {space} coordinates")
-    if not all(_plain_int(value[key]) for key in ("x", "y", "w", "h")):
+    if not all(is_plain_int(value[key]) for key in ("x", "y", "w", "h")):
         raise SchemaRefusal(f"{what} has a non-integer coordinate")
     if value["w"] <= 0 or value["h"] <= 0:
         raise SchemaRefusal(f"{what} is degenerate")
@@ -103,7 +99,7 @@ def _rotation(value: Any) -> None:
             "triage rotation must be a closed rotation_millidegrees/direction/origin/canvas record"
         )
     angle = value["rotation_millidegrees"]
-    if not _plain_int(angle) or not -180_000 <= angle <= 180_000:
+    if not is_plain_int(angle) or not -180_000 <= angle <= 180_000:
         raise SchemaRefusal("triage rotation must be an integer in [-180000, 180000] millidegrees")
     if value["direction"] != "clockwise":
         raise SchemaRefusal("triage rotation direction must be clockwise")
@@ -232,14 +228,14 @@ def validate_row(row: Any) -> dict[str, Any]:
     if (
         not isinstance(frame, dict)
         or set(frame) != {"width", "height"}
-        or not all(_plain_int(frame[key]) and frame[key] > 0 for key in frame)
+        or not all(is_plain_int(frame[key]) and frame[key] > 0 for key in frame)
     ):
         raise SchemaRefusal("triage row frame must be positive integer width and height")
     _validate_split(row["split"], frame)
     cluster = row["re_shoot_cluster_id"]
     if cluster is not None and (not isinstance(cluster, str) or not cluster.strip()):
         raise SchemaRefusal("triage re_shoot_cluster_id must be null or a non-blank string")
-    if not _plain_int(row["confidence"]) or row["confidence"] not in CONFIDENCE_ORDINALS:
+    if not is_plain_int(row["confidence"]) or row["confidence"] not in CONFIDENCE_ORDINALS:
         raise SchemaRefusal("triage confidence is outside the closed ordinal [0, 4]")
     if row["mode"] not in TRIAGE_MODES:
         raise SchemaRefusal(f"triage mode is not one of {TRIAGE_MODES}")
@@ -319,7 +315,7 @@ def validate_cluster_record(record: Any) -> dict[str, Any]:
         or len(set(members)) != len(members)
     ):
         raise SchemaRefusal("triage cluster record needs two or more distinct frame source digests")
-    if not _plain_int(record["split_count"]) or record["split_count"] < 1:
+    if not is_plain_int(record["split_count"]) or record["split_count"] < 1:
         raise SchemaRefusal("triage cluster split_count must be a positive integer")
     return record
 
@@ -397,7 +393,11 @@ def verify_submitted_frame(row: Mapping[str, Any], submitted_bytes: bytes) -> No
 def derivative_page_backlink(row: Mapping[str, Any], part_index: int) -> dict[str, str | int]:
     """Link one derivative page to its exact manifest row and split part."""
     checked = validate_row(dict(row))
-    if not _plain_int(part_index) or part_index < 0 or part_index >= len(checked["split"]["parts"]):
+    if (
+        not is_plain_int(part_index)
+        or part_index < 0
+        or part_index >= len(checked["split"]["parts"])
+    ):
         raise SchemaRefusal("triage derivative part_index does not name a split part")
     return {
         "corpus_id": checked["corpus_id"],
