@@ -794,11 +794,20 @@ def run_aggregate(
         )
 
     for join in continuation_joins or ():
-        reasons.append(
+        crossing = (
             f"continuation join {join['join_id']} ({join['status']}): an act may cross the "
             f"break from page {join['head_page_ordinal']} to page {join['tail_page_ordinal']}; "
-            "each side is delivered as its literal page reading and the join is unconfirmed"
         )
+        if join["status"] == "reconstructed":
+            reasons.append(
+                crossing + "each side is delivered as its own literal beside a labelled, "
+                "unconfirmed reconstruction"
+            )
+        else:
+            reasons.append(
+                crossing + f"no reconstruction was made ({join['not_reconstructed_reason']}), "
+                "and no act was joined"
+            )
 
     for act in sorted(act_categories):
         category = act_categories[act]

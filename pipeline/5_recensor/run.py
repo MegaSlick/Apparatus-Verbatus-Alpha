@@ -2951,8 +2951,8 @@ def review_route_from_findings(
 CONTINUATION_CANDIDATE_REASON = (
     "the Designator's geometry names this act in a continuation candidate: one act "
     "reaches a page's bottom edge and the next page opens on an unanchored act at its "
-    "top edge; whether they are one act is a review decision, so both halves are "
-    "delivered as their literal page readings and never as one act"
+    "top edge; whether they are one act is a review decision, so each half can leave "
+    "only as its own literal, never joined to the other as one act"
 )
 
 

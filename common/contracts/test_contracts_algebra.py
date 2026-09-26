@@ -416,6 +416,7 @@ def test_a_continuation_join_forces_partial_over_two_delivered_acts():
             {
                 "join_id": "join-1-2-0",
                 "status": "reconstructed",
+                "not_reconstructed_reason": None,
                 "head_page_ordinal": 1,
                 "tail_page_ordinal": 2,
             }
