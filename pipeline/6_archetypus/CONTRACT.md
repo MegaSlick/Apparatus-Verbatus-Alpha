@@ -262,7 +262,10 @@ consumer outside a stage builds a small shim first, exactly as `test_index.py` d
 **The clustered index has no such reconciliation yet — deliberately unfilled.**
 `build_logical_index` (Unit 19D) seals one `{logical_act_id, text_hash}` row per
 established logical record, but no consumer reads it and the stage does not yet run
-it: neither established stage dispatches by logical act. Until the first consumer
+it: neither established stage dispatches by logical act. The Perlector publishes no
+clustered reading for it to establish: every act on a registered re-shoot arrives here
+as a `not-run` Perlectio with `hold.code = "cross-capture-read-not-built"`, so it is
+held and reaches no record, like any other held act. Until the first consumer
 lands, the index can only agree with the writer's own list — the exact self-agreement
 the image-local reconciliation above exists to break. Wiring the clustered path must
 bring the same three-way reconciliation (rows, records on disk, the Recensor's

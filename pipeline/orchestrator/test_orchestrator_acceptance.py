@@ -33,7 +33,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of,
 from common.contracts.envelope import build_envelope, validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import act_id as derive_act_id
-from common.contracts.identities import artifact_id, attempt_id
+from common.contracts.identities import artifact_id, attempt_id, physical_page_id
 from common.contracts.stages import (
     ARCHETYPUS,
     ARMARIUM,
@@ -49,6 +49,8 @@ from common.contracts.stages import (
     WRITING_DIRECTORIES,
 )
 from common.contracts.uncertainty import from_perlectio
+from common.corpus_register import append_records, empty_register, register_digest
+from common.credentials import looks_like_credential_env
 from common.fixture_identity import page_identity
 from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
@@ -68,8 +70,7 @@ from common.stage import (
 )
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 from operations.operator import surface, volume_s3
-from operations.operator.custody import PROVIDER_ENV_PREFIXES, credential_free_environment
-from operations.pod.models import looks_like_credential_field
+from operations.operator.custody import credential_free_environment
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -159,6 +160,7 @@ def orchestrate(
     placement_tier: str | None = None,
     stage_timing_journal: Path | None = None,
     repository_commit: str | None = None,
+    corpus_register: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
     if nuda_per_mille and nuda_approval_ref == NUDA_APPROVAL_SUBJECT:
@@ -216,6 +218,8 @@ def orchestrate(
         command.extend(("--stage-timing-journal", str(stage_timing_journal)))
     if repository_commit is not None:
         command.extend(("--repository-commit", repository_commit))
+    if corpus_register is not None:
+        command.extend(("--corpus-register", str(corpus_register)))
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -661,10 +665,7 @@ def test_orchestrator_and_surface_strip_every_provider_credential(
     the transfer's own two S3 keys -- RUNPOD_API_KEY (pod creation, i.e.
     money), HF_TOKEN, AWS_*, and anything else shaped like a secret -- the
     same broad shape `credential_free_environment` already holds the
-    operator's confined children to; the orchestrator duplicates that
-    predicate rather than importing it (module docstring: "imports only
-    common/"), so this is also where the copy is checked against the original,
-    the way the transfer-credential duplicate above already is.
+    operator's confined children to.
     """
 
     orchestrator = _orchestrator_module("orchestrator_provider_credentials")
@@ -680,12 +681,7 @@ def test_orchestrator_and_surface_strip_every_provider_credential(
         *volume_s3.TRANSFER_CREDENTIAL_ENV,
     )
     for name in representative_names:
-        assert looks_like_credential_field(name) or name.startswith(PROVIDER_ENV_PREFIXES), (
-            f"{name} is not actually credential-shaped by the real predicate; fix the fixture"
-        )
-        assert orchestrator._looks_like_provider_credential(name), (
-            f"the orchestrator's duplicated predicate does not refuse {name}"
-        )
+        assert looks_like_credential_env(name), f"{name} is not credential-shaped; fix the fixture"
         monkeypatch.setenv(name, f"secret-for-{name}")
     monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
 
@@ -2462,6 +2458,107 @@ def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_bl
         == "confirmed-blank"
         for row in tree.build_manifest(RECENSOR)["artifacts"]
     )
+
+
+def _register_re_shoot_of(tmp_path: Path, page_ordinal: int) -> Path:
+    """A corpus register confirming one fixture page's capture as one of two of a leaf."""
+    capture = next(
+        page
+        for page in load_fixture(str(ROOT / "proof"))["page"]
+        if page["ordinal"] == page_ordinal
+    )
+    physical_page = physical_page_id("synthetic-corpus", "volume-1", f"leaf-{page_ordinal}")
+    register = tmp_path / "register.json"
+    append_records(
+        register,
+        [
+            {
+                "kind": "physical-page",
+                "corpus_id": "synthetic-corpus",
+                "volume_id": "volume-1",
+                "designation": f"leaf-{page_ordinal}",
+                "physical_page_id": physical_page,
+                "appending_run": "triage",
+            },
+            {
+                "kind": "membership",
+                "physical_page_id": physical_page,
+                "members": sorted([capture["sha256"], "f" * 64]),
+                "predecessor": None,
+                "appending_run": "triage",
+            },
+        ],
+        expected_digest=register_digest(empty_register()),
+    )
+    return register
+
+
+def _cross_capture_held(tree: RunTree, act_key: str) -> dict:
+    """Assert `act_key` is held by name through the Perlector, Recensor and export."""
+    readings = [
+        record
+        for record in (
+            tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+            for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+            if entry["kind"] == "perlectio"
+        )
+        if record["payload"]["act_key"] == act_key
+    ]
+    assert [record["outcome"] for record in readings] == ["not-run"]
+    assert readings[0]["payload"]["hold"] == {
+        "code": "cross-capture-read-not-built",
+        "partition_finding": "capture-page-alignment-unresolved",
+    }
+    reviews = [
+        tree.read_artifact(RECENSOR, entry["kind"], entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] in {"review", "recovery-request"}
+        and entry["subject_id"] == readings[0]["subject_id"]
+    ]
+    assert [review["outcome"] for review in reviews] == ["held-for-review"]
+    assert "cross-capture-read-not-built" in reviews[0]["payload"]["reason"]
+    entry = next(row for row in export_of(tree)["non_delivered"] if row["act_key"] == act_key)
+    assert entry["category"] == "held-for-review"
+    assert "cross-capture-read-not-built" in entry["reason"]
+    return entry
+
+
+def test_a_confirmed_re_shoot_holds_its_own_act_and_the_rest_of_the_run_is_exported(tmp_path):
+    """One confirmed re-shoot once refused the whole run before any act was read.
+
+    The register confirms page 3's capture as one of two captures of a physical
+    page. No cross-capture read exists, so the act on that capture is held by
+    name; page 1's acts are still read, established and exported.
+    """
+    root = tmp_path / "runs"
+    result = orchestrate(
+        root, "r", "ink-free-page", corpus_register=_register_re_shoot_of(tmp_path, 3)
+    )
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(root, "r")
+    _cross_capture_held(tree, "page-fallback:3")
+    export = export_of(tree)
+    assert sorted(item["act_key"] for item in export["delivered"]) == ["a1", "a2"]
+    assert [row["act_key"] for row in export["non_delivered"]] == ["page-fallback:3"]
+    assert export["aggregate"]["status"] == "partial"
+
+
+def test_a_held_act_on_a_re_shoot_page_is_never_sent_to_recovery(tmp_path):
+    """A recovery request for a held act made the rerun Perlector repeat its hold and
+    the Recensor's attempt count then halted the whole run.
+
+    `continuation-recovery` declares a recrop for a2; no shared fixture page carries
+    real ink outside its cuts, and both origins reach the same request gate.
+    """
+    root = tmp_path / "runs"
+    result = orchestrate(
+        root, "r", "continuation-recovery", corpus_register=_register_re_shoot_of(tmp_path, 1)
+    )
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(root, "r")
+    for act_key in ("a1", "a2"):
+        _cross_capture_held(tree, act_key)
+    assert export_of(tree)["delivered"] == []
 
 
 def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_path):

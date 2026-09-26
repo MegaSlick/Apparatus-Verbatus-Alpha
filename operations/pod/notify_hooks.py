@@ -17,18 +17,10 @@ either seam's result reads the same fields. `notify_bridge.py` is left
 untouched: it is a narrower seam (one warning kind, gated behind `--notify`
 and opt-in `silent` by default) and this module does not change its contract.
 
-**Never a secret, never a URL.** Every message is checked, before the shell
-call, against the same two independent markers this codebase already uses
-elsewhere to flag a value as credential-shaped -- a marker word in the text
-(`models.looks_like_credential_field`'s word list) and an opaque,
-separator-free run of 20+ mixed alphanumeric characters
-(`models.looks_like_credential_value`'s shape test) -- plus a bare
-`http://`/`https://` substring, because a URL in a phone notification is a
-disclosure channel `operations/pod/README.md` never asks for. The check is
-local to this module rather than importing either private helper: neither
-`models.py` nor `bootstrap_main.py` are owned by this seam, and a notification
-line is free-form prose, not an argv token or an environment name, so the two
-shape tests are re-expressed here against whitespace-split words instead.
+**Never a secret, never a URL.** Every message is checked before the shell
+call: a word naming a secret, any piece `common.credentials` reads as
+credential-shaped, or a URL, because a URL in a phone notification is a
+disclosure channel `operations/pod/README.md` never asks for.
 A message that fails the check is never sent, and that refusal is itself
 never raised -- it comes back as an ordinary `NotifyOutcome(attempted=False,
 ...)`, so a bug that would have leaked a secret cannot also take down the
@@ -49,6 +41,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Final, Sequence
+
+from common.credentials import notification_carries_credential
 
 ROOT: Final = Path(__file__).resolve().parents[2]
 NOTIFY_SCRIPT: Final = ROOT / "operations" / "notify" / "notify.sh"
@@ -124,25 +118,6 @@ def default_runner(argv: Sequence[str]) -> subprocess.CompletedProcess:
     )
 
 
-_CREDENTIAL_WORD_MARKERS: Final = (
-    "key",
-    "secret",
-    "password",
-    "credential",
-    "bearer",
-    "token",
-    "apikey",
-)
-_CREDENTIAL_VALUE_PREFIXES: Final = ("sk-", "hf_", "ghp_", "gho_", "github_pat_", "AKIA", "xox")
-# `.`, `/`, `:` and `@` are deliberately NOT here: those are exactly the
-# separators a credential-shaped opaque run (a JWT's dot-joined segments, a
-# base64 blob's `/` and `=` padding) or a console link uses to look like
-# ordinary punctuated prose instead of one long unbroken run. Treating them
-# as "safe" let a value built from a few such separators slip past the
-# 20+-character opaque test untouched; only whitespace, backslash and the
-# grouping/quoting marks a caller strips a *word* down to at its edges
-# (see `_unsafe_reason`) stay safe here.
-_CREDENTIAL_VALUE_SAFE_CHARACTERS: Final = frozenset(" \t\\,;()[]{}'\"")
 # A scheme-less host+path -- a console link, or a bare notification-service
 # link, pasted without `http(s)://` -- is exactly the shape a bare scheme
 # check misses. One or more dot-joined labels, an alphabetic TLD-shaped label
@@ -152,31 +127,14 @@ _CREDENTIAL_VALUE_SAFE_CHARACTERS: Final = frozenset(" \t\\,;()[]{}'\"")
 _HOST_PATH_PATTERN: Final = re.compile(r"(?:[\w-]+\.)+[a-zA-Z]{2,}/\S", re.ASCII)
 
 
-def _looks_like_credential_word(word: str) -> bool:
-    normalized = word.lower().replace("-", "_")
-    if any(marker in normalized for marker in _CREDENTIAL_WORD_MARKERS):
-        return True
-    if word.startswith(_CREDENTIAL_VALUE_PREFIXES):
-        return True
-    if len(word) < 20 or any(character in _CREDENTIAL_VALUE_SAFE_CHARACTERS for character in word):
-        return False
-    if all(character in "0123456789abcdef" for character in word):
-        return False
-    return any(character.isalpha() for character in word) and any(
-        character.isdigit() for character in word
-    )
-
-
 def _unsafe_reason(message: str) -> str | None:
     lowered = message.lower()
     if "http://" in lowered or "https://" in lowered:
         return "the message names a URL, which this seam never sends"
     if _HOST_PATH_PATTERN.search(message):
         return "the message names a URL, which this seam never sends"
-    for word in message.split():
-        stripped = word.strip("\"'(),;:")
-        if stripped and _looks_like_credential_word(stripped):
-            return f"the message looks like it carries a credential ({word!r}) and was refused"
+    if notification_carries_credential(message):
+        return "the message looks like it carries a credential and was refused"
     return None
 
 

@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from common.credentials import looks_like_credential_field
+
 from . import durable, supervise
 from .arming import ControllerArming
 from .controller_armer import (
@@ -45,7 +47,6 @@ from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     POD_REPORT_SCHEMA,
     PodCreateRequest,
-    looks_like_credential_field,
 )
 from .shutdown import BILLING_RECONCILIATION_ATTEMPTS, BILLING_RECONCILIATION_RETRY_SECONDS
 from .spend import SpendPolicy

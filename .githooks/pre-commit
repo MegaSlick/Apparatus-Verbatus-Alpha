@@ -1,7 +1,5 @@
 #!/bin/sh
-# Two commit-time checks:
-#   1. No commits on main (or on a detached HEAD, unless ALLOW_DETACHED_COMMIT=1).
-#   2. No secrets, undeclared binaries or oversized blobs in the staged index.
+# No commit on main or a detached HEAD; no secret, binary or oversized blob staged.
 
 if ! branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) &&
    [ "$ALLOW_DETACHED_COMMIT" != "1" ]; then
@@ -29,8 +27,7 @@ if [ "$branch" = "main" ]; then
   exit 1
 fi
 
-# Inspect the index rather than the working files. A secret that was staged and
-# then erased from the working copy is still the secret Git is about to record.
+# The index, not the working copy: a staged secret since erased is still recorded.
 ingress="$(dirname "$0")/check_ingress.py"
 if [ ! -f "$ingress" ]; then
   echo "" >&2
