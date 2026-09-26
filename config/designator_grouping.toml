@@ -340,7 +340,7 @@ caveat = "WHAT THE SAMPLE ESTABLISHES. SUBSTANTIAL_INK_AREA_BP = 4. The gate exi
 # in `common/residual_ink.py` (MINIMUM_INK_PIXELS = 24, MINIMUM_FRACTION_OUTSIDE_COVERAGE
 # = 0.02), outside every run's config_digest: a change between two live runs left their
 # provenance byte-identical (pre-launch review, F088). They are sealed here, under the
-# same `designator-grouping` seal every reader of this file already proves its bytes
+# same `designator-grouping` seal every reader of this file already proves its content
 # against, and travel on the Armarium's re-measurement rows so the export verifier can
 # recompute a page hold on a clean machine from the counts alone.
 #

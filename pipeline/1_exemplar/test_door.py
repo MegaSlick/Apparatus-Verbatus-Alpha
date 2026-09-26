@@ -51,7 +51,7 @@ from common.contracts.identities import physical_page_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.corpus_register import append_records, empty_register, members_of, register_digest
 from common.runtree.store import RunTree
-from common.sealed_config import read_sealed_toml
+from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, read_sealed_toml
 from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
@@ -3478,7 +3478,9 @@ def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config
     )
     # Read back the way a later stage reads it: out of a run authority, not off
     # the bindings dict, so the name has to survive being recorded and re-read.
-    sealed = run_sealed_config_digests({"sealed_config_digests": bindings["sealed_config_digests"]})
+    sealed = run_sealed_config_digests(
+        {"sealed_config_digests": bindings["sealed_config_digests"], SEAL_METHOD_FIELD: SEAL_METHOD}
+    )
     bound = supplied["designator_grouping_config_sha256"]
 
     # The run as sealed: the bytes the Designator re-reads are the bound bytes.
@@ -4716,7 +4718,8 @@ def test_a_run_sealed_before_the_repair_is_refused_by_name_not_by_key_error():
             "recovery": "f" * 64,
             "hard-failure": "0" * 64,
             "data-handling": "1" * 64,
-        }
+        },
+        SEAL_METHOD_FIELD: SEAL_METHOD,
     }
     sealed = run_sealed_config_digests(pre_repair_authority)
     assert "triage-modes" not in sealed

@@ -124,9 +124,9 @@ def _perlector_dissent():
 # or went missing, which is a real change to explain, not a golden update.
 #
 # Things that move the digests without any change in behaviour:
-#   - any byte of a config file the run seals, comments included: `run.json`
-#     seals each such file's bytes, so its prose is part of the configuration a
-#     run is bound to;
+#   - any value in a config file the run seals, provenance prose included: a
+#     TOML file's seal covers what it says (comments and layout move nothing),
+#     and a non-TOML sealed file's bytes;
 #   - any code change in `pipeline/4_perlector/prompts.py`, whose code digest is
 #     sealed into every prompt record;
 #   - any string sealed into a record or the export manifest.
@@ -139,8 +139,8 @@ def _perlector_dissent():
 # second recovery round.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "234370205cf5a6590d9e56fefff2922f597394adea5d3f618b9cffc69ce5a091"
-REVIEW_RUN_TREE_DIGEST = "5dd4e229467e012b6d68886ccbb2521d6f4158d205c9e6687d01db81b17b9ccd"
+HAPPY_RUN_TREE_DIGEST = "4e1e9b7edeff070dbe6efa9df3d3195343a92c6236bd11817fb1f86e464c9c6e"
+REVIEW_RUN_TREE_DIGEST = "a27596771b9b68a33e535089e5679e996c62d99b17e855ae329d39289f7def27"
 
 
 def orchestrate(

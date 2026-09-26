@@ -11,7 +11,7 @@ import common.stage as STAGE_MODULE
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.identities import attempt_id
 from common.native_witness import partition_disagreement
-from common.sealed_config import read_sealed_toml
+from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, read_sealed_toml
 from common.stage import (
     RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
@@ -283,7 +283,8 @@ def _aggregate_context(record):
     context = _context(record)
     context.args = SimpleNamespace(designator_grouping_config=str(config))
     context.run = {
-        "sealed_config_digests": {"designator-grouping": read_sealed_toml(config, "config")[1]}
+        "sealed_config_digests": {"designator-grouping": read_sealed_toml(config, "config")[1]},
+        SEAL_METHOD_FIELD: SEAL_METHOD,
     }
     return context
 

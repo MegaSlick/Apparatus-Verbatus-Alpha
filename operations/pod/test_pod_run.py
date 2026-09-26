@@ -63,7 +63,7 @@ from .test_bootstrap_main import (
 ROOT = Path(__file__).resolve().parents[2]
 TIER = "generic-48gb"
 SERVING_INPUTS = {
-    "schema": "serving-config-inputs.v1",
+    "schema": "serving-config-inputs.v2",
     "serving_recipes_sha256": "1" * 64,
     "pod_placement_sha256": "2" * 64,
 }

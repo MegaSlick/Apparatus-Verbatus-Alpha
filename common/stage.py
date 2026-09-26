@@ -107,7 +107,7 @@ from common.recovery import (
     recovery_kind_budget,
 )
 from common.runtree.store import PublishResult, RunTree, _inode_identity
-from common.sealed_config import read_sealed_toml, require_sealed_config
+from common.sealed_config import read_sealed_toml, require_seal_method, require_sealed_config
 from common.witness_adapters import validate_witness_adapter_bindings
 from common.witness_context import validate_witness_context_configuration
 
@@ -346,6 +346,7 @@ def run_sealed_config_digests(run: Mapping[str, Any]) -> dict[str, str]:
             "can prove which policy bytes governed it; a run created before the sealing "
             "family landed cannot be continued under a point-of-use recheck"
         )
+    require_seal_method(run, "this run authority")
     if any(
         not isinstance(name, str) or not name or not is_sha256(digest)
         for name, digest in recorded.items()
@@ -3964,6 +3965,8 @@ def open_context(
     read_snapshot(tree, run)
     # Compared separately: an equal `config_digest` proves the bytes, not that
     # they are filed under the names the run recorded.
+    if SEALED_CONFIG_DIGESTS_FIELD in run:
+        require_seal_method(run, f"run {args.run_id!r}")
     fields = ("config_digest", "adapter_recipes", "witness_chairs", SEALED_CONFIG_DIGESTS_FIELD)
     differing = [
         field

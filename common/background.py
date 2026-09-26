@@ -698,7 +698,7 @@ def validate_background_table(
 def load_background_config(
     path: str | Path = DEFAULT_BACKGROUND_CONFIG_PATH,
 ) -> dict[str, Any]:
-    """The sealed background policy and the digest of the bytes it was read from.
+    """The sealed background policy and the seal of the file it was read from.
 
     For the two stages that need this block and nothing else around it; the
     Designator reads the same file through `load_grouping_config` and

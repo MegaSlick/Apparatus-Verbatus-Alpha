@@ -11,10 +11,13 @@ from pathlib import Path
 from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, IncompatibleReuse
 
 # A run policy is bounded metadata, not a corpus payload.
 MAX_CONFIG_BYTES: Final = 1 << 20
+# Recorded beside a run's sealed digests. A run without it sealed raw file bytes.
+SEAL_METHOD: Final = "toml-sorted-json.v1"
+SEAL_METHOD_FIELD: Final = "sealed_config_method"
 
 
 def parse_sealed_toml(
@@ -40,9 +43,15 @@ def parse_sealed_toml(
             )
     try:
         # Not `canonical_bytes`, which refuses floats: a decoding temperature is one.
-        sealed = json.dumps(table, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        sealed = json.dumps(
+            table, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        )
     except TypeError as error:
         raise ContractError(f"the {what} holds a date or time, which has no sealed form") from error
+    except ValueError as error:
+        raise ContractError(
+            f"the {what} holds NaN or infinity, which has no sealed form"
+        ) from error
     return table, digest_bytes(sealed.encode("utf-8"))
 
 
@@ -79,4 +88,15 @@ def require_sealed_config(
             f"the {name} configuration changed between this run's binding check and the "
             f"read that used it: bound {sealed}, read {observed_sha256}. A stage may not "
             "work under a policy the run never sealed"
+        )
+
+
+def require_seal_method(run: Mapping[str, Any], owner: str) -> None:
+    """Refuse a run whose configuration seals were taken under another method."""
+    recorded = run.get(SEAL_METHOD_FIELD, "raw-bytes")
+    if recorded != SEAL_METHOD:
+        raise IncompatibleReuse(
+            f"{owner} sealed its configurations by the {recorded!r} method and this code "
+            f"seals by {SEAL_METHOD!r}, so every sealed digest would read as changed. A run "
+            "cannot resume across a seal-method change; start a new run"
         )

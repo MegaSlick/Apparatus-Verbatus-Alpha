@@ -46,6 +46,7 @@ from common.runtree.store import (
     SERVING_LOGS_DIR,
     RunTree,
 )
+from common.sealed_config import read_sealed_toml
 from common.stage import load_fixture
 from common.witness_context import validate_witness_context_configuration
 from operations.pod.arming import ControllerArming, ControllerReadiness
@@ -352,7 +353,7 @@ class FixtureBootstrapActions:
             "bindings": {
                 name: {
                     "path": str(config_root / filename),
-                    "sha256": sha256_file(config_root / filename),
+                    "sha256": read_sealed_toml(config_root / filename, filename)[1],
                 }
                 for name, filename in (
                     ("models_config", "models.toml"),

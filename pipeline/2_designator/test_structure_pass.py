@@ -462,7 +462,7 @@ def _mode_arguments(catalogue: Path, tier: str | None):
     placement = ROOT / "config" / "pod_placement.toml"
     context = SimpleNamespace(
         serving_config_inputs={
-            "schema": "serving-config-inputs.v1",
+            "schema": "serving-config-inputs.v2",
             "serving_recipes_sha256": read_sealed_toml(catalogue, "recipes")[1],
             "pod_placement_sha256": read_sealed_toml(placement, "placement")[1],
         },

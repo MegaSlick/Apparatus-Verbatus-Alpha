@@ -971,7 +971,7 @@ def _typed_sample_count(provenance: dict, name: str) -> int | None:
 def geometry_calibration_rows(context) -> list[dict]:
     """What each surveyed sealed configuration says about its own calibration.
 
-    Read from the same bytes the run sealed (`sealed_config_digests`), so a row
+    Read from the same policy the run sealed (`sealed_config_digests`), so a row
     here is the caveat the run actually ran under rather than whatever is in
     `config/` now. `sample_count` is `None` where the file declares none, which
     is not a zero: `designator_geometry.toml` carries no sample field at all,

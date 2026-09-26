@@ -5,15 +5,18 @@ from pathlib import Path
 import pytest
 
 from common.chairs import ChairRegistry
-from common.contracts.errors import ContractError
+from common.contracts.canonical import canonical_bytes, self_hash
+from common.contracts.errors import ContractError, IncompatibleReuse
 from common.recovery import load_recovery_policy
-from common.sealed_config import MAX_CONFIG_BYTES, read_sealed_toml
-from common.stage import run_config_bindings
+from common.runtree.store import RunTree
+from common.sealed_config import MAX_CONFIG_BYTES, SEAL_METHOD, SEAL_METHOD_FIELD, read_sealed_toml
+from common.stage import run_config_bindings, run_sealed_config_digests
 
 CONFIG = Path(__file__).resolve().parents[1] / "config"
 SEALED_FILES = {
     "pdf_render_config_path": "pdf_render.toml",
     "designator_padding_config_path": "designator_padding.toml",
+    "designator_geometry_config_path": "designator_geometry.toml",
     "designator_grouping_config_path": "designator_grouping.toml",
     "alignment_config_path": "alignment.toml",
     "armarium_formats_config_path": "formats.toml",
@@ -72,6 +75,17 @@ def test_the_seal_ignores_layout_and_key_order_but_not_values(tmp_path):
     assert seal("# note\nb = 'x'   # why\na = 1\n\n[t]\nc = [ 1, 2 ]\n") == base
     assert seal("a = 2\nb = 'x'\n[t]\nc = [1, 2]\n") != base
     assert seal("a = 1\nb = 'x'\n[t]\nc = [2, 1]\n") != base
+    assert seal("a = 1.0\nb = 'x'\n[t]\nc = [1, 2]\n") != base
+    assert seal("a = 1\nb = true\n[t]\nc = [1, 2]\n") != seal(
+        "a = 1\nb = 'true'\n[t]\nc = [1, 2]\n"
+    )
+    assert seal("a = 1\n[t]\n") != seal("a = 1\n")
+    with pytest.raises(ContractError, match="date or time"):
+        seal("a = 2026-09-26\n")
+    with pytest.raises(ContractError, match="NaN or infinity"):
+        seal("a = nan\n")
+    with pytest.raises(ContractError, match="NaN or infinity"):
+        seal("a = inf\n")
 
 
 def test_an_unknown_key_in_the_recovery_policy_refuses(tmp_path):
@@ -88,3 +102,26 @@ def test_a_config_read_is_bounded_before_any_toml_work(tmp_path):
 
     with pytest.raises(ContractError, match=f"{MAX_CONFIG_BYTES}-byte limit"):
         read_sealed_toml(oversized, "test policy")
+
+
+def test_a_run_sealed_under_raw_bytes_is_refused_as_a_method_change(tmp_path):
+    models = ChairRegistry.from_toml(CONFIG / "models.toml").config
+    bindings = run_config_bindings(models, {"fixture": "none"}, "test")
+    arguments = {
+        "source_manifest": [],
+        "config_digest": bindings["config_digest"],
+        "adapter_recipes": bindings["adapter_recipes"],
+        "witness_chairs": bindings["witness_chairs"],
+        "sealed_config_digests": bindings["sealed_config_digests"],
+    }
+    tree = RunTree.create(tmp_path, "old-seal", **arguments)
+    run = tree.read_run()
+    assert run[SEAL_METHOD_FIELD] == SEAL_METHOD
+    del run[SEAL_METHOD_FIELD]
+    run["self_hash"] = self_hash(run)
+    tree.resolve("run.json").write_bytes(canonical_bytes(run))
+
+    with pytest.raises(IncompatibleReuse, match="'raw-bytes' method.*seal-method change"):
+        RunTree.create(tmp_path, "old-seal", **arguments)
+    with pytest.raises(IncompatibleReuse, match="seal-method change"):
+        run_sealed_config_digests(tree.read_run())

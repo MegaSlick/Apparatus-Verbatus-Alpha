@@ -258,7 +258,7 @@ def validate_coverage_noise_floor_table(
 def load_coverage_audit_config(
     path: str | Path = DEFAULT_COVERAGE_AUDIT_CONFIG_PATH,
 ) -> dict[str, Any]:
-    """The sealed coverage-audit policy and the digest of the bytes it came from.
+    """The sealed coverage-audit policy and the seal of the file it came from.
 
     Refused loudly rather than defaulted: a gate silently taken as unlimited
     would change which pages are held with no config line saying so.

@@ -12,6 +12,7 @@ from common.chairs.models import ChairIdentity, is_sha256
 from common.chairs.receipts import validate_receipt
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
+from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA
 from common.sealed_config import parse_sealed_toml
 from operations.pod.durable import exclusive_write
 
@@ -76,10 +77,11 @@ def qualification_candidates(
     try:
         recipes_raw, recipes_sha256 = parse_sealed_toml(recipes_bytes, "serving recipes")
         _, placement_sha256 = parse_sealed_toml(placement_bytes, "placement table")
+        _, models_sha256 = parse_sealed_toml(models_bytes, "model roster")
     except ContractError as error:
         raise QualificationRefusal(f"serving configuration cannot be parsed: {error}") from error
     expected_inputs = {
-        "schema": "serving-config-inputs.v1",
+        "schema": SERVING_CONFIG_INPUTS_SCHEMA,
         "serving_recipes_sha256": recipes_sha256,
         "pod_placement_sha256": placement_sha256,
     }
@@ -206,7 +208,7 @@ def qualification_candidates(
         "schema": SCHEMA,
         "report_sha256": digest_bytes(report_bytes),
         "source_inputs": {
-            "models_config_sha256": digest_bytes(models_bytes),
+            "models_config_sha256": models_sha256,
             **expected_inputs,
         },
         "measured": {

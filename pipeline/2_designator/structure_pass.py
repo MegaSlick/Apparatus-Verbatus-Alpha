@@ -262,7 +262,7 @@ def bound_serving_recipes(context: Any, recipes_path: str | Path) -> ServingReci
             recipes_sha256=recipes.source_sha256,
             placement_sha256=placement_sha256,
         )
-    except ServingError as error:
+    except (ServingError, ContractError) as error:
         raise ContractError(f"the sealed serving configuration was refused: {error}") from error
     return recipes
 

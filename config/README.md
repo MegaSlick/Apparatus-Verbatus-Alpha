@@ -212,13 +212,19 @@ A policy that shapes a run is **read once, parsed, sealed into the run, and requ
 by its seal at every point of use.** The seal of a TOML file is the SHA-256 of its
 parsed table written as sorted-key JSON (`common/sealed_config.py::read_sealed_toml`):
 what the file says, not how it is written. Comments, blank lines and key order are
-free to edit and move no seal; any value change moves it. Sealing means two things
+free to edit and move no seal; any value change moves it. `run.json` records the
+method as `sealed_config_method = "toml-sorted-json.v1"`; a run without it sealed raw
+file bytes and is refused by name as a seal-method change, never as drift. The
+serving inputs (`serving-config-inputs.v2`) and the pod bootstrap receipt
+(`pod-bootstrap-configuration.v2`) carry the same method in their schema. Sealing means two things
 together: the seal goes into `run.json`'s `config_digest`, so reusing a run id across a
 change is refused before anything is written; and it is recorded by name in the run
 authority's `sealed_config_digests`, so a reader holding only the tree can *name* the
 policy that governed the run instead of merely testing a candidate file against one
 hash of everything. `data_handling_policy.json` is the one sealed file that is not
-TOML, and it is still sealed by its bytes.
+TOML, and it is still sealed by its bytes. `spend.toml` and the triage instrument
+declaration are TOML but are not sealed into a run: the spend display and the
+triage records carry a digest of their raw bytes instead.
 
 `common/sealed_config.py::require_sealed_config` is the point-of-use comparison. A stage asks
 through its `StageContext`; the orchestrator, which is not a stage, asks the run

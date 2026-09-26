@@ -3352,7 +3352,7 @@ def test_pod_assembly_refuses_recipe_or_placement_path_substitution_before_effec
         .replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
     )
 
-    with pytest.raises(ServingConfigurationError, match="recipes bytes differ"):
+    with pytest.raises(ServingConfigurationError, match="serving recipes differ"):
         assemble_serving_smoke_reader(
             registry=registry,
             stage_context=context,
@@ -3367,7 +3367,7 @@ def test_pod_assembly_refuses_recipe_or_placement_path_substitution_before_effec
             package_inspector=FakePackages({"vllm": "fixture-v0"}),
             residency_lease=FileResidencyLease(tmp_path / "pod-gpu.lock"),
         )
-    with pytest.raises(ServingConfigurationError, match="placement bytes differ"):
+    with pytest.raises(ServingConfigurationError, match="pod placement differs"):
         assemble_serving_smoke_reader(
             registry=registry,
             stage_context=context,

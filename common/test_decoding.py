@@ -117,20 +117,19 @@ _STRUCTURE = "[structure]\ntemperature = 0\n"
             "structure must declare",
         ),
         # TOML spells both of these as ordinary floats, and neither is caught by
-        # the non-negative test: `nan < 0` and `inf < 0` are both False. Only
-        # the loader's `math.isfinite` clause refuses them, so these two rows
-        # are what makes removing that clause fail a test rather than pass one.
+        # the non-negative test: `nan < 0` and `inf < 0` are both False. The
+        # seal refuses them before the policy is validated.
         (
             'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
             '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n'
             "[structure]\ntemperature = nan\n",
-            "structure must declare",
+            "NaN or infinity",
         ),
         (
             'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
             '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n'
             "[structure]\ntemperature = inf\n",
-            "structure must declare",
+            "NaN or infinity",
         ),
     ],
 )

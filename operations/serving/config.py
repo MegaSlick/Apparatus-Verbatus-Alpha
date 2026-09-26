@@ -322,11 +322,11 @@ class ServingConfigInputs:
 
         if recipes_sha256 != self.serving_recipes_sha256:
             raise ServingConfigurationError(
-                "serving recipes bytes differ from the run-sealed serving configuration"
+                "serving recipes differ from the run-sealed serving configuration"
             )
         if placement_sha256 != self.pod_placement_sha256:
             raise ServingConfigurationError(
-                "pod placement bytes differ from the run-sealed serving configuration"
+                "pod placement differs from the run-sealed serving configuration"
             )
 
 

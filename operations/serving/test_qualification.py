@@ -47,7 +47,7 @@ def _qualification_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict[str, o
     recipes_bytes = recipes_config.read_bytes()
     placement_bytes = ws.placement_config.read_bytes()
     config_inputs = {
-        "schema": "serving-config-inputs.v1",
+        "schema": "serving-config-inputs.v2",
         "serving_recipes_sha256": parse_sealed_toml(recipes_bytes, "recipes")[1],
         "pod_placement_sha256": parse_sealed_toml(placement_bytes, "placement")[1],
     }
