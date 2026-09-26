@@ -689,7 +689,7 @@ def _attached_reading_count(act: str, record: Mapping[str, Any]) -> int:
     Armarium's `_aggregate_from_basis` turns that `KeyError` into a refusal.
     """
     basis = record.get("granularity_basis", LEGACY_GRANULARITY_BASIS)
-    if basis in {INTERIM_GRANULARITY_BASIS, NATIVE_GRANULARITY_BASIS}:
+    if basis in (INTERIM_GRANULARITY_BASIS, NATIVE_GRANULARITY_BASIS):
         reading_chairs = sum(
             record["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
         )
