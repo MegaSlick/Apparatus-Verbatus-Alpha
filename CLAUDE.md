@@ -8,23 +8,23 @@
 - Check plan usage at milestones. At 97% of the weekly limit, wind down: write the
   handoff and send the `done` notification (`operations/notify/notify.sh`).
 
-## Lean mode (Ponytail)
+## Simplest end state
 
-- In every change, not only cleanups: build the smallest thing that works, and leave
-  each file you touch with no more comment lines than it had. A comment says why, in a
-  line or two; history, rule citations and restated code belong in the commit or pull
-  request.
-- For a cleanup task, run `/ponytail ultra` first; the next session starts in the
-  configured default mode (`full`).
-- A cleanup change must be net-negative in lines, uncommitted work included:
-  `git diff --shortstat $(git merge-base origin/main HEAD)`. If it is not, stop and say
-  why instead of adding more.
-- Deleting code deletes the tests that existed only for it. Do not write tests to prove
-  a deletion changed nothing; CI is that proof. A cleanup adds no new comments.
-- A review finding may be declined with "not worth the lines".
-- Project rules still win: AGENTS.md reporting, the test suite, and the independent
-  reader for pipeline, money, pod and credential changes. `/ponytail-review` is never
-  that reader. Decline its offer to add a status line.
+- Judge a change by the system it leaves behind, not by its diff: in existing code, fix
+  the root cause rather than keep a workaround. This overrides the Ponytail plugin, whose
+  smallest-diff ladder, `ponytail:` comments and three-line summaries serve new code only.
+- Build once, reuse everywhere: shared tools with small configs, standard library first.
+- Comments and docstrings are hypotheses, not verdicts: code, tests and digests never
+  depend on them, a warning becomes a regression test, and history belongs in git. A
+  touched file ends with no more comment lines than it had.
+- Vendor models run at a pinned revision fetched at launch, our adaptations are
+  deterministic scripts, and an upstream update is flagged for review as maintenance.
+- A pure cleanup (no behaviour change) runs `/ponytail ultra` first, is net-negative in
+  lines (`git diff --shortstat $(git merge-base origin/main HEAD)`) and deletes tests that
+  served only deleted code. A regression test for a recorded failure is always allowed.
+- Only a cosmetic review finding may be declined as "not worth the lines". AGENTS.md
+  reporting, the test suite and the independent reader still win; `/ponytail-review` is
+  never that reader. Decline its offer to add a status line.
 
 ## Graphify (code graph)
 

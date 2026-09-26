@@ -76,13 +76,7 @@ from .models import (
     SpendRefusal,
     validate_pod_report_identity,
 )
-from .notify_bridge import (
-    NOTIFY_SCRIPT,
-    NOTIFY_SUPPRESSED_MARKER,
-    NotifyOutcome,
-    shell_notifier,
-    silent,
-)
+from .notify_bridge import NotifyOutcome, silent
 from .pod_timer import (
     _CLOSE_ATTEMPTS,
     TimerContext,
@@ -2717,7 +2711,7 @@ def test_a_spend_warning_that_never_reached_the_phone_is_recorded_not_swallowed(
     ceilings = record["ceilings"]
     assert isinstance(ceilings, dict)
     assert ceilings["alert_notifications"] == [
-        "Phone notification: NOT DELIVERED (no topic configured). The result above still stands."
+        "Phone notification: NOT DELIVERED (no topic configured). The recorded result is unchanged."
     ]
 
 
@@ -2739,7 +2733,7 @@ def test_a_broken_notifier_is_recorded_and_still_cannot_fail_the_preview(tmp_pat
     ceilings = result.preview.to_record()["spend"]["ceilings"]  # type: ignore[index]
     assert ceilings["alert_notifications"] == [  # type: ignore[index]
         "Phone notification: NOT DELIVERED (the notifier raised: RuntimeError). "
-        "The result above still stands."
+        "The recorded result is unchanged."
     ]
 
 
@@ -2786,88 +2780,6 @@ def test_safe_balance_without_an_alert_episode_writes_no_debounce_state(tmp_path
 
     assert result.state is LaunchState.PREVIEW
     assert not lease_root.exists()
-
-
-def test_pod_shell_notifier_keeps_the_reason_notify_sh_printed() -> None:
-    """The script's reason distinguishes a missing topic from an ntfy refusal."""
-
-    def runner(command, **kwargs):  # type: ignore[no-untyped-def]
-        del command, kwargs
-        return subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="notify: NOT DELIVERED (start) — no topic\n"
-        )
-
-    outcome = shell_notifier(runner=runner)("Spend warning: balance is low.")
-
-    assert outcome == NotifyOutcome(True, False, "notify: NOT DELIVERED (start) — no topic")
-    assert outcome.line().startswith("Phone notification: NOT DELIVERED")
-
-
-def test_pod_shell_notifier_reports_the_test_sink_as_suppressed_never_as_sent() -> None:
-    """Exit 0 plus the marker is "swallowed by the sink", not "on his phone".
-
-    `notify.sh` exits 0 under the reserved test topic on purpose -- a guard must
-    not change what the suites it protects measure -- so this bridge read that 0
-    as delivery and printed "Phone notification: sent." for a spend warning no
-    phone ever saw. The marker on stdout is the only thing separating the two.
-    """
-
-    def runner(command, **kwargs):  # type: ignore[no-untyped-def]
-        del command, kwargs
-        return subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="NOTIFY_SUPPRESSED verbatus-test-sink\n", stderr=""
-        )
-
-    outcome = shell_notifier(runner=runner)("Spend warning: balance is low.")
-
-    assert outcome.attempted
-    assert not outcome.delivered
-    assert outcome.suppressed
-    assert outcome.detail == "NOTIFY_SUPPRESSED verbatus-test-sink"
-    assert outcome.line() == "Phone notification: suppressed (test sink)."
-    assert "sent" not in outcome.line()
-
-
-def test_pod_shell_notifier_still_reports_a_real_success_as_delivered() -> None:
-    """The counterfactual: exit 0 without the marker must not become suppressed."""
-
-    for stdout in ("", "\n", "some unrelated chatter\n"):
-
-        def runner(command, _stdout=stdout, **kwargs):  # type: ignore[no-untyped-def]
-            del command, kwargs
-            return subprocess.CompletedProcess(args=[], returncode=0, stdout=_stdout, stderr="")
-
-        outcome = shell_notifier(runner=runner)("Spend warning: balance is low.")
-
-        assert outcome == NotifyOutcome(True, True, "delivered")
-        assert not outcome.suppressed
-        assert outcome.line() == "Phone notification: sent."
-
-
-def test_the_marker_word_the_pod_bridge_reads_is_the_one_the_script_prints() -> None:
-    """Two languages, neither able to import the other, one typo apart from a
-    silent return to "sent." for a notification that never left the machine."""
-
-    source = NOTIFY_SCRIPT.read_text(encoding="utf-8")
-    assert f"printf '{NOTIFY_SUPPRESSED_MARKER} %s\\n' \"$topic\"" in source
-
-
-def test_pod_shell_notifier_reports_a_timeout_and_a_refused_message_honestly() -> None:
-    def timing_out(command, **kwargs):  # type: ignore[no-untyped-def]
-        del command
-        raise subprocess.TimeoutExpired(cmd="sh", timeout=kwargs["timeout"])
-
-    timed_out = shell_notifier(runner=timing_out)("Spend warning: balance is low.")
-    assert timed_out == NotifyOutcome(
-        True, False, "the notification command did not answer within 10 seconds"
-    )
-
-    def unreachable(command, **kwargs):  # type: ignore[no-untyped-def]
-        del command, kwargs
-        raise AssertionError("a malformed message must never reach the script")
-
-    refused = shell_notifier(runner=unreachable)("two\nlines")
-    assert refused == NotifyOutcome(False, False, "the message was not one non-empty line")
 
 
 def test_the_pod_cli_does_not_page_a_phone_unless_asked() -> None:
@@ -8043,7 +7955,7 @@ def _stub_balance_notifications(monkeypatch: pytest.MonkeyPatch) -> list[dict[st
     ``set_balance_notify`` -- every account-balance observation the launch
     makes. A green create against ``FakeProvider`` observes the balance three
     times, so a test that stubs only ``notify_launch`` still reaches
-    ``notify_hooks.notify_balance``, whose ``default_runner`` is the real
+    ``notify_hooks.notify_balance``, whose default runner is the real
     ``subprocess.run`` on the real ``operations/notify/notify.sh``.
 
     That is not hypothetical. Three tests here did exactly that, and the first

@@ -1,12 +1,4 @@
-"""`notify_hooks` offline: a fake runner, no shell, no network, no phone.
-
-Every test injects `runner` in place of `default_runner` -- exactly the
-pattern `operations/pod/notify_bridge.py`'s own tests use -- so nothing here
-ever spawns `sh` or touches `operations/notify/notify.sh` for real. The one
-test *of* `default_runner` replaces `subprocess.run` itself, for the same
-reason: it checks the arguments that call is made with, and still starts no
-process.
-"""
+"""`notify_hooks` offline: a fake runner, no shell, no network, no phone."""
 
 from __future__ import annotations
 
@@ -16,33 +8,20 @@ from dataclasses import dataclass, field
 import pytest
 
 from common.test_credentials import FILES_AND_HOSTS, OPAQUE, PASSING_VALUES, SHAPED_VALUES
+from operations.notify.client import NOTIFY_SCRIPT, NotifyOutcome
 
-from . import notify_hooks
-from .notify_hooks import (
-    NOTIFY_SCRIPT,
-    NOTIFY_TIMEOUT_SECONDS,
-    NotifyOutcome,
-    notify_balance,
-    notify_close,
-    notify_launch,
-)
+from .notify_hooks import notify_balance, notify_close, notify_launch
 
 
 @dataclass
 class FakeRunner:
-    """Records every argv it was called with; answers green unless told otherwise."""
+    """Records every argv it was called with and answers green."""
 
-    returncode: int = 0
-    stdout: str = ""
-    stderr: str = ""
-    raise_error: Exception | None = None
     calls: list[list[str]] = field(default_factory=list)
 
     def __call__(self, argv):  # type: ignore[no-untyped-def]
         self.calls.append(list(argv))
-        if self.raise_error is not None:
-            raise self.raise_error
-        return subprocess.CompletedProcess(list(argv), self.returncode, self.stdout, self.stderr)
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
 
 
 # --- the three messages ------------------------------------------------------
@@ -268,190 +247,3 @@ def test_a_lowercase_hex_identifier_is_not_mistaken_for_a_credential() -> None:
     )
 
     assert outcome.delivered
-
-
-def test_a_multi_line_message_is_refused_before_sending() -> None:
-    runner = FakeRunner()
-
-    outcome = notify_close(
-        lease_id="lease\nabc", verified_state="verified", billed_seconds=10, runner=runner
-    )
-
-    assert not outcome.attempted
-    assert runner.calls == []
-
-
-# --- a failed ping cannot prevent a close -------------------------------------
-
-
-def test_a_nonzero_exit_is_reported_not_raised() -> None:
-    runner = FakeRunner(returncode=1, stderr="no topic configured\n")
-
-    outcome = notify_close(
-        lease_id="lease-abc123", verified_state="verified", billed_seconds=10, runner=runner
-    )
-
-    assert outcome.attempted
-    assert not outcome.delivered
-    assert "no topic configured" in outcome.detail
-
-
-def test_a_transport_failure_is_reported_not_raised() -> None:
-    runner = FakeRunner(raise_error=OSError("no such file or directory: sh"))
-
-    outcome = notify_close(
-        lease_id="lease-abc123", verified_state="verified", billed_seconds=10, runner=runner
-    )
-
-    assert outcome.attempted
-    assert not outcome.delivered
-    assert "could not run" in outcome.detail
-
-
-def test_a_timeout_is_reported_not_raised() -> None:
-    runner = FakeRunner(raise_error=subprocess.TimeoutExpired(cmd=["sh"], timeout=10.0))
-
-    outcome = notify_close(
-        lease_id="lease-abc123", verified_state="verified", billed_seconds=10, runner=runner
-    )
-
-    assert outcome.attempted
-    assert not outcome.delivered
-    assert "did not answer" in outcome.detail
-
-
-def test_the_real_runner_bounds_the_script_with_the_module_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The one call every other test replaces, checked where it is made.
-
-    `default_runner` is what a real close reaches, and its `timeout` is the
-    only thing standing between a hung `notify.sh` and a pod held open while
-    it bills. Every test above injects a `FakeRunner` past this call, so
-    dropping the argument would have left the suite green. `subprocess.run` is
-    replaced here rather than run: nothing spawns a shell.
-    """
-
-    seen: dict[str, object] = {}
-
-    def _fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
-        seen["argv"] = list(argv)
-        seen.update(kwargs)
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
-
-    monkeypatch.setattr(notify_hooks.subprocess, "run", _fake_run)
-
-    result = notify_hooks.default_runner(["sh", str(NOTIFY_SCRIPT), "milestone", "a message"])
-
-    assert result.returncode == 0
-    assert seen["timeout"] == NOTIFY_TIMEOUT_SECONDS
-    assert seen["capture_output"] is True and seen["text"] is True and seen["check"] is False
-
-
-def test_an_unexpected_runner_exception_is_reported_not_raised() -> None:
-    """`subprocess.run(..., text=True)` decodes strictly and can raise
-
-    `UnicodeDecodeError` -- a `ValueError`, so neither the `OSError` nor the
-    `TimeoutExpired` handler catches it. The "never raised" promise this
-    module's docstring makes must hold for any runner failure, not just the
-    two anticipated ones.
-    """
-
-    runner = FakeRunner(
-        raise_error=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
-    )
-
-    outcome = notify_close(
-        lease_id="lease-abc123", verified_state="verified", billed_seconds=10, runner=runner
-    )
-
-    assert outcome == NotifyOutcome(True, False, outcome.detail)
-    assert not outcome.delivered
-    assert "failed unexpectedly" in outcome.detail
-    assert "NOT DELIVERED" in outcome.line()
-
-
-def test_a_keyboard_interrupt_still_propagates() -> None:
-    """The blanket `except Exception` must not swallow an operator's ^C."""
-
-    runner = FakeRunner(raise_error=KeyboardInterrupt())
-
-    with pytest.raises(KeyboardInterrupt):
-        notify_close(
-            lease_id="lease-abc123", verified_state="verified", billed_seconds=10, runner=runner
-        )
-
-
-def test_no_outcome_from_this_module_ever_raises() -> None:
-    """The whole point: a caller closing a pod never has to catch anything here."""
-
-    for runner in (
-        FakeRunner(returncode=1),
-        FakeRunner(raise_error=OSError("boom")),
-        FakeRunner(raise_error=subprocess.TimeoutExpired(cmd=["sh"], timeout=1.0)),
-        FakeRunner(raise_error=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")),
-    ):
-        outcome = notify_close(
-            lease_id="lease-abc123", verified_state="verified", billed_seconds=1, runner=runner
-        )
-        assert isinstance(outcome, NotifyOutcome)
-
-
-def test_a_long_stderr_reason_is_bounded() -> None:
-    runner = FakeRunner(returncode=1, stderr="x" * 500)
-
-    outcome = notify_close(
-        lease_id="lease-abc123", verified_state="verified", billed_seconds=1, runner=runner
-    )
-
-    assert len(outcome.detail) < 200
-    assert "truncated" in outcome.detail
-
-
-# --- the test sink is suppressed, never delivered ----------------------------
-
-
-def test_the_test_sink_marker_is_reported_as_suppressed_and_never_as_delivered() -> None:
-    """Exit 0 plus the marker is "swallowed by the sink", not "on his phone".
-
-    `notify.sh` exits 0 under the reserved test topic on purpose -- a guard must
-    not change what the suites it protects measure -- so for a while this module
-    read that 0 as delivery and the pod record said "Phone notification: sent."
-    for a notification no phone ever saw. The marker on stdout is the only thing
-    separating the two, and this is the assertion that it is read.
-    """
-
-    runner = FakeRunner(stdout="NOTIFY_SUPPRESSED verbatus-test-sink\n")
-
-    outcome = notify_balance(balance_usd="100.00", spend_rate_usd_per_hr=None, runner=runner)
-
-    assert outcome.attempted
-    assert not outcome.delivered
-    assert outcome.suppressed
-    assert outcome.detail == "NOTIFY_SUPPRESSED verbatus-test-sink"
-    assert outcome.line() == "Phone notification: suppressed (test sink)."
-    assert "sent" not in outcome.line()
-
-
-def test_a_real_success_is_still_delivered_and_carries_no_suppression() -> None:
-    """The counterfactual: exit 0 without the marker must not become suppressed."""
-
-    for stdout in ("", "\n", "some unrelated chatter\n"):
-        outcome = notify_launch(
-            lease_id="lease-abc123",
-            card="RTX PRO 6000",
-            max_hourly_usd="1.99",
-            runner=FakeRunner(stdout=stdout),
-        )
-
-        assert outcome == NotifyOutcome(True, True, "delivered")
-        assert not outcome.suppressed
-        assert outcome.line() == "Phone notification: sent."
-
-
-def test_the_marker_word_this_module_reads_is_the_one_the_script_prints() -> None:
-    """Two languages, neither able to import the other, one typo apart from a
-    silent return to "sent." for a notification that never left the machine."""
-
-    source = NOTIFY_SCRIPT.read_text(encoding="utf-8")
-    assert f"printf '{notify_hooks.NOTIFY_SUPPRESSED_MARKER} %s\\n' \"$topic\"" in source
