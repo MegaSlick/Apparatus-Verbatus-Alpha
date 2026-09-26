@@ -18,8 +18,7 @@ self-hashed refusal report; terminal output gives only counts, digests and
 report locations.
 
 There is no ordinary deletion command: whole-run disposal is a lifecycle
-decision this local tool has no sealed authority for, so `purge()` refuses.
-`cleanup.py` remains the synthetic-drill verifier.
+decision this local tool has no sealed authority for.
 
     python operations/submit/submit.py --source <folder> --manifest-out <path>
 """
@@ -31,7 +30,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Final, Literal, NoReturn
+from typing import Any, Final, Literal
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -412,21 +411,6 @@ def submit(
     atomic_create(resolved_manifest, data)
     log("submission sealed", files=len(entries), digest=digest_bytes(data))
     return manifest
-
-
-def purge(manifest_out: Path, approved_roots: tuple[Path, ...]) -> NoReturn:
-    """Refuse routine deletion: this tool has no sealed end-of-run authority.
-
-    Synthetic cleanup drills use ``cleanup.verify_synthetic_cleanup`` against
-    deliberately-created synthetic paths.  A real manifest/ledger remains until a
-    run is dead/broken or complete/exported and whole-run disposal is performed by
-    the owning lifecycle operation, not this local submit command.
-    """
-    del manifest_out, approved_roots
-    raise SubmitRefusal(
-        "purge is unavailable for submitted material: retain the whole run until its sealed "
-        "dead/broken or complete/exported condition permits whole-volume disposal"
-    )
 
 
 def main() -> int:
