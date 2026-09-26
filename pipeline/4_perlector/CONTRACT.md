@@ -740,7 +740,7 @@ card.
 `serving_mode_for` for the `(serving_recipe, chair, tier)` row in the catalogue named by
 `--serving-recipes-config`, whose digest is already inside `config_digest` through
 `serving_config_inputs`. No new configuration key was added and none is planned:
-`bound_serving_recipes` refuses a catalogue whose bytes are not the ones the run sealed,
+`operations/serving/assembly.py` refuses catalogue or placement bytes the run did not seal,
 so the posture cannot be moved after the run was bound. `--placement-tier` must be
 supplied beside a live catalogue and is deliberately *not* sealed — it is a measured
 runtime fact of the card, and the receipt records the caps that actually bound the
@@ -784,7 +784,7 @@ than pointing a `happy` run at a different `--scenario`.
 decides the route from one read of the run authority and, on a real submission, carries
 the registry, the sealed digest map and the serving configuration inputs this stage
 requires before its first line of work (`decoding`, `perlector-protocol`,
-`perlector-audit`, and `bound_serving_recipes`). The route is read off `context.run`
+`perlector-audit`, and `operations/serving/assembly.py`). The route is read off `context.run`
 (`real_ingress`), the same reading `common.stage` makes for `expected_acts`. Two fixture
 concepts have no real-mode counterpart:
 
