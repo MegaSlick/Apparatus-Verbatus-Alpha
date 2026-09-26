@@ -213,7 +213,7 @@ class PlanRefusal(ValueError):
     """A named, pre-execution refusal; nothing has been fetched, cloned, or held.
 
     ``report_path`` is set only when the refusal is raised after ``--report-path``
-    itself has passed containment, so ``main`` can best-effort leave the reason
+    itself has passed containment and the launch-token check, so ``main`` can best-effort leave the reason
     durable on the volume even though ``resolve_plan`` never got to return a
     ``Plan``.
     """
@@ -488,7 +488,11 @@ class RefusingParser(argparse.ArgumentParser):
         super().__init__(allow_abbrev=False, add_help=False, **kwargs)  # type: ignore[arg-type]
 
     def error(self, message: str) -> NoReturn:
-        raise PlanRefusal("argv: " + re.sub(r"'[^']*'|\"[^\"]*\"", "(value)", message))
+        named = message.split(":", 1)[0] if message.startswith("argument ") else message
+        raise PlanRefusal("argv: missing or malformed " + ", ".join(_FLAG_NAME.findall(named)))
+
+    def parse_args(self, args=None, namespace=None):  # type: ignore[no-untyped-def,override]
+        return self.parse_flags(sys.argv[1:] if args is None else args, None)
 
     def parse_flags(self, argv: Sequence[str], report_path: Path | None) -> argparse.Namespace:
         try:
@@ -506,8 +510,8 @@ class RefusingParser(argparse.ArgumentParser):
         return args
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = RefusingParser(description="Verbatus pod-side bootstrap-and-hold service")
+def build_parser() -> RefusingParser:
+    parser = RefusingParser()
     parser.add_argument("--volume-mount-path", required=True)
     parser.add_argument("--report-path", type=Path, required=True)
     parser.add_argument("--interval-seconds", type=float, default=15.0)
@@ -515,15 +519,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-env",
         action="append",
         default=[],
-        metavar="NAME",
-        help="exact environment variable name to keep despite the credential-shaped scrub",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--hold-only",
         action="store_true",
-        help="named drill mode: no bootstrap steps, journal a hold-only record, hold to the "
-        "deadline; refuses if any plan argument is supplied",
     )
     parser.add_argument("--repository", type=Path)
     parser.add_argument("--repository-commit")
@@ -534,59 +534,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cache-root",
         type=Path,
-        help="defaults to <volume-mount-path>/chair-cache",
     )
     parser.add_argument(
         "--fixture",
         type=Path,
-        help="an operator-rendered golden page carrying the witness named by "
-        "--page-witness-file; omit both and the pod renders its own page with a fresh "
-        "CSPRNG witness under <volume-mount-path>/preflight/",
     )
     parser.add_argument(
         "--page-witness-file",
         type=Path,
-        help="a file on the volume whose single line is the witness rendered on --fixture; "
-        "required with --fixture and refused without it",
     )
     parser.add_argument(
         "--serving-recipes-config",
         type=Path,
-        help="the serving-profile catalogue preflight smokes against; defaults to "
-        "<repository>/config/serving_recipes.toml, the fixture-only catalogue, and may be "
-        "defaulted only when --models-config is the shipped fixture roster "
-        "config/models.toml -- any other roster must name its catalogue explicitly "
-        "(config/serving_recipes_real.toml for the real roster) or the plan is refused",
     )
     parser.add_argument(
         "--witness-context-config",
         type=Path,
-        help="the Perlector-owned factual witness-context declaration the run seals; defaults "
-        "to <repository>/config/witness_context.toml, which describes every chair as a "
-        "synthetic fixture; after the pinned checkout, CONFIGURATION matches that parsed "
-        "profile to the selected chair identities. Name config/witness_context-real.toml "
-        "explicitly with config/models-real.toml; custom rosters require an operator-authored "
-        "declaration",
     )
     parser.add_argument(
         "--submission-manifest",
         type=Path,
-        help="the sealed submission ledger TRANSFER sends to --transfer-target-factory; "
-        "no default, because a pod that is consuming a submission already on the volume "
-        "has nothing to send. Naming one without a target, or a target without one, is "
-        "refused at plan time",
     )
     parser.add_argument(
         "--transfer-source-root",
         type=Path,
-        help="defaults to --volume-mount-path",
     )
     parser.add_argument("--transfer-prefix", default=None)
     parser.add_argument("--model-store-capacity-json", default=None)
     parser.add_argument(
         "--transfer-target-factory",
-        help="untracked module:callable returning a TransferTarget; omit when no submission "
-        "manifest is expected on this volume",
     )
     return parser
 

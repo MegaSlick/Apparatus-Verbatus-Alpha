@@ -514,7 +514,7 @@ A key that still starts with `/` is refused by name in the receipt's `refusals`.
 |---|---|---|
 | `<volume>/bootstrap-report-<token>.json` | `bootstrap_main --report-path`, rewritten every hold tick | the `--report-path` the launch request carried, mount prefix stripped |
 | the bootstrap journal, `<volume>/…-<token>.json` | `bootstrap_main --journal` | the request's `--journal`, mount prefix stripped; it must be under the mount and carry the token |
-| `<volume>/pod-run-report-<token>.json` | `pod_run --report-path` | the nested `--report-path` the launch request carried, mount prefix stripped |
+| `<volume>/pod-run-report-<token>.json` | `pod_run --report-path`; a refused run argument is recorded here, never in the bootstrap report | the nested `--report-path` the launch request carried, mount prefix stripped |
 | `<volume>/pod-run-report-<token>-hold.json` | `pod_run`'s hold after a `complete` or `held` run (`Plan.hold_path`) | the pod-run report key with `-hold` before its suffix. The only record that the pod stayed alive to the hard deadline |
 | `<volume>/pod-runtime-report-<token>.json` | `pod_timer --report-path` | the request's outermost `--report-path`, mount prefix stripped |
 | `<volume>/pod-transfer-journal.json` | `ChecksummedTransfer` | **a fixed name at the volume root**, no token. The only durable record of which submission rows were verified against target-observed bytes |
