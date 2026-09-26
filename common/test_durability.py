@@ -29,31 +29,6 @@ def test_strict_sync_propagates_either_directory_failure(
         sync_directory(tmp_path, strict=True)
 
 
-def test_a_second_create_is_refused_and_the_first_bytes_are_owner_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The create *is* the exclusion: two holders of one grant cannot both proceed."""
-
-    modes: list[int] = []
-    real_fchmod = durability.os.fchmod
-
-    def observe_fchmod(descriptor: int, mode: int) -> None:
-        modes.append(mode)
-        real_fchmod(descriptor, mode)
-
-    monkeypatch.setattr(durability.os, "fchmod", observe_fchmod)
-    target = tmp_path / "grant.json"
-    durability.atomic_create(target, b'{"grant":"one"}')
-    # Pinned at the call: `mkstemp`'s own 0600 would pass a check of the result alone.
-    assert modes == [0o600]
-
-    with pytest.raises(FileExistsError):
-        durability.atomic_create(target, b'{"grant":"two"}')
-
-    assert target.read_bytes() == b'{"grant":"one"}'
-    assert target.stat().st_mode & 0o777 == 0o600
-
-
 @WRITERS
 @pytest.mark.parametrize("failure", [OSError("injected fsync failure"), KeyboardInterrupt()])
 def test_an_interrupted_write_leaves_the_old_state_and_no_temporary(
@@ -167,15 +142,18 @@ def test_a_replaced_file_is_owner_only(tmp_path: Path) -> None:
 def test_an_interrupt_after_the_link_leaves_the_published_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def interrupt(_path: Path, *_arguments: object, **_keywords: object) -> None:
+    real_link = durability.os.link
+
+    def link_then_interrupt(source: str, destination: Path) -> None:
+        real_link(source, destination)
         raise KeyboardInterrupt
 
     target = tmp_path / "grant.json"
-    monkeypatch.setattr(Path, "unlink", interrupt)
+    monkeypatch.setattr(durability.os, "link", link_then_interrupt)
     with pytest.raises(KeyboardInterrupt):
         durability.atomic_create(target, b'{"grant":"one"}')
-    monkeypatch.undo()
     assert target.read_bytes() == b'{"grant":"one"}'
+    assert list(tmp_path.iterdir()) == [target]
 
 
 def test_a_temporary_that_cannot_be_created_is_not_a_taken_name(

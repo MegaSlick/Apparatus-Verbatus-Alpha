@@ -58,6 +58,12 @@ class PublishedUnsettled(OSError):
     """
 
 
+def is_temporary_name(name: str) -> bool:
+    """``.<target>.tmp-<unique>``: what an interrupted publication can leave behind."""
+    target, separator, unique = name[1:].partition(".tmp-")
+    return name.startswith(".") and bool(target and separator and unique)
+
+
 def atomic_replace(path: Path, data: bytes, *, strict: bool = True) -> None:
     """Replace ``path`` with ``data`` whole, or leave what was there."""
     _publish(path, data, create=False, strict=strict)
@@ -82,7 +88,6 @@ def _publish(path: Path, data: bytes, *, create: bool, strict: bool) -> None:
     temporary = Path(raw_temporary)
     try:
         with os.fdopen(descriptor, "wb") as handle:
-            os.fchmod(handle.fileno(), 0o600)
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())

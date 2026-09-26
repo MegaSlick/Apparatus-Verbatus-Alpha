@@ -37,6 +37,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, validate_run_id
 from common.contracts.stages import ARMARIUM, WRITING_DIRECTORIES
+from common.durability import is_temporary_name
 from common.runtree.store import (
     DOOR_MANIFEST_FILE,
     MANIFEST_FILE,
@@ -3494,6 +3495,8 @@ def _write_bundle_directory(
             detail=f"the Armarium evidence bundle cannot read {source_prefix}: {error}",
         ) from error
     for name in names:
+        if is_temporary_name(name):
+            continue
         label = f"{source_prefix}/{name}"
         try:
             named = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)

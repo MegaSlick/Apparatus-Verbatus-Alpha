@@ -22,10 +22,9 @@ import json
 from pathlib import Path
 from typing import Mapping
 
-from common.durability import HardLinkUnsupported, atomic_create, atomic_replace
+from common.durability import atomic_create, atomic_replace
 
 __all__ = [
-    "HardLinkUnsupported",
     "atomic_write",
     "canonical_json",
     "exclusive_write",

@@ -14,6 +14,7 @@ import signal
 import subprocess
 import threading
 import tracemalloc
+import zipfile
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -4867,6 +4868,22 @@ def test_an_evidence_bundle_short_of_run_json_refuses_rather_than_saying_complet
 
     assert "run.json" in (refusal.value.detail or "")
     assert not destination.exists(), "a refused bundle must not leave a file behind"
+
+
+def test_an_evidence_bundle_leaves_out_a_stray_publication_temporary(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    root = tmp_path / "runs" / "r"
+    (root / "7_armarium").mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    (root / "7_armarium" / "aggregate.json").write_text("{}", encoding="utf-8")
+    (root / "7_armarium" / ".aggregate.json.tmp-abc123").write_text("{", encoding="utf-8")
+
+    destination = tmp_path / "bundle.zip"
+    surface._write_base_armarium_bundle(tmp_path / "runs", "r", destination)
+
+    with zipfile.ZipFile(destination) as bundle:
+        assert not any(".tmp-" in name for name in bundle.namelist())
+        assert "r/7_armarium/aggregate.json" in bundle.namelist()
 
 
 def test_an_evidence_bundle_whose_armarium_is_a_file_refuses_too(tmp_path: Path) -> None:

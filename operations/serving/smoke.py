@@ -108,9 +108,8 @@ def render_golden_page(path: Path, witness: str) -> bytes:
     only fail, and this is where that would be found.
 
     **The page is verified before it takes its name, and never replaces one.**
-    The pixels go to a temporary beside ``path`` and are decoded there, so a
-    page the decoder rejects is never left lying under the real name for a
-    later reader to trust. It is then linked into place: identical bytes are a
+    The pixels are encoded and decoded in memory, so a page the decoder rejects
+    never reaches the disk. It is then published by atomic create: identical bytes are a
     no-op, and different bytes at the same name are refused rather than
     written over. Every receipt that names a golden page names it by digest,
     and a page that could be silently replaced is the one artefact those
