@@ -16,6 +16,7 @@ from decimal import Decimal
 import pytest
 
 from . import provider_runpod
+from .conftest import timer_start_command
 from .controllers import ControllerState, LaptopSupervisor
 from .lease import LeaseStore, PodLease
 from .models import (
@@ -75,17 +76,8 @@ def request(**overrides: object) -> PodCreateRequest:
         "template": "template-immutable-reference",
         "volume_id": "volume-1",
         "volume_mount_path": "/workspace/private",
-        "docker_start_cmd": (
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "operations.pod.provider_runpod:timer_context_from_environment",
-            "--bootstrap-command-json",
-            # PLACEHOLDER, as in test_provider_runpod.py: not a real request.
-            '["python","-m","operations.pod.bootstrap"]',
-            "--report-path",
-            f"/workspace/private/pod-runtime-report-{TOKEN}.json",
+        "docker_start_cmd": timer_start_command(
+            f"/workspace/private/pod-runtime-report-{TOKEN}.json"
         ),
         "hard_deadline": NOW + timedelta(hours=1),
         "repository_commit": "b" * 40,

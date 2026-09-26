@@ -19,6 +19,7 @@ from decimal import Decimal
 import pytest
 
 from . import notify_hooks
+from .conftest import timer_start_command
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     AccountBalanceObservation,
@@ -64,19 +65,8 @@ def request(**overrides: object) -> PodCreateRequest:
         "template": "template-immutable-reference",
         "volume_id": "volume-1",
         "volume_mount_path": "/workspace/private",
-        "docker_start_cmd": (
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "operations.pod.provider_runpod:timer_context_from_environment",
-            "--bootstrap-command-json",
-            # PLACEHOLDER: bootstrap.py has no __main__ and exits 0 immediately.
-            # Not a template for a real request file -- see test_pod_runtime.py's
-            # request() fixture.
-            '["python","-m","operations.pod.bootstrap"]',
-            "--report-path",
-            f"/workspace/private/pod-runtime-report-{TOKEN}.json",
+        "docker_start_cmd": timer_start_command(
+            f"/workspace/private/pod-runtime-report-{TOKEN}.json"
         ),
         "hard_deadline": NOW + timedelta(hours=1),
         "repository_commit": "b" * 40,
