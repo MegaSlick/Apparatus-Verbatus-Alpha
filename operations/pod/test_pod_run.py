@@ -727,11 +727,14 @@ def test_refuses_a_run_report_path_that_is_the_bootstrap_report_path(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     ws = _prepared(tmp_path)
+    ws.report_path.write_bytes(b"the bootstrap's own record")
 
     exit_code, _runner = _refused(ws, _run_argv(ws, report_path=ws.report_path))
 
     assert exit_code == EXIT_REFUSED
     assert "two records" in capsys.readouterr().err
+    assert ws.report_path.read_bytes() == b"the bootstrap's own record"
+    assert not (ws.volume / "pod-run-report.json").exists()
 
 
 def test_refuses_a_run_report_path_outside_the_volume(
@@ -755,12 +758,15 @@ def test_refuses_a_run_report_path_missing_the_launch_token(
     ws.journal = ws.volume / "bootstrap-journal-launch-abc123.json"
     clock = Clock()
     environment = _environ(clock, extra={"VERBATUS_LAUNCH_TOKEN": "launch-abc123"})
+    ws.report_path.write_bytes(b"the bootstrap's own record")
 
     exit_code, _runner = _refused(ws, _run_argv(ws), environ=environment)
 
     assert exit_code == EXIT_REFUSED
     err = capsys.readouterr().err
     assert "--report-path" in err and "this launch's token" in err
+    assert ws.report_path.read_bytes() == b"the bootstrap's own record"
+    assert not (ws.volume / "pod-run-report.json").exists()
 
 
 def test_an_unknown_run_argument_is_refused_by_name_only_on_the_run_report(

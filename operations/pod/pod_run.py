@@ -32,10 +32,12 @@ that could not start or exited outside its own vocabulary; ``EXIT_DRY_RUN``
 never 0, so a dry run launched as ``pod_timer``'s bootstrap child by mistake
 cannot be mistaken for a completed run.  Whatever the outcome, the report at
 ``--report-path`` says the same thing durably, under the launch-bound name,
-before the exit code says it -- except the dry run, which writes no report at
-all (see below), and a refused ``--report-path`` itself (missing, outside the
-volume, without the launch token, or the bootstrap's own report), which is
-refused on stderr only so no other record is overwritten.
+before the exit code says it.  The exceptions: the dry run writes no report at
+all (see below); a credential-looking argv, a missing ``--`` and a refused
+``--report-path`` itself (missing, outside the volume, without the launch
+token, or the bootstrap's own report) are refused on stderr only, so no other
+record is overwritten; and a refused bootstrap argv is recorded in the
+bootstrap report, not the run report.
 
 **The bootstrap-and-hold contract is unchanged for a run that finished.**
 ``pod_timer.run_with_bootstrap`` treats any child exit before the hard deadline
