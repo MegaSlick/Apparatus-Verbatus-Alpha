@@ -214,7 +214,7 @@ def _chain(root: Path, catalogue: Path, *extra: str) -> None:
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0, f"{program.name}: {result.stderr}"
+        assert result.returncode == 0, f"{program}: {result.stderr}"
 
 
 @pytest.fixture(scope="module")
@@ -268,7 +268,7 @@ def _real_submission(base: Path, pages: dict[str, bytes], *argv: str) -> Path:
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0, f"{program.name}: {result.stderr}"
+        assert result.returncode == 0, f"{program}: {result.stderr}"
     return root
 
 

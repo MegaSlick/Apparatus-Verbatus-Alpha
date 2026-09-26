@@ -3573,9 +3573,9 @@ def test_report_path_binding_also_binds_a_nested_equals_form_report_path() -> No
 
 
 def test_report_path_binding_leaves_a_nested_command_with_no_report_path_alone() -> None:
-    """A nested argv that never reads a report path (the library-module
-    placeholder ``request()`` uses below) is returned unchanged rather than
-    having a path invented for it."""
+    """A nested argv that never reads a report path (the no-op placeholder
+    ``request()`` uses) is returned unchanged rather than having a path
+    invented for it."""
 
     token = "a" * 32
     command = timer_start_command("/workspace/private/pod-runtime-report.json")

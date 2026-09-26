@@ -71,7 +71,19 @@ def code_text(source: object) -> str:
 @functools.cache
 def stage_programs() -> dict[str, str]:
     """The orchestrator's own stage programs, by stage name, in flow order."""
-    return load_stage("orchestrator").STAGE_PROGRAMS
+    programs = load_stage("orchestrator").STAGE_PROGRAMS
+    assert list(programs) == [
+        "door",
+        "exemplar",
+        "ink-map",
+        "designator",
+        "attestatores",
+        "perlector",
+        "recensor",
+        "archetypus",
+        "armarium",
+    ], "a stage was added to or dropped from the orchestrator's sequence"
+    return programs
 
 
 def programs_through(last: str) -> tuple[str, ...]:

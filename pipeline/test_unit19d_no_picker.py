@@ -215,7 +215,7 @@ def test_the_armarium_logical_export_path_names_no_preference_or_selector():
         assert subs == [], (node.name, [ast.unparse(n) for n in subs])
 
 
-def test_the_logical_projection_carries_no_member_act_rows_beside_its_subject(monkeypatch):
+def test_the_logical_projection_carries_no_member_act_rows_beside_its_subject():
     """§7 shape 15/19: the Armarium logical projection field set is closed and
 
     carries no per-member act_id/act_key -- only the logical subject and the
@@ -224,11 +224,7 @@ def test_the_logical_projection_carries_no_member_act_rows_beside_its_subject(mo
     and its refusals; the export-side double-count screen has its own test in
     the cluster-path suite.
     """
-    # syspath scoped to this test: pipeline/7_armarium holds run.py and
-    # display.py, and a leaked path entry would let any later test in the
-    # session import the Armarium's module under a generic name.
-    monkeypatch.syspath_prepend(str(ARMARIUM_SOURCE.parent))
-    module = load_stage("7_armarium")
+    module = load_stage("7_armarium", isolate_path=True)
 
     from common.contracts.canonical import digest_of, self_hash  # noqa: PLC0415
     from common.contracts.errors import SchemaRefusal  # noqa: PLC0415
