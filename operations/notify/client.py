@@ -14,6 +14,8 @@ from typing import Callable, Final, Sequence
 NOTIFY_SCRIPT: Final = Path(__file__).with_name("notify.sh")
 NOTIFY_TIMEOUT_SECONDS: Final = 10.0
 SUPPRESSED_MARKER: Final = "NOTIFY_SUPPRESSED"
+# `start` is notify.sh's rate-limited session-hook event; a caller's result must never be.
+EVENTS: Final = frozenset({"milestone", "decision", "done"})
 _DETAIL_LIMIT: Final = 160
 
 
@@ -31,7 +33,9 @@ class NotifyOutcome:
             return "Phone notification: suppressed (test sink)."
         if self.delivered:
             return "Phone notification: sent."
-        return f"Phone notification: NOT DELIVERED ({self.detail}). The result above still stands."
+        return (
+            f"Phone notification: NOT DELIVERED ({self.detail}). The recorded result is unchanged."
+        )
 
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
@@ -51,10 +55,12 @@ def _bounded(detail: str) -> str:
 
 
 def send(event: str, message: str, *, runner: Runner = run) -> NotifyOutcome:
+    if event not in EVENTS:
+        return NotifyOutcome(False, False, f"{event!r} is not an event this client sends")
     if "\n" in message or "\x00" in message or not message.strip():
         return NotifyOutcome(False, False, "the message was not one non-empty line")
     try:
-        result = runner(["sh", str(NOTIFY_SCRIPT), event, message])
+        return _read(runner(["sh", str(NOTIFY_SCRIPT), event, message]))
     except subprocess.TimeoutExpired:
         return NotifyOutcome(
             True,
@@ -67,6 +73,9 @@ def send(event: str, message: str, *, runner: Runner = run) -> NotifyOutcome:
         return NotifyOutcome(
             True, False, _bounded(f"the notification command failed unexpectedly: {error!r}")
         )
+
+
+def _read(result: subprocess.CompletedProcess) -> NotifyOutcome:
     if result.returncode != 0:
         return NotifyOutcome(
             True, False, _bounded(result.stderr or result.stdout or "no reason given")

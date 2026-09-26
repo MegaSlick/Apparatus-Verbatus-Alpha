@@ -2711,7 +2711,7 @@ def test_a_spend_warning_that_never_reached_the_phone_is_recorded_not_swallowed(
     ceilings = record["ceilings"]
     assert isinstance(ceilings, dict)
     assert ceilings["alert_notifications"] == [
-        "Phone notification: NOT DELIVERED (no topic configured). The result above still stands."
+        "Phone notification: NOT DELIVERED (no topic configured). The recorded result is unchanged."
     ]
 
 
@@ -2733,7 +2733,7 @@ def test_a_broken_notifier_is_recorded_and_still_cannot_fail_the_preview(tmp_pat
     ceilings = result.preview.to_record()["spend"]["ceilings"]  # type: ignore[index]
     assert ceilings["alert_notifications"] == [  # type: ignore[index]
         "Phone notification: NOT DELIVERED (the notifier raised: RuntimeError). "
-        "The result above still stands."
+        "The recorded result is unchanged."
     ]
 
 
