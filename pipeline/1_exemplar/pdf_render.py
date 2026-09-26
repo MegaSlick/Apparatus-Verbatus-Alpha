@@ -168,14 +168,8 @@ def _source_size(source: bytes | str | Path | BinaryIO) -> int:
 def _refuse_implausible_page_count(pages: int, container_size: int) -> None:
     """Hold a declared page count this reader cannot tell from a shared page tree.
 
-    `UNSUPPORTED_VARIANT`, not `CORRUPT`, and the distinction is the whole point.
-    A blind audit built a *valid* PDF 1.5 — 10,000 distinct page objects, true
-    `/Count`, no shared kids, packed into a Flate object stream — at 9.4 bytes per
-    page, and PDFium opens and renders it. So this ratio does not establish damage,
-    and `CORRUPT` would tell the operator their original is broken when it is not: the one
-    thing a refusal must never do. What it does establish is that this
-    reader cannot yet distinguish that file from the page-tree bomb it is here to
-    stop, which is a gap in this pipeline and is recorded as one.
+    `UNSUPPORTED_VARIANT`, not `CORRUPT`: a valid PDF packed into object streams can
+    fall under this ratio, so it shows a gap in this reader, not damage to the original.
     """
     if container_size < pages * MIN_BYTES_PER_DECLARED_PAGE:
         raise PdfRefusal(
