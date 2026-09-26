@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from operations.notify import client
+
 SOURCE = Path(__file__).with_name("notify.sh")
 GATE = SOURCE.parents[2] / ".githooks" / "check-all.sh"
 
@@ -586,3 +588,104 @@ def test_the_stamp_never_carries_the_topic(notify_repo):
     assert written.strip().isdigit()
     for text in (written, result.stdout, result.stderr):
         assert "stamp_leak_topic" not in text
+
+
+def _through(script: Path, env: dict[str, str]):
+    def runner(argv):
+        return subprocess.run(
+            ["sh", str(script), *argv[2:]], capture_output=True, text=True, env=env, timeout=10
+        )
+
+    return runner
+
+
+@pytest.mark.parametrize(
+    ("topic", "status", "delivered", "suppressed", "detail"),
+    [
+        ("verbatus-test-sink", "204", False, True, "NOTIFY_SUPPRESSED verbatus-test-sink"),
+        ("test_topic", "204", True, False, "delivered"),
+        ("test_topic", "503", False, False, "notify: NOT DELIVERED (milestone)"),
+    ],
+)
+def test_the_client_reads_each_outcome_of_the_real_script(
+    notify_repo, topic, status, delivered, suppressed, detail
+):
+    script, env = notify_repo
+    env["NTFY_TOPIC"] = topic
+    env["FAKE_STATUS"] = status
+
+    outcome = client.send("milestone", "finished", runner=_through(script, env))
+
+    assert outcome.attempted
+    assert (outcome.delivered, outcome.suppressed) == (delivered, suppressed)
+    assert outcome.detail.startswith(detail)
+    assert curl_ran(env) is not suppressed
+
+
+@pytest.mark.parametrize("stdout", ["", "\n", "some unrelated chatter\n"])
+def test_exit_0_without_the_marker_is_delivered(stdout):
+    outcome = client.send(
+        "milestone",
+        "finished",
+        runner=lambda argv: subprocess.CompletedProcess(argv, 0, stdout, ""),
+    )
+
+    assert outcome == client.NotifyOutcome(True, True, "delivered")
+
+
+@pytest.mark.parametrize("event", ["start", "note", ""])
+def test_the_client_refuses_an_event_it_does_not_send(event):
+    outcome = client.send(event, "finished", runner=_raises(AssertionError("ran")))
+
+    assert not outcome.attempted
+    assert "not an event this client sends" in outcome.detail
+
+
+def _raises(error: BaseException):
+    def runner(argv):
+        raise error
+
+    return runner
+
+
+@pytest.mark.parametrize(
+    ("runner", "detail"),
+    [
+        (_raises(subprocess.TimeoutExpired(["sh"], 10.0)), "did not answer within 10 seconds"),
+        (_raises(OSError("no shell here")), "could not run: no shell here"),
+        (_raises(UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")), "failed unexpectedly"),
+        (lambda argv: subprocess.CompletedProcess(argv, 1, "", "x" * 500), "x" * 160),
+        (lambda argv: subprocess.CompletedProcess(argv, 1, b"", b"raw"), "failed unexpectedly"),
+    ],
+)
+def test_the_client_turns_every_failure_into_a_not_delivered_outcome(runner, detail):
+    outcome = client.send("milestone", "finished", runner=runner)
+
+    assert outcome.attempted and not outcome.delivered and not outcome.suppressed
+    assert detail in outcome.detail
+    assert len(outcome.detail) < 220
+    assert outcome.line().endswith("The recorded result is unchanged.")
+
+
+def test_the_client_lets_a_keyboard_interrupt_through():
+    with pytest.raises(KeyboardInterrupt):
+        client.send("milestone", "finished", runner=_raises(KeyboardInterrupt()))
+
+
+@pytest.mark.parametrize("message", ["two\nlines", "", "   ", "nul\x00byte"])
+def test_the_client_never_runs_the_script_for_a_malformed_message(message):
+    outcome = client.send("milestone", message, runner=_raises(AssertionError("ran")))
+
+    assert not outcome.attempted
+    assert outcome.detail == "the message was not one non-empty line"
+
+
+def test_the_client_bounds_the_script_with_its_timeout(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        client.subprocess, "run", lambda argv, **kwargs: seen.update(kwargs) or None
+    )
+
+    client.run(["sh"])
+
+    assert seen["timeout"] == client.NOTIFY_TIMEOUT_SECONDS
