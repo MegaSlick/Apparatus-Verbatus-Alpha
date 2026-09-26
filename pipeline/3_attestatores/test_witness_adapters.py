@@ -17,6 +17,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ATTESTATORES, EXEMPLAR
 from common.imaging import encode_grayscale_png_deterministic
 from common.native_witness import validate_presented_page_binding
+from common.stage import StageContext
 from common.witness_adapters import KNOWN_WITNESS_ADAPTER_NAMES
 from conftest import load_stage
 
@@ -100,7 +101,7 @@ def test_no_runnable_adapter_lets_a_caller_relabel_its_retention(name):
 
     with pytest.raises(TypeError, match="unexpected keyword argument 'adapter'"):
         spec.retain(
-            SimpleNamespace(put_blob=lambda _stage, payload: None),
+            _DaiContext(tree=SimpleNamespace(put_blob=lambda _stage, payload: None)),
             adapter="another.v1",
             view={"kind": "fixture"},
             raw_response=b"<output>text</output>",
@@ -124,7 +125,7 @@ def test_retention_is_bound_to_the_resolved_adapter_and_cannot_be_relabeled(name
         return "a" * 64, SimpleNamespace(relative_path="blobs/a")
 
     retained = spec.retain(
-        SimpleNamespace(put_blob=put_blob),
+        _DaiContext(tree=SimpleNamespace(put_blob=put_blob)),
         view={"kind": "fixture"},
         raw_response=b"<output>text</output>",
         transport_stop_reason="complete",
@@ -168,8 +169,12 @@ class _DaiTree:
 
 
 class _DaiContext:
-    def __init__(self, page_bytes):
-        self.tree = _DaiTree(page_bytes)
+    stage = ATTESTATORES
+    sealed = False
+    retain = StageContext.retain
+
+    def __init__(self, page_bytes=b"", tree=None):
+        self.tree = tree or _DaiTree(page_bytes)
 
 
 def test_dai_crop_resize_is_a_rederivable_adapter_crop_and_preserves_uncertainty_tokens():
@@ -259,7 +264,7 @@ def test_dai_crop_refuses_bytes_swapped_after_page_artifact_verification():
     context.tree.read_artifact = verified_before_swap
     adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
 
-    with pytest.raises(SchemaRefusal, match="changed between artifact verification and crop use"):
+    with pytest.raises(SchemaRefusal, match="no longer matches its sealed digest"):
         adapters.resolve_runnable_adapter("dai.v1").present(context, _dai_region(20, 10))
     assert context.tree.blobs == {}
 
@@ -268,7 +273,7 @@ def test_dai_crop_refuses_bytes_swapped_after_page_artifact_verification():
 def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
     """A sealed page with no path to read is a held attempt, not a KeyError.
 
-    The stage's own `_verified_page_bytes` already names this failure; a bare
+    `sealed_page_bytes` names this failure; a bare
     `KeyError` out of the adapter boundary would reach the operator as an
     unclassified traceback, and the attempt would not be held with a reason
     (principle 2).
@@ -277,7 +282,7 @@ def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
     context.tree.read_artifact = lambda *_args: {"payload": payload}
     adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
 
-    with pytest.raises(SchemaRefusal, match="no image path to crop"):
+    with pytest.raises(SchemaRefusal, match="no image path"):
         adapters.resolve_runnable_adapter("dai.v1").present(context, _dai_region(20, 10))
     assert context.tree.blobs == {}
 

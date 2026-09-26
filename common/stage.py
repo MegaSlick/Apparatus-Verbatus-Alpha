@@ -702,22 +702,25 @@ class StageContext:
             )
 
     def _write_serving_blob(self, value: dict[str, Any], label: str) -> dict[str, str]:
-        """Canonical content-addressed storage shared by serving evidence records.
+        try:
+            payload = canonical_bytes(value)
+        except (TypeError, ValueError) as error:
+            raise SchemaRefusal(f"{label} is not canonical JSON data: {error}") from error
+        return self.retain(payload, label)
+
+    def retain(self, data: bytes, label: str = "a blob") -> dict[str, str]:
+        """Store bytes in this stage's blob directory and return their reference.
 
         Refused after the seal, like `publish`: the blob directory is in the
         sealed inventory, and a late write would look like tampering to the
-        next consumer.  Receipts need no guard; they live outside any stage.
+        next consumer.
         """
         if self.sealed:
             raise SchemaRefusal(
                 f"{self.stage} has sealed its completion boundary; storing {label} afterwards "
                 "would make its witnessed blob inventory false"
             )
-        try:
-            payload = canonical_bytes(value)
-        except (TypeError, ValueError) as error:
-            raise SchemaRefusal(f"{label} is not canonical JSON data: {error}") from error
-        digest, result = self.tree.put_blob(self.stage, payload)
+        digest, result = self.tree.put_blob(self.stage, data)
         return {"relative_path": result.relative_path, "sha256": digest}
 
     def input_ref(self, relative_path: str) -> dict[str, str]:
@@ -3538,8 +3541,7 @@ def _prove_page_wide_act_rectangle(
             f"act {act_id}'s page ordinal {ordinal} does not name exactly one sealed source"
         )
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    page_bytes = verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
     width, height = dimensions(page_bytes)
     full_page_bounds = {"x": 0, "y": 0, "w": width, "h": height}
     if bounds != full_page_bounds:

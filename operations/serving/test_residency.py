@@ -28,6 +28,7 @@ _REPOSITORY = Path(__file__).resolve().parents[2]
 # ids each acquired their own lease and co-resided on one GPU.
 _SERVING_CALLERS = (
     "operations/pod/bootstrap_main.py",
+    "operations/serving/assembly.py",
     "pipeline/2_designator/structure_pass.py",
     "pipeline/3_attestatores/run.py",
     "pipeline/4_perlector/run.py",
@@ -57,9 +58,13 @@ def test_every_serving_caller_takes_the_one_pod_wide_lease_path() -> None:
 
     for relative in _SERVING_CALLERS:
         source = (_REPOSITORY / relative).read_text(encoding="utf-8")
-        assert "POD_RESIDENCY_LOCK_PATH" in source, (
+        assert "POD_RESIDENCY_LOCK_PATH" in source or "stage_chair_client" in source, (
             f"{relative} serves a chair but does not name the one pod-wide lease path"
         )
+        if relative.startswith("pipeline/"):
+            assert "ServingManager(" not in source and "ChairClient(" not in source, (
+                f"{relative} builds its own manager or client instead of stage_chair_client"
+            )
         # `chosen.residency_lock` is `bootstrap_main`'s injection seam, whose
         # own default is the constant; every other spelling is a second
         # boundary, and a second boundary is no boundary.

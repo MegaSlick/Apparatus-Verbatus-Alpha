@@ -14,7 +14,7 @@ from typing import Any, Final
 from common.contracts.canonical import canonical_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
-from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR
+from common.contracts.stages import DESIGNATOR, EXEMPLAR
 from common.corpus_register import read_snapshot
 from common.cross_capture_autopsia import build_autopsia_from_run
 from common.physical_act_partition import (
@@ -131,8 +131,7 @@ def build_run_partition(
         source_ledger=_verified_source_ledger(context),
     )
     holds = cross_capture_holds(partition)
-    digest, published = context.tree.put_blob(PERLECTOR, canonical_bytes(partition))
-    return partition, {"relative_path": published.relative_path, "sha256": digest}, holds
+    return partition, context.retain(canonical_bytes(partition)), holds
 
 
 def cross_capture_holds(partition: dict[str, Any]) -> dict[str, str | None]:
