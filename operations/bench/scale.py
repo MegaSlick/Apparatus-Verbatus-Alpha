@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import time
 from pathlib import Path
 from typing import Any, Final
@@ -179,11 +178,3 @@ def run_scale(
         result["disk_bytes"] = complete_disk_bytes
     (root / _RESULT_FILE).write_bytes(result_bytes)
     return result
-
-
-def cleanup_scale(root: Path) -> None:
-    """Remove a scale scratch directory, refusing any directory without its census marker."""
-    marker = root / _CENSUS_FILE
-    if not marker.is_file():
-        raise FileNotFoundError(f"scale cleanup requires the {_CENSUS_FILE} marker: {marker}")
-    shutil.rmtree(root)

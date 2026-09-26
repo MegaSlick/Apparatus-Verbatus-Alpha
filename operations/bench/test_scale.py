@@ -7,7 +7,7 @@ import pytest
 
 import operations.bench.scale as scale
 from common.contracts.canonical import canonical_bytes
-from operations.bench.scale import cleanup_scale, run_scale
+from operations.bench.scale import run_scale
 
 
 def test_scale_runner_refuses_undersized_without_explicit_smoke_opt_in(tmp_path):
@@ -15,10 +15,8 @@ def test_scale_runner_refuses_undersized_without_explicit_smoke_opt_in(tmp_path)
         run_scale(tmp_path / "scale", shards=1, pages_per_shard=1)
 
 
-def test_scale_runner_creates_resumes_censuses_and_cleans_up_at_small_cardinality(
-    tmp_path, monkeypatch
-):
-    """Exercise the same create/resume/export/cleanup path as the full-size run,
+def test_scale_runner_creates_resumes_and_censuses_at_small_cardinality(tmp_path, monkeypatch):
+    """Exercise the same create/resume/export path as the full-size run,
     at a size this chamber can actually finish, so a latent logic bug is not
     resting on an unverified refusal-only test.
     """
@@ -62,21 +60,6 @@ def test_scale_runner_creates_resumes_censuses_and_cleans_up_at_small_cardinalit
 
     with pytest.raises(FileExistsError, match="scale root already exists"):
         run_scale(root, shards=2, pages_per_shard=3, allow_undersized_smoke=True)
-
-    cleanup_scale(root)
-    assert not root.exists()
-
-
-def test_cleanup_scale_refuses_a_markerless_non_scale_directory(tmp_path):
-    root = tmp_path / "ordinary-directory"
-    retained = root / "must-survive.txt"
-    root.mkdir()
-    retained.write_text("not scale output")
-
-    with pytest.raises(FileNotFoundError, match="aggregate-census.json marker"):
-        cleanup_scale(root)
-
-    assert retained.read_text() == "not scale output"
 
 
 def test_scale_runner_refuses_a_dropped_artifact_before_writing_a_census(tmp_path, monkeypatch):
