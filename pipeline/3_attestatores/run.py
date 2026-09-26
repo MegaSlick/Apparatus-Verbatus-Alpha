@@ -102,7 +102,6 @@ from common.native_witness import (
 from common.request_capacity import RequestCapacityRefusal  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
-    DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_HELD,
     WITNESS_READING_OUTCOMES,
@@ -118,27 +117,16 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
 )
-from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
-from operations.serving.config import (  # noqa: E402
-    ServingConfigInputs,
-    ServingRecipes,
-    load_serving_recipes,
+from operations.serving.assembly import (  # noqa: E402
+    bound_serving_recipes,
+    stage_chair_client,
 )
+from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
+from operations.serving.config import ServingRecipes  # noqa: E402
 from operations.serving.errors import (  # noqa: E402
     ChairResponseRefusal,
     ChairTransportFailure,
     ServingError,
-)
-from operations.serving.http import UrllibHttpTransport  # noqa: E402
-from operations.serving.manager import (  # noqa: E402
-    MECHANICS_QUALIFICATION_PURPOSE,
-    ServingManager,
-    StageContextReceiptPublisher,
-)
-from operations.serving.process import SubprocessLauncher  # noqa: E402
-from operations.serving.residency import (  # noqa: E402
-    POD_RESIDENCY_LOCK_PATH,
-    FileResidencyLease,
 )
 
 DESCRIPTION = "Attestatores: retain every witness attempt without changing its history."
@@ -3764,34 +3752,6 @@ def attempt_pass(
     return recorded, isolated_crop_failure
 
 
-def bound_serving_recipes(context) -> ServingRecipes:
-    """The serving catalogue this run sealed, re-read and re-checked by digest.
-
-    Re-checked at the moment of use so the rows deciding live or fixture are the
-    sealed ones (principle 6). An unreadable catalogue is a configuration refusal,
-    not a witness failure.
-    """
-    if context.serving_config_inputs is None:  # pragma: no cover - open_context always sets it
-        raise ContractError(
-            "this run authority seals no serving configuration inputs; the serving posture "
-            "of its chairs cannot be read"
-        )
-    try:
-        recipes = load_serving_recipes(context.args.serving_recipes_config)
-        placement_bytes = Path(DEFAULT_POD_PLACEMENT_CONFIG_PATH).read_bytes()
-        ServingConfigInputs.from_record(dict(context.serving_config_inputs)).require_loaded(
-            recipes_sha256=recipes.source_sha256,
-            placement_sha256=digest_bytes(placement_bytes),
-        )
-    except OSError as error:
-        raise ContractError(
-            f"the sealed serving configuration could not be read: {error}"
-        ) from error
-    except ServingError as error:
-        raise ContractError(f"the sealed serving configuration was refused: {error}") from error
-    return recipes
-
-
 def witness_serving_modes(context, recipes: ServingRecipes, tier: str | None) -> dict[str, str]:
     """`fixture` or `live` for every configured witness chair, and never a mix.
 
@@ -3844,43 +3804,16 @@ def require_every_witness_served(modes: dict[str, str]) -> None:
 
 
 def default_serving_factory(context, identity: ChairIdentity, tier: str) -> ChairClient:
-    """Build the client a live pass reads one chair through.
-
-    Everything is bound to this run, so a Testimonium's receipt is one this run
-    wrote. Nothing starts until `ChairClient.__enter__`. Tests inject their own
-    factory in-process; it is deliberately not a CLI flag, so no fake can answer
-    under a configured chair's name.
-    """
+    """Build the client a live pass reads one chair through. Tests inject their own
+    factory in-process; it is deliberately not a CLI flag, so no fake can answer under
+    a configured chair's name."""
     policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
-    manager = ServingManager(
-        registry=context.registry,
-        recipes=bound_serving_recipes(context),
-        config_inputs=ServingConfigInputs.from_record(dict(context.serving_config_inputs)),
-        launcher=SubprocessLauncher(),
-        http=UrllibHttpTransport(),
-        receipt_publisher=StageContextReceiptPublisher(context),
-        # Logs go where `inventory_scope()` expects them, or `fetch-run` refuses
-        # the served tree. The lease is per pod, not per run tree, and a network
-        # mount may not honour an advisory lock, so it uses the container path.
-        log_root=context.tree.resolve(context.tree.serving_log_path(ATTESTATORES)),
-        residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
-        producer="pipeline/3_attestatores/run.py",
-        _launch_purpose=(
-            MECHANICS_QUALIFICATION_PURPOSE
-            if getattr(context.args, "mechanics_qualification", False)
-            else None
-        ),
-    )
-    return ChairClient(
-        manager=manager,
-        identity=identity,
-        tier=tier,
-        retain=lambda data: retained_blob_ref(context, data),
+    return stage_chair_client(
+        context,
+        identity,
+        tier,
         decoding_config_sha256=decoding_sha256,
         record_temperature=policy["reading_of_record"]["temperature"],
-        # Passed bare: `ChairClient.__enter__` copies the read-only receipt
-        # reference into a dict.
-        read_receipt=context.tree.read_run_receipt,
         chandra_native_policy=policy.get("chandra_native_inference"),
     )
 
@@ -5588,7 +5521,9 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     context.require_sealed_config("decoding", decoding_sha256)
     witness_adapters.validate_runnable_adapter_bindings(context.registry.config)
     # Resolved first: the serving posture decides which pass runs.
-    modes = witness_serving_modes(context, bound_serving_recipes(context), args.placement_tier)
+    modes = witness_serving_modes(
+        context, bound_serving_recipes(context, args.serving_recipes_config), args.placement_tier
+    )
     if real:
         require_every_witness_served(modes)
     live_chairs = sorted(chair for chair, mode in modes.items() if mode == "live")

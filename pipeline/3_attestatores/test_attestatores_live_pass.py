@@ -1885,7 +1885,7 @@ def test_bound_serving_recipes_refuses_a_catalogue_it_cannot_read(tmp_path):
         },
     )
     with pytest.raises(ContractError, match="serving configuration"):
-        attestatores.bound_serving_recipes(context)
+        attestatores.bound_serving_recipes(context, context.args.serving_recipes_config)
 
 
 def test_require_live_page_capture_refuses_a_page_nobody_was_asked_about():
@@ -2208,6 +2208,10 @@ def test_the_default_serving_factory_binds_the_run_that_will_record_the_reading(
     # And it is inert: no service exists until the pass enters the client.
     with pytest.raises(Exception, match="enter it as a context manager"):
         assert client.handle is None
+    # A chair response retained after the seal would falsify the witnessed blob inventory.
+    context.sealed = True
+    with pytest.raises(SchemaRefusal, match="witnessed blob inventory false"):
+        client._retain(b"{}")
 
 
 def test_the_live_preflight_refuses_to_leave_a_sealed_pair_unresolved(live_run, tmp_path):

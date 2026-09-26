@@ -62,6 +62,7 @@ from common.stage import (
     open_stage_context,
     stage_parser,
 )
+from operations.serving.assembly import retain_chair_bytes
 from operations.serving.client import ChairClient
 from operations.serving.config import (
     ServingConfigInputs,
@@ -324,7 +325,7 @@ def _serving_factory(
             manager=manager,
             identity=chair,
             tier=tier,
-            retain=lambda data: structure_pass.retain_chair_bytes(context, data),
+            retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
             record_temperature=structure_pass.executable_temperature(policy),
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),

@@ -11,7 +11,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
+from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes
+from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.stages import stage_directory
 from operations.pod.preflight import (
     ChairCacheVerifier,
     GpuProfile,
@@ -22,18 +25,21 @@ from operations.pod.preflight import (
     load_placement_table,
 )
 
+from .client import ChairClient
 from .config import ServingConfigInputs, ServingRecipes, load_serving_recipes
-from .errors import ServingConfigurationError
+from .errors import ServingConfigurationError, ServingError
 from .http import HttpTransport, UrllibHttpTransport
 from .manager import (
     _PREFLIGHT_QUALIFICATION_PURPOSE,
+    MECHANICS_QUALIFICATION_PURPOSE,
     PackageInspector,
     ReceiptPublisher,
     ServingManager,
+    StageContextReceiptPublisher,
 )
 from .preflight import CalibrationFor, ServingSmokeReader, SmokeCall, prepare_log_root
 from .process import ProcessLauncher, SubprocessLauncher
-from .residency import ResidencyLease
+from .residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease, ResidencyLease
 
 DEFAULT_SERVING_RECIPES_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "serving_recipes.toml"
@@ -178,6 +184,83 @@ def assemble_serving_preflight_callback(
         return runner.run(profile).to_record()
 
     return run_preflight
+
+
+def bound_serving_recipes(context: Any, recipes_path: str | Path) -> ServingRecipes:
+    """The serving catalogue this run sealed, re-read with its placement table and
+    proven by digest at the moment of use, so the rows deciding live or fixture are
+    the sealed ones."""
+
+    if context.serving_config_inputs is None:
+        raise ContractError(
+            "this run authority seals no serving configuration inputs, so the serving "
+            "posture of its chairs cannot be proven"
+        )
+    try:
+        recipes, _, _ = _load_bound_configuration(
+            sealed_config_inputs=dict(context.serving_config_inputs),
+            recipes_path=recipes_path,
+            placement_path=DEFAULT_POD_PLACEMENT_PATH,
+        )
+    except ServingError as error:
+        raise ContractError(f"the sealed serving configuration was refused: {error}") from error
+    return recipes
+
+
+def retain_chair_bytes(context: Any, data: bytes) -> dict[str, str]:
+    """Store one chair response or call record in the stage's own blob store.
+
+    Refused after the seal, which witnessed that blob inventory.
+    """
+
+    if context.sealed:
+        raise SchemaRefusal(
+            f"the {context.stage} stage has sealed its completion boundary; retaining a chair "
+            "response afterwards would make its witnessed blob inventory false"
+        )
+    digest, result = context.tree.put_blob(context.stage, data)
+    return {"relative_path": result.relative_path, "sha256": digest}
+
+
+def stage_chair_client(
+    context: Any,
+    identity: ChairIdentity,
+    tier: str,
+    *,
+    decoding_config_sha256: str,
+    record_temperature: int | float,
+    chandra_native_policy: Mapping[str, object] | None = None,
+) -> ChairClient:
+    """The client a stage reads one configured chair through; nothing starts until
+    it is entered. Logs travel with the run tree; the residency lease belongs to the
+    pod's one card, so every stage and run id contends for it on container-local disk."""
+
+    manager = ServingManager(
+        registry=context.registry,
+        recipes=bound_serving_recipes(context, context.args.serving_recipes_config),
+        config_inputs=ServingConfigInputs.from_record(dict(context.serving_config_inputs)),
+        launcher=SubprocessLauncher(),
+        http=UrllibHttpTransport(),
+        receipt_publisher=StageContextReceiptPublisher(context),
+        log_root=context.tree.resolve(context.tree.serving_log_path(context.stage)),
+        residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
+        producer=f"pipeline/{stage_directory(context.stage)}/run.py",
+        _launch_purpose=(
+            MECHANICS_QUALIFICATION_PURPOSE
+            if getattr(context.args, "mechanics_qualification", False)
+            else None
+        ),
+    )
+    return ChairClient(
+        manager=manager,
+        identity=identity,
+        tier=tier,
+        retain=lambda data: retain_chair_bytes(context, data),
+        decoding_config_sha256=decoding_config_sha256,
+        record_temperature=record_temperature,
+        read_receipt=context.tree.read_run_receipt,
+        chandra_native_policy=chandra_native_policy,
+    )
 
 
 def _load_bound_configuration(
