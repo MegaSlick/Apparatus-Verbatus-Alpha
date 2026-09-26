@@ -923,7 +923,7 @@ def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed
     assert admitted == 2
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, tree, admitted)
+        door._finish_door_run(context, admitted)
 
     message = str(refusal.value)
     assert "ordinal(s) 1 and 2 carry identical bytes" in message
@@ -981,7 +981,7 @@ def test_two_copies_of_one_container_are_refused_naming_every_ordinal(tmp_path):
     assert admitted == 4
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, tree, admitted)
+        door._finish_door_run(context, admitted)
 
     message = str(refusal.value)
     assert "ordinal(s) 1, 2 and 3, 4 carry identical bytes" in message
@@ -1011,7 +1011,7 @@ def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
     admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
     assert admitted == 3
 
-    assert door._finish_door_run(context, tree, admitted) == EXIT_COMPLETE
+    assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
     assert [
         item
         for item in tree.build_manifest(DOOR)["artifacts"]
@@ -1043,7 +1043,7 @@ def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicat
     assert admitted == 0
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, tree, admitted)
+        door._finish_door_run(context, admitted)
 
     message = str(refusal.value)
     assert "the door admitted nothing" in message
@@ -1626,7 +1626,7 @@ def test_a_re_shoot_the_register_does_not_confirm_is_refused_before_the_seal(tmp
     """
     context, _digests = _admitted_re_shoot_pair(tmp_path)
     with pytest.raises(ContractError, match="unconfirmed-re-shoot.*opening-7.*new run id"):
-        door._finish_door_run(context, context.tree, 2)
+        door._finish_door_run(context, 2)
     kinds = {entry["kind"] for entry in context.tree.build_manifest(DOOR)["artifacts"]}
     assert "re-shoot-cluster-report" in kinds
     assert "stage-seal" not in kinds
@@ -3066,7 +3066,7 @@ def test_the_loud_failure_names_the_reasons_rather_than_counting_anonymously(tmp
     message = str(caught.value)
     assert "unrecognized-format: 1" in message
     assert "unreadable: 1" in message
-    assert "all 2 submitted source(s) were refused" in message
+    assert "all 2 page ordinal(s) were refused" in message
     assert "one.png" not in message and "two.tif" not in message
 
 
@@ -3084,7 +3084,7 @@ def test_a_wholly_refused_door_does_not_publish_a_completion_seal(tmp_path):
     )
 
     with pytest.raises(ContractError, match="the door admitted nothing"):
-        door._finish_door_run(context, tree, admitted)
+        door._finish_door_run(context, admitted)
 
     kinds = [entry["kind"] for entry in tree.build_manifest(DOOR)["artifacts"]]
     assert "refusal-report" in kinds
@@ -4428,9 +4428,9 @@ def test_cluster_report_keeps_refused_members_and_parts_visible(tmp_path):
     tree, context = open_door(tmp_path, sources)
     assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 1
 
-    report_path = door.publish_cluster_report(context)
-    assert report_path is not None
-    payload = json.loads(tree.read_bytes(report_path.path))["payload"]
+    report = door.publish_cluster_report(context)
+    assert report is not None
+    payload = json.loads(tree.read_bytes(report.path))["payload"]
     members = payload["clusters"][0]["members"]
     assert len(members) == 2
     assert {page["outcome"] for member in members for page in member["pages"]} == {
@@ -4809,6 +4809,45 @@ def test_streamed_pdf_membership_binds_inspected_bytes_not_a_shared_ledger_lie(t
         digest_bytes(second),
     ]
     assert door._membership_sha256(expanded[0]) != door._membership_sha256(expanded[1])
+
+
+def test_a_failed_close_on_one_streamed_pdf_leaves_the_next_pdf_its_own(tmp_path, monkeypatch):
+    folder = tmp_path / "pdfs"
+    folder.mkdir()
+    files = {"a.pdf": two_page_pdf(), "b.pdf": single_gray_page_pdf(value=200)}
+    for name, data in files.items():
+        (folder / name).write_bytes(data)
+    real_close = door.pdf_render.pdfium.PdfDocument.close
+    closes = []
+
+    def first_close_fails(document):
+        real_close(document)
+        closes.append(document)
+        if len(closes) == 1:
+            raise RuntimeError("synthetic native close failure")
+
+    def open_source(relative_path: str):
+        return door.inventory.open_submission_source(folder, relative_path)
+
+    rows = [
+        {"relative_path": name, "sha256": digest_bytes(data), "bytes": len(data)}
+        for name, data in files.items()
+    ]
+    sources = expand_sources(rows, reader(files), POLICY, open_source=open_source)
+    monkeypatch.setattr(door.pdf_render.pdfium.PdfDocument, "close", first_close_fails)
+    tree, context = open_door(tmp_path, sources)
+
+    assert (
+        process_sources(context, tree, sources, reader({}), policy=POLICY, open_source=open_source)
+        == len(sources)
+        == 3
+    )
+    context.finish(DOOR)
+    assert len(closes) == 2
+    for record in admissions(tree).values():
+        payload = record["payload"]
+        own = files[payload["declared_path"]]
+        assert payload["rendered_from"]["container_sha256"] == digest_bytes(own)
 
 
 def test_streamed_pdf_admission_refuses_bytes_replaced_after_membership_sealed(tmp_path):

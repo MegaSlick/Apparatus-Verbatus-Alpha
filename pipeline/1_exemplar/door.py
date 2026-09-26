@@ -1226,6 +1226,8 @@ def publish_refusal_report(context: StageContext) -> Report | None:
     rows: list[dict[str, Any]] = []
     inputs: list[dict[str, str]] = []
     for entry, payload in _iter_admissions(context, "refused"):
+        # A free-text reason must not seal into the report.
+        admission.reason_code(payload["reason"])
         rows.append({field: payload[field] for field in ("ordinal", "declared_path", "reason")})
         inputs.append(_entry_ref(entry))
     if not rows:
@@ -1486,7 +1488,7 @@ def require_some_admitted(admitted: int, refusal_report: Report | None) -> None:
     census = _refusal_census(refusal_report)
     named = ", ".join(f"{code}: {count}" for code, count in sorted(census.items()))
     raise ContractError(
-        f"the door admitted nothing: all {sum(census.values())} submitted source(s) were "
+        f"the door admitted nothing: all {sum(census.values())} page ordinal(s) were "
         f"refused ({named}). Private named refusal report: {refusal_report.path}. "
         "An empty or wholly unreadable input set is a loud failure, never a green run with no "
         "output"
@@ -1608,7 +1610,7 @@ def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
     )
 
 
-def _finish_door_run(context: StageContext, tree: RunTree, admitted: int) -> int:
+def _finish_door_run(context: StageContext, admitted: int) -> int:
     """The shared close for both entry points: reports, then the loud checks.
 
     Reports seal first so a refused run still leaves its evidence; both refusals
@@ -1697,7 +1699,7 @@ def fixture_submission(args, registry) -> int:
         policy=policy,
         pdf_settings=pdf_settings,
     )
-    return _finish_door_run(context, tree, admitted)
+    return _finish_door_run(context, admitted)
 
 
 def real_submission(args, registry) -> int:
@@ -1877,7 +1879,7 @@ def real_submission(args, registry) -> int:
         pdf_settings=pdf_settings,
         open_source=open_source,
     )
-    return _finish_door_run(context, tree, admitted)
+    return _finish_door_run(context, admitted)
 
 
 def _refuse_inside_submission(location: Path, submission_folder: Path, label: str) -> None:
