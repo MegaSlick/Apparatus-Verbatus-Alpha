@@ -623,7 +623,7 @@ def test_the_manifest_is_not_written_through_a_symlink_planted_at_its_temp_path(
         lambda prefix, dir: _mkstemp_at_the_planted_name(prefix, dir),
     )
 
-    with pytest.raises(submit.SubmitRefusal):
+    with pytest.raises(submit.SubmitRefusal, match="could not be written"):
         submit.submit(
             submission["folder"],
             target,

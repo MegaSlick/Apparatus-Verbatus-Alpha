@@ -1085,7 +1085,9 @@ def _atomic_write_canonical(path: Path, value: Mapping[str, Any]) -> None:
             f"confirmed triage document {path} was published but is not proven durable"
         ) from error
     except OSError as error:
-        raise ProducerRefusal(f"confirmed triage document {path} was not published") from error
+        refusal = ProducerRefusal(f"confirmed triage document {path} was not published")
+        refusal.__notes__ = list(getattr(error, "__notes__", ()))
+        raise refusal from error
 
 
 def _case_insensitive_path_key(path: Path) -> str:
@@ -1176,7 +1178,9 @@ def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
             f"or its .{path.name}.tmp-* sibling (a second name for it) was not removed"
         ) from error
     except OSError as error:
-        raise ProducerRefusal(f"confirmation authority record {path} was not published") from error
+        refusal = ProducerRefusal(f"confirmation authority record {path} was not published")
+        refusal.__notes__ = list(getattr(error, "__notes__", ()))
+        raise refusal from error
 
 
 def _read_existing_immutable(path: Path, expected_size: int) -> bytes:

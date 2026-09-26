@@ -305,7 +305,9 @@ def _atomic_replace(path: Path, data: bytes) -> None:
             "the corpus register was replaced but its directory entry is not proven durable"
         ) from error
     except OSError as error:
-        raise ContractError("the corpus register was not replaced") from error
+        refusal = ContractError("the corpus register was not replaced")
+        refusal.__notes__ = list(getattr(error, "__notes__", ()))
+        raise refusal from error
 
 
 def read_snapshot(tree: Any, run: dict[str, Any]) -> bytes:

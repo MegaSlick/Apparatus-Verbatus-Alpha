@@ -2,14 +2,12 @@
 
 ``fsync`` on a file persists its bytes, not the directory entry naming them; that
 needs its own sync (``fsync(2)``). ``os.replace`` and ``os.link`` give atomic
-visibility only. Every writer in the repository publishes through here, so the
-two guarantees cannot drift apart between copies. ``common`` never imports the
-operational layer, which is why this lives here.
+visibility only. Whole-bytes path writers share these; dir_fd and streamed ones do not.
+``common`` never imports the operational layer, which is why this lives here.
 """
 
 from __future__ import annotations
 
-import contextlib
 import errno
 import os
 import tempfile
@@ -74,7 +72,11 @@ def atomic_create(path: Path, data: bytes, *, strict: bool = True) -> None:
 
 
 def _publish(path: Path, data: bytes, *, create: bool, strict: bool) -> None:
-    descriptor, raw_temporary = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
+    try:
+        descriptor, raw_temporary = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
+    except FileExistsError as error:
+        # One argument, or OSError maps EEXIST back to FileExistsError: only the link's may.
+        raise OSError(f"no temporary for {path}: {error}") from error
     temporary = Path(raw_temporary)
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -101,9 +103,11 @@ def _publish(path: Path, data: bytes, *, create: bool, strict: bool) -> None:
                         "directory holding it has to be on a filesystem that supports it",
                     ) from error
                 raise
-    except BaseException:
-        with contextlib.suppress(OSError):
+    except BaseException as failure:
+        try:
             temporary.unlink(missing_ok=True)
+        except OSError as cleanup:
+            failure.add_note(f"temporary {temporary} also could not be removed: {cleanup}")
         raise
     _settle(path, temporary if create else None, strict)
 

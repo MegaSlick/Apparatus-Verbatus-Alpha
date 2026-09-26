@@ -957,8 +957,9 @@ def test_temporary_cleanup_failure_does_not_mask_a_producer_refusal(
 
     monkeypatch.setattr(producer_module.os, "replace", fail_replace)
     monkeypatch.setattr(Path, "unlink", fail_temporary_unlink)
-    with pytest.raises(ProducerRefusal, match="was not published"):
+    with pytest.raises(ProducerRefusal, match="was not published") as refusal:
         producer_module._atomic_write_canonical(tmp_path / "manifest.json", {"schema": "test"})
+    assert any("also could not be removed" in note for note in refusal.value.__notes__)
 
 
 def test_subset_confirmation_cannot_regress_a_grown_membership_or_door_cluster(tmp_path: Path):

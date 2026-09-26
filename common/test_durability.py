@@ -154,3 +154,70 @@ def test_an_existing_name_is_a_file_exists_error_after_its_entry_is_synced(
 
     assert synced == [target.parent]
     assert target.read_bytes() == b'{"grant":"one"}'
+
+
+def test_a_replaced_file_is_owner_only(tmp_path: Path) -> None:
+    target = tmp_path / "descriptor.json"
+    target.write_bytes(b"old")
+    target.chmod(0o644)
+    durability.atomic_replace(target, b"new")
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_an_interrupt_after_the_link_leaves_the_published_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupt(_path: Path, *_arguments: object, **_keywords: object) -> None:
+        raise KeyboardInterrupt
+
+    target = tmp_path / "grant.json"
+    monkeypatch.setattr(Path, "unlink", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        durability.atomic_create(target, b'{"grant":"one"}')
+    monkeypatch.undo()
+    assert target.read_bytes() == b'{"grant":"one"}'
+
+
+def test_a_failed_cleanup_is_noted_on_the_error_it_did_not_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*_arguments: object) -> None:
+        raise OSError("injected link failure")
+
+    def refuse_unlink(_path: Path, *_arguments: object, **_keywords: object) -> None:
+        raise OSError("injected cleanup failure")
+
+    monkeypatch.setattr(durability.os, "link", refuse)
+    monkeypatch.setattr(Path, "unlink", refuse_unlink)
+    with pytest.raises(OSError, match="injected link failure") as failure:
+        durability.atomic_create(tmp_path / "grant.json", b"{}")
+    assert any("also could not be removed" in note for note in failure.value.__notes__)
+
+
+def test_a_temporary_that_cannot_be_created_is_not_a_taken_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def taken(**_keywords: object) -> None:
+        raise FileExistsError(17, "File exists")
+
+    monkeypatch.setattr(durability.tempfile, "mkstemp", taken)
+    with pytest.raises(OSError) as failure:
+        durability.atomic_create(tmp_path / "grant.json", b"{}")
+    assert not isinstance(failure.value, FileExistsError)
+
+
+def test_a_taken_name_whose_entry_cannot_be_proved_is_not_reported_as_taken(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller that compares on FileExistsError would report an unproved reuse as success."""
+
+    target = tmp_path / "grant.json"
+    durability.atomic_create(target, b'{"grant":"one"}')
+
+    def unsyncable(_path: Path, *, strict: bool = False) -> None:
+        raise OSError("directory fsync refused")
+
+    monkeypatch.setattr(durability, "sync_directory", unsyncable)
+    with pytest.raises(durability.PublishedUnsettled) as refused:
+        durability.atomic_create(target, b'{"grant":"one"}')
+    assert not isinstance(refused.value, FileExistsError)

@@ -25,7 +25,7 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Protocol
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
-from common.durability import atomic_create, atomic_replace
+from common.durability import PublishedUnsettled, atomic_create, atomic_replace
 
 from .errors import ChairRefusal, DigestMismatchRefusal
 from .manifests import (
@@ -1291,6 +1291,10 @@ def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) 
                     f"{label} {destination} already exists with different bytes; "
                     "publication never overwrites existing evidence",
                 ) from None
+    except PublishedUnsettled as error:
+        raise DigestMismatchRefusal(
+            chair, f"{label} at {destination} is published but not proven durable: {error}"
+        ) from error
     except OSError as error:
         raise DigestMismatchRefusal(
             chair, f"cannot publish {label} at {destination}: {error}"
@@ -1303,6 +1307,11 @@ def _move_active_record(destination: Path, archive: Path) -> None:
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         atomic_replace(destination, archive.read_bytes(), strict=False)
+    except PublishedUnsettled as error:
+        raise DigestMismatchRefusal(
+            "model-store",
+            f"active download_record.json is published but not proven durable: {error}",
+        ) from error
     except OSError as error:
         raise DigestMismatchRefusal(
             "model-store", f"cannot publish active download_record.json: {error}"
