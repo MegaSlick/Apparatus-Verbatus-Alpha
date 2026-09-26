@@ -177,16 +177,15 @@ _DISPLAY_REASON: Final = (
     "beside each literal instead; no span-marking convention has been chosen for "
     "displayed readings"
 )
-_COMPLETED_CATEGORIES: Final = frozenset(
-    {
-        ArmariumCategory.DELIVERED.value,
-        ArmariumCategory.EXCLUDED_WITH_APPROVAL.value,
-        ArmariumCategory.CONFIRMED_BLANK.value,
-    }
+_COMPLETED_CATEGORIES: Final = (
+    ArmariumCategory.DELIVERED.value,
+    ArmariumCategory.EXCLUDED_WITH_APPROVAL.value,
+    ArmariumCategory.CONFIRMED_BLANK.value,
 )
-_KNOWN_CATEGORIES: Final = frozenset(category.value for category in ArmariumCategory)
-_REVIEW_CATEGORIES: Final = frozenset(
-    {ArmariumCategory.HELD_FOR_REVIEW.value, ArmariumCategory.REFUSED_WITH_REASON.value}
+_KNOWN_CATEGORIES: Final = tuple(category.value for category in ArmariumCategory)
+_REVIEW_CATEGORIES: Final = (
+    ArmariumCategory.HELD_FOR_REVIEW.value,
+    ArmariumCategory.REFUSED_WITH_REASON.value,
 )
 # Any one of these marks a record as salvage-tier, so a salvage item cannot pass
 # as an act.
@@ -3615,7 +3614,7 @@ def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
                 raise SchemaRefusal("an act partition repeats or omits an act identity")
             result[act_id] = category
     if (
-        seen_categories != _KNOWN_CATEGORIES
+        seen_categories != set(_KNOWN_CATEGORIES)
         or len(result) != expected_count
         or counted != expected_count
     ):

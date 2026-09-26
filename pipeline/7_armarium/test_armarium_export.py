@@ -2177,6 +2177,25 @@ def test_an_evidence_ref_that_cites_nothing_is_refused(member, tmp_path):
         verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
 
 
+@pytest.mark.parametrize("member", ["review-items.jsonl", "acts.jsonl", "sources.json"])
+@pytest.mark.parametrize("category", [["delivered"], {"delivered": 1}])
+def test_an_unhashable_category_is_a_named_refusal(member, category, tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    if member == "sources.json":
+        sources = json.loads(members[member])
+        sources["act_outcomes"][0]["category"] = category
+        members[member] = canonical_bytes(sources)
+    else:
+        rows = [json.loads(line) for line in members[member].decode("utf-8").splitlines()]
+        rows[0]["category"] = category
+        members[member] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    _refresh_manifest_member(members, member)
+
+    with pytest.raises(SchemaRefusal):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
+
+
 def test_an_acts_database_evidence_ref_that_cites_nothing_is_refused(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
