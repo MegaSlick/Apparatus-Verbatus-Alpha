@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
+from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import DESIGNATOR, writing_directory
@@ -43,12 +43,6 @@ _RECEIPT_PREFIX = "receipts/sha256/"
 _BINDING_FIELDS = frozenset(
     {"schema", "page_id", "page_ordinal", "receipt_sha256", "response_sha256"}
 )
-
-
-def _sha(value: Any, what: str) -> str:
-    if not is_sha256(value):
-        raise SchemaRefusal(f"{what} is not a lowercase sha256")
-    return value
 
 
 def custody_reference(value: object, prefix: str, what: str) -> dict[str, str]:

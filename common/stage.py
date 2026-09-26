@@ -3612,8 +3612,7 @@ def _prove_page_wide_act_rectangle(
             f"act {act_id}'s page ordinal {ordinal} does not name exactly one sealed source"
         )
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    page_bytes = verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
     width, height = dimensions(page_bytes)
     full_page_bounds = {"x": 0, "y": 0, "w": width, "h": height}
     if bounds != full_page_bounds:
