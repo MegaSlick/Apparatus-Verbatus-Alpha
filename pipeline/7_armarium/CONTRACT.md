@@ -169,6 +169,18 @@ projection configuration. The bundle may contain these plainly specified formats
   claim from it instead of believing the self-hashed manifest.
 - `review-items.jsonl` — held and refused act records with reasons and
   digest-checked evidence references.
+- `continuation_joins` in `sources.json` and `reconstructions.jsonl` — present only when
+  the Designator published a `continuation-candidate`, and refused unless every act it
+  names has a review citing it. Each join row is text-free and `authoritative: false`:
+  `reconstructed` when each side names exactly one delivered act, else
+  `not-reconstructed` with a named reason and no text. A reconstructed join is the head
+  literal, one U+000A, then the tail literal (`verbatus-page-join.v1`, nothing added,
+  removed or normalised), labelled `RECONSTRUCTED … not an act`, written to
+  `reconstructions.jsonl` (with `jsonl`) and as a `## RECONSTRUCTED <join_id> (not an act)`
+  section beside mirrored `possible-continuation-on/-from` notes (with `text-bundle`).
+  Every join keeps the run `partial` with a named reason; no reconstruction enters the
+  act count, the ledger, review items, the database or its search index. The clean
+  verifier recomputes every row and every reconstruction from the packaged literals.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
   act identifiers or canonical-text fields; promotion requires recorded approval
   and pipeline re-entry, never an export-time act.

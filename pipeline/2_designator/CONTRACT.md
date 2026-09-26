@@ -208,7 +208,7 @@ a page-break continuation; on `act-group` it is recorded, never gating, because
 a declared continuation whose crops do not happen to touch either page's edge (as
 in this stage's own synthetic fixture) is still a genuine continuation. The same
 check over undeclared pages is not only recorded: it decides which acts
-`continuation-candidate` holds for review. **Continuation
+`continuation-candidate` names for review. **Continuation
 ownership is settled and is the Recensor's** — see "Continuation ownership"
 below; this record is corroboration, never the relation itself.
 
@@ -251,7 +251,8 @@ grouping_config_sha256
 Inputs cite both pages' `structure-status` and every named act's `act-group`
 record. The payload passes `_refuse_text_fields`. It enters no act and no seal,
 and the Designator's exit code ignores it: the named acts stay `proposed`, are
-witnessed and read, and the Recensor holds each for review (see its contract).
+witnessed and read, and each is delivered as its literal page reading beside a
+labelled Armarium reconstruction, with the run partial (see those contracts).
 The link stays unmade; a candidate is a flag for review, never the relation.
 
 ## `kind="page-fallback"`
@@ -1301,7 +1302,8 @@ The fixture Perlector separately decodes every delivered tile and returns
 below the page's inferred background. The Recensor confirms the blank only after
 those declared witness reports and the Perlector's observed-empty reading exist.
 
-`continuation-candidate` is read by the Recensor, which holds every act it names.
+`continuation-candidate` is read by the Recensor, which cites it on every act it names,
+and by the Armarium, which projects it as a continuation join.
 `act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop` and
 `structure-status` have no consumer downstream of this stage today.
 `structure-status` is the exception in one direction only: it is not *read* by a
@@ -1494,12 +1496,12 @@ of which call site produced it. `grouping.py` is not this unit's owned path.
 Whoever owns it should give `fallback_tiles` (or its caller) the same
 live/fixture distinction this unit gave `_publish_page_fallback`'s `reason`.
 
-**An act crossing a page break is held, not linked.** The structure chair
+**An act crossing a page break is flagged, not linked.** The structure chair
 answers one page at a time, so an act that crosses a page break comes back as
 two acts: a head with no tail and a tail with no heading. When the geometry
-shows it (see `kind="continuation-candidate"`), both acts are read and then held
-for review, and the export is partial rather than complete. Nothing joins them
-yet. What this does not catch: a tail the scan groups with a margin anchor (an
+shows it (see `kind="continuation-candidate"`), both acts are read and delivered
+as their literals beside a labelled reconstruction, and the export is partial
+rather than complete. Nothing joins them into one act. What this does not catch: a tail the scan groups with a margin anchor (an
 anchored group is read as a new act); a head or tail that stops short of its
 page's edge reach; a crossing between two groups that share no pixel column,
 which includes a reading-order break from one column into another; a page cut
@@ -2006,7 +2008,7 @@ tolerance the test is plain interval intersection, which — unlike an absolute
 8px overlap — means the same thing on a 3508px scan as on a 260px fixture,
 because there is no length in it to scale. Zero is also the strict end. On
 `act-group` a miss is only a `false`, but the same test decides which acts
-`continuation-candidate` holds, so a miss there delivers a split act as two
+`continuation-candidate` names, so a miss there delivers a split act as two
 whole acts with no finding. Whether real pages need slack is unmeasured, and
 the 127-page calibration set cannot answer it: its pages are not consecutive.
 It must be measured on a sample of consecutive pages from one register before a
