@@ -98,7 +98,7 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Callable, Mapping, MutableMapping, Sequence
+from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 
 from common.chairs.config import parse_models_config
 from common.chairs.model_store import (
@@ -475,8 +475,13 @@ class PreflightSeams:
     residency_lock: Path = POD_RESIDENCY_LOCK_PATH
 
 
+class _RefusingParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise PlanRefusal(f"bootstrap argv: {message}")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _RefusingParser(
         description="Verbatus pod-side bootstrap-and-hold service",
         allow_abbrev=False,
     )
@@ -1346,6 +1351,16 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 "the real trio together, or an operator-authored declaration for a custom roster; "
                 "then resume this journal before any environment or model work.",
             ) from error
+        placement = DEFAULT_POD_PLACEMENT_CONFIG_PATH.resolve()
+        if not placement.is_relative_to(plan.repository.resolve()):
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"placement table {placement} is outside the checked-out repository "
+                f"{plan.repository}; preflight and the stages would not read the pinned "
+                "commit's table",
+                "Start bootstrap_main from the checked-out repository's own environment, "
+                "then resume this journal.",
+            )
         try:
             serving_source = _read_configuration_source(
                 plan.serving_recipes_config, "serving catalogue"
@@ -1545,8 +1560,13 @@ def prepare(
 
     argv = list(raw_argv)
     refuse_credential_looking_argv(argv)
-    args = build_parser().parse_args(argv)
+    args, unknown = build_parser().parse_known_args(argv)
     plan = resolve_plan(args, environment)
+    if unknown:
+        raise PlanRefusal(
+            "bootstrap argv: unrecognized arguments: " + " ".join(unknown),
+            report_path=plan.report_path,
+        )
     try:
         write_probe(plan.volume_mount_path)
         scrubbed = scrub_environment(environment, keep=plan.keep_env)
