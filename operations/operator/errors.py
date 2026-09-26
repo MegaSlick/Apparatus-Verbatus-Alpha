@@ -161,7 +161,7 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ),
     ErrorCode.SPEND_LOCK_UNAVAILABLE: ErrorCopy(
         "Launch could not take the spend-reservation lock, usually because another launch holds it.",
-        "Verbatus sent no paid provider action, so nothing was spent.",
+        "This attempt sent no paid provider action and spent nothing.",
         "Wait for the other launch to finish, or check for a stuck launch process and the lock error in the saved detail, then preview launch again; this is safe.",
     ),
     ErrorCode.LAUNCH_ALREADY_IN_FLIGHT: ErrorCopy(
