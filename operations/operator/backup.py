@@ -16,7 +16,7 @@ import os
 import secrets
 import stat
 import unicodedata
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final, Iterator
@@ -690,57 +690,21 @@ def _existing_digest(directory_descriptor: int, name: str, *, what: str) -> str 
 
 
 def _temporary_regular(directory_descriptor: int, *, prefix: str) -> tuple[int, str]:
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
-        raise BackupRefusal(
-            "this platform cannot create backup temporaries without following links"
-        )
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow
-    for _attempt in range(128):
-        name = f"{prefix}{secrets.token_hex(16)}"
-        try:
-            return os.open(name, flags, 0o600, dir_fd=directory_descriptor), name
-        except FileExistsError:
-            continue
-        except OSError as error:
-            raise BackupRefusal(f"a backup temporary could not be created: {error}") from error
-    raise BackupRefusal("a unique backup temporary name could not be created")
+    name = f"{prefix}{secrets.token_hex(16)}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    try:
+        return os.open(name, flags, 0o600, dir_fd=directory_descriptor), name
+    except OSError as error:
+        raise BackupRefusal(f"a backup temporary could not be created: {error}") from error
 
 
 @contextmanager
-def _publication_temporary(name: str, directory_descriptor: int, *, what: str) -> Iterator[None]:
-    """Discard a publication temporary without displacing a refusal in flight.
-
-    A cleanup ``OSError`` here must not replace the fault the operator has
-    to act on, so it is appended beside it instead; on the path where
-    nothing else went wrong it is itself the refusal, since a temporary
-    left in a content-addressed store is not a finished backup.
-    """
-
-    def _remove() -> str | None:
-        try:
-            os.unlink(name, dir_fd=directory_descriptor)
-        except FileNotFoundError:
-            return None
-        except OSError as error:
-            return f"the {what} temporary {name!r} could not be removed afterwards: {error}"
-        return None
-
+def _publication_temporary(name: str, directory_descriptor: int) -> Iterator[None]:
     try:
         yield
-    except BackupRefusal as refusal:
-        lost = _remove()
-        if lost is None:
-            raise
-        raise BackupRefusal(f"{refusal}; additionally, {lost}") from refusal
-    except BaseException as error:
-        lost = _remove()
-        if lost is not None:
-            error.add_note(lost)
-        raise
-    lost = _remove()
-    if lost is not None:
-        raise BackupRefusal(lost)
+    finally:
+        with suppress(OSError):
+            os.unlink(name, dir_fd=directory_descriptor)
 
 
 def _copy_verified(
@@ -768,7 +732,7 @@ def _copy_verified(
     except BaseException:
         os.close(source)
         raise
-    with _publication_temporary(temporary_name, objects_descriptor, what="backup object"):
+    with _publication_temporary(temporary_name, objects_descriptor):
         digest = hashlib.sha256()
         with (
             os.fdopen(temporary_descriptor, "wb") as destination,
@@ -898,7 +862,7 @@ def _publish_bytes(snapshots_descriptor: int, name: str, target: Path, data: byt
     if _refuse_a_different_snapshot(snapshots_descriptor, name, data):
         return
     descriptor, temporary = _temporary_regular(snapshots_descriptor, prefix=".snapshot-")
-    with _publication_temporary(temporary, snapshots_descriptor, what="backup snapshot"):
+    with _publication_temporary(temporary, snapshots_descriptor):
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
