@@ -1,0 +1,156 @@
+"""Failure-path tests for durable publication."""
+
+from __future__ import annotations
+
+import errno
+from pathlib import Path
+
+import pytest
+
+from common import durability
+from common.durability import sync_directory
+
+WRITERS = pytest.mark.parametrize(
+    "write", [durability.atomic_create, durability.atomic_replace], ids=("create", "replace")
+)
+
+
+@pytest.mark.parametrize("call", ["open", "fsync"])
+def test_strict_sync_propagates_either_directory_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, call: str
+) -> None:
+    def refuse(*_arguments: object) -> None:
+        raise OSError(f"injected directory {call} failure")
+
+    monkeypatch.setattr(durability.os, call, refuse)
+
+    sync_directory(tmp_path)
+    with pytest.raises(OSError, match=f"injected directory {call} failure"):
+        sync_directory(tmp_path, strict=True)
+
+
+def test_a_second_create_is_refused_and_the_first_bytes_are_owner_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The create *is* the exclusion: two holders of one grant cannot both proceed."""
+
+    modes: list[int] = []
+    real_fchmod = durability.os.fchmod
+
+    def observe_fchmod(descriptor: int, mode: int) -> None:
+        modes.append(mode)
+        real_fchmod(descriptor, mode)
+
+    monkeypatch.setattr(durability.os, "fchmod", observe_fchmod)
+    target = tmp_path / "grant.json"
+    durability.atomic_create(target, b'{"grant":"one"}')
+    # Pinned at the call: `mkstemp`'s own 0600 would pass a check of the result alone.
+    assert modes == [0o600]
+
+    with pytest.raises(FileExistsError):
+        durability.atomic_create(target, b'{"grant":"two"}')
+
+    assert target.read_bytes() == b'{"grant":"one"}'
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+@WRITERS
+@pytest.mark.parametrize("failure", [OSError("injected fsync failure"), KeyboardInterrupt()])
+def test_an_interrupted_write_leaves_the_old_state_and_no_temporary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write, failure: BaseException
+) -> None:
+    """An empty file at a claim's address would block the retry meant to succeed."""
+
+    target = tmp_path / "grant.json"
+
+    def refuse_fsync(_descriptor: int) -> None:
+        raise failure
+
+    monkeypatch.setattr(durability.os, "fsync", refuse_fsync)
+    with pytest.raises(type(failure)):
+        write(target, b'{"grant":"one"}')
+    monkeypatch.undo()
+
+    assert list(tmp_path.iterdir()) == [], "a failed write stranded its temporary"
+    write(target, b'{"grant":"one"}')
+    assert target.read_bytes() == b'{"grant":"one"}'
+
+
+@WRITERS
+def test_strict_refuses_an_unproved_directory_entry_after_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write
+) -> None:
+    target = tmp_path / "grant.json"
+
+    def unsyncable(_path: Path, *, strict: bool = False) -> None:
+        assert strict is True
+        raise OSError("directory fsync refused")
+
+    monkeypatch.setattr(durability, "sync_directory", unsyncable)
+    with pytest.raises(durability.PublishedUnsettled, match="directory fsync refused"):
+        write(target, b'{"grant":"one"}')
+
+    # The bytes are published, so the caller must not report them absent.
+    assert target.read_bytes() == b'{"grant":"one"}'
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@WRITERS
+def test_the_final_name_appears_only_after_the_payload_is_fsynced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write
+) -> None:
+    target = tmp_path / "grant.json"
+    real_fsync = durability.os.fsync
+    fsync_calls = 0
+
+    def observe_before_sync(descriptor: int) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 1:
+            assert not target.exists(), "the final path was visible before its bytes were durable"
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(durability.os, "fsync", observe_before_sync)
+    write(target, b'{"grant":"one"}')
+
+    assert fsync_calls >= 1, "the payload was published without ever being fsynced"
+    assert target.read_bytes() == b'{"grant":"one"}'
+
+
+def test_a_filesystem_that_refuses_hard_links_is_named_rather_than_an_errno(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse_link(_source: str, _target: str) -> None:
+        raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+
+    monkeypatch.setattr(durability.os, "link", refuse_link)
+
+    with pytest.raises(durability.HardLinkUnsupported) as refused:
+        durability.atomic_create(tmp_path / "receipt.json", b"{}")
+
+    assert "refuses hard links" in str(refused.value)
+    assert str(tmp_path) in str(refused.value)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_existing_name_is_a_file_exists_error_after_its_entry_is_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry path reports success on the winner's bytes, so it must prove them durable."""
+
+    synced: list[Path] = []
+    real_sync = durability.sync_directory
+
+    def observe(path: Path, *, strict: bool = False) -> None:
+        synced.append(Path(path))
+        real_sync(path, strict=strict)
+
+    target = tmp_path / "grant.json"
+    durability.atomic_create(target, b'{"grant":"one"}')
+    monkeypatch.setattr(durability, "sync_directory", observe)
+
+    with pytest.raises(FileExistsError):
+        durability.atomic_create(target, b'{"grant":"two"}')
+
+    assert synced == [target.parent]
+    assert target.read_bytes() == b'{"grant":"one"}'

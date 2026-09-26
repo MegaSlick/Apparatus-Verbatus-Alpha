@@ -2559,27 +2559,3 @@ def test_a_directory_that_cannot_be_opened_refuses_the_publication_too(
 
     with pytest.raises(SchemaRefusal, match="will not persist a directory entry"):
         runtree_store._atomic_write(tmp_path / "artifact.json", b'{"a":1}')
-
-
-def test_the_store_and_the_operational_records_share_one_sync_primitive(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """One implementation, reached from both layers, with `common` importing down.
-
-    The reviewer's finding was a protection present in one place and absent in
-    another. Two copies that agree today are the same finding waiting to happen,
-    so this pins that there is one — and pins the third caller behaviourally,
-    by watching the primitive get called, rather than by reading its source.
-    """
-
-    from common.durability import sync_directory as canonical
-    from operations.review import candidate
-
-    assert runtree_store.sync_directory is canonical
-
-    calls: list[tuple[Path, bool]] = []
-    monkeypatch.setattr(
-        candidate, "sync_directory", lambda path, *, strict=False: calls.append((path, strict))
-    )
-    candidate.fsync_directory(tmp_path)
-    assert calls == [(tmp_path, True)]

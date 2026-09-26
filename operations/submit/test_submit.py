@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from common import durability
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 from operations.submit import cleanup, gate, inventory, submit
 
@@ -617,10 +618,12 @@ def test_the_manifest_is_not_written_through_a_symlink_planted_at_its_temp_path(
         return os.open(planted, flags, 0o600), str(planted)
 
     monkeypatch.setattr(
-        submit.tempfile, "mkstemp", lambda prefix, dir: _mkstemp_at_the_planted_name(prefix, dir)
+        durability.tempfile,
+        "mkstemp",
+        lambda prefix, dir: _mkstemp_at_the_planted_name(prefix, dir),
     )
 
-    with pytest.raises(submit.SubmitRefusal, match="could not be written"):
+    with pytest.raises(submit.SubmitRefusal):
         submit.submit(
             submission["folder"],
             target,

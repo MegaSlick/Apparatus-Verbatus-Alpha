@@ -14,6 +14,7 @@ from typing import Callable
 
 import pytest
 
+from common import durability
 from operations.operator import records
 
 
@@ -282,7 +283,7 @@ def test_receipt_and_descriptor_publication_sync_their_directories(
         assert strict
         synced.append(path)
 
-    monkeypatch.setattr(records, "sync_directory", sync)
+    monkeypatch.setattr(durability, "sync_directory", sync)
     receipt = tmp_path / "receipt.json"
     descriptor = tmp_path / "operator-surface.json"
 
@@ -300,12 +301,12 @@ def test_operator_receipt_publication_names_a_directory_sync_failure_after_the_w
         assert strict
         raise OSError("injected directory sync failure")
 
-    monkeypatch.setattr(records, "sync_directory", refuses)
+    monkeypatch.setattr(durability, "sync_directory", refuses)
 
     target = tmp_path / "record.json"
     with pytest.raises(
         records.RecordError,
-        match="was written but its directory entry could not be made durable",
+        match="is on disk but its directory entry could not be made durable",
     ):
         records._atomic_create_or_reuse(target, b"payload")
 
@@ -322,11 +323,11 @@ def test_reused_operator_receipt_reproves_directory_durability(
         assert strict
         raise OSError("injected reuse directory sync failure")
 
-    monkeypatch.setattr(records, "sync_directory", refuses)
+    monkeypatch.setattr(durability, "sync_directory", refuses)
 
     with pytest.raises(
         records.RecordError,
-        match="exists but its directory entry could not be made durable",
+        match="is on disk but its directory entry could not be made durable",
     ):
         records._atomic_create_or_reuse(target, b"payload")
 
@@ -340,7 +341,7 @@ def test_operator_descriptor_publication_reports_a_directory_sync_failure(
         assert strict
         raise OSError("injected directory sync failure")
 
-    monkeypatch.setattr(records, "sync_directory", refuses)
+    monkeypatch.setattr(durability, "sync_directory", refuses)
 
     target = tmp_path / "record.json"
     with pytest.raises(records.RecordError, match="written but its directory entry"):

@@ -39,6 +39,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 from common.chairs.models import ChairIdentity
+from common.durability import atomic_create
 from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSample
 
 from .errors import ServingConfigurationError, ServingError
@@ -147,22 +148,19 @@ def render_golden_page(path: Path, witness: str) -> bytes:
             f"{_GOLDEN_PAGE_FONT_FLOOR}pt legibility floor"
         )
 
+    rendered = BytesIO()
+    page.save(rendered, format="PNG")
+    encoded = rendered.getvalue()
+    _verify_png(encoded, max_pixels=_GOLDEN_PAGE_SIZE[0] * _GOLDEN_PAGE_SIZE[1])
     path.parent.mkdir(parents=True, exist_ok=True)
-    staging = path.with_name(f".{path.name}.render-{secrets.token_hex(4)}")
     try:
-        page.save(staging, format="PNG")
-        encoded = staging.read_bytes()
-        _verify_png(encoded, max_pixels=_GOLDEN_PAGE_SIZE[0] * _GOLDEN_PAGE_SIZE[1])
-        try:
-            os.link(staging, path)
-        except FileExistsError:
-            if path.read_bytes() != encoded:
-                raise ServingConfigurationError(
-                    f"a different golden page already exists at {path}; preflight evidence "
-                    "is added, never written over -- render this page under its own name"
-                ) from None
-    finally:
-        staging.unlink(missing_ok=True)
+        atomic_create(path, encoded, strict=False)
+    except FileExistsError:
+        if path.read_bytes() != encoded:
+            raise ServingConfigurationError(
+                f"a different golden page already exists at {path}; preflight evidence "
+                "is added, never written over -- render this page under its own name"
+            ) from None
     return encoded
 
 

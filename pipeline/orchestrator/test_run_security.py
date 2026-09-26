@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -196,3 +197,18 @@ def test_the_stand_in_namespace_mirrors_the_argv_surface_it_claims_to():
                 f"{attribute}={value!r} names a config file that does not exist; a stand-in "
                 "for the real argv surface must not carry a path the real run could not use"
             )
+
+
+def test_an_interrupt_mid_write_leaves_the_journal_and_no_temporary(tmp_path, monkeypatch):
+    orchestrator = _load_orchestrator()
+    journal = tmp_path / "timing.json"
+    journal.write_bytes(b"{}")
+
+    def interrupt(_descriptor):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(os, "fsync", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        orchestrator._atomic_json(journal, {"entries": []})
+    assert [path.name for path in tmp_path.iterdir()] == ["timing.json"]
+    assert journal.read_bytes() == b"{}"

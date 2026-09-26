@@ -18,9 +18,7 @@ permissions are what stand between the two.
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -29,9 +27,8 @@ from pathlib import Path, PurePosixPath
 from typing import Iterator, Mapping
 
 from common.contracts.canonical import self_hash, verify_self_hash
-from common.durability import sync_directory
 
-from .durable import atomic_write, canonical_json
+from .durable import atomic_write, canonical_json, exclusive_write
 from .models import (
     LeaseFormatError,
     LeaseOwnershipError,
@@ -311,39 +308,18 @@ class LeaseStore:
     def create(self, lease: PodLease) -> PodLease:
         """Create an intent before a paid create; never overwrite a sibling owner.
 
-        The payload is written and fsynced to a uniquely named temporary
-        sibling (``mkstemp``: exclusive creation, 0600, never following a
-        planted symlink) and published with ``os.link``, so a crash mid-write
-        can leave only a stray temporary, never a torn file at the lease path
-        -- this is the record a restarting controller uses to find a pod that
-        may be billing.  ``link`` failing with EEXIST is the exclusivity
-        guarantee itself: whichever writer publishes first wins the path.
-        Hard links are required of the leases filesystem; one that lacks them
-        refuses every launch, which is fail-closed and acceptable -- the run
-        tree's immutable publication already relies on hard links.
+        Published by ``exclusive_write``, so a crash can never leave a torn file
+        at the lease path -- the record a restarting controller uses to find a
+        pod that may be billing -- and ``FileExistsError`` is the exclusivity
+        itself: whichever writer publishes first wins the path.
         """
 
         with self._lock():
             payload = canonical_json(lease.to_record())
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            descriptor, temporary = tempfile.mkstemp(
-                prefix=f".{self.path.name}.", dir=self.path.parent
-            )
             try:
-                with os.fdopen(descriptor, "wb") as handle:
-                    handle.write(payload)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                try:
-                    os.link(temporary, self.path)
-                except FileExistsError as error:
-                    raise LeaseOwnershipError(f"lease already exists at {self.path}") from error
-                sync_directory(self.path.parent)
-            finally:
-                try:
-                    os.unlink(temporary)
-                except OSError:
-                    pass
+                exclusive_write(self.path, payload)
+            except FileExistsError as error:
+                raise LeaseOwnershipError(f"lease already exists at {self.path}") from error
         return lease
 
     def load(self) -> PodLease | None:

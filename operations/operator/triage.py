@@ -10,8 +10,6 @@ from the instrument's verdict.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
@@ -19,7 +17,7 @@ from typing import Any, Iterator, Mapping, Sequence
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.corpus_register import refuse_capture_preference
-from common.durability import sync_directory
+from common.durability import PublishedUnsettled, atomic_replace
 from operations.triage import instrument
 from operations.triage.producer import (
     CONFIRMATION_SCHEMA,
@@ -102,12 +100,7 @@ def _persisted_form(value: Mapping[str, Any], what: str) -> tuple[bytes, dict[st
 
 
 def _atomic_bytes(path: Path, data: bytes) -> None:
-    """Publish exactly these bytes, and make the name that points at them durable.
-
-    Without the parent-directory fsync, a power cut can lose the rename after
-    success was reported. Once rename succeeds, a later sync failure must say the
-    bytes were published but are not proven durable so a retry cannot assume absence.
-    """
+    """Publish exactly these bytes, and make the name that points at them durable."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
@@ -115,28 +108,13 @@ def _atomic_bytes(path: Path, data: bytes) -> None:
             f"triage refusal write-failed: {path} parent directory could not be prepared"
         ) from error
     try:
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
-    except OSError as error:
+        atomic_replace(path, data)
+    except PublishedUnsettled as error:
         raise TriageRefusal(
-            f"triage refusal write-failed: {path} temporary file could not be created"
+            f"triage refusal write-failed: {path} was published but is not proven durable"
         ) from error
-    temporary = Path(temporary_name)
-    published = False
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        published = True
-        sync_directory(path.parent, strict=True)
     except OSError as error:
-        state = "was published but is not proven durable" if published else "was not published"
-        raise TriageRefusal(f"triage refusal write-failed: {path} {state}") from error
-    finally:
-        # An interrupt between mkstemp and replace must not leave hidden state
-        # beside the durable journal.
-        temporary.unlink(missing_ok=True)
+        raise TriageRefusal(f"triage refusal write-failed: {path} was not published") from error
 
 
 @contextmanager

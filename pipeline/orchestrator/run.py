@@ -37,7 +37,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,7 +49,7 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP, RECENSOR  # noqa: E402
 from common.credentials import looks_like_credential_env  # noqa: E402
-from common.durability import sync_directory  # noqa: E402
+from common.durability import atomic_replace  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
     load_hard_failure_policy,
@@ -436,27 +435,8 @@ def _prior_journal_entries(path: Path, args: argparse.Namespace) -> list:
 
 
 def _atomic_json(path: Path, record: dict) -> None:
-    """Replace `path` with `record` or leave what was there, then sync the name.
-
-    The shape of `operations/pod/durable.py`, repeated because this module
-    imports only `common/`.
-    """
-
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(json.dumps(record, sort_keys=True, indent=2).encode("utf-8"))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        sync_directory(path.parent)
-    except Exception:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
+    atomic_replace(path, json.dumps(record, sort_keys=True, indent=2).encode("utf-8"), strict=False)
 
 
 def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, str, str]]:
