@@ -73,9 +73,11 @@ startup refusal: holding with no bound cannot be tested and cannot be trusted.
 **A refusal leaves a durable reason, not just a stderr line nobody can read
 after the container is gone.**  Once ``--report-path`` has passed containment,
 every later refusal, an unparseable argv included, best-effort writes its
-reason there before exiting (principle 2 -- nothing is lost silently).  Two refusals necessarily precede
-a usable report path and stay stderr-only residue: the credential-argv scan
-(before argv is even parsed) and ``--report-path`` itself failing containment.
+reason there before exiting (principle 2 -- nothing is lost silently).  These
+stay stderr-only: the credential-argv scan (before argv is parsed), a missing
+or relative ``--volume-mount-path`` or missing ``--report-path``, and a
+``--report-path`` that fails containment or lacks this launch's token (it may
+name another launch's report, which must not be overwritten).
 
 **A gated chair repository needs its Hugging Face token kept.**  The
 environment scrub pops anything credential-shaped, including ``HF_TOKEN`` and
@@ -91,6 +93,7 @@ import argparse
 import json
 import math
 import os
+import re
 import secrets
 import stat
 import sys
@@ -475,17 +478,36 @@ class PreflightSeams:
     residency_lock: Path = POD_RESIDENCY_LOCK_PATH
 
 
-class _RefusingParser(argparse.ArgumentParser):
+_FLAG_NAME = re.compile(r"--[a-z0-9-]+")
+
+
+class RefusingParser(argparse.ArgumentParser):
+    """Argv errors become PlanRefusals naming flags, never values; there is no ``-h`` exit."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(allow_abbrev=False, add_help=False, **kwargs)  # type: ignore[arg-type]
+
     def error(self, message: str) -> NoReturn:
-        raise PlanRefusal(f"bootstrap argv: {message}")
+        raise PlanRefusal("argv: " + re.sub(r"'[^']*'|\"[^\"]*\"", "(value)", message))
+
+    def parse_flags(self, argv: Sequence[str], report_path: Path | None) -> argparse.Namespace:
+        try:
+            args, unknown = self.parse_known_args(argv)
+        except PlanRefusal as refusal:
+            refusal.report_path = report_path
+            raise
+        if unknown:
+            names = {token.split("=", 1)[0] for token in unknown}
+            shown = sorted(name if _FLAG_NAME.fullmatch(name) else "(value)" for name in names)
+            raise PlanRefusal(
+                "argv: unrecognized argument(s) " + ", ".join(dict.fromkeys(shown)),
+                report_path=report_path,
+            )
+        return args
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = _RefusingParser(
-        description="Verbatus pod-side bootstrap-and-hold service",
-        allow_abbrev=False,
-        add_help=False,
-    )
+    parser = RefusingParser(description="Verbatus pod-side bootstrap-and-hold service")
     parser.add_argument("--volume-mount-path", required=True)
     parser.add_argument("--report-path", type=Path, required=True)
     parser.add_argument("--interval-seconds", type=float, default=15.0)
@@ -578,14 +600,13 @@ def _factory(reference: str) -> Callable[[], object]:
     return getattr(importlib.import_module(module_name), name)
 
 
-def _launch_report_path(args: argparse.Namespace, environment: Mapping[str, str] | None) -> Path:
+def _launch_report_path(args: argparse.Namespace, launch_token: str | None) -> Path:
     if not PurePosixPath(args.volume_mount_path).is_absolute():
         raise PlanRefusal("--volume-mount-path must be an absolute path")
     report_path = _require_contained(
         args.report_path, Path(args.volume_mount_path), "--report-path"
     )
-    launch_token = (environment or {}).get("VERBATUS_LAUNCH_TOKEN") or None
-    _require_launch_token_named(report_path, launch_token, "--report-path", report_path=report_path)
+    _require_launch_token_named(report_path, launch_token, "--report-path", report_path=None)
     return report_path
 
 
@@ -602,8 +623,8 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
     """
 
     volume_mount_path = Path(args.volume_mount_path)
-    report_path = _launch_report_path(args, environment)
     launch_token = (environment or {}).get("VERBATUS_LAUNCH_TOKEN") or None
+    report_path = _launch_report_path(args, launch_token)
 
     plan_supplied = [
         name for name in _PLAN_ONLY_FLAGS if getattr(args, name, None) not in (None, [])
@@ -847,7 +868,7 @@ def _require_contained(
 
 
 def _require_launch_token_named(
-    path: Path, launch_token: str | None, flag: str, *, report_path: Path
+    path: Path, launch_token: str | None, flag: str, *, report_path: Path | None
 ) -> None:
     """Mirror ``models._required_timer_arguments``'s guard, on the bootstrap side.
 
@@ -898,12 +919,11 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
     for token in argv:
         if token.startswith("--") and "=" in token:
             flag, _, value = token.partition("=")
+            previous = ""
         elif token.startswith("--"):
-            previous = token
-            continue
+            flag, value, previous = "", token, token
         else:
-            flag, value = previous, token
-        previous = ""
+            flag, value, previous = previous, token, ""
         if flag == "--keep-env":
             continue
         shape = _credential_shape(value) if value else None
@@ -914,7 +934,7 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
             # retained volume -- so echoing a value that was refused *because it
             # looks like a credential* would put the suspected secret in three
             # more places. The flag and the shape are what an operator needs.
-            where = f"the value after {flag}" if flag else "a bare argv value"
+            where = f"the value after {flag}" if flag else "an argv token"
             raise PlanRefusal(
                 f"{where} looks like a credential and was refused "
                 f"({shape}); the value is not repeated here, because this "
@@ -1567,21 +1587,13 @@ def prepare(
 
     argv = list(raw_argv)
     refuse_credential_looking_argv(argv)
-    head = _RefusingParser(add_help=False, allow_abbrev=False)
+    head = RefusingParser()
     head.add_argument("--volume-mount-path", required=True)
     head.add_argument("--report-path", type=Path, required=True)
-    report_path = _launch_report_path(head.parse_known_args(argv)[0], environment)
-    try:
-        args, unknown = build_parser().parse_known_args(argv)
-    except PlanRefusal as refusal:
-        refusal.report_path = report_path
-        raise
-    if unknown:
-        names = sorted({item.split("=", 1)[0] for item in unknown if item.startswith("-")})
-        raise PlanRefusal(
-            "bootstrap argv: unrecognized argument(s) " + (", ".join(names) or "(values only)"),
-            report_path=report_path,
-        )
+    report_path = _launch_report_path(
+        head.parse_known_args(argv)[0], environment.get("VERBATUS_LAUNCH_TOKEN") or None
+    )
+    args = build_parser().parse_flags(argv, report_path)
     plan = resolve_plan(args, environment)
     try:
         write_probe(plan.volume_mount_path)
@@ -1590,8 +1602,6 @@ def prepare(
         environment.update(scrubbed)
         return plan, _hard_deadline(environment)
     except PlanRefusal as refusal:
-        # The plan exists, so its report path is where the reason belongs --
-        # the same durable reason `main` has always left for these refusals.
         if refusal.report_path is None:
             refusal.report_path = plan.report_path
         raise
@@ -1620,7 +1630,7 @@ def run_bootstrap(
 
     A red step is a returned red report -- the caller decides its exit -- and
     an action factory that cannot be built is ``EXIT_REFUSED`` with the reason
-    left on the volume, exactly as ``main`` has always done.
+    left on the volume.
     """
 
     journal = BootstrapJournal(

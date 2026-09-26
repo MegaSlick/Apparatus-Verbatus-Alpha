@@ -393,9 +393,8 @@ def _named(value: Path | None, flag: str) -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = bootstrap_main.RefusingParser(
         description="Verbatus pod-side run: bootstrap, orchestrate over the volume, hold",
-        allow_abbrev=False,
         epilog="the bootstrap_main argv follows a literal -- and is required",
     )
     parser.add_argument("--report-path", type=Path, required=True)
@@ -443,7 +442,7 @@ def resolve_run_plan(
     # The report path first, so every later refusal has somewhere durable to go.
     volume = bootstrap.volume_mount_path
     report_path = _require_contained(args.report_path, volume, "--report-path")
-    _require_launch_token_named(report_path, launch_token, "--report-path", report_path=report_path)
+    _require_launch_token_named(report_path, launch_token, "--report-path", report_path=None)
     # boot_a_request.py seals BOOT_A_VOLUME_MOUNT_PATH into every real launch
     # request; a directory at exactly that path that is not actually mounted
     # is an unmounted local substitute on the pod's own ephemeral disk, not
@@ -1012,7 +1011,7 @@ def main(
     except PlanRefusal as refusal:
         return bootstrap_main.refuse(refusal, plan=None, now=now, label="pod_run (bootstrap argv)")
     try:
-        args = build_parser().parse_args(run_argv)
+        args = build_parser().parse_flags(run_argv, bootstrap_plan.report_path)
         plan = resolve_run_plan(args, bootstrap_plan, launch_token)
         approved_roots, skipped_roots = require_approved_submission_folder(plan)
     except PlanRefusal as refusal:

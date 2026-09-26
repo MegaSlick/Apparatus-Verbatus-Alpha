@@ -763,6 +763,19 @@ def test_refuses_a_run_report_path_missing_the_launch_token(
     assert "--report-path" in err and "this launch's token" in err
 
 
+def test_an_unknown_run_argument_is_refused_by_name_only_on_the_bootstrap_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _prepared(tmp_path)
+
+    exit_code, _runner = _refused(ws, _run_argv(ws, extra=("-h", "--old-flag=hunter2")))
+
+    assert exit_code == EXIT_REFUSED
+    reason = json.loads(ws.report_path.read_text(encoding="utf-8"))["reason"]
+    assert "--old-flag" in reason and "(value)" in reason
+    assert "hunter2" not in reason + capsys.readouterr().err
+
+
 def test_a_launch_bound_run_report_path_is_accepted(tmp_path: Path) -> None:
     ws = _prepared(tmp_path)
     ws.report_path = ws.volume / "bootstrap-report-launch-abc123.json"

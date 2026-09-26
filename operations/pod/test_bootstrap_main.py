@@ -1310,7 +1310,7 @@ def test_a_stale_bootstrap_argument_is_a_durable_refusal(tmp_path: Path) -> None
 
     assert exit_code == 2
     reason = json.loads(ws.report_path.read_text(encoding="utf-8"))["reason"]
-    assert "--extra, --placement-config" in reason
+    assert "(value), --extra, --placement-config" in reason
     assert "hunter2" not in reason and "pod_placement.toml" not in reason
 
 
@@ -1321,7 +1321,34 @@ def test_an_argv_parse_error_is_a_durable_refusal(tmp_path: Path) -> None:
     exit_code = main(argv, environ=_environ(Clock()), actions_factory=_never_called)
 
     assert exit_code == 2
-    assert "bootstrap argv" in json.loads(ws.report_path.read_text(encoding="utf-8"))["reason"]
+    reason = json.loads(ws.report_path.read_text(encoding="utf-8"))["reason"]
+    assert "--interval-seconds" in reason and "soon" not in reason
+
+
+def test_an_opaque_flag_token_never_reaches_the_report_or_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _workspace(tmp_path)
+    opaque = "--Qm7vX2pL9kR4tW8zN3cB6hJ1"
+
+    exit_code = main(
+        _argv(ws, extra=(opaque,)), environ=_environ(Clock()), actions_factory=_never_called
+    )
+
+    assert exit_code == 2
+    written = ws.report_path.read_text(encoding="utf-8") if ws.report_path.exists() else ""
+    assert opaque[2:] not in written + capsys.readouterr().err
+
+
+def test_a_report_path_without_the_launch_token_is_never_written(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    ws.report_path.write_text("a previous launch's report", encoding="utf-8")
+    environment = _environ(Clock(), extra={"VERBATUS_LAUNCH_TOKEN": "launch-abc123"})
+
+    exit_code = main(_argv(ws), environ=environment, actions_factory=_never_called)
+
+    assert exit_code == 2
+    assert ws.report_path.read_text(encoding="utf-8") == "a previous launch's report"
 
 
 def test_configuration_refuses_a_placement_table_symlinked_out_of_the_checkout(
