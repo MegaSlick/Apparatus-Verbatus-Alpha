@@ -26,14 +26,12 @@ not concurrency, but "atomic" here means "survives being killed between the
 write and the rename," not "safe under concurrent writers."
 """
 
-import errno
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
+from common.durability import HardLinkUnsupported, atomic_create
 
 from . import CorpusRefusal
 
@@ -49,16 +47,6 @@ CACHE_REFUSAL_REASONS = frozenset(
 
 class Refusal(CorpusRefusal):
     reasons = CACHE_REFUSAL_REASONS
-
-
-# `os.link` on a cache root that cannot hold hard links (EPERM, EOPNOTSUPP,
-# ENOSYS — a filesystem with them disabled, or one that never supports them)
-# is a constraint on the cache root itself, not on the one file being written.
-# Any other `OSError` (ENOSPC, EIO, ...) keeps its native diagnostics and is
-# left to propagate unchanged — this set names only the case that has its own
-# recovery story ("point --cache-root at a filesystem that supports hard
-# links").
-_NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 
 
 class CacheUnusable(Refusal):
@@ -166,11 +154,6 @@ def write_new_file(path: Path, data: bytes) -> bool:
     for a request record the existing file is the answer of record and this
     function never overwrites it).
 
-    Writes to a temp file in the same directory, then hard-links the temp file
-    onto the destination: `os.link` raises `FileExistsError` atomically if the
-    destination is already there, which `os.replace` would not — it silently
-    overwrites. The temp file is always removed afterward, whichever branch ran.
-
     Raises `CacheUnusable` (`"no-hard-link-support"`) if the cache root's
     filesystem refuses hard links outright (EPERM/EOPNOTSUPP/ENOSYS) — that is
     a constraint on the cache root, not on this one file, and the caller should
@@ -178,32 +161,13 @@ def write_new_file(path: Path, data: bytes) -> bool:
     `OSError` (ENOSPC, EIO, ...) propagates unchanged.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".partial")
     try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(tmp_name, path)
-            return True
-        except FileExistsError:
-            return False
-        except OSError as error:
-            if error.errno in _NO_HARD_LINKS:
-                raise CacheUnusable(
-                    f"no-hard-link-support: the cache root at {path.parent} is on a "
-                    f"filesystem that refuses hard links ({error.strerror}); cache entries "
-                    "are published by atomic link so a partly written file can never take "
-                    "its final name, and the cache root has to be on a filesystem that "
-                    "supports it"
-                ) from error
-            raise
-    finally:
-        try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
+        atomic_create(path, data, strict=False)
+    except FileExistsError:
+        return False
+    except HardLinkUnsupported as error:
+        raise CacheUnusable(f"no-hard-link-support: {error.strerror}") from error
+    return True
 
 
 def store_response_body(cache_root: Path, body: bytes) -> str:

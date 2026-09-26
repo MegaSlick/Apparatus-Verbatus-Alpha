@@ -34,12 +34,10 @@ and a stage payload carries only its digest-checked reference plus the immutable
 it needs.
 """
 
-import errno
 import json
 import os
 import stat
 import sys
-import tempfile
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -73,7 +71,12 @@ from common.contracts.errors import (
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import DOOR, writing_directory
 from common.corpus_register import empty_register, validate_register_bytes
-from common.durability import sync_directory
+from common.durability import (
+    HardLinkUnsupported,
+    PublishedUnsettled,
+    atomic_create,
+    atomic_replace,
+)
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, require_seal_method
 
 RUN_FILE: Final = "run.json"
@@ -101,8 +104,6 @@ _BOUND_FIELDS: Final = (
 )
 _INGRESS_FIELD: Final = "ingress"
 
-# What a filesystem that will not hard-link answers with.
-_NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 # A run tree may be damaged or hostile (fetched, resumed), so every whole-file
 # read is bounded, and the manifest walk is bounded in entries too.
 _MAX_MANIFEST_ARTIFACT_BYTES: Final = 64 * 1024 * 1024
@@ -1453,83 +1454,29 @@ def _verify_register_snapshot_present(tree: RunTree, digest: str, expected: byte
 
 
 def _atomic_write(target: Path, data: bytes) -> None:
-    """Temp file in the same directory, flushed, replaced, then the directory synced.
-
-    Same directory because os.replace is only atomic within one filesystem;
-    both the file and its directory entry are synced, so the publication
-    survives power loss, not only process death.
-    """
-    temporary = _write_temporary(target, data)
-    try:
-        os.replace(temporary, target)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-    _sync_published_name(target)
+    with _run_root_refusals(target):
+        atomic_replace(target, data)
 
 
 def _atomic_create(target: Path, data: bytes) -> None:
-    """Publish immutable bytes only when their final name does not yet exist.
+    with _run_root_refusals(target):
+        atomic_create(target, data)
 
-    A hard link is an atomic create: the synced temporary either takes the
-    final name or raises ``FileExistsError`` without touching the other
-    writer's bytes.  So the run root must be on a hard-link-capable filesystem
-    (not exFAT, FAT32 or some network and bind mounts), refused by name
-    otherwise.  ``O_EXCL`` is no substitute: it names the file before its bytes
-    are in it.
-    """
-    temporary = _write_temporary(target, data)
+
+@contextmanager
+def _run_root_refusals(target: Path) -> Iterator[None]:
+    """Name the run root's filesystem, not the syscall, when it cannot hold the evidence."""
     try:
-        try:
-            os.link(temporary, target)
-        except OSError as error:
-            if error.errno in _NO_HARD_LINKS:
-                raise SchemaRefusal(
-                    f"the run root at {target.parent} is on a filesystem that refuses hard "
-                    f"links ({error.strerror}); artifacts are published by atomic link so "
-                    "that a partly written file can never take its final name, and the run "
-                    "root has to be on a filesystem that supports it"
-                ) from error
-            raise
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-    _sync_published_name(target)
-
-
-def _sync_published_name(target: Path) -> None:
-    """Persist the directory entry a publication just created, or refuse by name.
-
-    Strict, unlike the pod-side records: this tree is the evidence, and a
-    resume trusts what a publish reported.  The bytes are already published
-    when this refuses, so the refusal says so; the repair is to move the run root.
-    """
-
-    try:
-        sync_directory(target.parent, strict=True)
-    except OSError as error:
+        yield
+    except HardLinkUnsupported as error:
+        raise SchemaRefusal(error.strerror) from error
+    except PublishedUnsettled as error:
         raise SchemaRefusal(
             f"the run root at {target.parent} is on a filesystem that will not persist a "
-            f"directory entry ({error.strerror}); {target.name} is published but its name "
-            "is not proved to survive a power loss, and the run root has to be on a "
+            f"directory entry ({error.strerror}); {target.name} is in the run root but its "
+            "name is not proved to survive a power loss, and the run root has to be on a "
             "filesystem that supports it"
         ) from error
-
-
-def _write_temporary(target: Path, data: bytes) -> Path:
-    """Write one unique, synced same-directory temporary and return its path."""
-    descriptor, raw_path = tempfile.mkstemp(prefix=f".{target.name}.tmp-", dir=target.parent)
-    temporary = Path(raw_path)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        if temporary.exists():
-            temporary.unlink()
-        raise
-    return temporary
 
 
 @contextmanager

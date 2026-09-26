@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
+from common import durability
 from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.identities import physical_act_id, physical_page_id
 from proof.synthetic_pages import PAGES
@@ -1476,7 +1477,7 @@ def test_cache_write_new_file_refuses_by_name_when_hard_links_unsupported(tmp_pa
     def _no_hard_links(_src: str, _dst: str) -> None:
         raise OSError(errno.EPERM, "Operation not permitted")
 
-    monkeypatch.setattr(cache_module.os, "link", _no_hard_links)
+    monkeypatch.setattr(durability.os, "link", _no_hard_links)
     path = tmp_path / "cache" / "a.json"
 
     with pytest.raises(cache_module.CacheUnusable, match="refuses hard links"):
@@ -1489,7 +1490,7 @@ def test_cache_write_new_file_lets_unrelated_oserror_propagate(tmp_path, monkeyp
     def _no_space(_src: str, _dst: str) -> None:
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    monkeypatch.setattr(cache_module.os, "link", _no_space)
+    monkeypatch.setattr(durability.os, "link", _no_space)
     path = tmp_path / "cache" / "a.json"
 
     with pytest.raises(OSError) as excinfo:
@@ -1510,7 +1511,7 @@ def test_fetch_page_lets_cache_unusable_escape_uncaught(tmp_path, server, monkey
     def _no_hard_links(_src: str, _dst: str) -> None:
         raise OSError(errno.EPERM, "Operation not permitted")
 
-    monkeypatch.setattr(cache_module.os, "link", _no_hard_links)
+    monkeypatch.setattr(durability.os, "link", _no_hard_links)
 
     with pytest.raises(cache_module.CacheUnusable, match="no-hard-link-support"):
         fetch_page(session, page)
