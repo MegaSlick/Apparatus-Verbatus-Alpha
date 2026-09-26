@@ -30,6 +30,7 @@ import os
 import shutil
 import sys
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -173,7 +174,8 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
         raise ContractError(
             f"could not reserve export destination {out_dir}: {error}; an export destination "
             "is never reused or merged into, so a half-written publication can never be "
-            "mistaken for a whole one"
+            "mistaken for a whole one; if it is an empty directory left by a failed publish, "
+            "remove the empty directory and retry"
         ) from error
     try:
         data, payload = sealed_bundle(tree)
@@ -190,13 +192,6 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
             # Verified into the staging directory, from the bytes alone, exactly as a
             # recipient with no run tree would: if it does not survive that, it is not a
             # product to publish and the destination stays absent.
-            #
-            # `verify_delivered_bundle` rather than `verify_export_bundle`: the latter
-            # checks that the package is internally whole and stops there, so a product
-            # whose acts.jsonl and acts.sqlite carried different readings of one act
-            # passed it while its own manifest claimed `identity_verified_across` those
-            # formats. The build checked that; this, the gate the product actually
-            # leaves through, did not.
             manifest = verify_delivered_bundle(data, staging / EXTRACTION_NAME)
             if aggregate != manifest.get("aggregate"):
                 raise ContractError(
@@ -265,25 +260,14 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
             # directory rather than orphaning it beside the empty reservation.
             os.replace(staging, out_dir)
         except BaseException:
-            try:
-                shutil.rmtree(staging)
-            except OSError as cleanup_error:
-                print(
-                    f"warning: could not remove staging directory {staging}: {cleanup_error}",
-                    file=sys.stderr,
-                )
+            shutil.rmtree(staging, ignore_errors=True)
             raise
     except BaseException:
         # Every failure above re-raises before `os.replace`, so `out_dir` is still the
         # empty reservation. Removing it is what makes a failed publish leave no
         # destination at all rather than an empty one.
-        try:
+        with suppress(OSError):
             out_dir.rmdir()
-        except OSError as cleanup_error:
-            print(
-                f"warning: the empty destination {out_dir} remains: {cleanup_error}",
-                file=sys.stderr,
-            )
         raise
     # What the clean-machine pass actually did, carried out of it rather than
     # discarded. `search_fold` is the one check that can honestly decline to run --

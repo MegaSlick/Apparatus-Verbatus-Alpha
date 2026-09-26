@@ -73,7 +73,6 @@ from common.contracts.canonical import (  # noqa: E402
     self_hash,
 )
 from common.contracts.errors import ContractError  # noqa: E402
-from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.corpus_register import (  # noqa: E402
@@ -974,46 +973,21 @@ def process_sources(
     cached_path: str | None = None
     cached_data: bytes | None = None
     # A container's ordinals are contiguous, so one PDF stream and document are
-    # held open at a time.
+    # held open at a time, on one reusable stack.
+    active_pdf = ExitStack()
     active_pdf_key: str | None = None
     active_pdf_digest: tuple[str, int] | None = None
     active_pdf_document: pdf_render.OpenPdf | None = None
     active_opened_source: inventory.OpenedSubmissionSource | None = None
-    active_context: ExitStack | None = None
 
-    def close_active_pdf() -> None:
-        nonlocal active_pdf_key
-        nonlocal active_pdf_digest
-        nonlocal active_pdf_document
-        nonlocal active_opened_source
-        nonlocal active_context
-        # Cleared before anything can raise, so the outer handler cannot close
-        # the same handle twice and mask the real failure.
-        document, context_stack = active_pdf_document, active_context
-        active_pdf_key = None
-        active_pdf_digest = None
-        active_pdf_document = None
-        active_opened_source = None
-        active_context = None
-        try:
-            if document is not None:
-                try:
-                    pdf_render.close_document(document)
-                except pdf_render.PdfRefusal as error:
-                    # A handle that cannot be released is a resource failure,
-                    # not a page refusal.
-                    raise ContractError(str(error)) from error
-        finally:
-            # The stream closes after the document, even if that close failed.
-            if context_stack is not None:
-                context_stack.close()
-
-    try:
+    with active_pdf:
         for source in sorted(sources, key=lambda item: item.ordinal):
             streamed_pdf = open_source is not None and source.detected_format == "pdf"
             source_key = source.declared_path
             if active_pdf_key is not None and (not streamed_pdf or source_key != active_pdf_key):
-                close_active_pdf()
+                active_pdf.close()
+                active_pdf_key = active_pdf_digest = None
+                active_pdf_document = active_opened_source = None
             if (
                 source.declared_size is not None
                 and source.declared_size > MAX_SOURCE_BYTES
@@ -1033,27 +1007,18 @@ def process_sources(
                 try:
                     if active_pdf_key is None:
                         assert open_source is not None  # narrowed by streamed_pdf
-                        candidate_context = ExitStack()
-                        try:
-                            candidate_source = candidate_context.enter_context(
-                                open_source(source.declared_path)
-                            )
-                            actual_digest, actual_size = _source_digest_stream(
-                                candidate_source.handle
-                            )
-                            candidate_source.assert_unchanged(
-                                expected_sha256=source.declared_sha256
-                            )
-                        except BaseException:
-                            candidate_context.close()
-                            raise
+                        candidate_source = active_pdf.enter_context(
+                            open_source(source.declared_path)
+                        )
+                        actual_digest, actual_size = _source_digest_stream(candidate_source.handle)
+                        candidate_source.assert_unchanged(expected_sha256=source.declared_sha256)
                         active_pdf_key = source_key
                         active_pdf_digest = (actual_digest, actual_size)
                         active_opened_source = candidate_source
-                        active_context = candidate_context
                     assert active_pdf_digest is not None  # set with active_pdf_key
                     actual_digest, actual_size = active_pdf_digest
                 except (OSError, inventory.SubmissionInputError) as error:
+                    active_pdf.close()
                     _publish_refusal(context, source, RefusalReason.UNREADABLE, str(error))
                     continue
             else:
@@ -1079,6 +1044,7 @@ def process_sources(
                     if active_pdf_document is None:
                         assert active_opened_source is not None
                         active_pdf_document = pdf_render.open_document(active_opened_source.handle)
+                        active_pdf.callback(pdf_render.close_document, active_pdf_document)
                     opened_pdf = active_pdf_document
                 except pdf_render.PdfRefusal as error:
                     decision = _refused(str(error))
@@ -1124,16 +1090,6 @@ def process_sources(
             seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
             _publish_admission(context, tree, source, decision, data, actual_digest, duplicate_of)
             admitted += 1
-    except BaseException as primary:
-        # Cleanup must not replace a refusal already in flight; its failure
-        # becomes a note on it.
-        try:
-            close_active_pdf()
-        except BaseException as cleanup:
-            primary.add_note(f"PDF cleanup also failed: {cleanup}")
-        raise
-    else:
-        close_active_pdf()
 
     return admitted
 
@@ -1257,7 +1213,12 @@ def _iter_admissions(context: StageContext, outcome: str):
         yield entry, record["payload"]
 
 
-def publish_refusal_report(context: StageContext) -> str | None:
+class Report(NamedTuple):
+    path: str
+    payload: dict[str, Any]
+
+
+def publish_refusal_report(context: StageContext) -> Report | None:
     """Seal every door refusal into one private, filename-bearing report.
 
     The admission artifacts stay the authority; this indexes them so filenames
@@ -1266,18 +1227,9 @@ def publish_refusal_report(context: StageContext) -> str | None:
     rows: list[dict[str, Any]] = []
     inputs: list[dict[str, str]] = []
     for entry, payload in _iter_admissions(context, "refused"):
-        ordinal, path, refusal = (
-            payload.get("ordinal"),
-            payload.get("declared_path"),
-            payload.get("reason"),
-        )
-        if not is_plain_int(ordinal):
-            raise ContractError("a refused door admission has no integer source ordinal")
-        if not isinstance(path, str) or not path:
-            raise ContractError("a refused door admission has no declared filename")
-        # Parse the closed code so a producer bug cannot pass as free text.
-        admission.reason_code(refusal)
-        rows.append({"ordinal": ordinal, "declared_path": path, "reason": refusal})
+        # A free-text reason must not seal into the report.
+        admission.reason_code(payload["reason"])
+        rows.append({field: payload[field] for field in ("ordinal", "declared_path", "reason")})
         inputs.append(_entry_ref(entry))
     if not rows:
         return None
@@ -1290,7 +1242,7 @@ def publish_refusal_report(context: StageContext) -> str | None:
     )
 
 
-def publish_duplicate_report(context: StageContext) -> str | None:
+def publish_duplicate_report(context: StageContext) -> Report | None:
     """Seal the duplicate fact without refusing either source.
 
     Groups every admitted path sharing one submitted digest and names the first
@@ -1298,24 +1250,10 @@ def publish_duplicate_report(context: StageContext) -> str | None:
     """
     grouped: dict[str, list[tuple[int, str, dict[str, str]]]] = {}
     for entry, payload in _iter_admissions(context, "admitted"):
-        ordinal = payload.get("ordinal")
-        path = payload.get("declared_path")
-        # Not the optional `declared_sha256`: every admission has this digest, so
-        # its absence is a contract breach and stays loud (principle 2).
-        source_digest = payload.get("admitted_source_sha256")
-        if not is_plain_int(ordinal):
-            raise ContractError(
-                "an admitted door source has no integer ordinal for duplicate accounting"
-            )
-        if not isinstance(path, str) or not path:
-            raise ContractError(
-                "an admitted door source has no declared filename for duplicate accounting"
-            )
-        if not isinstance(source_digest, str) or len(source_digest) != 64:
-            raise ContractError(
-                "an admitted door source has no source digest for duplicate accounting"
-            )
-        grouped.setdefault(source_digest, []).append((ordinal, path, _entry_ref(entry)))
+        # Not the optional `declared_sha256`: every admission carries this digest.
+        grouped.setdefault(payload["admitted_source_sha256"], []).append(
+            (payload["ordinal"], payload["declared_path"], _entry_ref(entry))
+        )
 
     groups: list[dict[str, Any]] = []
     inputs: list[dict[str, str]] = []
@@ -1364,7 +1302,7 @@ def publish_duplicate_report(context: StageContext) -> str | None:
     )
 
 
-def publish_cluster_report(context: StageContext) -> str | None:
+def publish_cluster_report(context: StageContext) -> Report | None:
     """Carry corpus-scoped re-shoot links into the sealed run.
 
     No member is called canonical: every submitted member remains an admission.
@@ -1445,25 +1383,16 @@ def _publish_report(
     outcome: str,
     inputs: list[dict[str, str]],
     payload: dict[str, Any],
-) -> str:
-    """Seal one self-hashed report and return where it was written."""
+) -> Report:
+    """Seal one self-hashed report and return where it was written, with its payload."""
     payload["self_hash"] = self_hash(payload)
     published = context.publish(
         kind=kind, subject_id=subject_id, outcome=outcome, inputs=inputs, payload=payload
     )
-    return published.relative_path
+    return Report(published.relative_path, payload)
 
 
-def _read_duplicate_report(tree: RunTree) -> dict[str, Any]:
-    record = tree.read_artifact(
-        DOOR,
-        "duplicate-report",
-        artifact_id(DOOR, "duplicate-report", DOOR_DUPLICATE_REPORT_SUBJECT),
-    )
-    return record["payload"]
-
-
-def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) -> None:
+def require_no_duplicate_sources(duplicate_report: Report | None) -> None:
     """Refuse a submission in which two submitted files derive one page identity.
 
     Byte-identical files derive one `page_id`, but every later stage works one
@@ -1483,33 +1412,10 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
     """
     if duplicate_report is None:
         return
-    groups = _read_duplicate_report(tree).get("groups")
-    # The report was written moments ago, so a malformed one means the tree
-    # changed underneath; refuse by name rather than with a traceback.
-    if not isinstance(groups, list) or not groups:
-        raise ContractError(
-            "the door duplicate report names no group of sources sharing one digest, so the "
-            "submission cannot be refused by the ordinals that share it"
-        )
-    ordinals_by_group = []
-    for group in groups:
-        sources = group.get("sources") if isinstance(group, dict) else None
-        if not isinstance(sources, list) or not sources:
-            raise ContractError("the door duplicate report has a group naming no sources")
-        rendered = []
-        for source in sources:
-            ordinals = source.get("ordinals") if isinstance(source, dict) else None
-            if (
-                not isinstance(ordinals, list)
-                or not ordinals
-                or not all(map(is_plain_int, ordinals))
-            ):
-                raise ContractError(
-                    "the door duplicate report names a duplicate source with no integer ordinals"
-                )
-            rendered.append(", ".join(str(ordinal) for ordinal in ordinals))
-        ordinals_by_group.append(" and ".join(rendered))
-    named = "; ".join(ordinals_by_group)
+    named = "; ".join(
+        " and ".join(", ".join(map(str, source["ordinals"])) for source in group["sources"])
+        for group in duplicate_report.payload["groups"]
+    )
     raise ContractError(
         "this submission derives one page identity from more than one submitted file: "
         f"submitted ordinal(s) {named} carry identical bytes. Byte-identical sources "
@@ -1517,13 +1423,13 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
         "them while every stage behind it still works one page per submitted row, and "
         "the run would read one page where two files were submitted. Nothing is "
         "excluded here and nothing is dropped: the submission is refused whole, and "
-        f"the sealed duplicate report at {duplicate_report} names each "
+        f"the sealed duplicate report at {duplicate_report.path} names each "
         "filename. Re-submit with a --submission-manifest naming each distinct scan "
         "once, or ask the project lead if a repeated scan is genuinely two pages"
     )
 
 
-def require_confirmed_re_shoots(context: StageContext, cluster_report: str | None) -> None:
+def require_confirmed_re_shoots(context: StageContext, cluster_report: Report | None) -> None:
     """Refuse a submission holding a triage re-shoot the corpus register does not confirm.
 
     Only a register membership tells later stages that captures show one page; without
@@ -1547,30 +1453,22 @@ def require_confirmed_re_shoots(context: StageContext, cluster_report: str | Non
         for page, (_digest, members) in membership_heads(register).items()
         for capture in members
     }
-    try:
-        clusters = json.loads(context.tree.read_bytes(cluster_report))["payload"]["clusters"]
-        unconfirmed = sorted(
-            cluster["cluster_id"]
-            for cluster in clusters
-            if not cluster["members"]
-            or any(
-                (cluster["corpus_id"], member["source_frame_sha256"]) not in confirmed
-                for member in cluster["members"]
-            )
+    unconfirmed = sorted(
+        cluster["cluster_id"]
+        for cluster in cluster_report.payload["clusters"]
+        if any(
+            (cluster["corpus_id"], member["source_frame_sha256"]) not in confirmed
+            for member in cluster["members"]
         )
-        named = ", ".join(unconfirmed)
-    except (KeyError, TypeError, ValueError) as error:
-        raise ContractError(
-            f"the door re-shoot cluster report at {cluster_report} is malformed ({error!r}); "
-            "its clusters cannot be checked against the corpus register"
-        ) from error
+    )
+    named = ", ".join(unconfirmed)
     if unconfirmed:
         raise ContractError(
             f"unconfirmed-re-shoot: triage links re-shoot cluster(s) {named}, but the corpus "
             "register this run was created with does not record every capture in them as a "
             "member of a physical page of that corpus, so each capture would be read and "
             "exported as a separate act. Nothing is sealed and no page is dropped: the "
-            f"submission is refused whole, and the sealed cluster report at {cluster_report} "
+            f"submission is refused whole, and the sealed cluster report at {cluster_report.path} "
             "names each member. Confirm the cluster into the corpus register (or remove the "
             "triage link if the captures are not one page), then resubmit under a new run id "
             "with --corpus-register; this run id stays bound to the register and triage "
@@ -1578,7 +1476,7 @@ def require_confirmed_re_shoots(context: StageContext, cluster_report: str | Non
         )
 
 
-def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | None) -> None:
+def require_some_admitted(admitted: int, refusal_report: Report | None) -> None:
     """An empty or wholly refused input set is a loud failure.
 
     The error carries counts and the private report location; only the report
@@ -1586,45 +1484,25 @@ def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | No
     """
     if admitted != 0:
         return
-    total, census = _refusal_census(tree)
+    if refusal_report is None:
+        raise ContractError("the door admitted nothing: no source was submitted")
+    census = _refusal_census(refusal_report)
     named = ", ".join(f"{code}: {count}" for code, count in sorted(census.items()))
     raise ContractError(
-        f"the door admitted nothing: {total} source(s) submitted, "
-        f"{sum(census.values())} refused ({named or 'no refusal was recorded either'}). "
-        f"Private named refusal report: {refusal_report or 'unavailable'}. "
+        f"the door admitted nothing: all {sum(census.values())} page ordinal(s) were "
+        f"refused ({named}). Private named refusal report: {refusal_report.path}. "
         "An empty or wholly unreadable input set is a loud failure, never a green run with no "
         "output"
     )
 
 
-def _refusal_census(tree: RunTree) -> tuple[int, dict[str, int]]:
-    """Count the published refusals by closed-set reason code.
-
-    Best effort: it describes a failure already in flight, and an error about a
-    damaged artifact would mask it (principle 2), so unreadable records are
-    counted under a name that says so. A damaged admission whose payload is not
-    an object still raises `AttributeError`.
-    """
+def _refusal_census(refusal_report: Report) -> dict[str, int]:
+    """Count the reported refusals by closed-set reason code."""
     census: dict[str, int] = {}
-    total = 0
-    try:
-        entries = tree.build_manifest(DOOR)["artifacts"]
-    except (OSError, ValueError, ContractError):
-        return 0, {"the door's own census could not be read": 1}
-    for entry in entries:
-        if entry.get("kind") != "admission":
-            continue
-        total += 1
-        try:
-            record = json.loads(tree.read_bytes(entry["relative_path"]).decode("utf-8"))
-            if record["outcome"] != "refused":
-                continue
-            code = admission.reason_code(record["payload"].get("reason")).value
-        # TypeError: a damaged artifact can decode to a list, string or number.
-        except (OSError, TypeError, ValueError, KeyError, ContractError):
-            code = "unreadable record"
+    for row in refusal_report.payload["refusals"]:
+        code = admission.reason_code(row["reason"]).value
         census[code] = census.get(code, 0) + 1
-    return total, census
+    return census
 
 
 def declared_synthetic_fixture_root(requested_root: str) -> Path:
@@ -1733,7 +1611,7 @@ def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
     )
 
 
-def _finish_door_run(context: StageContext, tree: RunTree, admitted: int) -> int:
+def _finish_door_run(context: StageContext, admitted: int) -> int:
     """The shared close for both entry points: reports, then the loud checks.
 
     Reports seal first so a refused run still leaves its evidence; both refusals
@@ -1742,11 +1620,11 @@ def _finish_door_run(context: StageContext, tree: RunTree, admitted: int) -> int
     refusal_report = publish_refusal_report(context)
     duplicate_report = publish_duplicate_report(context)
     cluster_report = publish_cluster_report(context)
-    _announce_refusal_report(tree, refusal_report)
-    _announce_duplicate_report(tree, duplicate_report)
-    require_no_duplicate_sources(tree, duplicate_report)
+    _announce_refusal_report(refusal_report)
+    _announce_duplicate_report(duplicate_report)
+    require_no_duplicate_sources(duplicate_report)
     require_confirmed_re_shoots(context, cluster_report)
-    require_some_admitted(admitted, tree, refusal_report)
+    require_some_admitted(admitted, refusal_report)
     context.seal_boundary()
     context.finish(DOOR)
     return EXIT_COMPLETE
@@ -1822,7 +1700,7 @@ def fixture_submission(args, registry) -> int:
         policy=policy,
         pdf_settings=pdf_settings,
     )
-    return _finish_door_run(context, tree, admitted)
+    return _finish_door_run(context, admitted)
 
 
 def real_submission(args, registry) -> int:
@@ -2002,7 +1880,7 @@ def real_submission(args, registry) -> int:
         pdf_settings=pdf_settings,
         open_source=open_source,
     )
-    return _finish_door_run(context, tree, admitted)
+    return _finish_door_run(context, admitted)
 
 
 def _refuse_inside_submission(location: Path, submission_folder: Path, label: str) -> None:
@@ -2027,30 +1905,27 @@ def _read_corpus_register(register_path: str | None) -> bytes | None:
         ) from error
 
 
-def _announce_refusal_report(tree: RunTree, refusal_report: str | None) -> None:
+def _announce_refusal_report(refusal_report: Report | None) -> None:
     """Give the terminal only a count and private report location, never a name."""
     if refusal_report is None:
         return
-    _total, census = _refusal_census(tree)
     print(
-        f"{sum(census.values())} door refusal(s); private refusal report: {refusal_report}",
+        f"{len(refusal_report.payload['refusals'])} door refusal(s); "
+        f"private refusal report: {refusal_report.path}",
         file=sys.stderr,
     )
 
 
-def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> None:
+def _announce_duplicate_report(duplicate_report: Report | None) -> None:
     """Count duplicate sources in the operator summary without printing filenames."""
     if duplicate_report is None:
         return
-    payload = _read_duplicate_report(tree)
-    sources = payload.get("duplicate_source_count")
-    ordinals = payload.get("duplicate_ordinal_count")
-    if not is_plain_int(sources) or not is_plain_int(ordinals):
-        raise ContractError("the door duplicate report has no integer source and ordinal counts")
+    payload = duplicate_report.payload
     # "detected", not "admitted": the whole submission is refused two calls later.
     print(
-        f"{sources} duplicate source(s) detected across {ordinals} page ordinal(s); "
-        f"private duplicate report: {duplicate_report}",
+        f"{payload['duplicate_source_count']} duplicate source(s) detected across "
+        f"{payload['duplicate_ordinal_count']} page ordinal(s); "
+        f"private duplicate report: {duplicate_report.path}",
         file=sys.stderr,
     )
 

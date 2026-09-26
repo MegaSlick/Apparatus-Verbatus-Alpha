@@ -524,6 +524,7 @@ def test_a_nonexistence_mkdir_error_reports_the_os_reason(tmp_path, happy_run, m
         bundle_module.publish(tree, out)
 
     assert "never reused or merged" in str(caught.value)
+    assert "remove the empty directory and retry" in str(caught.value)
     assert isinstance(caught.value.__cause__, OSError)
     assert not out.exists()
 
@@ -568,38 +569,6 @@ def test_a_rename_failure_at_publish_does_not_orphan_the_staging_directory(
 
     assert not out.exists()
     assert list(tmp_path.glob(".delivery.publishing-*")) == []
-
-
-def test_a_cleanup_failure_names_the_leftover_staging_directory(
-    tmp_path, happy_run, monkeypatch, capsys
-):
-    import bundle as bundle_module
-
-    tree = RunTree(happy_run, "r")
-    tree.read_run()
-    monkeypatch.setattr(
-        bundle_module.os,
-        "replace",
-        lambda _src, _dst: (_ for _ in ()).throw(OSError("simulated rename failure")),
-    )
-    # tempfile shares this module's rmtree, so an unconditional patch would fail
-    # verifier scratch cleanup before the publication cleanup under test.
-    real_rmtree = bundle_module.shutil.rmtree
-
-    def failing_staging_rmtree(path, *args, **kwargs):
-        if ".publishing-" in str(path):
-            raise OSError("simulated cleanup failure")
-        return real_rmtree(path, *args, **kwargs)
-
-    monkeypatch.setattr(bundle_module.shutil, "rmtree", failing_staging_rmtree)
-
-    with pytest.raises(OSError, match="simulated rename failure"):
-        bundle_module.publish(tree, tmp_path / "delivery")
-
-    captured = capsys.readouterr()
-    assert "warning: could not remove staging directory" in captured.err
-    assert "simulated cleanup failure" in captured.err
-    assert list(tmp_path.glob(".delivery.publishing-*"))
 
 
 def test_a_tampered_sealed_blob_is_refused_before_anything_is_published(tmp_path, happy_run):
