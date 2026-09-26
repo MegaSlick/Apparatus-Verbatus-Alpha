@@ -2317,7 +2317,7 @@ def test_a_spend_gate_lock_another_process_holds_refuses_rather_than_waiting(
         fcntl.flock(blocker.fileno(), fcntl.LOCK_EX)
         result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
 
-    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert result.state is LaunchState.REFUSED_SPEND_LOCK_UNAVAILABLE
     assert "spend-reservation" in result.detail
     assert "still holds this lock" in result.detail
     assert not any(verb == "create" for verb, _ in provider.calls)
@@ -2532,7 +2532,7 @@ def test_only_a_real_spend_lock_failure_is_named_as_a_lock_refusal(tmp_path: Pat
         request(clock), confirmation=CREATE_CONFIRMATION
     )
 
-    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert result.state is LaunchState.REFUSED_SPEND_LOCK_UNAVAILABLE
     assert "spend-reservation lock failed" in result.detail
     assert not any(verb == "create" for verb, _ in provider.calls)
 

@@ -78,7 +78,6 @@ from common.contracts.serving import (
     RAW_RESPONSE_TRANSPORT_BODY,
     STOP_REASON_UNREPORTED,
 )
-from common.contracts.stages import ATTESTATORES
 from common.imaging import dimensions
 from common.native_witness import native_parse_refusal
 from common.request_capacity import (
@@ -549,13 +548,6 @@ def _failed_parse_composition(
     return parse_reason, parse_reason
 
 
-def _blob_ref(context: Any, data: bytes) -> dict[str, str]:
-    """Retain ``data`` and return the closed ``{relative_path, sha256}`` reference shape."""
-
-    digest, published = context.tree.put_blob(ATTESTATORES, data)
-    return {"relative_path": published.relative_path, "sha256": digest}
-
-
 def _dai_model_view(
     context: Any,
     presentation: Mapping[str, Any],
@@ -590,10 +582,10 @@ def _dai_model_view(
         },
         width_px=bounds["w"],
         height_px=bounds["h"],
-        system_prompt_ref=_blob_ref(context, prompt["system"].encode("utf-8")),
-        query_prompt_ref=_blob_ref(context, prompt["user"].encode("utf-8")),
-        generation_config_ref=_blob_ref(
-            context, json.dumps(dict(generation_declared), sort_keys=True).encode("utf-8")
+        system_prompt_ref=context.retain(prompt["system"].encode("utf-8")),
+        query_prompt_ref=context.retain(prompt["user"].encode("utf-8")),
+        generation_config_ref=context.retain(
+            json.dumps(dict(generation_declared), sort_keys=True).encode("utf-8")
         ),
         generation_accounting=(
             None if generation_accounting is None else dict(generation_accounting)
@@ -737,7 +729,7 @@ def live_attempt_from_response(
     # fixture-placeholder parser may not run (a served chair answering in a
     # shape it was never asked in is a named surprise, not a reading).
     capture = adapter.retain(
-        context.tree,
+        context,
         view=view,
         raw_response=response.content.encode("utf-8"),
         transport_stop_reason=transport_stop_reason,
@@ -806,7 +798,7 @@ def captured_page_attempt(
     # fixture-placeholder parser may not run (a served chair answering in a
     # shape it was never asked in is a named surprise, not a reading).
     capture = adapter.retain(
-        context.tree,
+        context,
         view=view,
         raw_response=response.content.encode("utf-8"),
         transport_stop_reason=transport_stop_reason,

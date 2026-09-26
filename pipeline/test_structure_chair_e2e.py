@@ -115,6 +115,7 @@ from common.stage import (  # noqa: E402
     stage_parser,
     verify_final_seal,
 )
+from operations.serving.assembly import retain_chair_bytes  # noqa: E402
 from operations.serving.client import ChairClient  # noqa: E402
 from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
@@ -269,7 +270,7 @@ class StructureWorld:
             manager=manager,
             identity=identity,
             tier=tier,
-            retain=lambda data: structure_pass.retain_chair_bytes(context, data),
+            retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
             record_temperature=structure_pass.executable_temperature(policy),
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),

@@ -34,6 +34,7 @@ from common.native_witness import (
     validate_presented_page_binding,
 )
 from common.runtree.store import RunTree
+from common.stage import StageContext
 from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -128,7 +129,7 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
 
     raw = b'{"unknown":"shape"}'
     record = feeding.retain_model_view(
-        Tree(),
+        _Context(tree=Tree()),
         adapter="chandra.v1",
         view={},
         raw_response=raw,
@@ -151,7 +152,7 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
 def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_path):
     attestatores = load_stage("3_attestatores")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
-    context = SimpleNamespace(
+    context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="shape-surprise",
         fixture={
@@ -185,7 +186,7 @@ def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_pat
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     tree = RunTree(tmp_path / "runs", "r")
     raw = b'{"schema":"fixture-chandra-response.v1","markdown":"actual","blocks":[]}'
-    context = SimpleNamespace(
+    context = _Context(
         tree=tree,
         scenario="mismatch",
         fixture={
@@ -222,7 +223,7 @@ def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_pat
 def test_chandra_malformed_capabilities_fail_only_that_retained_attempt(tmp_path):
     attestatores = load_stage("3_attestatores")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
-    context = SimpleNamespace(
+    context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="bad-capabilities",
         fixture={
@@ -375,7 +376,7 @@ def test_fixture_raw_response_cannot_be_silently_discarded(
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     if adapter_name != resolved.witness_adapter:
         resolved = replace(resolved, witness_adapter=adapter_name)
-    context = SimpleNamespace(
+    context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="bad-raw",
         fixture={
@@ -424,7 +425,7 @@ def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary
         load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"],
         witness_adapter="churro.v1",
     )
-    context = SimpleNamespace(
+    context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="bad-raw",
         fixture={
@@ -453,7 +454,7 @@ def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary
 def test_empty_fixture_raw_response_cannot_be_silently_discarded(tmp_path):
     attestatores = load_stage("3_attestatores")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
-    context = SimpleNamespace(
+    context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="bad-empty-raw",
         fixture={
@@ -863,7 +864,7 @@ def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record
         b'"blocks":[{"bbox":[0,0,"bad",1]}]}'
     )
     retained = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": {"instruction": "x"}},
         raw_response=raw,
@@ -1230,6 +1231,12 @@ class _PageTree:
         return digest, _Published(path)
 
 
+class _Context(SimpleNamespace):
+    stage = ATTESTATORES
+    sealed = False
+    retain = StageContext.retain
+
+
 def _page_png(width: int, height: int) -> bytes:
     """A deterministic grayscale page with visible structure in it.
 
@@ -1295,7 +1302,7 @@ def test_chandra_presents_a_page_at_the_size_its_own_vendor_rule_chooses():
     chandra = load_stage("3_attestatores", "chandra")
     adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     page = _page_png(200, 260)
-    context = SimpleNamespace(tree=_PageTree(page))
+    context = _Context(tree=_PageTree(page))
     source = _page_presentation(page, 200, 260)
 
     presented = chandra.present(context, source)
@@ -1345,7 +1352,7 @@ def test_the_presented_page_is_the_vendors_own_convert_then_resize_order():
     """
     chandra = load_stage("3_attestatores", "chandra")
     page = _page_png(200, 260)
-    context = SimpleNamespace(tree=_PageTree(page))
+    context = _Context(tree=_PageTree(page))
 
     presented = chandra.present(context, _page_presentation(page, 200, 260))
 
@@ -1409,7 +1416,7 @@ def test_a_chandra_presentation_that_is_not_the_vendors_own_size_is_refused_at_r
     chandra = load_stage("3_attestatores", "chandra")
     adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     page = _page_png(200, 260)
-    context = SimpleNamespace(tree=_PageTree(page))
+    context = _Context(tree=_PageTree(page))
     source = _page_presentation(page, 200, 260)
     forged = chandra.present(context, source)
     # Still on the 28-pixel grid and still inside the vendor's area ceiling, so
@@ -1430,7 +1437,7 @@ def test_a_chandra_act_view_keeps_the_crop_it_was_given_and_mints_no_resize():
     chandra = load_stage("3_attestatores", "chandra")
     adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     page = _page_png(200, 260)
-    context = SimpleNamespace(tree=_PageTree(page))
+    context = _Context(tree=_PageTree(page))
     region = {
         "kind": "region",
         "source_page_id": "page-1",
@@ -1532,7 +1539,7 @@ def test_an_unplaced_block_keeps_its_text_and_its_finding_and_reports_no_box():
     ]
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
         raw_response=body,
@@ -1577,7 +1584,7 @@ def test_a_degenerate_chandra_reading_is_a_finding_and_a_partial_stop_reason():
     tree = _PageTree(_page_png(200, 260))
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
         raw_response=body,
@@ -1606,7 +1613,7 @@ def test_an_honest_chandra_reading_carries_no_repetition_finding():
     tree = _PageTree(_page_png(200, 260))
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
         raw_response=body,
@@ -1633,7 +1640,7 @@ def test_a_repeated_tail_under_an_unplaceable_shape_keeps_the_parse_outcome():
     tree = _PageTree(_page_png(200, 260))
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
         raw_response=body,
@@ -1661,7 +1668,7 @@ def test_a_body_past_the_grammars_ceiling_says_the_scan_did_not_run():
     tree = _PageTree(_page_png(200, 260))
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
         raw_response=body,
@@ -1694,7 +1701,7 @@ def test_the_placeholder_posture_is_scanned_for_repetition_too():
     tree = _PageTree(_page_png(200, 260))
 
     record = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": dict(chandra.FIXTURE_PROMPT)},
         raw_response=body,
@@ -1723,7 +1730,7 @@ def test_the_committed_fixture_placeholder_can_never_be_retained_from_a_served_c
 
     assert chandra.parse_fixture_placeholder(body) == "placeholder"
     offline = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": dict(chandra.FIXTURE_PROMPT)},
         raw_response=body,
@@ -1737,7 +1744,7 @@ def test_the_committed_fixture_placeholder_can_never_be_retained_from_a_served_c
 
     with pytest.raises(SchemaRefusal, match="placeholder parser"):
         feeding.retain_model_view(
-            tree,
+            _Context(tree=tree),
             adapter="chandra.v1",
             view={"prompt": chandra.prompt()},
             raw_response=body,
@@ -1748,7 +1755,7 @@ def test_the_committed_fixture_placeholder_can_never_be_retained_from_a_served_c
     # And under the live grammar the same bytes are a named surprise rather than
     # a reading: the layout reader can place nothing in a JSON object.
     served = feeding.retain_model_view(
-        tree,
+        _Context(tree=tree),
         adapter="chandra.v1",
         view={"prompt": chandra.prompt()},
         raw_response=body,

@@ -42,6 +42,7 @@ from common.chairs.models import ChairIdentity  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import SchemaRefusal  # noqa: E402
 from common.contracts.serving import STOP_REASON_UNREPORTED  # noqa: E402
+from common.contracts.stages import ATTESTATORES  # noqa: E402
 from common.imaging import encode_grayscale_png  # noqa: E402
 from common.native_witness import CHURRO_OUTPUT_TOKENS  # noqa: E402
 from common.request_capacity import (  # noqa: E402
@@ -50,6 +51,7 @@ from common.request_capacity import (  # noqa: E402
     request_fits,
     sealed_prompt_tokens,
 )
+from common.stage import StageContext  # noqa: E402
 from operations.serving.client import ChairClient, ChairRequest  # noqa: E402
 from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
@@ -141,6 +143,12 @@ class _FakeTree:
         return digest, SimpleNamespace(relative_path=relative_path)
 
 
+class _Context(SimpleNamespace):
+    stage = ATTESTATORES
+    sealed = False
+    retain = StageContext.retain
+
+
 def _png(width: int, height: int) -> bytes:
     """A real PNG of a named size.
 
@@ -197,7 +205,7 @@ def _decoded_images(request: ChairRequest) -> list[bytes]:
 
 
 def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_split():
-    context = SimpleNamespace(tree=_FakeTree())
+    context = _Context(tree=_FakeTree())
     image_bytes = _png(40, 30)
     presentation = _presentation(kind="region", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
@@ -252,7 +260,7 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
 
 
 def test_act_chair_request_refuses_a_presented_image_that_does_not_match_its_own_digest():
-    context = SimpleNamespace(tree=_FakeTree())
+    context = _Context(tree=_FakeTree())
     presentation = _presentation(kind="region", image_bytes=_png(40, 30))
     context.tree.seed(presentation["image_path"], _png(41, 30))
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
@@ -262,7 +270,7 @@ def test_act_chair_request_refuses_a_presented_image_that_does_not_match_its_own
 
 
 def _churro_page_request(profile: Any):
-    context = SimpleNamespace(tree=_FakeTree())
+    context = _Context(tree=_FakeTree())
     image_bytes = _png(50, 70)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
@@ -509,7 +517,7 @@ def test_page_chair_request_refuses_a_row_that_cannot_state_its_image_geometry(f
 
 
 def _page_request_of_size(width: int, height: int, row):
-    context = SimpleNamespace(tree=_FakeTree())
+    context = _Context(tree=_FakeTree())
     image_bytes = _png(width, height)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
@@ -578,7 +586,7 @@ def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
     than a page's does not let a page-fallback act through.
     """
 
-    context = SimpleNamespace(tree=_FakeTree())
+    context = _Context(tree=_FakeTree())
     image_bytes = _png(1291, 1826)
     presentation = _presentation(kind="region", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
@@ -598,7 +606,7 @@ def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
 
 def test_an_ordinary_act_crop_still_fits_the_smallest_row():
 
-    context = SimpleNamespace(tree=_FakeTree())
+    context = _Context(tree=_FakeTree())
     image_bytes = _png(1500, 353)
     presentation = _presentation(kind="region", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
@@ -650,7 +658,7 @@ def test_every_measured_witness_prompt_constant_still_matches_the_prompt_that_is
 
 
 def test_page_chair_request_builds_chandras_single_user_turn():
-    context = SimpleNamespace(tree=_FakeTree())
+    context = _Context(tree=_FakeTree())
     image_bytes = _png(51, 70)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
@@ -753,7 +761,7 @@ def test_every_live_witness_builder_puts_the_image_part_before_the_text_part():
     with each other and disagreed with every upstream.
     """
 
-    context = SimpleNamespace(tree=_FakeTree())
+    context = _Context(tree=_FakeTree())
     image_bytes = _png(53, 71)
     chandra_module = sys.modules.get("chandra") or __import__("chandra")
 
@@ -848,7 +856,7 @@ def test_a_named_framing_reaches_the_request_and_its_capacity_record():
     follow the name, so a request under the paper-era harness's framing is
     admitted on that framing's own arithmetic."""
 
-    context = SimpleNamespace(tree=_FakeTree())
+    context = _Context(tree=_FakeTree())
     image_bytes = _png(54, 72)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
@@ -878,7 +886,7 @@ def test_the_resolved_framing_is_written_onto_the_capture(tmp_path: Path):
     )
     adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         1,
         "attestator_3",
         "churro.v1",
@@ -897,7 +905,7 @@ def test_the_resolved_framing_is_written_onto_the_capture(tmp_path: Path):
 
 
 def test_page_chair_request_refuses_an_unrecognized_prompt_shape():
-    context = SimpleNamespace(tree=_FakeTree())
+    context = _Context(tree=_FakeTree())
     image_bytes = _png(52, 70)
     presentation = _presentation(kind="page", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
@@ -1228,7 +1236,7 @@ def test_live_attempt_from_response_read_on_a_complete_stop(tmp_path: Path):
     )
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1259,7 +1267,7 @@ def test_format_capabilities_falls_back_to_the_blanket_default_when_undeclared(t
     assert not hasattr(adapter, "format_capabilities")
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1283,7 +1291,7 @@ def test_format_capabilities_is_read_from_the_adapter_when_it_declares_one(tmp_p
     adapter.format_capabilities = declared
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1310,7 +1318,7 @@ def test_format_capabilities_on_a_malformed_response_still_names_the_adapters_ow
     adapter.format_capabilities = declared
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1357,7 +1365,7 @@ def test_format_capabilities_for_propagates_a_malformed_declaration_through_a_li
 
     with pytest.raises(SchemaRefusal, match="format_capabilities"):
         live_witness.live_attempt_from_response(
-            SimpleNamespace(tree=_FakeTree()),
+            _Context(tree=_FakeTree()),
             adapter,
             "dai.v1",
             response,
@@ -1373,7 +1381,7 @@ def test_live_attempt_from_response_refuses_a_non_dai_adapter_name(tmp_path: Pat
 
     with pytest.raises(SchemaRefusal):
         live_witness.live_attempt_from_response(
-            SimpleNamespace(tree=_FakeTree()),
+            _Context(tree=_FakeTree()),
             adapter,
             "churro.v1",
             response,
@@ -1388,7 +1396,7 @@ def test_live_attempt_from_response_genuinely_empty_on_a_confirmed_blank(tmp_pat
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": ""}})
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1410,7 +1418,7 @@ def test_live_attempt_from_response_cut_off_empty_is_failed_not_confirmed_blank(
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": ""}})
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1433,7 +1441,7 @@ def test_live_attempt_from_response_unreported_empty_is_failed_not_confirmed_bla
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": ""}})
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1455,7 +1463,7 @@ def test_live_attempt_from_response_truncated_true_on_length(tmp_path: Path):
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "cut off tex"}})
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1476,7 +1484,7 @@ def test_live_attempt_from_response_unreported_stop_reason_is_truncation_unknown
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "some text"}})
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1498,7 +1506,7 @@ def test_live_attempt_from_response_unknown_stop_reason_carried_verbatim(tmp_pat
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "text"}})
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1525,7 +1533,7 @@ def test_live_attempt_from_response_failed_on_a_parser_failure(tmp_path: Path):
     )
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1555,7 +1563,7 @@ def test_live_attempt_from_response_cut_off_and_parser_failure_names_both(tmp_pa
     )
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1585,7 +1593,7 @@ def test_live_attempt_from_response_parser_failure_without_cut_off_keeps_verbati
     )
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1611,7 +1619,7 @@ def test_live_attempt_from_response_failed_on_a_malformed_wire_body(tmp_path: Pa
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "never reached"}})
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1634,7 +1642,7 @@ def test_live_attempt_carries_the_receipt_and_call_record_references(tmp_path: P
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "x"}})
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1660,7 +1668,7 @@ def test_live_attempt_from_response_real_dai_adapter_round_trip(tmp_path: Path):
     adapter = witness_adapters.resolve_runnable_adapter("dai.v1")
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1697,7 +1705,7 @@ def test_a_no_resize_dai_act_is_carried_rather_than_refused_after_its_answer(tmp
     assert view_kwargs["presentation"]["image_path"] != view_kwargs["presented"]["image_path"]
 
     attempt = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         response,
@@ -1741,7 +1749,7 @@ def test_a_no_resize_dai_act_whose_model_image_is_other_bytes_is_still_refused(t
 
     with pytest.raises(SchemaRefusal, match="identity transform does not retain the source"):
         live_witness.live_attempt_from_response(
-            SimpleNamespace(tree=_FakeTree()),
+            _Context(tree=_FakeTree()),
             adapter,
             "dai.v1",
             response,
@@ -1764,7 +1772,7 @@ def test_a_live_act_says_which_kind_of_bytes_it_retained(tmp_path: Path):
     )
     adapter = witness_adapters.resolve_runnable_adapter("dai.v1")
     parsed = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         parsed_response,
@@ -1780,7 +1788,7 @@ def test_a_live_act_says_which_kind_of_bytes_it_retained(tmp_path: Path):
     )
     assert malformed_response.parse_problem is not None
     malformed = live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         adapter,
         "dai.v1",
         malformed_response,
@@ -1805,7 +1813,7 @@ def test_captured_page_attempt_read_on_a_complete_stop(tmp_path: Path):
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "page text"}})
 
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
     )
 
     assert attempt.outcome == "read"
@@ -1827,13 +1835,13 @@ def test_both_live_retention_call_sites_declare_the_served_posture(tmp_path: Pat
     )
     page_adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "page text"}})
     live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "churro.v1", page_adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_1", "churro.v1", page_adapter, response
     )
     assert page_adapter.retained_served == [True]
 
     act_adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "page text"}})
     live_witness.live_attempt_from_response(
-        SimpleNamespace(tree=_FakeTree()),
+        _Context(tree=_FakeTree()),
         act_adapter,
         "dai.v1",
         response,
@@ -1849,7 +1857,7 @@ def test_captured_page_attempt_cut_off_empty_is_failed_not_confirmed_blank(tmp_p
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": ""}})
 
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
     )
 
     assert attempt.outcome == "failed"
@@ -1870,7 +1878,7 @@ def test_captured_page_attempt_cut_off_and_parser_failure_names_both(tmp_path: P
     )
 
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
     )
 
     assert attempt.outcome == "failed"
@@ -1889,7 +1897,7 @@ def test_captured_page_attempt_unreported_empty_is_failed_not_confirmed_blank(tm
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": ""}})
 
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
     )
 
     assert attempt.outcome == "failed"
@@ -1903,7 +1911,7 @@ def test_captured_page_attempt_genuinely_empty_on_a_confirmed_blank_page(tmp_pat
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": ""}})
 
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
     )
 
     assert attempt.outcome == "genuinely-empty"
@@ -1914,7 +1922,7 @@ def test_captured_page_attempt_failed_on_a_malformed_wire_body_retains_raw_bytes
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "never reached"}})
 
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
     )
 
     assert attempt.outcome == "failed"
@@ -1928,7 +1936,7 @@ def test_captured_page_attempt_refuses_an_unsupported_adapter_name(tmp_path: Pat
 
     with pytest.raises(SchemaRefusal):
         live_witness.captured_page_attempt(
-            SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "dai.v1", adapter, response
+            _Context(tree=_FakeTree()), 1, "attestator_1", "dai.v1", adapter, response
         )
 
 
@@ -1952,7 +1960,7 @@ def test_captured_page_attempt_real_churro_adapter_round_trip(tmp_path: Path):
     adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
 
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_2", "churro.v1", adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_2", "churro.v1", adapter, response
     )
 
     assert attempt.outcome == "read"
@@ -1981,7 +1989,7 @@ def test_captured_page_attempt_real_churro_adapter_still_reads_the_retired_envel
     adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
 
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_2", "churro.v1", adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_2", "churro.v1", adapter, response
     )
 
     assert attempt.outcome == "read"
@@ -2007,7 +2015,7 @@ def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name
     adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
 
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_2", "churro.v1", adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_2", "churro.v1", adapter, response
     )
 
     assert attempt.outcome == "failed"
@@ -2037,7 +2045,7 @@ def test_captured_page_attempt_real_chandra_adapter_reads_the_vendor_grammar(tmp
     adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
 
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_1", "chandra.v1", adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_1", "chandra.v1", adapter, response
     )
 
     assert attempt.outcome == "read"
@@ -2078,7 +2086,7 @@ def test_captured_page_attempt_real_chandra_adapter_is_honest_about_an_unrecogni
     adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
 
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=_FakeTree()), 1, "attestator_3", "chandra.v1", adapter, response
+        _Context(tree=_FakeTree()), 1, "attestator_3", "chandra.v1", adapter, response
     )
 
     assert attempt.outcome == "failed"
@@ -2133,7 +2141,7 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
 
     tree = _FakeTree()
     attempt = live_witness.captured_page_attempt(
-        SimpleNamespace(tree=tree), 1, "attestator_3", "chandra.v1", adapter, response
+        _Context(tree=tree), 1, "attestator_3", "chandra.v1", adapter, response
     )
 
     assert attempt.outcome == "failed"
@@ -2156,7 +2164,7 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
     assert chandra.parse_fixture_placeholder(body.encode("utf-8")) == "chandra text"
     with pytest.raises(SchemaRefusal, match="placeholder parser"):
         chandra.retain(
-            tree,
+            _Context(tree=tree),
             view={"prompt": chandra.prompt()},
             raw_response=body.encode("utf-8"),
             transport_stop_reason="stop",

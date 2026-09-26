@@ -36,7 +36,7 @@ import feeding
 from common import imaging_ports
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES
+from common.exemplar_boundary import read_sealed_page
 from common.imaging import crop_png, dimensions, resize_png_lanczos
 from common.native_witness import validate_presented
 from common.witness_adapters import AdapterRefusal, resolve_witness_adapter_name
@@ -120,7 +120,7 @@ class RunnableAdapter:
 
 
 def _retain_dai_model_view(
-    tree: Any,
+    context: Any,
     *,
     view: dict[str, Any],
     raw_response: bytes,
@@ -131,7 +131,7 @@ def _retain_dai_model_view(
     """Retain one DAI view without letting its registry identity be relabeled."""
 
     return feeding.retain_model_view(
-        tree,
+        context,
         adapter="dai.v1",
         view=view,
         raw_response=raw_response,
@@ -155,7 +155,7 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
         raise SchemaRefusal("DAI accepts an act proposal region, not a page presentation")
     source_transform = presentation["transform"]
     page_id = source_transform["source_page_id"]
-    page_bytes = feeding.sealed_page_bytes(context, page_id, what="DAI")
+    _, page_bytes = read_sealed_page(context.tree, page_id, what="DAI")
     # Keep bounds failures as SchemaRefusals, not crop_png's bare ValueError.
     validate_presented(presentation, page_size=dimensions(page_bytes))
     bounds = dict(source_transform["bounds"])
@@ -185,13 +185,13 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
                 "target_height_px": target_height,
             },
         }
-    digest, published = context.tree.put_blob(ATTESTATORES, model_image)
+    published = context.retain(model_image)
     return {
         "kind": "adapter-crop",
         "source_page_id": page_id,
         "source_page_ordinal": source_transform["source_page_ordinal"],
-        "image_path": published.relative_path,
-        "image_sha256": digest,
+        "image_path": published["relative_path"],
+        "image_sha256": published["sha256"],
         "transform": model_transform,
     }
 

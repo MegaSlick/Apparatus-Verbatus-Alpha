@@ -200,26 +200,6 @@ def _parse_stamp(value: object, label: str) -> datetime:
     return require_utc(parsed, label)
 
 
-def default_pid_alive(pid: int) -> bool:
-    """Ask the local OS whether ``pid`` still names a running process.
-
-    This only ever runs on the laptop, against a pid this same laptop wrote
-    -- never against anything provider-side. ``PermissionError`` means the
-    pid exists but is owned by someone else, which is still "alive" for this
-    purpose.
-    """
-
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
-
-
 def _lock_path(leases_root: Path, lease_id: str) -> Path:
     """The kernel-held claim on ownership -- distinct from the identity file.
 
@@ -453,7 +433,6 @@ def establish_identity(
     *,
     now: Callable[[], datetime] = utc_now,
     pid: int | None = None,
-    pid_alive: Callable[[int], bool] = default_pid_alive,
     token_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
     lock_acquirer: Callable[[Path], bool] = _acquire_lock,
 ) -> SupervisorIdentity:
@@ -468,13 +447,8 @@ def establish_identity(
     now -- refuse outright, touch neither provider nor lease, so two drivers
     can never both reach for the same pod. Nothing here reads or writes the
     lease itself.
-
-    ``pid_alive`` is accepted only for source compatibility with existing
-    callers; the lock above is what decides ownership, and this parameter is
-    not consulted.
     """
 
-    del pid_alive
     resolved_pid = os.getpid() if pid is None else pid
     lock_path = _lock_path(leases_root, lease_id)
     if not lock_acquirer(lock_path):

@@ -81,7 +81,11 @@ from common.contracts.serving import (  # noqa: E402
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
-from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.exemplar_boundary import (  # noqa: E402
+    read_sealed_page,
+    sealed_page_bytes,
+    verify_exemplar_crop_lineage,
+)
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     PAGE_TESTIMONIUM_REQUIRED_FIELDS,
@@ -100,10 +104,8 @@ from common.native_witness import (
     validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
 )
 from common.request_capacity import RequestCapacityRefusal  # noqa: E402
-from common.sealed_config import read_sealed_toml
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
-    DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_HELD,
     WITNESS_READING_OUTCOMES,
@@ -119,27 +121,17 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
 )
-from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
-from operations.serving.config import (  # noqa: E402
-    ServingConfigInputs,
-    ServingRecipes,
-    load_serving_recipes,
+from operations.serving.assembly import (  # noqa: E402
+    bound_serving_recipes,
+    retain_chair_bytes,
+    stage_chair_client,
 )
+from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
+from operations.serving.config import ServingRecipes  # noqa: E402
 from operations.serving.errors import (  # noqa: E402
     ChairResponseRefusal,
     ChairTransportFailure,
     ServingError,
-)
-from operations.serving.http import UrllibHttpTransport  # noqa: E402
-from operations.serving.manager import (  # noqa: E402
-    MECHANICS_QUALIFICATION_PURPOSE,
-    ServingManager,
-    StageContextReceiptPublisher,
-)
-from operations.serving.process import SubprocessLauncher  # noqa: E402
-from operations.serving.residency import (  # noqa: E402
-    POD_RESIDENCY_LOCK_PATH,
-    FileResidencyLease,
 )
 
 DESCRIPTION = "Attestatores: retain every witness attempt without changing its history."
@@ -371,7 +363,7 @@ def presentation_for_page(
             "pixels; no witness can be shown a page that was never admitted"
         )
     image_path = page["payload"]["image_path"]
-    page_bytes = _verified_page_bytes(context, page)
+    page_bytes = sealed_page_bytes(context.tree, page)
     width, height = dimensions(page_bytes)
     return {
         "kind": "page",
@@ -511,35 +503,8 @@ def _sealed_source_page(
 ) -> tuple[dict[str, Any], bytes, tuple[int, int]]:
     """The sealed Exemplar page, exact verified bytes used, and decoded size."""
     page_id = presented["source_page_id"]
-    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    page_bytes = _verified_page_bytes(context, page)
+    page, page_bytes = read_sealed_page(context.tree, page_id)
     return page, page_bytes, dimensions(page_bytes)
-
-
-def _verified_page_bytes(context, page: dict[str, Any]) -> bytes:
-    """Read once and bind the exact page bytes that image operations will use.
-
-    Digesting the same bytes object that is decoded closes the check/use gap a
-    second read of the blob would open.
-    """
-    payload = page.get("payload")
-    if not isinstance(payload, dict):
-        raise SchemaRefusal("a sealed Exemplar page has no object payload")
-    image_path = payload.get("image_path")
-    expected_digest = payload.get("source_sha256")
-    if not isinstance(image_path, str) or not image_path:
-        raise SchemaRefusal("a sealed Exemplar page has no image path")
-    try:
-        page_bytes = context.tree.read_bytes(image_path)
-    except OSError as error:
-        raise SchemaRefusal(f"sealed Exemplar page bytes could not be read: {error}") from error
-    actual_digest = digest_bytes(page_bytes)
-    if actual_digest != expected_digest:
-        raise SchemaRefusal(
-            "sealed Exemplar page bytes changed between artifact verification and image use: "
-            f"digest {actual_digest}, not {expected_digest}"
-        )
-    return page_bytes
 
 
 def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
@@ -2187,7 +2152,7 @@ def captured_churro_page_attempt(
         )
     adapter = witness_adapters.resolve_runnable_adapter(adapter_name)
     capture = adapter.retain(
-        context.tree,
+        context,
         # Churro fixture rows are real vendor-grammar answers, so the view records
         # the adapter's own prompt; no framing, as no request was made.
         view={"prompt": adapter.prompt(), "generation": feeding.churro_generation()},
@@ -2360,7 +2325,7 @@ def _fixture_raw_response_attempt(
         )
     adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
     retained = adapter.retain(
-        context.tree,
+        context,
         # The fixture's frozen prompt, not `adapter.prompt()`: this view is sealed
         # into pinned fixture bytes, and the served prompt must be free to change
         # without moving them.
@@ -3765,32 +3730,6 @@ def attempt_pass(
     return recorded, isolated_crop_failure
 
 
-def bound_serving_recipes(context) -> ServingRecipes:
-    """The serving catalogue this run sealed, re-read and re-checked by digest.
-
-    Re-checked at the moment of use so the rows deciding live or fixture are the
-    sealed ones (principle 6). An unreadable catalogue is a configuration refusal,
-    not a witness failure.
-    """
-    if context.serving_config_inputs is None:  # pragma: no cover - open_context always sets it
-        raise ContractError(
-            "this run authority seals no serving configuration inputs; the serving posture "
-            "of its chairs cannot be read"
-        )
-    try:
-        recipes = load_serving_recipes(context.args.serving_recipes_config)
-        _, placement_sha256 = read_sealed_toml(
-            DEFAULT_POD_PLACEMENT_CONFIG_PATH, "pod placement configuration"
-        )
-        ServingConfigInputs.from_record(dict(context.serving_config_inputs)).require_loaded(
-            recipes_sha256=recipes.source_sha256,
-            placement_sha256=placement_sha256,
-        )
-    except (ServingError, ContractError) as error:
-        raise ContractError(f"the sealed serving configuration was refused: {error}") from error
-    return recipes
-
-
 def witness_serving_modes(context, recipes: ServingRecipes, tier: str | None) -> dict[str, str]:
     """`fixture` or `live` for every configured witness chair, and never a mix.
 
@@ -3843,51 +3782,18 @@ def require_every_witness_served(modes: dict[str, str]) -> None:
 
 
 def default_serving_factory(context, identity: ChairIdentity, tier: str) -> ChairClient:
-    """Build the client a live pass reads one chair through.
-
-    Everything is bound to this run, so a Testimonium's receipt is one this run
-    wrote. Nothing starts until `ChairClient.__enter__`. Tests inject their own
-    factory in-process; it is deliberately not a CLI flag, so no fake can answer
-    under a configured chair's name.
-    """
+    """Build the client a live pass reads one chair through. Tests inject their own
+    factory in-process; it is deliberately not a CLI flag, so no fake can answer under
+    a configured chair's name."""
     policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
-    manager = ServingManager(
-        registry=context.registry,
-        recipes=bound_serving_recipes(context),
-        config_inputs=ServingConfigInputs.from_record(dict(context.serving_config_inputs)),
-        launcher=SubprocessLauncher(),
-        http=UrllibHttpTransport(),
-        receipt_publisher=StageContextReceiptPublisher(context),
-        # Logs go where `inventory_scope()` expects them, or `fetch-run` refuses
-        # the served tree. The lease is per pod, not per run tree, and a network
-        # mount may not honour an advisory lock, so it uses the container path.
-        log_root=context.tree.resolve(context.tree.serving_log_path(ATTESTATORES)),
-        residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
-        producer="pipeline/3_attestatores/run.py",
-        _launch_purpose=(
-            MECHANICS_QUALIFICATION_PURPOSE
-            if getattr(context.args, "mechanics_qualification", False)
-            else None
-        ),
-    )
-    return ChairClient(
-        manager=manager,
-        identity=identity,
-        tier=tier,
-        retain=lambda data: retained_blob_ref(context, data),
+    return stage_chair_client(
+        context,
+        identity,
+        tier,
         decoding_config_sha256=decoding_sha256,
         record_temperature=policy["reading_of_record"]["temperature"],
-        # Passed bare: `ChairClient.__enter__` copies the read-only receipt
-        # reference into a dict.
-        read_receipt=context.tree.read_run_receipt,
         chandra_native_policy=policy.get("chandra_native_inference"),
     )
-
-
-def retained_blob_ref(context, data: bytes) -> dict[str, str]:
-    """Retain bytes in this stage's own content-addressed blob store."""
-    digest, published = context.tree.put_blob(ATTESTATORES, data)
-    return {"relative_path": published.relative_path, "sha256": digest}
 
 
 def attempt_from_live(live: live_witness.LiveAttempt) -> Attempt:
@@ -4496,7 +4402,7 @@ def _chandra_application_refusal_attempt(
     reason = _CHANDRA_APPLICATION_REFUSAL_PREFIX + str(error)
     if attempt is not None:
         return attempt._replace(outcome="failed", reason=reason)
-    model_output_ref = retained_blob_ref(context, response.content.encode("utf-8"))
+    model_output_ref = retain_chair_bytes(context, response.content.encode("utf-8"))
     return Attempt(
         outcome="failed",
         native_payload=None,
@@ -4875,7 +4781,7 @@ def _publish_chandra_intent(
         }
         for digest in dispatch.request.image_sha256s
     ]
-    request_body_ref = retained_blob_ref(context, dispatch.body)
+    request_body_ref = retain_chair_bytes(context, dispatch.body)
     payload = {
         "schema": CHANDRA_INTENT_SCHEMA,
         "recipe": chandra_recipe_record(),
@@ -5587,7 +5493,9 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     context.require_sealed_config("decoding", decoding_sha256)
     witness_adapters.validate_runnable_adapter_bindings(context.registry.config)
     # Resolved first: the serving posture decides which pass runs.
-    modes = witness_serving_modes(context, bound_serving_recipes(context), args.placement_tier)
+    modes = witness_serving_modes(
+        context, bound_serving_recipes(context, args.serving_recipes_config), args.placement_tier
+    )
     if real:
         require_every_witness_served(modes)
     live_chairs = sorted(chair for chair, mode in modes.items() if mode == "live")

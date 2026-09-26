@@ -31,14 +31,17 @@ import sys
 import zlib
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
-from common.contracts.errors import ContractError
+from common.contracts.canonical import digest_bytes
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import DESIGNATOR, EXEMPLAR
 from common.exemplar_boundary import (
     _validate_exemplar_transform,
+    sealed_page_bytes,
     verify_exemplar_crop_lineage,
     verify_sealed_page_pixels,
 )
@@ -697,3 +700,17 @@ def test_a_self_hashed_manifest_row_still_needs_complete_mode_and_actor_provenan
 
     with pytest.raises(ContractError, match="triage row|triage manifest row"):
         verify_triage_derivative(contract, master, parent, sealed)
+
+
+def test_sealed_page_bytes_refuses_bytes_that_no_longer_match_the_seal():
+    original = b"sealed page bytes"
+    page = {
+        "payload": {
+            "image_path": "1_exemplar/blobs/sha256/" + digest_bytes(original),
+            "source_sha256": digest_bytes(original),
+        }
+    }
+    swapped = SimpleNamespace(read_bytes=lambda _path: b"different page bytes")
+    with pytest.raises(SchemaRefusal, match="no longer matches its sealed digest"):
+        sealed_page_bytes(swapped, page)
+    assert sealed_page_bytes(SimpleNamespace(read_bytes=lambda _path: original), page) == original

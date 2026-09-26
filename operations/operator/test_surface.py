@@ -633,9 +633,7 @@ def test_status_reads_a_supervisor_identity_without_writing_its_lock(tmp_path: P
     lease_id = lease_path.stem
     leases_root = lease_path.parent
 
-    pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
-    )
+    pod_supervise.establish_identity(leases_root, lease_id, now=lambda: START, pid=os.getpid())
     pod_supervise.release_lock(leases_root, lease_id)
     supervisors_dir = leases_root / "supervisors"
     # `establish_identity` above created the lock file as its own side
@@ -674,9 +672,7 @@ def test_status_survives_a_read_only_supervisors_directory_with_no_lock_file(
     lease_id = lease_path.stem
     leases_root = lease_path.parent
 
-    pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
-    )
+    pod_supervise.establish_identity(leases_root, lease_id, now=lambda: START, pid=os.getpid())
     pod_supervise.release_lock(leases_root, lease_id)
     supervisors_dir = leases_root / "supervisors"
     (supervisors_dir / f"supervisor-{lease_id}.lock").unlink()
@@ -1601,6 +1597,14 @@ def test_unobservable_balance_has_its_own_three_part_operator_refusal(tmp_path: 
     assert "repair the named balance source" in rendered
     receipt = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
     assert receipt["state"] == LaunchState.REFUSED_BALANCE_UNOBSERVABLE.value
+
+
+def test_a_spend_lock_failure_is_not_reported_as_an_unobservable_balance(
+    tmp_path: Path,
+) -> None:
+    result = LaunchResult(LaunchState.REFUSED_SPEND_LOCK_UNAVAILABLE, detail="lock failed")
+
+    assert _surface(tmp_path)._launch_error(result).code is ErrorCode.SPEND_LOCK_UNAVAILABLE
 
 
 def test_balance_floor_has_its_own_three_part_operator_refusal(tmp_path: Path) -> None:
@@ -5289,7 +5293,7 @@ def test_status_reports_a_running_supervisor_its_last_tick_and_the_volume_rate(
     leases_root = lease_path.parent
 
     identity = pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+        leases_root, lease_id, now=lambda: START, pid=os.getpid()
     )
     pod_supervise.record_tick(
         pod_supervise.identity_path(leases_root, lease_id),
@@ -5329,7 +5333,7 @@ def test_status_reports_a_crashed_supervisor_as_absent_even_with_a_live_identity
     leases_root = lease_path.parent
 
     identity = pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+        leases_root, lease_id, now=lambda: START, pid=os.getpid()
     )
     pod_supervise.record_tick(
         pod_supervise.identity_path(leases_root, lease_id),
@@ -5368,7 +5372,7 @@ def test_status_reports_unknown_never_running_when_the_ownership_lock_cannot_be_
     leases_root = lease_path.parent
 
     identity = pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+        leases_root, lease_id, now=lambda: START, pid=os.getpid()
     )
     pod_supervise.record_tick(
         pod_supervise.identity_path(leases_root, lease_id),
@@ -5407,7 +5411,7 @@ def test_status_reports_unreadable_when_the_ownership_lock_check_raises(
     leases_root = lease_path.parent
 
     identity = pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+        leases_root, lease_id, now=lambda: START, pid=os.getpid()
     )
     pod_supervise.record_tick(
         pod_supervise.identity_path(leases_root, lease_id),
@@ -5444,9 +5448,7 @@ def test_status_never_calls_the_provider_while_reading_supervisor_telemetry(
     lease_path = _open_lease_path(surface, provider, spend)
     lease_id = lease_path.stem
     leases_root = lease_path.parent
-    pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
-    )
+    pod_supervise.establish_identity(leases_root, lease_id, now=lambda: START, pid=os.getpid())
     provider.calls.clear()
 
     _surface(tmp_path, provider=provider).status()
@@ -5471,7 +5473,7 @@ def test_status_never_prints_the_supervisor_owner_token(tmp_path: Path) -> None:
     leases_root = lease_path.parent
 
     identity = pod_supervise.establish_identity(
-        leases_root, lease_id, now=lambda: START, pid=os.getpid(), pid_alive=lambda pid: True
+        leases_root, lease_id, now=lambda: START, pid=os.getpid()
     )
     pod_supervise.record_tick(
         pod_supervise.identity_path(leases_root, lease_id),
@@ -5745,7 +5747,7 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
 
 
 # The three stages that serve a chair, and the module each one's
-# `default_serving_factory` lives in. Read from source below rather than
+# chair client is built in. Read from source below rather than
 # imported, since a stage module pulls the whole serving stack in behind it.
 _SERVING_STAGE_SOURCES = {
     "designator": "pipeline/2_designator/structure_pass.py",
@@ -5758,7 +5760,7 @@ def _served_stage_log_keys(run_id: str) -> dict[str, str]:
     """`<stage> -> volume key` for the engine log each serving stage really writes.
 
     Derived from `RunTree.serving_log_path`, which is the expression every
-    stage's `default_serving_factory` passes to `ServingManager(log_root=...)`
+    stage builds through `stage_chair_client` for `ServingManager(log_root=...)`
     -- pinned by `test_no_serving_stage_spells_its_own_log_directory` below.
     Restating the directory here instead is what let the fixture pass while the
     Attestatores wrote to `attestatores/serving-logs/`, a path the stage name
@@ -5820,12 +5822,16 @@ def test_no_serving_stage_spells_its_own_log_directory() -> None:
     about the stages rather than about itself.
     """
 
+    assert re.search(
+        r"log_root=context\.tree\.resolve\(\s*context\.tree\.serving_log_path\(context\.stage\)",
+        (ROOT / "operations/serving/assembly.py").read_text(encoding="utf-8"),
+    ), "stage_chair_client does not build its serving log root from RunTree.serving_log_path"
     for relative in sorted(_SERVING_STAGE_SOURCES.values()):
         source = (ROOT / relative).read_text(encoding="utf-8")
-        assert re.search(
-            r"log_root=context\.tree\.resolve\(\s*context\.tree\.serving_log_path\(",
-            source,
-        ), f"{relative} does not build its serving log root from RunTree.serving_log_path"
+        assert "stage_chair_client" in source, f"{relative} builds its own chair client"
+        assert "ServingManager(" not in source and "ChairClient(" not in source, (
+            f"{relative} builds its own manager or client instead of stage_chair_client"
+        )
         assert '"serving-logs"' not in source and "'serving-logs'" not in source, (
             f"{relative} spells the serving-log directory for itself; the store owns it"
         )

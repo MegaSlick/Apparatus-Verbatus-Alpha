@@ -435,6 +435,7 @@ class LaunchState(StrEnum):
     REFUSED_CEILING = "refused-ceiling"
     REFUSED_BALANCE_FLOOR = "refused-balance-floor"
     REFUSED_BALANCE_UNOBSERVABLE = "refused-balance-unobservable"
+    REFUSED_SPEND_LOCK_UNAVAILABLE = "refused-spend-lock-unavailable"
     REFUSED_ACTIVE_LEASE = "refused-active-lease"
     REFUSED_CONFIRMATION = "refused-confirmation"
     PROVIDER_FAILURE = "provider-failure"
@@ -919,11 +920,8 @@ class PodRuntime:
                 return locked()
         except _SpendGateLockFailure as error:
             return LaunchResult(
-                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
-                detail=(
-                    "balance safety could not be established because the spend-reservation "
-                    f"lock failed: {error}; no paid action occurred"
-                ),
+                LaunchState.REFUSED_SPEND_LOCK_UNAVAILABLE,
+                detail=f"the spend-reservation lock failed: {error}; no paid action occurred",
             )
 
     def _confirmation_gate_refusal(

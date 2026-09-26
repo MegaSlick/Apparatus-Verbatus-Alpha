@@ -32,7 +32,7 @@ import feeding
 from common import chandra_layout
 from common.chandra_presentation import presented_transform, render_page
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES
+from common.exemplar_boundary import read_sealed_page
 from common.imaging import dimensions
 from common.native_witness import validate_presented
 
@@ -163,7 +163,7 @@ def parse_fixture_placeholder(raw_response: bytes) -> Any:
 
 
 def retain(
-    tree: Any,
+    context: Any,
     *,
     view: dict[str, Any],
     raw_response: bytes,
@@ -180,7 +180,7 @@ def retain(
     """
 
     return feeding.retain_model_view(
-        tree,
+        context,
         adapter="chandra.v1",
         view=view,
         raw_response=raw_response,
@@ -215,7 +215,7 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
         return presentation
     transform = presentation["transform"]
     page_id = transform["source_page_id"]
-    page_bytes = feeding.sealed_page_bytes(context, page_id, what="Chandra")
+    _, page_bytes = read_sealed_page(context.tree, page_id, what="Chandra")
     # Keep bounds failures as SchemaRefusals, not crop_png's bare ValueError.
     validate_presented(presentation, page_size=dimensions(page_bytes))
     bounds = dict(transform["bounds"])
@@ -228,13 +228,13 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
             f"Chandra's presented page cannot be converted to RGB, which the vendor's own "
             f"loader performs on every image before scale_to_fit sees it: {error}"
         ) from error
-    digest, published = context.tree.put_blob(ATTESTATORES, model_image)
+    published = context.retain(model_image)
     return {
         "kind": "adapter-crop",
         "source_page_id": page_id,
         "source_page_ordinal": transform["source_page_ordinal"],
-        "image_path": published.relative_path,
-        "image_sha256": digest,
+        "image_path": published["relative_path"],
+        "image_sha256": published["sha256"],
         "transform": presented_transform(
             page_id,
             transform["source_page_ordinal"],
