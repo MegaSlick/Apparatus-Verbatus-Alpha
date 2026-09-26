@@ -213,11 +213,14 @@ by its seal at every point of use.** The seal of a TOML file is the SHA-256 of i
 parsed table written as sorted-key JSON (`common/sealed_config.py::read_sealed_toml`):
 what the file says, not how it is written. Comments, blank lines and key order are
 free to edit and move no seal; any value change moves it. `run.json` records the
-method as `sealed_config_method = "toml-sorted-json.v1"`; a run without it sealed raw
-file bytes and is refused by name as a seal-method change, never as drift. The
-serving inputs (`serving-config-inputs.v2`) and the pod bootstrap receipt
-(`pod-bootstrap-configuration.v2`) carry the same method in their schema. Sealing means two things
-together: the seal goes into `run.json`'s `config_digest`, so reusing a run id across a
+scheme as `sealed_config_method = "toml-sorted-json.v1"`. The tag versions the whole
+map, not only its TOML entries: `data-handling` (JSON) is still a digest of raw bytes,
+and the real-ingress `models` and `run-policy` are canonical digests of parsed
+records. A run without the tag sealed its TOML files by raw bytes and is
+refused by name as a seal-method change, never as drift. The serving inputs
+(`serving-config-inputs.v2`) and the pod bootstrap receipt
+(`pod-bootstrap-configuration.v2`) carry the same scheme in their schema. Sealing means
+two things together: the seal goes into `run.json`'s `config_digest`, so reusing a run id across a
 change is refused before anything is written; and it is recorded by name in the run
 authority's `sealed_config_digests`, so a reader holding only the tree can *name* the
 policy that governed the run instead of merely testing a candidate file against one
@@ -235,10 +238,11 @@ policy a stage needs the *values* of is carried already parsed rather than reope
 
 Sealed names today: `designator-padding`, `designator-geometry`, `designator-grouping`,
 `alignment`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
-`pdf-render`, `recovery`, `hard-failure`, and — on real ingress only, because the
-fixture route is not gated — `data-handling`. `triage-modes` is likewise sealed into
-every run; Unit 6's pre-door producer/door seam must call `require_triage_modes` before
-using its vocabulary.
+`pdf-render`, `recovery`, `hard-failure` and `triage-modes` on every run (Unit 6's
+pre-door producer/door seam must call `require_triage_modes` before using its
+vocabulary). Real ingress adds `data-handling`, `serving-recipes`, `pod-placement`,
+`models`, `armarium-formats` and `run-policy`: the fixture route rechecks those facts
+through `config_digest`, which a later stage can recompute, and the real one cannot.
 
 ### `designator_grouping.toml`
 

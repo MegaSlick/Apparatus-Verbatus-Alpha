@@ -32,7 +32,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final, Iterator, Protocol, Sequence
 
-from common.chairs.config import load_models_toml
+from common.chairs.config import load_models_toml, parse_models_config
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, validate_run_id
@@ -343,18 +343,26 @@ class FixtureBootstrapActions:
         root = self.surface.workspace
         config_root = root / "config"
         shipped_config_root = Path(__file__).resolve().parents[2] / "config"
+        models_path = config_root / "models.toml"
+        models_raw, models_sha256 = read_sealed_toml(models_path, "models.toml")
         validation = validate_witness_context_configuration(
-            load_models_toml(config_root / "models.toml"),
+            parse_models_config(models_raw, source_path=models_path),
             config_root / "witness_context.toml",
             shipped_config_root=shipped_config_root,
         )
+        seals = {
+            "models_config": models_sha256,
+            "witness_context_config": validation.source_sha256,
+        }
+        for name, filename in (
+            ("serving_recipes_config", "serving_recipes.toml"),
+            ("placement_config", "pod_placement.toml"),
+        ):
+            seals[name] = read_sealed_toml(config_root / filename, filename)[1]
         return {
             "schema": CONFIGURATION_RECEIPT_SCHEMA,
             "bindings": {
-                name: {
-                    "path": str(config_root / filename),
-                    "sha256": read_sealed_toml(config_root / filename, filename)[1],
-                }
+                name: {"path": str(config_root / filename), "sha256": seals[name]}
                 for name, filename in (
                     ("models_config", "models.toml"),
                     ("witness_context_config", "witness_context.toml"),

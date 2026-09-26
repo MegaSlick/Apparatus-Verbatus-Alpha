@@ -7,7 +7,7 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence
 
-from common.chairs.config import load_models_toml
+from common.chairs.config import parse_models_config
 from common.chairs.models import ChairIdentity, is_sha256
 from common.chairs.receipts import validate_receipt
 from common.contracts.canonical import canonical_bytes, digest_bytes
@@ -77,7 +77,7 @@ def qualification_candidates(
     try:
         recipes_raw, recipes_sha256 = parse_sealed_toml(recipes_bytes, "serving recipes")
         _, placement_sha256 = parse_sealed_toml(placement_bytes, "placement table")
-        _, models_sha256 = parse_sealed_toml(models_bytes, "model roster")
+        models_raw, models_sha256 = parse_sealed_toml(models_bytes, "model roster")
     except ContractError as error:
         raise QualificationRefusal(f"serving configuration cannot be parsed: {error}") from error
     expected_inputs = {
@@ -101,7 +101,7 @@ def qualification_candidates(
         raise QualificationRefusal("serving recipes have no profile rows")
 
     try:
-        models = load_models_toml(models_config)
+        models = parse_models_config(models_raw, source_path=models_config)
     except ContractError as error:
         raise QualificationRefusal(f"model roster is invalid: {error}") from error
     identities = {

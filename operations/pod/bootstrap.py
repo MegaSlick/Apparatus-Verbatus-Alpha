@@ -31,6 +31,7 @@ steps complete without ever validating the checked-out roster/declaration
 pair. It cannot be resumed under the stronger order and is refused by schema.
 """
 CONFIGURATION_RECEIPT_SCHEMA = "pod-bootstrap-configuration.v2"
+_RAW_BYTE_RECEIPT_SCHEMA = "pod-bootstrap-configuration.v1"
 """The checked-out selections re-read before any completed bootstrap is reused.
 
 v2 binds each file's seal (`common/sealed_config.py`) where v1 bound raw bytes, so
@@ -726,6 +727,15 @@ class Bootstrapper:
             recorded = None
         else:
             recorded = receipts.get(BootstrapStep.CONFIGURATION.value)
+        if isinstance(recorded, dict) and recorded.get("schema") == _RAW_BYTE_RECEIPT_SCHEMA:
+            return BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"this journal predates seal method v2: its configuration receipt is "
+                f"{_RAW_BYTE_RECEIPT_SCHEMA!r}, which bound raw file bytes, so no current "
+                "seal can be compared with it",
+                f"Start a new journal: move {self.journal.path} aside and rerun boot. A "
+                "completed configuration receipt is never rewritten.",
+            )
         current_problem = _configuration_receipt_problem(current)
         recorded_problem = _configuration_receipt_problem(recorded)
         if current_problem is not None or recorded_problem is not None:
@@ -776,11 +786,6 @@ def _configuration_receipt_problem(receipt: object) -> str | None:
 
     if not isinstance(receipt, dict):
         return "receipt is not an object"
-    if receipt.get("schema") == "pod-bootstrap-configuration.v1":
-        return (
-            "it is 'pod-bootstrap-configuration.v1', which bound raw file bytes, not the "
-            "seals this bootstrap compares; start a new journal"
-        )
     required = {"schema", "bindings", "witness_context_validation"}
     if set(receipt) != required or receipt.get("schema") != CONFIGURATION_RECEIPT_SCHEMA:
         return f"receipt must be a closed {CONFIGURATION_RECEIPT_SCHEMA!r} object"

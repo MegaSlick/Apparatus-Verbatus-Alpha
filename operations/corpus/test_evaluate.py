@@ -24,6 +24,7 @@ import pytest
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 from common.contracts.canonical import self_hash as _self_hash
 from common.runtree.store import RunTree
+from common.sealed_config import SEAL_METHOD
 from operations.corpus import CorpusRefusal
 from operations.corpus.compare import compare_page, load_exemplar_page_shas
 from operations.corpus.evaluate import (
@@ -457,6 +458,7 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     assert report["run"]["export_status"] == "partial"
     assert report["run"]["scenario"] == "audit-reproof-cutoff"
     assert len(report["run"]["export_sha256"]) == 64
+    assert report["run"]["sealed_config_method"] == SEAL_METHOD
     assert report["corpus"] == {
         "reference_pages": 1,
         "reference_records": 2,

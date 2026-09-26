@@ -1575,8 +1575,9 @@ def test_a_journal_bound_under_the_raw_byte_receipt_is_refused_by_schema(tmp_pat
     )
 
     assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
-    assert "pod-bootstrap-configuration.v1" in (resumed.detail or "")
-    assert "differ" not in (resumed.detail or "")
+    assert "predates seal method v2" in (resumed.detail or "")
+    assert "lacks the required binding" not in (resumed.detail or "")
+    assert f"move {ws.journal} aside" in (resumed.remediation or "")
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
 
 
