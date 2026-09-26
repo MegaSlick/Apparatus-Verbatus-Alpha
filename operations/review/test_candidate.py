@@ -362,7 +362,7 @@ def test_partial_write_never_publishes_a_receipt_or_leaves_a_temp_file(tmp_path,
     directory = tmp_path / "workbench" / "raw" / "reviews" / candidate
     assert not list(directory.glob("*.md"))
     assert not list(directory.glob("*.json"))
-    assert not list(directory.glob(".*.tmp"))
+    assert not list(directory.glob(".*.tmp-*"))
 
 
 def test_receipt_refuses_a_preexisting_symlink_at_its_final_name(tmp_path):

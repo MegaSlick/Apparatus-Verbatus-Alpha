@@ -143,6 +143,26 @@ def test_ingest_commit_makes_an_immutable_ready_folder_and_keeps_source_bytes_un
     assert ready["confirmation_file_retained"] is False
 
 
+def test_a_stray_publication_temporary_does_not_block_the_ready_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, output, policy, _approved = _inputs(tmp_path)
+    previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
+    prepared = ingest_worker._prepare(
+        _pinned_commit_request(source, output, policy, ingest_worker._summary(previewed))
+    )
+    real_create = ingest_worker.submit.atomic_create
+
+    def create_and_strand(path: Path, data: bytes) -> bool:
+        (path.parent / f".{path.name}.tmp-stray").write_bytes(b"")
+        return real_create(path, data)
+
+    monkeypatch.setattr(ingest_worker.submit, "atomic_create", create_and_strand)
+    ingest_worker._commit(prepared)
+
+    assert (output / "ingest-ready.json").is_file()
+
+
 @requires_host_boundary
 def test_ingest_refusal_shows_the_unit_6b_reason_verbatim_and_writes_nothing(
     tmp_path: Path,

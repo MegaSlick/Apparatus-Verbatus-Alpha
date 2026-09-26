@@ -91,6 +91,7 @@ from common.decoding import (
     load_decoding_policy,
     structure_recovery_policy,
 )
+from common.durability import is_temporary_name
 from common.exemplar_boundary import verify_sealed_page_pixels
 from common.hard_failure import (
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -1034,10 +1035,7 @@ def _stage_blob_inventory(
 
 def _is_unpublished_blob_temporary(name: str) -> bool:
     """True only for ``RunTree.put_blob``'s ``.<digest>.tmp-<unique>`` name."""
-    if not name.startswith("."):
-        return False
-    target, separator, unique = name[1:].partition(".tmp-")
-    return bool(separator and unique and is_sha256(target))
+    return is_temporary_name(name) and is_sha256(name[1:].partition(".tmp-")[0])
 
 
 def _refuse_unpublishable_temporary(directory_fd: int, name: str, stage: str) -> None:

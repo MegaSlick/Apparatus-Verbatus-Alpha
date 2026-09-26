@@ -37,6 +37,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, validate_run_id
 from common.contracts.stages import ARMARIUM, WRITING_DIRECTORIES
+from common.durability import is_temporary_name
 from common.runtree.store import (
     DOOR_MANIFEST_FILE,
     MANIFEST_FILE,
@@ -3502,6 +3503,8 @@ def _write_bundle_directory(
                 ErrorCode.EXPORT_FAILED,
                 detail=f"the Armarium evidence bundle cannot read {label}: {error}",
             ) from error
+        if is_temporary_name(name) and stat.S_ISREG(named.st_mode):
+            continue
         if stat.S_ISDIR(named.st_mode):
             child = _open_expected_member(directory_descriptor, name, directory=True, label=label)
             try:

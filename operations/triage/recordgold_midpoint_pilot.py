@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.durability import atomic_create
 from common.imaging import render_triage_derivative
 from operations.triage import producer
 from operations.triage.scantailor_bridge import transcribe_imported_geometry
@@ -16,20 +16,6 @@ Step one writes a declared-midpoint ScanTailor project.  The operator imports it
 with ``verbatus scantailor``.  Step two consumes that immutable import and writes
 standard triage rows plus their binding sidecar.  No source image is changed.
 """
-
-
-def _new(path: Path, data: bytes) -> None:
-    """Publish one new artifact; a retry must inspect rather than overwrite it."""
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
-    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
 
 
 def _page(value: str) -> tuple[str, int]:
@@ -110,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
             PrescribedSpread(str(relative_prefix / source.source_path), source.width, source.height)
             for source in prescribed
         ]
-        _new(project, prescribed_midpoint_project(project_sources))
+        atomic_create(project, prescribed_midpoint_project(project_sources))
         print(project)
         return 0
     translated = transcribe_imported_geometry(
@@ -139,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
                 except ValueError as error:
                     parser.error(f"could not materialize {frame.path} part {part_index}: {error}")
                 output_name = f"{stem}-{'left' if part_index == 0 else 'right'}.png"
-                _new(args.prepared_source_dir / output_name, pixels)
+                atomic_create(args.prepared_source_dir / output_name, pixels)
                 materialized.append(
                     {
                         "prepared_relative_path": output_name,
@@ -153,8 +139,12 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 )
         translated.binding["materialized_pages"] = materialized
-    _new(args.output_dir / "scantailor-triage-binding.json", canonical_bytes(translated.binding))
-    _new(args.output_dir / "triage-decision-manifest.json", canonical_bytes(admitted.manifest))
+    atomic_create(
+        args.output_dir / "scantailor-triage-binding.json", canonical_bytes(translated.binding)
+    )
+    atomic_create(
+        args.output_dir / "triage-decision-manifest.json", canonical_bytes(admitted.manifest)
+    )
     print(args.output_dir / "triage-decision-manifest.json")
     return 0
 

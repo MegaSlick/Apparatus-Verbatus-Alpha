@@ -31,7 +31,6 @@ own recorded digest, not just replaying the register in hand.
 import json
 import os
 import stat
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final, Iterator
@@ -52,6 +51,7 @@ from common.contracts.identities import (
     physical_act_id,
     physical_page_id,
 )
+from common.durability import PublishedUnsettled, atomic_replace
 
 SCHEMA: Final = "corpus-register-v1"
 MAX_REGISTER_BYTES: Final = 64 * 1024 * 1024
@@ -298,62 +298,14 @@ def _require_same_register_identity(path: Path, expected: tuple[int, int] | None
 
 
 def _atomic_replace(path: Path, data: bytes) -> None:
-    """Publish complete register bytes atomically and make the name durable."""
-    descriptor, raw_temporary = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
-    temporary = Path(raw_temporary)
-    replaced = False
-    failure: ContractError | None = None
-    cause: OSError | None = None
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        replaced = True
-        directory = os.open(
-            path.parent,
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0),
-        )
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        atomic_replace(path, data)
+    except PublishedUnsettled as error:
+        raise ContractError(
+            "the corpus register was replaced but its directory entry is not proven durable"
+        ) from error
     except OSError as error:
-        state = (
-            "was replaced but its directory entry is not proven durable"
-            if replaced
-            else "was not replaced"
-        )
-        failure = ContractError(f"the corpus register {state}")
-        cause = error
-    cleanup_error = _temporary_cleanup_error(temporary)
-    if failure is not None:
-        if cleanup_error is not None:
-            failure.add_note(
-                f"corpus-register temporary {temporary} also could not be removed: {cleanup_error}"
-            )
-        raise failure from cause
-    if cleanup_error is not None:
-        # The replacement and the directory fsync both succeeded, so the new register is
-        # live and this refusal is about the leftover alone. It has to say so: a caller
-        # that reads "could not be removed" as "nothing was written" rebuilds its append
-        # against the previous digest, which the moved head then refuses as a concurrent
-        # change — two refusals for one durable, successful publish.
-        raise SchemaRefusal(
-            f"the corpus register was replaced and is durable at digest {digest_bytes(data)}; "
-            f"only the temporary {temporary} could not be removed. Do not retry this append "
-            "against the previous digest"
-        ) from cleanup_error
-
-
-def _temporary_cleanup_error(path: Path) -> OSError | None:
-    """Return cleanup failure so the corpus-register refusal remains primary."""
-    try:
-        path.unlink(missing_ok=True)
-    except OSError as error:
-        return error
-    return None
+        raise ContractError("the corpus register was not replaced") from error
 
 
 def read_snapshot(tree: Any, run: dict[str, Any]) -> bytes:

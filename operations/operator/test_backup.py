@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from common import durability
 from common.runtree import store
 from common.runtree.store import RunTree
 
@@ -922,7 +923,7 @@ def test_a_backup_taken_across_a_concurrent_append_refuses_and_stays_resumable(
 
 
 def test_the_exclusion_recognises_the_name_the_store_itself_publishes_through(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The store's temporary spelling and this module's predicate are one rule.
 
@@ -937,20 +938,27 @@ def test_the_exclusion_recognises_the_name_the_store_itself_publishes_through(
     """
     published = tmp_path / "volume" / "r" / "1_exemplar" / "artifacts" / "page" / "art_x.json"
     published.parent.mkdir(parents=True)
-    temporary = store._write_temporary(published, b"an interrupted publication")
-    try:
-        relative = temporary.relative_to(tmp_path / "volume" / "r").as_posix()
-        scope = RunTree(tmp_path / "volume", "r").inventory_scope()
-        assert backup_module._is_publication_temporary(relative, scope), (
-            f"the store publishes through {temporary.name!r}, which the backup's "
-            "exclusion does not recognise as a publication temporary"
-        )
-        # The published target itself is never residue, whatever it is named.
-        assert not backup_module._is_publication_temporary(
-            published.relative_to(tmp_path / "volume" / "r").as_posix(), scope
-        )
-    finally:
-        temporary.unlink()
+    temporaries: list[Path] = []
+    real_mkstemp = durability.tempfile.mkstemp
+
+    def observe(**keywords):  # type: ignore[no-untyped-def]
+        descriptor, name = real_mkstemp(**keywords)
+        temporaries.append(Path(name))
+        return descriptor, name
+
+    monkeypatch.setattr(durability.tempfile, "mkstemp", observe)
+    store._atomic_write(published, b"an interrupted publication")
+    [temporary] = temporaries
+    relative = temporary.relative_to(tmp_path / "volume" / "r").as_posix()
+    scope = RunTree(tmp_path / "volume", "r").inventory_scope()
+    assert backup_module._is_publication_temporary(relative, scope), (
+        f"the store publishes through {temporary.name!r}, which the backup's "
+        "exclusion does not recognise as a publication temporary"
+    )
+    # The published target itself is never residue, whatever it is named.
+    assert not backup_module._is_publication_temporary(
+        published.relative_to(tmp_path / "volume" / "r").as_posix(), scope
+    )
 
 
 def test_a_backup_leaves_a_receipt_naming_the_run_root_destination_and_snapshot(

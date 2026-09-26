@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import stat
-import tempfile
 import unicodedata
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
@@ -13,6 +12,7 @@ from typing import Any, Final, Mapping, Sequence
 from common.contracts.canonical import canonical_bytes, digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.corpus_register import refuse_capture_preference
+from common.durability import PublishedUnsettled, atomic_replace
 
 VERDICT_SCHEMA: Final = "triage-structural-verdict.v1"
 EXPECTED_SCHEMA: Final = "triage-structural-expected.v2"
@@ -490,50 +490,14 @@ def _read_verdict_bytes(path: Path) -> bytes:
 
 def _atomic_write(path: Path, data: bytes) -> None:
     """Replace one derived document with complete durable bytes, never a torn file."""
-    temporary: Path | None = None
-    replaced = False
-    failure: ReconciliationRefusal | None = None
-    cause: OSError | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
-        temporary = Path(temporary_name)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        replaced = True
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except OSError as error:
-        state = "was replaced but is not proven durable" if replaced else "was not replaced"
-        failure = ReconciliationRefusal(f"structural reconciliation output {path} {state}")
-        cause = error
-    cleanup_error = _temporary_cleanup_error(temporary)
-    if failure is not None:
-        if cleanup_error is not None:
-            failure.add_note(
-                f"structural reconciliation temporary {temporary} also could not be removed: "
-                f"{cleanup_error}"
-            )
-        raise failure from cause
-    if cleanup_error is not None:
+        atomic_replace(path, data)
+    except PublishedUnsettled as error:
         raise ReconciliationRefusal(
-            f"structural reconciliation output {path} was replaced and is durable; only the "
-            f"temporary {temporary} could not be removed"
-        ) from cleanup_error
-
-
-def _temporary_cleanup_error(path: Path | None) -> OSError | None:
-    """Return cleanup failure so the reconciliation refusal remains primary."""
-    if path is None:
-        return None
-    try:
-        path.unlink(missing_ok=True)
+            f"structural reconciliation output {path} was replaced but is not proven durable"
+        ) from error
     except OSError as error:
-        return error
-    return None
+        raise ReconciliationRefusal(
+            f"structural reconciliation output {path} was not replaced"
+        ) from error
