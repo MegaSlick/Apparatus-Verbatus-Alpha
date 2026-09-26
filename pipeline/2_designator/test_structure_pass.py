@@ -324,7 +324,7 @@ def _serving_factory(
             manager=manager,
             identity=chair,
             tier=tier,
-            retain=lambda data: structure_pass.retain_chair_bytes(context, data),
+            retain=context.retain,
             decoding_config_sha256=decoding_sha256,
             record_temperature=structure_pass.executable_temperature(policy),
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),

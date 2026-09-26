@@ -2036,8 +2036,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         formats,
         context.tree.read_bytes,
     )
-    bundle_digest, bundle_result = context.tree.put_blob(ARMARIUM, bundle.data)
-    bundle_ref = context.input_ref(bundle_result.relative_path)
+    bundle_ref = context.retain(bundle.data)
 
     # The terminal ledger's status, not the run aggregate's, is what this stage
     # reports. The ledger accounts three unit types -- source, sealed page, act --
@@ -2089,7 +2088,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "filename": ARMARIUM_ARCHIVE_NAME,
                 "format": "zip",
                 "reference": bundle_ref,
-                "sha256": bundle_digest,
+                "sha256": bundle_ref["sha256"],
                 "manifest_member": "EXPORT_MANIFEST.json",
                 "manifest_self_hash": bundle.manifest["self_hash"],
                 "claims_status": export_status,

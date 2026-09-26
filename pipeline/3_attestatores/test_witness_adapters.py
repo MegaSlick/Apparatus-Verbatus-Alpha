@@ -18,6 +18,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ATTESTATORES, EXEMPLAR
 from common.imaging import encode_grayscale_png_deterministic
 from common.native_witness import validate_presented_page_binding
+from common.stage import StageContext
 from common.witness_adapters import KNOWN_WITNESS_ADAPTER_NAMES
 
 STAGE = Path(__file__).resolve().parent
@@ -187,6 +188,10 @@ class _DaiTree:
 
 
 class _DaiContext:
+    stage = ATTESTATORES
+    sealed = False
+    retain = StageContext.retain
+
     def __init__(self, page_bytes):
         self.tree = _DaiTree(page_bytes)
 

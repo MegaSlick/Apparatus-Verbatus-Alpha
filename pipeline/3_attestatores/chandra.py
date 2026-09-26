@@ -32,7 +32,6 @@ import feeding
 from common import chandra_layout
 from common.chandra_presentation import presented_transform, render_page
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES
 from common.imaging import dimensions
 from common.native_witness import validate_presented
 
@@ -228,13 +227,13 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
             f"Chandra's presented page cannot be converted to RGB, which the vendor's own "
             f"loader performs on every image before scale_to_fit sees it: {error}"
         ) from error
-    digest, published = context.tree.put_blob(ATTESTATORES, model_image)
+    published = context.retain(model_image)
     return {
         "kind": "adapter-crop",
         "source_page_id": page_id,
         "source_page_ordinal": transform["source_page_ordinal"],
-        "image_path": published.relative_path,
-        "image_sha256": digest,
+        "image_path": published["relative_path"],
+        "image_sha256": published["sha256"],
         "transform": presented_transform(
             page_id,
             transform["source_page_ordinal"],

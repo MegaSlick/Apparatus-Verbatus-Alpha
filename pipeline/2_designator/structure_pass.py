@@ -353,22 +353,6 @@ def live_chair_record(
 # --- the production client --------------------------------------------------
 
 
-def retain_chair_bytes(context: Any, data: bytes) -> dict[str, str]:
-    """Store one chair response or call record under its own digest.
-
-    The client retains before it parses. Guarded after the seal, since this
-    writes into the stage's own blob directory, whose inventory the completion
-    seal already witnessed.
-    """
-    if context.sealed:
-        raise ContractError(
-            "the Designator has sealed its completion boundary; retaining a chair response "
-            "afterwards would make its witnessed blob inventory false"
-        )
-    digest, result = context.tree.put_blob(DESIGNATOR, data)
-    return {"relative_path": result.relative_path, "sha256": digest}
-
-
 def default_serving_factory(context: Any, identity: ChairIdentity, tier: str) -> ChairClient:
     """Build the client the live pass reads the structure chair through.
 
@@ -400,7 +384,7 @@ def default_serving_factory(context: Any, identity: ChairIdentity, tier: str) ->
         manager=manager,
         identity=identity,
         tier=tier,
-        retain=lambda data: retain_chair_bytes(context, data),
+        retain=context.retain,
         decoding_config_sha256=decoding_sha256,
         # The already-checked sealed value, never a serving default.
         record_temperature=executable_temperature(policy),
@@ -456,13 +440,13 @@ def prepare_page_request_image(
         raise SchemaRefusal(
             f"the Designator cannot reproduce Chandra's RGB scale_to_fit request image: {error}"
         ) from error
-    image_sha256, image_blob = context.tree.put_blob(DESIGNATOR, model_image)
+    image = context.retain(model_image)
     presented = {
         "kind": "adapter-crop",
         "source_page_id": page_id,
         "source_page_ordinal": page_ordinal,
-        "image_path": image_blob.relative_path,
-        "image_sha256": image_sha256,
+        "image_path": image["relative_path"],
+        "image_sha256": image["sha256"],
         "transform": presented_transform(page_id, page_ordinal, bounds, target),
     }
     validate_presented(presented, page_size=(page_w, page_h))

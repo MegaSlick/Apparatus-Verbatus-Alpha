@@ -815,12 +815,12 @@ def _stored_crop(
 ) -> dict:
     """Cut and store one crop, returned as the payload fields that describe it."""
     transform = _crop_transform(page_ordinal, page_record["subject_id"], final_bounds)
-    digest, stored = context.tree.put_blob(DESIGNATOR, crop_png(page_bytes, final_bounds))
+    stored = context.retain(crop_png(page_bytes, final_bounds))
     return {
         "transform": transform,
         "transform_digest": geometry.transform_digest(transform),
-        "image_path": stored.relative_path,
-        "image_sha256": digest,
+        "image_path": stored["relative_path"],
+        "image_sha256": stored["sha256"],
     }
 
 

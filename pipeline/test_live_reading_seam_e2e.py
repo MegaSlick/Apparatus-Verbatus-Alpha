@@ -681,7 +681,7 @@ class WitnessWorld:
             manager=manager,
             identity=identity,
             tier=tier,
-            retain=lambda data: attestatores.retained_blob_ref(context, data),
+            retain=context.retain,
             decoding_config_sha256=self.decoding_sha256,
             record_temperature=0,
             # Bare, not through a converter: `ChairClient.__enter__` normalizes
@@ -729,7 +729,7 @@ class ReaderWorld:
             manager=manager,
             identity=identity,
             tier=tier,
-            retain=lambda data: perlector.retain_chair_bytes(context, data),
+            retain=context.retain,
             decoding_config_sha256=decoding_sha256,
             record_temperature=policy["reading_of_record"]["temperature"],
             read_receipt=context.tree.read_run_receipt,

@@ -36,7 +36,6 @@ import feeding
 from common import imaging_ports
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES
 from common.imaging import crop_png, dimensions, resize_png_lanczos
 from common.native_witness import validate_presented
 from common.witness_adapters import AdapterRefusal, resolve_witness_adapter_name
@@ -185,13 +184,13 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
                 "target_height_px": target_height,
             },
         }
-    digest, published = context.tree.put_blob(ATTESTATORES, model_image)
+    published = context.retain(model_image)
     return {
         "kind": "adapter-crop",
         "source_page_id": page_id,
         "source_page_ordinal": source_transform["source_page_ordinal"],
-        "image_path": published.relative_path,
-        "image_sha256": digest,
+        "image_path": published["relative_path"],
+        "image_sha256": published["sha256"],
         "transform": model_transform,
     }
 

@@ -26,7 +26,7 @@ from common.chandra_native_retry import named_trace_summary
 from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
-from common.contracts.stages import EXEMPLAR, PERLECTOR
+from common.contracts.stages import EXEMPLAR
 from common.imaging import crop_png, dimensions, encode_grayscale_png_deterministic
 from common.native_witness import REPORTED_BOUNDS_SOURCES
 from common.stage import WITNESS_READING_OUTCOMES
@@ -176,15 +176,15 @@ def build_page_render(context, *, source_page_id: str, source_page_ordinal: int)
         raise SchemaRefusal(
             "a sealed Exemplar page could not be rendered as Perlector page context"
         ) from error
-    digest, published = context.tree.put_blob(PERLECTOR, downscaled)
+    published = context.retain(downscaled)
     return {
         "source_page_id": source_page_id,
         "source_page_ordinal": source_page_ordinal,
         # The sealed page this render was derived from, named so the derivation
         # can be checked rather than believed.
         "source": context.input_ref(source_path),
-        "image_path": published.relative_path,
-        "image_sha256": digest,
+        "image_path": published["relative_path"],
+        "image_sha256": published["sha256"],
         "transform": transform,
     }
 

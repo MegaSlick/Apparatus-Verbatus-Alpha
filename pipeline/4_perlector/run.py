@@ -1702,7 +1702,7 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
             manager=manager,
             identity=chair,
             tier=tier,
-            retain=partial(retain_chair_bytes, context),
+            retain=context.retain,
             decoding_config_sha256=decoding_config_sha256,
             record_temperature=record_temperature,
             # `ChairClient.__enter__` passes a plain dict, which is what
@@ -1711,21 +1711,6 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
         )
 
     return factory
-
-
-def retain_chair_bytes(context, data: bytes) -> dict[str, str]:
-    """Store one chair response or call record under its own digest.
-
-    The client retains before it parses (principle 2). Refused after the seal, which
-    witnessed this stage's blob inventory; a later write would make it false.
-    """
-    if context.sealed:
-        raise SchemaRefusal(
-            "the Perlector has sealed its completion boundary; retaining a chair response "
-            "afterwards would make its witnessed blob inventory false"
-        )
-    digest, result = context.tree.put_blob(context.stage, data)
-    return {"relative_path": result.relative_path, "sha256": digest}
 
 
 def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict[str, str]]:

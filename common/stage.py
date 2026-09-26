@@ -746,22 +746,25 @@ class StageContext:
             )
 
     def _write_serving_blob(self, value: dict[str, Any], label: str) -> dict[str, str]:
-        """Canonical content-addressed storage shared by serving evidence records.
-
-        Refused after the seal, like `publish`: the blob directory is in the
-        sealed inventory, and a late write would look like tampering to the
-        next consumer.  Receipts need no guard; they live outside any stage.
-        """
-        if self.sealed:
-            raise SchemaRefusal(
-                f"{self.stage} has sealed its completion boundary; storing {label} afterwards "
-                "would make its witnessed blob inventory false"
-            )
         try:
             payload = canonical_bytes(value)
         except (TypeError, ValueError) as error:
             raise SchemaRefusal(f"{label} is not canonical JSON data: {error}") from error
-        digest, result = self.tree.put_blob(self.stage, payload)
+        return self.retain(payload)
+
+    def retain(self, data: bytes) -> dict[str, str]:
+        """Store bytes in this stage's blob directory and return their reference.
+
+        Refused after the seal, like `publish`: the blob directory is in the
+        sealed inventory, and a late write would look like tampering to the
+        next consumer.
+        """
+        if self.sealed:
+            raise SchemaRefusal(
+                f"{self.stage} has sealed its completion boundary; storing a blob afterwards "
+                "would make its witnessed blob inventory false"
+            )
+        digest, result = self.tree.put_blob(self.stage, data)
         return {"relative_path": result.relative_path, "sha256": digest}
 
     def input_ref(self, relative_path: str) -> dict[str, str]:

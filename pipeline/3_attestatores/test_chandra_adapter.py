@@ -35,6 +35,7 @@ from common.native_witness import (
     validate_presented_page_binding,
 )
 from common.runtree.store import RunTree
+from common.stage import StageContext
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE = Path(__file__).resolve().parent
@@ -1268,6 +1269,12 @@ class _PageTree:
         return digest, _Published(path)
 
 
+class _Context(SimpleNamespace):
+    stage = ATTESTATORES
+    sealed = False
+    retain = StageContext.retain
+
+
 def _page_png(width: int, height: int) -> bytes:
     """A deterministic grayscale page with visible structure in it.
 
@@ -1333,7 +1340,7 @@ def test_chandra_presents_a_page_at_the_size_its_own_vendor_rule_chooses():
     chandra = _load_stage_module("chandra")
     adapters = _load_adapter_registry()
     page = _page_png(200, 260)
-    context = SimpleNamespace(tree=_PageTree(page))
+    context = _Context(tree=_PageTree(page))
     source = _page_presentation(page, 200, 260)
 
     presented = chandra.present(context, source)
@@ -1383,7 +1390,7 @@ def test_the_presented_page_is_the_vendors_own_convert_then_resize_order():
     """
     chandra = _load_stage_module("chandra")
     page = _page_png(200, 260)
-    context = SimpleNamespace(tree=_PageTree(page))
+    context = _Context(tree=_PageTree(page))
 
     presented = chandra.present(context, _page_presentation(page, 200, 260))
 
@@ -1447,7 +1454,7 @@ def test_a_chandra_presentation_that_is_not_the_vendors_own_size_is_refused_at_r
     chandra = _load_stage_module("chandra")
     adapters = _load_adapter_registry()
     page = _page_png(200, 260)
-    context = SimpleNamespace(tree=_PageTree(page))
+    context = _Context(tree=_PageTree(page))
     source = _page_presentation(page, 200, 260)
     forged = chandra.present(context, source)
     # Still on the 28-pixel grid and still inside the vendor's area ceiling, so
@@ -1468,7 +1475,7 @@ def test_a_chandra_act_view_keeps_the_crop_it_was_given_and_mints_no_resize():
     chandra = _load_stage_module("chandra")
     adapters = _load_adapter_registry()
     page = _page_png(200, 260)
-    context = SimpleNamespace(tree=_PageTree(page))
+    context = _Context(tree=_PageTree(page))
     region = {
         "kind": "region",
         "source_page_id": "page-1",

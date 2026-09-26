@@ -29,7 +29,6 @@ import feeding
 
 from common import churro_document
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES
 from common.imaging import convert_png_to_rgb, crop_png, dimensions, resize_png_lanczos
 from common.imaging_ports import resize_to_fit_churro
 from common.native_witness import parse_churro_response, validate_presented
@@ -202,13 +201,13 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
             f"Churro's presented page cannot be converted to RGB, which is half of the vendor's "
             f"own prepare_ocr_image and cannot be recorded as having run: {error}"
         ) from error
-    digest, published = context.tree.put_blob(ATTESTATORES, model_image)
+    published = context.retain(model_image)
     return {
         "kind": "adapter-crop",
         "source_page_id": page_id,
         "source_page_ordinal": transform["source_page_ordinal"],
-        "image_path": published.relative_path,
-        "image_sha256": digest,
+        "image_path": published["relative_path"],
+        "image_sha256": published["sha256"],
         "transform": presented_transform(
             page_id,
             transform["source_page_ordinal"],

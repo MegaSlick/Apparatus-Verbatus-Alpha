@@ -3875,7 +3875,7 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         manager=manager,
         identity=identity,
         tier=tier,
-        retain=lambda data: retained_blob_ref(context, data),
+        retain=context.retain,
         decoding_config_sha256=decoding_sha256,
         record_temperature=policy["reading_of_record"]["temperature"],
         # Passed bare: `ChairClient.__enter__` copies the read-only receipt
@@ -3883,12 +3883,6 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         read_receipt=context.tree.read_run_receipt,
         chandra_native_policy=policy.get("chandra_native_inference"),
     )
-
-
-def retained_blob_ref(context, data: bytes) -> dict[str, str]:
-    """Retain bytes in this stage's own content-addressed blob store."""
-    digest, published = context.tree.put_blob(ATTESTATORES, data)
-    return {"relative_path": published.relative_path, "sha256": digest}
 
 
 def attempt_from_live(live: live_witness.LiveAttempt) -> Attempt:
@@ -4497,7 +4491,7 @@ def _chandra_application_refusal_attempt(
     reason = _CHANDRA_APPLICATION_REFUSAL_PREFIX + str(error)
     if attempt is not None:
         return attempt._replace(outcome="failed", reason=reason)
-    model_output_ref = retained_blob_ref(context, response.content.encode("utf-8"))
+    model_output_ref = context.retain(response.content.encode("utf-8"))
     return Attempt(
         outcome="failed",
         native_payload=None,
@@ -4876,7 +4870,7 @@ def _publish_chandra_intent(
         }
         for digest in dispatch.request.image_sha256s
     ]
-    request_body_ref = retained_blob_ref(context, dispatch.body)
+    request_body_ref = context.retain(dispatch.body)
     payload = {
         "schema": CHANDRA_INTENT_SCHEMA,
         "recipe": chandra_recipe_record(),
