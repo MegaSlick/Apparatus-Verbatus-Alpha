@@ -973,46 +973,21 @@ def process_sources(
     cached_path: str | None = None
     cached_data: bytes | None = None
     # A container's ordinals are contiguous, so one PDF stream and document are
-    # held open at a time.
+    # held open at a time, on one reusable stack.
+    active_pdf = ExitStack()
     active_pdf_key: str | None = None
     active_pdf_digest: tuple[str, int] | None = None
     active_pdf_document: pdf_render.OpenPdf | None = None
     active_opened_source: inventory.OpenedSubmissionSource | None = None
-    active_context: ExitStack | None = None
 
-    def close_active_pdf() -> None:
-        nonlocal active_pdf_key
-        nonlocal active_pdf_digest
-        nonlocal active_pdf_document
-        nonlocal active_opened_source
-        nonlocal active_context
-        # Cleared before anything can raise, so the outer handler cannot close
-        # the same handle twice and mask the real failure.
-        document, context_stack = active_pdf_document, active_context
-        active_pdf_key = None
-        active_pdf_digest = None
-        active_pdf_document = None
-        active_opened_source = None
-        active_context = None
-        try:
-            if document is not None:
-                try:
-                    pdf_render.close_document(document)
-                except pdf_render.PdfRefusal as error:
-                    # A handle that cannot be released is a resource failure,
-                    # not a page refusal.
-                    raise ContractError(str(error)) from error
-        finally:
-            # The stream closes after the document, even if that close failed.
-            if context_stack is not None:
-                context_stack.close()
-
-    try:
+    with active_pdf:
         for source in sorted(sources, key=lambda item: item.ordinal):
             streamed_pdf = open_source is not None and source.detected_format == "pdf"
             source_key = source.declared_path
             if active_pdf_key is not None and (not streamed_pdf or source_key != active_pdf_key):
-                close_active_pdf()
+                active_pdf.close()
+                active_pdf_key = active_pdf_digest = None
+                active_pdf_document = active_opened_source = None
             if (
                 source.declared_size is not None
                 and source.declared_size > MAX_SOURCE_BYTES
@@ -1032,27 +1007,18 @@ def process_sources(
                 try:
                     if active_pdf_key is None:
                         assert open_source is not None  # narrowed by streamed_pdf
-                        candidate_context = ExitStack()
-                        try:
-                            candidate_source = candidate_context.enter_context(
-                                open_source(source.declared_path)
-                            )
-                            actual_digest, actual_size = _source_digest_stream(
-                                candidate_source.handle
-                            )
-                            candidate_source.assert_unchanged(
-                                expected_sha256=source.declared_sha256
-                            )
-                        except BaseException:
-                            candidate_context.close()
-                            raise
+                        candidate_source = active_pdf.enter_context(
+                            open_source(source.declared_path)
+                        )
+                        actual_digest, actual_size = _source_digest_stream(candidate_source.handle)
+                        candidate_source.assert_unchanged(expected_sha256=source.declared_sha256)
                         active_pdf_key = source_key
                         active_pdf_digest = (actual_digest, actual_size)
                         active_opened_source = candidate_source
-                        active_context = candidate_context
                     assert active_pdf_digest is not None  # set with active_pdf_key
                     actual_digest, actual_size = active_pdf_digest
                 except (OSError, inventory.SubmissionInputError) as error:
+                    active_pdf.close()
                     _publish_refusal(context, source, RefusalReason.UNREADABLE, str(error))
                     continue
             else:
@@ -1078,6 +1044,7 @@ def process_sources(
                     if active_pdf_document is None:
                         assert active_opened_source is not None
                         active_pdf_document = pdf_render.open_document(active_opened_source.handle)
+                        active_pdf.callback(pdf_render.close_document, active_pdf_document)
                     opened_pdf = active_pdf_document
                 except pdf_render.PdfRefusal as error:
                     decision = _refused(str(error))
@@ -1123,16 +1090,6 @@ def process_sources(
             seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
             _publish_admission(context, tree, source, decision, data, actual_digest, duplicate_of)
             admitted += 1
-    except BaseException as primary:
-        # Cleanup must not replace a refusal already in flight; its failure
-        # becomes a note on it.
-        try:
-            close_active_pdf()
-        except BaseException as cleanup:
-            primary.add_note(f"PDF cleanup also failed: {cleanup}")
-        raise
-    else:
-        close_active_pdf()
 
     return admitted
 

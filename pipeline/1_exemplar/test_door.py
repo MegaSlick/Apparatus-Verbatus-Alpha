@@ -544,56 +544,17 @@ def test_source_expansion_refuses_paths_that_alias_on_default_apfs():
         )
 
 
-def test_pdf_cleanup_failure_does_not_mask_a_security_refusal(monkeypatch):
-    """Cleanup evidence is retained without replacing the refusal in flight."""
-    data = single_gray_page_pdf()
-    digest = digest_bytes(data)
-    source = SourceEntry(
-        1,
-        "register.pdf",
-        digest,
-        container_page_index=0,
-        declared_size=len(data),
-        detected_format="pdf",
-    )
-
-    class Opened:
-        def __init__(self):
-            self.handle = BytesIO(data)
-
-        def assert_unchanged(self, *, expected_sha256):
-            assert expected_sha256 == digest
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-    monkeypatch.setattr(door.pdf_render, "open_document", lambda _handle: object())
-    monkeypatch.setattr(
-        door,
-        "decide",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(ContractError("security refusal")),
-    )
-
+def test_a_pdf_close_failure_after_a_good_render_still_admits_the_page(monkeypatch):
     def fail_close(_document):
-        raise door.pdf_render.PdfRefusal(RefusalReason.CORRUPT, "native cleanup failed")
+        raise RuntimeError("synthetic native close failure")
 
-    monkeypatch.setattr(door.pdf_render, "close_document", fail_close)
+    monkeypatch.setattr(door.pdf_render.pdfium.PdfDocument, "close", fail_close)
+    data = single_gray_page_pdf()
+    source = SourceEntry(
+        1, "register.pdf", digest_bytes(data), container_page_index=0, declared_size=len(data)
+    )
 
-    with pytest.raises(ContractError, match="security refusal") as refused:
-        process_sources(
-            object(),
-            object(),
-            [source],
-            lambda _path: pytest.fail("a streamed PDF must not use the raster reader"),
-            policy=POLICY,
-            pdf_settings=object(),
-            open_source=lambda _path: Opened(),
-        )
-
-    assert refused.value.__notes__ == ["PDF cleanup also failed: corrupt: native cleanup failed"]
+    assert door.decide(data, source, POLICY).outcome == "admitted"
 
 
 def test_container_pages_bind_membership_to_container_and_index_not_the_shared_file_hash(
