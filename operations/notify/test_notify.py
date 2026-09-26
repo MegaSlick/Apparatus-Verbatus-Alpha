@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from operations.notify import client
+
 SOURCE = Path(__file__).with_name("notify.sh")
 GATE = SOURCE.parents[2] / ".githooks" / "check-all.sh"
 
@@ -586,3 +588,84 @@ def test_the_stamp_never_carries_the_topic(notify_repo):
     assert written.strip().isdigit()
     for text in (written, result.stdout, result.stderr):
         assert "stamp_leak_topic" not in text
+
+
+def test_the_client_reports_the_real_script_under_the_sink_as_suppressed(monkeypatch):
+    monkeypatch.setenv("NTFY_TOPIC", "verbatus-test-sink")
+    monkeypatch.delenv("NTFY_SERVER", raising=False)
+
+    outcome = client.send("milestone", "a message no phone should see")
+
+    assert (outcome.attempted, outcome.delivered, outcome.suppressed) == (True, False, True)
+    assert outcome.line() == "Phone notification: suppressed (test sink)."
+
+
+@pytest.mark.parametrize(
+    ("status", "delivered", "detail"),
+    [("204", True, "delivered"), ("503", False, "notify: NOT DELIVERED (milestone)")],
+)
+def test_the_client_reads_delivery_and_failure_from_the_script(
+    notify_repo, status, delivered, detail
+):
+    script, env = notify_repo
+    env["FAKE_STATUS"] = status
+
+    def runner(argv):
+        return subprocess.run(
+            ["sh", str(script), *argv[2:]], capture_output=True, text=True, env=env, timeout=10
+        )
+
+    outcome = client.send("milestone", "finished", runner=runner)
+
+    assert outcome.attempted and not outcome.suppressed
+    assert outcome.delivered is delivered
+    assert outcome.detail.startswith(detail)
+
+
+def _raises(error: BaseException):
+    def runner(argv):
+        raise error
+
+    return runner
+
+
+@pytest.mark.parametrize(
+    ("runner", "detail"),
+    [
+        (_raises(subprocess.TimeoutExpired(["sh"], 10.0)), "did not answer within 10 seconds"),
+        (_raises(OSError("no shell here")), "could not run: no shell here"),
+        (_raises(UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")), "failed unexpectedly"),
+        (lambda argv: subprocess.CompletedProcess(argv, 1, "", "x" * 500), "x" * 160),
+    ],
+)
+def test_the_client_turns_every_failure_into_a_not_delivered_outcome(runner, detail):
+    outcome = client.send("milestone", "finished", runner=runner)
+
+    assert outcome.attempted and not outcome.delivered and not outcome.suppressed
+    assert detail in outcome.detail
+    assert len(outcome.detail) < 220
+    assert outcome.line().endswith("The result above still stands.")
+
+
+def test_the_client_lets_a_keyboard_interrupt_through():
+    with pytest.raises(KeyboardInterrupt):
+        client.send("milestone", "finished", runner=_raises(KeyboardInterrupt()))
+
+
+@pytest.mark.parametrize("message", ["two\nlines", "", "   ", "nul\x00byte"])
+def test_the_client_never_runs_the_script_for_a_malformed_message(message):
+    outcome = client.send("milestone", message, runner=_raises(AssertionError("ran")))
+
+    assert not outcome.attempted
+    assert outcome.detail == "the message was not one non-empty line"
+
+
+def test_the_client_bounds_the_script_with_its_timeout(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        client.subprocess, "run", lambda argv, **kwargs: seen.update(kwargs) or None
+    )
+
+    client.run(["sh"])
+
+    assert seen["timeout"] == client.NOTIFY_TIMEOUT_SECONDS

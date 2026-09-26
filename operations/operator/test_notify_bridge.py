@@ -55,60 +55,6 @@ def test_an_allowed_moment_reaches_the_notify_script_with_one_line(event: str) -
     assert outcome.line() == "Phone notification: sent."
 
 
-@pytest.mark.parametrize("message", ("first line\nsecond line", "", "   "))
-def test_a_message_that_is_not_one_non_empty_line_is_refused(message: str) -> None:
-    runner = RecordingRunner()
-    outcome = notify_bridge.shell_notifier(runner=runner)("milestone", message)
-
-    assert runner.calls == []
-    assert not outcome.delivered
-    assert "one non-empty line" in outcome.detail
-
-
-def test_a_failed_delivery_is_reported_as_not_delivered_and_never_as_success() -> None:
-    runner = RecordingRunner(returncode=1, stderr="NOT DELIVERED: no topic configured")
-    outcome = notify_bridge.shell_notifier(runner=runner)("milestone", "run finished")
-
-    assert outcome.attempted and not outcome.delivered
-    assert "NOT DELIVERED" in outcome.line()
-    assert "The result above still stands." in outcome.line()
-
-
-def test_a_cut_delivery_reason_says_where_it_was_cut() -> None:
-    runner = RecordingRunner(returncode=1, stderr="x" * 200)
-
-    outcome = notify_bridge.shell_notifier(runner=runner)("milestone", "run finished")
-
-    assert outcome.detail.startswith("x" * 160)
-    assert "reason truncated at 160 characters" in outcome.detail
-
-
-def test_a_notification_timeout_is_a_named_non_delivery() -> None:
-    observed: dict[str, object] = {}
-
-    def hangs(argv, **kwargs):  # type: ignore[no-untyped-def]
-        del argv
-        observed.update(kwargs)
-        raise subprocess.TimeoutExpired("notify", kwargs["timeout"])
-
-    outcome = notify_bridge.shell_notifier(runner=hangs)("milestone", "run finished")
-
-    assert observed["timeout"] == notify_bridge.NOTIFY_TIMEOUT_SECONDS
-    assert outcome.attempted and not outcome.delivered
-    assert "did not answer within 10 seconds" in outcome.detail
-
-
-def test_a_notifier_that_cannot_run_at_all_is_still_not_an_exception() -> None:
-    def refuses(argv, **kwargs):  # type: ignore[no-untyped-def]
-        del argv, kwargs
-        raise OSError("no shell here")
-
-    outcome = notify_bridge.shell_notifier(runner=refuses)("milestone", "run finished")
-
-    assert outcome.attempted and not outcome.delivered
-    assert "could not run" in outcome.detail
-
-
 def test_the_default_surface_notifier_sends_nothing_and_says_nothing(tmp_path: Path) -> None:
     """No test, and no first rehearsal, may put a ping on his phone unasked.
 
@@ -204,43 +150,12 @@ def test_notification_does_not_replace_the_terminal_result(tmp_path: Path) -> No
     assert [event for event, _ in sent] == ["milestone"]
 
 
-def test_the_test_sink_marker_is_reported_as_suppressed_and_never_as_sent() -> None:
-    """The operator surface prints this line to a human; it must not say "sent".
+def test_a_suppressed_spend_warning_stays_suppressed(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    surface.notifier = lambda event, message: notify_bridge.NotifyOutcome(
+        True, False, "NOTIFY_SUPPRESSED verbatus-test-sink", suppressed=True
+    )
 
-    `notify.sh` exits 0 under the reserved test topic so the guard cannot change
-    what the suites it protects measure. Reading that 0 as delivery made the
-    surface report a notification that never left the machine; the marker on
-    stdout is what tells the two apart.
-    """
+    outcome = surface._notify_spend("balance is low")
 
-    runner = RecordingRunner(stdout="NOTIFY_SUPPRESSED verbatus-test-sink\n")
-
-    outcome = notify_bridge.shell_notifier(runner=runner)("milestone", "run r1 finished")
-
-    assert outcome.attempted
-    assert not outcome.delivered
-    assert outcome.suppressed
-    assert outcome.detail == "NOTIFY_SUPPRESSED verbatus-test-sink"
     assert outcome.line() == "Phone notification: suppressed (test sink)."
-    assert "sent" not in outcome.line()
-
-
-def test_a_real_success_is_still_delivered_and_carries_no_suppression() -> None:
-    """The counterfactual: exit 0 without the marker must not become suppressed."""
-
-    for stdout in ("", "\n", "some unrelated chatter\n"):
-        outcome = notify_bridge.shell_notifier(runner=RecordingRunner(stdout=stdout))(
-            "milestone", "run r1 finished"
-        )
-
-        assert outcome.attempted and outcome.delivered
-        assert not outcome.suppressed
-        assert outcome.line() == "Phone notification: sent."
-
-
-def test_the_marker_word_this_module_reads_is_the_one_the_script_prints() -> None:
-    """Two languages, neither able to import the other, one typo apart from a
-    silent return to "sent." for a notification that never left the machine."""
-
-    source = notify_bridge.NOTIFY_SCRIPT.read_text(encoding="utf-8")
-    assert f"printf '{notify_bridge.NOTIFY_SUPPRESSED_MARKER} %s\\n' \"$topic\"" in source

@@ -76,7 +76,6 @@ from operations.pod.models import (
     require_billing_cutoff_margin_seconds,
     require_utc,
 )
-from operations.pod.notify_bridge import NotifyOutcome as PodNotifyOutcome
 from operations.pod.pod_run import DEFAULT_RUNS_DIRECTORY
 from operations.pod.preflight import (
     CacheMismatch,
@@ -2748,15 +2747,17 @@ class OperatorSurface:
             )
         self.present(outcome.line())
 
-    def _notify_spend(self, message: str) -> PodNotifyOutcome:
+    def _notify_spend(self, message: str) -> notify_bridge.NotifyOutcome:
         """Adapt the event-aware notifier without letting failure gate spend."""
 
         one_line = " ".join(message.split()) or "no spend-warning detail recorded"
         try:
             outcome = self.notifier("milestone", one_line)
         except Exception as error:  # a broken notifier is not a spend gate
-            return PodNotifyOutcome(True, False, f"the notifier raised: {type(error).__name__}")
-        return PodNotifyOutcome(outcome.attempted, outcome.delivered, outcome.detail)
+            return notify_bridge.NotifyOutcome(
+                True, False, f"the notifier raised: {type(error).__name__}"
+            )
+        return outcome
 
     def _show_close(self, report: CloseReport, receipt: Path) -> None:
         self._present_captured_cost(report)
