@@ -864,19 +864,12 @@ class ChairCacheBootstrapAction:
 class ModelStoreBootstrapAction:
     """Launch-time acquisition of the real roster onto the mounted model volume."""
 
-    def __init__(
-        self,
-        store_root: str | Path,
-        fetcher: MaterializationFetcher,
-        *,
-        capacity: dict[str, object],
-    ) -> None:
+    def __init__(self, store_root: str | Path, fetcher: MaterializationFetcher) -> None:
         self.store_root = Path(store_root)
         self.fetcher = fetcher
-        self.capacity = capacity
 
     def materialize(self) -> dict[str, object]:
-        return materialize_real_roster(self.store_root, self.fetcher, capacity=self.capacity)
+        return materialize_real_roster(self.store_root, self.fetcher)
 
 
 class SubprocessBootstrapActions:

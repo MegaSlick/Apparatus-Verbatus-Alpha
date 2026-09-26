@@ -87,12 +87,6 @@ def _store(tmp_path):
             "records": "records",
             "staging": "staging",
         },
-        "capacity": {
-            "snapshot_bytes": 51_000_000_000,
-            "promotion_headroom_bytes": 51_000_000_000,
-            "available_bytes": 102_000_000_000,
-            "cleanup_owner": "host model-store operator",
-        },
         "artifacts": [artifacts[key] for key in sorted(artifacts)],
     }
     write_download_record(record, tmp_path)
@@ -170,7 +164,9 @@ def test_write_derived_inventory_refuses_a_differing_republish_and_leaves_the_fi
     original_bytes = path.read_bytes()
 
     other = copy.deepcopy(record)
-    other["capacity"]["available_bytes"] += 1
+    other["artifacts"][0]["required_files"] = sorted(
+        [*other["artifacts"][0]["required_files"], "config.json"]
+    )
 
     with pytest.raises(DigestMismatchRefusal, match="already exists with different bytes"):
         write_derived_inventory(other, path)
@@ -242,8 +238,7 @@ def test_promote_verified_snapshot_refuses_a_pending_shaped_entry_by_name(tmp_pa
 def test_write_download_record_round_trips_through_load_download_record(tmp_path):
     """`_store` is the one host-record fixture, and it writes through this writer.
 
-    This body was a verbatim second copy of `_store`, differing only in capacity
-    figures neither assertion reads. One fixture means a record shape that
+    This body was a verbatim second copy of `_store`. One fixture means a record shape that
     changes cannot pass here while failing everywhere else.
     """
 
@@ -356,7 +351,9 @@ def test_active_record_swap_does_not_rewrite_its_immutable_version(tmp_path):
     original_digest = hashlib.sha256(original_bytes).hexdigest()
     archive = tmp_path / "records" / f"{original_digest}.json"
     swapped = copy.deepcopy(record)
-    swapped["capacity"]["available_bytes"] += 1
+    swapped["artifacts"][0]["required_files"] = sorted(
+        [*swapped["artifacts"][0]["required_files"], "config.json"]
+    )
 
     (tmp_path / "download_record.json").write_bytes(canonical_bytes(swapped))
 
@@ -469,9 +466,7 @@ def test_materializer_refuses_a_staging_root_symlink_before_fetching_outside_sto
     (store / "staging").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(DigestMismatchRefusal, match="escapes configured root"):
-        materialize_real_roster(
-            store, _FakeMaterializationFetcher(), capacity=dict(_MATERIALIZATION_CAPACITY)
-        )
+        materialize_real_roster(store, _FakeMaterializationFetcher())
 
     assert sorted(outside.iterdir()) == []
 
@@ -489,9 +484,7 @@ def test_materializer_refuses_a_fetcher_that_replaces_its_staging_directory(tmp_
             destination.symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(DigestMismatchRefusal, match="replaced the materialization destination"):
-        materialize_real_roster(
-            store, _ReplacesDestination(), capacity=dict(_MATERIALIZATION_CAPACITY)
-        )
+        materialize_real_roster(store, _ReplacesDestination())
 
     assert not (outside / UNTEXTED_LICENCE_SNAPSHOT).exists()
     assert sorted((store / "staging").iterdir()) == []
@@ -514,9 +507,7 @@ def test_materializer_names_a_cleanup_failure_without_losing_the_fetch_failure(
         DigestMismatchRefusal,
         match="fetch transport failed.*staging cleanup also failed.*cleanup denied",
     ):
-        materialize_real_roster(
-            tmp_path, _FailsAfterWriting(), capacity=dict(_MATERIALIZATION_CAPACITY)
-        )
+        materialize_real_roster(tmp_path, _FailsAfterWriting())
 
 
 def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_path, monkeypatch):
@@ -546,9 +537,7 @@ def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_pat
     monkeypatch.setattr(model_store, "_read_limited_bytes", refuse_external_read)
 
     with pytest.raises(DigestMismatchRefusal, match="symlink"):
-        materialize_real_roster(
-            tmp_path, _SymlinkedShardIndex(), capacity=dict(_MATERIALIZATION_CAPACITY)
-        )
+        materialize_real_roster(tmp_path, _SymlinkedShardIndex())
 
 
 def test_materializer_refuses_a_hard_link_to_bytes_owned_outside_staging(tmp_path):
@@ -562,9 +551,7 @@ def test_materializer_refuses_a_hard_link_to_bytes_owned_outside_staging(tmp_pat
             os.link(outside, destination / "model.safetensors")
 
     with pytest.raises(DigestMismatchRefusal, match="hard-linked file"):
-        materialize_real_roster(
-            store, _HardLinksExternalBytes(), capacity=dict(_MATERIALIZATION_CAPACITY)
-        )
+        materialize_real_roster(store, _HardLinksExternalBytes())
 
     assert outside.read_bytes() == b"not repository evidence"
     assert outside.stat().st_nlink == 1
@@ -949,14 +936,6 @@ def test_real_roster_and_materialization_inventory_name_the_same_pinned_reposito
     assert observed == expected
 
 
-_MATERIALIZATION_CAPACITY = {
-    "snapshot_bytes": 100,
-    "promotion_headroom_bytes": 100,
-    "available_bytes": 200,
-    "cleanup_owner": "pod operator",
-}
-
-
 class _FakeMaterializationFetcher:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -1014,37 +993,10 @@ def test_a_missing_client_package_is_not_reported_as_a_corrupt_model_card(tmp_pa
     assert "unreadable model-card metadata" not in str(refusal.value)
 
 
-def test_a_resumed_materialization_refuses_a_capacity_plan_that_is_not_the_recorded_one(tmp_path):
-    """The observation the caller supplied is not thrown away without a word.
-
-    A resume rebound `record` to the one on disk, so the supplied capacity was
-    neither recorded nor compared: a volume that was resized, or a store moved to
-    a different volume, kept publishing the previous volume's figures. Only
-    `_validate_record` looks at capacity, and it asks nothing beyond whether one
-    plan is self-consistent, so nothing reported the disagreement.
-    """
-
-    fetcher = _FakeMaterializationFetcher()
-    materialize_real_roster(tmp_path, fetcher, capacity=dict(_MATERIALIZATION_CAPACITY))
-    assert load_download_record(tmp_path)["capacity"] == dict(_MATERIALIZATION_CAPACITY)
-
-    moved = dict(_MATERIALIZATION_CAPACITY) | {"available_bytes": 400}
-
-    with pytest.raises(DigestMismatchRefusal) as refusal:
-        materialize_real_roster(tmp_path, fetcher, capacity=moved)
-
-    detail = str(refusal.value)
-    assert "capacity plan differs" in detail
-    assert "400" in detail
-    # The recorded plan is evidence and is not rewritten by the refusal.
-    assert load_download_record(tmp_path)["capacity"] == dict(_MATERIALIZATION_CAPACITY)
-
-
 def test_pod_materializer_fetches_each_real_pin_once_and_records_measured_evidence(tmp_path):
     fetcher = _FakeMaterializationFetcher()
-    capacity = dict(_MATERIALIZATION_CAPACITY)
 
-    receipt = materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+    receipt = materialize_real_roster(tmp_path, fetcher)
 
     expected = {
         (item.repo, item.revision) for item in REQUIRED_ARTIFACTS if item.source == "huggingface"
@@ -1068,11 +1020,10 @@ def test_pod_materializer_fetches_each_real_pin_once_and_records_measured_eviden
 
 def test_pod_materializer_reuses_verified_present_snapshots_without_refetching(tmp_path):
     fetcher = _FakeMaterializationFetcher()
-    capacity = dict(_MATERIALIZATION_CAPACITY)
-    materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+    materialize_real_roster(tmp_path, fetcher)
     calls = list(fetcher.calls)
 
-    materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+    materialize_real_roster(tmp_path, fetcher)
 
     assert fetcher.calls == calls
 
@@ -1088,9 +1039,7 @@ def test_materializer_joins_a_loaded_record_to_the_roster_before_indexing_it(tmp
     (tmp_path / "records" / f"{digest_bytes(payload)}.json").write_bytes(payload)
 
     with pytest.raises(DigestMismatchRefusal, match="required artifact 'churro-3B' is absent"):
-        materialize_real_roster(
-            tmp_path, _FakeMaterializationFetcher(), capacity=dict(_MATERIALIZATION_CAPACITY)
-        )
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
 
 
 def test_materializer_does_not_call_another_writers_staging_entry_an_orphan(tmp_path):
@@ -1098,9 +1047,7 @@ def test_materializer_does_not_call_another_writers_staging_entry_an_orphan(tmp_
     staging.mkdir()
     (staging / ".other-materializer.fetch-live").mkdir()
 
-    receipt = materialize_real_roster(
-        tmp_path, _FakeMaterializationFetcher(), capacity=dict(_MATERIALIZATION_CAPACITY)
-    )
+    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
 
     assert receipt["unattributed_staging_entries"] == [".other-materializer.fetch-live"]
     assert "staging_orphans" not in receipt
@@ -1110,7 +1057,7 @@ def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_p
     """A populated boot re-verifies once because each call hashes the whole store."""
 
     fetcher = _FakeMaterializationFetcher()
-    materialize_real_roster(tmp_path, fetcher, capacity=dict(_MATERIALIZATION_CAPACITY))
+    materialize_real_roster(tmp_path, fetcher)
     present = {item["artifact"] for item in load_download_record(tmp_path)["artifacts"]} - {
         "surya2-detection"
     }
@@ -1121,7 +1068,7 @@ def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_p
     monkeypatch.setattr(
         model_store, "verify_store", lambda root: (calls.append(root), real(root))[1]
     )
-    receipt = materialize_real_roster(tmp_path, fetcher, capacity=dict(_MATERIALIZATION_CAPACITY))
+    receipt = materialize_real_roster(tmp_path, fetcher)
 
     assert len(calls) == 1
     assert {row["artifact"] for row in receipt["artifacts"]} == present
@@ -1133,8 +1080,7 @@ def test_materializer_receipt_digest_names_the_record_whole_store_verification_c
     """A concurrent valid active-record update cannot relabel verified evidence."""
 
     fetcher = _FakeMaterializationFetcher()
-    capacity = dict(_MATERIALIZATION_CAPACITY)
-    materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+    materialize_real_roster(tmp_path, fetcher)
     verify = model_store.verify_store
     observed: dict[str, str] = {}
 
@@ -1142,13 +1088,14 @@ def test_materializer_receipt_digest_names_the_record_whole_store_verification_c
         inventory = verify(root)
         observed["verified"] = inventory["download_record_sha256"]
         replacement = load_download_record(root)
-        replacement["capacity"]["available_bytes"] += 1
+        pending = next(i for i in replacement["artifacts"] if i["state"] == "pending-fetch")
+        pending["reason"] += " (re-read)"
         observed["advanced"] = write_download_record(replacement, root)
         return inventory
 
     monkeypatch.setattr(model_store, "verify_store", verify_then_advance_active_record)
 
-    receipt = materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+    receipt = materialize_real_roster(tmp_path, fetcher)
 
     assert observed["verified"] != observed["advanced"]
     assert receipt["download_record_sha256"] == observed["verified"]
@@ -1195,19 +1142,18 @@ def test_a_boot_killed_mid_materialization_resumes_without_hand_repair(
 ):
     """Every fetch-to-record interruption window must recover by re-fetching its pin."""
 
-    capacity = dict(_MATERIALIZATION_CAPACITY)
     _die_on_call(monkeypatch, killed_at, ordinal)
     with pytest.raises(KeyboardInterrupt):
-        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), capacity=capacity)
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
     monkeypatch.undo()
 
     with pytest.raises(DigestMismatchRefusal) as refusal:
         verify_store(tmp_path)
     assert str(expected_evidence) in str(refusal.value)
-    # Interrupts outside `Exception` must still release their staged capacity.
+    # Interrupts outside `Exception` must still release their staging.
     assert sorted((tmp_path / "staging").iterdir()) == []
 
-    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), capacity=capacity)
+    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
 
     assert {row["artifact"] for row in receipt["artifacts"]} == {
         item.artifact for item in REQUIRED_ARTIFACTS if item.source == "huggingface"
@@ -1225,8 +1171,6 @@ def test_a_resumed_boot_still_refuses_bytes_that_differ_from_the_first_fetch(tmp
     never overwrites existing evidence (principle 4).
     """
 
-    capacity = dict(_MATERIALIZATION_CAPACITY)
-
     class _Drifted(_FakeMaterializationFetcher):
         def fetch(self, repo: str, revision: str, destination: Path) -> None:
             super().fetch(repo, revision, destination)
@@ -1234,11 +1178,11 @@ def test_a_resumed_boot_still_refuses_bytes_that_differ_from_the_first_fetch(tmp
 
     _die_on_call(monkeypatch, "_promote_materialized_snapshot", 2)
     with pytest.raises(KeyboardInterrupt):
-        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), capacity=capacity)
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
     monkeypatch.undo()
 
     with pytest.raises(DigestMismatchRefusal, match="already exists with different bytes"):
-        materialize_real_roster(tmp_path, _Drifted(), capacity=capacity)
+        materialize_real_roster(tmp_path, _Drifted())
 
 
 def test_a_repository_that_ships_no_licence_file_may_still_have_declared_one(tmp_path):
@@ -1249,7 +1193,7 @@ def test_a_repository_that_ships_no_licence_file_may_still_have_declared_one(tmp
             super().fetch(repo, revision, destination)
             (destination / "LICENSE").unlink(missing_ok=True)
 
-    materialize_real_roster(tmp_path, _NoLicenceFiles(), capacity=dict(_MATERIALIZATION_CAPACITY))
+    materialize_real_roster(tmp_path, _NoLicenceFiles())
 
     record = load_download_record(tmp_path)
     stored = {item["artifact"]: item for item in record["artifacts"]}
@@ -1437,7 +1381,7 @@ def test_a_fetch_that_stops_short_of_its_shard_index_is_refused_not_measured(tmp
     fetcher = _ShardedFetcher(drop="model-00002-of-00002.safetensors")
 
     with pytest.raises(DigestMismatchRefusal, match="the fetch is incomplete"):
-        materialize_real_roster(tmp_path, fetcher, capacity=dict(_MATERIALIZATION_CAPACITY))
+        materialize_real_roster(tmp_path, fetcher)
 
     assert not (tmp_path / "hf").exists()
     assert sorted((tmp_path / "staging").iterdir()) == []
@@ -1476,7 +1420,7 @@ def test_shard_index_refuses_parent_traversal_inside_the_named_taxonomy(tmp_path
 def test_a_complete_sharded_fetch_keeps_reconciling_after_the_boot_that_made_it(tmp_path):
     """The index and its shards are required files, so the check outlives the fetch."""
 
-    materialize_real_roster(tmp_path, _ShardedFetcher(), capacity=dict(_MATERIALIZATION_CAPACITY))
+    materialize_real_roster(tmp_path, _ShardedFetcher())
 
     record = load_download_record(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -1829,7 +1773,7 @@ def test_the_ad_hoc_download_record_refusal_names_what_the_v1_record_needs(tmp_p
         load_download_record(tmp_path)
 
     message = str(refusal.value)
-    assert "missing=['artifacts', 'capacity', 'layout', 'schema']" in message
+    assert "missing=['artifacts', 'layout', 'schema']" in message
     assert "unexpected=['Qwen/Qwen3.8-27B', 'datalab-to/chandra-ocr-2']" in message
 
 
@@ -1846,11 +1790,12 @@ def test_a_roster_divergence_names_the_pin_it_expected_and_the_one_it_found(tmp_
     assert "1" * 40 in message
 
 
-def test_a_capacity_refusal_names_the_four_fields_a_migrating_operator_must_write(tmp_path):
+def test_a_v1_record_still_carrying_its_capacity_block_is_refused(tmp_path):
     record = _store(tmp_path)
-    del record["capacity"]["cleanup_owner"]
+    record["schema"] = "verbatus-model-store.v1"
+    record["capacity"] = {"cleanup_owner": "host model-store operator"}
 
-    with pytest.raises(DigestMismatchRefusal, match="'snapshot_bytes'"):
+    with pytest.raises(DigestMismatchRefusal, match=r"unexpected=\['capacity'\]"):
         derived_inventory(record)
 
 
@@ -1940,9 +1885,7 @@ def test_a_fetcher_that_leaves_client_state_behind_is_refused_not_measured(tmp_p
             (cache / "model.safetensors.metadata").write_text("commit\netag\n1787288876.2\n")
 
     with pytest.raises(DigestMismatchRefusal, match="client bookkeeping"):
-        materialize_real_roster(
-            tmp_path, _LeavesClientState(), capacity=dict(_MATERIALIZATION_CAPACITY)
-        )
+        materialize_real_roster(tmp_path, _LeavesClientState())
     assert not (tmp_path / "hf").exists()
 
 
@@ -1954,9 +1897,7 @@ def test_repository_owned_cache_path_is_manifested_not_deleted_or_called_client_
             cache.mkdir()
             (cache / "repository-owned.json").write_text("pinned bytes", encoding="utf-8")
 
-    materialize_real_roster(
-        tmp_path, _RepositoryCacheFile(), capacity=dict(_MATERIALIZATION_CAPACITY)
-    )
+    materialize_real_roster(tmp_path, _RepositoryCacheFile())
 
     record = load_download_record(tmp_path)
     for entry in record["artifacts"]:

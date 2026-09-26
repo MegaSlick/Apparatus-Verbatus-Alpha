@@ -36,7 +36,7 @@ from .manifests import (
 from .models import ChairIdentity, is_hf_revision, is_sha256
 from .registry import CACHE_DESCRIPTOR, load_model_card_metadata
 
-STORE_SCHEMA = "verbatus-model-store.v1"
+STORE_SCHEMA = "verbatus-model-store.v2"
 INVENTORY_SCHEMA = "verbatus-model-inventory.v1"
 
 # An artifact entry is present, or `pending-fetch` naming its absence and reason,
@@ -55,13 +55,7 @@ PRESENT_FIELDS = {
     "required_files",
 }
 PENDING_FIELDS = {"artifact", "state", "source", "repo", "revision", "reason"}
-RECORD_FIELDS = {"schema", "layout", "capacity", "artifacts"}
-CAPACITY_FIELDS = {
-    "snapshot_bytes",
-    "promotion_headroom_bytes",
-    "available_bytes",
-    "cleanup_owner",
-}
+RECORD_FIELDS = {"schema", "layout", "artifacts"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,10 +223,7 @@ class VerifiedStoreFetcher:
 
 
 def materialize_real_roster(
-    store_root: str | Path,
-    fetcher: MaterializationFetcher,
-    *,
-    capacity: Mapping[str, Any],
+    store_root: str | Path, fetcher: MaterializationFetcher
 ) -> dict[str, Any]:
     """Fetch each real pinned repository once and publish its measured evidence.
 
@@ -244,20 +235,12 @@ def materialize_real_roster(
     """
 
     root = Path(store_root).resolve()
-    record = _initial_materialization_record(capacity)
+    record = _initial_materialization_record()
     active = root / "download_record.json"
     if active.exists():
         record = load_download_record(root)
         # Joined before indexing, so a missing artifact is a named refusal.
         derived_inventory(record)
-        if dict(record["capacity"]) != dict(capacity):
-            raise DigestMismatchRefusal(
-                "model-store",
-                "the supplied capacity plan differs from the one recorded here: "
-                f"recorded={dict(record['capacity'])}, supplied={dict(capacity)}; "
-                "record the new plan deliberately rather than materializing "
-                "against a stale one",
-            )
     else:
         write_download_record(record, root)
 
@@ -560,7 +543,7 @@ def _indexed_shards(snapshot: Path, artifact: str) -> list[str]:
     return sorted(found)
 
 
-def _initial_materialization_record(capacity: Mapping[str, Any]) -> dict[str, Any]:
+def _initial_materialization_record() -> dict[str, Any]:
     return {
         "schema": STORE_SCHEMA,
         "layout": {
@@ -570,7 +553,6 @@ def _initial_materialization_record(capacity: Mapping[str, Any]) -> dict[str, An
             "records": "records",
             "staging": "staging",
         },
-        "capacity": dict(capacity),
         "artifacts": [
             {
                 "artifact": item.artifact,
@@ -891,10 +873,10 @@ def write_download_record(record: Mapping[str, Any], store_root: str | Path) -> 
             ) from error
         if previous_bytes == payload:
             # Only an already-custodied record; a direct write gains no authority.
-            _current_v1_record(root, previous_bytes)
+            _current_record(root, previous_bytes)
             return digest
         previous_digest = digest_bytes(previous_bytes)
-        previous = _current_v1_record(root, previous_bytes)
+        previous = _current_record(root, previous_bytes)
         if previous is not None:
             _validate_record_transition(previous, record)
         _publish_once(
@@ -1226,8 +1208,7 @@ def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any
     below rather than repinned.
 
     The caller supplies an already-created staging directory.  This function does
-    not copy or download bytes; capacity must therefore reserve source + staging
-    space before it is called.  Publication follows the rest of this module's
+    not copy or download bytes.  Publication follows the rest of this module's
     custody rule (principle 4 — evidence is never overwritten): identical bytes
     already published are reused silently, a differing manifest already at that
     name is refused, and the existing file is never touched either way. A picked
@@ -1309,8 +1290,8 @@ def _move_active_record(destination: Path, archive: Path) -> None:
         ) from error
 
 
-def _current_v1_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:
-    """Return a current v1 record, while allowing the one legacy migration input."""
+def _current_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:
+    """Return a current-schema record, while allowing the one legacy migration input."""
 
     try:
         raw = json.loads(raw_bytes)
@@ -1318,7 +1299,7 @@ def _current_v1_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:
         return None
     if isinstance(raw, Mapping) and raw.get("schema") == STORE_SCHEMA:
         # This also proves canonical bytes and the immutable archived version. A
-        # damaged v1 record is not silently treated as legacy and replaced.
+        # damaged current record is not silently treated as legacy and replaced.
         return load_download_record(root)
     return None
 
@@ -1380,38 +1361,6 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
         raise DigestMismatchRefusal(
             "model-store",
             "store layout must name hf, local, manifests, records, and staging roots",
-        )
-    # `capacity` is the caller's declared plan, not a measurement (principle 8):
-    # only internal inconsistency is caught; a full disk fails the write loudly.
-    capacity = raw["capacity"]
-    if (
-        not isinstance(capacity, Mapping)
-        or set(capacity) != CAPACITY_FIELDS
-        or not all(
-            isinstance(capacity[key], int)
-            and not isinstance(capacity[key], bool)
-            and capacity[key] >= 0
-            for key in ("snapshot_bytes", "promotion_headroom_bytes", "available_bytes")
-        )
-        or not isinstance(capacity["cleanup_owner"], str)
-        or not capacity["cleanup_owner"].strip()
-    ):
-        raise DigestMismatchRefusal(
-            "model-store",
-            "capacity must record bytes, double-space headroom, and cleanup owner: exactly "
-            f"{sorted(CAPACITY_FIELDS)}, the first three nonnegative integers and the last "
-            "a nonblank name",
-        )
-    if capacity["promotion_headroom_bytes"] < capacity["snapshot_bytes"]:
-        raise DigestMismatchRefusal(
-            "model-store", "promotion headroom must reserve a second full snapshot"
-        )
-    if (
-        capacity["available_bytes"]
-        < capacity["snapshot_bytes"] + capacity["promotion_headroom_bytes"]
-    ):
-        raise DigestMismatchRefusal(
-            "model-store", "available capacity cannot cover verified promotion double-space"
         )
     items = raw["artifacts"]
     expected_artifacts = len({required.artifact for required in REQUIRED_ARTIFACTS})
