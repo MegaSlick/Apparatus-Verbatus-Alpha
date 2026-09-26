@@ -1315,7 +1315,11 @@ def artifacts_for(
 
 
 def continuation_joins(
-    context, reviews: dict[str, dict], projected_acts: list[dict], manifest_cache: dict[str, dict]
+    context,
+    reviews: dict[str, dict],
+    projected_acts: list[dict],
+    manifest_cache: dict[str, dict],
+    selected_formats: tuple[str, ...],
 ) -> tuple[dict, ...]:
     """Each Designator continuation candidate as a join row over the delivered literals.
 
@@ -1356,6 +1360,7 @@ def continuation_joins(
                 head_act_ids=head,
                 tail_act_ids=tail,
                 delivered_texts=delivered_texts,
+                selected_formats=selected_formats,
             )
         )
     return tuple(rows)
@@ -2032,7 +2037,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     ink_map_pages = ink_map_page_rows(
         context, census, claimed_bounds_by_page(context, manifest_cache)
     )
-    joins = continuation_joins(context, reviews, projected_acts, manifest_cache)
+    joins = continuation_joins(context, reviews, projected_acts, manifest_cache, formats.formats)
     aggregate = run_aggregate(
         categories,
         coverages,

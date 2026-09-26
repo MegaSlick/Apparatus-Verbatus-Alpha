@@ -229,7 +229,7 @@ the rate on real consecutive pages is unmeasured.
 
 Each group is mapped to every proposed act over it whose own edge lies within
 that page's edge reach, or, when none does, to the ones nearest that edge; this
-over-holds rather than delivering a crossing act whole because a neighbour
+over-flags rather than letting a crossing act go unflagged because a neighbour
 reached one pixel further. A side with no proposed act over its group is
 published empty, never dropped (that ink is also unclaimed, and conservation
 holds it). No pair

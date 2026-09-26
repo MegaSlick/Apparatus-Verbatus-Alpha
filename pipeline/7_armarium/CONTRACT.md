@@ -172,20 +172,27 @@ projection configuration. The bundle may contain these plainly specified formats
 - `continuation_joins` in `sources.json` and `reconstructions.jsonl` — present only when
   the Designator published a `continuation-candidate`, and refused unless every act it
   names has a review citing it. Each join row is text-free and `authoritative: false`:
-  `reconstructed` when each side names exactly one delivered act, else
-  `not-reconstructed` with a named reason and no text. A reconstructed join is the head
-  literal, one U+000A, then the tail literal (`verbatus-page-join.v1`, nothing added,
-  removed or normalised), labelled `RECONSTRUCTED … not an act`, written to
-  `reconstructions.jsonl` (with `jsonl`) and as a `## RECONSTRUCTED <join_id> (not an act)`
-  section beside mirrored `possible-continuation-on/-from` notes (with `text-bundle`).
-  Every join keeps the run `partial` with a named reason; no reconstruction enters the
-  act count, the ledger, review items, the database or its search index. The clean
-  verifier recomputes every row and every reconstruction from the packaged literals.
+  `reconstructed` when each side names exactly one delivered act and a literal-text
+  format is selected, else `not-reconstructed` with a named reason and no text. The
+  head and tail pages must be adjacent and among the pages each named act was marked
+  out on. A reconstructed join is the head literal, one U+000A, then the tail literal
+  (`verbatus-page-join.v1`, nothing added, removed or normalised), labelled
+  `RECONSTRUCTED … not an act`, and carries each half's `text_status` and a count of its
+  uncertain spans, gaps and self-revisions (the offsets stay on each half's own literal).
+  It is written to `reconstructions.jsonl` (with `jsonl`) and as a
+  `## RECONSTRUCTED <join_id> (not an act)` section, with mirrored
+  `possible-continuation-on/-from` notes in each named act's own section (with
+  `text-bundle`). Every join keeps the run `partial` with a reason named from its
+  status; no reconstruction enters the act count, the ledger's units, review items, the
+  database or its search index. The clean verifier recomputes every row, every
+  reconstruction record, every section line for line and every act's notes from the
+  packaged literals.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
   act identifiers or canonical-text fields; promotion requires recorded approval
   and pipeline re-entry, never an export-time act.
 - `sources.json` — cited source-page/frame rows with filename and digest, plus
-  text-free per-act citation/outcome records, the non-text accounting basis, and
+  text-free per-act citation/outcome records, the non-text accounting basis, the
+  text-free `continuation_joins` rows when any exist, and
   one `ink_map_pages` row per sealed page: what Unit 9's pre-proposal map found,
   and what this stage re-measured its retained runs to once the Designator's
   verified crops were known (`remeasured: null` for a page the map never

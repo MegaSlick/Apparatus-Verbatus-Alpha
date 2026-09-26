@@ -340,11 +340,13 @@ def continuation_join_row(
     head_act_ids: list[str],
     tail_act_ids: list[str],
     delivered_texts: dict[str, str],
+    selected_formats: tuple[str, ...] | list[str],
 ) -> dict[str, Any]:
     """One continuation candidate as a text-free join row over the delivered literals."""
+    literal = bool(_literal_formats_in(selected_formats))
 
     def side_sha256(act_ids: list[str]) -> str | None:
-        if len(act_ids) == 1 and act_ids[0] in delivered_texts:
+        if literal and len(act_ids) == 1 and act_ids[0] in delivered_texts:
             return canonical_text_sha256(delivered_texts[act_ids[0]])
         return None
 
@@ -358,6 +360,8 @@ def continuation_join_row(
         reason = "head-not-delivered"
     elif tail_act_ids[0] not in delivered_texts:
         reason = "tail-not-delivered"
+    elif not literal:
+        reason = "no-literal-format-selected"
     else:
         reason = None
     return {
@@ -376,16 +380,25 @@ def continuation_join_row(
     }
 
 
-def _reconstructions(
-    joins, texts: dict[str, str], text_statuses: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Head literal, one U+000A, tail literal: nothing added, removed or normalised."""
+def _doubt(layer: Any) -> dict[str, int]:
+    """How much doubt a literal carries, so a join never reads cleaner than its halves."""
+    layer = layer if isinstance(layer, dict) else {}
+    return {
+        kind: len(layer.get(kind) or []) for kind in ("uncertain_spans", "gaps", "self_revisions")
+    }
+
+
+def _reconstructions(joins, literals: dict[str, tuple[str, Any, Any]]) -> list[dict[str, Any]]:
+    """Head literal, one U+000A, tail literal: nothing added, removed or normalised.
+
+    `literals` maps each delivered act to (text, text_status, uncertainty).
+    """
     records = []
     for join in joins:
         if join["status"] != "reconstructed":
             continue
         (head,), (tail,) = join["head_act_ids"], join["tail_act_ids"]
-        text = texts[head] + "\n" + texts[tail]
+        text = literals[head][0] + "\n" + literals[tail][0]
         records.append(
             {
                 "schema": RECONSTRUCTION_SCHEMA,
@@ -396,14 +409,36 @@ def _reconstructions(
                 "head_page_ordinal": join["head_page_ordinal"],
                 "tail_page_ordinal": join["tail_page_ordinal"],
                 "join_rule": JOIN_RULE,
-                "break_offset": len(texts[head]),
+                "break_offset": len(literals[head][0]),
                 "reconstructed_text": text,
                 "reconstructed_text_sha256": canonical_text_sha256(text),
-                "head_text_status": text_statuses[head],
-                "tail_text_status": text_statuses[tail],
+                "head_text_status": literals[head][1],
+                "tail_text_status": literals[tail][1],
+                "head_doubt": _doubt(literals[head][2]),
+                "tail_doubt": _doubt(literals[tail][2]),
             }
         )
     return records
+
+
+def _reconstruction_section(record: dict[str, Any], act_keys: dict[str, str]) -> list[str]:
+    head, tail = record["head_act_id"], record["tail_act_id"]
+    return [
+        f"## RECONSTRUCTED {record['join_id']} (not an act)",
+        f"label: {record['label']}",
+        f"join_rule: {record['join_rule']}",
+        f"head: {act_keys[head]} ({head}) page {record['head_page_ordinal']}",
+        f"head_text_status: {record['head_text_status']}",
+        f"head_doubt: {json.dumps(record['head_doubt'], sort_keys=True)}",
+        f"tail: {act_keys[tail]} ({tail}) page {record['tail_page_ordinal']}",
+        f"tail_text_status: {record['tail_text_status']}",
+        f"tail_doubt: {json.dumps(record['tail_doubt'], sort_keys=True)}",
+        f"break_offset: {record['break_offset']}",
+        f"reconstructed_text_sha256: {record['reconstructed_text_sha256']}",
+        "reconstructed_text:",
+        json.dumps(record["reconstructed_text"], ensure_ascii=False),
+        "",
+    ]
 
 
 def _join_notes(joins, act_keys: dict[str, str]) -> dict[str, list[str]]:
@@ -490,8 +525,10 @@ def build_armarium_bundle(
     ]
     reconstructions = _reconstructions(
         projection.continuation_joins,
-        {act["act_id"]: act[CANONICAL_TEXT_FIELD] for act in delivered},
-        {act["act_id"]: act["text_status"] for act in delivered},
+        {
+            act["act_id"]: (act[CANONICAL_TEXT_FIELD], act["text_status"], act["uncertainty"])
+            for act in delivered
+        },
     )
     if "text-bundle" in formats.formats:
         members.update(
@@ -1370,101 +1407,113 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
     """Recompute every join row and every reconstruction from the packaged literals."""
     joins = sources["continuation_joins"] or []
     outcomes = _act_outcome_sources(sources)
-    delivered = {
-        act_id: outcome
-        for act_id, outcome in outcomes.items()
-        if outcome["category"] == ArmariumCategory.DELIVERED.value
-    }
+    act_keys = {act_id: outcome["act_key"] for act_id, outcome in outcomes.items()}
+    act_pages = sources["aggregate_basis"].get("act_pages") or {}
     literal_formats = _literal_formats_in(formats.formats)
-    texts = (
+    literals = (
         {
-            act_id: record[0]
+            act_id: (record[0], record[3], record[2])
             for act_id, record in _literal_projection(root, literal_formats[0]).items()
         }
-        if literal_formats
-        else None
+        if literal_formats and joins
+        else {
+            act_id: ("", None, None)
+            for act_id, outcome in outcomes.items()
+            if outcome["category"] == ArmariumCategory.DELIVERED.value
+        }
     )
     join_ids: set[str] = set()
     for join in joins:
         _require_exact_fields(join, _JOIN_FIELDS, subject="a continuation-join row")
         sides = (join["head_act_ids"], join["tail_act_ids"])
+        pages = (join["head_page_ordinal"], join["tail_page_ordinal"])
         reference = join["candidate_ref"]
         if (
             not _is_line_safe_identity(join["join_id"])
             or join["join_id"] in join_ids
             or not all(isinstance(side, list) and set(side) <= set(outcomes) for side in sides)
+            or not all(_is_integer(page) for page in pages)
+            or pages[1] != pages[0] + 1
+            or any(
+                page not in act_pages.get(act_keys[act_id], [])
+                for side, page in zip(sides, pages, strict=True)
+                for act_id in side
+            )
             or not isinstance(reference, dict)
-            or reference.get("availability") != _RUN_ACCESS_REQUIRED
+            or set(reference) != {"availability", "run_relative_path", "sha256"}
+            or reference["availability"] != _RUN_ACCESS_REQUIRED
         ):
-            raise SchemaRefusal("a continuation-join row names no valid join, acts or candidate")
+            raise SchemaRefusal(
+                "a continuation-join row names no valid join, candidate, acts or adjacent pages"
+            )
         join_ids.add(join["join_id"])
         expected = continuation_join_row(
             join_id=join["join_id"],
             candidate_ref=reference,
-            head_page_ordinal=join["head_page_ordinal"],
-            tail_page_ordinal=join["tail_page_ordinal"],
+            head_page_ordinal=pages[0],
+            tail_page_ordinal=pages[1],
             head_act_ids=sides[0],
             tail_act_ids=sides[1],
-            delivered_texts=texts if texts is not None else dict.fromkeys(delivered, ""),
+            delivered_texts={act_id: literal[0] for act_id, literal in literals.items()},
+            selected_formats=formats.formats,
         )
-        if texts is None:
-            # No literal format selected: no text left, so no hash can be recomputed.
-            for field in ("head_canonical_text_sha256", "tail_canonical_text_sha256"):
-                expected[field] = join[field]
         if expected != join:
             raise SchemaRefusal(
                 f"continuation join {join['join_id']} does not recompute from its acts' literals"
             )
-    reconstructions = _reconstructions(
-        joins,
-        texts or {},
-        {act_id: outcome["text_status"] for act_id, outcome in delivered.items()},
-    )
-    refusal = "a reconstruction is not head + one U+000A + tail of its packaged literals"
+    reconstructions = _reconstructions(joins, literals)
     if "jsonl" in formats.formats and reconstructions:
         found = list(
             _jsonl_rows(root / "reconstructions.jsonl", "reconstructions", "a reconstruction")
         )
         if found != reconstructions:
-            raise SchemaRefusal(refusal)
+            raise SchemaRefusal(
+                "a reconstruction is not head + one U+000A + tail of its packaged literals"
+            )
     if "text-bundle" in formats.formats:
-        act_keys = {act_id: outcome["act_key"] for act_id, outcome in outcomes.items()}
-        expected_notes = {
-            note
-            for act_id, notes in _join_notes(joins, act_keys).items()
-            if act_id in delivered
-            for note in notes
-        }
-        expected_texts = {
-            record["join_id"]: record["reconstructed_text"] for record in reconstructions
-        }
-        notes: set[str] = set()
-        found_texts: dict[str, Any] = {}
-        folders = {
-            _source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]
-        }
-        for folder in sorted(folders):
-            lines = _package_lines(root / _text_member_path(folder), "text bundle")
-            join_id = None
-            for index, line in enumerate(lines):
-                if line.startswith("## "):
-                    join_id = (
-                        line.removeprefix("## RECONSTRUCTED ").removesuffix(" (not an act)")
-                        if line.startswith("## RECONSTRUCTED ") and line.endswith(" (not an act)")
-                        else None
+        _verify_text_bundle_joins(root, sources, joins, reconstructions, act_keys)
+
+
+def _verify_text_bundle_joins(root, sources, joins, reconstructions, act_keys) -> None:
+    """Each RECONSTRUCTED section line for line, and each act section's own notes."""
+    expected_sections = {
+        record["join_id"]: _reconstruction_section(record, act_keys) for record in reconstructions
+    }
+    expected_notes = _join_notes(joins, act_keys)
+    sections: dict[str, list[str]] = {}
+    folders = {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
+    for folder in sorted(folders):
+        lines = [*_package_lines(root / _text_member_path(folder), "text bundle"), ""]
+        act_id, act_notes, index = None, None, 0
+        while index < len(lines):
+            line = lines[index]
+            if act_notes is not None and (not line or line.startswith("## ")):
+                if act_notes != expected_notes.get(act_id, []):
+                    raise SchemaRefusal(
+                        "the text bundle's continuation notes do not mirror its join rows"
                     )
-                elif line.startswith("possible-continuation-"):
-                    notes.add(line)
-                elif line == "reconstructed_text:":
-                    if join_id is None or index + 1 >= len(lines):
-                        raise SchemaRefusal(refusal)
-                    text = _decode_json(lines[index + 1], refusal)
-                    if found_texts.setdefault(join_id, text) != text:
-                        raise SchemaRefusal(refusal)
-        if found_texts != expected_texts:
-            raise SchemaRefusal(refusal)
-        if notes != expected_notes:
-            raise SchemaRefusal("the text bundle's continuation notes do not mirror its join rows")
+                act_notes = None
+            if line.startswith("## RECONSTRUCTED "):
+                end = next((at for at in range(index, len(lines)) if not lines[at]), len(lines))
+                block = lines[index : end + 1]
+                join_id = line.removeprefix("## RECONSTRUCTED ").removesuffix(" (not an act)")
+                if sections.setdefault(join_id, block) != block:
+                    raise SchemaRefusal(
+                        "a text-bundle RECONSTRUCTED section appears twice, unequal"
+                    )
+                index = end + 1
+                continue
+            if line.startswith("act-id: "):
+                act_id, act_notes = line.removeprefix("act-id: "), []
+            elif line.startswith("possible-continuation-") or line == "reconstructed_text:":
+                if act_notes is None or line == "reconstructed_text:":
+                    raise SchemaRefusal("a text-bundle continuation line sits outside its section")
+                act_notes.append(line)
+            index += 1
+    if sections != expected_sections:
+        raise SchemaRefusal(
+            "a text-bundle RECONSTRUCTED section does not recompute from its join and literals"
+        )
 
 
 INK_MAP_DENOMINATOR: Final = "ink-map sealed pages"
@@ -2510,20 +2559,7 @@ def _text_bundle_members(
         for record in reconstructions:
             if record["head_act_id"] not in in_folder:
                 continue
-            head, tail = record["head_act_id"], record["tail_act_id"]
-            lines.extend(
-                [
-                    f"## RECONSTRUCTED {record['join_id']} (not an act)",
-                    f"label: {record['label']}",
-                    f"join_rule: {record['join_rule']}",
-                    f"head: {act_keys[head]} ({head}) page {record['head_page_ordinal']}",
-                    f"tail: {act_keys[tail]} ({tail}) page {record['tail_page_ordinal']}",
-                    f"reconstructed_text_sha256: {record['reconstructed_text_sha256']}",
-                    "reconstructed_text:",
-                    json.dumps(record["reconstructed_text"], ensure_ascii=False),
-                    "",
-                ]
-            )
+            lines.extend(_reconstruction_section(record, act_keys))
         members[_text_member_path(folder)] = "\n".join(lines).encode("utf-8")
     return members
 
