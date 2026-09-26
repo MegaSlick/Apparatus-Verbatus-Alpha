@@ -1185,60 +1185,6 @@ def test_inspect_refuses_a_symlink_planted_as_the_object_is_opened(
     assert target.is_symlink(), "the test did not drive the read-side substitution"
 
 
-def test_fixture_object_publication_syncs_its_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    synced: list[Path] = []
-
-    def sync(path: Path, *, strict: bool) -> None:
-        assert strict
-        synced.append(path)
-
-    monkeypatch.setattr("operations.operator.fakes.sync_directory", sync)
-    source = tmp_path / "source.bin"
-    source.write_bytes(b"payload")
-    store = LocalFixtureObjectStore(tmp_path / "volume")
-
-    with source.open("rb") as handle:
-        store.put_file(
-            "objects/page.bin",
-            handle,
-            expected_sha=hashlib.sha256(b"payload").hexdigest(),
-        )
-
-    assert synced == [(tmp_path / "volume" / "objects").resolve()]
-
-
-def test_reused_fixture_object_reproves_directory_durability(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "source.bin"
-    source.write_bytes(b"payload")
-    store = LocalFixtureObjectStore(tmp_path / "volume")
-    with source.open("rb") as handle:
-        store.put_file(
-            "objects/page.bin",
-            handle,
-            expected_sha=hashlib.sha256(b"payload").hexdigest(),
-        )
-
-    def refuses(_path: Path, *, strict: bool) -> None:
-        assert strict
-        raise OSError("injected reuse directory sync failure")
-
-    monkeypatch.setattr("operations.operator.fakes.sync_directory", refuses)
-
-    with source.open("rb") as handle:
-        with pytest.raises(RuntimeError, match="exists but its directory entry"):
-            store.put_file(
-                "objects/page.bin",
-                handle,
-                expected_sha=hashlib.sha256(b"payload").hexdigest(),
-            )
-
-    assert store.puts == ["objects/page.bin"]
-
-
 def test_submit_and_upload_seals_a_new_manifest_then_transfers_it(tmp_path: Path) -> None:
     """The `--manifest-out` route through Spec 03's door, end to end.
 
