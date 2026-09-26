@@ -135,7 +135,7 @@ def _workspace(tmp_path: Path) -> Workspace:
         journal=volume / "bootstrap-journal.json",
         report_path=volume / "bootstrap-report.json",
         # Inside the volume / the checked-out repository respectively: a
-        # pinned real-roster store and a chair/placement config that resolve
+        # pinned real-roster store and a chair config that resolve
         # outside their required container are refused (resolve_plan).
         store_root=volume / "store",
         models_config=repository / "config" / "models.toml",
@@ -163,8 +163,6 @@ def _argv(ws: Workspace, *, commit: str = "a" * 40, extra: tuple[str, ...] = ())
         str(ws.store_root),
         "--models-config",
         str(ws.models_config),
-        "--placement-config",
-        str(ws.placement_config),
         *extra,
     ]
 
@@ -1131,7 +1129,6 @@ def test_build_actions_does_not_read_models_config_before_configuration_runs(
         journal=ws.journal,
         store_root=ws.store_root,
         models_config=ws.models_config,
-        placement_config=ws.placement_config,
         serving_recipes_config=ws.repository / "config" / "serving_recipes.toml",
         witness_context_config=ws.repository / "config" / "witness_context.toml",
         cache_root=ws.volume / "chair-cache",
@@ -1176,7 +1173,6 @@ def test_a_plan_with_no_submission_manifest_makes_transfer_a_vacuous_success() -
         journal=Path("/volume/journal.json"),
         store_root=Path("/volume/store"),
         models_config=Path("/repo/models.toml"),
-        placement_config=Path("/repo/placement.toml"),
         cache_root=Path("/volume/chair-cache"),
         fixture=Path("/repo/proof/fixtures/synthetic-two-page-v0/page-1.png"),
         submission_manifest=None,
@@ -1214,7 +1210,6 @@ def test_a_configured_manifest_that_is_missing_fails_the_step_rather_than_no_opp
         journal=Path("/volume/journal.json"),
         store_root=Path("/volume/store"),
         models_config=Path("/repo/models.toml"),
-        placement_config=Path("/repo/placement.toml"),
         cache_root=Path("/volume/chair-cache"),
         fixture=Path("/repo/proof/fixtures/synthetic-two-page-v0/page-1.png"),
         submission_manifest=Path("/volume/submission/manifest.json"),
@@ -1359,7 +1354,7 @@ def test_configuration_receipt_binds_every_selected_path_and_seal(tmp_path: Path
         ("models_config", plan.models_config),
         ("witness_context_config", plan.witness_context_config),
         ("serving_recipes_config", plan.serving_recipes_config),
-        ("placement_config", plan.placement_config),
+        ("placement_config", bootstrap_main.DEFAULT_POD_PLACEMENT_CONFIG_PATH),
     ):
         assert selected is not None
         assert bindings[name] == {  # type: ignore[index]
@@ -1376,10 +1371,12 @@ def test_configuration_receipt_binds_every_selected_path_and_seal(tmp_path: Path
     ],
 )
 def test_configuration_names_an_unreadable_selected_source_and_its_repair(
-    tmp_path: Path, attribute: str, label: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attribute: str, label: str
 ) -> None:
-    _ws, plan = _checked_out_configuration_plan(tmp_path)
-    selected = getattr(plan, attribute)
+    ws, plan = _checked_out_configuration_plan(tmp_path)
+    placement = ws.repository / "config" / "pod_placement.toml"
+    monkeypatch.setattr(bootstrap_main, "DEFAULT_POD_PLACEMENT_CONFIG_PATH", placement)
+    selected = getattr(plan, attribute, placement)
     assert isinstance(selected, Path)
     selected.unlink()
 
@@ -1403,10 +1400,16 @@ def test_configuration_names_an_unreadable_selected_source_and_its_repair(
     ],
 )
 def test_configuration_refuses_semantic_selected_source_before_later_work(
-    tmp_path: Path, attribute: str, contents: str, named_source: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attribute: str,
+    contents: str,
+    named_source: str,
 ) -> None:
     ws, plan = _checked_out_configuration_plan(tmp_path)
-    selected = getattr(plan, attribute)
+    placement = ws.repository / "config" / "pod_placement.toml"
+    monkeypatch.setattr(bootstrap_main, "DEFAULT_POD_PLACEMENT_CONFIG_PATH", placement)
+    selected = getattr(plan, attribute, placement)
     assert isinstance(selected, Path)
     selected.write_text(contents, encoding="utf-8")
     actions = _configuration_actions(plan)
@@ -1463,10 +1466,10 @@ def test_a_green_journal_refuses_a_changed_configuration_path_before_shortcut(
     )
     assert not isinstance(first, int) and first.green
 
-    alternate = ws.repository / "config" / "alternate-placement.toml"
-    assert original.placement_config is not None
-    alternate.write_bytes(original.placement_config.read_bytes())
-    changed = replace(original, placement_config=alternate)
+    alternate = ws.repository / "config" / "alternate-recipes.toml"
+    assert original.serving_recipes_config is not None
+    alternate.write_bytes(original.serving_recipes_config.read_bytes())
+    changed = replace(original, serving_recipes_config=alternate)
     resumed_actions = _configuration_actions(changed)
     resumed = bootstrap_main.run_bootstrap(
         changed,
@@ -1713,6 +1716,28 @@ def _preflight_seams(tmp_path: Path, identities: dict, *, witness: str = WITNESS
         residency_lock=tmp_path / "pod-gpu.lock",
     )
     return seams, http, launcher
+
+
+def test_preflight_measures_the_placement_table_the_run_seals(tmp_path: Path) -> None:
+    from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    checked_out = ws.repository / "config" / "pod_placement.toml"
+    checked_out.write_text(
+        checked_out.read_text(encoding="utf-8").replace(
+            'hourly_usd = "0.77"', 'hourly_usd = "9.99"'
+        ),
+        encoding="utf-8",
+    )
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    seams, _http, _launcher = _preflight_seams(tmp_path, identities)
+
+    record = _build_preflight(plan, seams)()
+
+    sealed = read_sealed_toml(DEFAULT_POD_PLACEMENT_CONFIG_PATH, "placement")[1]
+    assert record["serving_config_inputs"]["pod_placement_sha256"] == sealed  # type: ignore[index]
 
 
 def test_preflight_goes_green_through_the_registry_and_the_serving_seam(

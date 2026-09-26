@@ -121,6 +121,7 @@ from common.credentials import (
     looks_like_credential_field,
 )
 from common.sealed_config import parse_sealed_toml
+from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH
 from common.witness_context import validate_witness_context_configuration
 from operations.serving.assembly import ProfileProbe, assemble_serving_smoke_reader
 from operations.serving.config import (
@@ -184,7 +185,6 @@ _PLAN_ONLY_FLAGS = (
     "journal",
     "store_root",
     "models_config",
-    "placement_config",
     "cache_root",
     "fixture",
     "page_witness_file",
@@ -236,7 +236,6 @@ class Plan:
     journal: Path | None = None
     store_root: Path | None = None
     models_config: Path | None = None
-    placement_config: Path | None = None
     cache_root: Path | None = None
     fixture: Path | None = None
     page_witness_file: Path | None = None
@@ -268,7 +267,6 @@ class Plan:
             "journal": str(self.journal) if self.journal else None,
             "store_root": str(self.store_root) if self.store_root else None,
             "models_config": str(self.models_config) if self.models_config else None,
-            "placement_config": str(self.placement_config) if self.placement_config else None,
             "cache_root": str(self.cache_root) if self.cache_root else None,
             "fixture": str(self.fixture) if self.fixture else None,
             "page_witness_file": str(self.page_witness_file) if self.page_witness_file else None,
@@ -505,7 +503,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--journal", type=Path)
     parser.add_argument("--store-root", type=Path)
     parser.add_argument("--models-config", type=Path)
-    parser.add_argument("--placement-config", type=Path)
     parser.add_argument(
         "--cache-root",
         type=Path,
@@ -621,7 +618,6 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
             ("--journal", args.journal),
             ("--store-root", args.store_root),
             ("--models-config", args.models_config),
-            ("--placement-config", args.placement_config),
         )
         if value is None
     ]
@@ -666,13 +662,6 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         args.models_config,
         repository,
         "--models-config",
-        base_label="the checked-out repository",
-        report_path=report_path,
-    )
-    placement_config = _require_contained(
-        args.placement_config,
-        repository,
-        "--placement-config",
         base_label="the checked-out repository",
         report_path=report_path,
     )
@@ -770,7 +759,6 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         journal=journal,
         store_root=store_root,
         models_config=models_config,
-        placement_config=placement_config,
         cache_root=cache_root,
         fixture=fixture,
         page_witness_file=page_witness_file,
@@ -1194,12 +1182,11 @@ def _build_preflight(
 
     def _run() -> dict[str, object]:
         models_config = plan.models_config
-        placement_config = plan.placement_config
         recipes_config = plan.serving_recipes_config
-        if models_config is None or placement_config is None or recipes_config is None:
+        if models_config is None or recipes_config is None:
             raise PlanRefusal(
-                "bootstrap plan reached PREFLIGHT without its models, placement, or serving "
-                "recipes configuration; resolve_plan fills all three for every full plan"
+                "bootstrap plan reached PREFLIGHT without its models or serving recipes "
+                "configuration; resolve_plan fills both for every full plan"
             )
         registry = ChairRegistry.from_toml(models_config, cache_root=plan.cache_root)
         if seams is None:
@@ -1216,13 +1203,15 @@ def _build_preflight(
         # reads is a named refusal rather than a table the run never sealed.
         recipes = load_serving_recipes(recipes_config)
         try:
-            placement_bytes = placement_config.read_bytes()
-            placement = load_placement_table(placement_config, source_bytes=placement_bytes)
+            placement_bytes = DEFAULT_POD_PLACEMENT_CONFIG_PATH.read_bytes()
+            placement = load_placement_table(
+                DEFAULT_POD_PLACEMENT_CONFIG_PATH, source_bytes=placement_bytes
+            )
             _, placement_sha256 = parse_sealed_toml(placement_bytes, "placement table")
         except (OSError, PlacementRefusal, ContractError) as error:
             raise BootstrapStepFailure(
                 BootstrapStep.PREFLIGHT,
-                f"placement table {placement_config} could not be read: {error}",
+                f"placement table {DEFAULT_POD_PLACEMENT_CONFIG_PATH} could not be read: {error}",
                 "Restore the reviewed placement table at the pinned commit, then resume.",
             ) from error
         if recipes.source_sha256 is None:  # load_serving_recipes always digests; stated
@@ -1253,7 +1242,7 @@ def _build_preflight(
             gpu_profile=profile,
             log_root=preflight_root / "serving-logs",
             recipes_path=recipes_config,
-            placement_path=placement_config,
+            placement_path=DEFAULT_POD_PLACEMENT_CONFIG_PATH,
             launcher=chosen.launcher,
             http=chosen.http,
             package_inspector=chosen.package_inspector,
@@ -1330,13 +1319,12 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
             plan.repository is None
             or plan.models_config is None
             or plan.serving_recipes_config is None
-            or plan.placement_config is None
             or plan.witness_context_config is None
         ):
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
                 "bootstrap plan reached CONFIGURATION without its repository, roster, serving "
-                "catalogue, placement table, or declaration",
+                "catalogue, or declaration",
                 "Supply the complete bootstrap plan and start a new schema-v3 journal.",
             )
         try:
@@ -1362,7 +1350,9 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
             serving_source = _read_configuration_source(
                 plan.serving_recipes_config, "serving catalogue"
             )
-            placement_source = _read_configuration_source(plan.placement_config, "placement table")
+            placement_source = _read_configuration_source(
+                DEFAULT_POD_PLACEMENT_CONFIG_PATH, "placement table"
+            )
         except ContractError as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
@@ -1385,12 +1375,12 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 "this journal before any environment or model work.",
             ) from error
         try:
-            load_placement_table(plan.placement_config, source_bytes=placement_source)
+            load_placement_table(DEFAULT_POD_PLACEMENT_CONFIG_PATH, source_bytes=placement_source)
             _, placement_sha256 = parse_sealed_toml(placement_source, "placement table")
         except (PlacementRefusal, ContractError) as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
-                f"selected placement table {plan.placement_config} could not be parsed: {error}",
+                f"placement table {DEFAULT_POD_PLACEMENT_CONFIG_PATH} could not be parsed: {error}",
                 "Repair or restore the named placement table at the pinned commit, then resume "
                 "this journal before any environment or model work.",
             ) from error
@@ -1407,7 +1397,7 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                     "sha256": serving_sha256,
                 },
                 "placement_config": {
-                    "path": str(plan.placement_config),
+                    "path": str(DEFAULT_POD_PLACEMENT_CONFIG_PATH),
                     "sha256": placement_sha256,
                 },
             },

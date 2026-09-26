@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from common.contracts.errors import ContractError
 from common.sealed_config import parse_sealed_toml
+from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH
 from operations.pod.preflight import (
     ChairCacheVerifier,
     GpuProfile,
@@ -39,7 +40,6 @@ from .residency import ResidencyLease
 DEFAULT_SERVING_RECIPES_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "serving_recipes.toml"
 )
-DEFAULT_POD_PLACEMENT_PATH = Path(__file__).resolve().parents[2] / "config" / "pod_placement.toml"
 
 
 class ProfileProbe(Protocol):
@@ -60,7 +60,7 @@ def assemble_serving_smoke_reader(
     log_root: str | Path,
     calibration_for: CalibrationFor | None = None,
     recipes_path: str | Path = DEFAULT_SERVING_RECIPES_PATH,
-    placement_path: str | Path = DEFAULT_POD_PLACEMENT_PATH,
+    placement_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     launcher: ProcessLauncher | None = None,
     http: HttpTransport | None = None,
     package_inspector: PackageInspector | None = None,
@@ -121,7 +121,7 @@ def assemble_serving_preflight_callback(
     residency_lease: ResidencyLease,
     calibration_for: CalibrationFor | None = None,
     recipes_path: str | Path = DEFAULT_SERVING_RECIPES_PATH,
-    placement_path: str | Path = DEFAULT_POD_PLACEMENT_PATH,
+    placement_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     launcher: ProcessLauncher | None = None,
     http: HttpTransport | None = None,
     package_inspector: PackageInspector | None = None,
