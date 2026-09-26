@@ -13,7 +13,6 @@ from .errors import (
     ReceiptRefusal,
     ServingRecipeRefusal,
     UnresolvedChairRefusal,
-    is_closed_refusal,
 )
 from .manifests import (
     build_manifest,
@@ -36,7 +35,6 @@ from .model_store import (
     pod_materialization_plan,
     read_derived_inventory,
     require_complete_store,
-    require_store_artifact,
     verify_store,
     write_derived_inventory,
     write_download_record,
@@ -103,7 +101,6 @@ __all__ = [
     "configured_cache_materialization_plan",
     "derived_inventory",
     "exercise_contract",
-    "is_closed_refusal",
     "is_hf_revision",
     "is_sha256",
     "load_download_record",
@@ -116,7 +113,6 @@ __all__ = [
     "read_manifest",
     "receipt_record",
     "require_complete_store",
-    "require_store_artifact",
     "resolve_local_path",
     "validate_receipt",
     "verify_snapshot",

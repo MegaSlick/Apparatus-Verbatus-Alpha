@@ -12,11 +12,10 @@ subclass), it selects nothing about the *reading* (the pipeline already decided
 what it proposed; this only pairs a proposal with a reference box after the
 fact), and it drops nothing on either side: every unmatched reference act is
 reported as a MISS and every unmatched pipeline act is reported, not scored.
-`SPEC.md` Section 5.3(d) names this boundary exactly this way.
 
 `plan.py`'s own `records_per_page_distribution`, measured over the sealed row
 snapshot, is what `MAX_ACTS_PER_PAGE` is set against (1,165 pages, mean 6.59
-records/page, maximum 30) -- not `SPEC.md` Section 5.6's 2.5-3.5 estimate,
+records/page, maximum 30) -- not the earlier 2.5-3.5 estimate,
 which this package had already replaced with a measurement before this cap
 was chosen (see `_best_assignment`).
 
@@ -46,8 +45,8 @@ absurd input rather than silently degrading to an approximation.
 **Scoring.** A matched pair's CER/WER comes from the sealed instruments this
 package does not reimplement: `operations.spike_perlector.normalization`'s
 `graphemic-v1` profile and `operations.spike_perlector.scoring.score_response`.
-This module supplies the reference text (carried on the reference act, `SPEC.md`
-Section 5.3(b)/(d)) and each matched pipeline act's hypothesis text, obtained from
+This module supplies the reference text (carried on the reference act) and each matched
+pipeline act's hypothesis text, obtained from
 a caller-supplied mapping rather than an assumed Perlector artifact shape:
 `compare.py` owns the join and the scoring call, not the Perlector's internal
 kinds, and inventing a read of an unverified internal shape here would be
@@ -107,36 +106,38 @@ COMPARE_REFUSAL_REASONS = frozenset(
     }
 )
 
+
+class Refusal(CorpusRefusal):
+    reasons = COMPARE_REFUSAL_REASONS
+
+
 _BOUNDS_FIELDS = frozenset({"x", "y", "w", "h"})
 _PIPELINE_ACT_FIELDS = frozenset({"act_id", "bounds", "page_sha256"})
 
 
-def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise CorpusRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
-    return value
+_closed = Refusal.closed
 
 
 def _bounds(value: Any, what: str) -> dict[str, int]:
     bounds = _closed(value, _BOUNDS_FIELDS, what)
     if any(not isinstance(bounds[key], int) or isinstance(bounds[key], bool) for key in bounds):
-        raise CorpusRefusal(f"malformed-record: {what} must be plain integers")
+        raise Refusal(f"malformed-record: {what} must be plain integers")
     if bounds["x"] < 0 or bounds["y"] < 0 or bounds["w"] <= 0 or bounds["h"] <= 0:
-        raise CorpusRefusal(f"malformed-record: {what} must have non-negative x/y, positive w/h")
+        raise Refusal(f"malformed-record: {what} must have non-negative x/y, positive w/h")
     return bounds
 
 
 def _validate_pipeline_act(act: Any) -> dict[str, Any]:
     act = _closed(act, _PIPELINE_ACT_FIELDS, "pipeline act")
     if not is_well_formed(act["act_id"]) or not act["act_id"].startswith("act_"):
-        raise CorpusRefusal(
+        raise Refusal(
             f"wrong-identity-family: pipeline act carries {act['act_id']!r}, which is "
             "not a well-formed act_ identity -- a pac_ reference identity must never "
             "be accepted here"
         )
     _bounds(act["bounds"], f"pipeline act {act['act_id']!r} bounds")
     if not is_sha256(act["page_sha256"]):
-        raise CorpusRefusal(
+        raise Refusal(
             f"malformed-record: pipeline act {act['act_id']!r} page_sha256 must be a "
             "lowercase sha256 digest"
         )
@@ -284,7 +285,7 @@ def _best_assignment(
     eligible_pipeline = sorted({p for p, _ in weight})
     eligible_count = len(eligible_pipeline)
     if eligible_count > MAX_ACTS_PER_PAGE or reference_count > MAX_ACTS_PER_PAGE:
-        raise CorpusRefusal(
+        raise Refusal(
             "too-many-acts-for-page: "
             f"{eligible_count} pipeline acts with an eligible reference edge / "
             f"{reference_count} reference acts exceeds the predeclared sanity "
@@ -332,18 +333,18 @@ def load_exemplar_page_shas(tree: RunTree) -> dict[int, str]:
         payload = record["payload"]
         ordinal = payload.get("ordinal")
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: Exemplar page {record['subject_id']!r} carries no "
                 "integer ordinal"
             )
         digest = payload.get("source_sha256")
         if not is_sha256(digest):
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: Exemplar page {record['subject_id']!r} carries no "
                 "lowercase sha256 source_sha256"
             )
         if ordinal in shas:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: the Exemplar carries more than one sealed page for "
                 f"ordinal {ordinal}"
             )
@@ -355,8 +356,8 @@ def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
     """Every sealed Designator proposal region, read-only, grouped with its page sha256.
 
     Only `origin: "proposal"` regions -- a recovery crop's bounds are a Recensor
-    request, not a detected act, and `SPEC.md` Section 5.3(d) is explicit that the
-    matrix runs over "sealed proposal regions." Returns
+    request, not a detected act, and the matrix runs over sealed proposal
+    regions only. Returns
     `[{"act_id", "bounds", "page_sha256"}, ...]`.
 
     This reads a tree it did not produce, so a proposal region's shape is
@@ -378,13 +379,13 @@ def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
         transform = payload.get("transform")
         ordinal = transform.get("source_page_ordinal") if isinstance(transform, dict) else None
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: region {record['subject_id']!r} carries no integer "
                 "transform.source_page_ordinal, so its page cannot be resolved"
             )
         page_sha256 = page_shas.get(ordinal)
         if page_sha256 is None:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"unresolvable-page-ordinal: region {record['subject_id']!r} names "
                 f"source page ordinal {ordinal}, which no sealed Exemplar page carries"
             )
@@ -430,7 +431,7 @@ def count_excluded_designator_artifacts(tree: RunTree) -> dict[str, dict[str, in
 
 
 def _refused_write(*_args: Any, **_kwargs: Any) -> None:
-    raise CorpusRefusal(
+    raise Refusal(
         "run-tree-write-refused: the comparator is read-only over a completed run "
         "tree by contract -- it never writes into one"
     )
@@ -557,7 +558,7 @@ def compare_page_geometry(
     """Return the exact page assignment and geometry without inventing text scores."""
     reference_page = validate_reference_page(reference_page)
     if not isinstance(threshold, Fraction) or not (0 < threshold <= 1):
-        raise CorpusRefusal(
+        raise Refusal(
             f"malformed-record: threshold must be a Fraction in (0, 1], got {threshold!r}"
         )
     pipeline_acts = [_validate_pipeline_act(act) for act in pipeline_acts]
@@ -566,14 +567,14 @@ def compare_page_geometry(
     page_height = reference_page["page"]["height"]
     for act in pipeline_acts:
         if act["page_sha256"] != page_sha256:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"wrong-page: pipeline act {act['act_id']!r} carries page_sha256 "
                 f"{act['page_sha256']!r}, which does not match this reference page's "
                 f"{page_sha256!r}"
             )
         bounds = act["bounds"]
         if bounds["x"] + bounds["w"] > page_width or bounds["y"] + bounds["h"] > page_height:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"region-outside-page: pipeline act {act['act_id']!r} bounds {bounds} "
                 f"exceed this reference page's {page_width}x{page_height} bounds"
             )
@@ -689,7 +690,7 @@ def compare_page(
     Every reference act not selected by the assignment is a MISS. Every pipeline
     act not selected is reported, not scored -- `reference_page`'s
     `completeness: "records-only"` means an unmatched pipeline act is not
-    evidence of a false positive (`SPEC.md` Section 5.3(b)). A matched pair
+    evidence of a false positive. A matched pair
     without a supplied hypothesis is refused by name rather than silently scored
     as empty: the caller promised a mapping covering every act it expects
     compare_page to score.
@@ -708,7 +709,7 @@ def compare_page(
         ract = references[pair["reference_physical_act_id"]]
         hypothesis = hypotheses.get(act_id)
         if hypothesis is None:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"missing-hypothesis: matched pipeline act {act_id!r} has no "
                 "entry in the supplied hypotheses mapping"
             )
@@ -794,13 +795,13 @@ def _closed_threshold(value: Any) -> Fraction:
         or numerator <= 0
         or denominator <= 0
     ):
-        raise CorpusRefusal(
+        raise Refusal(
             "malformed-record: threshold.numerator and threshold.denominator must be "
             "positive plain integers"
         )
     fraction = Fraction(numerator, denominator)
     if fraction > 1:
-        raise CorpusRefusal(f"malformed-record: threshold must be at most 1, got {fraction}")
+        raise Refusal(f"malformed-record: threshold must be at most 1, got {fraction}")
     return fraction
 
 
@@ -812,15 +813,13 @@ def _closed_counts(value: Any, what: str) -> dict[str, int]:
         and count >= 0
         for key, count in value.items()
     ):
-        raise CorpusRefusal(
-            f"malformed-record: {what} must be a mapping of str to non-negative int"
-        )
+        raise Refusal(f"malformed-record: {what} must be a mapping of str to non-negative int")
     return value
 
 
 def _closed_list(value: Any, fields: frozenset[str], what: str) -> list[dict[str, Any]]:
     if not isinstance(value, list):
-        raise CorpusRefusal(f"malformed-record: {what} must be a list")
+        raise Refusal(f"malformed-record: {what} must be a list")
     return [_closed(item, fields, f"{what} entry") for item in value]
 
 
@@ -828,7 +827,7 @@ def validate_comparison(comparison: Any) -> dict[str, Any]:
     """Refuse a comparison record that is not exactly `reference-comparison.v1`."""
     comparison = _closed(comparison, _TOP_FIELDS, "reference comparison")
     if comparison["schema"] != SCHEMA:
-        raise CorpusRefusal(f"wrong-schema: expected {SCHEMA!r}, got {comparison['schema']!r}")
+        raise Refusal(f"wrong-schema: expected {SCHEMA!r}, got {comparison['schema']!r}")
 
     _closed_threshold(comparison["threshold"])
     _closed_list(comparison["matrix"], _MATRIX_ENTRY_FIELDS, "matrix")
@@ -849,7 +848,7 @@ def validate_comparison(comparison: Any) -> dict[str, Any]:
     _closed_counts(excluded["by_origin"], "excluded_region_counts.by_origin")
 
     if not verify_self_hash(comparison):
-        raise CorpusRefusal(
+        raise Refusal(
             "self-hash-mismatch: reference comparison self_hash does not verify "
             "against its own content"
         )

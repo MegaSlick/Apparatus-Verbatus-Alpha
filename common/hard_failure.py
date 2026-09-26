@@ -4,8 +4,9 @@ Distinct from `common/recovery.py`, which bounds rework for one act: this
 answers whether the RUN itself is going wrong. The tally is recomputed from
 the sealed, self-hashed artifacts already on disk every time it is asked for
 rather than kept as a running counter, so a process dying mid-run cannot make
-it read zero. A shard is one capped 1,000-page run, so the tally is per shard;
-a cross-shard condition is held for Recensor review instead.
+it read zero. A shard is one capped 1,000-page run, so the tally is per shard.
+Nothing links a continuation that crosses a shard boundary: each run sees only
+its own pages.
 """
 
 import tomllib

@@ -24,6 +24,7 @@ from typing import Any, Final
 
 from .canonical import digest_of
 from .errors import IdentityRefusal
+from .stages import DESIGNATOR
 
 # 64 bits: no practical collision in a run, yet comparable by eye in a listing.
 _DIGEST_CHARS: Final = 16
@@ -357,3 +358,6 @@ def artifact_bindings(
 
 def artifact_id(stage: str, kind: str, subject: str, attempt: str | None = None) -> str:
     return derive("artifact", artifact_bindings(stage, kind, subject, attempt))
+
+
+PROPOSAL_SEAL_ID: Final = artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)

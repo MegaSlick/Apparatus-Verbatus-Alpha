@@ -411,11 +411,20 @@ def test_a_local_path_escaping_the_model_root_refuses_without_touching_the_netwo
 def test_every_refusal_this_package_raises_is_a_member_of_the_closed_taxonomy():
     """A new failure mode has to be spelled as one of these, so a reader of the
     seven doors above can be sure the list is the whole list."""
-    from common.chairs.errors import ALL_REFUSAL_TYPES, is_closed_refusal
+    import common.chairs.errors as errors_module
+    from common.chairs.errors import ALL_REFUSAL_TYPES
+
+    declared = {
+        value
+        for value in vars(errors_module).values()
+        if isinstance(value, type)
+        and issubclass(value, errors_module.ChairRefusal)
+        and value is not errors_module.ChairRefusal
+    }
+    assert declared == set(ALL_REFUSAL_TYPES)
 
     for refusal in ALL_REFUSAL_TYPES:
         error = refusal("attestator_1", "a concrete difference")
-        assert is_closed_refusal(error)
         assert error.chair == "attestator_1"
         assert "attestator_1" in str(error)
         # Every one is a ContractError, so a stage that hits one exits with the
@@ -423,9 +432,6 @@ def test_every_refusal_this_package_raises_is_a_member_of_the_closed_taxonomy():
         from common.contracts.errors import ContractError
 
         assert isinstance(error, ContractError)
-
-    assert not is_closed_refusal(ChairRefusal("attestator_1", "the base class is not a member"))
-    assert not is_closed_refusal(ValueError("not a chair refusal at all"))
 
 
 def test_a_refusal_carries_the_concrete_difference_and_not_only_the_chair(world):

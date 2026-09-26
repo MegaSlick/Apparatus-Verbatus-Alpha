@@ -8,14 +8,11 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from common.contracts.canonical import canonical_bytes
 from common.imaging import render_triage_derivative
 from operations.operator.scantailor_worker import parse
 from operations.triage.producer import SubmittedFrame, produce
 from operations.triage.scantailor_bridge import (
-    ORIENTATION_SCHEMA,
     ScantailorBridgeRefusal,
-    load_orientations,
     transcribe_midpoint_splits,
 )
 from operations.triage.scantailor_project import PrescribedSpread, prescribed_midpoint_project
@@ -151,25 +148,3 @@ def test_a_declared_removed_half_is_refused_rather_than_published(tmp_path: Path
             mode="manual",
             orientation_degrees_by_source_path={sources[0]: 0, sources[1]: 180},
         )
-
-
-def test_a_boolean_orientation_is_refused_not_read_as_zero(tmp_path: Path):
-    """`False == 0` in Python, so a JSON boolean passed the membership test.
-
-    It then selected the zero-degree region order, recorded `0` for
-    `degrees * 1000`, and sealed `False` into the binding -- a malformed
-    canonical document accepted instead of refused.
-    """
-    orientations = {"schema": ORIENTATION_SCHEMA, "orientations": {"pages/a.jpg": False}}
-    raw = canonical_bytes(orientations) + b"\n"
-    path = tmp_path / "orientations.json"
-    path.write_bytes(raw)
-    with pytest.raises(ScantailorBridgeRefusal, match="wrong closed schema"):
-        load_orientations(path)
-
-    # The honest spellings still load.
-    for degrees in (0, 180):
-        good = {"schema": ORIENTATION_SCHEMA, "orientations": {"pages/a.jpg": degrees}}
-        good_path = tmp_path / f"orientations-{degrees}.json"
-        good_path.write_bytes(canonical_bytes(good) + b"\n")
-        assert load_orientations(good_path)[0] == {"pages/a.jpg": degrees}

@@ -19,7 +19,7 @@ against that reference truth; `local_admission.py` admits the RecordGold sets
 already on this machine as reference truth, every record admitted or refused by
 name; `evaluate.py` is the one caller that builds `compare.py`'s hypotheses from
 a real run's sealed Armarium export and writes the evaluation record. See
-`SPEC.md` and `README.md` for each module's shape in full.
+`README.md` for each module's shape in full.
 
 **Package rule**, binding every module in this package: `operations/corpus/`
 may not import `pipeline/`, and `pipeline/` may not import `operations.corpus`
@@ -47,19 +47,36 @@ pipeline read, and drops nothing from either side of a pairing. All of it
 refuses; none of it chooses.
 """
 
+from typing import Any
+
 from common.contracts.errors import ContractError
 
 
 class CorpusRefusal(ContractError):
-    """Every refusal this package raises, named at the front of its message.
+    """Every refusal this package raises, as `"<reason>: <detail>"`.
 
-    Convention: `"<reason-name>: <detail>"`, where `<reason-name>` is one of the
-    closed `*_REFUSAL_REASONS` vocabulary each module in this package declares.
-    A caller that wants to dispatch on the reason reads `str(error).split(":", 1)[0]`; a human
-    reading the raised text sees the same name as its first word. This is what
-    "refusals by name" means mechanically in this package: the name is not a
-    label attached after the fact, it is the exception's own leading token.
+    Each module raises its own `Refusal` subclass whose `reasons` is that module's closed
+    `*_REFUSAL_REASONS` vocabulary. `.reason` is the leading name; a caller
+    dispatches on it, never on the text. A name outside the vocabulary is a
+    programming error, raised as `TypeError` at construction.
     """
+
+    reasons: frozenset[str] = frozenset()
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.reason = message.split(":", 1)[0]
+        if self.reason not in self.reasons:
+            raise TypeError(
+                f"{type(self).__module__} declares no reason {self.reason!r}: {message}"
+            )
+
+    @classmethod
+    def closed(cls, value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
+        """`value` if it is a dict carrying exactly `fields`, else `malformed-record`."""
+        if not isinstance(value, dict) or set(value) != fields:
+            raise cls(f"malformed-record: {what} must be the closed record {sorted(fields)}")
+        return value
 
 
 __all__ = ["CorpusRefusal"]

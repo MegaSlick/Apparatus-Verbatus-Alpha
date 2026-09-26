@@ -406,7 +406,7 @@ actually measured against. `background_value` is `null` exactly when
 `ink_measurable` is false and no threshold could be inferred.
 
 **`ink_measurable: false` is a reconciliation that could not happen, published
-rather than skipped.** A page whose background `infer_background` refuses has no
+rather than skipped.** A page whose background `infer_background_evidence` refuses has no
 threshold that separates ink from paper, so there is nothing honest to count:
 the three counts are `null`, `residual_components` is empty, `reason` says why,
 and the record's outcome is `held`. The stage used to substitute the page's own
@@ -1532,7 +1532,7 @@ custody as its own evidence (`structure-answer.raw_response_ref`,
 `custody_ref`) and hands nothing to the witnesses; the Attestatores stage is
 untouched by the live Designator and reads a served seal under its own rows.
 
-**`infer_background`'s majority-paper assumption is checked from both sides,
+**`infer_background_evidence`'s majority-paper assumption is checked from both sides,
 and it also knows a photographed page from a dark one.** The premise is
 that a scanned register page is overwhelmingly paper, so its modal pixel is the
 paper colour. Two shapes break it and both are refusals now. A page where ink is
@@ -1953,7 +1953,7 @@ and has no notion of "claimed" to give — a change worth its own design and
 test pass. Named here rather than fixed quietly or left undiscovered. (Both
 sides of that shared adjacency label runs through one function,
 `common.components.label_component_runs`, and both are checked against the retired
-pixel-set labeller, `structure._label_components_reference`. The defect
+pixel-set labeller, `_test_support.label_components_reference`. The defect
 described above is unchanged by that substitution: it is a property of the
 adjacency rule, not of how the rule is computed.)
 

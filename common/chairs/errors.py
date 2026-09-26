@@ -88,9 +88,3 @@ ALL_REFUSAL_TYPES = (
     ProtocolClauseRefusal,
 )
 """The complete public taxonomy. New behaviour must use an existing refusal."""
-
-
-def is_closed_refusal(error: BaseException) -> bool:
-    """True only for an exact member of this boundary's public taxonomy."""
-
-    return type(error) in ALL_REFUSAL_TYPES

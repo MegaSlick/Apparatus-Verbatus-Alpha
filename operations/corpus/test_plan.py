@@ -420,6 +420,8 @@ def test_main_builds_and_writes_a_validated_plan(tmp_path):
     assert plan["schema"] == "recordgold-fetch-plan.v1"
     assert output_path.exists()
     assert output_path.read_bytes() == canonical_bytes(plan)
+    with pytest.raises(CorpusRefusal, match="^output-exists:"):
+        main(snapshot_path, output_path)
 
 
 def test_load_plan_returns_a_byte_identical_validated_plan(tmp_path):

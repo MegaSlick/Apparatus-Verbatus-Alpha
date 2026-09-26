@@ -862,23 +862,6 @@ def reconcile_edge_finding_with_runs(
     return measured
 
 
-def page_edge_ink(
-    image_bytes: bytes,
-    *,
-    background_policy: BackgroundPolicy,
-    coverage_policy: CoverageAuditPolicy,
-) -> dict[str, Any]:
-    """`edge_ink` over bytes this caller has not already decoded."""
-    width, height, rows = grayscale_rows(image_bytes)
-    return edge_ink(
-        width,
-        height,
-        rows,
-        background_policy=background_policy,
-        coverage_policy=coverage_policy,
-    )
-
-
 def edge_ink(
     width: int,
     height: int,

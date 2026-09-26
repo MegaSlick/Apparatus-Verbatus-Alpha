@@ -454,7 +454,7 @@ def test_the_ink_map_refuses_a_page_whose_verified_pixels_will_not_decode(monkey
     named refusal, not a bare traceback.
 
     `measured_page_bytes` proves the bytes match the digest the Exemplar sealed;
-    it says nothing about whether `page_residual_ink`/`page_edge_ink` can decode
+    it says nothing about whether `page_residual_ink`/`edge_ink` can decode
     them. `run_stage` only catches `RunHalted` and `ContractError`
     (`common/stage.py`), so an uncaught decoder `ValueError` here would escape as
     an unhandled traceback with `seal_boundary`/`finish` never reached --
@@ -593,8 +593,8 @@ def test_the_fixture_pages_stop_flagging_because_the_band_stopped_being_the_page
     which has no page with ink near its edge; it is written into the Ink Map's
     CONTRACT.md beside this test.
     """
-    from common.imaging import dimensions
-    from common.residual_ink import page_edge_ink
+    from common.imaging import dimensions, grayscale_rows
+    from common.residual_ink import edge_ink
     from proof.synthetic_pages import page_bytes
 
     width, height = dimensions(page_bytes(1))
@@ -607,8 +607,8 @@ def test_the_fixture_pages_stop_flagging_because_the_band_stopped_being_the_page
         "says it is, and the edge findings on a fixture run mean something else"
     )
     for ordinal in (1, 2):
-        finding = page_edge_ink(
-            page_bytes(ordinal),
+        finding = edge_ink(
+            *grayscale_rows(page_bytes(ordinal)),
             background_policy=_policy(width, height),
             coverage_policy=_coverage(width, height),
         )

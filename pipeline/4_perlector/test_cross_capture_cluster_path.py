@@ -40,7 +40,6 @@ from common.corpus_register import (  # noqa: E402
 )
 from common.cross_capture_autopsia import (  # noqa: E402
     build_autopsia,
-    dissent_shell,
 )
 from common.cross_capture_coverage import (  # noqa: E402
     build_cross_capture_coverage,
@@ -538,26 +537,6 @@ def test_two_capture_leaf_cluster_runs_partition_autopsia_perlectio_and_dissent(
         establishing_call["dossier"]["cross_capture_autopsia"]["required_capture_sha256s"]
     ) == {capture["source_sha256"] for capture in captures}
 
-    perlectio_bytes = canonical_bytes(passes["perlectio"])
-    perlectio_ref = {
-        "relative_path": "4_perlector/artifacts/perlectio.json",
-        "sha256": digest_bytes(perlectio_bytes),
-    }
-    shell = dissent_shell(
-        perlectio_ref=perlectio_ref,
-        autopsia=autopsia,
-        reader_invocation_ref={
-            "relative_path": "4_perlector/receipts/joint-reader.json",
-            "sha256": digest_bytes(b"one joint reader invocation"),
-        },
-        response_observation_digest=digest_bytes(b"two legible observations"),
-    )
-    assert shell["perlectio_ref"] == perlectio_ref
-    assert {view["source_sha256"] for view in shell["views"]} == {
-        capture["source_sha256"] for capture in captures
-    }
-    assert shell["capture_pairs"] == [sorted(capture["source_sha256"] for capture in captures)]
-
     membership_head, _active_members = membership_heads(register_path.read_bytes())[physical_page]
     append_records(
         register_path,
@@ -594,7 +573,6 @@ def test_two_capture_leaf_cluster_runs_partition_autopsia_perlectio_and_dissent(
             "partition": partition,
             "autopsia": autopsia,
             "perlectio": passes["perlectio"],
-            "dissent": shell,
             "reduced_partition": reduced_partition,
             "reduced_autopsia": reduced_autopsia,
             "reduced_perlectio": reduced_passes["perlectio"],

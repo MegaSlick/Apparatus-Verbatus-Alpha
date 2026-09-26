@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from common.durability import sync_directory
+
 from . import durable
 
 
@@ -18,9 +20,9 @@ def test_strict_sync_propagates_a_directory_open_failure(
 
     monkeypatch.setattr(durable.os, "open", refuse_open)
 
-    durable.sync_directory(tmp_path)
+    sync_directory(tmp_path)
     with pytest.raises(OSError, match="injected directory open failure"):
-        durable.sync_directory(tmp_path, strict=True)
+        sync_directory(tmp_path, strict=True)
 
 
 def test_strict_sync_propagates_a_directory_fsync_failure(
@@ -31,9 +33,9 @@ def test_strict_sync_propagates_a_directory_fsync_failure(
 
     monkeypatch.setattr(durable.os, "fsync", refuse_fsync)
 
-    durable.sync_directory(tmp_path)
+    sync_directory(tmp_path)
     with pytest.raises(OSError, match="injected directory fsync failure"):
-        durable.sync_directory(tmp_path, strict=True)
+        sync_directory(tmp_path, strict=True)
 
 
 def test_exclusive_write_refuses_a_second_create_and_keeps_the_first_bytes(

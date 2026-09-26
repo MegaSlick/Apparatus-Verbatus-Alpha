@@ -2573,10 +2573,8 @@ def test_the_store_and_the_operational_records_share_one_sync_primitive(
     """
 
     from common.durability import sync_directory as canonical
-    from operations.pod import durable
     from operations.review import candidate
 
-    assert durable.sync_directory is canonical
     assert runtree_store.sync_directory is canonical
 
     calls: list[tuple[Path, bool]] = []

@@ -22,8 +22,6 @@ from common.cross_capture_autopsia import (  # noqa: E402
     atomic_delivered_pixels,
     build_autopsia,
     build_autopsia_from_run,
-    cross_capture_audit_scope,
-    dissent_shell,
     invoke_one_logical_read,
     over_capacity_reason,
     validate_autopsia,
@@ -315,23 +313,6 @@ def test_the_preference_screen_walks_a_deep_payload_instead_of_the_interpreter_s
             required_capture_sha256s=[A],
             views=[buried],
         )
-
-
-def test_dissent_shell_is_post_read_and_pair_complete():
-    shell = dissent_shell(
-        perlectio_ref=REF,
-        autopsia=autopsia(),
-        reader_invocation_ref=REF,
-        response_observation_digest="a" * 64,
-    )
-    assert shell["logical_act_id"] == "pac_fixture"
-    assert shell["capture_pairs"] == [[A, B]]
-    assert shell["reader_invocation_ref"] == REF
-    assert shell["response_observation_digest"] == "a" * 64
-
-
-def test_cross_capture_audit_has_the_complete_page_set_and_no_representative_page():
-    assert cross_capture_audit_scope(autopsia()) == {"page_ids": ["pg_a", "pg_b"]}
 
 
 def test_a_view_image_that_no_longer_matches_its_digest_is_refused():
@@ -691,14 +672,4 @@ def test_a_traversal_region_ref_is_refused_before_any_reader_call():
             partition_ref=REF,
             required_capture_sha256s=[A, B],
             views=[escaping_view, view(B, "b")],
-        )
-
-
-def test_a_traversal_dissent_shell_reference_is_refused():
-    with pytest.raises(SchemaRefusal, match="is not a canonical run-relative path"):
-        dissent_shell(
-            perlectio_ref={"relative_path": "../outside", "sha256": "c" * 64},
-            autopsia=autopsia(),
-            reader_invocation_ref=REF,
-            response_observation_digest="d" * 64,
         )

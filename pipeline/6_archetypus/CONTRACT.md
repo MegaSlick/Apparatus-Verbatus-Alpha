@@ -299,8 +299,8 @@ Consequences worth stating plainly:
 
 - the older `annotations` layer is **carried, not migrated**. It is projected under the
   name `transcription_annotations`, to keep it apart from the unbuilt *semantic*
-  annotation layer (`pipeline/7_armarium/annotation_boundary.py`), whose per-row
-  `not-produced` claim used to be written over it under the bare name `annotations`.
+  annotation layer, whose per-row `not-produced` claim used to be written over it
+  under the bare name `annotations`.
   Nothing upstream populates this layer yet, so `[]` remains the ordinary value;
 - `evidence_ref`, `text_hash` and `index.json` are still not read at export. They
   remain fields this stage carries for their own sake; and

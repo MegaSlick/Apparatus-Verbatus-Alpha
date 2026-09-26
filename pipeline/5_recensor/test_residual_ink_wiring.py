@@ -42,6 +42,12 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import DESIGNATOR, RECENSOR
 from common.imaging import dimensions, encode_grayscale_png
+from common.residual_ink import (
+    MINIMUM_INK_PIXELS_FIELD,
+    load_coverage_audit_config,
+    page_residual_ink,
+    resolve_coverage_audit_policy,
+)
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -56,13 +62,7 @@ def _load_module(relative_path: str, name: str):
 
 
 RUN = _load_module("pipeline/5_recensor/run.py", "recensor_run_residual_ink_wiring")
-sys.path.insert(0, str((ROOT / "pipeline" / "5_recensor")))
-from residual_ink import (  # noqa: E402
-    MINIMUM_INK_PIXELS,
-    load_coverage_audit_config,
-    page_residual_ink,
-    resolve_coverage_audit_policy,
-)
+MINIMUM_INK_PIXELS = load_coverage_audit_config()["coverage_audit"][MINIMUM_INK_PIXELS_FIELD]
 
 
 def _measure_page(image_bytes, covered):

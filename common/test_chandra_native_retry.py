@@ -188,6 +188,5 @@ def test_trace_refuses_trigger_error_drift_early_exhaustion_and_reused_evidence(
 
 
 def test_a_persisted_intent_without_terminal_evidence_is_never_replayed():
-    refuse_orphan_intent(False)
     with pytest.raises(SchemaRefusal, match="delivery is unknown.*will not be replayed"):
-        refuse_orphan_intent(True)
+        refuse_orphan_intent()

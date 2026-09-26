@@ -30,12 +30,6 @@ from typing import Any, Final, Mapping
 import feeding
 
 from common import chandra_layout
-from common.chandra_presentation import (
-    PRESENT_COLOUR_MODE as SHARED_PRESENT_COLOUR_MODE,
-)
-from common.chandra_presentation import (
-    PRESENT_OPERATION as SHARED_PRESENT_OPERATION,
-)
 from common.chandra_presentation import presented_transform, render_page
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
@@ -45,10 +39,6 @@ from common.native_witness import validate_presented
 QUANTIZATION_RULE = "chandra.v1.floor-min-ceil-max.sealed-page-pixels"
 FIXTURE_RESPONSE_SCHEMA = "fixture-chandra-response.v1"
 
-# Re-exported because `witness_adapters.validate_adapter_presentation` reads
-# these from this adapter.
-PRESENT_OPERATION: Final = SHARED_PRESENT_OPERATION
-PRESENT_COLOUR_MODE: Final = SHARED_PRESENT_COLOUR_MODE
 # Re-exported so the fixture placeholder's reader below applies the same
 # finite intake as the grammar that owns these ceilings.
 MAX_RESPONSE_BYTES: Final = chandra_layout.MAX_RESPONSE_BYTES

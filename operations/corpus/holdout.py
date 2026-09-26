@@ -1,6 +1,6 @@
 """The hold-out ledger: which pages and records the `test` split protects.
 
-Built from the row snapshot alone — `SPEC.md` §5.4's strongest mechanism, ahead of
+Built from the row snapshot alone — the strongest hold-out mechanism, ahead of
 "the fetcher defaults to `val`" and "the submission builder refuses by name": an
 identifier ledger derivable before a single byte is fetched, so a page can never
 even be requested under the wrong split by a builder that forgot a flag.
@@ -9,20 +9,20 @@ Every IIIF identifier carrying at least one `test`-split record is *held*.
 `refuse_held_out_page` is the predicate the submission builder calls before
 writing a page into a submission folder — it never returns a reading,
 never picks among candidates, it only says whether a page may proceed, so it
-refuses rather than answers. Two distinct refusals, both closed vocabulary from
-`SPEC.md` §5.1: `holdout-page` for a page that is nothing but held-out material,
+refuses rather than answers. Two distinct refusals: `holdout-page` for a page that is
+nothing but held-out material,
 and the stronger `cross-split-page` for a page that also carries a non-held
-split's records — the case `SPEC.md` §5.4 names explicitly ("a page carrying test
-records cannot be used for calibration without exposing held-out material").
+split's records, since a page carrying test records cannot be used for
+calibration without exposing held-out material.
 
-Measured from the real snapshot (§5.5's "before a byte is fetched" promise): the
+Measured from the real snapshot, before a byte is fetched: the
 three splits are **page-disjoint** in this export — no identifier in `val` or
 `train` also carries a `test` record — so `cross-split-page` never fires against
-real data today. It is still load-bearing, not decorative: `SPEC.md` §6 names the
-disjointness as unverified until measured, and this file's own tests exercise it
+real data today. It is still load-bearing, not decorative: disjointness is a
+measurement of one export, not a guarantee, and this file's own tests exercise it
 against a synthetic cross-split page precisely because the real corpus cannot.
 
-"Append-only" (`SPEC.md` §5.1) means this ledger is only ever *derived*, never
+"Append-only" means this ledger is only ever *derived*, never
 hand-edited: rebuilding it from one row snapshot is deterministic and idempotent
 — the same snapshot always produces byte-identical bytes and the same self-hash —
 and shrinking or growing the hold-out set means producing a new row snapshot, not
@@ -36,6 +36,7 @@ from typing import Any
 from common.contracts.canonical import canonical_bytes, is_sha256, self_hash, verify_self_hash
 
 from . import CorpusRefusal
+from .cache import write_new_file
 from .plan import parse_record_url
 from .rows import CORPUS_ID, validate_snapshot
 
@@ -50,8 +51,14 @@ HOLDOUT_REFUSAL_REASONS = frozenset(
         "wrong-schema",
         "wrong-corpus",
         "self-hash-mismatch",
+        "output-exists",
     }
 )
+
+
+class Refusal(CorpusRefusal):
+    reasons = HOLDOUT_REFUSAL_REASONS
+
 
 _ENTRY_FIELDS = frozenset({"identifier", "record_ids"})
 _TOP_FIELDS = frozenset(
@@ -67,10 +74,7 @@ _TOP_FIELDS = frozenset(
 )
 
 
-def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise CorpusRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
-    return value
+_closed = Refusal.closed
 
 
 def build_holdout(rows: list[dict[str, Any]], source_row_snapshot_self_hash: str) -> dict[str, Any]:
@@ -107,11 +111,11 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
     """Refuse a ledger that is not exactly `recordgold-holdout.v1`, closed and self-consistent."""
     holdout = _closed(holdout, _TOP_FIELDS, "hold-out ledger")
     if holdout["schema"] != SCHEMA:
-        raise CorpusRefusal(f"wrong-schema: expected {SCHEMA!r}, got {holdout['schema']!r}")
+        raise Refusal(f"wrong-schema: expected {SCHEMA!r}, got {holdout['schema']!r}")
     if holdout["corpus_id"] != CORPUS_ID:
-        raise CorpusRefusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {holdout['corpus_id']!r}")
+        raise Refusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {holdout['corpus_id']!r}")
     if not is_sha256(holdout["source_row_snapshot_self_hash"]):
-        raise CorpusRefusal(
+        raise Refusal(
             "malformed-record: source_row_snapshot_self_hash must be a lowercase sha256 hex digest"
         )
 
@@ -119,20 +123,16 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
     if not isinstance(identifiers, list) or not all(
         isinstance(identifier, str) for identifier in identifiers
     ):
-        raise CorpusRefusal("malformed-record: held_identifiers must be a list of strings")
+        raise Refusal("malformed-record: held_identifiers must be a list of strings")
     if identifiers != sorted(set(identifiers)):
-        raise CorpusRefusal(
-            "malformed-record: held_identifiers must be a sorted, deduplicated list"
-        )
+        raise Refusal("malformed-record: held_identifiers must be a sorted, deduplicated list")
 
     entries = holdout["entries"]
     if (
         not isinstance(entries, list)
         or [entry.get("identifier") for entry in entries if isinstance(entry, dict)] != identifiers
     ):
-        raise CorpusRefusal(
-            "malformed-record: entries must list held_identifiers, in the same order"
-        )
+        raise Refusal("malformed-record: entries must list held_identifiers, in the same order")
 
     seen_record_ids: set[str] = set()
     for entry in entries:
@@ -143,24 +143,24 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
             or not record_ids
             or not all(isinstance(record_id, str) for record_id in record_ids)
         ):
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: entry {entry['identifier']!r} record_ids must be a "
                 "non-empty list of strings"
             )
         if record_ids != sorted(set(record_ids)):
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: entry {entry['identifier']!r} record_ids must be a "
                 "sorted, deduplicated, non-empty list"
             )
         seen_record_ids.update(record_ids)
 
     if holdout["held_record_ids"] != sorted(seen_record_ids):
-        raise CorpusRefusal(
+        raise Refusal(
             "malformed-record: held_record_ids does not match the union of every entry's record_ids"
         )
 
     if not verify_self_hash(holdout):
-        raise CorpusRefusal(
+        raise Refusal(
             "self-hash-mismatch: hold-out ledger self_hash does not verify against its own content"
         )
     return holdout
@@ -179,14 +179,12 @@ def refuse_held_out_page(
         return
     other_splits = sorted(set(splits_present) - {HELD_SPLIT})
     if other_splits:
-        raise CorpusRefusal(
+        raise Refusal(
             f"cross-split-page: identifier {identifier!r} is held for the {HELD_SPLIT!r} "
             f"split but also carries {other_splits} — it cannot be used for calibration "
             "without exposing held-out material"
         )
-    raise CorpusRefusal(
-        f"holdout-page: identifier {identifier!r} is held for the {HELD_SPLIT!r} split"
-    )
+    raise Refusal(f"holdout-page: identifier {identifier!r} is held for the {HELD_SPLIT!r} split")
 
 
 def load_holdout(path: str | Path) -> dict[str, Any]:
@@ -209,7 +207,8 @@ def main(snapshot_path: str | Path, output_path: str | Path) -> dict[str, Any]:
     """
     snapshot = validate_snapshot(json.loads(Path(snapshot_path).read_bytes()))
     holdout = build_holdout(snapshot["rows"], snapshot["self_hash"])
-    Path(output_path).write_bytes(canonical_bytes(holdout))
+    if not write_new_file(Path(output_path), canonical_bytes(holdout)):
+        raise Refusal(f"output-exists: {output_path} already exists")
     return holdout
 
 

@@ -413,7 +413,9 @@ Nested or interleaved cluster spans are kept as one contiguous shard interval.
 creates one run per at-most-1,000-page shard, so it must keep the existing tally per
 shard and must not add a corpus-wide aggregate that would silently change the ruled
 unit. Two hard failures in each of several shards remain warnings in each run; the
-third within any one shard halts that run at its next checkpoint.
+third within any one shard halts that run at its next checkpoint. Nothing links a
+continuation that crosses a shard boundary: each run sees only its own pages, and
+Unit 8 inherits that gap.
 
 **Recovery does not re-render a derivative page.** A recovery pass reads the same
 sealed Exemplar page, re-verifies its master/recipe lineage at the ordinary boundary,

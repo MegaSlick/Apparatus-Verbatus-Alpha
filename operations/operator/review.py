@@ -13,7 +13,7 @@ from typing import Any
 from common.contracts.approval import validate_approval_record
 from common.contracts.canonical import digest_bytes, verify_self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.identities import artifact_id
+from common.contracts.identities import PROPOSAL_SEAL_ID, artifact_id
 from common.contracts.outcomes import OutcomeClass, classify
 from common.contracts.stages import (
     ARCHETYPUS,
@@ -998,13 +998,12 @@ def _expected_acts(
     # than by there being exactly one record in the directory: a foreign
     # neighbour beside the denominator is named beside the act count, not
     # cause to refuse the whole view.
-    canonical_id = artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
-    canonical = [row for row in seals if row["artifact_id"] == canonical_id]
+    canonical = [row for row in seals if row["artifact_id"] == PROPOSAL_SEAL_ID]
     if not canonical:
         raise _seal_refusal(
             seals[0],
             f"is artifact {seals[0]['artifact_id']}; this run has no canonical proposal seal "
-            f"{canonical_id}, so nothing declares how many acts it has",
+            f"{PROPOSAL_SEAL_ID}, so nothing declares how many acts it has",
         )
     if len(canonical) > 1:
         # Two records under one canonical id is not a neighbour to name beside
@@ -1013,12 +1012,12 @@ def _expected_acts(
         raise _seal_refusal(
             canonical[0],
             f"is one of {len(canonical)} records stored under the canonical proposal-seal "
-            f"artifact {canonical_id} ("
+            f"artifact {PROPOSAL_SEAL_ID} ("
             f"{', '.join(row['record_ref']['relative_path'] for row in canonical)}); a run "
             "declares its act count once, and this surface does not choose between two",
         )
     seal = canonical[0]
-    extra = [row for row in seals if row["artifact_id"] != canonical_id]
+    extra = [row for row in seals if row["artifact_id"] != PROPOSAL_SEAL_ID]
     note = None
     if extra:
         note = (

@@ -11,35 +11,34 @@ skeleton's synthetic proposer does not yet support (see CONTRACT.md).
 """
 
 import random
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from residual_ink import (  # noqa: E402
-    MINIMUM_CONTRAST_BELOW_BACKGROUND,
-    MINIMUM_FRACTION_OUTSIDE_COVERAGE,
-    MINIMUM_INK_PIXELS,
-    page_residual_ink,
-    residual_ink,
-)
-
-from common.background import (  # noqa: E402
+from common.background import (
+    BASIS_POINTS,
     BackgroundInferenceRefusal,
     infer_background_evidence,
     load_background_config,
     resolve_background_policy,
 )
-from common.imaging import dimensions, encode_grayscale_png  # noqa: E402
-from common.residual_ink import (  # noqa: E402
+from common.imaging import dimensions, encode_grayscale_png, grayscale_rows
+from common.residual_ink import (
+    MINIMUM_CONTRAST_BELOW_BACKGROUND,
+    MINIMUM_FRACTION_OUTSIDE_BP_FIELD,
+    MINIMUM_INK_PIXELS_FIELD,
+    edge_ink,
     edge_ink_from_runs,
     ink_runs,
-    page_edge_ink,
+    load_coverage_audit_config,
+    page_residual_ink,
     page_spanning_components,
+    residual_ink,
 )
-from proof.synthetic_pages import PAGES, page_bytes  # noqa: E402
+from proof.synthetic_pages import PAGES, page_bytes
+
+_NOISE_FLOOR = load_coverage_audit_config()["coverage_audit"]
+MINIMUM_INK_PIXELS = _NOISE_FLOOR[MINIMUM_INK_PIXELS_FIELD]
+MINIMUM_FRACTION_OUTSIDE_COVERAGE = _NOISE_FLOOR[MINIMUM_FRACTION_OUTSIDE_BP_FIELD] / BASIS_POINTS
 
 
 def _policy(width: int, height: int):
@@ -467,8 +466,8 @@ def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink
     """
     for page in PAGES:
         image = page_bytes(page["ordinal"])
-        initial = page_edge_ink(
-            image,
+        initial = edge_ink(
+            *grayscale_rows(image),
             background_policy=_policy(*dimensions(image)),
             coverage_policy=_coverage(*dimensions(image)),
         )
@@ -483,7 +482,9 @@ def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink
     image = encode_grayscale_png(600, 600, rows)
     audit = _coverage(600, 600)
     assert audit["edge_band_px"] == 6
-    initial = page_edge_ink(image, background_policy=_policy(600, 600), coverage_policy=audit)
+    initial = edge_ink(
+        *grayscale_rows(image), background_policy=_policy(600, 600), coverage_policy=audit
+    )
     assert initial["outside_ink_pixels"] == 2400
     assert initial["flagged"] is True
 
@@ -508,7 +509,7 @@ def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink
 def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, height):
     """One instrument, not two that disagree about what an edge is.
 
-    `page_edge_ink` floors its band at 1 so the smallest legal image still has
+    `edge_ink` floors its band at 1 so the smallest legal image still has
     an edge. `edge_ink_from_runs` dropped that floor and computed 0, skipping
     the perimeter measurement entirely. The Ink Map then flagged such a page
     and the Armarium re-measured it clean, and
@@ -524,8 +525,8 @@ def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, 
         paint(rows, 0, 0, 3, 1)
     image = encode_grayscale_png(width, height, rows)
 
-    initial = page_edge_ink(
-        image,
+    initial = edge_ink(
+        *grayscale_rows(image),
         background_policy=_policy(*dimensions(image)),
         coverage_policy=_coverage(*dimensions(image)),
     )
@@ -556,7 +557,7 @@ def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
     interval `(width - band, width)` become the identical `(0, 1)` on every
     middle row -- each middle-row pixel then priced twice into
     `outside_ink_pixels` while `total_ink_pixels` counts it once, a page-space
-    account `page_edge_ink` never produces. Only a middle row proves it: rows
+    account `edge_ink` never produces. Only a middle row proves it: rows
     inside the band already take the single full-width interval either way.
     """
     width, height = 1, 100
@@ -565,8 +566,8 @@ def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
         paint(rows, 0, y, width, 1)
     image = encode_grayscale_png(width, height, rows)
 
-    initial = page_edge_ink(
-        image,
+    initial = edge_ink(
+        *grayscale_rows(image),
         background_policy=_policy(*dimensions(image)),
         coverage_policy=_coverage(*dimensions(image)),
     )

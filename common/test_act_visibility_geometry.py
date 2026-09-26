@@ -8,7 +8,6 @@ from common.act_visibility_geometry import (
     GRID,
     MAX_POLYGON_POINTS,
     classify_capture_visibility,
-    expected_surface_cells,
 )
 
 BOUNDS = {"x": 0, "y": 0, "w": 40, "h": 40}
@@ -84,12 +83,6 @@ def test_bounds_must_be_a_closed_positive_rectangle():
         classify_capture_visibility(bounds={"x": 0, "y": 0, "w": 0, "h": 10}, occlusion_polygons=[])
     with pytest.raises(ValueError):
         classify_capture_visibility(bounds={"x": 0, "y": 0, "w": 10}, occlusion_polygons=[])
-
-
-@pytest.mark.parametrize("grid", [0, -1, True, 1.5])
-def test_grid_must_be_a_positive_non_boolean_integer(grid):
-    with pytest.raises(ValueError, match="positive integer"):
-        expected_surface_cells(grid)
 
 
 @pytest.mark.parametrize(

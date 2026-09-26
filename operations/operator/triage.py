@@ -19,7 +19,7 @@ from typing import Any, Iterator, Mapping, Sequence
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.corpus_register import refuse_capture_preference
-from operations.pod.durable import sync_directory
+from common.durability import sync_directory
 from operations.triage import instrument
 from operations.triage.producer import (
     CONFIRMATION_SCHEMA,

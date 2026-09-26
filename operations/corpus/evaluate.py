@@ -65,6 +65,7 @@ from operations.spike_perlector.normalization import (
 )
 
 from . import CorpusRefusal
+from .cache import write_new_file
 from .compare import (
     ReadOnlyRunTree,
     compare_page,
@@ -109,6 +110,11 @@ EVALUATION_REFUSAL_REASONS = frozenset(
         "self-hash-mismatch",
     }
 )
+
+
+class Refusal(CorpusRefusal):
+    reasons = EVALUATION_REFUSAL_REASONS
+
 
 # The Armarium's terminal categories, each mapped to the scorer's response state.
 # A delivered act is the only one whose text is scored; every other category is
@@ -245,16 +251,16 @@ def hypotheses_from_export(
     for name in ("delivered", "non_delivered"):
         rows = export_payload.get(name)
         if not isinstance(rows, list):
-            raise CorpusRefusal(f"malformed-record: the export has no {name} list")
+            raise Refusal(f"malformed-record: the export has no {name} list")
         for row in rows:
             if not isinstance(row, dict) or not isinstance(row.get("act_id"), str):
-                raise CorpusRefusal(f"malformed-record: an export {name} row has no act_id")
+                raise Refusal(f"malformed-record: an export {name} row has no act_id")
             act_id = row["act_id"]
             if act_id in hypotheses:
-                raise CorpusRefusal(f"malformed-record: act {act_id!r} appears twice in the export")
+                raise Refusal(f"malformed-record: act {act_id!r} appears twice in the export")
             category = row.get("category")
             if category not in _CATEGORY_STATUS:
-                raise CorpusRefusal(
+                raise Refusal(
                     f"unknown-export-category: act {act_id!r} carries {category!r}, not one of "
                     f"{sorted(_CATEGORY_STATUS)}"
                 )
@@ -264,12 +270,12 @@ def hypotheses_from_export(
             if category == "delivered":
                 text = row.get("text")
                 if not isinstance(text, str):
-                    raise CorpusRefusal(
+                    raise Refusal(
                         f"malformed-record: delivered act {act_id!r} carries no literal text"
                     )
                 expected = established_text_hashes.get(act_id)
                 if expected is None:
-                    raise CorpusRefusal(
+                    raise Refusal(
                         f"unestablished-delivered-act: {act_id!r} is delivered but no Archetypus "
                         "record established it"
                     )
@@ -277,7 +283,7 @@ def hypotheses_from_export(
                 # JSON digest of the string, not of its raw bytes.
                 actual = digest_of(text)
                 if actual != expected:
-                    raise CorpusRefusal(
+                    raise Refusal(
                         f"export-text-mismatch: delivered act {act_id!r} text digests to {actual}, "
                         f"its Archetypus record established {expected}; the export is not scored"
                     )
@@ -307,11 +313,11 @@ def _established_text_hashes(tree: ReadOnlyRunTree) -> dict[str, str]:
         record = tree.read_artifact(ARCHETYPUS, "archetypus", entry["artifact_id"])
         text_hash = record.get("payload", {}).get("text_hash")
         if not is_sha256(text_hash):
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: Archetypus record {record['subject_id']!r} has no text_hash"
             )
         if record["subject_id"] in hashes:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: two Archetypus records establish {record['subject_id']!r}"
             )
         hashes[record["subject_id"]] = text_hash
@@ -439,7 +445,7 @@ def run_is_fixture(export_payload: Mapping[str, Any]) -> bool:
         and export_payload["submission_id"].strip()
     )
     if has_fixture == has_submission:
-        raise CorpusRefusal(
+        raise Refusal(
             "ambiguous-run-identity: the export names "
             f"{'both a fixture and a submission' if has_fixture else 'neither a fixture nor a submission'}"
             "; a run's export must be identified by exactly one, and nothing can be labelled "
@@ -465,13 +471,13 @@ def evaluate_run(
     checked.
     """
     if not isinstance(code_ref, str) or not code_ref:
-        raise CorpusRefusal("malformed-record: an evaluation must name the code it ran under")
+        raise Refusal("malformed-record: an evaluation must name the code it ran under")
     reference_ledger_sha256 = None
     if reference_ledger is not None:
         try:
             reference_ledger = validate_local_admission_ledger(dict(reference_ledger))
         except CorpusRefusal as error:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"reference-ledger-invalid: the named reference ledger does not validate: {error}"
             ) from error
         reference_ledger_sha256 = digest_bytes(canonical_bytes(dict(reference_ledger)))
@@ -480,12 +486,12 @@ def evaluate_run(
         try:
             page = validate_reference_page(page)
         except CorpusRefusal as error:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"reference-page-invalid: a reference page does not validate: {error}"
             ) from error
         digest = page["page"]["sha256"]
         if digest in references:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"reference-page-collision: two reference pages carry page sha256 {digest}"
             )
         references[digest] = page
@@ -500,7 +506,7 @@ def evaluate_run(
             page["self_hash"] for page in references.values() if page["self_hash"] not in in_ledger
         )
         if missing:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"reference-page-not-in-ledger: {len(missing)} reference page(s) do not appear in "
                 f"the named admission ledger, first {missing[0]}; the ledger names truth this "
                 "report was not given"
@@ -510,7 +516,7 @@ def evaluate_run(
     try:
         export_record = verify_final_seal(read_only)
     except ContractError as error:
-        raise CorpusRefusal(
+        raise Refusal(
             f"no-export: the run has no verified Armarium export to score ({error})"
         ) from error
     export_payload = export_record["payload"]
@@ -532,7 +538,7 @@ def evaluate_run(
         & set(references)
     )
     if repeated:
-        raise CorpusRefusal(
+        raise Refusal(
             f"malformed-record: the run seals page sha256 {repeated[0]} at more than one ordinal, "
             "so its reference records would be scored more than once"
         )
@@ -542,7 +548,7 @@ def evaluate_run(
         by_category[hypothesis["category"]] = by_category.get(hypothesis["category"], 0) + 1
     proposed_without_export_row = sorted(set(sha_by_act) - set(hypotheses))
     if proposed_without_export_row:
-        raise CorpusRefusal(
+        raise Refusal(
             "malformed-record: proposal acts with no export row: "
             f"{proposed_without_export_row}; the export does not account for every act"
         )
@@ -579,7 +585,7 @@ def evaluate_run(
                 excluded_region_counts=excluded,
             )
         except CorpusRefusal as error:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"comparison-refused: page {ordinal} ({sha}) could not be compared: {error}"
             ) from error
         comparisons.append({"ordinal": ordinal, "comparison": comparison})
@@ -739,22 +745,19 @@ def evaluate_run(
     return validate_evaluation(report)
 
 
-def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise CorpusRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
-    return value
+_closed = Refusal.closed
 
 
 def _validate_units(value: Any, what: str) -> None:
     units = _closed(value, _UNIT_FIELDS, what)
     for field in _EDIT_FIELDS:
         if not isinstance(units[field], int) or isinstance(units[field], bool) or units[field] < 0:
-            raise CorpusRefusal(f"malformed-record: {what}.{field} must be a count")
+            raise Refusal(f"malformed-record: {what}.{field} must be a count")
     rate = _closed(units["rate"], _RATE_FIELDS, f"{what}.rate")
     if rate != _rate(units):
-        raise CorpusRefusal(f"malformed-record: {what}.rate is not the rate of its own edits")
+        raise Refusal(f"malformed-record: {what}.rate is not the rate of its own edits")
     if rate["denominator"] <= 0:
-        raise CorpusRefusal(f"malformed-record: {what}.rate divides by a non-positive denominator")
+        raise Refusal(f"malformed-record: {what}.rate divides by a non-positive denominator")
 
 
 def validate_evaluation(report: Any) -> dict[str, Any]:
@@ -776,23 +779,21 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
     """
     report = _closed(report, _TOP_FIELDS, "evaluation report")
     if report["schema"] != SCHEMA:
-        raise CorpusRefusal(f"wrong-schema: expected {SCHEMA!r}, got {report['schema']!r}")
+        raise Refusal(f"wrong-schema: expected {SCHEMA!r}, got {report['schema']!r}")
     if not verify_self_hash(report):
-        raise CorpusRefusal("self-hash-mismatch: the report does not hash to its own self_hash")
+        raise Refusal("self-hash-mismatch: the report does not hash to its own self_hash")
     if not isinstance(report["fixture"], bool):
-        raise CorpusRefusal("malformed-record: fixture must be a boolean")
+        raise Refusal("malformed-record: fixture must be a boolean")
     expected_label = FIXTURE_LABEL if report["fixture"] else LIVE_LABEL
     if report["label"] != expected_label:
-        raise CorpusRefusal(
-            "malformed-record: the label does not match the run's own sealed identity"
-        )
+        raise Refusal("malformed-record: the label does not match the run's own sealed identity")
     if not isinstance(report["code_ref"], str) or not report["code_ref"]:
-        raise CorpusRefusal("malformed-record: an evaluation must name the code it ran under")
+        raise Refusal("malformed-record: an evaluation must name the code it ran under")
     check = _closed(report["code_ref_check"], _CODE_REF_CHECK_FIELDS, "code_ref_check")
     if check["state"] not in ("matches-checkout", "differs-from-checkout", "no-checkout-found"):
-        raise CorpusRefusal(f"malformed-record: code_ref_check names state {check['state']!r}")
+        raise Refusal(f"malformed-record: code_ref_check names state {check['state']!r}")
     if (check["checkout_head"] is None) != (check["state"] == "no-checkout-found"):
-        raise CorpusRefusal(
+        raise Refusal(
             "malformed-record: code_ref_check carries a checkout head exactly when one was found"
         )
 
@@ -800,22 +801,22 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
     if corpus["reference_ledger_sha256"] is not None and not is_sha256(
         corpus["reference_ledger_sha256"]
     ):
-        raise CorpusRefusal("malformed-record: reference_ledger_sha256 is not a sha256")
+        raise Refusal("malformed-record: reference_ledger_sha256 is not a sha256")
     if not isinstance(corpus["reference_ledger_verified"], bool):
-        raise CorpusRefusal("malformed-record: reference_ledger_verified must be a boolean")
+        raise Refusal("malformed-record: reference_ledger_verified must be a boolean")
     hashes = corpus["reference_page_self_hashes"]
     if not isinstance(hashes, list) or len(hashes) != corpus["reference_pages"]:
-        raise CorpusRefusal(
+        raise Refusal(
             "malformed-record: reference_page_self_hashes does not name every reference page"
         )
     splits = _closed(corpus["splits"], frozenset({"scored", "present_on_pages"}), "corpus.splits")
     for name, value in sorted(splits.items()):
         if not isinstance(value, list) or value != sorted(set(value)):
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: corpus.splits.{name} must be a sorted, deduplicated list"
             )
     if not splits["scored"]:
-        raise CorpusRefusal("malformed-record: an evaluation must name the split(s) it scored")
+        raise Refusal("malformed-record: an evaluation must name the split(s) it scored")
 
     aggregate = _closed(report["aggregate"], _AGGREGATE_FIELDS, "the aggregate")
     # A closed vocabulary, not the current constant: a report sealed under a
@@ -823,14 +824,14 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
     # record, and a validator that refused it would be refusing the past. An
     # unrecognised profile is a different thing and is refused.
     if aggregate["normalization_profile_id"] not in PROFILES:
-        raise CorpusRefusal(
+        raise Refusal(
             f"malformed-record: the aggregate names normalisation profile "
             f"{aggregate['normalization_profile_id']!r}, which is not a declared profile"
         )
     for name in ("matched_pairs_only", "including_missed_records"):
         block = _closed(aggregate[name], _AGGREGATE_SCOPE_FIELDS, f"aggregate.{name}")
         if not isinstance(block["scope"], str) or not block["scope"]:
-            raise CorpusRefusal(f"malformed-record: aggregate.{name} states no scope")
+            raise Refusal(f"malformed-record: aggregate.{name} states no scope")
         for unit in ("cer", "wer"):
             if block[unit] is not None:
                 _validate_units(block[unit], f"aggregate.{name}.{unit}")
@@ -843,12 +844,12 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
     for row in report["records"]:
         row = _closed(row, _RECORD_ROW_FIELDS, "a record row")
         if row["outcome"] not in outcomes:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: a record row carries outcome {row['outcome']!r}, not one "
                 f"of {sorted(outcomes)}"
             )
         if (row["outcome"] == "scored") != (row["cer"] is not None):
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: record row {row['record_id']!r} carries a rate exactly when "
                 "it was scored"
             )
@@ -861,11 +862,11 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
         or outcomes["missed"] != totals["reference_records_missed"]
         or outcomes["not-attempted"] != totals["reference_records_not_attempted"]
     ):
-        raise CorpusRefusal(
+        raise Refusal(
             "malformed-record: the record rows disagree with the denominators that count them"
         )
     if sum(outcomes.values()) != corpus["reference_records"]:
-        raise CorpusRefusal(
+        raise Refusal(
             "malformed-record: the evaluation's record denominator does not reconcile: "
             f"{sum(outcomes.values())} row(s) for {corpus['reference_records']} reference record(s)"
         )
@@ -877,17 +878,17 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
         or count < 0
         for name, count in by_category.items()
     ):
-        raise CorpusRefusal(
+        raise Refusal(
             "malformed-record: reference_records_scored_by_export_category is not a mapping of counts"
         )
     if sum(by_category.values()) != outcomes["scored"]:
-        raise CorpusRefusal(
+        raise Refusal(
             "malformed-record: the scored-by-category histogram does not sum to the scored count"
         )
     if len(report["unmatched_pipeline_acts"]) != totals["pipeline_acts_unmatched"]:
-        raise CorpusRefusal("malformed-record: pipeline_acts_unmatched does not count its own rows")
+        raise Refusal("malformed-record: pipeline_acts_unmatched does not count its own rows")
     if len(report["pages"]) != totals["run_pages_compared"]:
-        raise CorpusRefusal(
+        raise Refusal(
             f"malformed-record: run_pages_compared claims {totals['run_pages_compared']} page(s), "
             f"the report carries {len(report['pages'])} comparison record(s)"
         )
@@ -900,11 +901,9 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
     for entry in report["pages"]:
         entry = _closed(entry, _PAGE_ENTRY_FIELDS, "a page comparison entry")
         if not isinstance(entry["ordinal"], int) or isinstance(entry["ordinal"], bool):
-            raise CorpusRefusal(
-                "malformed-record: a page comparison entry's ordinal is not an integer"
-            )
+            raise Refusal("malformed-record: a page comparison entry's ordinal is not an integer")
         if entry["ordinal"] in seen_ordinals:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: page ordinal {entry['ordinal']} carries two comparisons; a "
                 "run seals one page per ordinal"
             )
@@ -913,16 +912,14 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
         page_sha = comparison["page"]["sha256"]
         reference = comparison["reference_page_self_hash"]
         if page_sha in seen_pages or reference in seen_references:
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: page {page_sha} / reference page {reference} is compared "
                 "twice; one page's comparison evidence would be missing behind a whole count"
             )
         seen_pages.add(page_sha)
         seen_references.add(reference)
     if len(report["pages_without_reference"]) != totals["run_pages_without_reference"]:
-        raise CorpusRefusal(
-            "malformed-record: run_pages_without_reference does not count its own rows"
-        )
+        raise Refusal("malformed-record: run_pages_without_reference does not count its own rows")
     return report
 
 
@@ -975,10 +972,8 @@ def write_report(report: Mapping[str, Any], path: str | Path) -> Path:
     """Write a validated report, refusing to overwrite and refusing an off-shape one."""
     validate_evaluation(dict(report))
     path = Path(path)
-    if path.exists():
-        raise CorpusRefusal(f"output-exists: {path} already exists; a report is never overwritten")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(canonical_bytes(dict(report)))
+    if not write_new_file(path, canonical_bytes(dict(report))):
+        raise Refusal(f"output-exists: {path} already exists; a report is never overwritten")
     return path
 
 
@@ -990,19 +985,19 @@ def load_reference_pages(path: str | Path) -> list[dict[str, Any]]:
     """
     path = Path(path)
     if not path.is_file():
-        raise CorpusRefusal(f"missing-input-file: {path} is not a file")
+        raise Refusal(f"missing-input-file: {path} is not a file")
     try:
         body = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
-        raise CorpusRefusal(f"malformed-record: {path} is not UTF-8: {error}") from error
+        raise Refusal(f"malformed-record: {path} is not UTF-8: {error}") from error
     pages = []
     for number, line in enumerate(body.splitlines(), start=1):
         if line.strip():
             try:
                 pages.append(json.loads(line))
             except ValueError as error:
-                raise CorpusRefusal(
-                    f"malformed-record: line {number} of {path} is not JSON"
+                raise Refusal(
+                    f"malformed-record: line {number} of {path} is not JSON: {error}"
                 ) from error
     return pages
 
@@ -1011,15 +1006,15 @@ def load_reference_ledger(path: str | Path) -> dict[str, Any]:
     """One admission ledger, refused by name rather than by traceback."""
     path = Path(path)
     if not path.is_file():
-        raise CorpusRefusal(f"missing-input-file: {path} is not a file")
+        raise Refusal(f"missing-input-file: {path} is not a file")
     try:
         return load_local_admission_ledger(path)
     except CorpusRefusal as error:
-        raise CorpusRefusal(
+        raise Refusal(
             f"reference-ledger-invalid: the named reference ledger does not validate: {error}"
         ) from error
     except ValueError as error:
-        raise CorpusRefusal(f"malformed-record: {path} is not JSON: {error}") from error
+        raise Refusal(f"malformed-record: {path} is not JSON: {error}") from error
 
 
 def main(argv: list[str] | None = None) -> int:

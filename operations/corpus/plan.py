@@ -15,9 +15,9 @@ RecordGold's `record_url` is a IIIF Image API 2 crop request, e.g.
     format         jpg
 
 Every field but the region is a closed vocabulary, and this parser refuses
-anything outside it **by name** rather than normalising it — `SPEC.md` §6 records
-this as unverified territory ("the exact `record_url` region semantics beyond the
-one example"), and the measured snapshot proves the caution earned its keep: 40 of
+anything outside it **by name** rather than normalising it — the `record_url`
+region semantics beyond one example were unverified, and the measured snapshot proves
+the caution earned its keep: 40 of
 7,720 rows across `val`/`train` carry `rotation=180`, which this parser refuses
 rather than silently fetching an image whose boxes would not line up with its
 pixels.
@@ -36,7 +36,7 @@ names the collection (`Ardennes`, `Tours`, `Ile de Ré`) but two collections
 identifier path is a page. The identifier's last `/`-segment is the page's own
 filename (`designation`); everything before it is the volume path. Those two,
 joined with the row's `source`, feed `common.contracts.identities.physical_page_id`
-— the `pac_`-ladder anchor `SPEC.md` §5.3(c) requires, because a RecordGold box
+— the `pac_`-ladder anchor, because a RecordGold box
 must never be minted as an `act_*` identity (those bind *originally minted*
 bounds; the Designator will never mint this exact rectangle). `source` is joined
 into the volume string as `f"{source}/{volume}"`, so a `source` carrying its own
@@ -66,6 +66,7 @@ from common.contracts.errors import IdentityRefusal
 from common.contracts.identities import physical_act_id, physical_page_id
 
 from . import CorpusRefusal
+from .cache import write_new_file
 from .rows import CORPUS_ID, SPLITS, validate_snapshot
 
 SCHEMA = "recordgold-fetch-plan.v1"
@@ -111,8 +112,13 @@ PLAN_REFUSAL_REASONS = frozenset(
         "wrong-schema",
         "wrong-corpus",
         "self-hash-mismatch",
+        "output-exists",
     }
 )
+
+
+class Refusal(CorpusRefusal):
+    reasons = PLAN_REFUSAL_REASONS
 
 
 class ParsedRecordUrl(NamedTuple):
@@ -138,8 +144,8 @@ class ParsedRecordUrl(NamedTuple):
 def unsafe_segment(segment: str) -> bool:
     """Whether a decoded identifier path segment is unsafe to carry into a filesystem path.
 
-    `SPEC.md` §5.1 turns `volume`/`designation` directly into a submission path in
-    U3; this parser's contract is to refuse anything it does not recognise rather
+    `volume`/`designation` become a submission path directly in `submission.py`;
+    this parser's contract is to refuse anything it does not recognise rather
     than normalise it, so a traversal or control-character segment is refused here
     rather than passed through.
     """
@@ -164,29 +170,25 @@ def parse_record_url(
     when asked for, because no conversion for it exists here.
     """
     if not isinstance(record_url, str):
-        raise CorpusRefusal(
-            f"unparseable-record-url: record_url must be a string, got {record_url!r}"
-        )
+        raise Refusal(f"unparseable-record-url: record_url must be a string, got {record_url!r}")
     match = _URL_RE.match(record_url)
     if match is None:
-        raise CorpusRefusal(
+        raise Refusal(
             f"unparseable-record-url: {record_url!r} does not match the IIIF Image "
             "API 2 crop shape this parser recognises"
         )
     host = match.group("host")
     if host != EXPECTED_HOST:
-        raise CorpusRefusal(
-            f"unexpected-host: {host!r} in {record_url!r}, expected {EXPECTED_HOST!r}"
-        )
+        raise Refusal(f"unexpected-host: {host!r} in {record_url!r}, expected {EXPECTED_HOST!r}")
 
     size = match.group("size")
     if size != EXPECTED_SIZE:
-        raise CorpusRefusal(
+        raise Refusal(
             f"unsupported-size-parameter: {size!r} in {record_url!r}, only {EXPECTED_SIZE!r} is recognised"
         )
     rotation = match.group("rotation")
     if rotation not in rotations or rotation not in SUPPORTED_ROTATIONS:
-        raise CorpusRefusal(
+        raise Refusal(
             f"unsupported-rotation-parameter: {rotation!r} in {record_url!r}, only "
             f"{sorted(rotations & SUPPORTED_ROTATIONS)!r} recognised here — a rotation this "
             "caller cannot convert would put the region's x,y,w,h in a different frame "
@@ -194,30 +196,30 @@ def parse_record_url(
         )
     quality = match.group("quality")
     if quality != EXPECTED_QUALITY:
-        raise CorpusRefusal(
+        raise Refusal(
             f"unsupported-quality-parameter: {quality!r} in {record_url!r}, only "
             f"{EXPECTED_QUALITY!r} is recognised"
         )
     fmt = match.group("format")
     if fmt != EXPECTED_FORMAT:
-        raise CorpusRefusal(
+        raise Refusal(
             f"unsupported-format-parameter: {fmt!r} in {record_url!r}, only {EXPECTED_FORMAT!r} is recognised"
         )
 
     x, y, w, h = (int(match.group(name)) for name in ("x", "y", "w", "h"))
     if x < 0 or y < 0 or w <= 0 or h <= 0:
-        raise CorpusRefusal(f"non-positive-region: x={x} y={y} w={w} h={h} in {record_url!r}")
+        raise Refusal(f"non-positive-region: x={x} y={y} w={w} h={h} in {record_url!r}")
 
     identifier_encoded = match.group("identifier")
     identifier = urllib.parse.unquote(identifier_encoded)
     if not identifier or "/" not in identifier:
-        raise CorpusRefusal(
+        raise Refusal(
             f"unparseable-record-url: identifier {identifier!r} carries no volume/page "
             f"structure in {record_url!r}"
         )
     for segment in identifier.split("/"):
         if unsafe_segment(segment):
-            raise CorpusRefusal(
+            raise Refusal(
                 f"unsafe-identifier-segment: identifier {identifier!r} carries the "
                 f"unsafe path segment {segment!r} in {record_url!r} — this parser "
                 "refuses anything it does not recognise rather than normalising it"
@@ -316,8 +318,7 @@ def build_fetch_plan(
         try:
             parsed = parse_record_url(record_url)
         except CorpusRefusal as error:
-            reason = str(error).split(":", 1)[0]
-            _refuse(reason, str(error), record_id, record_url, split, source)
+            _refuse(error.reason, str(error), record_id, record_url, split, source)
             continue
 
         if not isinstance(source, str) or unsafe_segment(source) or "/" in source:
@@ -337,13 +338,13 @@ def build_fetch_plan(
         existing_page = pages.get(parsed.identifier)
         if existing_page is not None:
             if existing_page["source"] != source:
-                raise CorpusRefusal(
+                raise Refusal(
                     f"inconsistent-source-for-identifier: {parsed.identifier!r} carries "
                     f"source {source!r} on record {record_id!r} but {existing_page['source']!r} "
                     "on an earlier record for the same page"
                 )
             if existing_page["identifier_encoded"] != parsed.identifier_encoded:
-                raise CorpusRefusal(
+                raise Refusal(
                     f"inconsistent-encoding-for-identifier: {parsed.identifier!r} was seen "
                     f"encoded as {existing_page['identifier_encoded']!r} but record "
                     f"{record_id!r} carries it encoded as {parsed.identifier_encoded!r}"
@@ -441,15 +442,12 @@ _TOP_FIELDS = frozenset(
 )
 
 
-def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise CorpusRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
-    return value
+_closed = Refusal.closed
 
 
 def _listed(value: Any, what: str) -> list[Any]:
     if not isinstance(value, list):
-        raise CorpusRefusal(f"malformed-record: {what} must be a list")
+        raise Refusal(f"malformed-record: {what} must be a list")
     return value
 
 
@@ -457,11 +455,11 @@ def validate_plan(plan: Any) -> dict[str, Any]:
     """Refuse a plan that is not exactly `recordgold-fetch-plan.v1`, closed and self-consistent."""
     plan = _closed(plan, _TOP_FIELDS, "fetch plan")
     if plan["schema"] != SCHEMA:
-        raise CorpusRefusal(f"wrong-schema: expected {SCHEMA!r}, got {plan['schema']!r}")
+        raise Refusal(f"wrong-schema: expected {SCHEMA!r}, got {plan['schema']!r}")
     if plan["corpus_id"] != CORPUS_ID:
-        raise CorpusRefusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {plan['corpus_id']!r}")
+        raise Refusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {plan['corpus_id']!r}")
     if not is_sha256(plan["source_row_snapshot_self_hash"]):
-        raise CorpusRefusal(
+        raise Refusal(
             "malformed-record: source_row_snapshot_self_hash must be a lowercase sha256 hex digest"
         )
 
@@ -475,17 +473,17 @@ def validate_plan(plan: Any) -> dict[str, Any]:
         if not isinstance(page["splits_present"], list) or page["splits_present"] != sorted(
             set(page["splits_present"])
         ):
-            raise CorpusRefusal(
+            raise Refusal(
                 f"malformed-record: page {page['identifier']!r} splits_present must be sorted and unique"
             )
         for split in page["splits_present"]:
             if split not in SPLITS:
-                raise CorpusRefusal(
+                raise Refusal(
                     f"malformed-record: page {page['identifier']!r} names unknown split {split!r}"
                 )
         records = _listed(page["records"], f"page {page['identifier']!r} records")
         if not records:
-            raise CorpusRefusal(f"malformed-record: page {page['identifier']!r} carries no records")
+            raise Refusal(f"malformed-record: page {page['identifier']!r} carries no records")
         for record in records:
             _closed(record, _RECORD_FIELDS, f"record on page {page['identifier']!r}")
 
@@ -493,7 +491,7 @@ def validate_plan(plan: Any) -> dict[str, Any]:
         _closed(refusal, _REFUSAL_FIELDS, "refusal entry")
 
     if not verify_self_hash(plan):
-        raise CorpusRefusal(
+        raise Refusal(
             "self-hash-mismatch: fetch plan self_hash does not verify against its own content"
         )
     return plan
@@ -519,7 +517,8 @@ def main(snapshot_path: str | Path, output_path: str | Path) -> dict[str, Any]:
     """
     snapshot = validate_snapshot(json.loads(Path(snapshot_path).read_bytes()))
     plan = build_fetch_plan(snapshot["rows"], snapshot["self_hash"])
-    Path(output_path).write_bytes(canonical_bytes(plan))
+    if not write_new_file(Path(output_path), canonical_bytes(plan)):
+        raise Refusal(f"output-exists: {output_path} already exists")
     return plan
 
 
