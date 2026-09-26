@@ -14,12 +14,14 @@ contrast stays this module's own: an audit sharing the Designator's margin
 would restate it rather than check it.
 
 The page-spanning component the Designator withholds from grouping
-(`pipeline/2_designator/grouping.partition_page_spanning`) is re-derived here at
-the page's own derived margin and taken out of `total_ink_pixels` and
+(`pipeline/2_designator/grouping.partition_page_spanning`) held 35 to 87 per
+cent of audited ink on 44 real pages, so counting it flagged every page. It is
+re-derived here at the page's own derived margin, because the Designator's record
+carries only whole-page boxes, and taken out of `total_ink_pixels` and
 `outside_ink_pixels`; `page_ink_pixels` and `page_spanning_ink_pixels` keep the
-whole-page figure. Derived at this module's looser contrast, it once swallowed
-writing and hid missed ink on 41 of 44 real pages; a single contrast is welcome
-if `test_writing_touching_a_faint_page_spanning_line_is_still_counted_outside_coverage`
+whole-page figure. At this module's looser contrast it swallowed writing and hid
+missed ink on 41 of 44 real pages; a single contrast is welcome if
+`test_writing_touching_a_faint_page_spanning_line_is_still_counted_outside_coverage`
 still passes.
 
 A page whose background the shared inference refuses raises
