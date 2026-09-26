@@ -30,15 +30,6 @@ def test_every_regular_file_is_found_sorted_hashed_and_retained(tmp_path):
     assert found[0].sha256 == __import__("hashlib").sha256(b"first").hexdigest()
 
 
-def test_a_stray_publication_temporary_is_not_sealed_as_a_source(tmp_path):
-    (tmp_path / "a.png").write_bytes(b"first")
-    (tmp_path / ".manifest.json.tmp-abc123").write_bytes(b"{")
-
-    found = read_submission(tmp_path, max_bytes=LIMIT)
-
-    assert [source.relative_path for source in found] == ["a.png"]
-
-
 def test_a_symlink_inside_a_submission_is_refused_rather_than_followed(tmp_path):
     """A link points at something the submitter did not submit. Following it would
     put bytes nobody chose into a sealed corpus."""

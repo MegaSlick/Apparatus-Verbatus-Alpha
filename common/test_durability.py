@@ -183,3 +183,20 @@ def test_a_taken_name_whose_entry_cannot_be_proved_is_not_reported_as_taken(
     with pytest.raises(durability.PublishedUnsettled) as refused:
         durability.atomic_create(target, b'{"grant":"one"}')
     assert not isinstance(refused.value, FileExistsError)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "IMG_0001.tif",
+        "page-1.png",
+        ".DS_Store",
+        "._IMG.tif",
+        "IMG.tmp-1.tif",
+        ".tmp-x",
+        "..tmp-x",
+        ".x.tmp-",
+    ],
+)
+def test_a_real_name_is_never_a_temporary(name: str) -> None:
+    assert not durability.is_temporary_name(name)

@@ -37,7 +37,6 @@ from pathlib import Path
 from typing import BinaryIO, Final, Iterator, NamedTuple
 
 from common.contracts.errors import ContractError
-from common.durability import is_temporary_name
 
 # Hash sources in chunks. A source beyond the retention limit contributes no
 # retained data, while an aggregate read-limit breach aborts inventory before
@@ -463,8 +462,6 @@ def _walk(
             entry=prefix or None,
         )
     for name in names:
-        if is_temporary_name(name):
-            continue
         relative_path = f"{prefix}/{name}" if prefix else name
         try:
             # `os.listdir` surrogate-escapes non-UTF-8 bytes, which cannot be

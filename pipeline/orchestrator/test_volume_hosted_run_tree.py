@@ -16,6 +16,7 @@ from typing import Iterator, cast
 import pytest
 
 from common.contracts.errors import SchemaRefusal
+from common.durability import is_temporary_name
 from common.runtree.store import RunTree
 from conftest import load_stage
 from operations.operator.backup import _is_publication_temporary, sync_run_tree
@@ -505,11 +506,7 @@ def _snapshot_manifest(mac: Path, snapshot_sha256: str) -> dict:
 
 def _is_publication_temporary_name(relative: str) -> bool:
     """A same-directory `.<target>.tmp-<unique>` name, as `RunTree` publishes."""
-    name = Path(relative).name
-    if not name.startswith("."):
-        return False
-    target, separator, unique = name[1:].partition(".tmp-")
-    return bool(separator and target and unique)
+    return is_temporary_name(Path(relative).name)
 
 
 def _restore(mac: Path, snapshot_sha256: str, destination: Path) -> None:

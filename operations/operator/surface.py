@@ -3495,8 +3495,6 @@ def _write_bundle_directory(
             detail=f"the Armarium evidence bundle cannot read {source_prefix}: {error}",
         ) from error
     for name in names:
-        if is_temporary_name(name):
-            continue
         label = f"{source_prefix}/{name}"
         try:
             named = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
@@ -3505,6 +3503,8 @@ def _write_bundle_directory(
                 ErrorCode.EXPORT_FAILED,
                 detail=f"the Armarium evidence bundle cannot read {label}: {error}",
             ) from error
+        if is_temporary_name(name) and stat.S_ISREG(named.st_mode):
+            continue
         if stat.S_ISDIR(named.st_mode):
             child = _open_expected_member(directory_descriptor, name, directory=True, label=label)
             try:
