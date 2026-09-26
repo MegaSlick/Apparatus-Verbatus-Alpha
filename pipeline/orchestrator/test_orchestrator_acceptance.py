@@ -55,6 +55,7 @@ from common.fixture_identity import page_identity
 from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
+from common.sealed_config import read_sealed_toml
 from common.stage import (
     DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     EXIT_FATAL,
@@ -485,8 +486,9 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
         witness_context_config_path=witness_context,
     )
     assert run_record["config_digest"] == expected["config_digest"]
-    assert expected["serving_config_inputs"]["serving_recipes_sha256"] == digest_bytes(
-        recipes.read_bytes()
+    assert (
+        expected["serving_config_inputs"]["serving_recipes_sha256"]
+        == read_sealed_toml(recipes, "serving recipes")[1]
     )
 
 
