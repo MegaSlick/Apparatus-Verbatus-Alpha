@@ -1830,12 +1830,13 @@ def test_preflight_measures_the_placement_table_the_run_seals(tmp_path: Path) ->
         ),
         encoding="utf-8",
     )
+    sealed = read_sealed_toml(DEFAULT_POD_PLACEMENT_CONFIG_PATH, "placement")[1]
+    assert read_sealed_toml(checked_out, "placement")[1] != sealed
     plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
     seams, _http, _launcher = _preflight_seams(tmp_path, identities)
 
     record = _build_preflight(plan, seams)()
 
-    sealed = read_sealed_toml(DEFAULT_POD_PLACEMENT_CONFIG_PATH, "placement")[1]
     assert record["serving_config_inputs"]["pod_placement_sha256"] == sealed  # type: ignore[index]
 
 
