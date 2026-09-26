@@ -371,6 +371,20 @@ def test_every_hold_cause_holds_a_corroborated_blank(tmp_path, monkeypatch, caus
         )
 
 
+def test_a_hold_does_not_skip_the_fatal_on_unrecorded_witness_evidence(tmp_path, monkeypatch):
+    root = tmp_path / "runs"
+    _run_through_perlector(root, "r", "confirmed-blank")
+    _HOLD_CAUSES["recovery-budget-spent"][0](monkeypatch)
+    _wrap(
+        monkeypatch,
+        "chair_read_evidence",
+        lambda evidence, *_: {**evidence, "attestator_2": {"regions": True, "receipt": False}},
+    )
+
+    with pytest.raises(FatalAccounting, match=r"attestator_2 has no serving receipt"):
+        _run_recensor_in_process(monkeypatch, root)
+
+
 @pytest.mark.parametrize(
     ("used_total", "budget", "named"),
     [

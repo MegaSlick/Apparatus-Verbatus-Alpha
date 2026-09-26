@@ -3732,9 +3732,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     chair_read_evidence(current_attempts),
                     witness_uncovered=bool(state["recovery_regions"]),
                 )
-                if latest["outcome"] == "no-readable-text" and not hold_causes
+                if latest["outcome"] == "no-readable-text"
                 else None
             )
+            # Validated before the hold gate, so a writer-impossible record stays fatal.
+            if hold_causes:
+                corroborating_chairs = None
             if corroborating_chairs is not None:
                 outcome, reason = (
                     "confirmed-blank",
