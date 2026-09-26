@@ -3666,6 +3666,40 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             held += 1
             continue
 
+        # One ordered list feeds both the blank gate and the hold route: `confirmed-blank`
+        # is terminal, so a cause the route holds on must also close the gate.
+        hold_causes = [
+            cause
+            for cause in (
+                continuation_shortfall
+                and (
+                    "held-for-review",
+                    "the seal claims a continuation but the Recensor's own reconciliation "
+                    f"finds proposal regions on only {len(continuation_link['page_ordinals'])} "
+                    "distinct page(s); accepting would deliver part of an act as the act",
+                ),
+                flagged_pages
+                and (
+                    "held-for-review",
+                    f"page(s) {flagged_pages} carry ink outside every region currently cut on "
+                    "them (a residual-ink check against the page image itself, never the "
+                    "proposal set — goal 2: a missed act is worse than a poorly read one); "
+                    "accepting this act would leave that ink unaccounted for",
+                ),
+                findings_route,
+                observation_hold,
+                wants_recovery
+                and (
+                    "held-for-review",
+                    f"fallback-recrops use {used_fallback} of their budget of "
+                    f"{allowed_fallback}; a page-level reread is not a substitute and remains "
+                    "unimplemented, so the act is held rather than re-rolled because recovery "
+                    "recovers coverage and never quality",
+                ),
+            )
+            if cause
+        ]
+
         # The Archetypus copies the latest reading's text, so text nobody successfully
         # read is held visibly (principle 2).
         blank_evidence = None
@@ -3684,19 +3718,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     chair_read_evidence(current_attempts),
                     witness_uncovered=bool(state["recovery_regions"]),
                 )
-                if (
-                    latest["outcome"] == "no-readable-text"
-                    and not continuation_shortfall
-                    and not flagged_pages
-                    # Every hold cause the ordinary chain would apply: `confirmed-blank`
-                    # is terminal, so a cause that appears only in that chain would be
-                    # silently overridden (principle 2).
-                    and findings_route is None
-                    # Confirmed ink in a witness pointer outside every cut, with no
-                    # request published (grant spent or budget exhausted), is also a
-                    # shortfall `confirmed-blank` must not override.
-                    and observation_hold is None
-                )
+                if latest["outcome"] == "no-readable-text" and not hold_causes
                 else None
             )
             if corroborating_chairs is not None:
@@ -3739,33 +3761,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "the latest reading establishes no readable text; silence is not blank proof and "
                 "is held until the Recensor can seal one",
             )
-        elif continuation_shortfall:
-            outcome, reason = (
-                "held-for-review",
-                "the seal claims a continuation but the Recensor's own reconciliation "
-                f"finds proposal regions on only {len(continuation_link['page_ordinals'])} "
-                "distinct page(s); accepting would deliver part of an act as the act",
-            )
-        elif flagged_pages:
-            outcome, reason = (
-                "held-for-review",
-                f"page(s) {flagged_pages} carry ink outside every region currently cut on "
-                "them (a residual-ink check against the page image itself, never the "
-                "proposal set — goal 2: a missed act is worse than a poorly read one); "
-                "accepting this act would leave that ink unaccounted for",
-            )
-        elif findings_route is not None:
-            outcome, reason = findings_route
-        elif observation_hold is not None:
-            outcome, reason = observation_hold
-        elif wants_recovery:
-            outcome, reason = (
-                "held-for-review",
-                f"fallback-recrops use {used_fallback} of their budget of {allowed_fallback}; "
-                "a page-level reread is not a substitute and remains unimplemented, so the act "
-                "is held rather than re-rolled because recovery recovers coverage and never "
-                "quality",
-            )
+        elif hold_causes:
+            outcome, reason = hold_causes[0]
         else:
             outcome = "accepted"
             if (
