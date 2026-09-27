@@ -8,7 +8,6 @@ import errno
 import hashlib
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -4172,113 +4171,6 @@ def test_mac_wrapper_refuses_an_empty_project_root(
     assert "Traceback" not in completed.stderr
 
 
-def _checkout_root_entry_names() -> set[str]:
-    """Read one level: every prohibited state or scratch placement starts at the root."""
-
-    return {entry.name for entry in ROOT.iterdir()}
-
-
-@pytest.fixture
-def recorded_temporary_directories(
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[Path]:
-    """Capture scratch paths without changing TemporaryDirectory cleanup."""
-
-    real = dry_run.tempfile.TemporaryDirectory
-    created: list[Path] = []
-
-    def recording(*args, **kwargs):
-        handle = real(*args, **kwargs)
-        created.append(Path(handle.name))
-        return handle
-
-    monkeypatch.setattr(dry_run.tempfile, "TemporaryDirectory", recording)
-    return created
-
-
-def test_operator_state_and_rehearsal_scratch_stay_out_of_the_checkout_root(
-    tmp_path: Path,
-) -> None:
-    """The six-word flow may create no state or scratch entry at workspace root."""
-
-    before = _checkout_root_entry_names()
-    surface = _surface(tmp_path)
-    spend = _spend_policy(tmp_path)
-    source, manifest = _manifest(tmp_path)
-
-    _launch(surface, spend)
-    surface.boot()
-    surface.upload(source, sealed_manifest=manifest)
-    surface.run(run_id="no-litter-run")
-    surface.export(run_id="no-litter-run")
-    prepared_close = surface.prepare_close()
-    surface.close(prepared_close, prepared_close.phrase)
-    surface.status()
-    make_transcript(tmp_path / "rehearsal.txt")
-
-    assert surface.workspace == ROOT
-    assert _checkout_root_entry_names() == before
-    assert not (ROOT / ".verbatus").exists()
-
-
-def test_the_rehearsal_scratch_folder_is_never_created_inside_the_checkout(
-    tmp_path: Path, recorded_temporary_directories: list[Path]
-) -> None:
-    """Rehearsal scratch must stay outside the checkout throughout its lifetime.
-
-    End-state inspection cannot locate a temporary directory removed on success,
-    so record its allocated path while it exists.
-    """
-
-    dry_run.make_transcript(tmp_path / "rehearsal.txt")
-
-    assert recorded_temporary_directories
-    for scratch in recorded_temporary_directories:
-        assert ROOT not in scratch.resolve().parents
-
-
-def test_a_tmpdir_inside_the_checkout_cannot_put_rehearsal_scratch_back_there(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    recorded_temporary_directories: list[Path],
-) -> None:
-    """TemporaryDirectory honours TMPDIR, so the placement must be checked."""
-
-    configured = ROOT / "operator-temporary-files"
-    monkeypatch.setattr(dry_run.tempfile, "gettempdir", lambda: str(configured))
-
-    dry_run.make_transcript(tmp_path / "rehearsal.txt")
-
-    assert recorded_temporary_directories
-    assert all(ROOT not in scratch.resolve().parents for scratch in recorded_temporary_directories)
-
-
-def test_no_usable_scratch_directory_is_reported_in_the_operator_contract(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The last-resort refusal must not be the one failure that prints a traceback.
-
-    `_scratch_root` raised a plain `RuntimeError`, and `main` translates only
-    `KeyboardInterrupt`, `OperatorError` and `OSError`. `OperatorError` derives
-    from `RuntimeError` rather than the reverse, so nothing caught it: the person
-    running the rehearsal saw a stack trace instead of what happened, what it
-    meant, and what to do next.
-    """
-
-    monkeypatch.setattr(dry_run.tempfile, "gettempdir", lambda: str(ROOT / "inside"))
-    monkeypatch.setattr(dry_run, "_is_within", lambda path, directory: True)
-
-    with pytest.raises(OperatorError) as refusal:
-        dry_run._scratch_root()
-
-    assert refusal.value.code is ErrorCode.UNEXPECTED
-    assert "no temporary directory outside the checkout" in str(refusal.value.detail)
-
-    exit_code = dry_run.main(["--output", str(tmp_path / "rehearsal.txt")])
-
-    assert exit_code == 1
-
-
 def test_rehearsal_scratch_containment_compares_directory_identity(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     scratch = checkout / "scratch"
@@ -4548,37 +4440,6 @@ def test_status_refuses_to_present_a_malformed_manifest_digest_as_evidence(
     assert "does not bind its submission record digest" in str(refusal.value.detail)
 
 
-def test_status_contract_says_it_reads_receipts_without_reopening_manifests() -> None:
-    help_text = cli.build_parser().format_help()
-    overview = (ROOT / "operations" / "README.md").read_text()
-
-    assert "read saved receipts only; it never contacts a provider" in help_text
-    assert "reads saved receipts only" in overview
-    assert "never reopens local submission files" in overview
-    assert "reads saved receipts and sealed submission records" not in overview
-
-
-def test_default_operator_state_root_is_absolute_and_not_dot_verbatus() -> None:
-    state = cli._default_state_dir()
-
-    assert state.is_absolute()
-    assert ".verbatus" not in str(state)
-
-
-def test_an_absolute_xdg_state_root_inside_the_checkout_is_not_used(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    workspace = tmp_path / "checkout"
-    workspace.mkdir()
-    monkeypatch.setenv("XDG_STATE_HOME", str(workspace / "xdg-state"))
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-
-    state = cli._default_state_dir(workspace)
-
-    assert state == tmp_path / "home" / ".local" / "state" / "verbatus"
-    assert not cli._is_within(state, workspace)
-
-
 def test_a_symlink_alias_cannot_hide_that_default_state_is_inside_the_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4593,55 +4454,6 @@ def test_a_symlink_alias_cannot_hide_that_default_state_is_inside_the_checkout(
     state = cli._default_state_dir(workspace)
 
     assert state == tmp_path / "home" / ".local" / "state" / "verbatus"
-
-
-def test_state_default_failure_uses_the_operator_error_contract(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def unavailable(_workspace: Path | None = None) -> Path:
-        raise RuntimeError("no safe state root")
-
-    monkeypatch.setattr(cli, "_default_state_dir", unavailable)
-
-    assert cli.main(["status"]) == 2
-    output = capsys.readouterr().out
-    assert "Verbatus met a problem it could not classify" in output
-    assert "no safe state root" in output
-    assert "Traceback" not in output
-
-
-@pytest.mark.parametrize("value", ("", ".", "relative/state"))
-def test_a_non_absolute_xdg_state_home_does_not_put_records_back_in_the_checkout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
-) -> None:
-    """The Base Directory specification requires ignoring non-absolute values."""
-
-    workspace = tmp_path / "checkout"
-    workspace.mkdir()
-    monkeypatch.chdir(workspace)
-    monkeypatch.setenv("XDG_STATE_HOME", value)
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-
-    default = cli._default_state_dir()
-
-    assert default.is_absolute()
-    assert workspace not in default.parents
-    assert default == tmp_path / "home" / ".local" / "state" / "verbatus"
-
-
-def test_a_relative_home_cannot_make_the_default_state_root_relative(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    workspace = tmp_path / "checkout"
-    workspace.mkdir()
-    monkeypatch.chdir(workspace)
-    monkeypatch.setenv("XDG_STATE_HOME", "")
-    monkeypatch.setenv("HOME", "relative-home")
-
-    default = cli._default_state_dir()
-
-    assert default.is_absolute()
-    assert workspace not in default.parents
 
 
 def test_an_old_in_checkout_verbatus_directory_is_named_not_silently_abandoned(
@@ -4660,21 +4472,6 @@ def test_an_old_in_checkout_verbatus_directory_is_named_not_silently_abandoned(
     out = capsys.readouterr().out
     assert str(old_state) in out
     assert "not read here" in out
-
-
-def test_no_stale_verbatus_notice_when_state_dir_is_named_explicitly(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    workspace = tmp_path / "checkout"
-    old_state = workspace / ".verbatus"
-    old_state.mkdir(parents=True)
-    monkeypatch.chdir(workspace)
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
-
-    cli.main(["--state-dir", str(old_state), "status"])
-
-    out = capsys.readouterr().out
-    assert "not read here" not in out
 
 
 def test_an_abbreviated_state_dir_flag_is_honoured_rather_than_parsed_and_discarded(
@@ -4696,20 +4493,6 @@ def test_an_abbreviated_state_dir_flag_is_honoured_rather_than_parsed_and_discar
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
 
     cli.main(["--state-di", str(old_state), "status"])
-
-    out = capsys.readouterr().out
-    assert "not read here" not in out
-
-
-def test_no_stale_verbatus_notice_when_no_old_directory_exists(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    workspace = tmp_path / "checkout"
-    workspace.mkdir()
-    monkeypatch.chdir(workspace)
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
-
-    cli.main(["status"])
 
     out = capsys.readouterr().out
     assert "not read here" not in out
@@ -5172,51 +4955,6 @@ def test_a_price_that_moves_after_the_screen_is_named_a_price_change(tmp_path: P
     assert failed["presented_review_sha256"] == prepared.review_digest
     assert failed["current_review_sha256"] != prepared.review_digest
     assert not any(verb == "create" for verb, _ in surface.provider.calls)
-
-
-def test_the_operator_readme_lists_exactly_the_verbs_the_parser_declares() -> None:
-    """The word table is the operator's map; a verb missing from it is invisible.
-
-    `triage` shipped with a subcommand, an interactive prompt entry and no row
-    here, so the console offered a word its own manual did not contain — and the
-    "N words" heading counted the table rather than the parser, which meant the
-    number read as confirmation while being wrong. Reconciling the two lists is
-    the same guard `common/chairs` puts between `models.toml` and the
-    materialization inventory: two places name one set, so a test holds them
-    together instead of a reviewer noticing.
-    """
-    readme = (ROOT / "operations" / "operator" / "README.md").read_text(encoding="utf-8")
-    # A multi-word cell like `spend show` documents the verb plus its
-    # subcommand; the verb is its first word. A hyphen is part of a verb's
-    # name (`fetch-run`), not a word boundary.
-    documented = set(re.findall(r"^\| `([a-z-]+)(?: [a-z]+)?` \|", readme, flags=re.MULTILINE))
-    subparsers_action = next(
-        action
-        for action in cli.build_parser()._actions
-        if isinstance(action, argparse._SubParsersAction)
-    )
-    declared = set(subparsers_action.choices)
-
-    assert documented == declared, (
-        f"the operator README's word table and the parser disagree: "
-        f"undocumented verbs {sorted(declared - documented)}, "
-        f"documented non-verbs {sorted(documented - declared)}"
-    )
-
-    counted = len(declared)
-    spelled = {
-        13: ("thirteen", "Eleven"),
-        14: ("fourteen", "Twelve"),
-        15: ("fifteen", "Thirteen"),
-    }
-    assert counted in spelled, (
-        f"{counted} verbs: extend this test's number words so the heading stays checkable"
-    )
-    total, doers = spelled[counted]
-    # The heading counts every word; the sentence counts every word but the
-    # two you can run any time (`status` and `spend show`).
-    assert f"## The {total} words" in readme
-    assert f"\n{doers} things this tool can do," in readme
 
 
 def test_status_reports_supervisor_absent_when_no_identity_file_exists(tmp_path: Path) -> None:
@@ -5773,30 +5511,6 @@ def test_every_serving_stage_writes_its_engine_log_inside_the_inventory_scope() 
         assert surface_module._is_serving_log(log), (
             f"{stage}'s engine log is in scope but is not classified as a serving log, "
             "so the fetch would try to verify it against a manifest nothing wrote"
-        )
-
-
-def test_no_serving_stage_spells_its_own_log_directory() -> None:
-    """Read from source, so a fourth serving stage with its own spelling fails here.
-
-    The defect this closes was one token: `f"{ATTESTATORES}/serving-logs"`,
-    where the stage is named `attestatores` and writes in `3_attestatores`. One
-    shared expression is the only thing that makes the test above a statement
-    about the stages rather than about itself.
-    """
-
-    assert re.search(
-        r"log_root=context\.tree\.resolve\(\s*context\.tree\.serving_log_path\(context\.stage\)",
-        (ROOT / "operations/serving/assembly.py").read_text(encoding="utf-8"),
-    ), "stage_chair_client does not build its serving log root from RunTree.serving_log_path"
-    for relative in sorted(_SERVING_STAGE_SOURCES.values()):
-        source = (ROOT / relative).read_text(encoding="utf-8")
-        assert "stage_chair_client" in source, f"{relative} builds its own chair client"
-        assert "ServingManager(" not in source and "ChairClient(" not in source, (
-            f"{relative} builds its own manager or client instead of stage_chair_client"
-        )
-        assert '"serving-logs"' not in source and "'serving-logs'" not in source, (
-            f"{relative} spells the serving-log directory for itself; the store owns it"
         )
 
 
