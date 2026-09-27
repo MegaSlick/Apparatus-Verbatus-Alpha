@@ -1182,9 +1182,7 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: its decode-environment is missing or damaged"
         ) from error
-    previous_environment = _validate_decode_environment(
-        environment.get("payload"), f"{producer} stored"
-    )
+    _validate_decode_environment(environment.get("payload"), f"{producer} stored")
     actual_environment_sha256 = digest_bytes(environment_bytes)
     if payload.get("decode_environment_sha256") != actual_environment_sha256:
         raise SchemaRefusal(
@@ -1208,32 +1206,6 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: its named inventory no longer matches disk"
         )
-    # The producer's environment, rebuilt here: the reader's own decode work
-    # differs by construction.
-    current_environment = _validate_decode_environment(
-        _decode_environment(producer), f"{reader} current for {producer}"
-    )
-    differences = _decode_difference(previous_environment, current_environment)
-    if differences:
-        # Reported, not refused: no rule yet says when a difference is fatal.
-        print(
-            f"decode environment differs by name from {producer}: {differences}",
-            file=sys.stderr,
-        )
-
-
-def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
-    """Every decode-environment field that differs, by name."""
-    changes = []
-    previous_decoders = {row["name"]: row["version"] for row in previous["decoders"]}
-    current_decoders = {row["name"]: row["version"] for row in current["decoders"]}
-    for name in sorted(set(previous_decoders) | set(current_decoders)):
-        if previous_decoders.get(name) != current_decoders.get(name):
-            changes.append(name)
-    for field in ("platform", "machine", "decode_paths_used", "produced_pixels"):
-        if previous.get(field) != current.get(field):
-            changes.append(field)
-    return changes
 
 
 def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[str, str]:

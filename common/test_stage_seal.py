@@ -623,59 +623,6 @@ def test_the_attestatores_records_the_pixels_its_own_pass_computes():
     assert environment["decode_paths_used"] == ["project-png"]
 
 
-def test_a_clean_consumer_reconstructs_the_producers_environment(tmp_path, capsys):
-    """Different stage roles must not manufacture a predecessor mismatch.
-
-    Unit 13 first pinned these role differences as reported-by-name; Unit 12's
-    later correction reconstructs the PRODUCER's environment on the consumer's
-    machine, so a role-only difference cannot exist to report and a clean
-    consumer sees a clean predecessor.
-    """
-    tree, run, registry, bindings = _tree(tmp_path)
-    context = _context(tree, run, registry, bindings, stage=RECENSOR)
-    context.seal_boundary()
-    context.finish()
-    assert _decode_environment(RECENSOR)["produced_pixels"] is True
-    assert _decode_environment(ARCHETYPUS)["produced_pixels"] is False
-    capsys.readouterr()
-
-    verify_predecessor_seal(tree, ARCHETYPUS)
-
-    reported = capsys.readouterr().err
-    assert "decode environment differs" not in reported
-
-
-def test_a_producer_environment_change_is_reported_field_by_field(tmp_path, capsys, monkeypatch):
-    """Still an observation, never a refusal: Unit 17 owns the fatal policy."""
-    tree, run, registry, bindings = _tree(tmp_path)
-    context = _context(tree, run, registry, bindings)
-    context.seal_boundary()
-    context.finish()
-
-    import common.stage as stage_module
-
-    moved = _decode_environment(ATTESTATORES)
-    moved["decoders"] = [
-        dict(row, version="0.0.0-moved") if row["name"] == "pillow" else row
-        for row in moved["decoders"]
-    ]
-    # Attestatores now seals decode_paths_used=["project-png"] and
-    # produced_pixels=True itself (DAI makes it a pixel stage), so the moved
-    # values must differ from that baseline to be reportable at all.
-    moved["decode_paths_used"] = []
-    moved["produced_pixels"] = False
-    monkeypatch.setattr(stage_module, "_decode_environment", lambda _: moved)
-    capsys.readouterr()
-
-    verify_predecessor_seal(tree, PERLECTOR)
-
-    reported = capsys.readouterr().err
-    assert "decode environment differs by name from attestatores" in reported
-    assert "pillow" in reported
-    assert "decode_paths_used" in reported
-    assert "produced_pixels" in reported
-
-
 def test_decode_environment_bytes_cannot_change_under_an_existing_seal(tmp_path):
     """The seal binds the environment record, not only its deterministic name."""
     tree, run, registry, bindings = _tree(tmp_path)
