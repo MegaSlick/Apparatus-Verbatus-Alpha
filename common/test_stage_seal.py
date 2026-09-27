@@ -29,7 +29,6 @@ from common.contracts.stages import (
     DOOR,
     EXEMPLAR,
     PERLECTOR,
-    RECENSOR,
 )
 from common.runtree.store import RunTree
 from common.stage import (
@@ -238,7 +237,7 @@ def test_a_stage_refuses_case_variant_and_symlink_blob_entries(tmp_path):
 
     (blob_root / link_name).unlink()
     (blob_root / link_name.upper()).write_bytes(outside.read_bytes())
-    with pytest.raises(SchemaRefusal, match="noncanonical content address"):
+    with pytest.raises(SchemaRefusal, match="non-canonical case variant"):
         _context(tree, run, registry, bindings).seal_boundary()
 
 
@@ -377,9 +376,11 @@ RunTree(Path(sys.argv[1]), "seal-unit").put_blob("attestatores", b"interrupted b
     # temporary-name hole punched in it and nothing else. Refusing is strictly
     # louder than recording, so the "can never disappear behind this exception"
     # guarantee this test was written for still holds -- the run stops instead.
-    (blobs_root / ".unexpected-published-name").write_bytes(b"must stay visible")
+    unexpected = blobs_root / ".unexpected-published-name"
+    unexpected.write_bytes(b"must stay visible")
     with pytest.raises(SchemaRefusal, match="noncanonical content address"):
         _context(tree, run, registry, bindings).seal_boundary()
+    unexpected.unlink()
     assert len(_stage_records(tree, ATTESTATORES, "stage-seal")) == 1
 
 

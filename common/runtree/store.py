@@ -75,6 +75,7 @@ from common.durability import (
     PublishedUnsettled,
     atomic_create,
     atomic_replace,
+    is_temporary_name,
 )
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, require_seal_method
 
@@ -888,9 +889,8 @@ class RunTree:
     def _walk_blobs(self, directory: Path) -> Iterator[str]:
         """Yield addressable regular blobs in name order.
 
-        Non-digest names include same-directory publication residue and are not
-        inventory members. Blob contents are verified when consumed rather than
-        during every manifest rebuild because they may be full page images.
+        Publisher temporaries are not inventory members. Blob contents are
+        verified when consumed because they may be full page images.
         """
         relative_root = str(directory.relative_to(self.root))
         directory_fd = self._open_relative_fd(
@@ -908,6 +908,14 @@ class RunTree:
                 if stat.S_ISLNK(before.st_mode):
                     self._raise_manifest_symlink(relative_path, frozenset())
                 if not is_sha256(name):
+                    if name != name.casefold() and is_sha256(name.casefold()):
+                        raise SchemaRefusal(
+                            f"{relative_path!r} is a non-canonical case variant of a sha256"
+                        )
+                    if not is_temporary_name(name) or not is_sha256(name[1:].partition(".tmp-")[0]):
+                        raise SchemaRefusal(f"{relative_path!r} has a noncanonical content address")
+                    if not stat.S_ISREG(before.st_mode):
+                        raise SchemaRefusal(f"{relative_path!r} is not a regular blob temporary")
                     continue
                 if not stat.S_ISREG(before.st_mode):
                     raise SchemaRefusal(

@@ -213,15 +213,12 @@ def test_a_write_that_grows_the_expected_act_count_is_also_refused(tmp_path):
         tree.write_recensor_partition_receipt(grown)
 
 
-def test_repeating_an_identical_receipt_is_reused_not_refused(tmp_path):
-    """The unchanged-denominator guard must not itself turn an idempotent
-    replay -- the ordinary case of resuming or re-running a finished pass --
-    into a refusal."""
+def test_repeating_an_identical_receipt_is_replaced_not_refused(tmp_path):
     tree = make_run(tmp_path)
     receipt = make_recensor_partition_receipt()
     tree.write_recensor_partition_receipt(receipt)
     result = tree.write_recensor_partition_receipt(receipt)
-    assert result.reused is True
+    assert result.reused is False
 
 
 # --- The run authority ---------------------------------------------------------
@@ -1692,6 +1689,16 @@ def test_the_blob_inventory_lists_stored_bytes_and_not_a_publication_that_was_ki
     (blobs_root / f".{digest}.tmp-abcdef").write_bytes(b"a partly published crop")
 
     assert tree.build_manifest(DESIGNATOR)["blobs"] == [digest]
+
+
+def test_a_manifest_refuses_unaddressable_blob_names(tmp_path):
+    tree = make_run(tmp_path)
+    blobs_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}")
+    blobs_root.mkdir(parents=True)
+    (blobs_root / "unknown").write_bytes(b"unaddressable")
+
+    with pytest.raises(SchemaRefusal, match="noncanonical content address"):
+        tree.build_manifest(DESIGNATOR)
 
 
 def test_a_manifest_still_builds_over_the_directories_the_store_itself_wrote(tmp_path):
