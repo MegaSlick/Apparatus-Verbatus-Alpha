@@ -301,19 +301,21 @@ def test_reproof_rejects_duplicate_json_members(raw):
         assemble_reproof_response(raw, _request())
 
 
-def test_legacy_v2_request_stays_validatable_but_cannot_mix_with_a_v3_edit_reply():
-    request = audit_request(
-        act_key="a1",
-        attempt_ordinal=1,
-        draft_ref={"relative_path": "4_perlector/audit-draft/a1.json", "sha256": "a" * 64},
-        semi_final_text="alpha beta",
-        flags=[{"class": "testimony-diff", "location": {"start": 6, "end": 10}}],
-        policy_schema=LEGACY_SCHEMA,
-    )
-    assert request["schema"] == LEGACY_REQUEST_SCHEMA
-    with pytest.raises(ReproofResponseRefusal, match="legacy request"):
+def test_legacy_request_is_refused_by_name_before_it_can_reach_the_reader():
+    request = _request()
+    request["schema"] = LEGACY_REQUEST_SCHEMA
+    with pytest.raises(SchemaRefusal, match="sealed under perlector-audit-request.v1"):
         assemble_reproof_response(
             json.dumps({"schema": "perlector-audit-response.v1", "edits": []}), request
+        )
+    with pytest.raises(SchemaRefusal, match="sealed under perlector-audit.v2"):
+        audit_request(
+            act_key="a1",
+            attempt_ordinal=1,
+            draft_ref={"relative_path": "4_perlector/audit-draft/a1.json", "sha256": "a" * 64},
+            semi_final_text="alpha beta",
+            flags=[{"class": "testimony-diff", "location": {"start": 6, "end": 10}}],
+            policy_schema=LEGACY_SCHEMA,
         )
 
 

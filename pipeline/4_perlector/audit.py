@@ -68,9 +68,8 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
         )
     if isinstance(policy, dict) and policy.get("schema") == LEGACY_SCHEMA:
         raise ContractError(
-            f"the Perlector audit declaration names legacy schema {LEGACY_SCHEMA!r}; sealed "
-            "artifacts under that schema remain readable, but a new execution must declare "
-            f"{SCHEMA!r} so its exact-edit request matches the current reader"
+            f"the Perlector audit declaration was sealed under {LEGACY_SCHEMA}, which this "
+            f"build no longer reads; re-run under {SCHEMA}"
         )
     if (
         not isinstance(policy, dict)
