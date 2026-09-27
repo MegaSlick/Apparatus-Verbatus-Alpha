@@ -44,6 +44,7 @@ from common.contracts.annotations import (  # noqa: E402, F401  (re-export)
 from common.contracts.canonical import (  # noqa: E402
     SCHEMA_LABEL,
     digest_of,
+    is_sha256,
     self_hash,
     verify_self_hash,
 )
@@ -194,11 +195,7 @@ def _is_ref_shaped(value) -> bool:
 
 
 def _logical_sha(value, label: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    if not is_sha256(value):
         raise SchemaRefusal(
             f"the logical Archetypus {label} is not a lowercase SHA-256; the record is "
             "refused because every capture and crop it cites must retain a digest identity"

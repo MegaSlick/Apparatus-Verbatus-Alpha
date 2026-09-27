@@ -439,9 +439,7 @@ def page_partition_entries(
     """
     survivors, overshoots = split_page_edge_overshoots(observed, page_size=page_size)
     if overshoots and (
-        not isinstance(raw_response_ref, dict)
-        or not isinstance(raw_response_ref.get("sha256"), str)
-        or len(raw_response_ref["sha256"]) != 64
+        not isinstance(raw_response_ref, dict) or not is_sha256(raw_response_ref.get("sha256"))
     ):
         raise SchemaRefusal(
             "a page-edge finding has no retained response reference. "
@@ -1070,9 +1068,7 @@ def validate_stage_blob_ref(reference: Any, field: str) -> dict[str, str]:
         not isinstance(reference, dict)
         or set(reference) != {"relative_path", "sha256"}
         or not isinstance(reference["relative_path"], str)
-        or not isinstance(reference["sha256"], str)
-        or len(reference["sha256"]) != 64
-        or any(character not in "0123456789abcdef" for character in reference["sha256"])
+        or not is_sha256(reference["sha256"])
         or reference["relative_path"] != prefix + reference["sha256"]
     ):
         raise SchemaRefusal(f"a Testimonium {field} is not an Attestatores blob reference")

@@ -18,11 +18,10 @@ This module may not import a stage (`pipeline/test_stage_import_boundaries.py`):
 it reads the sealed policy's own bytes and takes everything else as arguments.
 """
 
-import re
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
-from common.contracts.canonical import is_plain_int
+from common.contracts.canonical import is_plain_int, is_sha256
 from common.contracts.errors import ContractError
 from common.sealed_config import read_sealed_toml
 
@@ -494,7 +493,7 @@ def validate_ink_not_measurable_payload(payload: Any) -> dict[str, Any]:
             "the ink-not-measurable payload background_refusal is not a non-blank string"
         )
     digest = payload["background_config_sha256"]
-    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+    if not is_sha256(digest):
         raise ContractError(
             "the ink-not-measurable payload background_config_sha256 is not lowercase SHA-256 hex"
         )
@@ -577,7 +576,7 @@ def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> d
     if not 0 <= background["ink_threshold"] <= 255:
         raise ContractError("the measured ink-map background ink_threshold is outside 8-bit range")
     digest = background["config_sha256"]
-    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+    if not is_sha256(digest):
         raise ContractError(
             "the measured ink-map background config_sha256 is not lowercase SHA-256 hex"
         )

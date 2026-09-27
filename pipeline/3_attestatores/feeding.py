@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from collections.abc import Iterable
 from contextlib import contextmanager
 from itertools import groupby
@@ -17,7 +16,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Final, Iterator, Mapping
 
 from common import chandra_layout
-from common.contracts.canonical import digest_of
+from common.contracts.canonical import digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
@@ -466,11 +465,7 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
     if limits != expected_limits:
         raise SchemaRefusal("DAI model view image limits differ from the sealed executable limits")
     limits_digest = value["image_limits_sha256"]
-    if (
-        not isinstance(limits_digest, str)
-        or not re.fullmatch(r"[0-9a-f]{64}", limits_digest)
-        or limits_digest != digest_of(limits)
-    ):
+    if not is_sha256(limits_digest) or limits_digest != digest_of(limits):
         raise SchemaRefusal("DAI model view image-limits digest does not match its limits")
     if value["uncertainty_tokens_preserved"] != list(_UNCERTAINTY_TOKENS):
         raise SchemaRefusal("DAI model view does not preserve the declared uncertainty tokens")
@@ -814,5 +809,5 @@ def _reference(value: object, name: str) -> None:
     path = value["relative_path"]
     if path.startswith("/") or ".." in path.split("/"):
         raise SchemaRefusal(f"DAI {name} reference path escapes the run tree")
-    if not isinstance(value["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"]):
+    if not is_sha256(value["sha256"]):
         raise SchemaRefusal(f"DAI {name} reference digest is invalid")
