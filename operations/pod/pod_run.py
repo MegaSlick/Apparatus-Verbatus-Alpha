@@ -761,7 +761,7 @@ def _records_at_close(
                             break  # A stopped writer may leave a torn final line.
                         try:
                             record = json.loads(line)
-                        except (UnicodeDecodeError, json.JSONDecodeError):
+                        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
                             unreadable_lines += 1
                             continue  # A later append can leave a torn line in the middle.
                         if (

@@ -40,8 +40,10 @@ from .models import (
     SpendRefusal,
     _nested_argv_halves,
     _nested_flag_values,
+    _runs_the_orchestrator,
     rebind_nested_flag,
     run_report_paths,
+    terminating_path,
     utc_now,
 )
 from .notify_bridge import Notifier, NotifyOutcome, silent
@@ -158,28 +160,6 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     return command
 
 
-# Bootstrap and timer siblings are small local contracts; run siblings come
-# from the shared report-path derivation used by the writer and create gate.
-
-TIMER_REPORT_SIBLINGS: Final = ("-terminating.json",)
-"""What ``pod_timer`` writes beside its own bound report: the pre-DELETE breadcrumb."""
-
-HOLD_REPORT_SIBLINGS: Final = ("-hold.json",)
-"""What any bootstrap child writes beside its report while holding to the deadline."""
-
-_POD_RUN_MODULE: Final = "operations.pod.pod_run"
-
-
-def _runs_the_orchestrator(nested: list[str]) -> bool:
-    """Whether this bootstrap child is ``pod_run`` rather than a hold-only boot.
-
-    Both the ``-m`` and the path spelling count: a wrong answer costs only
-    accuracy in the derived key list, so it errs toward recognising the program.
-    """
-
-    return any(part == _POD_RUN_MODULE or part.endswith("pod_run.py") for part in nested)
-
-
 def _nested_bootstrap_argv(command: list[str]) -> list[str] | None:
     """The decoded ``--bootstrap-command-json`` argv, or ``None`` when there is none."""
 
@@ -217,7 +197,8 @@ def bound_report_paths(
     command = list(docker_start_cmd)
     found: dict[str, tuple[str, ...]] = {}
     for value in _outer_flag_values(command, "--report-path"):
-        found.setdefault(value, TIMER_REPORT_SIBLINGS)
+        report = PurePosixPath(value)
+        found.setdefault(value, (terminating_path(report).name.removeprefix(report.stem),))
     nested = _nested_bootstrap_argv(command)
     if nested is not None:
         for half in _nested_argv_halves(nested):
@@ -230,7 +211,8 @@ def bound_report_paths(
                             for path in run_report_paths(report)[1:]
                         )
                     else:
-                        siblings = HOLD_REPORT_SIBLINGS
+                        report = PurePosixPath(value)
+                        siblings = (run_report_paths(report)[1].name.removeprefix(report.stem),)
                     found.setdefault(value, siblings)
     return tuple(found.items())
 

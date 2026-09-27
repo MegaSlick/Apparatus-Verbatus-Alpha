@@ -39,6 +39,7 @@ from pipeline.orchestrator import run as orchestrator
 from . import launch as launch_module
 from . import pod_run
 from .bootstrap import BootstrapStep
+from .models import run_report_paths
 from .pod_run import (
     EXIT_BOOTSTRAP_RED,
     EXIT_COMPLETE,
@@ -1284,13 +1285,11 @@ def test_the_sibling_suffixes_launch_derives_are_the_ones_pod_run_actually_write
     command = ("--report-path", "/workspace/timer.json", "--bootstrap-command-json", nested)
     siblings = dict(launch_module.bound_report_paths(command))[str(report)]
     assert written == set(siblings)
-    assert set(launch_module.HOLD_REPORT_SIBLINGS) <= written
-    assert launch_module.TIMER_REPORT_SIBLINGS == (
-        terminating_path(Path("/v/pod-runtime-report.json")).name.removeprefix(
-            "pod-runtime-report"
-        ),
-    )
-    assert launch_module._POD_RUN_MODULE == pod_run.__name__
+    assert run_report_paths(report)[1].name.removeprefix(report.stem) in written
+    timer_report = Path("/v/pod-runtime-report.log")
+    assert dict(launch_module.bound_report_paths(("--report-path", str(timer_report))))[
+        str(timer_report)
+    ] == (terminating_path(timer_report).name.removeprefix(timer_report.stem),)
 
 
 def test_launch_uses_the_run_reports_actual_extension_for_fetch_keys() -> None:
@@ -1302,6 +1301,17 @@ def test_launch_uses_the_run_reports_actual_extension_for_fetch_keys() -> None:
 
     assert "run-receipt-timings.data" in keys
     assert "run-receipt-transcript.log" in keys
+
+
+def test_launch_uses_the_hold_reports_actual_extension_for_fetch_keys() -> None:
+    report = "/workspace/bootstrap-receipt.data"
+    nested = json.dumps(["python", "-m", "operations.pod.bootstrap_main", "--report-path", report])
+    command = ("--report-path", "/workspace/timer.log", "--bootstrap-command-json", nested)
+
+    keys = launch_module.launch_evidence_keys(command, volume_mount_path="/workspace")
+
+    assert "timer-terminating.log" in keys
+    assert "bootstrap-receipt-hold.data" in keys
 
 
 def test_every_launch_bound_record_is_derived_from_the_sealed_start_command() -> None:
@@ -2047,6 +2057,24 @@ def test_a_torn_timing_line_is_skipped(tmp_path: Path, later_entry: bool) -> Non
     assert missing == []
     assert audit["timing_journal"]["entries"] == 2
     assert audit["timing_journal"]["unreadable_lines"] == 1 + later_entry
+
+
+def test_a_deep_timing_line_is_skipped_without_losing_other_entries(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    report = _run_with(ws, RecordedRunner(returncode=0, journal_entries=2))
+    journal = Path(report["timing_journal_path"])
+    with journal.open("ab") as handle:
+        handle.write(b"[" * 1500 + b"0" + b"]" * 1500 + b"\n")
+    plan = object.__new__(pod_run.RunPlan)
+    object.__setattr__(plan, "report_path", ws.volume / "pod-run-report.json")
+    object.__setattr__(plan, "run_id", "first-real-run")
+    object.__setattr__(plan, "run_root", ws.volume / "runs")
+
+    audit, missing = pod_run._records_at_close(plan)
+
+    assert missing == []
+    assert audit["timing_journal"]["entries"] == 2
+    assert audit["timing_journal"]["unreadable_lines"] == 1
 
 
 def test_real_timing_writer_and_reader_audit_mixed_and_damaged_lines(tmp_path: Path) -> None:

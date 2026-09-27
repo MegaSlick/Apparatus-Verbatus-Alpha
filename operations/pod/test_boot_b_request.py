@@ -28,7 +28,7 @@ from .boot_b_request import (
 )
 from .cli import _request
 from .launch import _bind_report_path_to_launch
-from .models import DEFAULT_CONTAINER_DISK_GB, PodCreateRequest, run_report_paths
+from .models import DEFAULT_CONTAINER_DISK_GB, PodCreateRequest, run_report_paths, terminating_path
 from .preflight import load_placement_table
 from .spend import SpendPolicy, load_spend_policy
 
@@ -304,7 +304,7 @@ def test_timer_terminating_path_cannot_overlap_another_report(target: str) -> No
     base = validated_pod_request(filled_request())
     command = list(base.docker_start_cmd)
     outer = PurePosixPath(command[command.index("--report-path") + 1])
-    terminating = outer.with_name(f"{outer.stem}-terminating.json")
+    terminating = terminating_path(outer)
     nested = _sealed_nested_argv(base.docker_start_cmd)
     reports = [i + 1 for i, value in enumerate(nested) if value == "--report-path"]
     index = (
@@ -313,6 +313,21 @@ def test_timer_terminating_path_cannot_overlap_another_report(target: str) -> No
         else reports[0 if target == "run" else 1]
     )
     nested[index] = str(terminating)
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="pod timer report or terminating path collides"):
+        replace(base, docker_start_cmd=tuple(command))
+
+
+def test_log_timer_terminating_path_cannot_be_a_bootstrap_report() -> None:
+    base = validated_pod_request(filled_request())
+    command = list(base.docker_start_cmd)
+    timer_index = command.index("--report-path") + 1
+    timer_report = PurePosixPath(command[timer_index]).with_suffix(".log")
+    command[timer_index] = str(timer_report)
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    reports = [i + 1 for i, value in enumerate(nested) if value == "--report-path"]
+    nested[reports[1]] = str(terminating_path(timer_report))
     command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
 
     with pytest.raises(ValueError, match="pod timer report or terminating path collides"):

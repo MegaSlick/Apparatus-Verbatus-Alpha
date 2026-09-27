@@ -36,6 +36,21 @@ def run_report_paths(report: PurePosixPath) -> tuple[PurePosixPath, ...]:
     )
 
 
+def terminating_path(report: PurePosixPath) -> PurePosixPath:
+    """The timer's pre-DELETE breadcrumb beside its report."""
+
+    return report.with_name(f"{report.stem}-terminating{report.suffix}")
+
+
+_POD_RUN_MODULE = "operations.pod.pod_run"
+
+
+def _runs_the_orchestrator(nested: list[str]) -> bool:
+    """Whether a bootstrap child runs ``pod_run`` rather than a hold-only boot."""
+
+    return any(part == _POD_RUN_MODULE or part.endswith("pod_run.py") for part in nested)
+
+
 class PodRuntimeError(RuntimeError):
     """Base error for a closed, named pod-runtime refusal."""
 
@@ -579,7 +594,7 @@ def _required_timer_arguments(
     # after billing began -- the same shape as the nested report path before
     # ``launch`` learned to bind it.
     nested_halves = _nested_argv_halves(bootstrap)
-    report_paths: list[PurePosixPath] = []
+    report_paths: list[tuple[list[str], PurePosixPath]] = []
     bootstrap_journal: PurePosixPath | None = None
     for flag in NESTED_LAUNCH_BOUND_FLAGS:
         for half in nested_halves:
@@ -611,26 +626,29 @@ def _required_timer_arguments(
                     "overwrite its evidence"
                 )
             if flag == "--report-path":
-                report_paths.append(nested_path)
+                report_paths.append((half, nested_path))
             elif flag == "--journal":
                 bootstrap_journal = nested_path
-    if len(report_paths) == 2:
-        for name, bootstrap_path in (
-            ("bootstrap report", report_paths[1]),
-            ("bootstrap journal", bootstrap_journal),
-        ):
-            if bootstrap_path is not None and bootstrap_path in run_report_paths(report_paths[0]):
+    run_path = next((path for half, path in report_paths if _runs_the_orchestrator(half)), None)
+    if run_path is not None:
+        bootstrap_paths = [
+            ("bootstrap report", path)
+            for half, path in report_paths
+            if not _runs_the_orchestrator(half)
+        ]
+        for name, bootstrap_path in (*bootstrap_paths, ("bootstrap journal", bootstrap_journal)):
+            if bootstrap_path is not None and bootstrap_path in run_report_paths(run_path):
                 raise ValueError(
                     f"pod bootstrap command's {name} path collides with the run report "
                     "or one of its side files"
                 )
-    timer_paths = {report_path, report_path.with_name(f"{report_path.stem}-terminating.json")}
+    timer_paths = {report_path, terminating_path(report_path)}
     other_paths: set[PurePosixPath] = set()
-    for index, path in enumerate(report_paths):
-        if len(report_paths) == 2 and index == 0:
+    for half, path in report_paths:
+        if _runs_the_orchestrator(half):
             other_paths.update(run_report_paths(path))
         else:
-            other_paths.update((path, path.with_name(f"{path.stem}-hold{path.suffix}")))
+            other_paths.update((path, run_report_paths(path)[1]))
     if bootstrap_journal is not None:
         other_paths.add(bootstrap_journal)
     if timer_paths & other_paths:
