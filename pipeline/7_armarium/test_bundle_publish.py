@@ -656,7 +656,7 @@ def test_sealed_bundle_directly_refuses_bytes_changed_after_the_export_was_read(
         read_bytes=lambda _path: b"changed bundle",
     )
 
-    with pytest.raises(ContractError, match="no longer matches the digest"):
+    with pytest.raises(ContractError, match="changed under a sealed reference"):
         bundle_module.sealed_bundle(tree)
 
 

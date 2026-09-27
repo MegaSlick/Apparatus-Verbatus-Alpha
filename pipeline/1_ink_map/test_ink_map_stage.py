@@ -179,6 +179,8 @@ class _StubTree:
         return self._pages[int(artifact_id)]
 
     def read_bytes(self, relative_path):
+        if relative_path not in self._blobs:
+            raise FileNotFoundError(relative_path)
         return self._blobs[relative_path]
 
 
@@ -250,8 +252,10 @@ def test_the_ink_map_measures_only_pixels_it_digested_itself():
     assert INK_MAP_RUN.measured_page_bytes(honest, 1, page) == b"the sealed pixels"
 
     swapped = _StubTree([page], {"blob": b"different pixels under the same name"})
-    with pytest.raises(FatalAccounting, match="does not match the pixel digest"):
+    with pytest.raises(FatalAccounting, match="changed under a sealed reference"):
         INK_MAP_RUN.measured_page_bytes(swapped, 1, page)
+    with pytest.raises(FatalAccounting, match="could not be read"):
+        INK_MAP_RUN.measured_page_bytes(_StubTree([page]), 1, page)
 
 
 def test_the_ink_map_declares_the_decode_route_it_actually_takes():

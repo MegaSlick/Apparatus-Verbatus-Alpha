@@ -632,7 +632,7 @@ def test_reuse_refuses_a_missing_register_snapshot_instead_of_reconstructing_it(
     snapshot = tree.resolve(tree.blob_path(DOOR, run["register_digest"]))
     snapshot.unlink()
 
-    with pytest.raises(IncompatibleReuse, match="missing or unreadable"):
+    with pytest.raises(IncompatibleReuse, match="could not be read"):
         make_run(tmp_path, register_bytes=empty_register())
 
     assert not snapshot.exists()

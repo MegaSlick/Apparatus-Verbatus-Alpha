@@ -46,8 +46,8 @@ from common.background import (  # noqa: E402
 )
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.annotations import validate_annotations  # noqa: E402
-from common.contracts.canonical import digest_bytes, digest_of, verify_self_hash  # noqa: E402
-from common.contracts.envelope import validate_input_refs  # noqa: E402
+from common.contracts.canonical import digest_of, verify_self_hash  # noqa: E402
+from common.contracts.envelope import read_verified, validate_input_refs  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import is_well_formed  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
@@ -1427,12 +1427,9 @@ def export_source_regions(tree, regions: list[dict], census: dict[int, dict]) ->
         image_path, image_sha256 = region.get("image_path"), region.get("image_sha256")
         if not isinstance(image_path, str) or not isinstance(image_sha256, str):
             raise FatalAccounting("an established source region names no sealed crop")
-        try:
-            crop = tree.read_bytes(image_path)
-        except OSError as error:
-            raise FatalAccounting("an established source region's crop is missing") from error
-        if digest_bytes(crop) != image_sha256:
-            raise FatalAccounting("an established source region's crop bytes changed before export")
+        crop_ref = {"relative_path": image_path, "sha256": image_sha256}
+        what = "an established source region's crop"
+        read_verified(tree.read_bytes, crop_ref, what, FatalAccounting)
         entry = dict(region)
         for field in (
             "declared_path",

@@ -15,7 +15,7 @@ import json
 from typing import Any, Final
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
-from common.contracts.envelope import validate_envelope, verify_input_bytes
+from common.contracts.envelope import read_verified, validate_envelope
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import PROPOSAL_SEAL_ID, artifact_id, page_id, region_id
 from common.contracts.stages import (
@@ -142,7 +142,13 @@ def verify_sealed_page_pixels(
     return page_bytes
 
 
-def sealed_page_bytes(tree: RunTree, page: dict[str, Any], *, what: str = "") -> bytes:
+def sealed_page_bytes(
+    tree: RunTree,
+    page: dict[str, Any],
+    *,
+    what: str = "",
+    refusal: type[ContractError] = SchemaRefusal,
+) -> bytes:
     """Read a sealed Exemplar page's pixels once, checked against its sealed digest.
 
     Image work must use these same bytes: a second read reopens the gap a swap
@@ -152,26 +158,21 @@ def sealed_page_bytes(tree: RunTree, page: dict[str, Any], *, what: str = "") ->
     payload = page.get("payload")
     image_path = payload.get("image_path") if isinstance(payload, dict) else None
     if not isinstance(image_path, str) or not image_path:
-        raise SchemaRefusal(f"{subject} has no image path")
-    try:
-        data = tree.read_bytes(image_path)
-    except OSError as error:
-        raise SchemaRefusal(f"{subject} could not be read: {error}") from error
-    actual = digest_bytes(data)
-    if actual != payload.get("source_sha256"):
-        raise SchemaRefusal(
-            f"{subject} no longer matches its sealed digest: "
-            f"read {actual}, sealed {payload.get('source_sha256')}"
-        )
-    return data
+        raise refusal(f"{subject} has no image path")
+    ref = {"relative_path": image_path, "sha256": payload.get("source_sha256")}
+    return read_verified(tree.read_bytes, ref, subject, refusal)
 
 
 def read_sealed_page(
-    tree: RunTree, page_id: str, *, what: str = ""
+    tree: RunTree,
+    page_id: str,
+    *,
+    what: str = "",
+    refusal: type[ContractError] = SchemaRefusal,
 ) -> tuple[dict[str, Any], bytes]:
     """One Exemplar page artifact and its pixels, read once through `sealed_page_bytes`."""
     page = tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    return page, sealed_page_bytes(tree, page, what=what)
+    return page, sealed_page_bytes(tree, page, what=what, refusal=refusal)
 
 
 def _page_origin(source_digest: str, rendered: Any) -> dict[str, Any]:
@@ -1163,15 +1164,7 @@ def _references_by_path(value: Any) -> dict[str, dict[str, str]]:
 
 
 def _read_checked(tree: RunTree, ref: dict[str, str], label: str) -> bytes:
-    try:
-        data = tree.read_bytes(ref["relative_path"])
-    except OSError as error:
-        raise ContractError(f"{label} could not be read") from error
-    try:
-        verify_input_bytes(ref, data)
-    except SchemaRefusal as error:
-        raise ContractError(f"{label} no longer matches its sealed input digest") from error
-    return data
+    return read_verified(tree.read_bytes, ref, label, ContractError)
 
 
 def _is_sha256(value: Any) -> bool:

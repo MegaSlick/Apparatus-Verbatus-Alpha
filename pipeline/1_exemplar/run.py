@@ -44,8 +44,8 @@ from admission import reason_code  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
-from common.contracts.canonical import digest_bytes, self_hash, verify_self_hash  # noqa: E402
-from common.contracts.envelope import validate_envelope, verify_input_bytes  # noqa: E402
+from common.contracts.canonical import self_hash, verify_self_hash  # noqa: E402
+from common.contracts.envelope import read_verified, validate_envelope  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id, page_id  # noqa: E402
 from common.contracts.stages import DOOR, EXEMPLAR  # noqa: E402
@@ -455,12 +455,8 @@ def _read_checked_admission(
     relative_path, digest = entry.get("relative_path"), entry.get("sha256")
     if not isinstance(relative_path, str) or not _is_sha256(digest):
         raise ContractError("the door's manifest holds an invalid admission reference")
-    try:
-        data = tree.read_bytes(relative_path)
-    except OSError as error:
-        raise ContractError("a door admission's bytes could not be read") from error
-    if digest_bytes(data) != digest:
-        raise ContractError("a door admission's bytes no longer match the door's manifest")
+    ref = {"relative_path": relative_path, "sha256": digest}
+    data = read_verified(tree.read_bytes, ref, "a door admission", ContractError)
     try:
         decoded = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
@@ -584,16 +580,7 @@ def _verify_admitted_blob(
         raise ContractError(
             "a derivative page does not input exactly its pixels and untouched master"
         )
-    try:
-        blob = tree.read_bytes(stored_at)
-    except OSError as error:
-        raise ContractError(
-            "an admitted blob could not be read; the bytes the door sealed are no "
-            "longer in the run tree, and a page cannot be sealed over bytes nobody has"
-        ) from error
-    if digest_bytes(blob) != sealed_digest:
-        raise ContractError("an admitted blob's bytes no longer match their sealed digest")
-    verify_input_bytes(input_ref, blob)
+    blob = read_verified(tree.read_bytes, input_ref, "an admitted blob", ContractError)
     if is_derivative:
         verify_triage_derivative(rendered_from["render_contract"], parent_bytes, parent, blob)
     return {"relative_path": stored_at, "sha256": sealed_digest}
@@ -619,15 +606,11 @@ def _verify_derivative_admission(
     ):
         raise ContractError("a derivative page does not carry a valid immutable parent frame")
     parent_ref = {"relative_path": parent["stored_at"], "sha256": parent["sha256"]}
-    try:
-        parent_bytes = tree.read_bytes(parent_ref["relative_path"])
-    except OSError as error:
-        raise ContractError(
-            "a derivative page's submitted master could not be read; the page was not sealed "
-            "because its lineage cannot be re-derived; restore the content-addressed master "
-            "from the submitted bytes before retrying"
-        ) from error
-    verify_input_bytes(parent_ref, parent_bytes)
+    parent_bytes = read_verified(
+        tree.read_bytes,
+        parent_ref,
+        "a derivative page's submitted master (restore it from the submitted bytes to retry)",
+    )
     return parent_ref, parent, parent_bytes
 
 

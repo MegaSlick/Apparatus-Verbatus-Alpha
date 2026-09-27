@@ -36,7 +36,7 @@ from common.background import (  # noqa: E402
 )
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256  # noqa: E402
+from common.contracts.canonical import is_plain_int, is_sha256  # noqa: E402
 from common.contracts.errors import (  # noqa: E402
     ContractError,
     FatalAccounting,
@@ -69,7 +69,7 @@ from common.cross_capture_coverage import (  # noqa: E402
     same_chair_witness_floor,
     validate_cross_capture_coverage,
 )
-from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
+from common.exemplar_boundary import sealed_page_bytes, verify_sealed_page_pixels  # noqa: E402
 from common.imaging import grayscale_rows  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
@@ -1491,12 +1491,9 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
                 "did not seal; a crop of unsealed pixels is invariant #10's imbalance"
             )
         # Digest the bytes actually measured, not an earlier read (principle 8).
-        image_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-        if digest_bytes(image_bytes) != page["payload"]["source_sha256"]:
-            raise FatalAccounting(
-                f"the sealed Exemplar page {ordinal} the residual-ink check read does not "
-                "match the pixel digest its own page record verified"
-            )
+        image_bytes = sealed_page_bytes(
+            context.tree, page, what="the residual-ink check", refusal=FatalAccounting
+        )
         width, height, rows = grayscale_rows(image_bytes)
         try:
             findings[ordinal] = residual_ink(
