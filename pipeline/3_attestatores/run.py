@@ -1,17 +1,8 @@
-"""Attestatores: retain every witness attempt without changing its history.
+"""Retain every witness attempt without changing its history.
 
-``payload`` is the witness's native response, unshaped. ``witness_reported`` is
-the witness's own confidence or status claim, never used for channel health,
-which is computed here from the response and the transport boundary.
-
-Attempts are append-only: a re-read gets a new ordinal, and consumers take the
-newest contiguous ordinal as current. `--attempt-ordinal N` runs every chair on
-every expected act at that ordinal, byte-identically resumable.
-`--operation reread --act <id> --chair <role>` retries one chair's one act at
-its next ordinal without re-reading ink nobody doubted.
-
-    python pipeline/3_attestatores/run.py --run-root <dir> --run-id <id>
-    python pipeline/3_attestatores/run.py ... --operation reread --act <id> --chair <role>
+Attempts are append-only. A whole pass reads every chair at one ordinal; reread
+advances one chair and act. A witness's self-reported confidence is retained but
+never used for channel health, which comes from the response and transport.
 """
 
 import json
@@ -5450,12 +5441,86 @@ def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
         )
 
 
-def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
-    """Run every configured chair through one attempt, or reread one named chair.
+def _run_full_pass(
+    context, acts, args, index, real, live_chairs, has_prior_boundary, serving_factory
+):
+    if args.act or args.chair:
+        raise ContractError(
+            "--act and --chair name a targeted reread; a whole pass reads every "
+            "configured chair on every expected act and cannot narrow to them"
+        )
+    ordinal = 1 if args.attempt_ordinal is None else args.attempt_ordinal
+    try:
+        # A live fixture run still refuses contradictory fixture declarations.
+        declarations = real_declarations(ordinal) if real else declarations_for(context, ordinal)
+        regions_by_act, attempts_by_pair, sealed_pairs = preflight_appendable_ordinals(
+            context,
+            acts,
+            ordinal,
+            declarations,
+            index,
+            # A live chair cannot reproduce immutable bytes (principle 4).
+            resume_incomplete_pass=bool(live_chairs) or not has_prior_boundary,
+            resolve=pending_live_attempt if live_chairs else None,
+            fixture_declared=not real,
+        )
+    except ContractError as error:
+        if isinstance(error, FatalAccounting):
+            raise
+        print(f"Attestatores refused this pass: {error}", file=sys.stderr)
+        return None
+    page_captures = None
+    if live_chairs:
+        refuse_unread_fixture_declarations(context, live_chairs)
+        recorded, isolated_crop_failure, page_captures = live_attempt_pass(
+            context,
+            acts,
+            ordinal,
+            regions_by_act,
+            attempts_by_pair,
+            sealed_pairs,
+            serving_factory=default_serving_factory if serving_factory is None else serving_factory,
+            tier=args.placement_tier,
+        )
+    else:
+        recorded, isolated_crop_failure = attempt_pass(
+            context,
+            acts,
+            ordinal,
+            regions_by_act,
+            attempts_by_pair,
+            sealed_pairs,
+        )
+    publish_page_testimonia_and_attachments(
+        context,
+        acts=acts,
+        ordinal=ordinal,
+        regions_by_act=regions_by_act,
+        attempts_by_pair=attempts_by_pair,
+        page_captures=page_captures,
+    )
+    return recorded, isolated_crop_failure
 
-    ``serving_factory`` is an in-process test seam like ``registry_factory``, used
-    only when the sealed catalogue says the witnesses are live.
-    """
+
+def _finish_pass(context, acts, recorded, isolated_crop_failure):
+    if recorded == 0:
+        raise ContractError("no chair produced an outcome for any act")
+    # The inventory precedes its tally; the boundary is sealed only afterward.
+    context.finish()
+    tally = attempt_tally(context.tree, context=context, acts=acts, chairs=context.witness_chairs)
+    if tally["hold"]:
+        print(f"Attestatores attempt tally UNKNOWN: {tally['reason']}", file=sys.stderr)
+    context.seal_boundary()
+    context.finish()
+    if tally["hold"]:
+        return EXIT_HELD
+    if isolated_crop_failure:
+        # Every chair has a non-reading record, so later stages show the refusal.
+        print("Attestatores recorded one or more refused proposal crops", file=sys.stderr)
+    return EXIT_COMPLETE
+
+
+def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     parser = stage_parser(DESCRIPTION, accepts_chair=True)
     parser.add_argument(
         "--attempt-ordinal",
@@ -5532,85 +5597,14 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
             )
         recorded = reread_pass(context, acts, args.act, args.chair, index)
     else:
-        if args.act or args.chair:
-            raise ContractError(
-                "--act and --chair name a targeted reread; a whole pass reads every "
-                "configured chair on every expected act and cannot narrow to them"
-            )
-        ordinal = 1 if args.attempt_ordinal is None else args.attempt_ordinal
-        try:
-            # Read even for a live fixture run, to refuse a self-contradicting
-            # fixture; the live resolver then ignores it.
-            declarations = (
-                real_declarations(ordinal) if real else declarations_for(context, ordinal)
-            )
-            regions_by_act, attempts_by_pair, sealed_pairs = preflight_appendable_ordinals(
-                context,
-                acts,
-                ordinal,
-                declarations,
-                index,
-                # A live chair cannot reproduce immutable bytes (principle 4).
-                resume_incomplete_pass=bool(live_chairs) or not has_prior_boundary,
-                resolve=pending_live_attempt if live_chairs else None,
-                fixture_declared=not real,
-            )
-        except ContractError as error:
-            # Held before any write; an accounting imbalance stays fatal.
-            if isinstance(error, FatalAccounting):
-                raise
-            print(f"Attestatores refused this pass: {error}", file=sys.stderr)
-            return EXIT_HELD
-        page_captures = None
-        if live_chairs:
-            refuse_unread_fixture_declarations(context, live_chairs)
-            recorded, isolated_crop_failure, page_captures = live_attempt_pass(
-                context,
-                acts,
-                ordinal,
-                regions_by_act,
-                attempts_by_pair,
-                sealed_pairs,
-                serving_factory=default_serving_factory
-                if serving_factory is None
-                else serving_factory,
-                tier=args.placement_tier,
-            )
-        else:
-            recorded, isolated_crop_failure = attempt_pass(
-                context,
-                acts,
-                ordinal,
-                regions_by_act,
-                attempts_by_pair,
-                sealed_pairs,
-            )
-        publish_page_testimonia_and_attachments(
-            context,
-            acts=acts,
-            ordinal=ordinal,
-            regions_by_act=regions_by_act,
-            attempts_by_pair=attempts_by_pair,
-            page_captures=page_captures,
+        result = _run_full_pass(
+            context, acts, args, index, real, live_chairs, has_prior_boundary, serving_factory
         )
+        if result is None:
+            return EXIT_HELD
+        recorded, isolated_crop_failure = result
 
-    if recorded == 0:
-        raise ContractError("no chair produced an outcome for any act")
-
-    # Write the inventory for the tally, and seal only after it passes.
-    context.finish()
-    tally = attempt_tally(context.tree, context=context, acts=acts, chairs=context.witness_chairs)
-    if tally["hold"]:
-        print(f"Attestatores attempt tally UNKNOWN: {tally['reason']}", file=sys.stderr)
-        context.seal_boundary()
-        context.finish()
-        return EXIT_HELD
-    context.seal_boundary()
-    context.finish()
-    if isolated_crop_failure:
-        # Not a hold: every chair has a non-reading record, and later stages show it.
-        print("Attestatores recorded one or more refused proposal crops", file=sys.stderr)
-    return EXIT_COMPLETE
+    return _finish_pass(context, acts, recorded, isolated_crop_failure)
 
 
 if __name__ == "__main__":
