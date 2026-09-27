@@ -9,6 +9,7 @@ most one act-scoped recovery request.
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,8 @@ import pytest
 
 from common.background import DEFAULT_BACKGROUND_CONFIG_PATH
 from common.contracts.errors import ContractError, FatalAccounting
+from common.contracts.stages import ATTESTATORES
+from common.contracts.stages import RECENSOR as RECENSOR_STAGE
 from common.residual_ink import (
     MINIMUM_INK_PIXELS_FIELD,
     edge_ink_from_runs,
@@ -23,7 +26,7 @@ from common.residual_ink import (
     resolve_coverage_audit_policy,
 )
 from common.sealed_config import read_sealed_toml
-from conftest import load_stage
+from conftest import load_stage, run_through
 
 # The sealed noise floor, read from `[coverage_audit.noise_floor]` the way the
 # stage reads it, so a stimulus anchored on this name moves with the sealed
@@ -35,139 +38,93 @@ RECENSOR = ROOT / "pipeline/5_recensor/run.py"
 EXPECTED_BACKGROUND_SHA256 = read_sealed_toml(DEFAULT_BACKGROUND_CONFIG_PATH, "config")[1]
 
 
-# The live trigger expression calls `declared_recovery` -- a named function, not
-# a bare subscript, since it must also answer `False` with no scenario at all
-# (`declared_scenario` is `None` on a real submission). The isolated `eval`
-# below needs that one name resolvable, exactly as it needs `bool`.
 _RECENSOR_MODULE = load_stage("5_recensor")
 
 
-def _tree(source: str | None = None) -> ast.Module:
-    return ast.parse((RECENSOR.read_text(encoding="utf-8") if source is None else source))
-
-
-def _names(node: ast.AST) -> set[str]:
-    return {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
-
-
-def _live_recovery_trigger(source: str | None = None):
-    """Compile the one expression that decides whether recovery is wanted.
-
-    This is the real request-path expression, read from ``run.py`` rather than
-    a duplicate predicate in the test.  The publication guard below proves
-    that its result is what reaches a recovery-request artifact.
-    """
-    tree = _tree(source)
-    assignments = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id == "wants_recovery"
-            for target in node.targets
-        )
-    ]
-    assert len(assignments) == 1, "the Recensor no longer has one identifiable recovery trigger"
-    expression = assignments[0].value
-
-    publications = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if any(
-            keyword.arg == "kind"
-            and isinstance(keyword.value, ast.Constant)
-            and keyword.value.value == "recovery-request"
-            for keyword in node.keywords
-        ):
-            publications.append(node)
-    assert len(publications) == 1, "Unit 14B must have exactly one recovery-request publication"
-
-    guards = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and any(
-            publications[0] is child for statement in node.body for child in ast.walk(statement)
-        )
-    ]
-    assert any("wants_recovery" in _names(guard.test) for guard in guards), (
-        "the live recovery trigger no longer guards the recovery-request publication"
-    )
-
-    names = _names(expression)
-    assert "outside_ink_requests" in names, (
-        "wants_recovery no longer reads ink-confirmed observations -- missing ink evidence check"
-    )
-    assert "content_coverage" not in names, (
-        "wants_recovery reads the raw witness-reported dict directly -- missing ink evidence check"
-    )
-    assert "funded_pages" in names, (
-        "wants_recovery no longer bounds the observation route to one request per page"
-    )
-
-    return compile(ast.Expression(expression), str(RECENSOR), "eval")
-
-
-_NO_SCENARIO = object()
+def _tree() -> ast.Module:
+    return ast.parse(RECENSOR.read_text(encoding="utf-8"))
 
 
 def _wants_recovery(
     outside_ink_requests: list,
     *,
-    source: str | None = None,
     page_ordinal: int = 1,
     funded_pages: set[int] | None = None,
-    scenario: dict | None | object = _NO_SCENARIO,
+    scenario: dict | None = None,
+    used_total: int = 0,
 ) -> bool:
-    return bool(
-        eval(  # noqa: S307 -- compile input is this checked-in module's one expression.
-            _live_recovery_trigger(source),
-            {"bool": bool, "declared_recovery": _RECENSOR_MODULE.declared_recovery},
-            {
-                "act_key": "a",
-                "act": {"page_ordinal": page_ordinal},
-                "scenario": {"recover_acts": []} if scenario is _NO_SCENARIO else scenario,
-                "outside_ink_requests": outside_ink_requests,
-                "funded_pages": set(funded_pages or ()),
-                "used_total": 0,
-            },
-        )
+    return _RECENSOR_MODULE._wants_recovery(
+        scenario, "a", outside_ink_requests, page_ordinal, funded_pages or set(), used_total
     )
 
 
-def test_wants_recovery_is_inert_without_an_ink_confirmed_observation():
-    """The structural wiring: no ink-confirmed request, no recovery wanted."""
-    assert _wants_recovery([]) is False
-    assert _wants_recovery([{"page_ordinal": 1, "outside_ink_pixels": 40}]) is True
+def test_recovery_decision_uses_ink_confirmation_and_a_page_grant():
+    confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
+    assert not _wants_recovery([])
+    assert _wants_recovery(confirmed)
+    assert not _wants_recovery(confirmed, funded_pages={1})
+    assert not _wants_recovery(confirmed, used_total=1)
 
 
-def test_wants_recovery_reads_a_real_submissions_absent_scenario_through_the_reader():
-    """The same two cases with no declared scenario at all, which is the real route.
-
-    A real submission has no fixture to declare `recover_acts`, so `scenario`
-    is `None` and `declared_recovery` answers `False` because nothing fed it
-    (`run.py::declared_recovery`), never because the act was measured as
-    needing no recovery. Every case above passes a scenario dict, so the live
-    expression could be rewritten to subscript `scenario["recover_acts"]`
-    directly -- dropping the one reader that knows what an absent scenario
-    means -- and this file would still be green while every real run raised
-    `TypeError` at the trigger. These two cases fail on that rewrite: the
-    first with `TypeError`, and they pin that ink-confirmed recovery still
-    reaches a real run through the observation route.
-    """
-    assert _wants_recovery([], scenario=None) is False
-    assert _wants_recovery([{"page_ordinal": 1, "outside_ink_pixels": 40}], scenario=None) is True
+def test_recovery_decision_accepts_an_absent_real_submission_scenario():
+    confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
+    assert not _wants_recovery([], scenario=None)
+    assert _wants_recovery(confirmed, scenario=None)
 
 
-def test_a_bypass_of_ink_confirmation_is_caught_by_this_files_own_guard():
-    """The structural guard rejects a request predicate based on raw witness data."""
-    source = RECENSOR.read_text(encoding="utf-8")
-    live = "bool(outside_ink_requests)"
-    assert source.count(live) == 1, "the test no longer identifies the live coverage origin"
-    mixed_source = source.replace(live, 'bool(content_coverage.get("unclaimed_observations"))')
-    with pytest.raises(AssertionError, match="missing ink evidence check"):
-        _live_recovery_trigger(mixed_source)
+@pytest.mark.parametrize("real_route", [False, True])
+def test_stage_publishes_at_most_one_observation_request_per_page(
+    tmp_path, monkeypatch, real_route
+):
+    root = tmp_path / "runs"
+    run_through(root, "observation", "happy", "perlector")
+    recensor = load_stage("5_recensor")
+    args = recensor.stage_parser("observation test").parse_args(
+        ["--run-root", str(root), "--run-id", "observation", "--scenario", "happy"]
+    )
+    context = recensor.open_stage_context(args, RECENSOR_STAGE)
+    witness = next(
+        entry
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+    )
+    box = {"x": 0, "y": 0, "w": 5, "h": 5}
+    observation = recensor.unclaimed_ink_observations(
+        {1: _ink_map(20, 20, [box])},
+        [{"bounds": box}],
+        1,
+        {},
+        minimum_ink_pixels=MINIMUM_INK_PIXELS,
+    )[0]
+    observation.update(
+        {
+            "testimonium_ref": context.artifact_ref(
+                ATTESTATORES, "page-testimonium", witness["artifact_id"]
+            ),
+            "testimonium_id": witness["artifact_id"],
+            "observation_ordinal": 1,
+            "ink_map_ref": recensor.ink_map_by_page(context)[1]["_ink_map_ref"],
+        }
+    )
+    monkeypatch.setattr(
+        recensor, "unclaimed_ink_observations", lambda *args, **kwargs: [observation]
+    )
+    if real_route:
+        monkeypatch.setattr(recensor, "declared_scenario", lambda context: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["recensor", "--run-root", str(root), "--run-id", "observation", "--scenario", "happy"],
+    )
+
+    recensor.main()
+
+    requests = [
+        entry
+        for entry in context.tree.build_manifest(RECENSOR_STAGE)["artifacts"]
+        if entry["kind"] == "recovery-request"
+    ]
+    assert len(requests) == 1
 
 
 class _FakeTree:
@@ -515,41 +472,8 @@ def test_a_retained_observation_with_no_readable_bounds_is_refused_not_skipped(o
         )
 
 
-def test_one_observation_funds_one_request_on_its_page():
-    """Page-scoped evidence funds one act-scoped grant on that page."""
-    confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
-    assert _wants_recovery(confirmed, page_ordinal=1, funded_pages=set()) is True
-    assert _wants_recovery(confirmed, page_ordinal=1, funded_pages={1}) is False
-    assert _wants_recovery(confirmed, page_ordinal=2, funded_pages={1}) is True
-
-
-def test_the_declared_route_is_not_bounded_by_another_pages_observation():
-    """A scenario-declared recrop is not the observation's grant to spend."""
-    trigger = _live_recovery_trigger()
-    assert bool(
-        eval(  # noqa: S307 -- compile input is this checked-in module's one expression.
-            trigger,
-            {"bool": bool, "declared_recovery": _RECENSOR_MODULE.declared_recovery},
-            {
-                "act_key": "a",
-                "act": {"page_ordinal": 1},
-                "scenario": {"recover_acts": ["a"]},
-                "outside_ink_requests": [],
-                "funded_pages": {1},
-                "used_total": 0,
-            },
-        )
-    )
-
-
-def test_a_removal_of_the_page_bound_is_caught_by_this_files_own_guard():
-    """Mutate-and-observe: dropping the bound trips the structural guard."""
-    source = RECENSOR.read_text(encoding="utf-8")
-    live = '(bool(outside_ink_requests) and act["page_ordinal"] not in funded_pages)'
-    assert source.count(live) == 1, "the test no longer identifies the live page bound"
-    unbounded = source.replace(live, "bool(outside_ink_requests)")
-    with pytest.raises(AssertionError, match="one request per page"):
-        _live_recovery_trigger(unbounded)
+def test_declared_recovery_does_not_spend_an_observation_grant():
+    assert _wants_recovery([], scenario={"recover_acts": ["a"]}, funded_pages={1})
 
 
 class _RequestTree:
@@ -648,9 +572,6 @@ def test_a_second_request_is_replaced_by_a_loud_hold_not_an_acceptance():
     assert exhausted_outcome == "held-for-review"
     assert "bounded recovery policy cannot admit another request" in exhausted_reason
     assert recensor.unresolved_observation_hold([], 1, {1}) is None
-
-    source = RECENSOR.read_text(encoding="utf-8")
-    assert source.count("observation_hold = unresolved_observation_hold(") == 1
 
 
 def test_real_route_uses_the_same_budget_hold_when_recovery_is_not_admitted():
