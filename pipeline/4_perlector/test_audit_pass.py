@@ -2850,7 +2850,7 @@ def test_an_emptied_reproof_is_re_measured_beside_the_text_it_publishes():
     read_the_acts = next(
         node
         for node in ast.walk(module)
-        if isinstance(node, ast.FunctionDef) and node.name == "_read_the_acts"
+        if isinstance(node, ast.FunctionDef) and node.name == "_adopt_reproof_text"
     )
     branches = [
         node
