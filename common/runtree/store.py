@@ -37,7 +37,6 @@ it needs.
 import json
 import os
 import stat
-import sys
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -487,7 +486,7 @@ class RunTree:
         target = self.resolve(relative)
         data = canonical_bytes(checked)
         if target.exists():
-            existing = _existing_partition_receipt(target, relative)
+            existing = _existing_partition_receipt(target)
             if existing is not None and (
                 existing["run_id"] == checked["run_id"]
                 and existing["config_digest"] == checked["config_digest"]
@@ -1362,27 +1361,13 @@ def _run_creation_lock(parent: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def _existing_partition_receipt(target: Path, relative: str) -> dict[str, Any] | None:
-    """The stored partition receipt, or `None` when it is unreadable or invalid.
-
-    The receipt is derived, so damage must not block rebuilding it; but the
-    damage is reported, because the next write erases the only trace of it.
-    `TypeError` and `RecursionError` are how strict canonicalization and a deeply
-    nested file refuse; `_read_json` already translates `OSError` and `ValueError`.
-    """
+def _existing_partition_receipt(target: Path) -> dict[str, Any] | None:
+    """The stored derived receipt, or `None` when it cannot be validated."""
     from common.recensor_receipt import validate_recensor_partition_receipt
 
     try:
         return validate_recensor_partition_receipt(_read_json(target))
-    except (ContractError, TypeError, RecursionError) as error:
-        print(
-            f"warning: the existing Recensor partition receipt at {relative} could "
-            f"not be read as a valid receipt and is being replaced "
-            f"({type(error).__name__}: {error}). This means a previous write did "
-            f"not complete; the receipt is derived and is being rebuilt, but the "
-            f"interruption itself is worth investigating.",
-            file=sys.stderr,
-        )
+    except (ContractError, TypeError, RecursionError):
         return None
 
 
