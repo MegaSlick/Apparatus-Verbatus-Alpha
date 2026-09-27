@@ -12,6 +12,7 @@ from typing import Any
 from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.errors import FatalAccounting
 from common.contracts.stages import (
     ARMARIUM,
     ATTESTATORES,
@@ -189,7 +190,7 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 reading = latest_attempt(
                     perlectios.get(act_id, []), f"canary reading of {act_id}", operation="perlegere"
                 )
-            except Exception:
+            except FatalAccounting:
                 fail(PERLECTOR, "canary-reading-ambiguous")
                 continue
             payload = reading.get("payload", {}) if isinstance(reading, dict) else {}
