@@ -2041,10 +2041,7 @@ def _publish_conservation_and_secondary(
 
 
 def _conservation_reason(measurable: bool, aggregated: bool, component_count: int) -> str | None:
-    """The one sentence a reviewer reads about why this record is not ordinary.
-
-    Unmeasurable, aggregated, or None when the record is ordinary.
-    """
+    """Explain an unmeasured or aggregated conservation record."""
     if not measurable:
         return (
             "this page's background could not be inferred, so it has no threshold to "
@@ -2137,14 +2134,8 @@ def _initial_pass_has_holds(
     secondary_held: bool,
     unmeasured: bool,
 ) -> bool:
-    """One explicit list of the facts that withhold a complete exit."""
-    hold_facts = (
-        any(row["outcome"] == "held" for row in expected),
-        bool(failures),
-        secondary_held,
-        unmeasured,
-    )
-    return any(hold_facts)
+    held = any(row["outcome"] == "held" for row in expected)
+    return any((held, bool(failures), secondary_held, unmeasured))
 
 
 def _account_for_declared_act(
@@ -3104,11 +3095,8 @@ def _declared_recovery(context, act_key: str) -> tuple[dict, list[dict]]:
     return act, recovery
 
 
-def recovery_pass(context, act_id: str, request_id: str) -> None:
-    """Cut one replacement region for one act, at the Recensor's request.
-
-    The Recensor asks; only the Designator cuts, so crops keep one author.
-    """
+def _validated_recrop_request(context, act_id: str, request_id: str):
+    """Require a current Recensor recrop for a proposed act."""
     # The shared consumer verifies the seal and every minted premise first.
     match = [item for item in expected_acts(context) if item["act_id"] == act_id]
     if not match:
@@ -3150,6 +3138,18 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             f"only answers {FALLBACK_RECROP!r} requests (a recrop). A different recovery "
             "kind names a different owning stage, not a substitute crop"
         )
+
+    return match, request, request_payload, ordinal
+
+
+def recovery_pass(context, act_id: str, request_id: str) -> None:
+    """Cut one replacement region for one act, at the Recensor's request.
+
+    The Recensor asks; only the Designator cuts, so crops keep one author.
+    """
+    match, request, request_payload, ordinal = _validated_recrop_request(
+        context, act_id, request_id
+    )
 
     real_input = parse_ingress_record(context.run.get("ingress")) == REAL_INGRESS
     # Real ingress has no fixture: its recrop geometry comes from the request.
