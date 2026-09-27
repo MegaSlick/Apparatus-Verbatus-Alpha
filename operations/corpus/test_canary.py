@@ -240,6 +240,22 @@ def test_build_copies_only_selected_synthetic_reference_pages(tmp_path):
     )
     with pytest.raises(ValueError, match="under private"):
         canary.build(source, [sha], canary.Path(__file__).resolve().parents[2] / "tracked-canary")
+    command_output = tmp_path / "command-canary"
+    assert (
+        canary.main(
+            [
+                "build",
+                "--source-dir",
+                str(source),
+                "--page-sha",
+                sha,
+                "--output-root",
+                str(command_output),
+            ]
+        )
+        == 0
+    )
+    assert (command_output / "submission-manifest.json").exists()
 
 
 def test_build_derives_references_from_a_synthetic_recordgold_set(tmp_path):

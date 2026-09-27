@@ -69,7 +69,7 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
 
     def fail(stage: str, rule: str) -> None:
         for chair in CHAIRS if stage == ATTESTATORES else (stage,):
-            if not any(row["stage"] == chair for row in dead):
+            if not any(row["stage"] == chair and row["rule"] == rule for row in dead):
                 dead.append({"stage": chair, "rule": rule})
 
     run = tree.read_run()

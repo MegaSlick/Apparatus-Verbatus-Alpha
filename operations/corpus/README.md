@@ -122,9 +122,9 @@ built.
 
 ## `private/` and the fetch protocol
 
-Everything this package writes lives under `private/corpora/recordgold/`, which
-`.gitignore` already excludes and `config/data_handling_policy.json` already names
-as an approved storage root — the same root the Door's own admission loop checks.
+The RecordGold fetch tools write under `private/corpora/recordgold/`, which
+`.gitignore` excludes and `config/data_handling_policy.json` names as an approved
+storage root. The canary builder writes under `private/canary/` by default.
 Nothing here is tracked; nothing here needs to be.
 
 ```text

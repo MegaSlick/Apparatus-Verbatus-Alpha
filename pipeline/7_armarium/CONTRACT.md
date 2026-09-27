@@ -103,6 +103,9 @@ ZIP projection, its page census, source manifest, act list, and aggregate count
 contain only real pages and acts. An act spanning canary and real pages refuses
 export rather than dropping the real side. A run without a sealed canary ledger
 has no `canary` block and retains the prior byte-identical export shape.
+Membership uses the Designator proposal seal's primary page ordinal together
+with every verified region page. A conservation hold with no crop still belongs
+to its sealed page, so it cannot leak into the real export or aggregate.
 
 The export payload contains the aggregate result, the expected-act count, `delivered`
 entries, `non_delivered` entries (every act that was not delivered, including
