@@ -70,6 +70,7 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         triage_clusters=None,
         triage_producer_recipe=None,
         cache_root=None,
+        store_root=None,
     )
     fields.update(overrides)
     return fields

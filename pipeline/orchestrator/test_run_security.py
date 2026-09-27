@@ -59,6 +59,7 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         triage_clusters=None,
         triage_producer_recipe=None,
         cache_root=None,
+        store_root=None,
         mechanics_qualification=False,
     )
 

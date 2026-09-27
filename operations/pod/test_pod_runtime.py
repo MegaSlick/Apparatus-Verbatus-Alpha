@@ -4673,7 +4673,7 @@ def test_launch_refuses_bootstrap_evidence_colliding_with_run_report_files(
         ]
     )
 
-    with pytest.raises(ValueError, match="collides with the run report"):
+    with pytest.raises(ValueError, match="collides with (the run report|a nested report path)"):
         replace(
             request(clock),
             docker_start_cmd=tuple(command),
