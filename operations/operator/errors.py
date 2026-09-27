@@ -352,7 +352,7 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ),
     ErrorCode.CLEAR_LEFTOVERS_STOPPED: ErrorCopy(
         "Clearing leftovers stopped part-way: part of the named folder could not be read or changed.",
-        "Anything listed above as removed may already be gone; nothing else was touched, and nothing was started or billed.",
+        "Anything listed above as removed may already be gone, and a folder being removed may remain renamed and partly emptied as `.<name>.clearing-<id>`; the next run leaves that alone for an hour, then removes it. Nothing else was touched, and nothing was started or billed.",
         "Fix the folder named in the saved detail, then run `verbatus clear-leftovers` again; it only lists unless you add --apply.",
     ),
     ErrorCode.FETCH_RUN_FAILED: ErrorCopy(

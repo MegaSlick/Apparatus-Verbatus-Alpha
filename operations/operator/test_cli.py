@@ -166,3 +166,30 @@ def test_clear_leftovers_stops_at_a_folder_it_cannot_read(tmp_path, capsys):
     printed = capsys.readouterr().out
     assert "0 leftover(s)" not in printed
     assert "may already be gone" in printed and str(tmp_path / "run") in printed
+
+
+def test_clear_leftovers_finishes_an_interrupted_clear(tmp_path, capsys, later):
+    interrupted = tmp_path / ".delivery.publishing-abcdefgh.clearing-0123abcd"
+    (interrupted / "half").mkdir(parents=True)
+
+    assert _clear(tmp_path, tmp_path, "--apply") == 0
+    assert not interrupted.exists()
+    assert not list(tmp_path.glob(".delivery.publishing-*"))
+
+
+def test_clear_leftovers_skips_a_name_that_vanishes_before_the_rename(
+    tmp_path, capsys, later, monkeypatch
+):
+    staging = tmp_path / ".delivery.publishing-abcdefgh"
+    staging.mkdir()
+    real_rename = os.rename
+
+    def rename(source, target, **descriptors):
+        staging.rmdir()
+        return real_rename(source, target, **descriptors)
+
+    monkeypatch.setattr(cli.os, "rename", rename)
+    assert _clear(tmp_path, tmp_path, "--apply") == 0
+    printed = capsys.readouterr().out
+    assert f"Skipped, changed during the check: {staging}" in printed
+    assert "0 leftover(s)" in printed

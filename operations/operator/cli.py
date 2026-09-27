@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import dataclasses
 import json
 import os
@@ -980,7 +979,8 @@ def _clear_one(name: str, descriptor: int, path: Path, *, folder: bool, apply: b
         return False
     if apply and folder:
         # A racing publish's os.replace of the old name now fails instead of losing its files.
-        quarantine = f"{name.partition('.clearing-')[0]}.clearing-{secrets.token_hex(4)}"
+        base = re.sub(r"\.clearing-[0-9a-f]{8}$", "", name)
+        quarantine = f"{base}.clearing-{secrets.token_hex(4)}"
         os.rename(name, quarantine, src_dir_fd=descriptor, dst_dir_fd=descriptor)
         shutil.rmtree(quarantine, dir_fd=descriptor)
     elif apply:
@@ -1006,8 +1006,10 @@ def _clear_leftovers(root: Path, *, apply: bool) -> None:
             candidates += [(name, False) for name in files if _TEMPORARY.fullmatch(name)]
             for name, folder in candidates:
                 path = Path(root, directory, name)
-                with contextlib.suppress(FileNotFoundError):
+                try:
                     found += _clear_one(name, descriptor, path, folder=folder, apply=apply)
+                except FileNotFoundError:
+                    _print(f"Skipped, changed during the check: {path}")
     except OSError as error:
         raise OperatorError(ErrorCode.CLEAR_LEFTOVERS_STOPPED, detail=f"{root}: {error}") from error
     finally:
