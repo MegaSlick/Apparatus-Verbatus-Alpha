@@ -286,6 +286,9 @@ refusal in ``bootstrap.sync_uv_environment`` is the half that does measure: it
 reads the free space actually present before the download starts.
 """
 
+BIG_CARD_CONTAINER_DISK_GB = 120
+"""Perlector pods: the 52 GiB 27B cache plus the ~32 GiB venv and uv cache."""
+
 
 @dataclass(frozen=True, slots=True)
 class PodCreateRequest:
