@@ -15,6 +15,7 @@ import math
 import subprocess
 from decimal import Decimal
 from pathlib import Path
+from string import ascii_letters, digits
 
 import pytest
 from PIL import Image
@@ -40,8 +41,10 @@ def test_a_fresh_witness_is_one_the_smoke_callable_accepts_and_two_draws_differ(
     assert 32 <= len(first) <= 128
     assert len(first) == _PAGE_WITNESS_LENGTH
     assert set(first) <= set(_PAGE_WITNESS_ALPHABET)
-    assert not set(first) & set("Il10Oo-_")
-    assert len(first) * math.log2(len(_PAGE_WITNESS_ALPHABET)) >= 256
+    assert set(_PAGE_WITNESS_ALPHABET) == set(ascii_letters + digits) - set("IlL10OoQD")
+    assert not set(first) & set("IlL10OoQD")
+    assert all(first[index] != first[index + 1] for index in range(len(first) - 1))
+    assert len(first) * math.log2(len(_PAGE_WITNESS_ALPHABET)) >= 200
 
 
 def test_the_rendered_golden_page_is_a_decodable_png_under_the_smallest_tier_cap(
@@ -128,12 +131,10 @@ def test_rendering_refuses_a_witness_the_smoke_would_refuse(tmp_path: Path) -> N
 def test_the_witness_line_fits_inside_the_page_bounds_for_the_worst_case_width(
     tmp_path: Path,
 ) -> None:
-    # `W` is one of the widest glyphs in the golden-page font; a witness built
-    # entirely of it is close to the widest line the CSPRNG could ever draw
-    # (57 characters, preserving at least 256 bits over the production
-    # alphabet). At the fixed 40pt this line overruns the page and PIL clips it
-    # silently at the canvas edge; render_golden_page must shrink the font (or
-    # refuse) rather than let that happen.
+    # `W` is one of the widest glyphs in the golden-page font. At the fixed
+    # 40pt this line can overrun the page and PIL clips it silently at the
+    # canvas edge; render_golden_page must shrink the font (or refuse) rather
+    # than let that happen.
     worst_case_witness = "W" * _PAGE_WITNESS_LENGTH
     page = tmp_path / "worst-case.png"
 
