@@ -65,7 +65,8 @@ from common.chandra_native_retry import (
 from common.chandra_native_retry import (
     validate_trace as validate_chandra_trace,
 )
-from common.contracts.canonical import digest_bytes, is_sha256  # noqa: E402
+from common.contracts.canonical import is_sha256  # noqa: E402
+from common.contracts.envelope import read_verified  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.outcomes import page_attachment_basis  # noqa: E402
@@ -1263,16 +1264,8 @@ def validate_retained_response_blob(
     call-record blob, and both are re-hashed.
     """
     checked = validate_stage_blob_ref(reference, field)
-    try:
-        data = tree.read_bytes(checked["relative_path"])
-    except OSError as error:
-        raise SchemaRefusal(
-            f"retained witness {field} {checked['relative_path']} could not be read: {error}"
-        ) from error
-    if digest_bytes(data) != checked["sha256"]:
-        raise SchemaRefusal(
-            f"retained witness {field} {checked['relative_path']} differs from its digest"
-        )
+    what = f"retained witness {field}"
+    read_verified(tree.read_bytes, checked, what)
 
 
 def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
@@ -1970,19 +1963,11 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
     parsed_into_a_payload = _retains_chandra_observation_payload(record)
     if raw_response_ref is not None:
         validate_raw_response_ref(raw_response_ref)
-        try:
-            observation_payload = tree.read_bytes(raw_response_ref["relative_path"])
-        except OSError as error:
-            raise SchemaRefusal(
-                "a resumed Testimonium's retained raw response could not be read: "
-                f"{raw_response_ref['relative_path']}: {error}"
-            ) from error
-        observed = digest_bytes(observation_payload)
-        if observed != raw_response_ref["sha256"]:
-            raise SchemaRefusal(
-                "a resumed Testimonium's retained raw response digest differs from its "
-                f"reference: expected {raw_response_ref['sha256']}, read {observed}"
-            )
+        observation_payload = read_verified(
+            tree.read_bytes,
+            raw_response_ref,
+            "a resumed Testimonium's retained raw response",
+        )
         # Always digest-checked; only its use as geometry depends on the branch.
         if served_by_a_chair and not parsed_into_a_payload:
             observation_payload = None
@@ -3878,17 +3863,11 @@ def _page_capture_from_record(
         # re-read and digest-checked because the page geometry is re-derived
         # from them on republish.
         reference = validate_raw_response_ref(capture["raw_response_ref"])
-        try:
-            observation_payload = context.tree.read_bytes(reference["relative_path"])
-        except OSError as error:
-            raise SchemaRefusal(
-                f"{what} names a retained raw response that could not be read: "
-                f"{reference['relative_path']}: {error}"
-            ) from error
-        if digest_bytes(observation_payload) != reference["sha256"]:
-            raise SchemaRefusal(
-                f"{what} names a retained raw response whose digest differs from its reference"
-            )
+        observation_payload = read_verified(
+            context.tree.read_bytes,
+            reference,
+            f"{what}'s retained raw response",
+        )
     return (
         Attempt(
             outcome=record["outcome"],
@@ -4365,11 +4344,11 @@ def _attempt_from_evidence_record(context, value: Any) -> Attempt:
     if capture is not None:
         validate_native_capture(capture)
         reference = validate_raw_response_ref(capture["raw_response_ref"])
-        observation_payload = context.tree.read_bytes(reference["relative_path"])
-        if digest_bytes(observation_payload) != reference["sha256"]:
-            raise SchemaRefusal(
-                "a Chandra native terminal artifact's model output differs from its digest"
-            )
+        observation_payload = read_verified(
+            context.tree.read_bytes,
+            reference,
+            "a Chandra native terminal artifact's model output",
+        )
     return Attempt(**value, observation_payload=observation_payload)
 
 
@@ -4491,9 +4470,13 @@ def _validate_chandra_intent(
         raise SchemaRefusal("a Chandra native attempt intent has invalid image digests")
     _chandra_ref(payload["receipt_ref"], "receipt reference")
     body_ref = validate_stage_blob_ref(payload["request_body_ref"], "request_body_ref")
-    body = context.tree.read_bytes(body_ref["relative_path"])
-    if digest_bytes(body) != body_ref["sha256"] or body_ref["sha256"] != payload["request_sha256"]:
+    if body_ref["sha256"] != payload["request_sha256"]:
         raise SchemaRefusal("a Chandra native attempt intent's retained request body moved")
+    read_verified(
+        context.tree.read_bytes,
+        body_ref,
+        "a Chandra native attempt intent's retained request body",
+    )
     expected_inputs = _named_once(
         [
             {
@@ -4727,9 +4710,11 @@ def _validate_chandra_terminal(
                 "a successful Chandra native terminal retains no final model-output bytes"
             )
         model_output_ref = validate_raw_response_ref(resolved.raw_response_ref)
-        model_output = context.tree.read_bytes(model_output_ref["relative_path"])
-        if digest_bytes(model_output) != model_output_ref["sha256"]:
-            raise SchemaRefusal("a Chandra native terminal's final model output moved")
+        model_output = read_verified(
+            context.tree.read_bytes,
+            model_output_ref,
+            "a Chandra native terminal's final model output",
+        )
         try:
             raw = model_output.decode("utf-8")
         except UnicodeDecodeError as error:

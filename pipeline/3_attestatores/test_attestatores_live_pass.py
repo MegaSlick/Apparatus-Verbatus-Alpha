@@ -2695,7 +2695,7 @@ def test_an_unparsed_resumed_record_still_reads_and_digest_checks_its_retained_b
         },
     }
 
-    with pytest.raises(SchemaRefusal, match="retained raw response digest differs"):
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         attestatores._attempt_from_retained_testimonium(context.tree, record)
 
 
