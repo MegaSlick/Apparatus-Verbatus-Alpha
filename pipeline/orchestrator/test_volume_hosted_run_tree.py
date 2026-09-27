@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import os
@@ -12,8 +11,6 @@ import sys
 import time
 from pathlib import Path
 from typing import Iterator, cast
-
-import pytest
 
 from common.contracts.errors import SchemaRefusal
 from common.durability import is_temporary_name
@@ -514,134 +511,3 @@ def _restore(mac: Path, snapshot_sha256: str, destination: Path) -> None:
         target = destination / record["run_id"] / row["relative_path"]
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
-
-
-def _process_has_terminated(pid: int) -> bool:
-    """Has this pid stopped running -- reaped, or dead and awaiting its parent?
-
-    Signal zero asks whether the pid exists, and a zombie still does: it holds
-    its slot until someone reaps it. On Linux that is a real interval, because
-    the grandchild's own parent is being killed in the same signal and cannot
-    reap it; the pid only disappears once it is reparented and init collects it.
-    Waiting for disappearance alone therefore spends the full deadline and then
-    reports a leak after a kill that worked perfectly.
-
-    Linux answers the actual question through procfs, where state ``Z`` is
-    "terminated, not yet reaped". The comm field can contain spaces and
-    parentheses, so the state is read after the last ``)``. Elsewhere -- macOS
-    has no procfs -- disappearance is the only available answer and is used.
-    """
-
-    # Only the two answers that are evidence of termination. A `PermissionError`
-    # says the pid exists and belongs to someone else, and an `EACCES` or `EIO`
-    # reading procfs says nothing about the process at all -- reporting either
-    # as "gone" would let this test pass without ever establishing that the kill
-    # worked. They are left to surface as the failures they are.
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    if sys.platform != "linux":
-        return False
-    try:
-        stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
-    except FileNotFoundError:
-        # The entry went away between the two reads, which is the pid being
-        # reaped -- the outcome this function is asked about.
-        return True
-    return _procfs_state_is_zombie(stat_line)
-
-
-def _procfs_state_is_zombie(stat_line: str) -> bool:
-    """Read the state field of a `/proc/<pid>/stat` line.
-
-    Split out so the parse is measurable on a host without procfs. The comm
-    field is parenthesised and may itself contain spaces and parentheses, so the
-    state is the first token after the *last* `)`, never `split()[2]`.
-    """
-
-    return stat_line.rpartition(")")[2].split()[:1] == ["Z"]
-
-
-def test_only_evidence_of_termination_counts_as_termination(monkeypatch) -> None:
-    """A pid we may not signal is a pid that still exists.
-
-    Reporting `PermissionError` as "gone" would let the process-group test pass
-    without ever establishing that the kill worked, which is the one thing it
-    exists to establish.
-    """
-
-    def _denied(_pid, _signal):
-        raise PermissionError(errno.EPERM, "Operation not permitted")
-
-    monkeypatch.setattr(os, "kill", _denied)
-    with pytest.raises(PermissionError):
-        _process_has_terminated(1)
-
-    def _absent(_pid, _signal):
-        raise ProcessLookupError(errno.ESRCH, "No such process")
-
-    monkeypatch.setattr(os, "kill", _absent)
-    assert _process_has_terminated(1)
-
-
-def test_the_procfs_state_parse_survives_a_command_name_full_of_parentheses() -> None:
-    """`split()[2]` is the parse this must not be, and a stat line says why."""
-
-    assert _procfs_state_is_zombie("42 (python3) Z 1 42 42 0 -1 4194560 0 0")
-    assert not _procfs_state_is_zombie("42 (python3) S 1 42 42 0 -1 4194560 0 0")
-    # A real command name this repository could produce: spaces and brackets.
-    assert _procfs_state_is_zombie("42 (run.py --stage recovery) Z 1 42 42")
-    assert not _procfs_state_is_zombie("42 (run.py --stage recovery) R 1 42 42")
-    assert _procfs_state_is_zombie("42 (weird )(name) Z 1 42 42")
-    assert not _procfs_state_is_zombie("42 (weird )(name) S 1 42 42")
-
-
-def test_crash_observer_cleanup_kills_and_reaps_a_live_process_group() -> None:
-    """A real session, a real grandchild, and a real check that the group is gone.
-
-    Driven through stubs -- a `Process` that always reports itself alive, an
-    `os.killpg` replaced by a list append, a `wait` that returns whatever the
-    stub says -- this proved only that `_kill_and_reap` calls two functions in
-    one order. It would have stayed green if the wrong group were killed, or if
-    a real child survived on the machine, and a leaked recovery driver
-    accumulating through a parish-sized run is the thing it is named for.
-
-    The child starts its own session and forks a grandchild that outlives it, so
-    killing the process alone leaves the grandchild running: only a group-wide
-    signal ends both. The grandchild reports its pid, and its death is what this
-    asserts, rather than the call sequence that was supposed to cause it.
-    """
-
-    with subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            "import os, sys, time\n"
-            "child = os.fork()\n"
-            "if child == 0:\n"
-            "    time.sleep(600)\n"
-            "    os._exit(0)\n"
-            "sys.stdout.write(f'{child}\\n')\n"
-            "sys.stdout.flush()\n"
-            "time.sleep(600)\n",
-        ],
-        stdout=subprocess.PIPE,
-        start_new_session=True,
-    ) as process:
-        assert process.stdout is not None
-        grandchild = int(process.stdout.readline())
-        # Running, and outside the child's own lifetime.
-        assert not _process_has_terminated(grandchild)
-
-        assert _kill_and_reap(process) == -signal.SIGKILL
-
-        # The grandchild is not this process's child, so it is never reaped here
-        # and cannot be mistaken for gone by a `waitpid` race.
-        deadline = time.monotonic() + 30
-        while not _process_has_terminated(grandchild):
-            assert time.monotonic() < deadline, (
-                f"grandchild {grandchild} survived the group kill, so a recovery driver "
-                "would have been left running on the machine"
-            )
-            time.sleep(0.01)

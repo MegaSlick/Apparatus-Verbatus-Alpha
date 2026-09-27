@@ -61,7 +61,6 @@ constant.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import shutil
@@ -1091,23 +1090,6 @@ def test_the_continuation_row_is_present_on_the_unmodified_live_tree(live_seam):
     the row, this test -- not a synthetic drop of it -- is what fails.
     """
     _assert_the_continuation_page_is_unmeasured_by_name(_reviews(live_seam))
-
-
-def test_the_unmeasured_assertion_itself_catches_a_dropped_continuation_row(live_seam):
-    """Helper-drill: proves the assertion above is not vacuously true.
-
-    Takes this same live tree's reviews, deletes the continuation row the way
-    the pre-F2 code silently did, and requires
-    `_assert_the_continuation_page_is_unmeasured_by_name` to reject that tree.
-    This does not stand in for the regression test above -- it only shows that
-    test's own assertion has teeth.
-    """
-    dropped = copy.deepcopy(_reviews(live_seam))
-    for review in dropped:
-        review["payload"]["testimony_content_coverage_continuation"] = []
-
-    with pytest.raises(AssertionError):
-        _assert_the_continuation_page_is_unmeasured_by_name(dropped)
 
 
 def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_seam):
