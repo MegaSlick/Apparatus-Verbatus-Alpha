@@ -58,9 +58,9 @@ from common.contracts.canonical import (
 )
 from common.contracts.envelope import (
     digest_ref,
+    read_verified,
     validate_envelope,
     validate_input_refs,
-    verify_input_bytes,
 )
 from common.contracts.errors import (
     ApprovalRefusal,
@@ -309,7 +309,7 @@ class RunTree:
             tree._bind_root_identity()
             if run_file.exists():
                 _verify_compatible_reuse(tree, run_id, authority)
-                _verify_register_snapshot_present(tree, snapshot_digest, snapshot)
+                _verify_register_snapshot_present(tree, snapshot_digest)
                 return tree
             tree.put_blob(DOOR, snapshot)
             try:
@@ -318,7 +318,7 @@ class RunTree:
                 # A writer ignoring the advisory lock won the race; its authority
                 # must pass the same reuse check.
                 _verify_compatible_reuse(tree, run_id, authority)
-                _verify_register_snapshot_present(tree, snapshot_digest, snapshot)
+                _verify_register_snapshot_present(tree, snapshot_digest)
         return tree
 
     def read_run(self) -> dict[str, Any]:
@@ -411,7 +411,8 @@ class RunTree:
             # A symlink loop (RuntimeError, or OSError) or an unrepresentable path
             # (ValueError) is a path the tree cannot resolve, not a crash.
             raise SchemaRefusal(
-                f"{relative_path!r} could not be resolved inside the run tree: {error}"
+                f"{relative_path!r} could not be resolved inside the run tree: "
+                f"{type(error).__name__}"
             ) from error
         # Not a string prefix, which would accept the sibling `.../r1-scratch`.
         if not resolved.is_relative_to(self.root):
@@ -591,16 +592,8 @@ class RunTree:
                 f"{reference_label} reference {relative_path!r} is not its content-addressed "
                 f"path {expected_path!r}"
             )
-        try:
-            data = self.read_bytes(relative_path)
-        except OSError as error:
-            raise refusal(f"{label} {relative_path} could not be read: {error}") from error
-        actual = digest_bytes(data)
-        if actual != sha256:
-            raise refusal(
-                f"{label} {relative_path} has digest {actual}, not the reference digest {sha256}"
-            )
-        return data
+        ref = {"relative_path": relative_path, "sha256": sha256}
+        return read_verified(self.read_bytes, ref, label, refusal)
 
     def _publish_bytes(self, relative: str, data: bytes) -> PublishResult:
         target = self.resolve(relative)
@@ -679,13 +672,7 @@ class RunTree:
         """
         validate_input_refs([reference])
         relative_path = reference["relative_path"]
-        try:
-            data = self.read_bytes(relative_path)
-        except OSError as error:
-            raise SchemaRefusal(
-                f"referenced artifact {relative_path!r} could not be read: {error}"
-            ) from error
-        verify_input_bytes(reference, data)
+        data = read_verified(self.read_bytes, reference, "referenced artifact")
         try:
             record = validate_envelope(json.loads(data.decode("utf-8")))
         except (UnicodeDecodeError, ValueError) as error:
@@ -1250,13 +1237,7 @@ class RunTree:
         checks it against the bytes again.
         """
         for reference in record["inputs"]:
-            try:
-                data = self.read_bytes(reference["relative_path"])
-            except OSError as error:
-                raise SchemaRefusal(
-                    f"artifact input {reference['relative_path']!r} could not be read: {error}"
-                ) from error
-            verify_input_bytes(reference, data)
+            read_verified(self.read_bytes, reference, "artifact input")
 
     def write_manifest(self, stage: str) -> PublishResult:
         """Publish the derived manifest.
@@ -1437,20 +1418,10 @@ def _verify_compatible_reuse(tree: RunTree, run_id: str, authority: dict[str, An
         ) from None
 
 
-def _verify_register_snapshot_present(tree: RunTree, digest: str, expected: bytes) -> None:
-    relative = tree.blob_path(DOOR, digest)
-    try:
-        observed = tree.read_bytes(relative)
-    except OSError as error:
-        raise IncompatibleReuse(
-            "run.json seals a corpus-register snapshot that is missing or unreadable; an "
-            "existing run's immutable evidence is refused rather than silently reconstructed"
-        ) from error
-    if observed != expected:
-        raise IncompatibleReuse(
-            "run.json seals corpus-register snapshot bytes that no longer match the accepted "
-            "reuse input"
-        )
+def _verify_register_snapshot_present(tree: RunTree, digest: str) -> None:
+    what = "run.json's sealed corpus-register snapshot"
+    ref = {"relative_path": tree.blob_path(DOOR, digest), "sha256": digest}
+    read_verified(tree.read_bytes, ref, what, IncompatibleReuse)
 
 
 def _atomic_write(target: Path, data: bytes) -> None:
@@ -1512,11 +1483,13 @@ def _read_bytes_bounded(path: Path, *, max_bytes: int | None = None) -> bytes:
         size = os.fstat(handle.fileno()).st_size
         if size > max_bytes:
             raise SchemaRefusal(
-                f"{path} is {size} bytes, above the {max_bytes}-byte tree read limit"
+                f"{path.name} is {size} bytes, above the {max_bytes}-byte tree read limit"
             )
         data = handle.read(max_bytes + 1)
     if len(data) > max_bytes:
-        raise SchemaRefusal(f"{path} grew above the {max_bytes}-byte tree read limit while read")
+        raise SchemaRefusal(
+            f"{path.name} grew above the {max_bytes}-byte tree read limit while read"
+        )
     return data
 
 

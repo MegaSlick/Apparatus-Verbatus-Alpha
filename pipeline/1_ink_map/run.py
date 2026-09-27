@@ -29,10 +29,9 @@ from common.background import (  # noqa: E402
 )
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import parse_ingress_record  # noqa: E402
-from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.stages import EXEMPLAR, INK_MAP  # noqa: E402
-from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
+from common.exemplar_boundary import sealed_page_bytes, verify_sealed_page_pixels  # noqa: E402
 from common.imaging import grayscale_rows  # noqa: E402
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
@@ -105,11 +104,7 @@ def sealed_pages(context):
 
 
 def measured_page_bytes(tree, ordinal: int, page: dict) -> bytes:
-    """The page pixels this stage measures, digested as the bytes it measures.
-
-    `verify_sealed_page_pixels` proves a separate read of the sealed blob. This
-    read must therefore verify its own digest or the measurement would describe
-    unchecked pixels (principle 8).
+    """The page pixels this stage measures, digested as the bytes it measures (principle 8).
 
     Read one page at a time rather than accumulated with the census, because
     this stage measures EVERY sealed page of a shard and a shard runs to 1,000
@@ -117,14 +112,9 @@ def measured_page_bytes(tree, ordinal: int, page: dict) -> bytes:
     made peak memory the size of the shard's pixels; the Recensor reads inside
     its own loop for the same reason.
     """
-    payload = page["payload"]
-    image_bytes = tree.read_bytes(payload["image_path"])
-    if digest_bytes(image_bytes) != payload.get("source_sha256"):
-        raise FatalAccounting(
-            f"the sealed Exemplar page {ordinal} the ink map read does not match the "
-            "pixel digest its own page record verified"
-        )
-    return image_bytes
+    return sealed_page_bytes(
+        tree, page, what=f"the ink map (page {ordinal})", refusal=FatalAccounting
+    )
 
 
 def artifact_finding(finding: dict) -> dict:

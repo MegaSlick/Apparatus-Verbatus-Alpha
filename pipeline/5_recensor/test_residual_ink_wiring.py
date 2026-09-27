@@ -253,7 +253,7 @@ def test_the_residual_ink_check_refuses_page_bytes_it_did_not_verify(tmp_path):
 
     context = _FakeContext(real)
     context.tree = RacingTree(real)
-    with pytest.raises(FatalAccounting, match="does not match the pixel digest"):
+    with pytest.raises(FatalAccounting, match="changed under a sealed reference"):
         RUN.page_coverage_findings(context)
 
 

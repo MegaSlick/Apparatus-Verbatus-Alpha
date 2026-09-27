@@ -42,7 +42,7 @@ from common.contracts.canonical import (
     is_plain_int,
     verify_self_hash,
 )
-from common.contracts.envelope import build_envelope, digest_ref, verify_input_bytes
+from common.contracts.envelope import build_envelope, digest_ref, read_verified
 from common.contracts.errors import (
     ContractError,
     FatalAccounting,
@@ -92,7 +92,7 @@ from common.decoding import (
     structure_recovery_policy,
 )
 from common.durability import is_temporary_name
-from common.exemplar_boundary import verify_sealed_page_pixels
+from common.exemplar_boundary import read_sealed_page, verify_sealed_page_pixels
 from common.hard_failure import (
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
     load_hard_failure_policy,
@@ -664,18 +664,7 @@ class StageContext:
                 f"serving launch audit reference {reference['relative_path']!r} is not its "
                 f"content-addressed path {expected_path!r}"
             )
-        try:
-            payload = self.tree.read_bytes(reference["relative_path"])
-        except OSError as error:
-            raise SchemaRefusal(
-                f"serving launch audit {reference['relative_path']} could not be read: {error}"
-            ) from error
-        actual_digest = digest_bytes(payload)
-        if actual_digest != reference["sha256"]:
-            raise SchemaRefusal(
-                f"serving launch audit {reference['relative_path']} has digest {actual_digest}, "
-                f"not the reference digest {reference['sha256']}"
-            )
+        payload = read_verified(self.tree.read_bytes, reference, "serving launch audit")
         try:
             audit = json.loads(payload.decode("utf-8"))
             canonical = canonical_bytes(audit)
@@ -2592,17 +2581,12 @@ def _verify_structure_request_image(
             f"structure attempt for page {page_id} does not retain its native request image "
             "at its Designator content address"
         )
-    try:
-        presented_bytes = context.tree.read_bytes(presented["image_path"])
-    except OSError as error:
-        raise ContractError(
-            f"structure attempt for page {page_id} cannot read its presented image: {error}"
-        ) from error
-    if digest_bytes(presented_bytes) != presented["image_sha256"]:
-        raise ContractError(
-            f"structure attempt for page {page_id} presented-image bytes changed under their "
-            "retained digest"
-        )
+    read_verified(
+        context.tree.read_bytes,
+        {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]},
+        f"structure attempt for page {page_id} presented image",
+        ContractError,
+    )
     resize = presented["transform"]["resize"]
     if not _capacity_is_one_image(payload, resize["target_width_px"], resize["target_height_px"]):
         raise ContractError(
@@ -2630,25 +2614,13 @@ def _structure_source_page(
     page_id: str,
 ) -> tuple[dict[str, str], bytes, tuple[int, int]]:
     """Read and bind the unchanged Exemplar page behind one structure attempt."""
-    page = context.tree.read_artifact(
-        EXEMPLAR,
-        "page",
-        artifact_id(EXEMPLAR, "page", page_id),
+    page, page_bytes = read_sealed_page(
+        context.tree, page_id, what=f"structure attempt for page {page_id}"
     )
-    page_payload = page.get("payload")
-    if not isinstance(page_payload, Mapping):
-        raise ContractError(f"structure attempt for page {page_id} has no sealed source page")
     source_ref = {
-        "relative_path": page_payload.get("image_path"),
-        "sha256": page_payload.get("source_sha256"),
+        "relative_path": page["payload"]["image_path"],
+        "sha256": page["payload"]["source_sha256"],
     }
-    try:
-        page_bytes = context.tree.read_bytes(source_ref["relative_path"])
-    except (OSError, TypeError) as error:
-        raise ContractError(
-            f"structure attempt for page {page_id} cannot read its sealed source page: {error}"
-        ) from error
-    verify_input_bytes(source_ref, page_bytes)
     page_size = dimensions(page_bytes)
     if page_size != (payload.get("page_w"), payload.get("page_h")):
         raise ContractError(
@@ -2707,13 +2679,11 @@ def verify_structure_attempt_call(
             )
         return
     call_reference = _serving_evidence_reference(reference, "structure attempt call record")
-    try:
-        raw = context.tree.read_bytes(call_reference["relative_path"])
-    except OSError as error:
-        raise ContractError(
-            f"structure attempt for page {page_id} names an unreadable call record: {error}"
-        ) from error
-    verify_input_bytes(call_reference, raw)
+    raw = read_verified(
+        context.tree.read_bytes,
+        call_reference,
+        f"structure attempt for page {page_id} call record",
+    )
     try:
         call = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
@@ -2830,13 +2800,11 @@ def verify_structure_attempt_call(
         raise ContractError(
             f"structure attempt for page {page_id} disagrees with its retained response evidence"
         )
-    try:
-        response_bytes = context.tree.read_bytes(raw_reference["relative_path"])
-    except OSError as error:
-        raise ContractError(
-            f"structure attempt for page {page_id} names an unreadable raw response: {error}"
-        ) from error
-    verify_input_bytes(raw_reference, response_bytes)
+    read_verified(
+        context.tree.read_bytes,
+        raw_reference,
+        f"structure attempt for page {page_id} raw response",
+    )
 
 
 def _verify_proposal_act_row(
@@ -2953,19 +2921,12 @@ def _verify_proposal_act_row(
             f"act {act_id}'s structure answer parsed but names no usable call record to have "
             f"parsed: {error}"
         ) from error
-    try:
-        call_record_bytes = context.tree.read_bytes(call_record_reference["relative_path"])
-    except OSError as error:
-        raise FatalAccounting(
-            f"act {act_id}'s structure answer names a call record that could not be read: {error}"
-        ) from error
-    try:
-        verify_input_bytes(call_record_reference, call_record_bytes)
-    except SchemaRefusal as error:
-        raise FatalAccounting(
-            f"act {act_id}'s structure answer names a call record reference whose bytes have "
-            f"changed since it was cited: {error}"
-        ) from error
+    call_record_bytes = read_verified(
+        context.tree.read_bytes,
+        call_record_reference,
+        f"act {act_id}'s structure answer call record",
+        FatalAccounting,
+    )
     try:
         call_record = json.loads(call_record_bytes.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:

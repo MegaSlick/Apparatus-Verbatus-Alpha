@@ -320,11 +320,11 @@ def test_the_preference_screen_walks_a_deep_payload_instead_of_the_interpreter_s
 def test_a_view_image_that_no_longer_matches_its_digest_is_refused():
     """A path is not evidence that its current bytes still match the sealed crop."""
     reader = RecordingReader()
-    with pytest.raises(SchemaRefusal, match="no longer matches its sealed digest"):
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         atomic_delivered_pixels(
             autopsia(), read_bytes=lambda path: b"tampered " + READ_BYTES(path), max_images=6
         )
-    with pytest.raises(SchemaRefusal, match="no longer matches its sealed digest"):
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         invoke_one_logical_read(
             reader,
             autopsia=autopsia(),

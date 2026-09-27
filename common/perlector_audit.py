@@ -23,7 +23,7 @@ from typing import Any, Final
 
 from common.contracts import uncertainty
 from common.contracts.canonical import code_digest, digest_bytes, digest_of, is_plain_int, is_sha256
-from common.contracts.envelope import validate_input_refs
+from common.contracts.envelope import read_verified, validate_input_refs
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_SCHEMA,
@@ -662,16 +662,13 @@ def _validate_live_reproof_request(
     for name in ("call_record_ref", "raw_response_ref"):
         if call_evidence[name] not in reading.get("inputs", []):
             raise SchemaRefusal(f"an audit re-proof does not bind its {name} as a direct input")
-    call_bytes = tree.read_bytes(call_evidence["call_record_ref"]["relative_path"])
-    if digest_bytes(call_bytes) != call_evidence["call_record_ref"]["sha256"]:
-        raise SchemaRefusal("an audit re-proof call record reference disagrees with its bytes")
+    call_ref, raw_ref = call_evidence["call_record_ref"], call_evidence["raw_response_ref"]
+    call_bytes = read_verified(tree.read_bytes, call_ref, "an audit re-proof call record")
     try:
         call = json.loads(call_bytes)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SchemaRefusal("an audit re-proof call record is not JSON") from error
-    raw_bytes = tree.read_bytes(call_evidence["raw_response_ref"]["relative_path"])
-    if digest_bytes(raw_bytes) != call_evidence["raw_response_ref"]["sha256"]:
-        raise SchemaRefusal("an audit re-proof raw response reference disagrees with its bytes")
+    read_verified(tree.read_bytes, raw_ref, "an audit re-proof raw response")
     if (
         not isinstance(call, dict)
         or call.get("schema") not in CHAIR_CALL_RECORD_SCHEMAS
@@ -697,9 +694,7 @@ def _validate_live_reproof_request(
     region_refs = [ref for view in views for ref in view.get("region_refs", [])]
 
     def image_part(reference: dict[str, str]) -> dict[str, Any]:
-        data = tree.read_bytes(reference["relative_path"])
-        if digest_bytes(data) != reference["sha256"]:
-            raise SchemaRefusal("an audit re-proof image reference disagrees with its bytes")
+        data = read_verified(tree.read_bytes, reference, "an audit re-proof image")
         return {
             "type": "image_url",
             "image_url": {"url": "data:image/png;base64," + base64.b64encode(data).decode("ascii")},

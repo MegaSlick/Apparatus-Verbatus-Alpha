@@ -11,8 +11,8 @@ import copy
 import unicodedata
 from typing import Any, Callable, Final
 
-from common.contracts.canonical import digest_bytes, digest_of, is_sha256, walk_dicts
-from common.contracts.envelope import digest_ref
+from common.contracts.canonical import digest_of, is_sha256, walk_dicts
+from common.contracts.envelope import digest_ref, read_verified
 from common.contracts.errors import SchemaRefusal
 from common.physical_act_partition import source_ledger_from_run
 
@@ -250,20 +250,8 @@ def validate_autopsia(value: dict[str, Any]) -> dict[str, Any]:
 
 def _load(ref: dict[str, str], read_bytes: Callable[[str], bytes]) -> bytes:
     """Recheck bytes here because a sealed path may change before reader delivery."""
-    try:
-        image = read_bytes(ref["relative_path"])
-    except OSError as error:
-        raise SchemaRefusal(
-            f"cross-capture autopsia: view image {ref['relative_path']!r} could not be read: "
-            f"{error}"
-        ) from error
-    observed = digest_bytes(image)
-    if observed != ref["sha256"]:
-        raise SchemaRefusal(
-            f"cross-capture autopsia: view image {ref['relative_path']!r} no longer matches its "
-            f"sealed digest: expected {ref['sha256']}, observed {observed}"
-        )
-    return image
+    what = "cross-capture autopsia: view image"
+    return read_verified(read_bytes, ref, what)
 
 
 def _capacity_reason(record: dict[str, Any], max_images: int | None) -> str | None:
