@@ -37,6 +37,7 @@ from .models import ChairIdentity, is_hf_revision, is_sha256
 from .registry import CACHE_DESCRIPTOR, load_model_card_metadata
 
 STORE_SCHEMA = "verbatus-model-store.v2"
+V1_STORE_SCHEMA = "verbatus-model-store.v1"
 INVENTORY_SCHEMA = "verbatus-model-inventory.v1"
 
 # An artifact entry is present, or `pending-fetch` naming its absence and reason,
@@ -238,6 +239,7 @@ def materialize_real_roster(
     record = _initial_materialization_record()
     active = root / "download_record.json"
     if active.exists():
+        _migrate_v1_record(root)
         record = load_download_record(root)
         # Joined before indexing, so a missing artifact is a named refusal.
         derived_inventory(record)
@@ -1291,7 +1293,7 @@ def _move_active_record(destination: Path, archive: Path) -> None:
 
 
 def _current_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:
-    """Return a current-schema record, while allowing the one legacy migration input."""
+    """Return the previous record in current shape, or None for the ad-hoc legacy input."""
 
     try:
         raw = json.loads(raw_bytes)
@@ -1301,7 +1303,36 @@ def _current_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:
         # This also proves canonical bytes and the immutable archived version. A
         # damaged current record is not silently treated as legacy and replaced.
         return load_download_record(root)
+    if isinstance(raw, Mapping) and raw.get("schema") == V1_STORE_SCHEMA:
+        migrated = _from_v1(raw)
+        _validate_record(migrated)
+        return migrated
     return None
+
+
+def _from_v1(raw: Mapping[str, Any]) -> dict[str, Any]:
+    # v2 dropped only v1's operator-declared capacity plan.
+    return {key: value for key, value in raw.items() if key != "capacity"} | {
+        "schema": STORE_SCHEMA
+    }
+
+
+def _migrate_v1_record(root: Path) -> None:
+    """Rewrite a v1 active record as v2 once; its v1 bytes stay archived under records/."""
+
+    try:
+        raw = json.loads(
+            _read_limited_bytes(
+                root / "download_record.json",
+                MAX_DOWNLOAD_RECORD_BYTES,
+                "model-store",
+                "download_record.json",
+            )
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return  # load_download_record names the failure.
+    if isinstance(raw, Mapping) and raw.get("schema") == V1_STORE_SCHEMA:
+        write_download_record(_from_v1(raw), root)
 
 
 def _validate_record_transition(
@@ -1338,6 +1369,11 @@ def _validate_record_transition(
 def _validate_record(raw: Mapping[str, Any]) -> None:
     if not isinstance(raw, Mapping):
         raise DigestMismatchRefusal("model-store", "download record is not a table")
+    if raw.get("schema") != STORE_SCHEMA:
+        raise DigestMismatchRefusal(
+            "model-store",
+            f"download record schema must be {STORE_SCHEMA!r}, not {raw.get('schema')!r}",
+        )
     if set(raw) != RECORD_FIELDS:
         missing = sorted(RECORD_FIELDS - set(raw), key=str)
         unexpected = sorted(set(raw) - RECORD_FIELDS, key=str)
@@ -1345,11 +1381,6 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
             "model-store",
             "download record has an invalid top-level shape: it carries exactly "
             f"{sorted(RECORD_FIELDS)}; missing={missing}, unexpected={unexpected}",
-        )
-    if raw["schema"] != STORE_SCHEMA:
-        raise DigestMismatchRefusal(
-            "model-store",
-            f"download record schema must be {STORE_SCHEMA!r}, not {raw['schema']!r}",
         )
     if raw["layout"] != {
         "hf": "hf",

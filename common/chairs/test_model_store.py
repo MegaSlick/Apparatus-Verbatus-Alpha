@@ -1755,7 +1755,7 @@ def test_publication_onto_a_name_already_taken_by_a_directory_refuses(tmp_path):
         write_derived_inventory(record, tmp_path / "inventory.json")
 
 
-def test_the_ad_hoc_download_record_refusal_names_what_the_v1_record_needs(tmp_path):
+def test_the_ad_hoc_download_record_refusal_names_the_v2_schema_it_needs(tmp_path):
     """The host store's real record is the old download script's repo-keyed shape.
 
     Migrating it is a host action that happens against these refusals and
@@ -1772,9 +1772,7 @@ def test_the_ad_hoc_download_record_refusal_names_what_the_v1_record_needs(tmp_p
     with pytest.raises(DigestMismatchRefusal) as refusal:
         load_download_record(tmp_path)
 
-    message = str(refusal.value)
-    assert "missing=['artifacts', 'layout', 'schema']" in message
-    assert "unexpected=['Qwen/Qwen3.8-27B', 'datalab-to/chandra-ocr-2']" in message
+    assert "schema must be 'verbatus-model-store.v2', not None" in str(refusal.value)
 
 
 def test_a_roster_divergence_names_the_pin_it_expected_and_the_one_it_found(tmp_path):
@@ -1790,12 +1788,57 @@ def test_a_roster_divergence_names_the_pin_it_expected_and_the_one_it_found(tmp_
     assert "1" * 40 in message
 
 
-def test_a_v1_record_still_carrying_its_capacity_block_is_refused(tmp_path):
+def _as_v1_on_disk(tmp_path):
+    """Rewrite the active record as the v1 shape a live volume may still hold."""
+    v1 = load_download_record(tmp_path) | {
+        "schema": "verbatus-model-store.v1",
+        "capacity": {"cleanup_owner": "host model-store operator"},
+    }
+    v1_bytes = canonical_bytes(v1)
+    (tmp_path / "download_record.json").write_bytes(v1_bytes)
+    return v1_bytes
+
+
+def test_a_v1_record_on_disk_is_migrated_once_without_refetching(tmp_path):
+    fetcher = _FakeMaterializationFetcher()
+    materialize_real_roster(tmp_path, fetcher)
+    calls = list(fetcher.calls)
+    v1_bytes = _as_v1_on_disk(tmp_path)
+
+    receipt = materialize_real_roster(tmp_path, fetcher)
+
+    assert fetcher.calls == calls
+    assert receipt["real_roster_complete"] is True
+    assert (tmp_path / "records" / f"{digest_bytes(v1_bytes)}.json").read_bytes() == v1_bytes
+    record = load_download_record(tmp_path)
+    assert record["schema"] == STORE_SCHEMA
+    assert "capacity" not in record
+
+
+def test_a_v1_record_cannot_be_replaced_by_one_that_returns_present_to_pending(tmp_path):
+    record = _store(tmp_path)
+    _as_v1_on_disk(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    required = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "churro-3B")
+    record["artifacts"][record["artifacts"].index(entry)] = {
+        "artifact": "churro-3B",
+        "state": "pending-fetch",
+        "source": required.source,
+        "repo": required.repo,
+        "revision": required.revision,
+        "reason": "rewound",
+    }
+
+    with pytest.raises(DigestMismatchRefusal, match="cannot return to pending-fetch"):
+        write_download_record(record, tmp_path)
+
+
+def test_a_v1_record_is_refused_by_its_schema_before_its_shape(tmp_path):
     record = _store(tmp_path)
     record["schema"] = "verbatus-model-store.v1"
     record["capacity"] = {"cleanup_owner": "host model-store operator"}
 
-    with pytest.raises(DigestMismatchRefusal, match=r"unexpected=\['capacity'\]"):
+    with pytest.raises(DigestMismatchRefusal, match="not 'verbatus-model-store.v1'"):
         derived_inventory(record)
 
 
