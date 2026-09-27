@@ -638,13 +638,7 @@ def test_refuses_a_malformed_act_id():
 
 
 def test_load_pipeline_proposal_acts_output_composes_straight_into_compare_page(tmp_path):
-    """`load_pipeline_proposal_acts(tree)` needs no reshaping before `compare_page`.
-
-    A synthetic run tree with known boxes, reaching the
-    comparator end to end: seal a page and a proposal region, build the matching
-    reference page for the same sealed page bytes, and hand the loader's own list
-    straight to `compare_page`.
-    """
+    """`load_pipeline_proposal_acts(tree)` needs no reshaping before `compare_page`."""
     tree = _make_run(tmp_path)
     page_identity = _seal_page(tree, ordinal=1)
     bounds = {"x": 100, "y": 100, "w": 200, "h": 80}

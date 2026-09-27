@@ -939,20 +939,7 @@ def test_a_callers_capacity_record_reaches_the_call_record_verbatim(tmp_path: Pa
 def test_a_capacity_record_mutated_after_construction_does_not_reach_the_call_record(
     tmp_path: Path,
 ) -> None:
-    """The retained arithmetic is the arithmetic the request was admitted on.
-
-    A capacity record is not flat -- `request_fits` returns an `images` list of
-    per-image dictionaries -- and every production builder passes that record
-    straight into `ChairRequest` while keeping its own reference to it. Freezing
-    only the outer mapping left the nested data live: a caller could rewrite an
-    image's token cost, or drop an image, after the request was built and
-    before the client retained the record, and the receipt would then carry
-    numbers no admission decision was ever made on.
-
-    Both directions are exercised: a rewrite through the caller's own reference
-    changes nothing on the request or in the retained record, and a write
-    through the request's own view raises instead of succeeding quietly.
-    """
+    """The retained arithmetic is the arithmetic the request was admitted on."""
 
     capacity: dict[str, object] = {
         "schema": "verbatus-request-capacity.v1",
@@ -991,13 +978,7 @@ def test_a_capacity_record_mutated_after_construction_does_not_reach_the_call_re
 def test_a_capacity_record_the_canonical_writer_cannot_hold_is_refused_at_construction(
     tmp_path: Path,
 ) -> None:
-    """Refused where the caller can still see it, not inside serialization.
-
-    `canonical_bytes` refuses floats, non-string keys and cycles, and the call
-    record goes through it. Sealing the snapshot through the same writer moves
-    that refusal to `ChairRequest` construction: before the wire call, with the
-    caller's own frame on the stack, rather than after a pod has answered.
-    """
+    """Refused where the caller can still see it, not inside serialization."""
 
     with pytest.raises(ChairRequestRefusal):
         _request(capacity={"schema": "verbatus-request-capacity.v1", "headroom": 1.5})
@@ -1107,12 +1088,7 @@ def test_a_declared_float_that_is_never_sent_is_still_recorded_exactly(tmp_path:
 def test_a_nonfinite_generation_value_is_refused_before_anything_is_sent(
     tmp_path: Path, value: float
 ) -> None:
-    """NaN and Infinity are not JSON; Python's encoder emits them anyway.
-
-    A request carrying one would put a body on the wire no conforming reader
-    can parse, and no honest record could transcribe it. Refused before the
-    body exists, rather than rounded to some finite number nobody declared.
-    """
+    """NaN and Infinity are not JSON; Python's encoder emits them anyway."""
 
     client, endpoint, blob_store, _ = _built(tmp_path)
     with client:
@@ -1126,14 +1102,7 @@ def test_a_nonfinite_generation_value_is_refused_before_anything_is_sent(
 def test_a_declared_view_that_collides_with_the_decimal_form_is_refused_not_mangled(
     tmp_path: Path,
 ) -> None:
-    """The one shape the tagged form cannot represent, named rather than lost.
-
-    A vendor that genuinely declared `{"schema": "wire-decimal.v1", "decimal":
-    "1.05"}` as a *value* would be indistinguishable, on read-back, from a
-    float this client encoded. The client proves its own transcription round
-    trips on every call, so this collision surfaces as a named refusal before
-    the record is written instead of as a silently retyped vendor value.
-    """
+    """The one shape the tagged form cannot represent, named rather than lost."""
 
     client, endpoint, blob_store, _ = _built(tmp_path)
     with client:
@@ -1182,19 +1151,7 @@ def test_a_declared_view_with_a_malformed_decimal_form_is_refused_not_crashed(
 def test_the_tree_receipt_reader_is_wired_bare_with_no_stage_side_converter(
     tmp_path: Path,
 ) -> None:
-    """`RunTree.read_run_receipt`'s own rule, satisfied by the client itself.
-
-    `ServiceHandle.receipt_reference` is a read-only mapping proxy — a
-    published provenance reference nothing may edit — and the tree's reader
-    accepts its own reference type or a plain `dict` and refuses anything else
-    by name. Both boundaries are right, and neither is loosened: the client
-    copies on the way in. Before it did, every stage that wired a real tree had
-    to carry a private converter, and the wiring the serving README describes
-    (`read_receipt=context.tree.read_run_receipt`) refused every live start.
-
-    The reader below refuses exactly what the real one refuses, so passing it
-    bare is the assertion.
-    """
+    """`RunTree.read_run_receipt`'s own rule, satisfied by the client itself."""
 
     chair = _identity()
     seen: list[object] = []
@@ -1312,13 +1269,7 @@ def test_receipt_revision_drift_alone_refuses(tmp_path: Path) -> None:
 
 
 def test_receipt_drift_refusal_survives_an_unverifiable_shutdown(tmp_path: Path) -> None:
-    """The drift diagnosis must not be replaced by a shutdown failure.
-
-    ``handle.stop()`` runs before the drift is raised; if the stop itself
-    cannot be verified (the endpoint keeps answering after the owned process
-    is told to exit), the resulting ``ServiceStopError`` must be chained onto
-    the ``ReceiptDriftRefusal``, never swap places with it.
-    """
+    """The drift diagnosis must not be replaced by a shutdown failure."""
 
     chair = _identity()
     row = _seal(

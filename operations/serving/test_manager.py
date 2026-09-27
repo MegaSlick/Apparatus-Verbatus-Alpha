@@ -578,12 +578,7 @@ def test_a_real_serving_profile_missing_preflight_state_refuses_by_name():
 
 
 def test_start_refuses_a_serving_profile_that_is_not_preflight_proven(tmp_path: Path) -> None:
-    """A structurally 'unproven' profile must refuse launch, not merely round-trip.
-
-    ``test_real_serving_profile_is_structurally_unproven_until_preflight`` only
-    proves parsing preserves the value; this proves ``manager.start`` actually
-    enforces it before any process, lease, or endpoint action.
-    """
+    """A structurally 'unproven' profile must refuse launch, not merely round-trip."""
 
     chair = identity("reader", "reader-v1")
     row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
@@ -1375,14 +1370,7 @@ def test_a_long_launch_log_is_carried_as_a_bounded_and_labelled_tail() -> None:
 def test_a_loading_marker_that_never_moved_is_not_reported_as_current_progress(
     tmp_path: Path,
 ) -> None:
-    """An early marker left in a retained log is not evidence of progress now.
-
-    "The engine was still starting when the bound expired" is the sentence an
-    operator extends `startup_timeout_seconds` on and keeps billing for. It was
-    produced by any loading marker anywhere in the tail, including one written
-    before the engine stopped making progress. The
-    marker is still reported -- it is real evidence -- but as what it is.
-    """
+    """An early marker left in a retained log is not evidence of progress now."""
 
     chair = identity("reader", "reader-v1")
     manager, _, http, launcher, _, publisher = reader_manager(
@@ -3126,19 +3114,7 @@ def test_load_placement_table_parses_the_bytes_it_is_given_and_not_the_path(
 def test_bound_configuration_parses_the_snapshot_it_digested_not_a_second_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The sealed-configuration interlock, against the substitution that beat it.
-
-    The first version of this repair read the placement file twice — once to
-    digest and once to parse — so an ordinary replacement between the two reads
-    produced a table the run never sealed while `require_loaded` compared the
-    sealed digest and passed. Nothing in the suite caught it: the existing
-    substitution test alters the file *before* the call, so both reads see the
-    same bytes and even the two-read code refuses.
-
-    This one makes the two reads distinguishable. The path yields the sealed bytes
-    once and the altered bytes to every later reader, so a second read is visible
-    in the parsed result and nowhere else.
-    """
+    """The sealed-configuration interlock, against the substitution that beat it."""
 
     root = Path(__file__).resolve().parents[2]
     recipes_path = root / "config/serving_recipes.toml"
@@ -3176,15 +3152,7 @@ def test_bound_configuration_parses_the_snapshot_it_digested_not_a_second_read(
 def test_bound_configuration_refuses_an_unusable_placement_in_the_serving_vocabulary(
     tmp_path: Path,
 ) -> None:
-    """Every way the placement file can fail refuses as a `ServingError`.
-
-    `PlacementRefusal` is a `ValueError` and `ServingConfigurationError` is a
-    `ServingError`, so a handler written for this boundary catches one and not the
-    other. Before this test, a missing file refused in the serving vocabulary while
-    malformed TOML and a non-UTF-8 file escaped as `PlacementRefusal` — the same
-    rule enforced in two places and repaired in one, which is the shape this branch
-    has now found five times.
-    """
+    """Every way the placement file can fail refuses as a `ServingError`."""
 
     root = Path(__file__).resolve().parents[2]
     recipes_path = root / "config/serving_recipes.toml"
@@ -3581,15 +3549,7 @@ def test_stage_context_publisher_uses_existing_run_receipt_seam() -> None:
 
 
 def test_a_manager_built_audit_reaches_a_real_stage_context_end_to_end(tmp_path: Path) -> None:
-    """The run-sealed-configuration interlock, joined rather than traced by hand.
-
-    Every other manager test publishes through ``FakePublisher``; every assembly
-    test uses ``FakeStageContext``, a two-field frozen dataclass. Nothing before
-    this test drove a manager-built launch audit into a real
-    ``StageContext``/``StageContextReceiptPublisher`` -- the interlock that stops
-    a launch running under configuration bytes the run did not seal was only
-    ever exercised on its two sides separately.
-    """
+    """The run-sealed-configuration interlock, joined rather than traced by hand."""
 
     root = Path(__file__).resolve().parents[2]
     registry = ChairRegistry.from_toml(root / "config/models.toml")
@@ -4314,12 +4274,7 @@ def test_serving_smoke_reader_refuses_a_text_only_request_as_golden_page_evidenc
 def test_the_plain_reader_seam_gives_the_same_log_root_guarantee_as_the_callback(
     tmp_path: Path,
 ) -> None:
-    """The reader refuses a symlinked log root before anything can launch through it.
-
-    ``prepare_log_root`` runs before each start regardless of which seam
-    assembled the reader, so the plain seam gets the same symlink refusal and
-    0700 chmod as the callback seam.
-    """
+    """The reader refuses a symlinked log root before anything can launch through it."""
 
     chair = identity("reader", "reader-v1")
     elsewhere = tmp_path / "elsewhere"
@@ -5021,12 +4976,7 @@ def test_a_hybrid_attention_checkpoint_refuses_to_launch_with_prefix_caching_on(
 def test_a_fixture_role_sharing_the_same_name_is_unaffected_by_the_hybrid_check(
     tmp_path: Path,
 ) -> None:
-    """Same role name (``attestator_1``), a fake repository: no refusal.
-
-    Regression guard for the collision the role-keyed version of this check
-    originally had with `test_client.py`'s and this file's own generic
-    fixtures.
-    """
+    """Same role name (``attestator_1``), a fake repository: no refusal."""
 
     chair = identity("attestator_1", "reader-v1")  # repo="example/attestator_1"
     row = profile_row(
@@ -5518,12 +5468,7 @@ def test_a_credential_shaped_token_in_the_launch_log_never_travels_with_the_refu
 
 
 def test_a_budget_gone_before_the_first_probe_answers_claims_no_observation() -> None:
-    """A one-second `startup_timeout_seconds` can expire before any probe comes back.
-
-    Reporting that as "connection refused" or as "answered but never ready"
-    would put a claim about an endpoint nobody reached into a durable record,
-    so the third state stays distinct.
-    """
+    """A one-second `startup_timeout_seconds` can expire before any probe comes back."""
 
     error = _watchdog_timeout(
         FakeProcess(4242, log_tail="INFO: nothing here\n"),

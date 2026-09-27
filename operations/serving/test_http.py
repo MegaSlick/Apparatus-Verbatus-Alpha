@@ -214,14 +214,7 @@ def test_transport_classifies_a_refused_connection_as_definitively_absent() -> N
 def test_transport_ignores_an_ambient_proxy_and_reaches_the_loopback_model(
     proxy_variable: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A configured proxy must never stand between this transport and 127.0.0.1.
-
-    The prompt and its embedded page image are in the request body, so a proxy
-    that answered here would take them off the machine before any response
-    validation ran — and could answer 200 for a model that was never reached.
-    Both spellings are set with no ``no_proxy`` bypass, because an operator's
-    correct ``NO_PROXY`` is not a control this boundary may depend on.
-    """
+    """A configured proxy must never stand between this transport and 127.0.0.1."""
 
     reached_proxy = threading.Event()
 
@@ -362,15 +355,7 @@ def test_a_complete_error_response_keeps_its_status_and_body(status: int) -> Non
 def test_the_declared_timeout_bounds_the_whole_call_not_one_receive(
     status: bytes, headers_slowly: bool
 ) -> None:
-    """Connect, headers and body come out of one monotonic deadline.
-
-    Measured at 36acde636f against a declared 0.15s: a response whose *headers*
-    dribbled in returned HTTP 200 after 1.280s, because the body deadline was
-    created only once the opener had already returned them.  Both loops that
-    drive this transport consult their own deadline between requests only, so
-    one such call defeats the readiness watchdog and the shutdown absence poll
-    alike, on a card that bills by the hour.
-    """
+    """Connect, headers and body come out of one monotonic deadline."""
 
     with dribbling_loopback_server(status, headers_slowly=headers_slowly) as base:
         started = time.monotonic()

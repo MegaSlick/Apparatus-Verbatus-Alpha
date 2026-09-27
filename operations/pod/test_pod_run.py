@@ -894,17 +894,7 @@ def test_refuses_before_bootstrap_when_the_policy_does_not_admit_the_volume(
 def test_refuses_the_pod_mount_path_when_it_is_only_a_plain_directory(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The one path a real launch seals must actually be mounted, not merely present.
-
-    ``boot_a_request.py`` seals ``BOOT_A_VOLUME_MOUNT_PATH`` into every real
-    launch request. Neither ``bootstrap_main.write_probe`` (a writable
-    directory) nor ``gate.resolve_storage_roots`` (an existing directory)
-    proves that path is the attached network volume rather than an unmounted
-    local substitute on the pod's own ephemeral disk. This test stands a
-    plain temporary directory in for that path -- ``tmp_path`` is never
-    itself a mount point -- and expects the refusal named in
-    ``resolve_run_plan``, before the orchestrator or even the bootstrap runs.
-    """
+    """The one path a real launch seals must actually be mounted, not merely present."""
 
     ws = _prepared(tmp_path)
     monkeypatch.setattr(pod_run.boot_a_request, "BOOT_A_VOLUME_MOUNT_PATH", str(ws.volume))
@@ -921,14 +911,7 @@ def test_refuses_the_pod_mount_path_when_it_is_only_a_plain_directory(
 def test_the_pre_bootstrap_refusal_names_a_root_this_machine_did_not_have(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Principle 2, on the path where nothing else gets to say it.
-
-    This gate runs before the bootstrap's own mount diagnostic, so on a pod
-    with the volume unmounted it is the only thing an operator reads. Naming
-    only the roots that resolved made "the policy does not admit it" look like
-    a policy that never listed the folder, when the truth is that the root
-    listing it was not there. The skipped root is named, never admitted.
-    """
+    """Principle 2, on the path where nothing else gets to say it."""
 
     ws = _prepared(tmp_path)
     absent = tmp_path / "never-mounted"
@@ -1779,16 +1762,7 @@ def test_the_real_catalogue_pins_one_serving_stack() -> None:
 
 
 def test_the_pod_dependency_group_carries_exactly_the_recipe_pins() -> None:
-    """The locked group and the catalogue's rows are the same bytes, both ways.
-
-    This was a strict expected failure while no `pod` group could be locked at all
-    (`transformers==4.57.1` wanted `huggingface-hub<1.0`). The group exists now, so
-    the reconciliation is live: `ServingManager` checks each `required_packages` pin
-    through `importlib.metadata` before it launches, and a group that drifted from
-    the catalogue would mean a pod that installs the stack and is then refused.
-    Every requirement must also carry the Linux/x86_64 marker, which is what keeps a
-    laptop `uv sync` from resolving torch.
-    """
+    """The locked group and the catalogue's rows are the same bytes, both ways."""
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     group = pyproject["dependency-groups"]["pod"]

@@ -164,12 +164,7 @@ def provider_for(card: str) -> FakeProvider:
 
 
 def test_an_unlisted_card_is_refused_before_any_provider_call(tmp_path: Path) -> None:
-    """The refusal names the card and every reviewed row, and nothing is asked.
-
-    "Before any provider call" is asserted literally: `FakeProvider` records
-    every verb it is asked for, including the unpriced `estimate` read, and the
-    list is empty.
-    """
+    """The refusal names the card and every reviewed row, and nothing is asked."""
 
     provider = provider_for("fake-48gb")
 
@@ -220,13 +215,7 @@ def test_the_stage_one_card_passes_the_gate_to_the_provider(tmp_path: Path) -> N
 
 
 def test_the_ceiling_is_net_of_the_volume_the_provider_quotes(tmp_path: Path) -> None:
-    """A pod that fits alone and not beside its volume is refused, by name.
-
-    $0.27 fits under $0.30; $0.27 plus a $0.05/h volume does not. The first
-    check (before any provider call) cannot know the volume rate, so this
-    refusal comes from the second one, immediately after the estimate and still
-    before anything is created.
-    """
+    """A pod that fits alone and not beside its volume is refused, by name."""
 
     provider = provider_for(A5000)
 

@@ -77,22 +77,7 @@ def _edited_project(project: Path, _output: Path) -> None:
 def test_a_commit_refused_on_its_pin_wrote_nothing_it_disowned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, disturb, named
 ) -> None:
-    """The two pin refusals' "nothing was written", measured against the tree.
-
-    The pin is the whole of the shown-before-written promise: it exists so that a
-    folder or a project swapped between the two launches is refused rather than
-    committed. The refusal says nothing was written, and the operator's next move is
-    to preview again -- which lands a document under a digest-named path. A commit
-    that published before noticing the pin had moved would leave a geometry document
-    the operator never saw approved, in a folder they never approved, and the message
-    would still print.
-
-    The comparison covers the whole tree rather than the output folder alone, since
-    the project file is the operator's own work and a commit has no business touching
-    it. It is over content rather than names, because a document rewritten under a
-    name that already exists moves no name. The assertion names the paths that moved,
-    because "one file changed" does not say which.
-    """
+    """The two pin refusals' "nothing was written", measured against the tree."""
     project = tmp_path / "scan.ScanTailor"
     project.write_bytes(PROJECT)
     output = tmp_path / "geometry"

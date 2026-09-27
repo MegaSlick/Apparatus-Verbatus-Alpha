@@ -385,16 +385,7 @@ def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
 def test_auto_mode_can_advance_the_armarium_boundary_that_may_hold_in_every_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Auto may advance Armarium: its terminal report can hold without consulting mode.
-
-    Pins F-R21C1 closed: `ALWAYS_HELD_BOUNDARIES` used to name only Attestatores,
-    so `verbatus advance --mode auto --stage armarium` refused every request for
-    this boundary even when a real auto run stopped there, because
-    `run_sequence`'s tail returns `EXIT_HELD` for a non-complete terminal report
-    with no reference to `mode` at all -- the identical mode-independent shape
-    as the Attestatores' hold, just spelled as a bare ternary the branch-shaped
-    AST scan below could not see.
-    """
+    """Auto may advance Armarium: its terminal report can hold without consulting mode."""
 
     run_root, run_id = _run(tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)

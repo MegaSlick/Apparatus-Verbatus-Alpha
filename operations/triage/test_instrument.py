@@ -948,13 +948,7 @@ def test_a_large_disagreement_scattered_across_many_regions_stays_unrelated():
 
 
 def test_the_shipped_recipe_validates_against_the_validator_that_guards_it():
-    """The producer's two halves must agree, sentence for sentence.
-
-    Every declared rule is written once as a module constant now, but the round trip
-    is what proves it: if either half ever grows its own copy of a sentence, or the
-    validator's closed key set drifts from `imaging_library_versions()`, the producer
-    would refuse the only recipe it can build and could commit no confirmation at all.
-    """
+    """The producer's two halves must agree, sentence for sentence."""
     recipe = json.loads(json.dumps(instrument.producer_recipe(instrument.load_config())))
     assert instrument.validate_producer_recipe(recipe) == recipe
     comparison = recipe["comparison_recipe"]

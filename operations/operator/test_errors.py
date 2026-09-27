@@ -101,14 +101,7 @@ def test_the_word_traceback_in_a_receipt_path_does_not_erase_the_path() -> None:
 
 
 def test_old_close_vocabulary_is_replaced_even_without_the_word_traceback() -> None:
-    """The substitution table itself, not just the short-circuit around it.
-
-    The detail string above always contains "traceback", which returns a fixed
-    generic phrase before the shutdown/terminate/stop substitution table ever
-    runs — so that test alone cannot tell the table apart from being deleted.
-    This one drives a detail string the table, not the short-circuit, must
-    handle.
-    """
+    """The substitution table itself, not just the short-circuit around it."""
 
     rendered = errors.sanitize_detail(
         "provider termination confirmed, shutdown complete, pod stopped"

@@ -245,12 +245,7 @@ def test_launch_does_not_reach_paid_fake_without_a_saved_confirmation(tmp_path: 
 def test_no_saved_operator_record_carries_a_spendable_confirmation_phrase(
     tmp_path: Path,
 ) -> None:
-    """Durable records may commit to confirmation bytes but never retain them.
-
-    Search every state file for both phrase and challenge so moving a spendable
-    value to another record cannot pass as redaction. The review digest remains
-    recomputable from its stored preimage.
-    """
+    """Durable records may commit to confirmation bytes but never retain them."""
 
     surface = _surface(tmp_path)
     prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
@@ -409,14 +404,7 @@ def test_active_fixture_cannot_be_adopted_again_or_hidden_by_a_new_paid_path(
 def test_two_overlapping_prepared_launches_cannot_both_be_confirmed_into_real_pods(
     tmp_path: Path,
 ) -> None:
-    """Two double-clicks, or two terminal windows, before either types a confirmation.
-
-    Both `prepare_launch` calls see no active pod yet and pass; only the *second*
-    `launch` call is where this must be caught, because that is the only point
-    where a second real pod would otherwise be created that `status`/`close` can
-    never reach again (no `--pod-id` recorded for it, and the descriptor's single
-    active-launch pointer only ever names the most recent one).
-    """
+    """Two double-clicks, or two terminal windows, before either types a confirmation."""
 
     surface = _surface(tmp_path)
     spend = _spend_policy(tmp_path)
@@ -434,12 +422,7 @@ def test_two_overlapping_prepared_launches_cannot_both_be_confirmed_into_real_po
 
 
 def test_two_console_windows_cannot_both_confirm_a_paid_launch(tmp_path: Path) -> None:
-    """The active check and result record must be exclusive across processes.
-
-    The active receipt follows the provider call, so a sequential check cannot
-    prevent two windows from passing before either receipt exists. The loser is
-    refused without spending its challenge.
-    """
+    """The active check and result record must be exclusive across processes."""
 
     provider = OperatorFakeProvider(now=lambda: START)
     spend = _spend_policy(tmp_path)
@@ -656,14 +639,7 @@ def _tree_listing(root: Path) -> set[str]:
 def test_status_survives_a_read_only_supervisors_directory_with_no_lock_file(
     tmp_path: Path,
 ) -> None:
-    """A `leases/supervisors` this process can read but not write into --
-
-    what a restore, a sync, or a read-only medium presents -- must not
-    swallow the open-lease and "may still be billing" lines below it. The old
-    `peek_running` tried to create the missing `.lock` file to check it,
-    which raised a bare `PermissionError` straight out of `status` before
-    those lines were ever printed; the non-creating read must not.
-    """
+    """A `leases/supervisors` this process can read but not write into --"""
 
     provider = OperatorFakeProvider(now=lambda: START)
     spend = _spend_policy(tmp_path)
@@ -688,12 +664,7 @@ def test_status_survives_a_read_only_supervisors_directory_with_no_lock_file(
 
 
 def test_a_prepared_launch_without_a_preview_refuses_in_plain_language(tmp_path: Path) -> None:
-    """No money-path input reaches the operator as a raw attribute error.
-
-    `PreparedLaunch` guards both of its derived screens on a missing preview.
-    The confirmation receipt has to consult that guard before it reads the
-    preview, or the guard never runs.
-    """
+    """No money-path input reaches the operator as a raw attribute error."""
 
     surface = _surface(tmp_path)
     policy = load_spend_policy(_spend_policy(tmp_path))
@@ -1489,13 +1460,7 @@ def test_a_gate_refusal_for_an_open_lease_speaks_the_console_s_own_word_for_it(
 def test_a_post_confirmation_provider_failure_is_named_launch_unresolved_not_retryable(
     tmp_path: Path,
 ) -> None:
-    """The orphan-risk case: the provider accepts the paid call, then the
-
-    client loses the response — after the typed confirmation, not before,
-    unlike the preview faults above. This is the one state where a real pod
-    could already be billing while the operator has no confirmation it
-    exists, and it must never be reported as a plain, retryable failure.
-    """
+    """The orphan-risk case: the provider accepts the paid call, then the"""
 
     surface = _surface(tmp_path)
     prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
@@ -1916,17 +1881,8 @@ def test_upload_refuses_an_oversized_manifest_before_constructing_a_transfer(
 
 
 def test_upload_refuses_a_bad_sealed_manifest_as_refused_not_partial(tmp_path: Path) -> None:
-    """G13: upload validates the immutable snapshot through
-    `submission_door.load_manifest` before a target is inspected or a file sent.
-
-    A malformed or non-canonical manifest raises `SubmitRefusal` (a `ContractError`).
-    It must land as
-    `UPLOAD_REFUSED`: never `UPLOAD_PARTIAL`, because nothing was transferred
-    and reporting a partial transfer would be a false statement about what
-    happened, and not `UPLOAD_MANIFEST_MISSING` either, whose copy sends the
-    operator to find a record that is sitting readable at the path they named.
-    The receipt binds the digest of the record that was refused.
-    """
+    """G13: upload validates the immutable snapshot through `submission_door.load_manifest`
+    before a target is inspected or a file sent."""
 
     surface = _surface(tmp_path)
     source = tmp_path / "submitted-pages"
@@ -2904,12 +2860,7 @@ def test_console_close_with_no_saved_pod_refuses_before_prompting(
 def test_console_close_shows_its_notice_before_asking_for_the_confirmation_phrase(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The close notice has to be read before the phrase is typed, not after —
-
-    the same order `launch` already uses: show the price screen, then ask. The
-    notice is where "the attached volume keeps its own ongoing price" is said,
-    so asking first means asking someone who has not been told what it costs.
-    """
+    """The close notice has to be read before the phrase is typed, not after —"""
 
     state = tmp_path / "operator-state"
     surface = _surface(tmp_path)
@@ -2951,16 +2902,7 @@ def test_console_close_shows_its_notice_before_asking_for_the_confirmation_phras
 def test_close_reconstruction_verifies_across_a_real_gap_between_processes(
     tmp_path: Path,
 ) -> None:
-    """`close` in a fresh process, run well over an hour after `launch` in another.
-
-    `_provider_for_record` recreates the fake pod once the launching process is
-    gone. Before the fix, the recreated provider's clock was frozen at
-    `record.created_at`, so `bill()`'s captured-cost cutoff never advanced past
-    `created_at + 1h`, while `VerifiedShutdown` requested a cutoff at the real,
-    later wall-clock close time. Every close past that one-hour mark reported
-    UNVERIFIED regardless of how healthy the close actually was — this is the
-    fresh-process false alarm the drive in the pre-pull-request audit found.
-    """
+    """`close` in a fresh process, run well over an hour after `launch` in another."""
 
     def _launch_then_close(name: str, gap: timedelta) -> CloseReport:
         state = tmp_path / f"operator-state-{name}"
@@ -3034,13 +2976,7 @@ def test_a_corrupted_launch_descriptor_never_claims_close_has_nothing_to_do(
 def test_refuse_if_active_pod_names_the_specific_reason_it_could_not_check_safely(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A blocked launch must say *which* record or lease failed, and why.
-
-    Before this fix every failure while checking the recorded active pod became
-    the same fixed sentence, and an operator blocked from launching could not
-    tell a broken lease from a broken receipt without a developer reading the
-    code alongside them.
-    """
+    """A blocked launch must say *which* record or lease failed, and why."""
 
     surface = _surface(tmp_path)
     launched = _launch(surface, _spend_policy(tmp_path))
@@ -3121,17 +3057,7 @@ def test_a_non_list_pages_record_is_a_named_run_failure_not_a_character_count(
 def test_run_refuses_a_complete_aggregate_with_no_act_partition(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`aggregate["status"] == "complete"` is not enough on its own.
-
-    `_exported_work` used to default a missing `delivered`/`non_delivered`
-    to an empty list and print the generic "the recorded acts" placeholder,
-    so a record honestly missing its act partition -- an older build, or a
-    record `fetch-run` brought home from a pod running different code --
-    could still finish with `state: complete` and a success line on the
-    console and the phone. Exercised through the real `_armarium_export`
-    (only `RunTree.read_artifact` is stubbed) so the guard that closes this
-    is the one `run()` actually calls, not a test double standing in for it.
-    """
+    """`aggregate["status"] == "complete"` is not enough on its own."""
 
     surface = _surface(tmp_path)
     surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
@@ -3193,18 +3119,7 @@ def test_the_export_reader_refuses_non_list_members_before_any_receipt(
 def test_the_export_reader_refuses_a_member_missing_entirely(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member: str
 ) -> None:
-    """A record that omits `member` outright is refused, not defaulted to empty.
-
-    The producer (`pipeline/7_armarium/run.py`) always writes `pages`,
-    `delivered`, and `non_delivered` together, so a record missing one is
-    never an honest partial write -- it is what a mismatched schema looks
-    like (an older build, or a record `fetch-run` brought home from a pod
-    running different code). Before this, the loop below only checked type
-    when a key was present, so an absent member passed silently and
-    `_exported_work` printed the generic "the recorded acts" instead of the
-    run being refused -- the exact gap principle 2's "nothing is lost
-    silently" exists to catch.
-    """
+    """A record that omits `member` outright is refused, not defaulted to empty."""
 
     surface = _surface(tmp_path)
     import operations.operator.surface as surface_module
@@ -3223,14 +3138,7 @@ def test_the_export_reader_refuses_a_member_missing_entirely(
 def test_run_refuses_a_complete_aggregate_whose_partition_undercounts_expected_acts(
     tmp_path: Path,
 ) -> None:
-    """`delivered`/`non_delivered` being present lists is not enough on its own.
-
-    A foreign record could claim `status: complete` with `expected_acts: 3`
-    while `delivered` and `non_delivered` are both empty -- present, well-typed,
-    and wrong. Before this fix `run()` took `state` from `aggregate["status"]`
-    alone, so this record would still print "Run complete" and send a milestone
-    claiming acts accounted for that were never actually delivered or held.
-    """
+    """`delivered`/`non_delivered` being present lists is not enough on its own."""
 
     surface = _surface(tmp_path)
     surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
@@ -3318,15 +3226,7 @@ def test_run_refuses_a_complete_aggregate_with_a_malformed_act_record(
 def test_run_refuses_a_complete_aggregate_with_an_empty_act_key(
     tmp_path: Path,
 ) -> None:
-    """An empty string satisfies `isinstance(..., str)` but names no act.
-
-    `common/stage.py` refuses an empty `act_key` at the Designator's own seal, but
-    that seal is exactly what a foreign or older-build record -- the same class this
-    reconciliation check exists to catch -- would not have gone through. Before this
-    fix, `delivered: [{"act_key": ""}]` with `expected_acts: 1` reconciled cleanly:
-    one record, one distinct "identity", and a run or export reported complete over
-    an act nothing actually names.
-    """
+    """An empty string satisfies `isinstance(..., str)` but names no act."""
     surface = _surface(tmp_path)
     surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
         args=[], returncode=0, stdout="", stderr=""
@@ -3352,13 +3252,7 @@ def test_run_refuses_a_complete_aggregate_with_an_empty_act_key(
 def test_a_held_run_raises_run_held_not_run_failed(
     tmp_path: Path,
 ) -> None:
-    """A hold is the pipeline asking a person to decide, not a failure.
-
-    Before this fix a legitimately held run raised `RUN_FAILED`, whose copy
-    says the run "could not reach its recorded end state" - untrue of a hold,
-    whose whole point is that a person decides what happens next, not that the
-    run failed to reach one.
-    """
+    """A hold is the pipeline asking a person to decide, not a failure."""
 
     surface = _surface(tmp_path)
     surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
@@ -3509,14 +3403,12 @@ def test_a_held_runs_missing_expected_act_total_is_named_on_screen(
 def test_a_complete_aggregate_with_no_expected_acts_is_refused_not_displayed_as_unknown(
     tmp_path: Path,
 ) -> None:
-    """`expected_acts` is a precondition for claiming `complete`, not an
-    optional display value -- the real producer always writes it alongside
-    `delivered`/`non_delivered` (`pipeline/7_armarium/run.py`), so a record
-    missing it is exactly the shape a foreign or mismatched-schema record
-    takes. Before this fix a `complete` record with no `expected_acts`
-    skipped reconciliation entirely and displayed "total not recorded" as
-    if that were a normal, honest outcome.
-    """
+    """`expected_acts` is a precondition for claiming `complete`, not an optional display
+    value -- the real producer always writes it alongside
+    `delivered`/`non_delivered` (`pipeline/7_armarium/run.py`), so a record missing
+    it is exactly the shape a foreign or mismatched-schema record takes. Before this
+    fix a `complete` record with no `expected_acts` skipped reconciliation entirely
+    and displayed "total not recorded" as if that were a normal, honest outcome."""
     surface = _surface(tmp_path)
     surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
         args=[], returncode=0, stdout="", stderr=""
@@ -3539,18 +3431,7 @@ def test_a_complete_aggregate_with_no_expected_acts_is_refused_not_displayed_as_
 
 
 def test_a_run_whose_declared_fixture_cannot_be_read_says_so(tmp_path: Path) -> None:
-    """A fixture that cannot be read must not silently become a placeholder.
-
-    Before the first fix, `run` fell back to the generic "the declared
-    pages"/"the declared acts" labels with no comment at all — exactly the
-    progress detail Spec 12 asks for ("names pages and acts, not percentages")
-    quietly replaced by a placeholder with nothing to say it happened. Saying
-    so and then launching the orchestrator anyway was the second half of the
-    same defect: the orchestrator reads the same fixture from the same place,
-    so the run failed a moment later for a reason the operator never saw. An
-    unreadable fixture is the precondition failure `NOT_A_CHECKOUT` names, and
-    it is refused before anything starts.
-    """
+    """A fixture that cannot be read must not silently become a placeholder."""
 
     workspace = tmp_path / "workspace-with-no-fixture"
     workspace.mkdir()
@@ -3588,13 +3469,7 @@ def test_a_run_whose_declared_fixture_cannot_be_read_says_so(tmp_path: Path) -> 
 def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An earlier export's receipt names its bundle's path *and* its exact digest.
-
-    Before this fix the bundle path was named by run id alone, so exporting
-    the same run twice — after anything in the run tree changed in between —
-    silently overwrote the first bundle's bytes at the path the first,
-    immutable receipt still vouches for.
-    """
+    """An earlier export's receipt names its bundle's path *and* its exact digest."""
 
     surface = _surface(tmp_path)
     launched = _launch(surface, _spend_policy(tmp_path))
@@ -3674,15 +3549,7 @@ def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
 def test_status_reads_a_refused_upload_receipt_without_calling_it_unreadable(
     tmp_path: Path,
 ) -> None:
-    """The verb every failure message sends the operator to must survive that failure.
-
-    A refusal recorded before any transfer began -- a refused submission folder,
-    an unavailable network volume -- never had a sealed record to bind, so
-    requiring `submission_manifest_sha256` on every upload receipt made `status`
-    print "UNREADABLE; it was not treated as success" for a perfectly correct
-    record and exit 2. `status` is read-only and documented as always safe, and
-    teaching an operator to ignore STATUS_UNREADABLE costs the signal itself.
-    """
+    """The verb every failure message sends the operator to must survive that failure."""
 
     output: list[str] = []
     surface = _surface(tmp_path, output=output)
@@ -4546,21 +4413,7 @@ def test_close_timing_comes_from_the_reviewed_policy_not_from_a_constant(tmp_pat
 def test_a_reviewed_billing_margin_under_the_fixtures_own_cutoff_is_floored(
     tmp_path: Path, margin: int
 ) -> None:
-    """Every reviewed margin but exactly 3600 turned a healthy close red.
-
-    `FakeProvider.bill()` stamps its cutoff one hour **ahead** of its own clock,
-    so a margin shorter than that cannot reach it. The no-policy branch of
-    `_shutdown` already carried the 3600 floor; the configured branch took the
-    reviewed number raw — and 0 to 3600 is the whole accepted range, so the only
-    value that worked was the one the fixtures happen to use. Measured before the
-    fix at 1800, 600 and 0: all three raised "Close could not verify both pod
-    absence and billing evidence."
-
-    Dormant only because the shipped `config/spend.toml` is `unconfigured`, which
-    is why this asserts on `_shutdown` directly rather than driving a close: there
-    is no end-to-end path to the configured branch until that file is filled in,
-    and the first time it is, this is what would have gone wrong.
-    """
+    """Every reviewed margin but exactly 3600 turned a healthy close red."""
 
     surface = _surface(tmp_path)
     policy = load_spend_policy(_spend_policy(tmp_path, margin=margin))
@@ -4875,15 +4728,7 @@ def test_repository_commit_lookup_is_bounded_and_names_a_timeout(
 
 
 def test_the_combined_price_preview_line_is_rounded_to_cents(tmp_path: Path) -> None:
-    """Money on the one screen a person confirms against must read as money.
-
-    The unrounded `Decimal` division (`$0.77/hr` pod + `$0.05/hr` volume over
-    900 seconds) is exactly `$0.2050` — four decimal places, immediately
-    before a non-programmer is asked to type a paid confirmation. The
-    confirmation phrase is derived from the two hourly rates shown just
-    above this line, never from this total, so rounding the display cannot
-    weaken what the typed confirmation actually authorizes.
-    """
+    """Money on the one screen a person confirms against must read as money."""
 
     messages: list[str] = []
     surface = _surface(tmp_path, output=messages)
@@ -5718,12 +5563,7 @@ def test_a_refused_serving_log_is_not_counted_among_what_was_verified(
 def test_fetch_run_still_refuses_an_unaccounted_object_beside_the_serving_logs(
     tmp_path: Path,
 ) -> None:
-    """Naming one prefix is not opening the tree: everything else still refuses.
-
-    The lease file that used to sit at the run-tree root is the concrete case --
-    a served run tree written by the old code would still be refused by name,
-    which is the correct answer now that no stage writes one there.
-    """
+    """Naming one prefix is not opening the tree: everything else still refuses."""
 
     volume, reader = _volume_run(tmp_path)
     _served_stage_leavings(volume)
@@ -5815,15 +5655,7 @@ def _volume_evidence(volume: Path, stem: str = "boot-a-report") -> dict[str, byt
 def test_fetch_run_brings_the_launch_evidence_home_and_names_what_it_did_not(
     tmp_path: Path,
 ) -> None:
-    """The run tree is not the whole record of a run that billed a card.
-
-    The launch's PREFLIGHT tree -- which chairs were preflighted, against which
-    catalogue digests, at what measured tier -- is written outside
-    ``runs/<run_id>/`` and used to have no tracked path home, while the volume
-    it lives on is destroyed under the retention policy. What
-    still cannot be fetched by name is said out loud rather than left to be
-    inferred from an empty folder.
-    """
+    """The run tree is not the whole record of a run that billed a card."""
 
     volume, reader = _volume_run(tmp_path)
     written = _volume_evidence(volume)
@@ -6388,12 +6220,7 @@ def _run_receipts(surface: OperatorSurface, run_id: str) -> list[dict[str, objec
 def test_every_run_receipt_carries_identity_configuration_commit_and_output(
     tmp_path: Path,
 ) -> None:
-    """A run's receipt is enough to say what ran, from what, under which commit and config.
-
-    A held run's receipt was the one that most needed these and had none: no
-    argv, no start time, no commit, no config digests, and the stderr that
-    named the hold discarded once the terminal closed.
-    """
+    """A run's receipt is enough to say what ran, from what, under which commit and config."""
 
     messages: list[str] = []
     surface = _surface(tmp_path, output=messages)
@@ -6644,13 +6471,7 @@ def _fake_bundle(bundle_bytes: bytes):  # type: ignore[no-untyped-def]
 def test_export_names_its_run_first_and_exits_partial_over_a_held_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`export` exited 0 over a held run with a receipt hardcoded to `complete`.
-
-    The screen was honest; the exit status, the receipt and the milestone were
-    not -- and a script gating on the exit status called one act of two a
-    success. With no `--run-id` it also exported whichever run was recorded
-    last without saying so before doing the work.
-    """
+    """`export` exited 0 over a held run with a receipt hardcoded to `complete`."""
 
     messages: list[str] = []
     notifications: list[tuple[str, str]] = []
@@ -6923,18 +6744,9 @@ def test_status_names_an_advance_so_the_operators_sequence_is_reconstructible(
 def test_status_rejoins_a_state_relative_run_root_for_an_advance_record(
     tmp_path: Path,
 ) -> None:
-    """The `advance` status arm must resolve a state-relative run root the
-    same way the `run` arm already does (`_display_path`), not print the
-    stored relative fragment unchanged.
-
-    `record_advance` stores `run_root` through `_state_relative`, which
-    keeps a run root under the state directory as a short relative path
-    (e.g. `runs`) so it survives the state directory being moved. Before
-    this fix, `_status_projection`'s `advance` arm printed that stored value
-    straight from the receipt instead of rejoining it against `state_root`
-    the way the `run` arm does -- the operator would see a path that does
-    not exist from their current directory.
-    """
+    """The `advance` status arm must resolve a state-relative run root the same way the
+    `run` arm already does (`_display_path`), not print the stored relative fragment
+    unchanged."""
     surface = _surface(tmp_path)
     reference = ApprovalRecordReference("2_designator/approvals/a.json", "b" * 64)
     run_root = surface.state_root / "runs"

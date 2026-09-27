@@ -500,16 +500,7 @@ def build_observing_drill(
 def test_a_green_launch_arms_on_the_pods_own_report_and_hands_the_lease_to_the_supervisor(
     build_drill: Callable[..., Drill],
 ) -> None:
-    """The whole arming order, in one create.
-
-    The supervisor is started and its identity recorded before the first read
-    of this launch's report object; the pod's own timer then files the report
-    the armer is waiting for; the receipt that observation produces survives
-    both validators and reaches the durable lease; and the supervisor -- which
-    resumed *this launch's* owner token rather than minting one of its own --
-    then ticks as the lease's legitimate owner and guards the pod instead of
-    closing it.
-    """
+    """The whole arming order, in one create."""
 
     drill = build_drill(lifetime=300)
     drill.pod_writes_at(2)  # the launcher's first read of the bound key misses
@@ -650,16 +641,7 @@ def test_b_a_launcher_that_dies_mid_poll_leaves_a_supervisor_that_closes_the_una
 def test_c_a_report_that_never_appears_closes_the_pod_inside_the_create_that_made_it(
     build_drill: Callable[..., Drill],
 ) -> None:
-    """No report, no proof the pod can be closed -- so it is closed now.
-
-    The bound is clamped down to what is left of the lease *less the close
-    budget*, the refusal names it, and `launch._arm_or_close` closes the pod
-    before `create` returns. Reserving that budget is what keeps this close
-    inside the hard deadline instead of starting after it. The close is
-    checked against provider state, not against the armer's
-    word for it: terminated once, absent to a GET, absent from the list, and
-    durably recorded as ``closed-verified``.
-    """
+    """No report, no proof the pod can be closed -- so it is closed now."""
 
     lifetime = 60
     drill = build_drill(lifetime=lifetime)  # nothing ever writes to the volume
@@ -741,13 +723,7 @@ def test_c2_a_pod_stuck_provisioning_is_waited_for_then_closed_when_arming_expir
 def test_d_a_pod_that_exits_under_a_fresh_heartbeat_is_closed_by_the_supervisor(
     build_drill: Callable[..., Drill],
 ) -> None:
-    """Deferral 04-4's real harm, from the green launch that precedes it.
-
-    The lease is armed, the heartbeat is perfectly fresh and the deadline is an
-    hour away -- everything `LaptopSupervisor.run_once` looks at says healthy.
-    The pod is nonetheless EXITED and billing its attached volume, and only the
-    provider lifecycle word `supervise_tick` reads on every tick can see that.
-    """
+    """An exited pod must close even while its supervisor heartbeat is fresh."""
 
     drill = build_drill(lifetime=3600)
     drill.pod_writes_at(1)

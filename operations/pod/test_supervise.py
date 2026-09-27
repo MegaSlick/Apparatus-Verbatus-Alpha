@@ -308,14 +308,7 @@ def test_an_exited_pod_closes_even_while_the_heartbeat_is_fresh_and_names_the_vo
 def test_a_padded_running_word_from_the_provider_does_not_close_a_healthy_pod(
     tmp_path: Path,
 ) -> None:
-    """The RUNNING guard must strip, not just case-fold: `provider_runpod.py`
-
-    now stores the stripped word it already decided usability on, but a
-    non-adapter provider (this fake, or a future one) can still hand this
-    guard a padded string directly. Regression for the guard disagreeing with
-    the seam about the same byte string and terminating a healthy pod --
-    see `test_provider_runpod.py`'s companion drill for the adapter side.
-    """
+    """The RUNNING guard must strip, not just case-fold: `provider_runpod.py`"""
 
     clock = Clock()
     provider = fake(clock)
@@ -525,14 +518,7 @@ class _ForeverFreshForeignOwnerStore:
 def test_run_supervisor_breaks_rather_than_spins_once_a_foreign_owners_deadline_passes(
     tmp_path: Path,
 ) -> None:
-    """A foreign owner whose heartbeat never goes stale, once its lease's own
-
-    hard deadline has passed, must end the run with a named exit rather than
-    hot-loop rewriting its identity file forever. Regression for the spin:
-    without the deadline break, `sleep_for` collapses to 0 the moment the
-    deadline passes (both its terms floor at 0), and the old
-    `if sleep_for <= 0: continue` never slept or stopped.
-    """
+    """A foreign owner whose heartbeat never goes stale, once its lease's own"""
 
     clock = Clock()
     provider = fake(clock)

@@ -790,17 +790,15 @@ def test_holds_when_the_report_path_carries_the_launch_token(tmp_path: Path) -> 
 
 
 def test_hold_only_reaches_the_hold_through_the_real_launch_binding(tmp_path: Path) -> None:
-    """``boot_a_request.pod_request`` renders a ``bootstrap_main --hold-only``
-    argv nested inside ``--bootstrap-command-json``, with no launch token in
-    either report path -- ``launch._bind_report_path_to_launch`` must fold the
-    token into both the outer timer's and the nested ``--report-path``, or
-    ``resolve_plan`` refuses it (this module's own
-    ``test_refuses_a_report_path_missing_the_launch_token`` proves that
-    refusal in isolation). This test drives the real templates and the real
-    binding helper end to end -- not a hand-written argv standing in for
-    them -- so a regression in either module's report-path handling is
-    caught here rather than only in a unit test of one side.
-    """
+    """``boot_a_request.pod_request`` renders a ``bootstrap_main --hold-only`` argv nested
+    inside ``--bootstrap-command-json``, with no launch token in either report path
+    -- ``launch._bind_report_path_to_launch`` must fold the token into both the
+    outer timer's and the nested ``--report-path``, or ``resolve_plan`` refuses it
+    (this module's own ``test_refuses_a_report_path_missing_the_launch_token``
+    proves that refusal in isolation). This test drives the real templates and the
+    real binding helper end to end -- not a hand-written argv standing in for them
+    -- so a regression in either module's report-path handling is caught here rather
+    than only in a unit test of one side."""
 
     from types import SimpleNamespace
 
@@ -932,12 +930,7 @@ def test_the_real_roster_is_accepted_when_its_catalogue_and_context_are_named(
 def test_the_real_roster_default_context_is_refused_after_the_pinned_checkout(
     tmp_path: Path,
 ) -> None:
-    """The declaration is parsed only after the pinned files exist.
-
-    Plan construction records the default path without claiming to have read
-    it. CONFIGURATION then refuses the fixture declaration paired with the
-    real roster before uv, transfer, model materialization, cache, or serving.
-    """
+    """The declaration is parsed only after the pinned files exist."""
 
     ws = _workspace(tmp_path)
     ws.models_config = ws.repository / "config" / "models-real.toml"
@@ -998,18 +991,7 @@ def test_an_explicit_malformed_context_is_refused_by_configuration_after_checkou
 def test_build_actions_does_not_read_models_config_before_configuration_runs(
     tmp_path: Path,
 ) -> None:
-    """``build_actions`` runs before REPOSITORY checks out the pinned commit.
-
-    Building the chair cache eagerly would read whatever ``models.toml``
-    happened to be on disk at container start, not the commit the journal
-    names -- the receipt would attest a provenance nothing measured
-    (principle 6). ``--models-config`` is deliberately left absent here: were
-    ``build_actions`` still eager, constructing the real actions would already
-    raise trying to read it.
-
-    The dependency-light CONFIGURATION callback is the first action that reads
-    the checked-out files. Chair-cache construction remains lazy beyond it.
-    """
+    """``build_actions`` runs before REPOSITORY checks out the pinned commit."""
 
     from .bootstrap_main import Plan, build_actions
 
@@ -1126,12 +1108,7 @@ def test_a_configured_manifest_that_is_missing_fails_the_step_rather_than_no_opp
 def test_a_submission_manifest_with_no_transfer_target_is_refused_at_plan_time(
     tmp_path: Path,
 ) -> None:
-    """Half the transfer pair is refused before UV_ENVIRONMENT, not after it.
-
-    The in-step refusal this replaces ran after the ~10 GB sync, so the pod had
-    already paid for the download before being told its transfer was
-    misconfigured.
-    """
+    """Half the transfer pair is refused before UV_ENVIRONMENT, not after it."""
 
     ws = _workspace(tmp_path)
     manifest = ws.volume / "submission" / "manifest.json"
@@ -1742,14 +1719,7 @@ def test_preflight_measures_the_placement_table_the_run_seals(tmp_path: Path) ->
 def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
     tmp_path: Path,
 ) -> None:
-    """The fixture roster, the real ``ChairRegistry``, and the serving fakes.
-
-    Nothing here is a fixture pass borrowed into preflight: every chair's cache
-    is verified by ``ChairRegistry.ensure`` against the committed model
-    fixtures, every chair is started through ``ServingManager`` (a fake
-    launcher and loopback), and every smoke answer is the witness this
-    preflight rendered onto its own golden page moments before.
-    """
+    """The fixture roster, the real ``ChairRegistry``, and the serving fakes."""
 
     from .bootstrap_main import _build_preflight, build_parser, resolve_plan
 

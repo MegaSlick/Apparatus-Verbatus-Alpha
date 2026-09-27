@@ -138,14 +138,7 @@ def test_a_card_above_the_hourly_ceiling_is_named_as_a_coming_refusal() -> None:
 
 
 def test_the_pod_request_validates_once_the_project_lead_supplies_four_values() -> None:
-    """``hard_deadline`` is a value the project lead supplies too -- ``pod_request``
-
-    carries no runtime that fills it in, unlike ``metadata``'s billing-cutoff
-    margin, which the launch seals from the spend policy on its own. This
-    supplies all four (image, volume id, repository commit, hard deadline)
-    exactly the way the rendered request asks for them, rather than patching
-    hard_deadline and metadata past the placeholders the rendering leaves.
-    """
+    """``hard_deadline`` is a value the project lead supplies too -- ``pod_request``"""
 
     card = cheapest_card(load_placement_table(PLACEMENT))
     hard_deadline = (utc_now().replace(microsecond=0)).isoformat().replace("+00:00", "Z")

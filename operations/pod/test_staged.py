@@ -565,13 +565,7 @@ def test_close_report_for_another_pod_cannot_verify_the_active_boot(
 def test_a_boot_abandoned_before_its_close_has_unknown_cost_and_names_its_pod_on_the_volume(
     tmp_path: Path,
 ) -> None:
-    """The kill-between-create-and-close case is already a cost liability.
-
-    The lease store already knows the pod; what it cannot say is which
-    collection stage and which grant bought it. This record is that binding,
-    written before any work runs, so an operator recovering a run has the pod id
-    to type into a provider console and the grant to reconcile it against.
-    """
+    """The kill-between-create-and-close case is already a cost liability."""
 
     clock, _, _, subject = lifecycle(tmp_path)
     active = subject.boot(

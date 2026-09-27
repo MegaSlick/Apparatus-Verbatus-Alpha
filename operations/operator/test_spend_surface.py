@@ -664,15 +664,7 @@ def test_a_confirmed_paid_action_that_saved_no_preview_at_all_is_still_named(
 def test_the_shown_digest_is_the_digest_of_the_bytes_the_ceilings_came_from(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One read, one byte sequence, for both the digest and the values.
-
-    The surface used to hash the file, parse it in a second read, and hash it
-    once more to confirm. A policy widened between the first hash and the parse
-    and restored before the confirming hash passed all three steps, and the
-    screen showed the widened ceilings under the original file's digest. The
-    reader here changes its answer on every call: a surface that still read
-    more than once would print a digest of bytes it did not parse.
-    """
+    """One read, one byte sequence, for both the digest and the values."""
 
     source = _policy(tmp_path / "spend.toml")
     original = source.read_bytes()

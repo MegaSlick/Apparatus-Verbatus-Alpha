@@ -177,13 +177,7 @@ def test_validate_holdout_refuses_held_record_ids_out_of_sync_with_entries():
 
 
 def test_validate_holdout_refuses_a_non_string_element_in_held_identifiers_by_name():
-    """A non-string in `held_identifiers` must refuse by name, not leak a `TypeError`.
-
-    `held_identifiers != sorted(set(held_identifiers))` sorts before checking
-    element types; mixing `str` and `int` raises an unguarded `TypeError`, and
-    an unhashable element (a `dict` or a `list`) raises inside `set()` before
-    the sort even runs.
-    """
+    """A non-string in `held_identifiers` must refuse by name, not leak a `TypeError`."""
     rows = [_row("s1", "test", TEST_ONLY_PAGE_URL)]
     holdout = build_holdout(rows, SNAPSHOT_HASH)
 

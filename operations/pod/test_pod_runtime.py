@@ -553,13 +553,7 @@ def close_to_verified(
 def test_a_create_nobody_previewed_is_refused_even_with_the_derived_phrase(
     tmp_path: Path,
 ) -> None:
-    """The price is public; being shown a preview is not.
-
-    Every component of the old phrase came from the price sheet, so any caller able to
-    read the config could compute it and spend money without a human ever seeing the
-    preview. The challenge is what closes that: with no preview issued in this run there
-    is no phrase to derive, and `create` must refuse before it reaches the provider.
-    """
+    """The price is public; being shown a preview is not."""
 
     clock = Clock()
     provider = fake(clock)
@@ -854,14 +848,7 @@ def test_one_challenge_authorizes_exactly_one_adoption(tmp_path: Path) -> None:
 def test_an_adoption_challenge_is_spent_when_it_is_claimed_not_when_it_succeeds(
     tmp_path: Path,
 ) -> None:
-    """A post-claim adoption failure must still consume its challenge.
-
-    The claim consumes the challenge before anything durable is armed, so an
-    adoption that fails afterwards leaves no lease behind -- and the phrase that
-    authorized it is gone all the same. That is the case a replay could otherwise
-    walk straight into: nothing open in the lease root, a pod still adoptable, and
-    an operator retyping the phrase they were shown a moment ago.
-    """
+    """A post-claim adoption failure must still consume its challenge."""
 
     clock = Clock()
     provider = fake(clock)
@@ -894,14 +881,7 @@ def test_an_adoption_challenge_is_spent_when_it_is_claimed_not_when_it_succeeds(
 
 
 def test_two_overlapping_creates_spend_one_challenge_exactly_once(tmp_path: Path) -> None:
-    """One confirmation must buy one pod even when two callers race for it.
-
-    The spend gate serializes whole creates, so the loser is refused before it
-    ever reaches the claim window -- `observed == [False]` below proves that
-    serialization, not the claim window's own lock. The window's atomicity has
-    its own direct race in
-    `test_validation_and_consumption_share_one_lock_in_the_claim_window`.
-    """
+    """One confirmation must buy one pod even when two callers race for it."""
 
     clock = Clock()
     provider = fake(clock)
@@ -1818,18 +1798,9 @@ def test_observed_balance_at_or_below_hard_floor_refuses_create_and_adopt_before
 def test_unobservable_balance_at_the_actual_gate_fails_closed_even_after_a_clean_preview(
     tmp_path: Path, error: BaseException
 ) -> None:
-    """A provider error, timeout, or malformed response must never read as 'proceed',
-    and the gate must not fall back on an earlier successful preview's reading --
-    that would be exactly the cached-balance shortcut the ruling refuses.
-
-    Constructed directly against ``PodRuntime`` (not the ``runtime()``/
-    ``PreviewingRuntime`` helper): ``PreviewingRuntime.create`` stages an extra,
-    discarded preview before the one that gates, so injecting a single failure
-    through it proves nothing about the actual gate -- it can be silently consumed
-    by the discarded call instead. Every other balance test here drives the fake's
-    clean, injected balance, proving the ceiling comparison but never this
-    fail-closed catch in ``PodRuntime._observe_balance``.
-    """
+    """A provider error, timeout, or malformed response must never read as 'proceed', and
+    the gate must not fall back on an earlier successful preview's reading -- that
+    would be exactly the cached-balance shortcut the ruling refuses."""
 
     clock = Clock()
     provider = fake(clock)
@@ -2525,13 +2496,7 @@ def test_a_balance_exactly_at_the_alert_threshold_warns_without_blocking(tmp_pat
 def test_a_run_that_would_spend_through_the_hard_floor_is_refused_before_it_starts(
     tmp_path: Path,
 ) -> None:
-    """The floor is a reserve that has to survive the run, not just start it.
-
-    The balance here is above *both* the floor and the warning threshold, but
-    the run's maximum liability would leave the account below the reserve that
-    keeps the network volume alive while data is secured. The create gate must
-    therefore refuse before the provider sees a paid action.
-    """
+    """The floor is a reserve that has to survive the run, not just start it."""
 
     clock = Clock()
     provider = fake(clock)
@@ -4207,13 +4172,7 @@ def test_pod_timer_requires_bootstrap_and_persists_a_red_bootstrap_close_report(
 def test_a_pre_delete_breadcrumb_says_a_close_was_attempted_from_inside_the_pod(
     tmp_path: Path,
 ) -> None:
-    """A truncated pod-side report reads like a timer that never tried.
-
-    Every step of the close runs inside the container the DELETE destroys, so
-    the durable artefact is usually the *pre*-close report -- bootstrap
-    running, close null, green false. The breadcrumb written immediately before
-    the DELETE is what tells that apart from a close that was never issued.
-    """
+    """A truncated pod-side report reads like a timer that never tried."""
 
     clock = Clock()
     provider = fake(clock)
@@ -4638,15 +4597,7 @@ def test_a_duplicated_nested_report_path_is_refused() -> None:
 
 
 def test_a_pod_run_shaped_nested_argv_is_accepted() -> None:
-    """The Boot B shape: two nested halves, one ``--report-path`` each.
-
-    ``pod_run`` splits its argv at the first literal ``--`` and hands the
-    second half to ``bootstrap_main``; each parser requires its own
-    ``--report-path``, and ``pod_run.resolve_run_plan`` requires the two to
-    be different files. The nested check must count the two halves
-    separately, or *every* request that could run the pipeline is refused
-    here, before any preview, lease or provider call.
-    """
+    """The Boot B shape: two nested halves, one ``--report-path`` each."""
 
     clock = Clock()
     token = "a" * 32
@@ -5133,15 +5084,7 @@ def test_bootstrap_journal_cannot_claim_green_with_unaccounted_steps(tmp_path: P
 def test_a_journal_from_before_the_configuration_step_is_refused_as_an_old_schema(
     tmp_path: Path,
 ) -> None:
-    """A journal is not blamed for a change this code made to the step list.
-
-    A v2 journal's valid completion prefix does not include ``CONFIGURATION``,
-    which now runs before ``UV_ENVIRONMENT``. Reading it under the current
-    schema name would reject a perfectly honest old journal as "duplicated,
-    reordered, or skips a step", which reads as tampering. The schema name
-    makes it what it is instead: a journal this code no longer understands,
-    to be preserved and replaced.
-    """
+    """A journal is not blamed for a change this code made to the step list."""
 
     lockfile = tmp_path / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
@@ -5225,15 +5168,7 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
 
 
 def test_sync_uv_environment_never_pairs_locked_with_frozen(tmp_path: Path) -> None:
-    """uv's own CLI refuses `--locked` and `--frozen` together.
-
-    A review of this step once found the argv actually built,
-    `["uv", "sync", "--locked", "--frozen", "--group", "pod"]`, is a usage
-    error on the pinned uv 0.12.1 (`--locked` `conflicts_with_all`
-    `--frozen`) -- so the pod would boot, bill, and die on `uv`'s argument
-    parser before a single wheel downloaded. This captures the real argv
-    through the injected runner so that pairing cannot come back unnoticed.
-    """
+    """uv's own CLI refuses `--locked` and `--frozen` together."""
 
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -7142,19 +7077,7 @@ def test_preflight_with_no_smoke_read_anywhere_is_red_with_a_named_issue(tmp_pat
 def test_a_confirmation_spent_before_a_restart_authorizes_nothing_after_one(
     tmp_path: Path,
 ) -> None:
-    """The money gate is per-process, and a restart makes that a refusal, not a hole.
-
-    Unit 17's per-stage lifecycle refuses to spend one recorded grant twice, and
-    that refusal is now durable. This is the check underneath it: even where a
-    caller carries a phrase that was genuinely previewed, typed and spent before
-    a restart, the process that comes up afterwards holds no outstanding
-    challenge for it. Both shapes are covered, because an operator restarting a
-    run will plausibly try either -- replay the old phrase cold, and replay it
-    after asking for a fresh preview. The second is only a refusal because a new
-    preview mints a *different* challenge, which `mint_challenge` guarantees and
-    `test_minted_challenges_are_unpredictable_and_do_not_repeat` pins; the fixed
-    factory here would otherwise hand the restarted process the same one back.
-    """
+    """The money gate is per-process, and a restart makes that a refusal, not a hole."""
 
     clock = Clock()
     provider = fake(clock)
@@ -7719,15 +7642,7 @@ def test_cli_record_fixture_refuses_a_provider_that_cannot_record(
 def test_cli_record_fixture_refuses_a_recorder_that_cannot_be_opened(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The other way the flag fails, on a provider that *can* record.
-
-    `FixtureRecorder` creates the parent directory, opens the file and narrows
-    its mode, so it raises `OSError` -- here because a regular file sits where
-    the fixture's parent directory belongs. Only `ValueError` was caught, so
-    this raised out of `cli.main` before the preview: a traceback where this
-    command promises a named refusal. `create` refuses, because nothing is paid
-    yet and an operator who asked for evidence should get evidence or a reason.
-    """
+    """The other way the flag fails, on a provider that *can* record."""
 
     clock = Clock()
     provider = _RecordingFake({"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}, now=clock.now)
@@ -7831,13 +7746,7 @@ def _assert_balance_hook_was_stubbed(calls: list[dict[str, object]]) -> None:
 def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``--notify`` fires ``notify_hooks.notify_launch`` on a green create.
-
-    Fakes stand in for ``notify_hooks.notify_launch`` *and* for the balance
-    hook ``--notify`` also wires, so this never spawns
-    ``operations/notify/notify.sh`` for real. The docstring claimed that
-    before the balance stub existed, and the claim was false.
-    """
+    """``--notify`` fires ``notify_hooks.notify_launch`` on a green create."""
 
     clock = Clock()
     provider = fake(clock)

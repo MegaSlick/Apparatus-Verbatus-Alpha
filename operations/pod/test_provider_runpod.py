@@ -103,15 +103,7 @@ def test_runpod_balance_source_is_injected_and_never_an_implicit_http_read() -> 
 
 
 def test_a_balance_source_that_never_answers_becomes_a_named_timeout_refusal() -> None:
-    """A hang here would leave a created pod billing with nothing recorded.
-
-    The post-create spend assessment observes the balance after `create` has
-    returned a billing pod and before anything has been armed to stop it. Every
-    caller downstream already fails closed on a raised exception, so the only
-    outcome that escapes them is a source that blocks instead of failing. The
-    observer is never released -- that is what "blocked" means -- so the assertion
-    is on the deadline the caller sees.
-    """
+    """A hang here would leave a created pod billing with nothing recorded."""
 
     transport = ScriptedTransport([])
     blocked = threading.Event()
@@ -208,16 +200,7 @@ def test_a_source_that_overran_its_deadline_is_never_called_again() -> None:
 
 
 def test_a_second_observation_during_the_first_is_refused_rather_than_started() -> None:
-    """The latch check and the worker start are one transaction.
-
-    Two callers that both read "not abandoned" before either started would both
-    start a worker, and the at-most-one-abandoned-thread guarantee would hold
-    for the sequential case only. Nothing in this repository drives one
-    `RunPodProvider` from two threads today -- the sole production construction,
-    `timer_context_from_environment`, passes no observer at all -- so this is
-    the guarantee being made true before something relies on it, not a live bug
-    being repaired.
-    """
+    """The latch check and the worker start are one transaction."""
 
     transport = ScriptedTransport([])
     entered = threading.Event()
@@ -472,18 +455,8 @@ class _BreakingRecorder:
 def test_a_recorder_failure_after_a_real_create_never_loses_the_pod_identity(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """``fixture.RecordingTransport`` must not let a broken evidence write
-    masquerade as a failed provider call.
-
-    Before the fix, ``FixtureRecorder.record`` raising after a successful
-    POST propagated out of ``RunPodProvider.create`` exactly as a real
-    ``ProviderFailure`` would -- ``PodRuntime._create_locked`` catches that
-    broad exception and reports ``PROVIDER_FAILURE`` with no pod record and
-    no lease, even though the provider had already created a real, billing
-    pod. ``create`` here must still return the pod RunPod actually created,
-    and the recorder's own failure must be named on stderr rather than
-    silently dropped (principle 2).
-    """
+    """``fixture.RecordingTransport`` must not let a broken evidence write masquerade as a
+    failed provider call."""
 
     from .fixture import RecordingTransport
 
@@ -1221,16 +1194,8 @@ def test_the_default_observer_runs_through_the_bounded_balance_read() -> None:
 
 
 def test_a_bare_live_transport_carries_no_notify_hook() -> None:
-    """``--notify`` is the single gate for a phone notification: absent it,
-    not even a live-transport provider's default balance observer may carry
-    one.
-
-    A pod's own ``timer_context_from_environment`` builds exactly this
-    unqualified constructor call, with no way to pass ``--notify`` through --
-    so if this defaulted to a hook, a plain ``verbatus pod create`` with no
-    ``--notify`` would still page a phone from the pod on every spend
-    assessment, before any --notify gate was ever consulted. It must not.
-    """
+    """``--notify`` is the single gate for a phone notification: absent it, not even a
+    live-transport provider's default balance observer may carry one."""
 
     live = RunPodProvider(
         UrllibRunPodTransport("test-capability-value"),
@@ -1627,17 +1592,7 @@ def test_a_non_finite_money_value_is_refused_rather_than_written_as_a_marker(tmp
 
 
 def test_a_credential_shaped_value_under_an_innocuous_key_is_scrubbed(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """The name check alone let a token through under a harmless key.
-
-    The recorder is the one place on this branch that deliberately writes
-    provider request and response bodies to disk; a RunPod answer echoing a key
-    inside `dockerArgs`, `message` or an env value would have landed there
-    marked `verbatim: true` with an empty `scrubbed` list.
-
-    The probe is an opaque mixed-alphanumeric run rather than a value carrying
-    a vendor prefix: this repository's own ingress scanner recognises the
-    prefixed shape and would refuse the commit that added the test.
-    """
+    """The name check alone let a token through under a harmless key."""
 
     from .fixture import SCRUBBED, FixtureRecorder, read_fixture
 
@@ -1663,15 +1618,7 @@ def test_a_credential_shaped_value_under_an_innocuous_key_is_scrubbed(tmp_path) 
 
 
 def test_concurrent_record_calls_never_share_a_sequence(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """`record_exchanges` shares one recorder between a provider's own
-
-    transport and its balance observer's, and the observer runs on a daemon
-    thread that a caller can abandon on overrun -- its blocked call can still
-    be inside `record` when the main thread records its own exchange. Before
-    the lock covered the whole method, `self.sequence` was re-read nine
-    lines after being incremented, so two concurrent calls could stamp the
-    same sequence and skip one entirely.
-    """
+    """`record_exchanges` shares one recorder between a provider's own"""
 
     from .fixture import FixtureRecorder, read_fixture
 
@@ -1748,14 +1695,7 @@ def _no_ambient_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_the_configured_timeout_bounds_the_whole_provider_call(
     headers_slowly: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A response that dribbles cannot hold a money-path verb open.
-
-    Measured at 36acde636f against a declared 0.15s: a loopback response
-    delivering its body one byte at a time answered after 8.559s, and one
-    delivering its headers slowly after 1.273s. `VerifiedShutdown` and every
-    other controller here check their own deadline only *between* provider
-    calls, so an unbounded call is an unbounded controller while the card bills.
-    """
+    """A response that dribbles cannot hold a money-path verb open."""
 
     _no_ambient_proxy(monkeypatch)
     with dribbling_loopback_server(b"200 OK", headers_slowly=headers_slowly) as base:

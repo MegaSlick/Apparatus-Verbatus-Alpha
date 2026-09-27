@@ -298,12 +298,7 @@ def test_close_refuses_a_lease_this_account_does_not_hold(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """An unknown lease id, and a lease armed under another provider account.
-
-    Both refuse before any provider call: exit 2 is this surface's "nothing was
-    touched", and a close that reached for a stranger's pod would be the worse
-    failure of the two.
-    """
+    """An unknown lease id, and a lease armed under another provider account."""
 
     drill = live_drill(build_drill)
     drill.starter.stop_all()
@@ -524,13 +519,7 @@ def test_a_lease_id_that_is_not_a_lease_id_builds_no_path_at_all(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`--lease ../../elsewhere` is refused before a path is built from it.
-
-    The id is interpolated into four paths -- the lease file, the kernel lock,
-    the identity file and the durable final record -- so it is checked before
-    the first of them exists. The record this refusal files is the anonymous
-    one, which is the assertion that the traversal reached no filename.
-    """
+    """`--lease ../../elsewhere` is refused before a path is built from it."""
 
     drill = live_drill(build_drill)
     drill.starter.stop_all()
@@ -661,14 +650,7 @@ def test_the_close_record_says_what_the_phone_hook_did(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`--notify` wires balance notifications for a close too, and says so.
-
-    A close consults no ceiling, but the hook is attached to the provider
-    before this verb is dispatched, and a vendor adapter that observes its
-    account balance while terminating or capturing cost pages the phone through
-    it. Whether that wiring took, and what each ping did, is a fact about this
-    close and belongs in its record rather than in a return value nobody reads.
-    """
+    """`--notify` wires balance notifications for a close too, and says so."""
 
     drill = live_drill(build_drill)
     drill.starter.stop_all()
@@ -842,14 +824,7 @@ def test_a_fixture_recorder_that_cannot_be_opened_does_not_stop_the_close(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`FixtureRecorder` opens and chmods a file, so it raises `OSError`.
-
-    The provider here *can* record its exchanges, so the earlier refusal path
-    is not the one under test: the recorder itself cannot be opened, because
-    the path it was given has a regular file where a directory belongs. This
-    must not raise out of `main` before `_close_command` is ever called -- a
-    live pod must not be traded for an evidence file.
-    """
+    """`FixtureRecorder` opens and chmods a file, so it raises `OSError`."""
 
     drill = live_drill(build_drill)
     drill.starter.stop_all()

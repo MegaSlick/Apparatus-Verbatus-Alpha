@@ -364,13 +364,7 @@ def test_operator_descriptor_publication_reports_a_directory_sync_failure(
 def test_a_dangling_receipt_directory_link_refuses_rather_than_reading_as_empty(
     tmp_path: Path, read: Callable[[records.ReceiptStore], object]
 ) -> None:
-    """`exists()` follows the link, so a dangling one is not "no receipts yet".
-
-    Both readers asked `exists()` first and returned an empty history, so an
-    unsafe receipt location was reported to the operator as nothing recorded —
-    no saved balance observation, no alert, and no sign that anything was
-    wrong. The link is named before anything asks whether it resolves.
-    """
+    """`exists()` follows the link, so a dangling one is not "no receipts yet"."""
 
     state = tmp_path / "operator-state"
     state.mkdir()

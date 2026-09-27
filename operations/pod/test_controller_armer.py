@@ -737,12 +737,7 @@ def test_a_lease_the_launch_no_longer_owns_stops_the_poll(tmp_path: Path) -> Non
 def test_a_lease_store_fault_while_polling_is_named_as_a_store_fault_not_an_ownership_loss(
     tmp_path: Path,
 ) -> None:
-    """An `OSError` heartbeating the lease is not proof another controller
-
-    owns it -- it is proof the store could not be written to. Regression:
-    the old handler folded every heartbeat failure into "another controller
-    now owns or has closed this lease", which is false here.
-    """
+    """An `OSError` heartbeating the lease is not proof another controller"""
 
     clock = Clock()
     ask, record, store, lease = scene(tmp_path, clock)
@@ -955,11 +950,11 @@ def test_preflight_refuses_an_unconfigured_policy() -> None:
 def test_preflight_refuses_a_poll_interval_that_does_not_stay_inside_the_heartbeat_timeout() -> (
     None
 ):
-    """`policy.laptop_heartbeat_timeout_seconds = 1` is a legal `spend.toml`.
-    Under the default 5s poll interval the supervisor started during arming
-    would wake and close the pod before the launch owner's next heartbeat --
-    every launch under that policy would die mid-arming. Catching it here
-    costs nothing before the create."""
+    """`policy.laptop_heartbeat_timeout_seconds = 1` is a legal `spend.toml`. Under the
+    default 5s poll interval the supervisor started during arming would wake and
+    close the pod before the launch owner's next heartbeat -- every launch under
+    that policy would die mid-arming. Catching it here costs nothing before the
+    create."""
 
     clock = Clock()
     ask = request(clock)
@@ -1139,13 +1134,7 @@ def test_an_object_that_is_not_a_channel_is_refused_at_construction() -> None:
 
 
 def test_without_a_liveness_probe_the_channel_bound_is_the_whole_wait(tmp_path: Path) -> None:
-    """The unchanged shape: no probe configured, no container wait, same bound.
-
-    An operator whose factory supplies no `ContainerLivenessProbe` gets exactly
-    the behaviour that existed before the split, and the evidence says so
-    rather than reporting a zero that could be read as a measured instant
-    start.
-    """
+    """The unchanged shape: no probe configured, no container wait, same bound."""
 
     clock = Clock()
     ask, record, store, lease = scene(tmp_path, clock)
@@ -1160,13 +1149,7 @@ def test_without_a_liveness_probe_the_channel_bound_is_the_whole_wait(tmp_path: 
 
 
 def test_the_image_pull_is_waited_out_before_the_channel_bound_starts(tmp_path: Path) -> None:
-    """The finding itself: a slow pull must not spend the propagation budget.
-
-    The container takes 60s to start and the report appears only after the
-    full channel bound has run from *that* moment. Before the split the pod
-    would have been terminated at t=300s with its report unread; here the
-    attempt arms, and the two waits are reported as two numbers.
-    """
+    """The finding itself: a slow pull must not spend the propagation budget."""
 
     clock = Clock()
     ask, record, store, lease = scene(tmp_path, clock, lifetime=3600)
