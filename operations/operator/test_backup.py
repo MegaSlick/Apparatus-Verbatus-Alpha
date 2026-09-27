@@ -241,6 +241,37 @@ def test_backup_snapshot_publish_survives_a_kill_before_the_link(tmp_path: Path)
     assert finished.reused == 2 and finished.copied == 0
 
 
+def test_every_linked_entry_is_synced_before_the_backup_reports_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+    events: list[str] = []
+    real_fsync, real_link = os.fsync, backup_module._link_or_refuse
+
+    def fsync(descriptor: int) -> None:
+        for name in ("objects", "snapshots"):
+            if os.path.samestat(os.fstat(descriptor), os.stat(mac / name / "sha256")):
+                events.append(f"sync {name}")
+        real_fsync(descriptor)
+
+    def link(temporary, target, descriptor, *, target_display):
+        events.append(f"link {target_display.parent.parent.name}")
+        return real_link(temporary, target, descriptor, target_display=target_display)
+
+    monkeypatch.setattr(backup_module.os, "fsync", fsync)
+    monkeypatch.setattr(backup_module, "_link_or_refuse", link)
+    sync_run_tree(volume, run_id, mac)
+
+    assert events == [
+        "link objects",
+        "link objects",
+        "sync objects",
+        "link snapshots",
+        "sync snapshots",
+    ]
+
+
 def test_backup_cli_uses_a_confined_credential_free_child(tmp_path: Path, monkeypatch) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"

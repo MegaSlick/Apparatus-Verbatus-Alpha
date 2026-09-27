@@ -35,9 +35,6 @@ MAX_BACKUP_ENTRIES = 1_000_000
 MAX_DIRECTORY_DEPTH = 128
 MAX_RELATIVE_PATH_BYTES = 16 * 1024
 MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
-# Backup targets commonly include exFAT, network shares, and sync folders; their
-# hard-link errors must name that filesystem constraint without weakening the
-# temp-then-link publication guarantee.
 _NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 # OS-generated residue, never written by any stage or part of what a stage
 # seals; matched against the bare filename only, since Finder/Explorer drop
@@ -102,8 +99,6 @@ class BackupReport:
         counts: dict[str, int] = {}
         for field in ("copied", "reused"):
             count = value[field]
-            # Two clauses, two messages: "is not an integer" says more about
-            # a report carrying "2" than a shared sentence about bounds would.
             if not isinstance(count, int) or isinstance(count, bool):
                 raise BackupRefusal(f"backup worker report field {field!r} is not an integer")
             if count < 0 or count > MAX_BACKUP_FILES:
@@ -186,12 +181,22 @@ def sync_run_tree(
                     "published"
                 )
             snapshot_sha256 = digest_bytes(data)
+            # A linked name survives a power cut only once its directory is synced; the
+            # objects go first so a durable snapshot never names an object a crash dropped.
+            for directory in (
+                destination.root,
+                destination.objects_parent,
+                destination.objects,
+                destination.snapshots_parent,
+            ):
+                os.fsync(directory)
             _publish_bytes(
                 destination.snapshots,
                 f"{snapshot_sha256}.json",
                 root / "snapshots" / "sha256" / f"{snapshot_sha256}.json",
                 data,
             )
+            os.fsync(destination.snapshots)
             return BackupReport(snapshot_sha256, copied, reused)
 
 
