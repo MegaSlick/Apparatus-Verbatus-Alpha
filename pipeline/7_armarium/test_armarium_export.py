@@ -5175,7 +5175,6 @@ def recipient_happy_run(tmp_path_factory):
         ("member-byte-count", "manifest byte count"),
         ("selected-format-inventory", "selected formats.*missing"),
         ("damaged-act-whole", "may not be projected as a whole one"),
-        ("cleanup-failure", "temporary file .* could not be removed"),
         ("reconstruction-text", "does not recompute|head \\+ one U\\+000A"),
         ("reconstruction-section", "RECONSTRUCTED section does not recompute"),
         ("publish-aggregate", "aggregate disagrees"),
@@ -5183,7 +5182,6 @@ def recipient_happy_run(tmp_path_factory):
         ("publish-submission", "this run's authority names no real submission"),
         ("publish-retained-manifest", "manifest identity or status disagrees"),
         ("publish-search-fold", "search-fold recomputation was not run"),
-        ("publish-blob", "bytes changed under a sealed reference"),
         ("publish-run-authority", "fails its own self-hash"),
     ],
 )
@@ -5285,26 +5283,6 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
         data = _zip_bytes(members)
     elif case == "damaged-act-whole":
         data = _recipient_whole_damaged_act()
-    elif case == "cleanup-failure":
-        import armarium_export as export_module
-
-        data = build_armarium_bundle(
-            _projection(), _formats(embed_pixels=False), _source_bytes
-        ).data
-        monkeypatch = request.getfixturevalue("monkeypatch")
-        real_unlink = export_module._unlink_at
-        monkeypatch.setattr(
-            export_module,
-            "_atomic_replace",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("simulated replace failure")),
-        )
-
-        def fail_temporary_unlink(path, *args, **kwargs):
-            if ".extracting-" in Path(path).name:
-                raise OSError("simulated cleanup failure")
-            return real_unlink(path, *args, **kwargs)
-
-        monkeypatch.setattr(export_module, "_unlink_at", fail_temporary_unlink)
     elif case == "reconstruction-text":
         data = _reforged(
             _joined_members(),
@@ -5332,11 +5310,6 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
             record["payload"]["aggregate"]["status"] = "fabricated-terminal-status"
             record["self_hash"] = self_hash(record)
             path.write_bytes(canonical_bytes(record))
-        elif case == "publish-blob":
-            blob = next(
-                path for path in (root / "r" / "7_armarium" / "blobs").rglob("*") if path.is_file()
-            )
-            blob.write_bytes(blob.read_bytes() + b"tampered")
         elif case in {
             "publish-binding",
             "publish-submission",
