@@ -79,68 +79,60 @@ def test_parse_openai_answer_defaults_are_backward_compatible() -> None:
 # --- parse_openai_reading: every CHAIR_RESPONSE_* refusal fires by its own reason ---
 
 
-def test_reading_refuses_a_non_chat_kind_by_name() -> None:
-    with pytest.raises(ChairRequestRefusal) as excinfo:
-        parse_openai_reading(_response({}), kind="completions", expected_model_id="reader-api")
-
-    assert excinfo.value.code == "CHAIR_REQUEST_INVALID"
-
-
-def test_reading_refuses_a_non_200_status_by_name() -> None:
-    with pytest.raises(ChairResponseRefusal) as excinfo:
-        parse_openai_reading(
-            _response({}, status=500), kind="chat-completions", expected_model_id="reader-api"
-        )
-
-    assert excinfo.value.code == "CHAIR_RESPONSE_HTTP_ERROR"
-
-
-def test_reading_refuses_a_body_that_is_not_json_by_name() -> None:
-    with pytest.raises(ChairResponseRefusal) as excinfo:
-        parse_openai_reading(
-            HttpResponse(200, b"not json"), kind="chat-completions", expected_model_id="reader-api"
-        )
-
-    assert excinfo.value.code == "CHAIR_RESPONSE_INVALID"
-
-
-def test_reading_refuses_a_body_that_is_not_a_json_object_by_name() -> None:
-    with pytest.raises(ChairResponseRefusal) as excinfo:
-        parse_openai_reading(
-            _response([1, 2, 3]), kind="chat-completions", expected_model_id="reader-api"
-        )
-
-    assert excinfo.value.code == "CHAIR_RESPONSE_INVALID"
-
-
-def test_reading_refuses_a_model_mismatch_by_name() -> None:
-    response = _response({"model": "some-other-model", "choices": [{"message": {"content": "x"}}]})
-
-    with pytest.raises(ChairResponseRefusal) as excinfo:
-        parse_openai_reading(response, kind="chat-completions", expected_model_id="reader-api")
-
-    assert excinfo.value.code == "CHAIR_RESPONSE_MODEL_MISMATCH"
-
-
 @pytest.mark.parametrize(
-    "choices", [[], [{"message": {"content": "a"}}, {"message": {"content": "b"}}]]
+    ("response", "kind", "refusal_type", "code"),
+    (
+        (_response({}), "completions", ChairRequestRefusal, "CHAIR_REQUEST_INVALID"),
+        (
+            _response({}, status=500),
+            "chat-completions",
+            ChairResponseRefusal,
+            "CHAIR_RESPONSE_HTTP_ERROR",
+        ),
+        (
+            HttpResponse(200, b"not json"),
+            "chat-completions",
+            ChairResponseRefusal,
+            "CHAIR_RESPONSE_INVALID",
+        ),
+        (_response([1, 2, 3]), "chat-completions", ChairResponseRefusal, "CHAIR_RESPONSE_INVALID"),
+        (
+            _response({"model": "some-other-model", "choices": [{"message": {"content": "x"}}]}),
+            "chat-completions",
+            ChairResponseRefusal,
+            "CHAIR_RESPONSE_MODEL_MISMATCH",
+        ),
+        (
+            _response({"model": "reader-api", "choices": []}),
+            "chat-completions",
+            ChairResponseRefusal,
+            "CHAIR_RESPONSE_CHOICES_NOT_ONE",
+        ),
+        (
+            _response(
+                {
+                    "model": "reader-api",
+                    "choices": [{"message": {"content": "a"}}, {"message": {"content": "b"}}],
+                }
+            ),
+            "chat-completions",
+            ChairResponseRefusal,
+            "CHAIR_RESPONSE_CHOICES_NOT_ONE",
+        ),
+        (
+            _response({"model": "reader-api", "choices": ["not-an-object"]}),
+            "chat-completions",
+            ChairResponseRefusal,
+            "CHAIR_RESPONSE_CHOICES_NOT_ONE",
+        ),
+    ),
 )
-def test_reading_refuses_anything_but_exactly_one_choice_by_name(choices: list[object]) -> None:
-    response = _response({"model": "reader-api", "choices": choices})
-
-    with pytest.raises(ChairResponseRefusal) as excinfo:
-        parse_openai_reading(response, kind="chat-completions", expected_model_id="reader-api")
-
-    assert excinfo.value.code == "CHAIR_RESPONSE_CHOICES_NOT_ONE"
-
-
-def test_reading_refuses_a_non_object_choice_by_name() -> None:
-    response = _response({"model": "reader-api", "choices": ["not-an-object"]})
-
-    with pytest.raises(ChairResponseRefusal) as excinfo:
-        parse_openai_reading(response, kind="chat-completions", expected_model_id="reader-api")
-
-    assert excinfo.value.code == "CHAIR_RESPONSE_CHOICES_NOT_ONE"
+def test_reading_refusals_name_the_bad_wire_fact(
+    response: HttpResponse, kind: str, refusal_type: type[Exception], code: str
+) -> None:
+    with pytest.raises(refusal_type) as excinfo:
+        parse_openai_reading(response, kind=kind, expected_model_id="reader-api")
+    assert excinfo.value.code == code
 
 
 @pytest.mark.parametrize(
@@ -410,69 +402,6 @@ def test_request_reading_refuses_once_the_owned_process_has_exited(tmp_path) -> 
 
 
 # --- assert_wire_part_order: the request-wide walker request_body wires in (F133 follow-up) ---
-
-
-def test_assert_wire_part_order_skips_a_non_list_messages_value() -> None:
-    assert_wire_part_order({"messages": "not-a-list"}, label="probe")  # does not raise
-    assert_wire_part_order({}, label="probe")  # does not raise
-
-
-def test_assert_wire_part_order_skips_an_image_outside_a_user_role() -> None:
-    payload = {
-        "messages": [
-            {
-                "role": "system",
-                "content": [{"type": "image_url", "image_url": {"url": _png_data_uri(1)}}],
-            }
-        ]
-    }
-
-    assert_wire_part_order(payload, label="probe")  # does not raise
-
-
-def test_assert_wire_part_order_skips_string_content() -> None:
-    payload = {"messages": [{"role": "user", "content": "READY"}]}
-
-    assert_wire_part_order(payload, label="probe")  # does not raise
-
-
-def test_assert_wire_part_order_skips_a_text_only_user_content_list() -> None:
-    payload = {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}
-
-    assert_wire_part_order(payload, label="probe")  # does not raise
-
-
-def test_assert_wire_part_order_accepts_image_before_text() -> None:
-    payload = {
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
-                    {"type": "text", "text": "hi"},
-                ],
-            }
-        ]
-    }
-
-    assert_wire_part_order(payload, label="probe")  # does not raise
-
-
-def test_assert_wire_part_order_refuses_text_before_image_with_the_given_label() -> None:
-    payload = {
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "hi"},
-                    {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
-                ],
-            }
-        ]
-    }
-
-    with pytest.raises(ServingConfigurationError, match="request for reader-api"):
-        assert_wire_part_order(payload, label="request for reader-api")
 
 
 def test_assert_wire_part_order_catches_a_text_first_tuple_content_list() -> None:

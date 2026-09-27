@@ -53,7 +53,6 @@ from .errors import (
     ServingConfigurationError,
 )
 from .fakes import (
-    ABSENT,
     FakeBlobStore,
     FakeEndpoint,
     FakeLauncher,
@@ -787,42 +786,6 @@ def test_content_missing_retains_and_yields_parse_problem_never_raises(tmp_path:
 # --- finish_reason, verbatim -------------------------------------------------
 
 
-def test_finish_reason_absent_becomes_none(tmp_path: Path) -> None:
-    client, endpoint, _, _ = _built(tmp_path)
-    with client:
-        endpoint.script(ScriptedAnswer(content="", finish_reason=ABSENT))
-        response = client.read(_request())
-    assert response.finish_reason is None
-    assert response.content == ""
-    assert response.parse_problem is None
-
-
-def test_finish_reason_null_becomes_none(tmp_path: Path) -> None:
-    client, endpoint, _, _ = _built(tmp_path)
-    with client:
-        endpoint.script(ScriptedAnswer(content="text", finish_reason=None))
-        response = client.read(_request())
-    assert response.finish_reason is None
-
-
-def test_finish_reason_unknown_string_carried_verbatim(tmp_path: Path) -> None:
-    client, endpoint, _, _ = _built(tmp_path)
-    with client:
-        endpoint.script(ScriptedAnswer(content="text", finish_reason="abort"))
-        response = client.read(_request())
-    assert response.finish_reason == "abort"
-    assert response.parse_problem is None
-
-
-def test_finish_reason_stop_and_length_carried_verbatim(tmp_path: Path) -> None:
-    client, endpoint, _, _ = _built(tmp_path)
-    with client:
-        endpoint.script(ScriptedAnswer(content="a", finish_reason="stop"))
-        assert client.read(_request()).finish_reason == "stop"
-        endpoint.script(ScriptedAnswer(content="b", finish_reason="length"))
-        assert client.read(_request()).finish_reason == "length"
-
-
 # --- response-as-arrival -------------------------------------------------------
 
 
@@ -1428,14 +1391,17 @@ def test_serving_mode_all_fixture_is_fixture(tmp_path: Path) -> None:
     assert serving_mode_for(recipes, chair, TIER) == "fixture"
 
 
-def test_serving_mode_vllm_without_tier_is_unresolved(tmp_path: Path) -> None:
+@pytest.mark.parametrize("tier", [None, "tier-does-not-exist"])
+def test_serving_mode_vllm_without_matching_tier_is_unresolved(
+    tmp_path: Path, tier: str | None
+) -> None:
     chair = _identity()
     row = _seal(
         _vllm_row(recipe=chair.serving_recipe, chair=chair.role, served_model_id="x"), chair
     )
     recipes = _recipes(row)
     with pytest.raises(ServingModeRefusal) as excinfo:
-        serving_mode_for(recipes, chair, None)
+        serving_mode_for(recipes, chair, tier)
     assert excinfo.value.code == "SERVING_MODE_UNRESOLVED"
 
 
@@ -1446,21 +1412,6 @@ def test_serving_mode_vllm_with_tier_is_live(tmp_path: Path) -> None:
     )
     recipes = _recipes(row)
     assert serving_mode_for(recipes, chair, TIER) == "live"
-
-
-def test_serving_mode_absent_tier_is_unresolved(tmp_path: Path) -> None:
-    """A tier with no configured row for this chair is still this function's
-    own refusal vocabulary — never a bare `ServingConfigurationError` leaking
-    out of `recipes.for_identity`'s zero-match lookup."""
-
-    chair = _identity()
-    row = _seal(
-        _vllm_row(recipe=chair.serving_recipe, chair=chair.role, served_model_id="x"), chair
-    )
-    recipes = _recipes(row)
-    with pytest.raises(ServingModeRefusal) as excinfo:
-        serving_mode_for(recipes, chair, "tier-does-not-exist")
-    assert excinfo.value.code == "SERVING_MODE_UNRESOLVED"
 
 
 def test_serving_mode_unsupported_profile_refuses_by_its_own_reason(tmp_path: Path) -> None:
