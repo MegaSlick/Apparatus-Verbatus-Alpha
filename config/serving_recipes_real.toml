@@ -59,9 +59,9 @@
 # over: a two-capture-view *page-fallback* act -- an act whose bounds are the
 # whole page, seen from two captures -- sends four page-sized images, which at
 # the 80 GB+ tier's `max_pixels` is 20,400 prompt tokens before a word of
-# prompt.  It fits at 24 GB and 48 GB and, since this catalogue raised the 80 GB+ context
-# to 32,768, now fits there too; the pinned case in the capacity test says so
-# by name.
+# prompt.  Its token count fits the smaller tiers' contexts, but its weights
+# rule those tiers out.  The 80 GB+ row has a 32,768-token context; the pinned
+# capacity case says the request fits that row.
 #
 # CHURRO'S ANSWER BUDGET IS NOW THE VENDOR GRAMMAR'S OWN COST.  The live chair
 # is asked in the system string the vendor's own registry resolves for
@@ -103,10 +103,8 @@
 # measure 51.7 GiB of bf16 from the repository's own safetensors sizes -- more
 # than either card class holds before a token of KV, vision peak or engine
 # overhead is counted, so only `generic-80gb-plus` (a 64 GiB+ floor) can ever
-# serve it.  The two smaller rows are kept for catalogue coverage, not as a
-# claim that a 24 or 48 GiB card could run them; `preflight_state =
-# "unproven"` already says so per-row, and this comment records the measured
-# reason rather than leaving a reader to assume the rows were merely untested.
+# serve it.  The two smaller tiers have unsupported rows so the catalogue
+# still names their measured refusal rather than offering impossible launches.
 #
 # `generation_config = "auto"` ON EVERY ATTESTATOR (WITNESS) ROW.
 # `operations/serving/config.py` accepts it for Attestator rows
@@ -565,75 +563,18 @@ request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has 
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
-kind = "vllm"
+kind = "unsupported"
 recipe = "unproven-real-perlector"
 chair = "perlector"
 tier = "generic-24gb"
-host = "127.0.0.1"
-port = 8106
-served_model_id = "perlector-qwen3.8-27b"
-dtype = "bfloat16"
-seed = 0
-# UNSERVABLE ON THIS CLASS: the weights alone measure 51.7
-# GiB of bf16 (Qwen3.8-27B's own safetensors sizes), above the 24 GiB this
-# tier names before a token of KV, vision peak or engine overhead is counted.
-# 64 GiB is the measured floor; only `generic-80gb-plus` can serve this chair.
-# Kept for catalogue coverage, not as a claim that this card class runs it --
-# see the header note.
-required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 16384
-max_num_seqs = 1
-max_num_batched_tokens = 4096
-gpu_memory_utilization = "0.58"
-min_pixels = 3136
-max_pixels = 1806336
-patch_size = 16
-merge_size = 2
-enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
-enforce_eager = false
-trust_remote_code = true
-enable_tower_connector_lora = false
-max_lora_rank = 64
-generation_config = "vllm"
-preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder, least plausible here: 51.7 GiB / volume read rate + graph capture (see the header)
-poll_interval_seconds = 2
-request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
-readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+reason = "Perlector Qwen3.8-27B needs 51.7 GiB for bf16 weights alone, above this 24 GiB tier before KV, vision, or engine overhead; use generic-80gb-plus."
 
 [[profiles]]
-kind = "vllm"
+kind = "unsupported"
 recipe = "unproven-real-perlector"
 chair = "perlector"
 tier = "generic-48gb"
-host = "127.0.0.1"
-port = 8106
-served_model_id = "perlector-qwen3.8-27b"
-dtype = "bfloat16"
-seed = 0
-# UNSERVABLE ON THIS CLASS: 51.7 GiB of measured bf16
-# weights above the 48 GiB this tier names, before KV/vision/engine overhead.
-# 64 GiB is the measured floor; kept for catalogue coverage -- see the header.
-required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 16384
-max_num_seqs = 2
-max_num_batched_tokens = 4096
-gpu_memory_utilization = "0.78"
-min_pixels = 3136
-max_pixels = 3211264
-patch_size = 16
-merge_size = 2
-enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
-enforce_eager = false
-trust_remote_code = true
-enable_tower_connector_lora = false
-max_lora_rank = 64
-generation_config = "vllm"
-preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder, least plausible here: 51.7 GiB / volume read rate + graph capture (see the header)
-poll_interval_seconds = 2
-request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
-readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+reason = "Perlector Qwen3.8-27B needs 51.7 GiB for bf16 weights alone, above this 48 GiB tier before KV, vision, or engine overhead; use generic-80gb-plus."
 
 [[profiles]]
 kind = "vllm"

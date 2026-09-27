@@ -1318,6 +1318,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     )
     parser.add_argument("--models-config", default="config/models.toml")
     parser.add_argument("--cache-root", default=None)
+    parser.add_argument("--store-root", default=None)
     parser.add_argument(
         "--mechanics-qualification",
         action="store_true",
@@ -3997,6 +3998,13 @@ def _open_real_context(
 
 def _open_registry(args, registry_factory: Callable[..., StageChairProtocol]) -> StageChairProtocol:
     cache_root = getattr(args, "cache_root", None)
+    store_root = getattr(args, "store_root", None)
+    if store_root is not None:
+        from common.chairs.model_store import StoreRoleFetcher
+
+        return registry_factory(
+            args.models_config, cache_root=cache_root, fetcher=StoreRoleFetcher(store_root)
+        )
     if cache_root is None:
         return registry_factory(args.models_config)
     return registry_factory(args.models_config, cache_root=cache_root)

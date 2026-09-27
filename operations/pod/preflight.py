@@ -9,10 +9,13 @@ import tomllib
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from common.chairs.errors import CacheRevisionRefusal, DigestMismatchRefusal
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
+
+if TYPE_CHECKING:
+    from operations.serving.config import ServingRecipes
 
 from .models import as_decimal
 
@@ -53,8 +56,8 @@ class _RuntimeProvenance:
 
     This is a guard against a caller asserting its own proof, not a security
     boundary: Python has no private, and a determined caller can always reach a
-    module-private name. That is the same posture `repaired_once` and
-    `served_engine` already take on their receipts -- what it buys is that a
+    module-private name. That is the same posture `served_engine` takes on
+    its receipt -- what it buys is that a
     fixture, an operator rehearsal, a test double, or a future adapter cannot
     claim a measured card *by accident* or by filling in an inviting field.
     """
@@ -714,13 +717,10 @@ class SmokeResult:
 
 
 class ChairCacheVerifier(Protocol):
-    """One exact chair cache at a time; a mismatch receives one explicit repair."""
+    """Verify one exact chair cache at a time."""
 
     def verify(self, identity: ChairIdentity) -> dict[str, object]:
         """Return an identity-bound verification receipt or raise a named refusal."""
-
-    def refetch_once(self, identity: ChairIdentity) -> None:
-        """Stage one fresh fetch of the exact same pin, never a replacement chair."""
 
 
 class SmokeReader(Protocol):
@@ -843,14 +843,21 @@ class PreflightRunner:
         cache_verifier: ChairCacheVerifier,
         smoke_reader: SmokeReader,
         fixture: str | Path,
+        *,
+        serving_recipes: ServingRecipes | None = None,
+        selected_roles: frozenset[str] | None = None,
     ) -> None:
         self.models = models
         self.placement = placement
         self.cache_verifier = cache_verifier
         self.smoke_reader = smoke_reader
         self.fixture = Path(fixture)
+        self.serving_recipes = serving_recipes
+        self.selected_roles = selected_roles
 
     def run(self, profile: GpuProfile) -> PreflightReport:
+        from operations.serving.config import UnsupportedProfile
+
         issues: list[PreflightIssue] = []
         placements: list[ChairPlacement] = []
         cache_receipts: list[dict[str, object]] = []
@@ -883,6 +890,8 @@ class PreflightRunner:
                 )
             )
         for role, configured in sorted(self.models.chairs.items()):
+            if self.selected_roles is not None and role not in self.selected_roles:
+                continue
             if isinstance(configured, AbsentChair):
                 placements.append(
                     ChairPlacement(role, None, None, None, None, None, None, None, "absent")
@@ -900,6 +909,23 @@ class PreflightRunner:
                         None,
                         None,
                         "unplanned",
+                    )
+                )
+                continue
+            if self.serving_recipes is not None and isinstance(
+                self.serving_recipes.for_identity(configured, tier.identifier), UnsupportedProfile
+            ):
+                placements.append(
+                    ChairPlacement(
+                        role,
+                        configured.serving_recipe,
+                        tier.identifier,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        "unservable-at-tier",
                     )
                 )
                 continue
@@ -922,7 +948,7 @@ class PreflightRunner:
             served_by = self._smoke(configured, tier, issues, smoke_receipts, utilization)
             if served_by is not None:
                 served_reads.append((role, served_by))
-        if not smoke_receipts:
+        if not smoke_receipts and self.selected_roles != frozenset():
             # An all-absent or fully-failed roster produced placements and no
             # measurements; green here would claim a serving assembly nobody
             # smoke-read (principle 8).
@@ -1101,38 +1127,21 @@ class PreflightRunner:
         try:
             receipt = self.cache_verifier.verify(identity)
         except Exception as initial_error:
-            if not is_cache_mismatch(initial_error):
-                issues.append(
-                    PreflightIssue(
-                        "cache-verification-failed",
-                        f"chair {identity.role} cache verification failed: {initial_error}",
-                        "Repair the named chair cache and retry preflight.",
-                        identity.role,
-                    )
+            issues.append(
+                PreflightIssue(
+                    "cache-mismatch"
+                    if is_cache_mismatch(initial_error)
+                    else "cache-verification-failed",
+                    f"chair {identity.role} cache verification failed: {initial_error}",
+                    "Inspect the named cache and pinned manifest; repair the cause before retrying.",
+                    identity.role,
                 )
-                return False
-            try:
-                self.cache_verifier.refetch_once(identity)
-                receipt = self.cache_verifier.verify(identity)
-            except Exception as retry_error:
-                issues.append(
-                    PreflightIssue(
-                        "cache-mismatch-after-refetch",
-                        f"chair {identity.role} still differs from its pinned digest after one re-fetch: {retry_error}",
-                        "Inspect the named cache and pinned manifest; do not substitute a chair or revision.",
-                        identity.role,
-                    )
-                )
-                return False
-            normalized = self._bound_receipt(identity, receipt, issues, "cache")
-            if normalized is None:
-                return False
-            receipts.append({"chair": identity.role, "repaired_once": True, **normalized})
-            return True
+            )
+            return False
         normalized = self._bound_receipt(identity, receipt, issues, "cache")
         if normalized is None:
             return False
-        receipts.append({"chair": identity.role, "repaired_once": False, **normalized})
+        receipts.append({"chair": identity.role, **normalized})
         return True
 
     @staticmethod
@@ -1161,16 +1170,6 @@ class PreflightRunner:
                     f"{kind}-receipt-misbound",
                     f"chair {identity.role} returned a {kind} receipt naming {reported_chair!r}.",
                     "Repair the adapter; evidence from one chair cannot be recorded under another.",
-                    identity.role,
-                )
-            )
-            return None
-        if kind == "cache" and "repaired_once" in receipt:
-            issues.append(
-                PreflightIssue(
-                    "cache-receipt-invalid",
-                    f"chair {identity.role} returned the runtime-owned repaired_once field.",
-                    "Repair the cache adapter; retry accounting belongs to the preflight runtime.",
                     identity.role,
                 )
             )
@@ -1261,8 +1260,7 @@ class PreflightRunner:
             {
                 "chair": identity.role,
                 **receipt,
-                # Runtime-owned, like `repaired_once` on a cache receipt: the
-                # reader reports what it read, the runtime reports what served
+                # Runtime-owned: the reader reports what it read, the runtime reports what served
                 # it.  `_bound_receipt` refuses an adapter that pre-populates it.
                 "served_engine": result.served_by,
                 "utilization": [

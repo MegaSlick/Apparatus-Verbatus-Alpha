@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from common import stage as stage_module
+from common.chairs.model_store import StoreRoleFetcher
 from common.contracts.errors import ContractError
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
@@ -53,6 +55,71 @@ def drive(root: Path, run_id: str, scenario: str, *selection: str) -> subprocess
         capture_output=True,
         text=True,
     )
+
+
+def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
+    orchestrator = load_stage("orchestrator")
+    names = (
+        "submission_folder",
+        "submission_manifest",
+        "canary_folder",
+        "canary_manifest",
+        "data_gate_policy",
+        "triage_decision_manifest",
+        "triage_clusters",
+        "triage_producer_recipe",
+        "corpus_register",
+        "cache_root",
+        "fixture_root",
+        "decoding_config",
+        "serving_recipes_config",
+        "pdf_render_config",
+        "designator_padding_config",
+        "designator_geometry_config",
+        "designator_grouping_config",
+        "alignment_config",
+        "formats_config",
+        "recovery_config",
+        "hard_failure_config",
+        "pdf_target_dpi",
+        "placement_tier",
+        "witness_context",
+        "witness_context_config",
+        "nuda_per_mille",
+        "nuda_approval_ref",
+        "perlector_instrument_per_mille",
+        "perlector_instrument_approval_ref",
+        "perlector_protocol_config",
+        "perlector_audit_config",
+    )
+    args = argparse.Namespace(**{name: None for name in names})
+    args.run_root = tmp_path / "runs"
+    args.run_id = "r"
+    args.scenario = "happy"
+    args.models_config = str(tmp_path / "models.toml")
+    args.store_root = tmp_path / "store"
+    args.draft_fed = False
+    commands = []
+    monkeypatch.setattr(
+        orchestrator.subprocess,
+        "run",
+        lambda command, **kwargs: (
+            commands.append(command) or subprocess.CompletedProcess(command, 0)
+        ),
+    )
+    assert orchestrator.invoke("pipeline/3_attestatores/run.py", args) == 0
+    command = commands[0]
+    assert command[command.index("--store-root") + 1] == str(args.store_root)
+
+    received = {}
+
+    def registry_factory(config, **kwargs):  # type: ignore[no-untyped-def]
+        received.update(kwargs)
+        return config
+
+    assert stage_module._open_registry(args, registry_factory) == args.models_config
+    assert isinstance(received["fetcher"], StoreRoleFetcher)
+    assert received["fetcher"].root == args.store_root
 
 
 def test_canary_ingress_requires_a_real_submission_and_a_pair():

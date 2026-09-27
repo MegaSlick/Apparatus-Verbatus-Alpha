@@ -62,12 +62,12 @@ mid-arming; an unstartable supervisor command is caught at preflight; and
 `_read_bounded`'s accumulation is bounded to its declared `limit` even against an
 over-serving body.
 
-**U5 — `bootstrap_main.py`, bootstrap-and-hold (closes 04-3; partly closes 04-8).** On green this
+**U5 — `bootstrap_main.py`, bootstrap-and-hold (closes 04-3; 04-8 was superseded).** On green this
 process holds rather than exits, because `pod_timer.run_with_bootstrap` treats any
 child exit before the hard deadline as `completed-early` and closes the pod.
 `ChairCacheBootstrapAction` is constructed here for the first time in the tracked
-tree. `PREFLIGHT` stays honestly red — no production `ChairCacheVerifier` or
-`SmokeReader` exists anywhere in this repository; Spec 05 owns that. Its tests
+tree. `PREFLIGHT` now uses a production registry verifier and serving smoke reader;
+cache mismatches retain their original named cause without a re-fetch. Its tests
 drive hold survival, red-step immediate exit, every named refusal, env scrubbing, and
 both no-action modes — **all against a fakes-only `actions_factory`**, per the test
 file's own module docstring ("no git, uv, Hugging Face, or GPU probe is ever invoked
@@ -311,6 +311,9 @@ from it is cited with its page and its date in the file that relies on it.
   takes the cheapest card by reviewed `hourly_usd`, and renders the coming preview
   refusals (card above `max_hourly_usd`, cost above the metered ceiling) as a section
   rather than hiding them or refusing to render.
+- Container disk follows the selected card's placement tier: 120 GB for
+  `generic-80gb-plus`, 60 GB for other tiers. A request without a known tier
+  uses the 60 GB default unless it states `container_disk_gb` explicitly.
 - `V2_MIGRATION.md` is admitted to the allowlist by exact path, with its deletion
   condition written beside the admission, rather than widened to a glob.
 

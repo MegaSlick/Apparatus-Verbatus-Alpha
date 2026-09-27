@@ -41,6 +41,7 @@ from .bootstrap_main import (
     scrub_environment,
 )
 from .conftest import SharedClock
+from .run_exits import EXIT_BOOTSTRAP_RED
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -93,6 +94,11 @@ class FakeActions:
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         return self._step(BootstrapStep.UV_ENVIRONMENT, {"lockfile": str(lockfile)})
+
+    def configure_cuda_compat(self) -> dict[str, object]:
+        return self._step(
+            BootstrapStep.CUDA_COMPAT, {"driver": "fixture", "gpus": [], "compat_path": None}
+        )
 
     def resume_transfer(self) -> dict[str, object]:
         return self._step(BootstrapStep.TRANSFER, {"state": "nothing-to-transfer"})
@@ -169,6 +175,15 @@ def _environ(
     if extra:
         environment.update(extra)
     return environment
+
+
+def test_cache_root_on_volume_is_refused_before_bootstrap(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    args = build_parser().parse_args(
+        _argv(ws, extra=("--cache-root", str(ws.volume / "chair-cache")))
+    )
+    with pytest.raises(PlanRefusal, match="network volume"):
+        resolve_plan(args, _environ(Clock()))
 
 
 def _preflight_publisher(root: Path) -> PodPreflightReceiptPublisher:
@@ -337,7 +352,7 @@ def test_red_bootstrap_step_exits_nonzero_and_never_holds(tmp_path: Path) -> Non
         actions_factory=lambda plan: fake,
     )
 
-    assert exit_code == 3
+    assert exit_code == EXIT_BOOTSTRAP_RED
     assert BootstrapStep.PREFLIGHT not in fake.calls
     durable = json.loads(ws.report_path.read_text(encoding="utf-8"))
     assert durable["schema"] == "pod-bootstrap-result.v1"
@@ -360,7 +375,7 @@ def test_configuration_refusal_stops_before_environment_and_model_work(tmp_path:
         actions_factory=lambda plan: fake,
     )
 
-    assert exit_code == 3
+    assert exit_code == EXIT_BOOTSTRAP_RED
     assert fake.calls == [BootstrapStep.REPOSITORY, BootstrapStep.CONFIGURATION]
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     assert journal["failure"]["step"] == "configuration"
@@ -1512,7 +1527,7 @@ def test_an_unchanged_resume_revalidates_configuration_without_rerunning_paid_st
     )
 
     assert not isinstance(resumed, int) and resumed.green
-    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION, BootstrapStep.CUDA_COMPAT]
 
 
 def test_a_completed_receipt_missing_one_binding_fails_closed(

@@ -60,12 +60,13 @@ from .assembly import (
     assemble_serving_preflight_callback,
     assemble_serving_smoke_reader,
 )
-from .client import serving_mode_for
+from .client import ServingModeRefusal, serving_mode_for
 from .config import (
     FixtureProfile,
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
+    UnsupportedProfile,
     chair_preflight_identity_digest,
     load_serving_recipes,
     model_and_tokenizer_pins,
@@ -2570,16 +2571,16 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
         model_and_tokenizer_pins(identity("reader", "reader-v1", revision="not-a-commit"))
 
 
-def test_real_catalogue_gives_every_real_chair_its_own_unproven_vllm_row():
-    """The real roster is opt-in, and every configured chair is served.
+def test_real_catalogue_covers_each_chair_and_names_unservable_tiers():
+    """The real roster is opt-in, and every configured chair has a row.
 
     `secondary_proposer` is absent from `config/models-real.toml` (the
     project lead's ruling, dated in the config's own `reason`), so it never
     reaches `configured` and needs no row. Every chair that *is* configured
-    has a live-shaped row at every tier, `attestator_1` included: Chandra is
+    has a row at every tier, `attestator_1` included: Chandra is
     served and read in the Attestatores' own call rather than reusing the
-    Designator's reading. Every row is `preflight_state = "unproven"` -- a planning
-    shape, never a claim that anything has started on real silicon.
+    Designator's reading. The smaller Perlector tiers name their measured
+    refusal; live rows remain unproven on real silicon.
     """
 
     root = Path(__file__).resolve().parents[2]
@@ -2617,6 +2618,11 @@ def test_real_catalogue_gives_every_real_chair_its_own_unproven_vllm_row():
     for identity in configured:
         for tier in tiers:
             profile = real_catalogue.for_identity(identity, tier)
+            if identity.role == "perlector" and tier != "generic-80gb-plus":
+                assert isinstance(profile, UnsupportedProfile)
+                with pytest.raises(ServingModeRefusal, match="51.7 GiB"):
+                    serving_mode_for(real_catalogue, identity, tier)
+                continue
             assert isinstance(profile, ServingProfile)
             assert profile.preflight_state == "unproven"
             assert profile.required_packages["vllm"] == "0.27.1"
@@ -2991,9 +2997,6 @@ def test_pod_assembly_builds_bootstrap_preflight_callback_without_running_it(
     class Cache:
         def verify(self, supplied_identity):  # type: ignore[no-untyped-def]
             raise AssertionError(f"preflight construction must not verify {supplied_identity.role}")
-
-        def refetch_once(self, supplied_identity):  # type: ignore[no-untyped-def]
-            raise AssertionError(f"preflight construction must not repair {supplied_identity.role}")
 
     class Probe:
         def __init__(self) -> None:
@@ -4740,9 +4743,6 @@ def test_serving_smoke_reader_turns_an_invalid_page_result_into_existing_preflig
         def verify(self, supplied_identity):  # type: ignore[no-untyped-def]
             assert supplied_identity == chair
             return {"manifest_digest": supplied_identity.digest_manifest}
-
-        def refetch_once(self, supplied_identity):  # type: ignore[no-untyped-def]
-            raise AssertionError(f"unexpected cache repair for {supplied_identity.role}")
 
     runner = PreflightRunner(
         ModelsConfig(witness_floor=0, chairs={chair.role: chair}),

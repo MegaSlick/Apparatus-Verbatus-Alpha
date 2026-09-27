@@ -27,6 +27,7 @@ import tomllib
 from argparse import Namespace
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -79,7 +80,21 @@ class PreflightedActions(FakeActions):
     def run_preflight(self) -> dict[str, object]:
         return self._step(
             BootstrapStep.PREFLIGHT,
-            {"color": "green", "placement_tier": TIER, "serving_config_inputs": SERVING_INPUTS},
+            {
+                "color": "green",
+                "placement_tier": TIER,
+                "serving_config_inputs": SERVING_INPUTS,
+                "smoke_receipts": [
+                    {"chair": role, "valid": True}
+                    for role in (
+                        "designator_structure",
+                        "attestator_1",
+                        "attestator_2",
+                        "attestator_3",
+                        "perlector",
+                    )
+                ],
+            },
         )
 
 
@@ -166,6 +181,11 @@ def _submission(ws: Workspace) -> tuple[Path, Path]:
 
 def _prepared(tmp_path: Path) -> Workspace:
     ws = _workspace(tmp_path)
+    ws.models_config.parent.mkdir(parents=True, exist_ok=True)
+    ws.models_config.write_bytes((ROOT / "config" / "models.toml").read_bytes())
+    (ws.repository / "config" / "models-real.toml").write_bytes(
+        (ROOT / "config" / "models-real.toml").read_bytes()
+    )
     _policy(ws)
     _submission(ws)
     return ws
@@ -179,6 +199,9 @@ def _run_argv(
     extra: tuple[str, ...] = (),
     bootstrap_extra: tuple[str, ...] = (),
 ) -> list[str]:
+    if not ws.models_config.exists():
+        ws.models_config.parent.mkdir(parents=True, exist_ok=True)
+        ws.models_config.write_bytes((ROOT / "config" / "models.toml").read_bytes())
     return [
         "--report-path",
         str(report_path or ws.volume / "pod-run-report.json"),
@@ -203,10 +226,25 @@ def _report(ws: Workspace, name: str = "pod-run-report.json") -> dict:
 # --- the green run: bootstrap, orchestrate over the volume, hold --------------
 
 
-def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_path: Path) -> None:
+def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
     actions = PreflightedActions()
+    monkeypatch.setattr(
+        actions,
+        "configure_cuda_compat",
+        lambda: actions._step(
+            BootstrapStep.CUDA_COMPAT,
+            {
+                "driver": "570.195.03",
+                "gpus": ["NVIDIA RTX A6000"],
+                "compat_path": "/usr/local/cuda-13.0/compat",
+                "action": "installed",
+            },
+        ),
+    )
     runner = RecordedRunner(returncode=0)
     real_recipes = ws.repository / "config" / "serving_recipes_real.toml"
     real_roster = ws.repository / "config" / "models-real.toml"
@@ -264,12 +302,15 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
         "--repository-commit",
         "a" * 40,
         "--cache-root",
-        str(ws.volume / "chair-cache"),
+        str(Path("/var/tmp/verbatus-chair-cache").resolve()),
+        "--store-root",
+        str(ws.store_root),
         "--placement-tier",
         TIER,
     ]
     # The scrubbed environment is what the orchestrator sees: no transfer key.
     assert "RUNPOD_S3_ACCESS_KEY" not in env
+    assert env["LD_LIBRARY_PATH"].split(":")[0] == "/usr/local/cuda-13.0/compat"
     report = _report(ws)
     assert report["schema"] == RUN_REPORT_SCHEMA
     assert report["state"] == "complete"
@@ -288,6 +329,183 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
     hold = _report(ws, "pod-run-report-hold.json")
     assert hold["state"] == "holding-after-complete"
     assert hold["tick"] == 4
+
+
+def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws, extra=("--models", "small")),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    assert code == pod_run.EXIT_SELECTION_COMPLETE
+    assert clock.seconds == 0
+    command = runner.calls[0][0]
+    assert command[command.index("--from") : command.index("--from") + 4] == [
+        "--from",
+        "door",
+        "--to",
+        "attestatores",
+    ]
+    report = _report(ws)
+    assert report["state"] == "selection-complete"
+    assert report["held_to_hard_deadline"] is False
+    assert report["plan"]["selection"]["models"] == "small"
+    assert report["plan"]["bootstrap"]["preflight_roles"] == [
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+        "designator_structure",
+        "secondary_proposer",
+    ]
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        ("--models", "big"),
+        ("--from", "perlector", "--to", "armarium"),
+        ("--stage", "perlector"),
+    ],
+)
+def test_starting_at_perlector_requires_the_attestatores_seal_before_bootstrap(
+    tmp_path: Path, selection: tuple[str, ...]
+) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    actions = PreflightedActions()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws, extra=selection),
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: actions,
+        runner=runner,
+    )
+    assert code == EXIT_REFUSED
+    assert "sealed attestatores" in _report(ws)["reason"]
+    assert actions.calls == []
+    assert runner.calls == []
+
+
+def test_big_models_maps_to_perlector_through_armarium(tmp_path: Path, monkeypatch) -> None:
+    ws = _prepared(tmp_path)
+    checked = []
+    monkeypatch.setattr(
+        pod_run, "verify_predecessor_seal", lambda tree, stage: checked.append((tree.run_id, stage))
+    )
+    clock = Clock()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws, extra=("--models", "big")),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    assert code == EXIT_COMPLETE
+    assert checked == [("first-real-run", "perlector")]
+    command = runner.calls[0][0]
+    assert command[command.index("--from") : command.index("--from") + 4] == [
+        "--from",
+        "perlector",
+        "--to",
+        "armarium",
+    ]
+    assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == ["perlector"]
+
+
+def test_a_held_selection_closes_without_paid_idle_time(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    code = main(
+        _run_argv(ws, extra=("--stage", "attestatores")),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=orchestrator.EXIT_HELD),
+    )
+    assert code == EXIT_HELD
+    assert clock.seconds == 0
+    assert _report(ws)["held_to_hard_deadline"] is False
+    assert not (ws.volume / "pod-run-report-hold.json").exists()
+
+
+def test_auto_and_empty_selection_preflight_roles(tmp_path: Path, capsys) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    for extra, expected in (((), None), (("--stage", "door"), [])):
+        assert (
+            main(
+                _run_argv(ws, extra=(*extra, "--dry-run")),
+                environ=_environ(clock),
+                now=clock.now,
+                sleeper=clock.sleep,
+            )
+            == EXIT_DRY_RUN
+        )
+        assert json.loads(capsys.readouterr().out)["bootstrap"]["preflight_roles"] == expected
+
+
+def test_attestatores_preflight_roles_follow_the_configured_roster(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(
+        pod_run,
+        "load_models_toml",
+        lambda path: SimpleNamespace(chairs={"attestator_7": object(), "perlector": object()}),
+    )
+    clock = Clock()
+    assert (
+        main(
+            _run_argv(ws, extra=("--models", "small", "--dry-run")),
+            environ=_environ(clock),
+            now=clock.now,
+            sleeper=clock.sleep,
+        )
+        == EXIT_DRY_RUN
+    )
+    roles = json.loads(capsys.readouterr().out)["bootstrap"]["preflight_roles"]
+    assert roles == ["attestator_7", "designator_structure", "secondary_proposer"]
+
+
+def test_selection_refuses_missing_chair_smoke_after_preflight(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+
+    class PartialSmoke(PreflightedActions):
+        def run_preflight(self) -> dict[str, object]:
+            return self._step(
+                BootstrapStep.PREFLIGHT,
+                {
+                    "color": "green",
+                    "placement_tier": TIER,
+                    "serving_config_inputs": SERVING_INPUTS,
+                    "smoke_receipts": [{"chair": "attestator_1"}],
+                },
+            )
+
+    code = main(
+        _run_argv(ws, extra=("--models", "small")),
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PartialSmoke(),
+        runner=runner,
+    )
+    assert code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "attestator_2" in _report(ws)["reason"]
 
 
 def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
@@ -339,7 +557,10 @@ def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
         == EXIT_COMPLETE
     )
     command = runner.calls[0][0]
-    assert command[command.index("--cache-root") + 1] == str(ws.volume / "chair-cache")
+    assert command[command.index("--cache-root") + 1] == str(
+        Path("/var/tmp/verbatus-chair-cache").resolve()
+    )
+    assert command[command.index("--store-root") + 1] == str(ws.store_root)
     for flag, path in (
         ("--triage-decision-manifest", decision),
         ("--triage-clusters", clusters),

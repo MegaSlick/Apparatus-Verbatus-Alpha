@@ -206,14 +206,14 @@ it saw and how long it waited in a local evidence file. Boot A uses it.
 as `completed-early` and closes the pod. A red step exits non-zero at once, which is the
 correct immediate close.
 
-- **Chair cache.** `ChairCacheBootstrapAction` copies each role's pinned bytes from a
-  verified retained store and verifies them before publication. Only model-store
-  materialization fetches from Hugging Face. The at-most-one same-pin re-fetch is not wired
-  (`refetch_same_pin=None`, 04-8) because `ChairRegistry` has no cache-clear verb; a
-  mismatch is red and names the chair.
+- **Chair cache.** `CHAIR_CACHE` records the pinned source plan without copying weights.
+  PREFLIGHT and each stage copy one role from the volume store to the container-local cache,
+  verify the copy against its pinned manifest, and evict other roles before the next fill.
+  An adapter base remains available while its adapter is filled. The at-most-one same-pin
+  re-fetch is not wired (04-8); a mismatch is red and names the chair.
 - **Transfer is optional.** No submission manifest on the volume is a vacuous success; a
   manifest with no configured target is a refusal.
-- **`PREFLIGHT`** runs `ChairRegistry.ensure` over the roster, then a smoke read through the
+- **`PREFLIGHT`** runs `ChairRegistry.ensure` for the selected roles, then a smoke read through the
   serving package's production seam (`assemble_serving_smoke_reader` around
   `ServingManager`, fed `operations/serving/smoke.py::VisionSmokeCall`). The witness value
   is drawn from the CSPRNG on the pod and rendered onto a golden page under
@@ -235,6 +235,16 @@ correct immediate close.
   declaration. The placement table is always the checkout's own `config/pod_placement.toml`,
   the one the stages seal; `CONFIGURATION` refuses any other resolved path, a symlink out
   included.
+- **CUDA compatibility.** Before the uv install, `CUDA_COMPAT` records `nvidia-smi`'s
+  driver and GPU names. Drivers below 580.65.06 on professional RTX or data-center cards
+  get the pinned `cuda-compat-13-0=580.178.04-1ubuntu1` from the image's NVIDIA apt
+  repository. Missing apt lists or that pin cause a named refusal; the bootstrap does not
+  refresh lists on a billing pod. It records the installed package version and requires
+  `cuInit(0)` to succeed through the compatibility library before it puts
+  `/usr/local/cuda-13.0/compat` first in `LD_LIBRARY_PATH` for preflight and `pod_run`'s
+  orchestrator, whose serving children inherit it. A GeForce card with an older driver
+  is refused before the serving stack download. The receipt records the action, including
+  each resume recheck when a restart has removed the container-local installation.
 - **Refusals come before any action**: a journal or report path outside the mounted volume;
   a lockfile that is not the checkout's `uv.lock`; a volume that fails a real write-and-read
   probe (it never creates the mount point it requires); a missing hard deadline; a
@@ -272,6 +282,7 @@ bootstrap checked and measured, and `--data-gate-policy` inside the repository. 
 | 5 | a red bootstrap step |
 | 6 | the orchestrator could not start or exited outside its vocabulary |
 | 7 | `--dry-run`: plan validated and printed, nothing ran |
+| 8 | selected stages completed before Armarium; the timer closes the pod |
 
 It refuses by name: no `--`; a `--hold-only` plan; a report path that is the bootstrap's or
 lacks the launch token; a run root or submission outside the volume or missing; a policy
@@ -287,11 +298,18 @@ submission outside every listed root is refused. Almost no machine has both root
 run report records which resolved and which did not (`approved_storage_roots`,
 `skipped_storage_roots`).
 
-**There is no `--placement-tier` flag.** No stage reads a tier; `pod_run` records the one
-the green `PREFLIGHT` receipt measured and refuses a receipt with none.
+`pod_run` forwards the `--placement-tier` measured by green `PREFLIGHT` to the
+orchestrator and records it in the report. `--stage` runs one boundary, `--from` and
+`--to` run an inclusive range, and no selection runs the full sequence. `--models small`
+selects Door through Attestatores on a cheap card; `--models big` resumes Perlector
+through Armarium on a big card, after verifying this run's sealed Attestatores
+stage on the volume before bootstrap. The two model toggles use the same range validation.
 
-**It holds only for a finished run.** After `complete` or `held` it holds to the hard
-deadline (paid idle time), because the pod timer treats an early exit as non-green. After
+**It holds only for a finished full run.** A selection ending before Armarium records
+`selection-complete` and returns at once so the pod timer closes the card. A held
+selection ending before Armarium also closes promptly. A full `complete` or terminal
+`held` holds to the hard deadline (paid idle time), because the pod timer
+treats an early exit as non-green. After
 `halted`, `failed` or a failed start it returns at once and lets the timer close the pod:
 holding a card for a run that will produce nothing more is paying for nothing. Everything
 stays on the volume. `held_to_hard_deadline` in the report says which way it went.
@@ -525,7 +543,7 @@ the runtime report's `-terminating.json` breadcrumb are derived the same way.
 `verbatus fetch-run --launch-receipt <path>` derives every key except the transfer journal
 from the saved receipt's sealed `docker_start_cmd`.
 
-**Not records, deliberately not fetched:** `<volume>/chair-cache/` (weights),
+**Not records, deliberately not fetched:** `<volume>/store/` (weights),
 `<volume>/submission/` and `<volume>/submission-manifest.json` (page images and their
 ledger, kept beside rather than inside the folder because the Door refuses pipeline records
 among source images), `<volume>/pod-transfer/` (transferred bytes), and any other upload
@@ -568,8 +586,8 @@ setpriv --no-new-privs --landlock-access fs:write-file -- /bin/true
 A kernel without working Landlock is a refusal: choose another host, never bypass it.
 
 Keep the repository, `.venv` and `UV_CACHE_DIR` on container-local disk. The serving stack
-needs roughly 101 GB of model cache against a 200 GB container disk; keep inputs, outputs,
-evidence and materialized models on the network volume.
+keeps only the active model in its container-local cache. Keep inputs, outputs,
+evidence and the materialized model store on the network volume.
 
 ### What the image must carry
 
@@ -583,7 +601,9 @@ evidence and materialized models on the network volume.
   token, credentials in the remote URL, or an SSH remote whose key the pod user can reach;
   an `http(s)` origin with none of these is refused.
 - **Tools at absolute paths; PATH is never searched.** `git` at `/usr/bin/git`, `uv` at
-  `/usr/local/bin/uv` (`BOOTSTRAP_EXECUTABLES`). The default uv installer writes
+  `/usr/local/bin/uv`, `nvidia-smi` at `/usr/bin/nvidia-smi`, `apt-cache` at
+  `/usr/bin/apt-cache`, `apt-get` at `/usr/bin/apt-get`, and `dpkg-query` at
+  `/usr/bin/dpkg-query` (`BOOTSTRAP_EXECUTABLES`). The default uv installer writes
   `~/.local/bin`, which does not qualify.
 - **A pre-built `<repository>/.venv` whose interpreter runs the primary process.**
   `bootstrap_main` imports PIL at module scope, so even `--hold-only` needs the environment
@@ -710,9 +730,9 @@ Record the pod id, timestamps, provider responses, and whether each item is **ve
 - [ ] Run the real preflight (GPU, driver, capability, VRAM, disk, chair cache, smoke read).
   The smoke preflight may launch the still-unproven rows for qualification; afterwards run
   `python -m operations.serving.qualify` on its report and evidence, review the candidates,
-  and stamp only the measured tier's rows proven. **Record `nvidia-smi`'s driver and CUDA version
-  before `uv sync --group pod`**: `torch 2.13.0` needs CUDA 13, so an older driver should
-  be refused before the download. Record whether the sync completed and how long it took,
+  and stamp only the measured tier's rows proven. Record the `CUDA_COMPAT` receipt and
+  `nvidia-smi`'s CUDA version before `uv sync --group pod`. Record whether the sync
+  completed and how long it took,
   whether each chair loaded under `vllm 0.27.1`, and per chair whether the witness was read
   back. **Record free container disk before and after the sync and the final `.venv` size**;
   they replace `models.DEFAULT_CONTAINER_DISK_GB`, `bootstrap.UV_CACHE_REQUIRED_BYTES` and
@@ -745,7 +765,7 @@ these IDs.
 | 04-5 | Untested seams | **Open**: the success paths of `sync_uv_environment`, `pod_timer.main`/`load_timer_context`, `cli.main` end to end through real `module:callable` factories (tests monkeypatch them), and `UrllibRunPodTransport`. |
 | 04-6 | Every RunPod field name is documented, not observed | **Open** until the first live run on each route in use; `--record-fixture` captures its exchanges to rebuild the offline suite on observed shapes. |
 | 04-7 | The close billing window was anchored on `lastStartedAt`, not creation | **Anchor closed under v2**: `created_at` is the pod's `createdAt`. **Still open**: that RunPod bills nothing before `createdAt` is unobserved, and v1 still anchors on `lastStartedAt` until it is deleted. |
-| 04-8 | The at-most-one same-pin cache re-fetch does not ship | **Partly closed.** Constructed with `refetch_same_pin=None` (no cache-clear verb); `_build_cache` is untested. |
+| 04-8 | The at-most-one same-pin cache re-fetch does not ship | **Superseded.** A role cache is filled from its pinned volume store when needed; a mismatch is named and refused, with no automatic repair attempt. |
 | 04-9 | Nothing proves billing buckets cover the declared window | **Window half closed under v2** when `metadata.query` is present: the declared window is the provider's resolved one, must cover the request, and an empty answer inside it reads `pending-reconciliation`. **Still open**: whether `metadata.query` appears on the `podId`-filtered route, and whether the buckets *fill* the window, wait on a live run; a coverage check written before that would guess, and a wrong guess turns every close red. |
 | 04-10 | The real serving stack could not be locked | **Closed**; see "The serving stack, re-planned and locked". |
 

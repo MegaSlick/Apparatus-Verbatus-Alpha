@@ -28,7 +28,14 @@ from .boot_b_request import (
 )
 from .cli import _request
 from .launch import _bind_report_path_to_launch
-from .models import DEFAULT_CONTAINER_DISK_GB, PodCreateRequest, run_report_paths, terminating_path
+from .models import (
+    BIG_CARD_CONTAINER_DISK_GB,
+    DEFAULT_CONTAINER_DISK_GB,
+    PodCreateRequest,
+    container_disk_gb_for_tier,
+    run_report_paths,
+    terminating_path,
+)
 from .preflight import load_placement_table
 from .spend import SpendPolicy, load_spend_policy
 
@@ -116,6 +123,24 @@ def test_the_committed_policy_renders_a_boot_b_request() -> None:
         assert phrase in rendered.text, phrase
 
 
+def test_boot_b_container_disk_follows_the_selected_card_tier() -> None:
+    placement = load_placement_table(PLACEMENT)
+    cards = {card.tier: card for card in placement.card_profiles}
+
+    def disk_for(tier: str) -> object:
+        return pod_request(
+            cards[tier],
+            image=IMAGE,
+            volume_id="volume-abc",
+            repository_commit=COMMIT,
+            run_id="boot-b-0001",
+            hard_deadline=_deadline(),
+        )["container_disk_gb"]
+
+    assert disk_for("generic-80gb-plus") == BIG_CARD_CONTAINER_DISK_GB
+    assert disk_for("generic-48gb") == DEFAULT_CONTAINER_DISK_GB
+
+
 def test_boot_b_forwards_canary_inputs_only_as_a_pair() -> None:
     args = dict(
         image=IMAGE,
@@ -189,12 +214,6 @@ def test_the_rendered_request_carries_no_transfer_half() -> None:
     assert f"{BOOT_B_VOLUME_MOUNT_PATH}/submission-manifest.json" in run_half
 
 
-def test_the_rendered_request_states_a_container_disk() -> None:
-    """The bootstrap fills this disk twice over; nothing may leave it to a default."""
-
-    assert filled_request()["container_disk_gb"] == 60
-
-
 # --- the shape the money path has to accept --------------------------------
 
 
@@ -225,12 +244,9 @@ def test_the_rendered_json_is_accepted_by_the_create_surface(tmp_path: Path) -> 
     loaded = _request(path)
 
     assert loaded.volume_mount_path == BOOT_B_VOLUME_MOUNT_PATH
-    # Against the constant that carries the arithmetic, not against the number
-    # it currently holds: the first boot replaces that number with a
-    # measurement, and a request still printing the old one would be found by
-    # a free-space refusal on a rented card.
-    assert loaded.container_disk_gb == DEFAULT_CONTAINER_DISK_GB
-    assert request["container_disk_gb"] == DEFAULT_CONTAINER_DISK_GB
+    expected_disk = container_disk_gb_for_tier(cheapest_card(load_placement_table(PLACEMENT)).tier)
+    assert loaded.container_disk_gb == expected_disk
+    assert request["container_disk_gb"] == expected_disk
     assert BOOT_B_REPOSITORY_PATH in _sealed_nested_argv(loaded.docker_start_cmd)[-1]
 
 

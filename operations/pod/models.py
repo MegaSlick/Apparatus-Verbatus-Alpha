@@ -266,7 +266,7 @@ def validate_pod_report_identity(
 
 
 DEFAULT_CONTAINER_DISK_GB = 60
-"""How much container-local disk every request asks for, in gigabytes.
+"""Container-local disk for a small card or a request with no known tier, in gigabytes.
 
 The bootstrap spends this disk twice over, and leaving it to the image or
 account default -- commonly 20 GB -- lets ``uv sync --group pod`` fill the
@@ -285,6 +285,14 @@ asks for it) and this number is replaced by the measured one. The pod-side
 refusal in ``bootstrap.sync_uv_environment`` is the half that does measure: it
 reads the free space actually present before the download starts.
 """
+
+BIG_CARD_CONTAINER_DISK_GB = 120
+"""Perlector pods: the 52 GiB 27B cache plus the ~32 GiB venv and uv cache."""
+
+
+def container_disk_gb_for_tier(tier: str | None) -> int:
+    """Size container-local disk from the reviewed placement tier, when known."""
+    return BIG_CARD_CONTAINER_DISK_GB if tier == "generic-80gb-plus" else DEFAULT_CONTAINER_DISK_GB
 
 
 @dataclass(frozen=True, slots=True)
