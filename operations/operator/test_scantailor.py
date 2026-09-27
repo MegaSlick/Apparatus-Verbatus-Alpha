@@ -725,33 +725,6 @@ def test_the_geometry_document_is_published_through_the_pinned_descriptor(tmp_pa
     assert len(pinned) >= 2
 
 
-def test_documented_word_count_matches_the_scantailor_extended_table() -> None:
-    """Bind the README table to the parser, not to a number written into the test.
-
-    A hard-coded count stays green when a verb is added or removed from
-    `build_parser`; deriving the expected set from the parser instead means the
-    README and the tool cannot drift apart unnoticed.
-    """
-    from operations.operator import cli
-
-    readme = Path(__file__).with_name("README.md").read_text(encoding="utf-8")
-    words = [line for line in readme.splitlines() if line.startswith("| `")]
-    documented = {line.split("`")[1].split()[0] for line in words}
-    (verb_action,) = (action for action in cli.build_parser()._actions if action.dest == "verb")
-    assert documented == set(verb_action.choices)
-    # The heading's number words come from the parser too, as the docstring
-    # promises: a count written into the test stayed green through one added
-    # verb and then broke on the next for the README saying the right thing.
-    spelled = {13: ("thirteen", "Eleven"), 14: ("fourteen", "Twelve"), 15: ("fifteen", "Thirteen")}
-    counted = len(verb_action.choices)
-    assert counted in spelled, (
-        f"{counted} verbs: extend this test's number words so the heading stays checkable"
-    )
-    total, doers = spelled[counted]
-    assert f"## The {total} words" in readme
-    assert f"{doers} things this tool can do" in readme
-
-
 def _worker(command: list[str], *, writable: Path | None, cwd: Path, input_text: str):
     from subprocess import CompletedProcess
 

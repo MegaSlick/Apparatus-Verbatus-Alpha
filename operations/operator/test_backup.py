@@ -226,6 +226,88 @@ def test_backup_snapshot_publish_survives_a_kill_before_the_link(tmp_path: Path)
     assert finished.reused == 2 and finished.copied == 0
 
 
+def test_every_linked_entry_is_synced_before_the_backup_reports_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+    folders = {
+        "parent": tmp_path,
+        "root": mac,
+        "objects": mac / "objects",
+        "objects/sha256": mac / "objects" / "sha256",
+        "snapshots": mac / "snapshots",
+        "snapshots/sha256": mac / "snapshots" / "sha256",
+    }
+    events: list[str] = []
+    real_fsync, real_link = os.fsync, backup_module._link_or_refuse
+
+    def fsync(descriptor: int) -> None:
+        opened = os.fstat(descriptor)
+        events.extend(
+            f"sync {label}"
+            for label, path in folders.items()
+            if path.exists() and os.path.samestat(opened, os.stat(path))
+        )
+        real_fsync(descriptor)
+
+    def link(temporary, target, descriptor, *, target_display):
+        events.append(f"link {target_display.parent.parent.name}")
+        return real_link(temporary, target, descriptor, target_display=target_display)
+
+    monkeypatch.setattr(backup_module.os, "fsync", fsync)
+    monkeypatch.setattr(backup_module, "_link_or_refuse", link)
+    sync_run_tree(volume, run_id, mac)
+
+    assert events == [
+        "sync parent",
+        "link objects",
+        "link objects",
+        "sync root",
+        "sync objects",
+        "sync objects/sha256",
+        "sync snapshots",
+        "link snapshots",
+        "sync snapshots/sha256",
+    ]
+
+
+def test_a_folder_that_cannot_be_synced_refuses_the_backup(tmp_path: Path, monkeypatch) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+    mac.mkdir()
+    real_fsync = os.fsync
+
+    def fsync(descriptor: int) -> None:
+        failing = mac / "objects" / "sha256"
+        if failing.exists() and os.path.samestat(os.fstat(descriptor), os.stat(failing)):
+            raise OSError(errno.EIO, "Input/output error")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(backup_module.os, "fsync", fsync)
+    with pytest.raises(BackupRefusal, match="objects/sha256 could not be synced.*local disk"):
+        sync_run_tree(volume, run_id, mac)
+    assert not list((mac / "snapshots" / "sha256").iterdir())
+
+
+def test_an_existing_root_is_refused_when_its_parent_cannot_be_synced(
+    tmp_path: Path, monkeypatch
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+    sync_run_tree(volume, run_id, mac)
+    real_fsync = os.fsync
+
+    def fsync(descriptor: int) -> None:
+        if os.path.samestat(os.fstat(descriptor), os.stat(tmp_path)):
+            raise OSError(errno.EIO, "Input/output error")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(backup_module.os, "fsync", fsync)
+    with pytest.raises(BackupRefusal, match="could not be synced.*local disk"):
+        sync_run_tree(volume, run_id, mac)
+
+
 def test_backup_cli_uses_a_confined_credential_free_child(tmp_path: Path, monkeypatch) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"

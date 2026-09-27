@@ -23,7 +23,7 @@ import os
 import stat
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -1091,8 +1091,6 @@ def _checked_page_attachment(
     act_id = act["act_id"]
     chair = attachment["chair"]
     attachment_page = attachment["page_ordinal"]
-    span = attachment["span"]
-    view = None
     if attachment_page not in page_ids:
         raise SchemaRefusal(
             f"act {act_id} page attachment names page {attachment_page!r} outside its "
@@ -1113,17 +1111,7 @@ def _checked_page_attachment(
         page_testimonia_seen[testimonium["artifact_id"]] = testimonium
     native_capture = page_payload.get("native_capture")
     if native_capture is not None:
-        if native_capture["raw_response_ref"] not in testimonium.get("inputs", []):
-            raise SchemaRefusal(
-                f"act {act_id} page Testimonium for chair {chair!r} does not bind its "
-                "retained raw response as a verified input"
-            )
-        if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
-            raise SchemaRefusal(
-                f"act {act_id} page Testimonium for chair {chair!r} attributes its "
-                "native capture to an adapter other than that chair's configured boundary"
-            )
-        verify_native_capture_blob(context.tree, native_capture)
+        _verify_page_native_capture(context, act_id, chair, testimonium, native_capture)
     # Sealed proposal geometry only, as the writer used: a recovery crop postdates
     # testimony, so it may not enlarge the denominator that attached it.
     page_bases = [
@@ -1157,6 +1145,41 @@ def _checked_page_attachment(
             "page text, against the sealed proposal"
         )
     deltas = sealed_proposal_edge_deltas(page_payload, page_bases)
+    _check_page_testimonium_matches(act, attachment, page_payload)
+    # The exact label is evidence about independence: `anchor-line` says the chair
+    # counts only because another chair's anchor located its text.
+    if attachment["attached"] and attachment["attachment_basis"] != derived_basis:
+        raise SchemaRefusal(
+            f"act {act_id} page attachment for chair {chair!r} names basis "
+            f"{attachment['attachment_basis']!r}, but its own retained evidence "
+            f"attached it by {derived_basis!r}"
+        )
+    return _page_comparison_view(act_id, attachment, page_payload), deltas
+
+
+def _verify_page_native_capture(
+    context, act_id: str, chair: str, testimonium: dict, native_capture: dict
+) -> None:
+    if native_capture["raw_response_ref"] not in testimonium.get("inputs", []):
+        raise SchemaRefusal(
+            f"act {act_id} page Testimonium for chair {chair!r} does not bind its "
+            "retained raw response as a verified input"
+        )
+    if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
+        raise SchemaRefusal(
+            f"act {act_id} page Testimonium for chair {chair!r} attributes its "
+            "native capture to an adapter other than that chair's configured boundary"
+        )
+    verify_native_capture_blob(context.tree, native_capture)
+
+
+def _check_page_testimonium_matches(
+    act: dict[str, Any], attachment: dict[str, Any], page_payload: dict[str, Any]
+) -> None:
+    """The page Testimonium is this chair's, for this page, in a role the act allows."""
+    act_id = act["act_id"]
+    chair = attachment["chair"]
+    attachment_page = attachment["page_ordinal"]
     unjoined = page_payload.get("unjoined_act_attempts")
     if (
         page_payload.get("chair") != chair
@@ -1210,100 +1233,87 @@ def _checked_page_attachment(
         )
     # No row means the act joined. An omitted act is disclosed with the outcome that
     # explains it; a reading may still be omitted (a structured native object cannot join).
-    row = current_unjoined[0] if current_unjoined else None
-    disclosed = row["outcome"] in WITNESS_READING_OUTCOMES if row is not None else True
     # Joining only proves the bytes arrived: a joined response may still be unaligned,
     # but an omitted one can never attach.
-    if not disclosed and attachment["attached"]:
+    if (
+        attachment["attached"]
+        and current_unjoined
+        and current_unjoined[0]["outcome"] not in WITNESS_READING_OUTCOMES
+    ):
         raise SchemaRefusal(
             f"act {act_id} attachment disagrees with its page Testimonium's unjoined-attempt record"
         )
-    alignment = attachment["alignment"]
-    # The exact label is evidence about independence: `anchor-line` says the chair
-    # counts only because another chair's anchor located its text.
-    if attachment["attached"] and attachment["attachment_basis"] != derived_basis:
-        raise SchemaRefusal(
-            f"act {act_id} page attachment for chair {chair!r} names basis "
-            f"{attachment['attachment_basis']!r}, but its own retained evidence "
-            f"attached it by {derived_basis!r}"
-        )
-    if (
-        attachment["attached"]
-        and isinstance(alignment, dict)
-        and alignment.get("status") == "aligned"
-    ):
-        if (
-            set(alignment)
-            != {
-                "status",
-                "anchor_basis",
-                "anchor_chair",
-                "anchor_span",
-                "witness_span",
-                "anchor_line_match",
-                "line_geometry",
-                "loss",
-                "offset_maps",
-                "deadline_in_force",
-            }
-            or (
-                alignment.get("anchor_basis") == "act-anchor"
-                and not isinstance(alignment.get("anchor_chair"), str)
-            )
-            or (
-                alignment.get("anchor_basis") != "act-anchor"
-                and alignment.get("anchor_chair") is not None
-            )
-            or span != alignment.get("witness_span")
-            # Whether the SIGALRM backstop was armed, not only whether it finished.
-            or not isinstance(alignment.get("deadline_in_force"), bool)
-        ):
-            raise SchemaRefusal("an attached page witness has no computed alignment")
-        page_text = page_payload.get("payload")
-        witness_span = alignment["witness_span"]
-        if not isinstance(page_text, str):
-            raise SchemaRefusal("an attached page witness has no textual comparison view")
-        # `witness_span` indexes the raw page reading. The slice is stripped of
-        # markup because dissent assumes a markup-free comparison view.
-        view = act_comparison_view(page_text, witness_span)
-    elif attachment["attached"] and (
-        not isinstance(alignment, dict)
-        or set(alignment) != {"status", "reason"}
-        or alignment.get("status") != "unaligned"
-        or span is not None
-        or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
-    ):
-        raise SchemaRefusal("a geometrically attached page witness has no explicit span limit")
-    elif (
-        not attachment["attached"]
-        and isinstance(alignment, dict)
-        and alignment.get("status") == "aligned"
-    ):
+
+
+def _is_explicit_unaligned(alignment: Any) -> bool:
+    """An unaligned result with a reason, so the operator can tell why comparison failed."""
+    return (
+        isinstance(alignment, dict)
+        and set(alignment) == {"status", "reason"}
+        and alignment.get("status") == "unaligned"
+        and isinstance(alignment["reason"], str)
+        and bool(alignment["reason"].strip())
+    )
+
+
+def _page_comparison_view(
+    act_id: str, attachment: dict[str, Any], page_payload: dict[str, Any]
+) -> str | None:
+    """The act's slice of an attached, aligned page reading, once its alignment is proven."""
+    chair, span, alignment = attachment["chair"], attachment["span"], attachment["alignment"]
+    aligned = isinstance(alignment, dict) and alignment.get("status") == "aligned"
+    view = None
+    if attachment["attached"]:
+        if aligned:
+            if (
+                set(alignment)
+                != {
+                    "status",
+                    "anchor_basis",
+                    "anchor_chair",
+                    "anchor_span",
+                    "witness_span",
+                    "anchor_line_match",
+                    "line_geometry",
+                    "loss",
+                    "offset_maps",
+                    "deadline_in_force",
+                }
+                or (
+                    alignment.get("anchor_basis") == "act-anchor"
+                    and not isinstance(alignment.get("anchor_chair"), str)
+                )
+                or (
+                    alignment.get("anchor_basis") != "act-anchor"
+                    and alignment.get("anchor_chair") is not None
+                )
+                or span != alignment.get("witness_span")
+                # Whether the SIGALRM backstop was armed, not only whether it finished.
+                or not isinstance(alignment.get("deadline_in_force"), bool)
+            ):
+                raise SchemaRefusal("an attached page witness has no computed alignment")
+            page_text = page_payload.get("payload")
+            if not isinstance(page_text, str):
+                raise SchemaRefusal("an attached page witness has no textual comparison view")
+            view = act_comparison_view(page_text, alignment["witness_span"])
+        elif span is not None or not _is_explicit_unaligned(alignment):
+            raise SchemaRefusal("a geometrically attached page witness has no explicit span limit")
+    elif aligned:
         # Text alignment cannot authorize a geometric attachment or comparison view.
         if span is not None:
             raise SchemaRefusal("an unattached page witness claims a comparison span")
-    elif not attachment["attached"] and (
-        not isinstance(alignment, dict)
-        or set(alignment) != {"status", "reason"}
-        or alignment.get("status") != "unaligned"
-        or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
-    ):
-        # Without a reason the operator cannot tell why comparison failed.
+    elif not _is_explicit_unaligned(alignment):
         raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
     # Geometry alone cannot satisfy the witness floor: the act also needs an aligned
     # slice of retained page text, re-derived so it cannot be claimed by assertion.
-    if attachment["comparable"] != (
-        attachment["attached"]
-        and isinstance(alignment, dict)
-        and alignment.get("status") == "aligned"
-    ):
+    if attachment["comparable"] != (attachment["attached"] and aligned):
         raise SchemaRefusal(
             f"act {act_id} page attachment for chair {chair!r} claims a comparability "
             "its own recorded alignment does not support. The witness floor could count "
             "text that was never placed in this act. Rebuild comparability from the "
             "referenced page Testimonium and alignment."
         )
-    return view, deltas
+    return view
 
 
 def _checked_act_scoped_attachment(
@@ -1467,8 +1477,6 @@ def verify_region(context, region: dict) -> dict:
         ) from error
 
 
-# Re-exported from dossier.py, which derives witness coverage from the testimonia it
-# carries.
 witnessed_region_ids = dossier_module.witnessed_region_ids
 
 
@@ -1668,44 +1676,27 @@ def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict
     return references
 
 
-def _live_reader(
-    context,
-    args,
-    *,
-    chair: ChairIdentity,
-    protocol_config,
-    decoding_policy: dict[str, Any],
-    decoding_sha256: str,
-    serving_factory,
-    service: "ResidentChair",
-) -> tuple[VLLMReader, dict[str, str]]:
-    """Start this run's one chair; return its reader and receipt reference.
+def _start_live_reader(run: "_Pass") -> None:
+    """Start this run's one chair and keep its reader and receipt reference on the pass.
 
     Every record the pass publishes names the receipt of the service that answered,
     which `ChairClient.__enter__` has checked names this chair and revision
     (principle 6).
     """
-    factory = serving_factory or partial(
-        stage_chair_client,
-        decoding_config_sha256=decoding_sha256,
-        # The sealed reading-of-record temperature; `ChairClient` refuses anything but 0
-        # rather than coercing it.
-        record_temperature=decoding_policy["reading_of_record"]["temperature"],
-    )
     # Assigned before entering so `close` covers any failure from here on; closing an
     # unstarted client is a no-op.
-    service.client = factory(context, chair, args.placement_tier)
-    service.client.__enter__()
+    run.service.client = run.client_factory(run.context, run.chair, run.args.placement_tier)
+    run.service.client.__enter__()
     reader = VLLMReader(
-        client=service.client,
-        chair=chair,
-        protocol_config=protocol_config,
+        client=run.service.client,
+        chair=run.chair,
+        protocol_config=run.protocol_config,
         # No sealed output bound: vLLM bounds generation by `max_model_len`, so an
         # engine `"length"` means the context was exhausted, not that the harness cut
         # the reading.
         max_tokens=None,
     )
-    return reader, dict(service.client.handle.receipt_reference)
+    run.reader, run.receipt_ref = reader, dict(run.service.client.handle.receipt_reference)
 
 
 def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -1738,8 +1729,7 @@ def _reading_already_sealed(context, act_id: str, ordinal: int, *, act_key: str)
     A failed Perlectio is validated before the chair is skipped, so malformed failure
     bytes cannot become a permanent resume bypass.
     """
-    attempt = perlector_attempt_id(act_id, "perlegere", ordinal)
-    identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
+    identifier = _attempt_artifact_id(act_id, "perlectio", "perlegere", ordinal)
     if not context.tree.resolve(
         context.tree.artifact_path(PERLECTOR, "perlectio", identifier)
     ).exists():
@@ -1748,16 +1738,6 @@ def _reading_already_sealed(context, act_id: str, ordinal: int, *, act_key: str)
     if reading["outcome"] == "failed" and "failure" in reading["payload"]:
         validate_failed_perlectio(context, reading, act_id, expected_act_key=act_key)
     return True
-
-
-def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
-    """Which pre-Perlectio artifacts of this attempt are already on disk.
-
-    An attempt that stopped part-way (abort, timeout, OOM, SIGKILL) leaves immutable
-    artifacts; a resume that simply read again would republish them from a second live
-    answer and be refused on every retry.
-    """
-    return frozenset(kind for kind, _identifier in _present_arms(context, act_id, ordinal))
 
 
 def _present_arms(context, act_id: str, ordinal: int):
@@ -1798,7 +1778,7 @@ def _acts_left_to_read(context, wanted: list[dict[str, Any]]) -> int:
         ordinal = _next_attempt(context, act_id, act_regions(context, act_id)[0])
         if _reading_already_sealed(context, act_id, ordinal, act_key=act["act_key"]):
             continue
-        if _sealed_pass_kinds(context, act_id, ordinal):
+        if any(_present_arms(context, act_id, ordinal)):
             half_read.append(act["act_key"])
         left += 1
     if half_read:
@@ -2068,20 +2048,29 @@ def _reported_call_evidence(error: Exception) -> dict[str, Any]:
 
 
 def _publish_not_run(
-    context,
-    *,
-    act_id: str,
+    run: "_Pass",
+    act: dict[str, Any],
     ordinal: int,
+    *,
     fields: frozenset,
-    payload: dict[str, Any],
+    reason: str,
     inputs: list[dict[str, str]] | None = None,
+    **facts: Any,
 ) -> None:
+    """Publish why an act was not read, in the closed shape of that reason."""
+    payload = {
+        "act_key": act["act_key"],
+        "attempt_ordinal": ordinal,
+        "reason": reason,
+        **facts,
+        "provenance": provenance_for(run.context, run.chair, attempted=False),
+    }
     validate_not_run_payload(payload, fields=fields)
-    context.publish(
+    run.context.publish(
         kind="perlectio",
-        subject_id=act_id,
+        subject_id=act["act_id"],
         outcome="not-run",
-        attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
+        attempt=perlector_attempt_id(act["act_id"], "perlegere", ordinal),
         inputs=inputs,
         payload=payload,
     )
@@ -2140,14 +2129,6 @@ def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
     return None
 
 
-def _failure_evidence_inputs(failure: Mapping[str, Any]) -> list[dict[str, str]]:
-    return [
-        dict(failure[name])
-        for name in ("raw_response_ref", "call_record_ref", "receipt_ref")
-        if failure[name] is not None
-    ]
-
-
 def _failure_from_engine_call(
     context, engine_call: Mapping[str, Any] | None, *, detail: str
 ) -> dict[str, Any]:
@@ -2173,40 +2154,6 @@ def _failure_from_engine_call(
     return record
 
 
-def _publish_failed_perlectio(
-    context, *, act_id: str, ordinal: int, inputs: list[dict[str, str]], payload: dict[str, Any]
-) -> None:
-    """Fully validate the prospective immutable record before publishing it."""
-    attempt = perlector_attempt_id(act_id, "perlegere", ordinal)
-    inputs = _distinct_inputs(inputs)
-    candidate = build_envelope(
-        run_id=context.tree.run_id,
-        artifact_id=artifact_id(PERLECTOR, "perlectio", act_id, attempt),
-        subject_id=act_id,
-        stage=PERLECTOR,
-        kind="perlectio",
-        outcome="failed",
-        config_digest=context.config_digest,
-        adapter_revision=context.adapter_revision,
-        inputs=inputs,
-        payload=payload,
-        attempt=attempt,
-    )
-    validate_failed_perlectio(context, candidate, act_id, expected_act_key=payload.get("act_key"))
-    context.publish(
-        kind="perlectio",
-        subject_id=act_id,
-        outcome="failed",
-        attempt=attempt,
-        inputs=inputs,
-        payload=payload,
-    )
-    identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
-    validate_failed_perlectio(
-        context, context.tree.read_artifact(PERLECTOR, "perlectio", identifier), act_id
-    )
-
-
 def _publish_reading_failure(
     context,
     *,
@@ -2218,18 +2165,46 @@ def _publish_reading_failure(
     reason: str,
     provenance: dict[str, Any],
 ) -> None:
-    _publish_failed_perlectio(
-        context,
-        act_id=act_id,
-        ordinal=ordinal,
-        inputs=inputs + _failure_evidence_inputs(failure),
-        payload={
-            "act_key": act_key,
-            "attempt_ordinal": ordinal,
-            "reason": reason,
-            "failure": failure,
-            "provenance": provenance,
-        },
+    """Fully validate the prospective immutable failed Perlectio before publishing it."""
+    evidence = [
+        dict(failure[name])
+        for name in ("raw_response_ref", "call_record_ref", "receipt_ref")
+        if failure[name] is not None
+    ]
+    inputs = _distinct_inputs(inputs + evidence)
+    payload = {
+        "act_key": act_key,
+        "attempt_ordinal": ordinal,
+        "reason": reason,
+        "failure": failure,
+        "provenance": provenance,
+    }
+    attempt = perlector_attempt_id(act_id, "perlegere", ordinal)
+    identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
+    candidate = build_envelope(
+        run_id=context.tree.run_id,
+        artifact_id=identifier,
+        subject_id=act_id,
+        stage=PERLECTOR,
+        kind="perlectio",
+        outcome="failed",
+        config_digest=context.config_digest,
+        adapter_revision=context.adapter_revision,
+        inputs=inputs,
+        payload=payload,
+        attempt=attempt,
+    )
+    validate_failed_perlectio(context, candidate, act_id, expected_act_key=act_key)
+    context.publish(
+        kind="perlectio",
+        subject_id=act_id,
+        outcome="failed",
+        attempt=attempt,
+        inputs=inputs,
+        payload=payload,
+    )
+    validate_failed_perlectio(
+        context, context.tree.read_artifact(PERLECTOR, "perlectio", identifier), act_id
     )
 
 
@@ -3157,36 +3132,93 @@ class _Attempt:
     def provenance(self, context) -> dict:
         return provenance_for(context, self.chair, attempted=True, receipt_ref=self.receipt_ref)
 
+    def truncation(self, text: str, stop_reason: str | None) -> dict[str, Any]:
+        return truncation.classify(
+            text,
+            region_pixels=self.region_pixels,
+            page_pixels=self.page_pixels,
+            truncation_policy=self.protocol_config[protocol.TRUNCATION_TABLE],
+            stop_reason=stop_reason,
+        )
 
-def _publication_pass_data(
-    attempt: _Attempt, dossier: dict[str, Any], result: dict[str, Any]
-) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], str]:
+
+def _arm_reading(
+    context, attempt: _Attempt, dossier: dict[str, Any], result: dict[str, Any], testimonia
+) -> tuple[dict[str, Any], str, dict[str, dict[str, str]]]:
+    """The fields every arm's record shares, its outcome, and its Testimonium references."""
     sealed_dossier = _reseal_dossier(dossier)
     prompt = prompts.prompt_evidence(
         attempt.chair, sealed_dossier, attempt.protocol_config, attempt.protocol_sha256
     )
-    truncation_record = truncation.classify(
-        result["text"],
-        region_pixels=attempt.region_pixels,
-        page_pixels=attempt.page_pixels,
-        truncation_policy=attempt.protocol_config[protocol.TRUNCATION_TABLE],
-        stop_reason=result["stop_reason"],
-    )
+    truncation_record = attempt.truncation(result["text"], result["stop_reason"])
     outcome = _resolve_outcome(
         declared_failure=None, truncation_record=truncation_record, text=result["text"]
     )
     text = "" if outcome == "no-readable-text" else result["text"]
-    return sealed_dossier, prompt, outcome, truncation_record, text
+    references = _testimonium_references(context, testimonia)
+    assessment, spans, gaps = _published_doubt(
+        result,
+        text=text,
+        outcome=outcome,
+        whole_act_gaps=_whole_act_gap(testimonia, references),
+    )
+    payload = {
+        "act_key": attempt.act_key,
+        "attempt_ordinal": attempt.ordinal,
+        "text": text,
+        "dossier": sealed_dossier,
+        "prompt": prompt,
+        "truncation": truncation_record,
+        "uncertain_spans": spans,
+        "uncertainty_assessment": assessment,
+        "gaps": gaps,
+    }
+    return payload, outcome, references
 
 
-def _arm_image_inputs(
-    context, attempt: _Attempt, sealed_dossier: dict[str, Any]
-) -> list[dict[str, str]]:
-    return _reading_image_inputs(
-        context,
-        attempt.bases,
-        attempt.page_renders,
-        autopsia=sealed_dossier["cross_capture_autopsia"],
+def _publish_arm(
+    context,
+    attempt: _Attempt,
+    result: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    kind: str,
+    operation: str,
+    outcome: str,
+    fields: frozenset,
+    witness_inputs: list[dict[str, str]] | None = None,
+    approval_ref: ApprovalRecordBinding | None = None,
+) -> None:
+    """Validate one arm's record against exactly the inputs it cites, then publish it."""
+    fields = with_engine_call(payload, result, fields)
+    reading_inputs = (
+        _reading_image_inputs(
+            context,
+            attempt.bases,
+            attempt.page_renders,
+            autopsia=payload["dossier"]["cross_capture_autopsia"],
+        )
+        + (witness_inputs or [])
+        + engine_call_inputs(context, result.get("engine_call"))
+    )
+    validate_reading_payload(
+        payload,
+        outcome=outcome,
+        fields=fields,
+        run_id=context.tree.run_id,
+        config_digest=context.config_digest,
+        protocol_config=attempt.protocol_config,
+        protocol_sha256=attempt.protocol_sha256,
+        inputs=reading_inputs,
+    )
+    context.publish(
+        kind=kind,
+        subject_id=attempt.act_id,
+        outcome=outcome,
+        attempt=perlector_attempt_id(attempt.act_id, operation, attempt.ordinal),
+        inputs=reading_inputs
+        + ([approval_ref.reference.to_record()] if approval_ref is not None else []),
+        payload=payload,
     )
 
 
@@ -3227,51 +3259,25 @@ def _publish_lectio_nuda(
     approval_ref: ApprovalRecordBinding,
 ) -> None:
     """Publish outside Perlectio kind and attempt identity with no witness facts."""
-    nuda_dossier, prompt, outcome, truncation_record, nuda_text = _publication_pass_data(
-        attempt, dossier, result
-    )
-    nuda_assessment, nuda_spans, nuda_gaps = _published_doubt(
-        result,
-        text=nuda_text,
-        outcome=outcome,
-        whole_act_gaps=_whole_act_gap([], {}),
-    )
-    payload = {
-        "act_key": attempt.act_key,
-        "attempt_ordinal": attempt.ordinal,
-        "text": nuda_text,
-        "dossier": nuda_dossier,
-        "prompt": prompt,
-        "sampling": nuda.sampling_design(
+    payload, outcome, _ = _arm_reading(context, attempt, dossier, result, [])
+    payload.update(
+        sampling=nuda.sampling_design(
             nuda_per_mille=context.nuda_per_mille,
             approval_ref=approval_ref,
         ),
-        "dissent": [],
-        "truncation": truncation_record,
-        "uncertain_spans": nuda_spans,
-        "uncertainty_assessment": nuda_assessment,
-        "gaps": nuda_gaps,
-        "provenance": attempt.provenance(context),
-    }
-    fields = with_engine_call(payload, result, _LECTIO_NUDA_FIELDS)
-    reading_inputs = _arm_image_inputs(context, attempt, nuda_dossier) + engine_call_inputs(
-        context, result.get("engine_call")
+        dissent=[],
+        provenance=attempt.provenance(context),
     )
-    validate_reading_payload(
+    _publish_arm(
+        context,
+        attempt,
+        result,
         payload,
-        outcome=outcome,
-        fields=fields,
-        protocol_config=attempt.protocol_config,
-        protocol_sha256=attempt.protocol_sha256,
-        inputs=reading_inputs,
-    )
-    context.publish(
         kind=nuda.LECTIO_NUDA_KIND,
-        subject_id=attempt.act_id,
+        operation="lectio-nuda",
         outcome=outcome,
-        attempt=perlector_attempt_id(attempt.act_id, "lectio-nuda", attempt.ordinal),
-        inputs=reading_inputs + [approval_ref.reference.to_record()],
-        payload=payload,
+        fields=_LECTIO_NUDA_FIELDS,
+        approval_ref=approval_ref,
     )
 
 
@@ -3279,55 +3285,28 @@ def _publish_lectio_prior(
     context, attempt: _Attempt, dossier: dict[str, Any], result: dict[str, Any]
 ) -> dict:
     """Publish Pass A as a retained draft, never as a Perlectio."""
-    prior_dossier, prompt, outcome, truncation_record, text = _publication_pass_data(
-        attempt, dossier, result
+    payload, outcome, _ = _arm_reading(context, attempt, dossier, result, [])
+    payload.update(
+        dissent=[],
+        provenance=attempt.provenance(context),
+        protocol=_protocol_record(context, attempt.protocol_config),
     )
-    prior_assessment, prior_spans, prior_gaps = _published_doubt(
+    _publish_arm(
+        context,
+        attempt,
         result,
-        text=text,
-        outcome=outcome,
-        whole_act_gaps=_whole_act_gap([], {}),
-    )
-    payload = {
-        "act_key": attempt.act_key,
-        "attempt_ordinal": attempt.ordinal,
-        "text": text,
-        "dossier": prior_dossier,
-        "prompt": prompt,
-        "dissent": [],
-        "truncation": truncation_record,
-        "uncertain_spans": prior_spans,
-        "uncertainty_assessment": prior_assessment,
-        "gaps": prior_gaps,
-        "provenance": attempt.provenance(context),
-        "protocol": _protocol_record(context, attempt.protocol_config),
-    }
-    fields = with_engine_call(payload, result, _LECTIO_PRIOR_FIELDS)
-    reading_inputs = _arm_image_inputs(context, attempt, prior_dossier) + engine_call_inputs(
-        context, result.get("engine_call")
-    )
-    validate_reading_payload(
         payload,
-        outcome=outcome,
-        fields=fields,
-        protocol_config=attempt.protocol_config,
-        protocol_sha256=attempt.protocol_sha256,
-        inputs=reading_inputs,
-    )
-    context.publish(
         kind="lectio-prior",
-        subject_id=attempt.act_id,
+        operation="lectio-prior",
         outcome=outcome,
-        attempt=perlector_attempt_id(attempt.act_id, "lectio-prior", attempt.ordinal),
-        inputs=reading_inputs,
-        payload=payload,
+        fields=_LECTIO_PRIOR_FIELDS,
     )
     prior_artifact_id = _attempt_artifact_id(
         attempt.act_id, "lectio-prior", "lectio-prior", attempt.ordinal
     )
     return {
         "reference": context.artifact_ref(PERLECTOR, "lectio-prior", prior_artifact_id),
-        "text": text,
+        "text": payload["text"],
     }
 
 
@@ -3342,75 +3321,43 @@ def _publish_primed_without_prior(
     approval_ref: ApprovalRecordBinding,
 ) -> None:
     """The sampled control sees witnesses but never the Pass-A draft."""
-    control_dossier, prompt, outcome, truncation_record, text = _publication_pass_data(
-        attempt, dossier, result
+    payload, outcome, testimonium_references = _arm_reading(
+        context, attempt, dossier, result, testimonia
     )
-    testimonium_references = _testimonium_references(context, testimonia)
-    # `context.run` was verified when opened and nothing rewrites `run.json`, so it is
-    # not re-read per act.
-    membership = context.run["corpus_frame_membership"]
-    control_assessment, control_spans, control_gaps = _published_doubt(
-        result,
-        text=text,
-        outcome=outcome,
-        whole_act_gaps=_whole_act_gap(testimonia, testimonium_references),
-    )
-    payload = {
-        "act_key": attempt.act_key,
-        "attempt_ordinal": attempt.ordinal,
-        "text": text,
-        "basis": {
+    payload.update(
+        basis={
             "regions": attempt.bases,
             "testimonia": _testimonia_basis(testimonia, testimonium_references),
         },
-        "dossier": control_dossier,
-        "prompt": prompt,
-        "sampling": protocol.control_sampling_design(
+        sampling=protocol.control_sampling_design(
             per_mille=context.perlector_instrument_per_mille,
             selection_rule=attempt.protocol_config["selection_rule"],
             approval_ref=approval_ref,
         ),
-        # The digest draw above is keyed by the logical act. Record that same
-        # subject here; a local capture ID would make a clustered control's
-        # retained membership impossible to reproduce from its own facts.
-        "membership": {
-            **membership,
-            "act_id": control_dossier["logical_act_id"],
+        # The sampling draw is keyed by the logical act, so the membership records that
+        # subject; a capture ID would make a clustered control irreproducible. `context.run`
+        # was verified when opened and nothing rewrites `run.json`.
+        membership={
+            **context.run["corpus_frame_membership"],
+            "act_id": payload["dossier"]["logical_act_id"],
             "protocol_sha256": attempt.protocol_sha256,
         },
-        "dissent": dissent_against(text, dissent_testimonia(testimonia, attachment_view)),
-        "truncation": truncation_record,
-        "uncertain_spans": control_spans,
-        "uncertainty_assessment": control_assessment,
-        "gaps": control_gaps,
-        "provenance": attempt.provenance(context),
-        "lectio_kind": "primed-without-prior",
-        "protocol": _protocol_record(context, attempt.protocol_config),
-    }
-    fields = with_engine_call(payload, result, _PRIMED_WITHOUT_PRIOR_FIELDS)
-    reading_inputs = (
-        _arm_image_inputs(context, attempt, control_dossier)
-        + list(testimonium_references.values())
-        + [attachment_view["reference"]]
-        + engine_call_inputs(context, result.get("engine_call"))
+        dissent=dissent_against(payload["text"], dissent_testimonia(testimonia, attachment_view)),
+        provenance=attempt.provenance(context),
+        lectio_kind="primed-without-prior",
+        protocol=_protocol_record(context, attempt.protocol_config),
     )
-    validate_reading_payload(
+    _publish_arm(
+        context,
+        attempt,
+        result,
         payload,
-        outcome=outcome,
-        fields=fields,
-        run_id=context.tree.run_id,
-        config_digest=context.config_digest,
-        protocol_config=attempt.protocol_config,
-        protocol_sha256=attempt.protocol_sha256,
-        inputs=reading_inputs,
-    )
-    context.publish(
         kind="primed-without-prior",
-        subject_id=attempt.act_id,
+        operation="primed-without-prior",
         outcome=outcome,
-        attempt=perlector_attempt_id(attempt.act_id, "primed-without-prior", attempt.ordinal),
-        inputs=reading_inputs + [approval_ref.reference.to_record()],
-        payload=payload,
+        fields=_PRIMED_WITHOUT_PRIOR_FIELDS,
+        witness_inputs=list(testimonium_references.values()) + [attachment_view["reference"]],
+        approval_ref=approval_ref,
     )
 
 
@@ -3440,24 +3387,16 @@ def _established_row(
     prompt = prompts.prompt_evidence(
         attempt.chair, primed_dossier, attempt.protocol_config, attempt.protocol_sha256
     )
-    # A declared failure is refused in live mode before any call.
     reading = "" if declared_failure == "no-readable-text" else result["text"]
     truncation_record = _reconciled_truncation(
         declared_failure=declared_failure,
-        truncation_record=truncation.classify(
-            reading,
-            region_pixels=attempt.region_pixels,
-            page_pixels=attempt.page_pixels,
-            truncation_policy=attempt.protocol_config[protocol.TRUNCATION_TABLE],
-            stop_reason=result["stop_reason"],
-        ),
+        truncation_record=attempt.truncation(reading, result["stop_reason"]),
     )
     outcome = _resolve_outcome(
         declared_failure=declared_failure, truncation_record=truncation_record, text=reading
     )
     if outcome == "no-readable-text":
-        # Whitespace resolved as unreadable is published as the empty text its schema
-        # requires.
+        # Whitespace resolved as unreadable is published as the empty text it is.
         reading = ""
     testimonium_references = _testimonium_references(context, testimonia)
     sealed_doubt, reader_spans, gaps = _published_doubt(
@@ -3557,6 +3496,71 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
 
 def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) -> int:
     """One Perlector pass: every requested act read once and published once."""
+    run = _open_pass(registry_factory, serving_factory, service)
+    _refuse_a_live_start_past_the_deadline(run)
+    pending = []
+    for act in run.wanted:
+        row = _read_act(run, act)
+        if row is not None:
+            pending.append(row)
+    _publish_audited_readings(run, pending)
+    # Every requested act was read, resumed or acknowledged, or the pass refused.
+    if not run.wanted:
+        raise ContractError("the Perlector read no act and acknowledged no held act")
+    # Before the seal, so a failed shutdown is never reported over a sealed stage;
+    # `close` is idempotent with `main`'s `finally`.
+    service.close()
+    run.context.seal_boundary()
+    run.context.finish()
+    return EXIT_COMPLETE
+
+
+@dataclass
+class _Pass:
+    """The sealed inputs one Perlector pass reads every act under, and its live chair."""
+
+    context: Any
+    args: Any
+    service: ResidentChair
+    client_factory: Any
+    chair: ChairIdentity | AbsentChair
+    serving_mode: str
+    # `None` in live mode until the first act that needs it: a resumed pass with every
+    # act sealed or over capacity never loads a model on a card billed by the hour.
+    reader: Any
+    witness_context_table: Any
+    protocol_config: dict[str, Any]
+    protocol_sha256: str
+    nuda_approval: ApprovalRecordBinding | None
+    instrument_approval: ApprovalRecordBinding | None
+    audit_policy: dict[str, Any]
+    audit_sha256: str
+    expected: list[dict[str, Any]]
+    declared_order: dict[str, int]
+    wanted: list[dict[str, Any]]
+    partition: Any
+    partition_ref: dict[str, str]
+    holds: dict[str, Any]
+    max_images: int | None
+    # The run-wide routing denominator; `reported_unrouted` keeps one finding from being
+    # restated by every act reaching the same page Testimonium.
+    all_proposal_regions: list[dict]
+    reported_unrouted: set[tuple[str, int]] = field(default_factory=set)
+    receipt_ref: dict[str, str] | None = None
+    unread: int = 0
+
+    @property
+    def calls_per_act(self) -> int:
+        return (
+            2
+            + self.audit_policy["round_cap"]
+            + bool(self.context.nuda_per_mille)
+            + bool(self.context.perlector_instrument_per_mille)
+        )
+
+
+def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pass:
+    """Resolve every sealed input the pass needs, refusing before anything is published."""
     parser = stage_parser(DESCRIPTION)
     parser.add_argument(
         "--reading-deadline",
@@ -3569,7 +3573,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)
     decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
-    # Resolved before anything is published or started, so they refuse on an untouched tree.
     chair = perlector_chair(context)
     serving_mode = perlector_serving_mode(context, args, chair)
     reader = fixture_reader_for(context, chair, serving_mode)
@@ -3578,342 +3581,310 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     )
     protocol_config, protocol_sha256 = protocol.load(context.perlector_protocol_config_path)
     context.require_sealed_config("perlector-protocol", protocol_sha256)
-    nuda_approval = (
-        resolve_sampling_approval(
-            context,
-            approval_ref=context.nuda_approval_ref,
-            subject=NUDA_APPROVAL_SUBJECT,
-        )
-        if context.nuda_per_mille
-        else None
+    nuda_approval = _sampling_approval(
+        context, context.nuda_per_mille, context.nuda_approval_ref, NUDA_APPROVAL_SUBJECT
     )
-    instrument_approval = (
-        resolve_sampling_approval(
-            context,
-            approval_ref=context.perlector_instrument_approval_ref,
-            subject=PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
-        )
-        if context.perlector_instrument_per_mille
-        else None
+    instrument_approval = _sampling_approval(
+        context,
+        context.perlector_instrument_per_mille,
+        context.perlector_instrument_approval_ref,
+        PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
     )
     audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
     context.require_sealed_config("perlector-audit", audit_sha256)
 
     expected = expected_acts(context)
-    declared_order = {act["act_id"]: order for order, act in enumerate(expected)}
     # An attempt nobody requested would make the attempt tally meaningless.
     wanted = [act for act in expected if args.act in (None, act["act_id"])]
     if args.act and not wanted:
         raise ContractError(f"asked to read {args.act}, which the proposal seal does not name")
     preflight_testimonia_denominator(context, wanted)
-
-    # Recovery may narrow `wanted`, but the partition denominator remains the
-    # complete proposal seal for every invocation.
+    # Recovery may narrow `wanted`; the partition denominator stays the whole proposal seal.
     partition, partition_ref, holds = logical_reading.build_run_partition(context, expected)
     max_images = protocol_config.get("max_images")
     if not isinstance(max_images, int) or isinstance(max_images, bool):
         max_images = None
-
-    read = 0
-    acknowledged = 0
-    resumed = 0
-    pending: list[dict[str, Any]] = []
-    # The routing denominator is every sealed proposal; `reported_unrouted` keeps one
-    # finding from being restated by every act reaching the same page Testimonium.
-    all_proposal_regions = sealed_proposal_regions(context)
-    reported_unrouted: set[tuple[str, int]] = set()
-
-    # A live chair starts on first use, so a resumed pass with every act sealed or over
-    # capacity never loads a model on a card billed by the hour.
-    receipt_ref: dict[str, str] | None = None
-
-    calls_per_act = (
-        2
-        + audit_policy["round_cap"]
-        + bool(context.nuda_per_mille)
-        + bool(context.perlector_instrument_per_mille)
+    return _Pass(
+        context=context,
+        args=args,
+        service=service,
+        client_factory=serving_factory
+        or partial(
+            stage_chair_client,
+            decoding_config_sha256=decoding_sha256,
+            # The sealed reading-of-record temperature; `ChairClient` refuses anything
+            # but 0 rather than coercing it.
+            record_temperature=decoding_policy["reading_of_record"]["temperature"],
+        ),
+        chair=chair,
+        serving_mode=serving_mode,
+        reader=reader,
+        witness_context_table=witness_context_table,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+        nuda_approval=nuda_approval,
+        instrument_approval=instrument_approval,
+        audit_policy=audit_policy,
+        audit_sha256=audit_sha256,
+        expected=expected,
+        declared_order={act["act_id"]: order for order, act in enumerate(expected)},
+        wanted=wanted,
+        partition=partition,
+        partition_ref=partition_ref,
+        holds=holds,
+        max_images=max_images,
+        all_proposal_regions=sealed_proposal_regions(context),
     )
-    unread = (
-        _acts_left_to_read(context, [act for act in wanted if act["act_id"] not in holds])
-        if serving_mode == "live"
-        else 0
+
+
+def _sampling_approval(
+    context, per_mille: int, approval_ref: str, subject: str
+) -> ApprovalRecordBinding | None:
+    if not per_mille:
+        return None
+    return resolve_sampling_approval(context, approval_ref=approval_ref, subject=subject)
+
+
+def _refuse_a_live_start_past_the_deadline(run: _Pass) -> None:
+    """Count the acts a live pass still has to read, and refuse a start it cannot finish."""
+    if run.serving_mode != "live":
+        return
+    run.unread = _acts_left_to_read(
+        run.context, [act for act in run.wanted if act["act_id"] not in run.holds]
     )
-    if unread:
-        startup = (
-            bound_serving_recipes(context, args.serving_recipes_config)
-            .for_identity(chair, args.placement_tier)
-            .startup_timeout_seconds
-        )
-        _refuse_past_deadline(
-            args.reading_deadline,
-            startup + unread * calls_per_act * PLANNED_SECONDS_PER_CALL,
-            f"starting the Perlector ({startup}s) and reading {unread} acts",
-        )
+    if not run.unread:
+        return
+    startup = (
+        bound_serving_recipes(run.context, run.args.serving_recipes_config)
+        .for_identity(run.chair, run.args.placement_tier)
+        .startup_timeout_seconds
+    )
+    _refuse_past_deadline(
+        run.args.reading_deadline,
+        startup + run.unread * run.calls_per_act * PLANNED_SECONDS_PER_CALL,
+        f"starting the Perlector ({startup}s) and reading {run.unread} acts",
+    )
 
-    for act in wanted:
-        act_id = act["act_id"]
-        if act["outcome"] == "held":
-            # Reading part of an act would deliver a truncation as output; acknowledged
-            # explicitly, never skipped, so no unit goes unaccounted.
-            _publish_not_run(
-                context,
-                act_id=act_id,
-                ordinal=1,
-                fields=_NOT_RUN_HELD_FIELDS,
-                payload={
-                    "act_key": act["act_key"],
-                    "attempt_ordinal": 1,
-                    "reason": (
-                        "the Designator held this act; an incomplete proposal is "
-                        "not read, because a reading of part of an act would be a "
-                        "truncation delivered as an output"
-                    ),
-                    "provenance": provenance_for(context, chair, attempted=False),
-                },
-            )
-            acknowledged += 1
-            continue
 
-        if act_id in holds:
-            # Derived, not fixed: an act re-asked after a recrop gets its next ordinal.
-            ordinal = _next_attempt(context, act_id, act_regions(context, act_id)[0])
-            _publish_not_run(
-                context,
-                act_id=act_id,
-                ordinal=ordinal,
-                fields=_NOT_RUN_CROSS_CAPTURE_FIELDS,
-                inputs=[partition_ref],
-                payload={
-                    "act_key": act["act_key"],
-                    "attempt_ordinal": ordinal,
-                    "reason": (
-                        "the corpus register records this act's capture as a member of a "
-                        "physical page, and no read across a physical page's captures is "
-                        "built yet; reading this capture alone could establish one capture's "
-                        "text for the physical act"
-                    ),
-                    "hold": {
-                        "code": CROSS_CAPTURE_READ_NOT_BUILT,
-                        "partition_finding": holds[act_id],
-                    },
-                    "provenance": provenance_for(context, chair, attempted=False),
-                },
-            )
-            acknowledged += 1
-            continue
-
-        # One region read answers both the attempt ordinal and the crops read, so
-        # `_next_attempt` refuses an unplaceable origin before any immutable Perlectio
-        # exists.
-        regions, proposal_regions = act_regions(context, act_id)
-        ordinal = _next_attempt(context, act_id, regions)
-        if isinstance(chair, AbsentChair):
-            # An explicit record of the absence: producing nothing would leave the Recensor
-            # to infer a gap it cannot see.
-            _publish_not_run(
-                context,
-                act_id=act_id,
-                ordinal=ordinal,
-                fields=_NOT_RUN_ABSENT_FIELDS,
-                payload={
-                    "act_key": act["act_key"],
-                    "attempt_ordinal": ordinal,
-                    "reason": f"the Perlector chair is explicitly absent: {chair.reason}",
-                    "basis": {"regions": [], "testimonia": []},
-                    "dissent": [],
-                    "provenance": provenance_for(context, chair, attempted=False),
-                },
-            )
-            acknowledged += 1
-            continue
-
-        if serving_mode == "live" and _reading_already_sealed(
-            context, act_id, ordinal, act_key=act["act_key"]
-        ):
-            # Never asked again: a second live reading would differ and the store refuses
-            # it (principle 4).
-            resumed += 1
-            continue
-
-        # A declared engine outcome stands in for a real engine's report, so it is valid
-        # only when no engine answers. A live pass over a declared act refuses here,
-        # before any chair starts or arm is published (principle 8).
-        declared_failure = declared_reading_failure(context, act["act_key"])
-        if serving_mode == "live" and declared_failure is not None:
-            raise ContractError(
-                f"the fixture declares reading outcome {declared_failure!r} for "
-                f"act {act['act_key']!r} while a live chair is answering; a "
-                "declared stand-in cannot override an engine that reported"
-            )
-
-        bases, testimonia, attachment_view = _witnessed_act(
-            context,
+def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
+    """Read one act up to Pass B, returning its row for the audit; else publish why not."""
+    context, act_id, act_key = run.context, act["act_id"], act["act_key"]
+    if act["outcome"] == "held":
+        # Reading part of an act would deliver a truncation as output; acknowledged
+        # explicitly, never skipped, so no unit goes unaccounted.
+        _publish_not_run(
+            run,
             act,
-            regions,
-            proposal_regions,
-            all_proposal_regions=all_proposal_regions,
-            reported_unrouted=reported_unrouted,
+            1,
+            fields=_NOT_RUN_HELD_FIELDS,
+            reason=(
+                "the Designator held this act; an incomplete proposal is "
+                "not read, because a reading of part of an act would be a "
+                "truncation delivered as an output"
+            ),
         )
-        region_pixels = _region_pixels(bases)
-        page_renders = _page_renders_for(context, bases)
-        page_pixels = _page_pixels(page_renders)
+        return None
 
-        # Resolve the required capture set before any reader call so an absent
-        # member cannot become a partial presentation.
-        logical_act_id = logical_reading.logical_act_id_for(partition, act_id)
-        autopsia = logical_reading.act_autopsia(
-            context,
+    if act_id in run.holds:
+        # Derived, not fixed: an act re-asked after a recrop gets its next ordinal.
+        _publish_not_run(
+            run,
+            act,
+            _next_attempt(context, act_id, act_regions(context, act_id)[0]),
+            fields=_NOT_RUN_CROSS_CAPTURE_FIELDS,
+            inputs=[run.partition_ref],
+            reason=(
+                "the corpus register records this act's capture as a member of a "
+                "physical page, and no read across a physical page's captures is "
+                "built yet; reading this capture alone could establish one capture's "
+                "text for the physical act"
+            ),
+            hold={
+                "code": CROSS_CAPTURE_READ_NOT_BUILT,
+                "partition_finding": run.holds[act_id],
+            },
+        )
+        return None
+
+    # One region read answers both the attempt ordinal and the crops read, so
+    # `_next_attempt` refuses an unplaceable origin before any immutable Perlectio exists.
+    regions, proposal_regions = act_regions(context, act_id)
+    ordinal = _next_attempt(context, act_id, regions)
+    if isinstance(run.chair, AbsentChair):
+        # An explicit record of the absence: producing nothing would leave the Recensor
+        # to infer a gap it cannot see.
+        _publish_not_run(
+            run,
+            act,
+            ordinal,
+            fields=_NOT_RUN_ABSENT_FIELDS,
+            reason=f"the Perlector chair is explicitly absent: {run.chair.reason}",
+            basis={"regions": [], "testimonia": []},
+            dissent=[],
+        )
+        return None
+
+    if run.serving_mode == "live" and _reading_already_sealed(
+        context, act_id, ordinal, act_key=act_key
+    ):
+        # Never asked again: a second live reading would differ and the store refuses
+        # it (principle 4).
+        return None
+
+    # A declared engine outcome stands in for a real engine's report, so it is valid
+    # only when no engine answers (principle 8).
+    declared_failure = declared_reading_failure(context, act_key)
+    if run.serving_mode == "live" and declared_failure is not None:
+        raise ContractError(
+            f"the fixture declares reading outcome {declared_failure!r} for "
+            f"act {act_key!r} while a live chair is answering; a "
+            "declared stand-in cannot override an engine that reported"
+        )
+
+    bases, testimonia, attachment_view = _witnessed_act(
+        context,
+        act,
+        regions,
+        proposal_regions,
+        all_proposal_regions=run.all_proposal_regions,
+        reported_unrouted=run.reported_unrouted,
+    )
+    region_pixels = _region_pixels(bases)
+    page_renders = _page_renders_for(context, bases)
+    page_pixels = _page_pixels(page_renders)
+
+    # Resolved before any reader call so an absent member cannot become a partial
+    # presentation.
+    logical_act_id = logical_reading.logical_act_id_for(run.partition, act_id)
+    autopsia = logical_reading.act_autopsia(
+        context,
+        logical_act_id=logical_act_id,
+        partition_ref=run.partition_ref,
+        act=act,
+        bases=bases,
+        page_renders=page_renders,
+    )
+    # Before any arm: one oversized act is held without killing other acts or letting
+    # the transport chunk its views.
+    capacity_finding = over_capacity_reason(autopsia, run.max_images)
+    if capacity_finding is not None:
+        _publish_not_run(
+            run,
+            act,
+            ordinal,
+            fields=_NOT_RUN_CAPACITY_FIELDS,
+            inputs=_reading_image_inputs(context, bases, page_renders, autopsia=autopsia),
+            reason=capacity_finding,
+            basis={"regions": [], "testimonia": []},
+            dissent=[],
             logical_act_id=logical_act_id,
-            partition_ref=partition_ref,
-            act=act,
-            bases=bases,
-            page_renders=page_renders,
+            cross_capture_autopsia=autopsia,
         )
-        # Route capacity before building any arm: one oversized act must be held
-        # without killing other acts or allowing the transport to chunk views.
-        capacity_finding = over_capacity_reason(autopsia, max_images)
-        if capacity_finding is not None:
-            _publish_not_run(
-                context,
-                act_id=act_id,
-                ordinal=ordinal,
-                fields=_NOT_RUN_CAPACITY_FIELDS,
-                inputs=_reading_image_inputs(context, bases, page_renders, autopsia=autopsia),
-                payload={
-                    "act_key": act["act_key"],
-                    "attempt_ordinal": ordinal,
-                    "reason": capacity_finding,
-                    "basis": {"regions": [], "testimonia": []},
-                    "dissent": [],
-                    "provenance": provenance_for(context, chair, attempted=False),
-                    "logical_act_id": logical_act_id,
-                    "cross_capture_autopsia": autopsia,
-                },
-            )
-            unread -= 1
-            acknowledged += 1
-            continue
+        run.unread -= 1
+        return None
 
-        _refuse_past_deadline(
-            args.reading_deadline,
-            unread * calls_per_act * PLANNED_SECONDS_PER_CALL,
-            f"reading the {unread} acts left",
+    _refuse_past_deadline(
+        run.args.reading_deadline,
+        run.unread * run.calls_per_act * PLANNED_SECONDS_PER_CALL,
+        f"reading the {run.unread} acts left",
+    )
+    run.unread -= 1
+    if run.reader is None:
+        _start_live_reader(run)
+
+    base_dossier = dossier_module.build_dossier(
+        context,
+        act_id=act_id,
+        act_key=act_key,
+        regions=bases,
+        testimonia=testimonia,
+        regime=context.witness_context,
+        page_renders=page_renders,
+        witness_context=run.witness_context_table,
+        act_attachment=attachment_view,
+    )
+    nuda_sampled, control_sampled = _logical_sampling_decisions(context, logical_act_id)
+    attempt = _Attempt(
+        act_key=act_key,
+        act_id=act_id,
+        ordinal=ordinal,
+        chair=run.chair,
+        bases=bases,
+        page_renders=page_renders,
+        region_pixels=region_pixels,
+        page_pixels=page_pixels,
+        protocol_config=run.protocol_config,
+        protocol_sha256=run.protocol_sha256,
+        receipt_ref=run.receipt_ref,
+    )
+    try:
+        passes = combined.run_logical_passes(
+            run.reader,
+            autopsia=autopsia,
+            dossier=base_dossier,
+            read_bytes=context.tree.read_bytes,
+            protocol_config=run.protocol_config,
+            nuda_sampled=nuda_sampled,
+            control_sampled=control_sampled,
+            draft_fed=context.draft_fed,
+            # Runs before the establishing arm, which embeds the prior reference it returns.
+            publish_prior=partial(_publish_lectio_prior, context, attempt),
         )
-        unread -= 1
-        if reader is None:
-            reader, receipt_ref = _live_reader(
-                context,
-                args,
-                chair=chair,
-                protocol_config=protocol_config,
-                decoding_policy=decoding_policy,
-                decoding_sha256=decoding_sha256,
-                serving_factory=serving_factory,
-                service=service,
-            )
-
-        base_dossier = dossier_module.build_dossier(
+    except _ACT_LOCAL_READING_FAILURES as error:
+        failure = _failure_record(error, phase="establishing")
+        assert failure is not None  # narrowed by the exception tuple above
+        _publish_reading_failure(
             context,
             act_id=act_id,
-            act_key=act["act_key"],
-            regions=bases,
-            testimonia=testimonia,
-            regime=context.witness_context,
-            page_renders=page_renders,
-            witness_context=witness_context_table,
-            act_attachment=attachment_view,
-        )
-
-        nuda_sampled, control_sampled = _logical_sampling_decisions(context, logical_act_id)
-
-        attempt = _Attempt(
-            act_key=act["act_key"],
-            act_id=act_id,
+            act_key=act_key,
             ordinal=ordinal,
-            chair=chair,
-            bases=bases,
-            page_renders=page_renders,
-            region_pixels=region_pixels,
-            page_pixels=page_pixels,
-            protocol_config=protocol_config,
-            protocol_sha256=protocol_sha256,
-            receipt_ref=receipt_ref,
+            inputs=_reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
+            + list(_testimonium_references(context, testimonia).values())
+            + [attachment_view["reference"]]
+            + _published_arm_refs(context, act_id, ordinal),
+            failure=failure,
+            reason=f"live Perlector {failure['kind']} failure: {failure['code']}",
+            provenance=attempt.provenance(context),
         )
-        # Runs before the establishing arm, which embeds the prior reference it returns.
-        publish_prior = partial(_publish_lectio_prior, context, attempt)
+        return None
 
-        # Every arm receives the complete presentation in one reader call.
-        try:
-            passes = combined.run_logical_passes(
-                reader,
-                autopsia=autopsia,
-                dossier=base_dossier,
-                read_bytes=context.tree.read_bytes,
-                protocol_config=protocol_config,
-                nuda_sampled=nuda_sampled,
-                control_sampled=control_sampled,
-                draft_fed=context.draft_fed,
-                publish_prior=publish_prior,
-            )
-        except _ACT_LOCAL_READING_FAILURES as error:
-            failure = _failure_record(error, phase="establishing")
-            assert failure is not None  # narrowed by the exception tuple above
-            _publish_reading_failure(
-                context,
-                act_id=act_id,
-                act_key=act["act_key"],
-                ordinal=ordinal,
-                inputs=_reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
-                + [
-                    context.artifact_ref(ATTESTATORES, "testimonium", record["artifact_id"])
-                    for record in testimonia
-                ]
-                + [attachment_view["reference"]]
-                + _published_arm_refs(context, act_id, ordinal),
-                failure=failure,
-                reason=f"live Perlector {failure['kind']} failure: {failure['code']}",
-                provenance=provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
-            )
-            acknowledged += 1
-            continue
-
-        if nuda_sampled:
-            _publish_lectio_nuda(
-                context,
-                attempt,
-                passes["lectio-nuda"]["dossier"],
-                passes["lectio-nuda"]["result"],
-                nuda_approval,
-            )
-
-        if control_sampled:
-            _publish_primed_without_prior(
-                context,
-                attempt,
-                passes["primed-without-prior"]["dossier"],
-                passes["primed-without-prior"]["result"],
-                testimonia=testimonia,
-                attachment_view=attachment_view,
-                approval_ref=instrument_approval,
-            )
-
-        pending.append(
-            _established_row(
-                context,
-                attempt,
-                act,
-                passes["perlectio"],
-                order=declared_order[act_id],
-                declared_failure=declared_failure,
-                testimonia=testimonia,
-                attachment_view=attachment_view,
-                autopsia=autopsia,
-            )
+    if nuda_sampled:
+        _publish_lectio_nuda(
+            context,
+            attempt,
+            passes["lectio-nuda"]["dossier"],
+            passes["lectio-nuda"]["result"],
+            run.nuda_approval,
         )
-        read += 1
+    if control_sampled:
+        _publish_primed_without_prior(
+            context,
+            attempt,
+            passes["primed-without-prior"]["dossier"],
+            passes["primed-without-prior"]["result"],
+            testimonia=testimonia,
+            attachment_view=attachment_view,
+            approval_ref=run.instrument_approval,
+        )
+    return _established_row(
+        context,
+        attempt,
+        act,
+        passes["perlectio"],
+        order=run.declared_order[act_id],
+        declared_failure=declared_failure,
+        testimonia=testimonia,
+        attachment_view=attachment_view,
+        autopsia=autopsia,
+    )
 
-    # All Pass-B semi-finals together, before any re-proof exists: one deterministic
-    # cross-act computation per page, with no cascade.
+
+def _publish_audited_readings(run: _Pass, pending: list[dict[str, Any]]) -> None:
+    """Pass C: flag every page once over all Pass-B semi-finals, then finish each act.
+
+    The flags are computed before any re-proof exists, one deterministic cross-act
+    computation per page, so no re-proof cascades into another act's flags.
+    """
     semi_finals = [
         semi_final
         for row in pending
@@ -3926,335 +3897,361 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
     ]
     page_flags = _page_flags(
-        context,
+        run.context,
         semi_finals,
-        expected=expected,
-        recovery_act_id=args.act,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        expected=run.expected,
+        recovery_act_id=run.args.act,
+        protocol_config=run.protocol_config,
+        protocol_sha256=run.protocol_sha256,
     )
-    policy_record = audit.policy_record(audit_policy, audit_sha256)
+    policy_record = audit.policy_record(run.audit_policy, run.audit_sha256)
     for row in pending:
-        payload = row["payload"]
-        act_id = row["act_id"]
-        flags = page_flags[act_id]
-        draft_payload, draft_ref = _publish_audit_draft(
-            context, row, flags, round_cap=audit_policy["round_cap"], policy_record=policy_record
+        _publish_audited_reading(run, row, page_flags[row["act_id"]], policy_record)
+
+
+@dataclass(frozen=True)
+class _Reproof:
+    """One delivered Pass-C re-proof: its request, reply, and the text its edits produce."""
+
+    request_digest: str
+    reply: dict[str, Any]
+    text: str
+    edits: list[dict[str, Any]]
+    call_record: dict[str, Any] | None
+    # A re-proof is evidence whether or not it changed the text, so it is always bound
+    # as an input; `engine_call` names it only when its text is published.
+    inputs: list[dict[str, str]]
+
+
+def _publish_audited_reading(
+    run: _Pass, row: dict[str, Any], flags: list[dict[str, Any]], policy_record: dict[str, Any]
+) -> None:
+    """Freeze the semi-final, re-proof its flags when due, then publish finding and Perlectio."""
+    context, payload, act_id = run.context, row["payload"], row["act_id"]
+    round_cap = run.audit_policy["round_cap"]
+    draft_payload, draft_ref = _publish_audit_draft(
+        context, row, flags, round_cap=round_cap, policy_record=policy_record
+    )
+    # The one function `validate_chain` and `audit_request` also use, so the sealed,
+    # delivered and recomputed plans are one computation.
+    reproofs = audit.reproof_plan(
+        flags, text_length=len(payload["text"]), policy_schema=run.audit_policy["schema"]
+    )
+    reproof: _Reproof | None = None
+    reproof_truncation: dict[str, Any] | None = None
+    changes: list[dict[str, Any]] = []
+    if audit.reproof_delivery_due(flags, round_cap):
+        reproof = _delivered_reproof(run, row, flags, draft_ref)
+        if reproof is None:
+            return
+        reproof_truncation = _adopt_reproof_text(run, row, reproof)
+        # Downstream validation replays these exact edits against the frozen draft.
+        changes = audit.change_records_from_edits(reproof.edits)
+    # Only an exhausted cap mints spans; an incomplete re-proof is recorded as an
+    # incomplete examination for the Recensor to route, never as a span or truncation.
+    examination = audit.examination_state(flags, round_cap, reproof_truncation)
+    unresolved = audit.unresolved_state(examination)
+    uncertainty = (
+        _cap_exhausted_spans(flags) if examination == audit.EXAMINATION_CAP_EXHAUSTED else []
+    )
+    finding_payload = {
+        "act_key": row["act"]["act_key"],
+        "attempt_ordinal": payload["attempt_ordinal"],
+        "page_ids": draft_payload["page_ids"],
+        "round_cap": round_cap,
+        "policy": policy_record,
+        "flags": flags,
+        "change_record": changes,
+        "uncertain_spans": uncertainty,
+        "unresolved": unresolved,
+        "examination": examination,
+        "reproof_truncation": reproof_truncation,
+        "reproof_edits": reproof.edits if reproof else None,
+        # Named here because the Perlectio's `engine_call` stays Pass B's when the
+        # text is unchanged.
+        "reproof_call": reproof.call_record if reproof else None,
+    }
+    audit.validate_finding(
+        finding_payload,
+        # The text this act actually publishes, never a rejected rewrite.
+        text=payload["text"],
+        flag_text=draft_payload["semi_final_text"],
+    )
+    attempt_id = perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"])
+    finding = context.publish(
+        kind="audit-finding",
+        subject_id=act_id,
+        outcome="read",
+        attempt=attempt_id,
+        inputs=[draft_ref],
+        payload=finding_payload,
+    )
+    finding_ref = context.input_ref(finding.relative_path)
+    # An unresolved flag never stays a clean `read`: it becomes an explicit span,
+    # unlabelled; only `payload["audit"]` and the finding say which are the audit's.
+    payload["uncertain_spans"] = _union_with_projection(
+        [
+            {"start": span["start"], "end": span["end"], "alternatives": [], "confidence": "low"}
+            for span in uncertainty
+        ],
+        payload["uncertain_spans"],
+    )
+    payload["audit"] = {
+        "draft_ref": draft_ref,
+        "finding_ref": finding_ref,
+        "finding_digest": audit.audit_digest(finding_payload),
+        "unresolved": unresolved,
+        "examination": examination,
+        "reproofs": reproofs,
+        # The request actually delivered, or `None` when nothing needed re-proof or
+        # the cap was spent; `reproofs` alone cannot tell these apart.
+        "request_digest": reproof.request_digest if reproof else None,
+    }
+    reading_inputs = _audited_reading_inputs(
+        row["inputs"], reproof.inputs if reproof else [], draft_ref, finding_ref
+    )
+    # The consumers' own cross-record validation, run before publication so a drifted
+    # draft/finding relationship never becomes an unreadable artifact.
+    audit.validate_chain(
+        context.tree,
+        {"payload": payload, "inputs": reading_inputs},
+        act_id,
+        length_floor_characters_per_page=_sealed_length_floor(run.protocol_config),
+    )
+    validate_reading_payload(
+        payload,
+        outcome=row["outcome"],
+        fields=row["fields"],
+        run_id=context.tree.run_id,
+        config_digest=context.config_digest,
+        protocol_config=run.protocol_config,
+        protocol_sha256=run.protocol_sha256,
+        inputs=reading_inputs,
+    )
+    context.publish(
+        kind="perlectio",
+        subject_id=act_id,
+        outcome=row["outcome"],
+        attempt=attempt_id,
+        inputs=reading_inputs,
+        payload=payload,
+    )
+
+
+def _audited_reading_inputs(
+    established: list[dict[str, str]],
+    reproof_inputs: list[dict[str, str]],
+    draft_ref: dict[str, str],
+    finding_ref: dict[str, str],
+) -> list[dict[str, str]]:
+    """Dedup only the re-proof's references, which can repeat the establishing call's bytes.
+
+    A duplicate among the established inputs stays under the envelope's own refusal.
+    """
+    return (
+        established
+        + [
+            reference
+            for reference in _distinct_inputs(reproof_inputs)
+            if reference not in established
+        ]
+        + [draft_ref, finding_ref]
+    )
+
+
+def _delivered_reproof(
+    run: _Pass, row: dict[str, Any], flags: list[dict[str, Any]], draft_ref: dict[str, str]
+) -> _Reproof | None:
+    """Ask the chair to re-proof the flagged spans; `None` once a failure is published instead."""
+    context, payload = run.context, row["payload"]
+    base_prompt_record = copy.deepcopy(payload["prompt"])
+    base_prompt_text = prompts.build_prompt(
+        run.chair.serving_recipe, run.chair.role, payload["dossier"], run.protocol_config
+    )
+    # One reader call per act and round over the complete atomic presentation; a
+    # flagged-page subset would be a capture-local call.
+    pixels = atomic_delivered_pixels(
+        row["autopsia"], read_bytes=context.tree.read_bytes, max_images=run.max_images
+    )
+    # The request carries the frozen semi-final its locations index into, bound by the
+    # published draft's digest; the dossier goes through untouched so its
+    # `dossier_digest` still covers it.
+    request = audit.audit_request(
+        act_key=row["act"]["act_key"],
+        attempt_ordinal=payload["attempt_ordinal"],
+        draft_ref=draft_ref,
+        semi_final_text=payload["text"],
+        flags=flags,
+        policy_schema=run.audit_policy["schema"],
+    )
+    request_digest = audit.audit_digest(request)
+    # Enforced by the producer so it binds whichever reader sits in the chair.
+    validate_audit_delivery(payload["dossier"], pass_kind="audit-reproof", audit_request=request)
+    _refuse_past_deadline(
+        run.args.reading_deadline, PLANNED_SECONDS_PER_CALL, "the next re-proof call"
+    )
+    try:
+        reply = run.reader.read(
+            payload["dossier"],
+            pass_kind="audit-reproof",
+            delivered_pixels=pixels,
+            audit_request=copy.deepcopy(request),
         )
-        page_ids = draft_payload["page_ids"]
-        final_text = payload["text"]
-        # The truncation verdict on the re-proof call itself, measured before its text
-        # is compared with the semi-final: a cut-off re-proof that returned the
-        # established text verbatim must not pass as complete.
-        reproof_truncation: dict[str, Any] | None = None
-        # The one function `validate_chain` and `audit_request` also use, so the sealed,
-        # delivered and recomputed plans are one computation.
-        reproofs = audit.reproof_plan(
-            flags, text_length=len(final_text), policy_schema=audit_policy["schema"]
+    except _ACT_LOCAL_READING_FAILURES as error:
+        failure = _failure_record(error, phase="audit-reproof")
+        assert failure is not None
+        _publish_reproof_failure(
+            run,
+            row,
+            inputs=row["inputs"]
+            + [draft_ref]
+            + _published_arm_refs(context, row["act_id"], payload["attempt_ordinal"]),
+            failure=failure,
+            reason=f"live Perlector {failure['kind']} failure during audit re-proof: {failure['code']}",
         )
-        request_digest: str | None = None
-        changes: list[dict[str, Any]] = []
-        reproof_edits: list[dict[str, Any]] | None = None
-        payload_fields = row["fields"]
-        # A re-proof is evidence whether or not it changed the text, so it is always
-        # bound as an input; `engine_call` names it only when its text is published.
-        reproof_inputs: list[dict[str, str]] = []
-        reproof_call_record: dict[str, Any] | None = None
-        # The predicate `validate_chain` re-derives from the frozen draft.
-        if audit.reproof_delivery_due(flags, audit_policy["round_cap"]):
-            base_prompt_record = copy.deepcopy(payload["prompt"])
-            base_prompt_text = prompts.build_prompt(
-                chair.serving_recipe, chair.role, payload["dossier"], protocol_config
+        return None
+    # A Pass-C reply is exact draft-anchored edits, never a second whole reading;
+    # assembly validates every edit before it touches the established text.
+    try:
+        text, response = audit.assemble_reproof_response(reply["text"], request)
+        # Publishing whitespace as the empty reading would remove characters outside
+        # the exact edits the response accounted for.
+        if _publishes_empty(text) and text not in {"", payload["text"]}:
+            raise audit.ReproofResponseRefusal(
+                "an audit re-proof response becomes a whole-act empty projection outside "
+                "its exact requested edits"
             )
-            # One reader call per act and round over the complete atomic presentation; a
-            # flagged-page subset would be a capture-local call.
-            reproof_pixels = atomic_delivered_pixels(
-                row["autopsia"], read_bytes=context.tree.read_bytes, max_images=max_images
-            )
-            # The request carries the frozen semi-final its locations index into, bound by
-            # the published draft's digest; the dossier goes through untouched so its
-            # `dossier_digest` still covers it.
-            audit_request = audit.audit_request(
-                act_key=row["act"]["act_key"],
-                attempt_ordinal=payload["attempt_ordinal"],
-                draft_ref=draft_ref,
-                semi_final_text=payload["text"],
-                flags=flags,
-                policy_schema=audit_policy["schema"],
-            )
-            request_digest = audit.audit_digest(audit_request)
-            # Enforced by the producer so it binds whichever reader sits in the chair.
-            validate_audit_delivery(
-                payload["dossier"], pass_kind="audit-reproof", audit_request=audit_request
-            )
-            _refuse_past_deadline(
-                args.reading_deadline, PLANNED_SECONDS_PER_CALL, "the next re-proof call"
-            )
-            try:
-                reproof = reader.read(
-                    payload["dossier"],
-                    pass_kind="audit-reproof",
-                    delivered_pixels=reproof_pixels,
-                    audit_request=copy.deepcopy(audit_request),
-                )
-            except _ACT_LOCAL_READING_FAILURES as error:
-                failure = _failure_record(error, phase="audit-reproof")
-                assert failure is not None
-                _publish_reading_failure(
-                    context,
-                    act_id=act_id,
-                    act_key=row["act"]["act_key"],
-                    ordinal=payload["attempt_ordinal"],
-                    inputs=row["inputs"]
-                    + [draft_ref]
-                    + _published_arm_refs(context, act_id, payload["attempt_ordinal"]),
-                    failure=failure,
-                    reason=f"live Perlector {failure['kind']} failure during audit re-proof: {failure['code']}",
-                    provenance=payload["provenance"],
-                )
-                continue
-            # A Pass-C reply is exact draft-anchored edits, never a second whole reading;
-            # assembly validates every edit before it touches the established text.
-            try:
-                final_text, reproof_response = audit.assemble_reproof_response(
-                    reproof["text"], audit_request
-                )
-                # Publishing whitespace as the empty reading would remove characters
-                # outside the exact edits the response accounted for.
-                if _publishes_empty(final_text) and final_text not in {"", payload["text"]}:
-                    raise audit.ReproofResponseRefusal(
-                        "an audit re-proof response becomes a whole-act empty projection outside "
-                        "its exact requested edits"
-                    )
-                reproof_edits = copy.deepcopy(reproof_response["edits"])
-                reproof_call_record = _reproof_call(
-                    reproof,
-                    base_prompt=base_prompt_record,
-                    base_text=base_prompt_text,
-                    request=audit_request,
-                )
-            except audit.ReproofResponseRefusal as error:
-                _publish_reading_failure(
-                    context,
-                    act_id=act_id,
-                    act_key=row["act"]["act_key"],
-                    ordinal=payload["attempt_ordinal"],
-                    inputs=row["inputs"]
-                    + [draft_ref]
-                    + engine_call_inputs(context, reproof.get("engine_call"))
-                    + _published_arm_refs(context, act_id, payload["attempt_ordinal"]),
-                    failure=_failure_from_engine_call(
-                        context, reproof.get("engine_call"), detail=str(error)
-                    ),
-                    reason="the delivered audit re-proof response could not be assembled safely",
-                    provenance=payload["provenance"],
-                )
-                continue
-            reproof_inputs = engine_call_inputs(context, reproof.get("engine_call"))
-            reproof_truncation = _row_truncation(
-                row, final_text, stop_reason=reproof["stop_reason"], protocol_config=protocol_config
-            )
-            # The edits are already checked; this binds the accepted text to its
-            # producing call. Unchanged text keeps Pass B's provenance.
-            if final_text != payload["text"]:
-                payload["text"] = final_text
-                # The doubt report travels with the call whose text is published, so
-                # nothing is re-anchored by guesswork; this also drops a Pass-B whole-act gap.
-                reproof_assessment = _assessed(reproof, text=final_text)
-                if "[[" in final_text or "]]" in final_text:
-                    reproof_assessment = annotations.malformed_assessment(
-                        "a re-proof replacement carries a doubt mark its JSON answer cannot anchor"
-                    )
-                elif reproof_assessment["state"] != "assessed" and (
-                    payload["gaps"] or payload["uncertain_spans"]
-                ):
-                    reproof_assessment = annotations.malformed_assessment(
-                        "a re-proof replaced text over which Pass B marked doubts; those marks "
-                        "stay in Pass B's retained response and cannot be re-anchored here"
-                    )
-                payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
-                payload["uncertain_spans"] = list(reproof_assessment["uncertain_spans"])
-                payload["gaps"] = list(reproof_assessment["gaps"])
-                # `engine_call` moves with the text, so a published reading never names
-                # a response that did not produce it.
-                payload_fields = with_engine_call(payload, reproof, payload_fields)
-                if reproof_call_record is not None:
-                    payload["prompt"] = copy.deepcopy(reproof_call_record["audit_prompt"])
-                payload["dissent"] = dissent_against(
-                    final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
-                )
-                payload["self_revision"] = departures(final_text, row["prior"]["text"])
-                # Re-measured over the published text with the re-proof's own stop
-                # reason; `_audited_truncation` never lets Pass C improve the verdict.
-                payload["truncation"] = _audited_truncation(
-                    pass_b=payload["truncation"],
-                    declared_failure=row["declared_failure"],
-                    text=final_text,
-                    region_pixels=row["region_pixels"],
-                    page_pixels=row["page_pixels"],
-                    truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
-                    stop_reason=reproof["stop_reason"],
-                    measured=reproof_truncation,
-                )
-                row["outcome"] = _resolve_outcome(
-                    declared_failure=row["declared_failure"],
-                    truncation_record=payload["truncation"],
-                    text=final_text,
-                )
-                if row["outcome"] == "no-readable-text":
-                    # As on the Pass-B path, unreadable text is published empty, with
-                    # the whole-act gap carrying the witness evidence.
-                    final_text = ""
-                    payload["text"] = ""
-                    # `validate_finding` binds the sealed termination to the published
-                    # text, so it is re-measured over the emptied text.
-                    reproof_truncation = _row_truncation(
-                        row,
-                        final_text,
-                        stop_reason=reproof["stop_reason"],
-                        protocol_config=protocol_config,
-                    )
-                    # Re-asked against the empty text, so the record never says
-                    # `assessed` over a report that was thrown away.
-                    (
-                        payload["uncertainty_assessment"],
-                        payload["uncertain_spans"],
-                        payload["gaps"],
-                    ) = _published_doubt(
-                        reproof,
-                        text="",
-                        outcome="no-readable-text",
-                        whole_act_gaps=_whole_act_gap(
-                            row["testimonia"], _testimonium_references(context, row["testimonia"])
-                        ),
-                    )
-                    if reproof_assessment["state"] == "malformed":
-                        payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
-                    payload["dissent"] = dissent_against(
-                        "", dissent_testimonia(row["testimonia"], row["attachment_view"])
-                    )
-                    payload["self_revision"] = departures("", row["prior"]["text"])
-            # Record the exact validated edits; downstream validation replays
-            # them against the frozen draft and the published text.
-            changes = audit.change_records_from_edits(reproof_edits)
-        # Only an exhausted cap mints spans; an incomplete re-proof is recorded as an
-        # incomplete examination for the Recensor to route, never as a span or truncation.
-        examination = audit.examination_state(
-            flags,
-            audit_policy["round_cap"],
-            reproof_truncation,
+        edits = copy.deepcopy(response["edits"])
+        call_record = _reproof_call(
+            reply, base_prompt=base_prompt_record, base_text=base_prompt_text, request=request
         )
-        unresolved = audit.unresolved_state(examination)
-        uncertainty = (
-            _cap_exhausted_spans(flags) if examination == audit.EXAMINATION_CAP_EXHAUSTED else []
+    except audit.ReproofResponseRefusal as error:
+        _publish_reproof_failure(
+            run,
+            row,
+            inputs=row["inputs"]
+            + [draft_ref]
+            + engine_call_inputs(context, reply.get("engine_call"))
+            + _published_arm_refs(context, row["act_id"], payload["attempt_ordinal"]),
+            failure=_failure_from_engine_call(context, reply.get("engine_call"), detail=str(error)),
+            reason="the delivered audit re-proof response could not be assembled safely",
         )
-        finding_payload = {
-            "act_key": row["act"]["act_key"],
-            "attempt_ordinal": payload["attempt_ordinal"],
-            "page_ids": page_ids,
-            "round_cap": audit_policy["round_cap"],
-            "policy": policy_record,
-            "flags": flags,
-            "change_record": changes,
-            "uncertain_spans": uncertainty,
-            "unresolved": unresolved,
-            "examination": examination,
-            "reproof_truncation": reproof_truncation,
-            "reproof_edits": reproof_edits,
-            # Named here because the Perlectio's `engine_call` stays Pass B's when the
-            # text is unchanged.
-            "reproof_call": reproof_call_record if reproof_truncation is not None else None,
-        }
-        audit.validate_finding(
-            finding_payload,
-            # The text this act actually publishes, never a rejected rewrite.
-            text=payload["text"],
-            flag_text=draft_payload["semi_final_text"],
+        return None
+    return _Reproof(
+        request_digest=request_digest,
+        reply=reply,
+        text=text,
+        edits=edits,
+        call_record=call_record,
+        inputs=engine_call_inputs(context, reply.get("engine_call")),
+    )
+
+
+def _publish_reproof_failure(
+    run: _Pass,
+    row: dict[str, Any],
+    *,
+    inputs: list[dict[str, str]],
+    failure: dict[str, Any],
+    reason: str,
+) -> None:
+    payload = row["payload"]
+    _publish_reading_failure(
+        run.context,
+        act_id=row["act_id"],
+        act_key=row["act"]["act_key"],
+        ordinal=payload["attempt_ordinal"],
+        inputs=inputs,
+        failure=failure,
+        reason=reason,
+        provenance=payload["provenance"],
+    )
+
+
+def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> dict[str, Any]:
+    """Publish a re-proof's changed text in place of Pass B's; return its truncation verdict.
+
+    The verdict is measured before the text is compared with the semi-final: a cut-off
+    re-proof that returned the established text verbatim must not pass as complete.
+    Unchanged text keeps Pass B's provenance.
+    """
+    payload, reply, final_text = row["payload"], reproof.reply, reproof.text
+    reproof_truncation = _row_truncation(
+        row, final_text, stop_reason=reply["stop_reason"], protocol_config=run.protocol_config
+    )
+    if final_text == payload["text"]:
+        return reproof_truncation
+    payload["text"] = final_text
+    # The doubt report travels with the call whose text is published, so nothing is
+    # re-anchored by guesswork; this also drops a Pass-B whole-act gap.
+    reproof_assessment = _assessed(reply, text=final_text)
+    if "[[" in final_text or "]]" in final_text:
+        reproof_assessment = annotations.malformed_assessment(
+            "a re-proof replacement carries a doubt mark its JSON answer cannot anchor"
         )
-        finding = context.publish(
-            kind="audit-finding",
-            subject_id=act_id,
-            outcome="read",
-            attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
-            inputs=[draft_ref],
-            payload=finding_payload,
+    elif reproof_assessment["state"] != "assessed" and (
+        payload["gaps"] or payload["uncertain_spans"]
+    ):
+        reproof_assessment = annotations.malformed_assessment(
+            "a re-proof replaced text over which Pass B marked doubts; those marks "
+            "stay in Pass B's retained response and cannot be re-anchored here"
         )
-        finding_ref = context.input_ref(finding.relative_path)
-        # An unresolved flag never stays a clean `read`: it becomes an explicit span,
-        # unlabelled; only `payload["audit"]` and the finding say which are the audit's.
-        payload["uncertain_spans"] = _union_with_projection(
-            [
-                {
-                    "start": span["start"],
-                    "end": span["end"],
-                    "alternatives": [],
-                    "confidence": "low",
-                }
-                for span in uncertainty
-            ],
+    payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
+    payload["uncertain_spans"] = list(reproof_assessment["uncertain_spans"])
+    payload["gaps"] = list(reproof_assessment["gaps"])
+    # `engine_call` moves with the text, so a published reading never names a response
+    # that did not produce it.
+    row["fields"] = with_engine_call(payload, reply, row["fields"])
+    if reproof.call_record is not None:
+        payload["prompt"] = copy.deepcopy(reproof.call_record["audit_prompt"])
+    payload["dissent"] = dissent_against(
+        final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
+    )
+    payload["self_revision"] = departures(final_text, row["prior"]["text"])
+    payload["truncation"] = _audited_truncation(
+        pass_b=payload["truncation"],
+        declared_failure=row["declared_failure"],
+        text=final_text,
+        region_pixels=row["region_pixels"],
+        page_pixels=row["page_pixels"],
+        truncation_policy=run.protocol_config[protocol.TRUNCATION_TABLE],
+        stop_reason=reply["stop_reason"],
+        measured=reproof_truncation,
+    )
+    row["outcome"] = _resolve_outcome(
+        declared_failure=row["declared_failure"],
+        truncation_record=payload["truncation"],
+        text=final_text,
+    )
+    if row["outcome"] == "no-readable-text":
+        # As on the Pass-B path, unreadable text is published empty with the whole-act
+        # gap carrying the witness evidence. `validate_finding` binds the sealed
+        # termination to the published text, so it is re-measured over the empty text.
+        payload["text"] = ""
+        reproof_truncation = _row_truncation(
+            row, "", stop_reason=reply["stop_reason"], protocol_config=run.protocol_config
+        )
+        # Re-asked against the empty text, so the record never says `assessed` over a
+        # report that was thrown away.
+        (
+            payload["uncertainty_assessment"],
             payload["uncertain_spans"],
+            payload["gaps"],
+        ) = _published_doubt(
+            reply,
+            text="",
+            outcome="no-readable-text",
+            whole_act_gaps=_whole_act_gap(
+                row["testimonia"], _testimonium_references(run.context, row["testimonia"])
+            ),
         )
-        payload["audit"] = {
-            "draft_ref": draft_ref,
-            "finding_ref": finding_ref,
-            "finding_digest": audit.audit_digest(finding_payload),
-            "unresolved": unresolved,
-            "examination": examination,
-            "reproofs": reproofs,
-            # The request actually delivered, or `None` when nothing needed re-proof or
-            # the cap was spent; `reproofs` alone cannot tell these apart.
-            "request_digest": request_digest,
-        }
-        # Dedup only the re-proof's references, which can repeat the establishing call's
-        # bytes; a duplicate in `row["inputs"]` stays under the envelope's refusal.
-        reading_inputs = (
-            row["inputs"]
-            + [
-                reference
-                for reference in _distinct_inputs(reproof_inputs)
-                if reference not in row["inputs"]
-            ]
-            + [
-                draft_ref,
-                finding_ref,
-            ]
+        if reproof_assessment["state"] == "malformed":
+            payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
+        payload["dissent"] = dissent_against(
+            "", dissent_testimonia(row["testimonia"], row["attachment_view"])
         )
-        # The consumers' own cross-record validation, run before publication so a
-        # drifted draft/finding relationship never becomes an unreadable artifact.
-        audit.validate_chain(
-            context.tree,
-            {"payload": payload, "inputs": reading_inputs},
-            act_id,
-            length_floor_characters_per_page=_sealed_length_floor(protocol_config),
-        )
-        validate_reading_payload(
-            payload,
-            outcome=row["outcome"],
-            fields=payload_fields,
-            run_id=context.tree.run_id,
-            config_digest=context.config_digest,
-            protocol_config=protocol_config,
-            protocol_sha256=protocol_sha256,
-            inputs=reading_inputs,
-        )
-        context.publish(
-            kind="perlectio",
-            subject_id=act_id,
-            outcome=row["outcome"],
-            attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
-            inputs=reading_inputs,
-            payload=payload,
-        )
-
-    if read == 0 and acknowledged == 0 and resumed == 0:
-        raise ContractError("the Perlector read no act and acknowledged no held act")
-
-    # Before the seal, so a failed shutdown is never reported over a sealed stage;
-    # `close` is idempotent with `main`'s `finally`.
-    service.close()
-    context.seal_boundary()
-    context.finish()
-    return EXIT_COMPLETE
+        payload["self_revision"] = departures("", row["prior"]["text"])
+    return reproof_truncation
 
 
 def _witnessed_act(

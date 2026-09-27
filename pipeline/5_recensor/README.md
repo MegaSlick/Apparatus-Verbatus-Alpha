@@ -2,7 +2,7 @@
 
 Checks completeness, asks for recovery.
 
-Reviews the page, the crops, the testimonia and the findings, and establishes that the text is complete. It establishes no text. Where something is missing, cut off, or continues onto another page it asks for bounded rework. It recovers coverage, never quality.
+Reviews the page, the crops, the testimonia and the findings, and checks whether the text is complete. It establishes no text. Confirmed ink outside live crops can request a bounded fallback recrop; continuation shortfall and unsupported or incomplete readings are held for review. It recovers coverage, never quality.
 
 Read [CONTRACT.md](CONTRACT.md) for what this stage writes and where. That document
 is the interface — no other stage reads this one's code.

@@ -1,8 +1,9 @@
 # Orchestrator — contract
 
-The orchestrator is not a stage. It establishes nothing, writes nothing of its own, and
-holds no progress state: every fact a resume depends on is in the run tree, which is why
-a run can be re-entered from any process on any machine. This file says what its driver
+The orchestrator is not a stage. It establishes nothing and holds no progress state
+in the run tree. It can append an optional stage-timing journal outside that tree;
+every fact a resume depends on is in the run tree, which is why a run can be
+re-entered from any process on any machine. This file says what its driver
 vocabulary means, because a word that appears in a `--flag` and nowhere in a document is
 a word two branches can define differently.
 
@@ -24,22 +25,19 @@ code `--all` does at that point.
 **Every round screens the whole outstanding batch before it dispatches any of it.**
 `undispatchable_recovery_reason` answers, per request, why this orchestrator cannot
 dispatch it: a `recovery_kind` other than `fallback-recrop` (the page-level reread belongs
-to the Perlector, which has not built it), or a recrop on a real submission (the Designator
-refuses `--operation recover` there by name, because a recrop's geometry still comes from a
-fixture's declared rectangle); a measured-request dispatch also requires dict-valued
-`recovery_bounds`, `coverage_observation`, and `ink_map_ref`, `origin == "coverage-observation"`,
-and exactly integer (not boolean) nonnegative `x`, `y`, `w`, and `h` bounds with positive `w`
-and `h`. Screening the batch first is what keeps an unanswerable
-request from leaving half a round behind it, and screening the route here is what stops the
-Designator's refusal reaching an operator as a bare `pipeline/2_designator/run.py exited 2`.
+to the Perlector, which has not built it), or a legacy real recrop lacking measured
+`recovery_bounds`, `coverage_observation`, or `ink_map_ref`. A measured request is dispatched
+only when those three are dicts, `origin == "coverage-observation"`, and the `x`, `y`, `w` and
+`h` bounds are exact nonnegative integers (not booleans) with positive `w` and `h`; Designator
+then verifies its evidence before cutting. Screening the batch first keeps an unanswerable
+request from leaving half a round behind it.
 `report_undispatchable_recoveries` then names every refused act and request before the
-`ContractError` is raised — this module writes no file of its own, so the run's own output
-is where it records a dispatch it would not make (principle 2); the durable evidence is the
+`ContractError` is raised — console output records the dispatch it would not
+make (principle 2); the durable evidence is the
 immutable request artifact and its `recovery-requested` review, which nothing here touches.
 
-The Recensor no longer publishes a real-ingress request at all, so
-the route branch is a backstop over a tree written before that gate landed. It is still
-checked: a bound nobody checks is not a bound.
+The Recensor can publish a measured real-ingress recrop request. The shape check
+also refuses older fixture-only requests on that route.
 
 **It aborts the run; it does not hold the refused acts and carry on, and that is decided
 rather than omitted.** A tree that already carries such a request has no export available
@@ -102,8 +100,8 @@ between the three and fail.
 
 **Scan triage and the driver share one mode vocabulary.** Triage chooses `manual`, `semi`,
 or `auto` per batch through confidence-threshold settings (`config/triage_modes.toml`).
-`common/contracts/stages.py:113-115` declares that triple once as `TRIAGE_MODES`, and
-`common/stage.py:230-232` aliases it as `RUN_MODES`; `pipeline/0_triage/CONTRACT.md:49-53`
+`common/contracts/stages.py:103` declares that triple once as `TRIAGE_MODES`, and
+`common/stage.py:222` aliases it as `RUN_MODES`; `pipeline/0_triage/CONTRACT.md:49-53`
 records the same join.
 
 The selections have different lifetimes. Triage persists its member as a batch property;
