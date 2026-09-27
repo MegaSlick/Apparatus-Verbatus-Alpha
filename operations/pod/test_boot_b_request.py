@@ -272,6 +272,20 @@ def test_two_nested_report_paths_naming_one_file_are_refused() -> None:
         validated_pod_request(_with_nested_argv(filled_request(), nested))
 
 
+def test_bootstrap_argument_named_pod_run_does_not_hide_report_collision() -> None:
+    base = validated_pod_request(filled_request())
+    command = list(base.docker_start_cmd)
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    report_indexes = [i + 1 for i, value in enumerate(nested) if value == "--report-path"]
+    run_path = PurePosixPath(nested[report_indexes[0]])
+    nested[report_indexes[1]] = str(run_report_paths(run_path)[1])
+    nested[nested.index("--repository") + 1] = "/opt/pod_run.py"
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="bootstrap report path collides with the run report"):
+        replace(base, docker_start_cmd=tuple(command))
+
+
 @pytest.mark.parametrize(
     "target", ("run", "hold", "liveness", "timings", "transcript", "bootstrap", "journal")
 )

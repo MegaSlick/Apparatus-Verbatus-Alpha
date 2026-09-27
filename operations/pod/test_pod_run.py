@@ -1303,7 +1303,7 @@ def test_launch_uses_the_run_reports_actual_extension_for_fetch_keys() -> None:
     assert "run-receipt-transcript.log" in keys
 
 
-def test_launch_uses_the_hold_reports_actual_extension_for_fetch_keys() -> None:
+def test_launch_uses_the_bootstrap_report_without_inventing_a_hold_key() -> None:
     report = "/workspace/bootstrap-receipt.data"
     nested = json.dumps(["python", "-m", "operations.pod.bootstrap_main", "--report-path", report])
     command = ("--report-path", "/workspace/timer.log", "--bootstrap-command-json", nested)
@@ -1311,7 +1311,8 @@ def test_launch_uses_the_hold_reports_actual_extension_for_fetch_keys() -> None:
     keys = launch_module.launch_evidence_keys(command, volume_mount_path="/workspace")
 
     assert "timer-terminating.log" in keys
-    assert "bootstrap-receipt-hold.data" in keys
+    assert "bootstrap-receipt.data" in keys
+    assert "bootstrap-receipt-hold.data" not in keys
 
 
 def test_every_launch_bound_record_is_derived_from_the_sealed_start_command() -> None:
@@ -1547,7 +1548,6 @@ def test_a_hold_only_launch_derives_no_record_pod_run_alone_writes() -> None:
         f"pod-runtime-report-{token}.json",
         f"pod-runtime-report-{token}-terminating.json",
         f"bootstrap-hold-only-report-{token}.json",
-        f"bootstrap-hold-only-report-{token}-hold.json",
     )
 
 
@@ -1817,7 +1817,6 @@ def test_a_hold_only_launch_receipt_is_refused_when_a_run_id_is_requested(
         f"pod-runtime-report-{token}.json",
         f"pod-runtime-report-{token}-terminating.json",
         f"bootstrap-hold-only-report-{token}.json",
-        f"bootstrap-hold-only-report-{token}-hold.json",
     )
 
 

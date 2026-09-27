@@ -211,8 +211,7 @@ def bound_report_paths(
                             for path in run_report_paths(report)[1:]
                         )
                     else:
-                        report = PurePosixPath(value)
-                        siblings = (run_report_paths(report)[1].name.removeprefix(report.stem),)
+                        siblings = ()
                     found.setdefault(value, siblings)
     return tuple(found.items())
 

@@ -48,7 +48,9 @@ _POD_RUN_MODULE = "operations.pod.pod_run"
 def _runs_the_orchestrator(nested: list[str]) -> bool:
     """Whether a bootstrap child runs ``pod_run`` rather than a hold-only boot."""
 
-    return any(part == _POD_RUN_MODULE or part.endswith("pod_run.py") for part in nested)
+    if len(nested) >= 3 and nested[1] == "-m":
+        return nested[2] == _POD_RUN_MODULE
+    return len(nested) >= 2 and PurePosixPath(nested[1]).name == "pod_run.py"
 
 
 class PodRuntimeError(RuntimeError):
@@ -648,7 +650,7 @@ def _required_timer_arguments(
         if _runs_the_orchestrator(half):
             other_paths.update(run_report_paths(path))
         else:
-            other_paths.update((path, run_report_paths(path)[1]))
+            other_paths.add(path)
     if bootstrap_journal is not None:
         other_paths.add(bootstrap_journal)
     if timer_paths & other_paths:
