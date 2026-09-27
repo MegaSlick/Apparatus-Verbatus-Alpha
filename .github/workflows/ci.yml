@@ -13,18 +13,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # The cap exists to catch a genuinely hung leg, with headroom for the
-    # suite to grow through the rest of the rebuild stack — every time it has
-    # trailed the suite, timeouts were misread as flakes. History: 15 minutes
-    # fell to R5b's audit pass (six leg cancels, one AT [100%] after 15m16s);
-    # 25 fell to pr/03's review rounds (3.13 finished at 24m38s while 3.12
-    # and 3.14 were cancelled at 25m on four consecutive runs); 45 fell to
-    # pr/07's (3.12 cancelled at 45m while its siblings passed at 37-38m).
-    # 75 fell to pr/15's (both legs cancelled at 75m after #79's run had
-    # already reached 1h14m). A cap the healthy suite exceeds enforces
-    # nothing; 110 stands ~45% above the last green legs, so a hang still
-    # cancels while growth through pr/16 fits.
-    timeout-minutes: 110
+    # Catches a hung leg. Runner speed varies about 2x (the same suite took 59 and
+    # 108 minutes a night apart), so the cap sits well above the slow case.
+    timeout-minutes: 150
     strategy:
       matrix:
         # 3.12 is the supported floor and 3.14 the newest supported; 3.13 was
