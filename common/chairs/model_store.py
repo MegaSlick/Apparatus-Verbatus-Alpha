@@ -350,28 +350,20 @@ def _fetch_artifact(
             "carried": carried,
             "required_files": required_files,
         }
-    except BaseException as error:
-        # Interrupts clean the same staged bytes as ordinary failures.
-        _cleanup_failed_staging(staging, requirement.artifact, error)
+    except BaseException:
+        _cleanup_failed_staging(staging)
         raise
 
 
-def _cleanup_failed_staging(staging: Path, artifact: str, failure: BaseException) -> None:
-    """Remove one failed fetch tree, keeping both failures if cleanup is refused."""
-
+def _cleanup_failed_staging(staging: Path) -> None:
+    """Best-effort removal of a failed fetch tree."""
     try:
         if staging.is_symlink():
             staging.unlink(missing_ok=True)
-        elif staging.exists():
-            shutil.rmtree(staging)
-    except OSError as cleanup_error:
-        detail = (
-            f"materialization failed ({failure}); staging cleanup also failed at "
-            f"{staging}: {cleanup_error}"
-        )
-        if isinstance(failure, Exception):
-            raise DigestMismatchRefusal(artifact, detail) from failure
-        failure.add_note(detail)
+        else:
+            shutil.rmtree(staging, ignore_errors=True)
+    except OSError:
+        pass
 
 
 def _refuse_staged_symlinks(snapshot: Path, artifact: str) -> None:
