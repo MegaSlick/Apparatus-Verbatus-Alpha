@@ -1524,7 +1524,8 @@ def preflight_appendable_ordinals(
     One attachment names one ordinal; downstream refuses an ordinal moved without recrop.
     Resume reuses a sealed pair at this ordinal because a live chair cannot
     reproduce its bytes; a completed fixture pass re-resolves and compares.
-    The live resolver leaves unsealed pairs pending until the serving pass.
+    The live resolver leaves pairs pending so no model runs before the first write.
+    Publication reuses the region map checked here to prevent a different crop.
     """
     resolve = resolve_attempt if resolve is None else resolve
     # Native declarations must refuse before compatibility records are published.
@@ -1719,6 +1720,7 @@ def attempt_tally(
 
     Chair coverage is checked only at closing; an interrupted pass needs to fill
     its missing pairs before the denominator can reconcile.
+    Any inventory damage or divergence makes the count UNKNOWN and the caller must hold.
     """
     if chairs is not None and acts is None:
         raise SchemaRefusal("an attempt tally denominator names chairs but no expected acts")
@@ -2261,7 +2263,7 @@ def resolve_attempt(
     *,
     reread: bool = False,
 ) -> Attempt:
-    """Derive a chair outcome; an undeclared reread is failed, not not-run."""
+    """A reread invocation is an attempt, so an undeclared response fails."""
     if isinstance(resolved, AbsentChair):
         return dead_attempt(resolved)
 
@@ -2378,6 +2380,7 @@ def derived_chandra_anchor(
 
     A normalized-text hull may include a neighbour, overstating disagreement.
     Shared blocks give two acts one range; ambiguous alignment then refuses both.
+    Acts match by geometry, never by choosing a witness; the hull cannot hide disagreement.
     """
     offset_map = markup_text_view(page_text)["offset_map"]
     normalized_by_raw: dict[int, list[int]] = {}
@@ -2788,6 +2791,7 @@ def require_live_page_capture(
 
 def _declared_pages(context, act: dict[str, Any], refusal: str | None) -> list[int]:
     """Count declared continuation pages even when no region verified."""
+    # Non-reading testimony still owes a record for every declared page.
     if refusal is None:
         raise FatalAccounting(
             f"act {act['act_id']} has neither verified proposal regions nor a "
@@ -3370,6 +3374,7 @@ def publish_page_testimonia_and_attachments(
     page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]] | None = None,
 ) -> None:
     """Retain page testimony and act attachments linked to their page evidence."""
+    # Act views are compatibility records for the Perlector, linked to page Testimonia.
     page_chairs = declared_page_witness_chairs(context)
     anchor_chair = declared_chandra_anchor_chair(context)
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
@@ -3661,7 +3666,7 @@ def _publish_prepared_attempts(
                 ordinal=ordinal,
                 regions=regions,
                 attempt=attempt,
-                **({"live": True} if live else {}),
+                live=live,
             )
             recorded += 1
     return recorded, isolated_crop_failure
@@ -3676,6 +3681,7 @@ def attempt_pass(
     sealed_pairs: frozenset[tuple[str, str]],
 ) -> tuple[int, bool]:
     """Publish the fixture pass, counting sealed pairs without republishing them."""
+    # Publish exactly the preflight-checked attempts so its collision check remains valid.
     return _publish_prepared_attempts(
         context, acts, ordinal, regions_by_act, attempts_by_pair, sealed_pairs, live=False
     )
@@ -5224,6 +5230,7 @@ def witness_bound_reading_acts(context) -> frozenset[str]:
 
 def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what: str) -> None:
     """Refuse new attempts before they collide with an immutable Perlectio."""
+    # Callers check appends before writing, but let resumes reuse sealed testimony.
     if act["act_id"] in closed:
         raise ContractError(
             f"act {act['act_id']} ({act['act_key']}) already carries a Perlectio, so its "
@@ -5318,6 +5325,7 @@ def prepared_act_attachment(
     """Preflight reread attachments before writing the new Testimonium.
 
     Its chair's slot is pending; other entries carry forward after staleness checks.
+    Refuse before publication so a bad attachment leaves the folder untouched.
     """
     records = index.attachments_by_act.get(act["act_id"], [])
     if not records:
@@ -5450,6 +5458,7 @@ def _run_full_pass(
             fixture_declared=not real,
         )
     except ContractError as error:
+        # A preflight refusal precedes writes; accounting imbalance remains fatal.
         if isinstance(error, FatalAccounting):
             raise
         print(f"Attestatores refused this pass: {error}", file=sys.stderr)
@@ -5500,7 +5509,7 @@ def _finish_pass(context, acts, recorded, isolated_crop_failure):
     if tally["hold"]:
         return EXIT_HELD
     if isolated_crop_failure:
-        # Every chair has a non-reading record, so later stages show the refusal.
+        # This is not a hold: every chair has a non-reading record for later stages.
         print("Attestatores recorded one or more refused proposal crops", file=sys.stderr)
     return EXIT_COMPLETE
 
