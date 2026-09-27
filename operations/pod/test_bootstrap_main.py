@@ -135,7 +135,7 @@ def _workspace(tmp_path: Path) -> Workspace:
         journal=volume / "bootstrap-journal.json",
         report_path=volume / "bootstrap-report.json",
         # Inside the volume / the checked-out repository respectively: a
-        # pinned real-roster store and a chair/placement config that resolve
+        # pinned real-roster store and a chair config that resolve
         # outside their required container are refused (resolve_plan).
         store_root=volume / "store",
         models_config=repository / "config" / "models.toml",
@@ -163,8 +163,6 @@ def _argv(ws: Workspace, *, commit: str = "a" * 40, extra: tuple[str, ...] = ())
         str(ws.store_root),
         "--models-config",
         str(ws.models_config),
-        "--placement-config",
-        str(ws.placement_config),
         *extra,
     ]
 
@@ -1131,7 +1129,6 @@ def test_build_actions_does_not_read_models_config_before_configuration_runs(
         journal=ws.journal,
         store_root=ws.store_root,
         models_config=ws.models_config,
-        placement_config=ws.placement_config,
         serving_recipes_config=ws.repository / "config" / "serving_recipes.toml",
         witness_context_config=ws.repository / "config" / "witness_context.toml",
         cache_root=ws.volume / "chair-cache",
@@ -1176,7 +1173,6 @@ def test_a_plan_with_no_submission_manifest_makes_transfer_a_vacuous_success() -
         journal=Path("/volume/journal.json"),
         store_root=Path("/volume/store"),
         models_config=Path("/repo/models.toml"),
-        placement_config=Path("/repo/placement.toml"),
         cache_root=Path("/volume/chair-cache"),
         fixture=Path("/repo/proof/fixtures/synthetic-two-page-v0/page-1.png"),
         submission_manifest=None,
@@ -1214,7 +1210,6 @@ def test_a_configured_manifest_that_is_missing_fails_the_step_rather_than_no_opp
         journal=Path("/volume/journal.json"),
         store_root=Path("/volume/store"),
         models_config=Path("/repo/models.toml"),
-        placement_config=Path("/repo/placement.toml"),
         cache_root=Path("/volume/chair-cache"),
         fixture=Path("/repo/proof/fixtures/synthetic-two-page-v0/page-1.png"),
         submission_manifest=Path("/volume/submission/manifest.json"),
@@ -1306,6 +1301,93 @@ def test_a_refusal_after_report_path_validation_writes_a_durable_reason(
     assert "missing required plan argument(s)" in record["reason"]
 
 
+def test_a_stale_bootstrap_argument_is_a_durable_refusal(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+    argv = _argv(ws, extra=("--placement-config", "config/pod_placement.toml", "--extra=hunter2"))
+
+    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
+
+    assert exit_code == 2
+    reason = json.loads(ws.report_path.read_text(encoding="utf-8"))["reason"]
+    assert "(value), --extra, --placement-config" in reason
+    assert "hunter2" not in reason and "pod_placement.toml" not in reason
+
+
+def test_an_argv_parse_error_is_a_durable_refusal(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    argv = _argv(ws, extra=("--interval-seconds", "soon", "-h"))
+
+    exit_code = main(argv, environ=_environ(Clock()), actions_factory=_never_called)
+
+    assert exit_code == 2
+    reason = json.loads(ws.report_path.read_text(encoding="utf-8"))["reason"]
+    assert "--interval-seconds" in reason and "soon" not in reason
+
+
+def test_an_opaque_flag_token_never_reaches_the_report_or_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _workspace(tmp_path)
+    opaque = "--Qm7vX2pL9kR4tW8zN3cB6hJ1"
+
+    exit_code = main(
+        _argv(ws, extra=(opaque,)), environ=_environ(Clock()), actions_factory=_never_called
+    )
+
+    assert exit_code == 2
+    written = ws.report_path.read_text(encoding="utf-8") if ws.report_path.exists() else ""
+    assert opaque[2:] not in written + capsys.readouterr().err
+
+
+def test_a_report_path_without_the_launch_token_is_never_written(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    ws.report_path.write_text("a previous launch's report", encoding="utf-8")
+    environment = _environ(Clock(), extra={"VERBATUS_LAUNCH_TOKEN": "launch-abc123"})
+
+    exit_code = main(_argv(ws), environ=environment, actions_factory=_never_called)
+
+    assert exit_code == 2
+    assert ws.report_path.read_text(encoding="utf-8") == "a previous launch's report"
+
+
+def test_configuration_refuses_a_placement_table_symlinked_out_of_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
+    elsewhere = tmp_path / "elsewhere.toml"
+    elsewhere.write_bytes(ws.placement_config.read_bytes())
+    ws.placement_config.unlink()
+    ws.placement_config.symlink_to(elsewhere)
+
+    with pytest.raises(BootstrapStepFailure) as refusal:
+        bootstrap_main._build_configuration_validation(plan)()
+
+    assert refusal.value.step is BootstrapStep.CONFIGURATION
+    assert "is not the checked-out repository's" in refusal.value.detail
+
+
+def test_a_placement_value_changed_after_a_green_bootstrap_refuses_the_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
+    first = bootstrap_main.run_bootstrap(
+        plan, now=lambda: START, actions_factory=lambda _plan: _configuration_actions(plan)
+    )
+    assert not isinstance(first, int) and first.green
+
+    ws.placement_config.write_bytes(
+        ws.placement_config.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+    )
+    resumed_actions = _configuration_actions(plan)
+    resumed = bootstrap_main.run_bootstrap(
+        plan, now=lambda: START, actions_factory=lambda _plan: resumed_actions
+    )
+
+    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+
+
 def test_a_refusal_that_precedes_report_path_validation_writes_nothing(
     tmp_path: Path,
 ) -> None:
@@ -1330,9 +1412,12 @@ PROVEN_TIER = "generic-48gb"
 WITNESS = "h6GMQDVxeNmr7RYvT82PqWkJz3BLaF9C"
 
 
-def _checked_out_configuration_plan(tmp_path: Path) -> tuple[Workspace, bootstrap_main.Plan]:
+def _checked_out_configuration_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Workspace, bootstrap_main.Plan]:
     ws = _workspace(tmp_path)
     shutil.copytree(ROOT / "config", ws.repository / "config")
+    monkeypatch.setattr(bootstrap_main, "DEFAULT_POD_PLACEMENT_CONFIG_PATH", ws.placement_config)
     plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
     return ws, plan
 
@@ -1348,8 +1433,10 @@ def _configuration_actions(
     )
 
 
-def test_configuration_receipt_binds_every_selected_path_and_seal(tmp_path: Path) -> None:
-    _ws, plan = _checked_out_configuration_plan(tmp_path)
+def test_configuration_receipt_binds_every_selected_path_and_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
 
     receipt = bootstrap_main._build_configuration_validation(plan)()
 
@@ -1359,7 +1446,7 @@ def test_configuration_receipt_binds_every_selected_path_and_seal(tmp_path: Path
         ("models_config", plan.models_config),
         ("witness_context_config", plan.witness_context_config),
         ("serving_recipes_config", plan.serving_recipes_config),
-        ("placement_config", plan.placement_config),
+        ("placement_config", bootstrap_main.DEFAULT_POD_PLACEMENT_CONFIG_PATH),
     ):
         assert selected is not None
         assert bindings[name] == {  # type: ignore[index]
@@ -1376,10 +1463,10 @@ def test_configuration_receipt_binds_every_selected_path_and_seal(tmp_path: Path
     ],
 )
 def test_configuration_names_an_unreadable_selected_source_and_its_repair(
-    tmp_path: Path, attribute: str, label: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attribute: str, label: str
 ) -> None:
-    _ws, plan = _checked_out_configuration_plan(tmp_path)
-    selected = getattr(plan, attribute)
+    ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
+    selected = ws.placement_config if attribute == "placement_config" else getattr(plan, attribute)
     assert isinstance(selected, Path)
     selected.unlink()
 
@@ -1403,10 +1490,14 @@ def test_configuration_names_an_unreadable_selected_source_and_its_repair(
     ],
 )
 def test_configuration_refuses_semantic_selected_source_before_later_work(
-    tmp_path: Path, attribute: str, contents: str, named_source: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attribute: str,
+    contents: str,
+    named_source: str,
 ) -> None:
-    ws, plan = _checked_out_configuration_plan(tmp_path)
-    selected = getattr(plan, attribute)
+    ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
+    selected = ws.placement_config if attribute == "placement_config" else getattr(plan, attribute)
     assert isinstance(selected, Path)
     selected.write_text(contents, encoding="utf-8")
     actions = _configuration_actions(plan)
@@ -1422,8 +1513,10 @@ def test_configuration_refuses_semantic_selected_source_before_later_work(
     assert "resume this journal before any environment or model work" in (result.remediation or "")
 
 
-def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(tmp_path: Path) -> None:
-    ws, original = _checked_out_configuration_plan(tmp_path)
+def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, original = _checked_out_configuration_plan(tmp_path, monkeypatch)
     first_actions = _configuration_actions(original, fail_step=BootstrapStep.UV_ENVIRONMENT)
     first = bootstrap_main.run_bootstrap(
         original,
@@ -1453,8 +1546,9 @@ def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(tmp_pa
 
 def test_a_green_journal_refuses_a_changed_configuration_path_before_shortcut(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ws, original = _checked_out_configuration_plan(tmp_path)
+    ws, original = _checked_out_configuration_plan(tmp_path, monkeypatch)
     first_actions = _configuration_actions(original)
     first = bootstrap_main.run_bootstrap(
         original,
@@ -1463,10 +1557,10 @@ def test_a_green_journal_refuses_a_changed_configuration_path_before_shortcut(
     )
     assert not isinstance(first, int) and first.green
 
-    alternate = ws.repository / "config" / "alternate-placement.toml"
-    assert original.placement_config is not None
-    alternate.write_bytes(original.placement_config.read_bytes())
-    changed = replace(original, placement_config=alternate)
+    alternate = ws.repository / "config" / "alternate-recipes.toml"
+    assert original.serving_recipes_config is not None
+    alternate.write_bytes(original.serving_recipes_config.read_bytes())
+    changed = replace(original, serving_recipes_config=alternate)
     resumed_actions = _configuration_actions(changed)
     resumed = bootstrap_main.run_bootstrap(
         changed,
@@ -1479,8 +1573,10 @@ def test_a_green_journal_refuses_a_changed_configuration_path_before_shortcut(
     assert BootstrapStep.UV_ENVIRONMENT not in resumed_actions.calls
 
 
-def test_a_same_path_serving_byte_change_refuses_before_a_partial_resume(tmp_path: Path) -> None:
-    ws, plan = _checked_out_configuration_plan(tmp_path)
+def test_a_same_path_serving_byte_change_refuses_before_a_partial_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
     first_actions = _configuration_actions(plan, fail_step=BootstrapStep.UV_ENVIRONMENT)
     first = bootstrap_main.run_bootstrap(
         plan,
@@ -1513,8 +1609,9 @@ def test_a_same_path_serving_byte_change_refuses_before_a_partial_resume(tmp_pat
 
 def test_an_unchanged_resume_revalidates_configuration_without_rerunning_paid_steps(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _ws, plan = _checked_out_configuration_plan(tmp_path)
+    _ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
     first_actions = _configuration_actions(plan)
     first = bootstrap_main.run_bootstrap(
         plan,
@@ -1534,8 +1631,10 @@ def test_an_unchanged_resume_revalidates_configuration_without_rerunning_paid_st
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
 
 
-def test_a_completed_receipt_missing_one_binding_fails_closed(tmp_path: Path) -> None:
-    ws, plan = _checked_out_configuration_plan(tmp_path)
+def test_a_completed_receipt_missing_one_binding_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
     first_actions = _configuration_actions(plan)
     first = bootstrap_main.run_bootstrap(
         plan,
@@ -1559,8 +1658,10 @@ def test_a_completed_receipt_missing_one_binding_fails_closed(tmp_path: Path) ->
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
 
 
-def test_a_journal_bound_under_the_raw_byte_receipt_is_refused_by_schema(tmp_path: Path) -> None:
-    ws, plan = _checked_out_configuration_plan(tmp_path)
+def test_a_journal_bound_under_the_raw_byte_receipt_is_refused_by_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
     first = bootstrap_main.run_bootstrap(
         plan, now=lambda: START, actions_factory=lambda selected: _configuration_actions(plan)
     )
@@ -1583,8 +1684,9 @@ def test_a_journal_bound_under_the_raw_byte_receipt_is_refused_by_schema(tmp_pat
 
 def test_a_failed_configuration_may_repair_its_selection_before_first_completion(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ws, repaired_plan = _checked_out_configuration_plan(tmp_path)
+    ws, repaired_plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
     bad_context = ws.repository / "config" / "bad-context.toml"
     bad_context.write_text('attestator_1 = "not a table"\n', encoding="utf-8")
     bad_plan = replace(repaired_plan, witness_context_config=bad_context)
@@ -1713,6 +1815,29 @@ def _preflight_seams(tmp_path: Path, identities: dict, *, witness: str = WITNESS
         residency_lock=tmp_path / "pod-gpu.lock",
     )
     return seams, http, launcher
+
+
+def test_preflight_measures_the_placement_table_the_run_seals(tmp_path: Path) -> None:
+    from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    checked_out = ws.repository / "config" / "pod_placement.toml"
+    checked_out.write_text(
+        checked_out.read_text(encoding="utf-8").replace(
+            'hourly_usd = "0.77"', 'hourly_usd = "9.99"'
+        ),
+        encoding="utf-8",
+    )
+    sealed = read_sealed_toml(DEFAULT_POD_PLACEMENT_CONFIG_PATH, "placement")[1]
+    assert read_sealed_toml(checked_out, "placement")[1] != sealed
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    seams, _http, _launcher = _preflight_seams(tmp_path, identities)
+
+    record = _build_preflight(plan, seams)()
+
+    assert record["serving_config_inputs"]["pod_placement_sha256"] == sealed  # type: ignore[index]
 
 
 def test_preflight_goes_green_through_the_registry_and_the_serving_seam(

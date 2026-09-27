@@ -1297,8 +1297,8 @@ def _publish_continuation_candidates(
     `acts_by_page` holds every page marked out by detection, with its proposed
     acts (possibly none); `linked` marks an act whose continuation the fixture
     declares, which is dropped from the head side as already linked. The record is not authoritative: it enters no act and no seal, and
-    the Recensor holds every act it names, since a head alone is truncated and
-    a tail alone has no heading. Whether they are one act stays unmade here. A
+    every act it names is delivered apart, since the link is a review decision
+    the Armarium only reconstructs. Whether they are one act stays unmade here. A
     side with no proposed act over its group is published empty, never
     dropped: that ink is also unclaimed, and conservation holds it.
     """

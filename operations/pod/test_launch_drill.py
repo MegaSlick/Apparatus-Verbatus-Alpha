@@ -93,7 +93,7 @@ REPORT_PATH = f"{MOUNT}/pod-report.json"
 BOUND_REPORT_PATH = f"{MOUNT}/pod-report-{LEASE_ID}.json"
 BOUND_REPORT_OBJECT = f"pod-report-{LEASE_ID}.json"
 
-BOOTSTRAP_ARGV = ["python", "-m", "operations.pod.bootstrap_main", "--hold"]
+BOOTSTRAP_ARGV = ["python", "-m", "operations.pod.bootstrap_main", "--hold-only"]
 
 SUPERVISOR_PID = 90001
 

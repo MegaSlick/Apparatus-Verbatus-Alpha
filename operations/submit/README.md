@@ -22,14 +22,11 @@ resumable", and no pod exists yet.
 - `submit.py` — the folder-to-manifest tool. It writes a private refusal report
   that preserves source filenames and reasons when inventory refuses a source;
   a distinct retry receives a content-addressed sibling report rather than losing
-  the later alarm to immutable evidence already at the ordinary path;
-  `purge()` refuses routine deletion because this tool has no sealed end-of-run
-  authority. The Exemplar door writes the corresponding private report for
-  decoder, digest, and unreadable-after-transfer alarms. Byte-identical sources
-  are admitted as distinct filename links and recorded as a private duplicate fact,
-  not a refusal.
-- `cleanup.py` — the drill's verification half: declared, measurable bounds, and a
-  refusal when one of them is not met.
+  the later alarm to immutable evidence already at the ordinary path. There is no
+  routine deletion command: this tool has no sealed end-of-run authority. The
+  Exemplar door writes the corresponding private report for decoder, digest, and
+  unreadable-after-transfer alarms. Byte-identical sources are admitted as
+  distinct filename links and recorded as a private duplicate fact, not a refusal.
 
 ## The storage-root check is mechanical; the approval-record requirement is cut
 

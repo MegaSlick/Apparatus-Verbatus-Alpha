@@ -280,3 +280,15 @@ def test_a_nested_journal_outside_the_volume_is_refused() -> None:
 
     with pytest.raises(ValueError, match="nested --journal must be inside"):
         validated_pod_request(_with_nested_argv(filled_request(), nested))
+
+
+def test_the_rendered_bootstrap_half_is_a_plan_bootstrap_main_accepts() -> None:
+    from .bootstrap_main import build_parser, resolve_plan
+
+    request = validated_pod_request(filled_request())
+    nested = _sealed_nested_argv(request.docker_start_cmd)
+    bootstrap_half = nested[nested.index("--") + 1 :]
+
+    plan = resolve_plan(build_parser().parse_args(bootstrap_half), request.metadata)
+
+    assert str(plan.repository) == BOOT_B_REPOSITORY_PATH

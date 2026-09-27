@@ -2837,7 +2837,6 @@ def review_route_from_findings(
     audit_reproof_truncation: dict | None = None,
     assessment_malformed: bool = False,
     assessment_problem: str | None = None,
-    continuation_candidate: bool = False,
 ) -> tuple[str, str] | None:
     """Compose every independent review cause in stable priority order.
 
@@ -2859,7 +2858,6 @@ def review_route_from_findings(
             "assessment_problem": assessment_problem,
             "under_witnessed": under_witnessed,
             "unreconciled": unreconciled,
-            "continuation_candidate": continuation_candidate,
         },
         what="a Recensor review route",
     )
@@ -2939,8 +2937,6 @@ def review_route_from_findings(
         )
     if unreconciled:
         reasons.append("the act did not reconcile and needs a human")
-    if continuation_candidate:
-        reasons.append(CONTINUATION_CANDIDATE_REASON)
     if not reasons:
         return None
     return "held-for-review", "; ".join(reasons)
@@ -2949,8 +2945,8 @@ def review_route_from_findings(
 CONTINUATION_CANDIDATE_REASON = (
     "the Designator's geometry names this act in a continuation candidate: one act "
     "reaches a page's bottom edge and the next page opens on an unanchored act at its "
-    "top edge; whether they are one act is a review decision, so neither half is "
-    "delivered as a whole act"
+    "top edge; whether they are one act is a review decision, so each half can leave "
+    "only as its own literal, never joined to the other as one act"
 )
 
 
@@ -3469,7 +3465,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             audit_reproof_truncation=audit_facts.get("reproof_truncation"),
             assessment_malformed=(assessment_record or {}).get("state") == "malformed",
             assessment_problem=(assessment_record or {}).get("problem"),
-            continuation_candidate=act_id in candidate_refs,
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
@@ -3729,8 +3724,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 if latest["outcome"] == "no-readable-text"
                 else None
             )
+            # A named act may be half of one act, so it never seals blank on its own.
+            blockers = [cause[1] for cause in hold_causes] + (
+                [CONTINUATION_CANDIDATE_REASON] if act_id in candidate_refs else []
+            )
             # Validated before the hold gate, so a writer-impossible record stays fatal.
-            if hold_causes:
+            if blockers:
                 corroborating_chairs = None
             if corroborating_chairs is not None:
                 outcome, reason = (
@@ -3756,9 +3755,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 }
             else:
                 route_reason = (
-                    f"; its corroboration is blocked because {hold_causes[0][1]}"
-                    if hold_causes
-                    else ""
+                    f"; its corroboration is blocked because {blockers[0]}" if blockers else ""
                 )
                 outcome, reason = (
                     "held-for-review",
