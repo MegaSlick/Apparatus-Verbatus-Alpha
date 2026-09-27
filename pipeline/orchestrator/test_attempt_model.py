@@ -23,7 +23,6 @@ Findings: F2 (2a wedge, 2b whole-pass refusal, 2c currency loss, 2d stale
 `complete` export) and Sol-S5 (the lax recovery counter at the Perlector).
 """
 
-
 from __future__ import annotations
 
 import json

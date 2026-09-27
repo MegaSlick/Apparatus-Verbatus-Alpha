@@ -1,6 +1,5 @@
 """The staged driver is one sequence, irrespective of how an operator enters it."""
 
-
 from __future__ import annotations
 
 import argparse

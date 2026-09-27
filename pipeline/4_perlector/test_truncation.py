@@ -298,9 +298,12 @@ def test_the_verdict_is_invariant_under_uniform_rescaling(scale):
 @pytest.mark.xfail(strict=True, reason="A clean one-line cutoff is classified complete")
 def test_a_real_act_crop_cut_off_after_one_line_is_not_caught_by_the_length_signal():
     cut_off = "L'an mil sept cent quarante deux le douze de may"[:40]
-    assert classify(
-        cut_off, region_pixels=2400 * 420, page_pixels=LEAF_PAGE, stop_reason="stop"
-    )["classification"] != truncation.COMPLETE
+    assert (
+        classify(cut_off, region_pixels=2400 * 420, page_pixels=LEAF_PAGE, stop_reason="stop")[
+            "classification"
+        ]
+        != truncation.COMPLETE
+    )
 
 
 # --------------------------------------------------------------------------
