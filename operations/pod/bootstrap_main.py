@@ -289,11 +289,11 @@ class Plan:
 class RegistryChairCacheVerifier:
     """The production ``ChairCacheVerifier``: one ``ensure`` per configured chair.
 
-    ``ChairRegistry.ensure`` verifies the exact pinned snapshot in the cache
-    the ``CHAIR_CACHE`` step already filled -- every row of the pinned
-    manifest against the bytes on the volume -- and returns the verified
-    snapshot, or raises the chair's own named refusal. A mismatch is reported
-    once, by chair, with its original cause; no automatic repair is attempted.
+    ``ChairRegistry.ensure`` verifies the exact pinned snapshot in the role
+    cache, filling it from the retained store if needed, and returns the
+    verified snapshot or raises the chair's named refusal. A mismatch is
+    reported once, by chair, with its original cause; no automatic repair is
+    attempted.
     """
 
     def __init__(self, registry: ChairRegistry) -> None:

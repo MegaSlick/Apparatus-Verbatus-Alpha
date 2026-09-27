@@ -25,8 +25,8 @@ from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
 from operations.pod.launch import launch_evidence_keys, launch_evidence_prefixes, launch_run_id
 from operations.pod.models import (
-    DEFAULT_CONTAINER_DISK_GB,
     PodCreateRequest,
+    container_disk_gb_for_tier,
     require_utc,
 )
 from operations.pod.transfer import normalize_transfer_prefix
@@ -1496,7 +1496,7 @@ def load_request(path: str | Path) -> PodCreateRequest:
             hard_deadline=require_utc(deadline, "hard deadline"),
             repository_commit=raw["repository_commit"],
             # Absent falls back to the reviewed default, not the provider's.
-            container_disk_gb=raw.get("container_disk_gb", DEFAULT_CONTAINER_DISK_GB),
+            container_disk_gb=raw.get("container_disk_gb", container_disk_gb_for_tier(None)),
             template=raw.get("template"),
             metadata=metadata,
             interruptible=interruptible,

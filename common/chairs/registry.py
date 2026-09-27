@@ -553,11 +553,18 @@ class ChairRegistry:
             for role, configured in self.config.chairs.items()
             if isinstance(configured, ChairIdentity) and configured.adapter_of == identity.role
         )
+        configured_roles = {
+            role
+            for role, configured in self.config.chairs.items()
+            if isinstance(configured, ChairIdentity)
+        }
         with _cache_write(identity.role, "other chair caches could not be evicted"):
             for other in cache_root.iterdir():
                 if other.name in keep:
                     continue
-                if other.name.startswith(".") and ".candidate-" not in other.name:
+                if other.name not in configured_roles and not any(
+                    other.name.startswith(f".{role}.candidate-") for role in configured_roles
+                ):
                     continue
                 if other.is_symlink():
                     other.unlink()

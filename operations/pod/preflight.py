@@ -56,8 +56,8 @@ class _RuntimeProvenance:
 
     This is a guard against a caller asserting its own proof, not a security
     boundary: Python has no private, and a determined caller can always reach a
-    module-private name. That is the same posture `repaired_once` and
-    `served_engine` already take on their receipts -- what it buys is that a
+    module-private name. That is the same posture `served_engine` takes on
+    its receipt -- what it buys is that a
     fixture, an operator rehearsal, a test double, or a future adapter cannot
     claim a measured card *by accident* or by filling in an inviting field.
     """
@@ -1141,7 +1141,7 @@ class PreflightRunner:
         normalized = self._bound_receipt(identity, receipt, issues, "cache")
         if normalized is None:
             return False
-        receipts.append({"chair": identity.role, "repaired_once": False, **normalized})
+        receipts.append({"chair": identity.role, **normalized})
         return True
 
     @staticmethod
@@ -1170,16 +1170,6 @@ class PreflightRunner:
                     f"{kind}-receipt-misbound",
                     f"chair {identity.role} returned a {kind} receipt naming {reported_chair!r}.",
                     "Repair the adapter; evidence from one chair cannot be recorded under another.",
-                    identity.role,
-                )
-            )
-            return None
-        if kind == "cache" and "repaired_once" in receipt:
-            issues.append(
-                PreflightIssue(
-                    "cache-receipt-invalid",
-                    f"chair {identity.role} returned the runtime-owned repaired_once field.",
-                    "Repair the cache adapter; retry accounting belongs to the preflight runtime.",
                     identity.role,
                 )
             )
@@ -1270,8 +1260,7 @@ class PreflightRunner:
             {
                 "chair": identity.role,
                 **receipt,
-                # Runtime-owned, like `repaired_once` on a cache receipt: the
-                # reader reports what it read, the runtime reports what served
+                # Runtime-owned: the reader reports what it read, the runtime reports what served
                 # it.  `_bound_receipt` refuses an adapter that pre-populates it.
                 "served_engine": result.served_by,
                 "utilization": [

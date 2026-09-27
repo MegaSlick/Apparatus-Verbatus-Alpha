@@ -4955,7 +4955,10 @@ def test_pod_timer_closes_when_bootstrap_exits_early_to_avoid_idle_spend(tmp_pat
     assert report["green"] is False
 
 
-def test_pod_timer_records_selected_stages_as_completed_early(tmp_path: Path) -> None:
+@pytest.mark.parametrize("exit_code", [3, 8])
+def test_pod_timer_records_selected_stages_as_completed_early(
+    tmp_path: Path, exit_code: int
+) -> None:
     clock = Clock()
     provider = fake(clock)
     record = provider.create(request(clock))
@@ -4970,7 +4973,7 @@ def test_pod_timer_records_selected_stages_as_completed_early(tmp_path: Path) ->
 
     class SelectedChild:
         def poll(self) -> int:
-            return 8
+            return exit_code
 
     report_path = tmp_path / "selection-report.json"
     result = run_with_bootstrap(
@@ -4982,7 +4985,9 @@ def test_pod_timer_records_selected_stages_as_completed_early(tmp_path: Path) ->
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert result.close_report is not None and result.close_report.verified
     assert report["bootstrap"]["state"] == "completed-early"
-    assert report["bootstrap"]["exit_code"] == 8
+    assert report["bootstrap"]["exit_code"] == exit_code
+    if exit_code == 3:
+        assert "held for review" in report["bootstrap"]["remediation"]
 
 
 def _fixture_configuration_receipt() -> dict[str, object]:
@@ -6089,27 +6094,6 @@ def test_smoke_receipt_cannot_replace_its_chair_identity() -> None:
 
     assert report.color == "red"
     assert any(issue.code == "smoke-receipt-misbound" for issue in report.issues)
-
-
-def test_cache_receipt_cannot_replace_runtime_retry_accounting() -> None:
-    class MiscountedCache(FakeCache):
-        def verify(self, identity):  # type: ignore[no-untyped-def]
-            return {"manifest_digest": identity.digest_manifest, "repaired_once": False}
-
-    report = _preflight(MiscountedCache(), FakeSmoke()).run(
-        GpuProfile(
-            "synthetic",
-            "12.4",
-            "550",
-            (8, 0),
-            Decimal("48"),
-            Decimal("100"),
-            "bfloat16",
-        )
-    )
-
-    assert report.color == "red"
-    assert any(issue.code == "cache-receipt-invalid" for issue in report.issues)
 
 
 @pytest.mark.parametrize(

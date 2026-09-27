@@ -311,6 +311,9 @@ from it is cited with its page and its date in the file that relies on it.
   takes the cheapest card by reviewed `hourly_usd`, and renders the coming preview
   refusals (card above `max_hourly_usd`, cost above the metered ceiling) as a section
   rather than hiding them or refusing to render.
+- Container disk follows the selected card's placement tier: 120 GB for
+  `generic-80gb-plus`, 60 GB for other tiers. A request without a known tier
+  uses the 60 GB default unless it states `container_disk_gb` explicitly.
 - `V2_MIGRATION.md` is admitted to the allowlist by exact path, with its deletion
   condition written beside the admission, rather than widened to a glob.
 
