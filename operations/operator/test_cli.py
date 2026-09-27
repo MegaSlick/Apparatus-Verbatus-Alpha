@@ -79,6 +79,17 @@ def _clear(tmp_path, root, *extra):
     return cli.main([*common, "clear-leftovers", "--root", str(root), *extra])
 
 
+def test_interactive_clear_leftovers_explains_a_blank_folder(capsys, monkeypatch):
+    answers = iter(("clear-leftovers", ""))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert cli._interactive_arguments() == []
+    assert (
+        "Clear-leftovers needs a folder to check for leftovers. "
+        "It was left blank, so nothing changed."
+    ) in capsys.readouterr().out
+
+
 @pytest.fixture
 def later(monkeypatch):
     """Two hours from now: what exists now is quiet; what is stamped `later` is fresh."""
