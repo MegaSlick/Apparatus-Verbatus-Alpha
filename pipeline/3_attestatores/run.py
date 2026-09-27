@@ -158,11 +158,7 @@ def real_ingress(context) -> bool:
 
 
 def page_subject(context, page_ordinal: int, *, page_ids: dict[int, str] | None = None) -> str:
-    """The Exemplar page one submitted ordinal names, on either ingress route.
-
-    `page_ids` is an optional prebuilt `exemplar_page_ids(context)`; a caller visiting
-    many pages passes it to avoid one inventory walk per lookup.
-    """
+    """Name the Exemplar page; a supplied page map avoids repeated inventory walks."""
     pages = page_ids if page_ids is not None else exemplar_page_ids(context)
     if page_ordinal not in pages:
         raise FatalAccounting(
@@ -553,11 +549,7 @@ def _sorted_refs(references: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
-    """Whether a fixture declaration belongs to this immutable attempt.
-
-    A row without an ordinal means attempt one only, so a declared failure does not
-    repeat on every re-read.
-    """
+    """An unnumbered fixture row belongs to attempt one, never to rereads."""
     declared = row.get("attempt_ordinal", 1)
     if not _is_positive_int(declared):
         raise SchemaRefusal("a fixture witness declaration has no positive attempt ordinal")
@@ -1249,11 +1241,7 @@ def validate_live_serving_fields(payload: dict[str, Any]) -> None:
 def validate_retained_response_blob(
     tree: Any, reference: Any, field: str = "raw_response_ref"
 ) -> None:
-    """Re-read one retained blob so a missing or changed one cannot pass a tally.
-
-    ``field`` names the reference: a live record carries both the response and the
-    call-record blob, and both are re-hashed.
-    """
+    """Re-hash the named response or call blob during tally read-back."""
     checked = validate_stage_blob_ref(reference, field)
     what = f"retained witness {field}"
     read_verified(tree.read_bytes, checked, what)
@@ -1396,11 +1384,7 @@ class AttemptIndex(NamedTuple):
 
 
 def _attempt_history(context) -> AttemptIndex:
-    """Index immutable Testimonia and derived attachments once for this invocation.
-
-    Serves only append/collision decisions, which would otherwise walk the manifest
-    per pair and go quadratic; the tally validates independently.
-    """
+    """Index once for append decisions; the tally validates independently."""
     manifest = context.tree.build_manifest(ATTESTATORES)
     by_pair: AttemptHistory = {}
     attachments_by_act: dict[str, list[dict[str, Any]]] = {}
@@ -1471,15 +1455,11 @@ def _refuse_write_collision(
     ordinal: int,
     attempt: "Attempt",
 ) -> None:
-    """Refuse before any Testimonium write if this pass would seal different
-    bytes than an attempt already recorded at this exact identity.
+    """Refuse every collision before writing any Testimonium in this pass.
 
-    A reread and a whole pass can reach one identity with different outcomes (an
-    undeclared response is `failed` under one and `not-run` under the other). The
-    RunTree would refuse only mid-pass, after earlier pairs were published, so
-    every pair is checked first. Compared on the fields the two write paths can
-    disagree on; provenance does not vary with `reread`. Raw response blobs
-    retained before this refusal stay in custody.
+    A reread and whole pass can give one identity different outcomes; RunTree
+    would catch that only mid-pass. Provenance cannot differ between the paths;
+    earlier raw response blobs stay in custody.
     """
     existing = _records_at_ordinal(history, (act["act_id"], chair), ordinal)
     if not existing:
@@ -1523,17 +1503,11 @@ def pass_would_append(history: AttemptHistory, act_id: str, chairs, ordinal: int
 def require_shared_whole_pass_ordinal(
     index: "AttemptIndex", act: dict[str, Any], chairs, ordinal: int
 ) -> None:
-    """Refuse an appending whole pass on an act a targeted reread has moved.
+    """Refuse a reread's moved attachment ordinal before writing new attempts.
 
-    A reread already took the act's next attachment ordinal, and the RunTree would
-    refuse only after the pass's Testimonia were written, leaving attempts the
-    manifest does not name. An act is off the shared ordinal when its chairs
-    disagree on their current ordinal; pairs with no record are ignored.
-
-    Not caught here: rereading every chair to the same ordinal makes the pass a
-    repeat, and the attachment write then fails loudly in the RunTree
-    (`RunTree.write_manifest` recovers). Catching it would cost a second
-    derivation of every attachment.
+    A later refusal would leave attempts the attachment inventory does not name.
+    If every chair was reread to the same ordinal, the later attachment write
+    still refuses; preflighting that case would re-derive every attachment.
     """
     current: dict[str, int] = {}
     for chair in chairs:
@@ -1584,22 +1558,12 @@ def preflight_appendable_ordinals(
     dict[tuple[str, str], "Attempt"],
     frozenset[tuple[str, str]],
 ]:
-    """Refuse a damaged history, or a colliding write, before adding any new
-    attempt to this invocation.
+    """Check history and collisions before adding an attempt.
 
-    The returned region map lets publication reuse the regions verified here.
-
-    A resumed pass keeps one ordinal for every pair: an attachment describes one
-    ordinal, and downstream stages refuse a reading ordinal that moves without a
-    recrop (principles 2 and 4). With `resume_incomplete_pass`, a pair already
-    sealed at this ordinal is reused rather than re-resolved, since a live chair
-    cannot reproduce immutable bytes; a fixture pass over a completed boundary
-    re-resolves and compares.
-
-    `resolve` defaults to the fixture resolver; the live pass passes one that
-    returns `PENDING_LIVE_ATTEMPT` so no model is called before anything is written.
-    `fixture_declared` comes from `real_ingress` in `main`: a real submission has
-    no fixture to validate.
+    One attachment names one ordinal; downstream refuses an ordinal moved without recrop.
+    Resume reuses a sealed pair at this ordinal because a live chair cannot
+    reproduce its bytes; a completed fixture pass re-resolves and compares.
+    The live resolver leaves unsealed pairs pending until the serving pass.
     """
     resolve = resolve_attempt if resolve is None else resolve
     # Native declarations must refuse before compatibility records are published.
@@ -1792,13 +1756,10 @@ def attempt_tally(
     acts: list[dict[str, Any]] | None = None,
     chairs: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Rebuild and check the stage's attempt inventory.
+    """Compare the stored inventory with the rebuilt and validated Testimonia.
 
-    The stored manifest is checked against a fresh walk and the Testimonia; any
-    damage or divergence makes the count UNKNOWN, and the caller must hold.
-
-    `chairs` is optional because full pair coverage is a closing check: demanding
-    it before a pass would block the pass that completes an interrupted one.
+    Chair coverage is checked only at closing; an interrupted pass needs to fill
+    its missing pairs before the denominator can reconcile.
     """
     if chairs is not None and acts is None:
         raise SchemaRefusal("an attempt tally denominator names chairs but no expected acts")
@@ -4506,66 +4467,7 @@ def _chandra_backoff(completed_attempt_ordinal: int) -> None:
     time.sleep(delay)
 
 
-def _validate_chandra_terminal(
-    context,
-    *,
-    subject_id: str,
-    native_attempt_ordinal: int,
-    record: Mapping[str, Any],
-) -> dict[str, Any]:
-    payload = record.get("payload")
-    required = {
-        "schema",
-        "recipe",
-        "native_attempt_ordinal",
-        "parameters",
-        "request_sha256",
-        "intent_ref",
-        "trigger",
-        "returned_condition",
-        "error",
-        "error_code",
-        "error_detail",
-        "transport_response_ref",
-        "resolved_attempt",
-    }
-    if not isinstance(payload, dict) or set(payload) != required:
-        raise SchemaRefusal("a Chandra native terminal artifact is not its closed schema")
-    parameters = chandra_attempt_parameters(native_attempt_ordinal)
-    trigger = payload["trigger"]
-    returned = payload["returned_condition"]
-    if (
-        payload["schema"] != CHANDRA_ATTEMPT_SCHEMA
-        or payload["recipe"] != chandra_recipe_record()
-        or payload["native_attempt_ordinal"] != native_attempt_ordinal
-        or payload["parameters"] != parameters
-        or not is_sha256(payload["request_sha256"])
-        or trigger not in {None, "repeat-token", "inference-error"}
-        or returned not in {None, "repeat-token", "inference-error"}
-        or not isinstance(payload["error"], bool)
-    ):
-        raise SchemaRefusal("a Chandra native terminal artifact moved from its pinned attempt")
-    if native_attempt_ordinal < CHANDRA_MAX_ATTEMPTS and returned != trigger:
-        raise SchemaRefusal("a Chandra native terminal artifact disagrees with its retry trigger")
-    if native_attempt_ordinal == CHANDRA_MAX_ATTEMPTS and trigger is not None:
-        raise SchemaRefusal("the seventh Chandra native terminal artifact still requests a retry")
-    if payload["error"]:
-        if not isinstance(payload["error_code"], str) or not payload["error_code"].strip():
-            raise SchemaRefusal("a failed Chandra native attempt has no error code")
-        if not isinstance(payload["error_detail"], str) or not payload["error_detail"].strip():
-            raise SchemaRefusal("a failed Chandra native attempt has no error detail")
-    elif payload["error_code"] is not None or payload["error_detail"] is not None:
-        raise SchemaRefusal("a successful Chandra native attempt carries an invented error")
-
-    intent = _validate_chandra_intent(
-        context,
-        subject_id=subject_id,
-        native_attempt_ordinal=native_attempt_ordinal,
-        intent_ref=payload["intent_ref"],
-    )
-    if intent["request_sha256"] != payload["request_sha256"]:
-        raise SchemaRefusal("a Chandra native terminal artifact names a different intended request")
-
+def _validated_chandra_serving_call(context, payload, parameters, intent):
     resolved = _attempt_from_evidence_record(context, payload["resolved_attempt"])
     call_ref = validate_stage_blob_ref(resolved.serving_call_ref, "serving_call_ref")
     validate_retained_response_blob(context.tree, call_ref, "serving_call_ref")
@@ -4659,7 +4561,20 @@ def _validate_chandra_terminal(
         or sent.get("top_p") != {"schema": "wire-decimal.v1", "decimal": expected_top_p}
     ):
         raise SchemaRefusal("a Chandra native serving call record moved its pinned request")
+    return resolved, call_ref, call_record, inference_error
 
+
+def _validate_chandra_terminal_response(
+    context,
+    payload,
+    record,
+    native_attempt_ordinal,
+    resolved,
+    call_ref,
+    call_record,
+    inference_error,
+    conditions,
+):
     response_ref = payload["transport_response_ref"]
     if response_ref is not None:
         validate_stage_blob_ref(response_ref, "transport_response_ref")
@@ -4714,7 +4629,7 @@ def _validate_chandra_terminal(
             raw = model_output.decode("utf-8")
         except UnicodeDecodeError as error:
             raise SchemaRefusal("a Chandra native terminal's model output is not UTF-8") from error
-    if (trigger, returned) != _chandra_conditions(raw, inference_error, native_attempt_ordinal):
+    if conditions != _chandra_conditions(raw, inference_error, native_attempt_ordinal):
         raise SchemaRefusal(
             "a Chandra native terminal's trigger disagrees with its retained response/error"
         )
@@ -4728,6 +4643,82 @@ def _validate_chandra_terminal(
             expected_inputs.append(reference)
     if "inputs" in record and record["inputs"] != _sorted_refs(_named_once(expected_inputs)):
         raise SchemaRefusal("a Chandra native terminal artifact does not bind all call evidence")
+
+
+def _validate_chandra_terminal(
+    context,
+    *,
+    subject_id: str,
+    native_attempt_ordinal: int,
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = record.get("payload")
+    required = {
+        "schema",
+        "recipe",
+        "native_attempt_ordinal",
+        "parameters",
+        "request_sha256",
+        "intent_ref",
+        "trigger",
+        "returned_condition",
+        "error",
+        "error_code",
+        "error_detail",
+        "transport_response_ref",
+        "resolved_attempt",
+    }
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise SchemaRefusal("a Chandra native terminal artifact is not its closed schema")
+    parameters = chandra_attempt_parameters(native_attempt_ordinal)
+    trigger = payload["trigger"]
+    returned = payload["returned_condition"]
+    if (
+        payload["schema"] != CHANDRA_ATTEMPT_SCHEMA
+        or payload["recipe"] != chandra_recipe_record()
+        or payload["native_attempt_ordinal"] != native_attempt_ordinal
+        or payload["parameters"] != parameters
+        or not is_sha256(payload["request_sha256"])
+        or trigger not in {None, "repeat-token", "inference-error"}
+        or returned not in {None, "repeat-token", "inference-error"}
+        or not isinstance(payload["error"], bool)
+    ):
+        raise SchemaRefusal("a Chandra native terminal artifact moved from its pinned attempt")
+    if native_attempt_ordinal < CHANDRA_MAX_ATTEMPTS and returned != trigger:
+        raise SchemaRefusal("a Chandra native terminal artifact disagrees with its retry trigger")
+    if native_attempt_ordinal == CHANDRA_MAX_ATTEMPTS and trigger is not None:
+        raise SchemaRefusal("the seventh Chandra native terminal artifact still requests a retry")
+    if payload["error"]:
+        if not isinstance(payload["error_code"], str) or not payload["error_code"].strip():
+            raise SchemaRefusal("a failed Chandra native attempt has no error code")
+        if not isinstance(payload["error_detail"], str) or not payload["error_detail"].strip():
+            raise SchemaRefusal("a failed Chandra native attempt has no error detail")
+    elif payload["error_code"] is not None or payload["error_detail"] is not None:
+        raise SchemaRefusal("a successful Chandra native attempt carries an invented error")
+
+    intent = _validate_chandra_intent(
+        context,
+        subject_id=subject_id,
+        native_attempt_ordinal=native_attempt_ordinal,
+        intent_ref=payload["intent_ref"],
+    )
+    if intent["request_sha256"] != payload["request_sha256"]:
+        raise SchemaRefusal("a Chandra native terminal artifact names a different intended request")
+
+    resolved, call_ref, call_record, inference_error = _validated_chandra_serving_call(
+        context, payload, parameters, intent
+    )
+    _validate_chandra_terminal_response(
+        context,
+        payload,
+        record,
+        native_attempt_ordinal,
+        resolved,
+        call_ref,
+        call_record,
+        inference_error,
+        (trigger, returned),
+    )
     return payload
 
 
