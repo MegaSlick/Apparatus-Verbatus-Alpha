@@ -435,19 +435,25 @@ def test_the_live_reader_reads_pass_kind_for_nothing_but_the_refusal_and_the_aud
 # --- stop-reason mapping, per spec 1.6 ----------------------------------------
 
 
-def test_stop_reason_stop_maps_to_stop(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("finish_reason", "expected"),
+    [("stop", "stop"), ("length", "length"), (ABSENT, None)],
+)
+def test_live_reader_preserves_engine_stop_reason(
+    tmp_path: Path, finish_reason: str, expected: str | None
+) -> None:
     client, endpoint, _blobs, chair = _built(tmp_path)
     region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
     with client:
-        endpoint.script(ScriptedAnswer(content="alpha beta", finish_reason="stop"))
+        endpoint.script(ScriptedAnswer(content="alpha beta", finish_reason=finish_reason))
         result = _reader(client, chair).read(
             _dossier(region_image=region_image, page_image=page_image),
             pass_kind="perlectio",
             delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
         )
-    assert result["stop_reason"] == "stop"
+    assert result["stop_reason"] == expected
+    assert result["engine_call"]["finish_reason"] == expected
     assert result["text"] == "alpha beta"
-    assert result["engine_call"]["finish_reason"] == "stop"
     assert result["engine_call"]["served_model_id"] == SERVED_MODEL_ID
 
 
@@ -472,33 +478,6 @@ def test_a_marked_reading_publishes_clean_text_and_the_doubts_it_marked(tmp_path
         "gaps": [{"position": "internal", "start": 12, "end": 12, "witness_evidence": []}],
         "problem": None,
     }
-
-
-def test_stop_reason_length_maps_to_length(tmp_path: Path) -> None:
-    client, endpoint, _blobs, chair = _built(tmp_path)
-    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
-    with client:
-        endpoint.script(ScriptedAnswer(content="cut off mid", finish_reason="length"))
-        result = _reader(client, chair).read(
-            _dossier(region_image=region_image, page_image=page_image),
-            pass_kind="perlectio",
-            delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
-        )
-    assert result["stop_reason"] == "length"
-
-
-def test_stop_reason_absent_maps_to_none(tmp_path: Path) -> None:
-    client, endpoint, _blobs, chair = _built(tmp_path)
-    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
-    with client:
-        endpoint.script(ScriptedAnswer(content="no stop word", finish_reason=ABSENT))
-        result = _reader(client, chair).read(
-            _dossier(region_image=region_image, page_image=page_image),
-            pass_kind="perlectio",
-            delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
-        )
-    assert result["stop_reason"] is None
-    assert result["engine_call"]["finish_reason"] is None
 
 
 def test_an_unrecognized_stop_reason_refuses_by_name_with_the_bytes_retained(
