@@ -1002,7 +1002,10 @@ class OperatorSurface:
                 verdict_bytes = canonical_bytes(canary_verdict)
                 if verdict_path.exists():
                     if verdict_path.read_bytes() != verdict_bytes:
-                        raise ValueError("an existing canary verdict differs from this run")
+                        raise OperatorError(
+                            ErrorCode.CANARY_VERDICT_CONFLICT,
+                            detail="an existing canary verdict differs from this run",
+                        )
                 elif not write_new_file(verdict_path, verdict_bytes):
                     raise OSError("canary verdict could not be sealed")
                 else:
@@ -1126,7 +1129,10 @@ class OperatorSurface:
         if canary_verdict and canary_verdict["dead"]:
             raise OperatorError(
                 ErrorCode.CANARY_ALARM,
-                detail=f"{len(canary_verdict['dead'])} stage(s) failed. Saved verdict: {verdict_path}. Saved receipt: {receipt}",
+                detail=(
+                    f"{len({row['stage'] for row in canary_verdict['dead']})} stage(s) failed. "
+                    f"Saved verdict: {verdict_path}. Saved receipt: {receipt}"
+                ),
             )
         if outcome.unverified_serving_logs:
             self.present(

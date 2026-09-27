@@ -66,6 +66,7 @@ class ErrorCode(StrEnum):
     FETCH_RUN_FAILED = "fetch-run-failed"
     CANARY_ALARM = "canary-alarm"
     CANARY_VERDICT_SAVE_FAILED = "canary-verdict-save-failed"
+    CANARY_VERDICT_CONFLICT = "canary-verdict-conflict"
     INGEST_REFUSED = "ingest-refused"
     INGEST_PREVIEW_UNRESOLVED = "ingest-preview-unresolved"
     INGEST_UNRESOLVED = "ingest-unresolved"
@@ -365,6 +366,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The golden canary verdict could not be saved.",
         "The fetched run tree is present, but its private canary check has no sealed verdict.",
         "Repair the private canary verdict location and fetch the run again.",
+    ),
+    ErrorCode.CANARY_VERDICT_CONFLICT: ErrorCopy(
+        "An existing golden canary verdict conflicts with this fetched run.",
+        "Both the fetched run and the earlier private verdict remain available.",
+        "Preserve both records and investigate the changed canary verdict before using the export.",
     ),
     ErrorCode.INGEST_REFUSED: ErrorCopy(
         "The submission could not be prepared for the Door.",

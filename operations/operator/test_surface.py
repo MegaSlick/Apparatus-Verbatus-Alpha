@@ -5743,6 +5743,12 @@ def test_fetch_run_seals_one_private_alarm_and_sends_one_decision_ping(tmp_path,
     assert len(pings) == 1
     assert pings[0][0] == "milestone"
     assert (private / "verdicts" / "brought-home.json").read_bytes() == canonical_bytes(verdict)
+    monkeypatch.setattr(canary, "check_run", lambda _tree, _root: {**verdict, "dead": []})
+    with pytest.raises(OperatorError) as conflict:
+        surface.fetch_run(run_id="brought-home", into=into, reader=reader, canary_root=private)
+    assert conflict.value.code == ErrorCode.CANARY_VERDICT_CONFLICT
+    assert "conflicts" in str(conflict.value)
+    assert len(pings) == 1
 
 
 def test_fetch_run_with_a_healthy_canary_is_silent(tmp_path, monkeypatch):
