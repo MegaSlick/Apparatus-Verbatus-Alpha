@@ -542,11 +542,9 @@ class VaryingReadingEndpoint(RecordingEndpoint):
     render the same request, but the audit re-proof does not: it appends every
     reproof prompt to the same dossier (`live_reader.read`), so a whole-body
     hash answers the re-proof with different text. That is not a re-proof this
-    seam may serve. `audit.change_record` admits only a change that falls
-    inside a flagged location, and a tail digest that moved sits inside a
-    testimony-diff flag only when the witness text happens to end in the same
-    character as the reading -- so the pass would refuse, or not, on a
-    coincidence between a witness constant and a hash. The delivered pixels are
+    seam may serve. The audit response must name exact requested locations and
+    original text; a changed tail digest would instead depend on the witness
+    text used to locate its flag. The delivered pixels are
     the act's own bytes and are identical across its ordinary reading passes,
     which is the property this endpoint needed all along.
     """
@@ -564,18 +562,9 @@ class VaryingReadingEndpoint(RecordingEndpoint):
             reproof_response = _unchanged_reproof_response(body)
             images = chat_image_bytes_all(json.loads(body)) if body is not None else []
             digest = hashlib.sha256(b"".join(images)).hexdigest()[:12] if images else "no-pixels"
-            # Bracketed, not bare: a bare hex digest ends in "a" one time in
-            # sixteen, and every witness body this fixture serves also ends
-            # in "a" (`DAI_ACT_ONE`, `DAI_ACT_TWO`, and Churro's parsed
-            # `<output>` text all end mid-word on "...gamma"/"...eta"). When
-            # both coincide, a testimony-diff flag's suffix-trimmed end lands
-            # one character short of a re-proof envelope that reaches the
-            # true end of the text -- a real production coincidence
-            # (`common.perlector_audit.change_record` now tolerates exactly
-            # that one-byte gap), but not one this fixture needs to also
-            # roll on every run. "]" is not a character any scripted witness
-            # body ends with, so the coincidence this constant final
-            # character could still produce is structural, not random.
+            # Brackets keep the final character stable across reading passes;
+            # a bare hex digest would sometimes end in the same character as
+            # a scripted witness and move the testimony-diff flag's end.
             content = reproof_response or f"{READING} [{digest}]"
             assert reproof_response is not None or content.startswith(READING)
             self.script(

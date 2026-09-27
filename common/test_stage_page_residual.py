@@ -404,19 +404,29 @@ def test_aggregate_page_hold_refuses_unbound_claims(page, monkeypatch, change, m
         ("two_holds", "exactly one page-residual"),
         ("missing_promoted", "accounts for no held act"),
         ("wrong_aggregate_count", "aggregate component count"),
+        ("missing_enumeration", "outside the closed set"),
+        ("unknown_enumeration", "outside the closed set"),
+        ("unaccounted_page_hold", "does not account for"),
     ],
 )
 def test_aggregate_conservation_refuses_unaccounted_ink(page, change, message):
-    page.publish_conservation(_aggregate_payload())
+    payload = _aggregate_payload()
+    if change == "missing_enumeration":
+        del payload["residual_enumeration"]
+    elif change == "unknown_enumeration":
+        payload["residual_enumeration"] = "unknown"
+    page.publish_conservation(payload)
     if change != "missing_promoted":
         page.hold_component(AGGREGATE_PROMOTED)
     if change != "missing_hold":
-        page.hold_page(
+        page_hold = page.hold_page(
             count=2,
             extra={"aggregated_component_count": 2 if change == "wrong_aggregate_count" else 1},
         )
     if change == "two_holds":
         page.hold_page(bounds={**page.rectangle, "w": page.rectangle["w"] - 1})
+    elif change == "unaccounted_page_hold":
+        del page.rows[page_hold]
     page.context.finish()
 
     with pytest.raises(FatalAccounting, match=message):

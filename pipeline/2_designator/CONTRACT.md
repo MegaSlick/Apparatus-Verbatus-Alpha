@@ -640,8 +640,9 @@ session reading a finished run back can now say, per page, what the structure
 pass actually ran at instead of re-deriving it from the seal and the pixels —
 and a re-derivation is what stops matching the run the day the resolution rule
 changes. The published `resolved_thresholds` records the grouping thresholds
-used for that page, except for the legacy-only `max_residual_components`, which
-is omitted because it does not govern new residual presentation. These fields
+used for that page, except for `max_residual_components`, which is retained in
+the sealed policy but omitted here because it does not govern current residual
+presentation. These fields
 are a recording and decide nothing; they
 are `null` on a page held before analysis for the same reason the two above are.
 

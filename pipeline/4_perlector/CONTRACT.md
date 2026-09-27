@@ -604,12 +604,12 @@ kind="audit-draft"    {act_key, attempt_ordinal, semi_final_text, page_ids,
                        round_cap, policy, flags, flag_location_basis}
 kind="audit-finding"  {act_key, attempt_ordinal, page_ids, round_cap, policy,
                        flags, change_record, uncertain_spans, unresolved,
-                       examination, reproof_truncation, reproof_call}
+                       examination, reproof_truncation, reproof_call, reproof_edits}
 payload.audit         {draft_ref, finding_ref, finding_digest, unresolved,
                        examination, reproofs, request_digest}
 ```
 
-The sealed policy schema is `perlector-audit.v2`. `examination` is one of
+The sealed policy schema is `perlector-audit.v3`. `examination` is one of
 `not-due` (no flag), `cap-exhausted` (flags, cap 0), `complete` (a re-proof was
 delivered and its call ran to completion) or `incomplete` (delivered and the truncation
 instrument did not classify its call complete -- the engine reported `length`, gave no
@@ -633,10 +633,12 @@ name (`RETIRED_SCHEMAS`) rather than read it forward; the act is re-read in a ne
 run and the old bytes stay as written.
 
 The flags are computed once per page, before any re-proof result exists, so no
-result can reopen the calculation. `change_record` attributes a changed span to
-the *narrowest* flag containing it and refuses a change that escapes every
-flagged location. Nothing in this pass selects among witnesses: the request
-carries no witness identity, no witness text and no ranking, and the prompt is
+result can reopen the calculation. Each response edit must repeat one exact
+requested location and its frozen original text; `change_record` retains one
+row per changed edit, with that edit's flag class. An edit outside the requested
+locations is refused before any final text is assembled. Nothing in this pass
+selects among witnesses: the request carries no witness identity, no witness
+text and no ranking, and the prompt is
 byte-identical for every flag class. A `testimony-diff` flag's *location* is
 witness-derived, though, and now that the instrument is actually delivered the
 reader is directed to the exact spans where it disagreed with witnesses while
@@ -651,7 +653,7 @@ neutral, location-only prompt each; `audit_request` wraps that plan into the
 closed object the reader is handed:
 
 ```text
-audit_request = {schema: "perlector-audit-request.v1", act_key, attempt_ordinal,
+audit_request = {schema: "perlector-audit-request.v2", act_key, attempt_ordinal,
                  draft_ref, semi_final_text, reproofs}
 reproofs      = [{class, location: {start, end}, prompt}, ...]   # non-empty
 ```
@@ -695,35 +697,13 @@ test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals` captures
 the real reader call and requires exact equality with the sealed plan; it is the
 test that fails if the two ever part again.
 
-**A `testimony-diff` flag's end and a re-proof's change span can each be
-suffix-trimmed by one coincidental byte, against two different strings.**
-`audit.py` computes a flag's location by `text_change_span(text, testimony)`;
-`common.perlector_audit.change_record` computes a re-proof's change span by
-the same function over `(before, after)` — and `before` is that same act
-text. Suffix trimming is exact for the pair it compares, but exact for two
-different pairs is not the same claim: when the act's own text and the one
-testimony that located a flag happen to share their final character, the
-flag's recorded end lands one byte short of the true end of the text, and a
-re-proof that genuinely rewrites through to that true end (a tail correction,
-not an escape) produces an envelope one byte wider than every flag —
-`change_record` used to refuse it outright, on the strength of a single
-witness's coincidental last character rather than the content of the change.
-`change_record` now credits a witness-derived flag with the one trailing byte
-its own trim could have coincidentally eaten, and only there: the envelope
-must actually reach into the flag, the gap must reach exactly `len(before)`
-(suffix trimming can only ever fall short at the true end of a string) and be
-exactly one byte, or the change still refuses as a real escape from every
-flagged location — this loosens the coincidence, not the posture.
-`common/test_perlector_audit.py` and `pipeline/4_perlector/test_audit.py` pin
-the one-byte credit, the requirement that the envelope overlap the flag, and
-the boundary. **The credit is flat at one byte, not general to the trim
-width**: a real act text and testimony that happen to share two or more
-trailing characters still produce a flag short by that many bytes, and a
-re-proof rewriting through to the true end still refuses as an escape —
-`change_record` has no way to tell a two-byte coincidence from two bytes of
-real content without carrying the flag's own trim width alongside it. A
-re-proof caught this way must be re-planned to a span the flag actually
-covers; widening the credit past one byte is a later call, not this one.
+**The current re-proof response is a set of exact edits.** Each edit names one
+requested flag class and location, repeats the original text at those frozen
+offsets, and supplies its replacement. The validator assembles the final text
+from those edits and re-derives `change_record` directly from the changed rows.
+It refuses missing, extra, overlapping or wrongly anchored edits. A fixture's
+older whole-text proposal is converted to this protocol only when its change
+fits one requested location; otherwise the response is refused.
 
 ## Live reader
 

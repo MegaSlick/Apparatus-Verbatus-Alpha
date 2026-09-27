@@ -82,7 +82,6 @@ from common.native_witness import (  # noqa: E402
 from common.perlector_audit import (  # noqa: E402
     EXAMINATION_CAP_EXHAUSTED,
     EXAMINATION_INCOMPLETE,
-    EXAMINATION_REPROOF_REJECTED,
     unresolved_state,
     validate_chain,
 )
@@ -2813,13 +2812,6 @@ def review_route_from_findings(
                 "sent to settle stand unassessed; the establishing reading and the incomplete "
                 "re-proof are both retained, and the act is held rather than delivered on a "
                 "re-examination that never finished"
-            )
-        elif audit_examination == EXAMINATION_REPROOF_REJECTED:
-            reasons.append(
-                "the Perlector's audit re-proof for this act completed but rewrote text "
-                "outside every location its own flag identified; the rewrite is refused rather "
-                "than published, the establishing reading is retained, and the act is held "
-                "rather than delivered on a re-examination that overran its own scope"
             )
         elif audit_examination in (None, EXAMINATION_CAP_EXHAUSTED):
             # `None` means the caller did not name the examination; it gets the generic

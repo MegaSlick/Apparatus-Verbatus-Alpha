@@ -20,7 +20,6 @@ from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
 from common.perlector_audit import (
     LEGACY_SCHEMA,
     REPROOF_PASS_KIND,
-    change_record,
     neutral_prompt,
     render_reproof_instruction,
     truncation_classification,
@@ -1130,12 +1129,6 @@ def test_a_degenerate_digit_run_flags_instead_of_ending_the_stage():
     assert audit._numeric_key("1688") < audit._numeric_key("1689")
 
 
-def test_change_record_refuses_a_change_extending_past_the_flag_end():
-    flags = [{"class": "testimony-diff", "location": {"start": 1, "end": 2}}]
-    with pytest.raises(SchemaRefusal, match="outside every flagged location"):
-        change_record("abcd", "aXYZ", flags)
-
-
 def test_identical_testimony_flags_are_deduped_before_the_reproof_plan():
     frozen = [
         {
@@ -1215,30 +1208,6 @@ def test_unhashable_audit_classes_are_named_schema_refusals():
     }
     with pytest.raises(SchemaRefusal, match="unknown class or prompt"):
         audit.validate_perlectio_audit(perlectio_audit, text_length=1)
-
-
-def test_change_record_names_the_narrowest_flag_that_located_the_change():
-    """The triggering class is the soft-picker measurement, not decoration.
-
-    Every cross-act flag class spans the whole act from offset 0, so any act
-    that carries one contains every narrower flag too. Attributing by list
-    order made the widest flag win and recorded a correction that sits squarely
-    inside a `testimony-diff` span as `date-sequence` — the one change the
-    "moved toward the witness" measurement is looking for, filed under a class
-    that has nothing to do with testimony.
-    """
-    text = "No 1 1688 alpha beta gamma"
-    flags = [
-        # Exactly the order `flags_once_per_page` emits: sorted by (start, class).
-        {"class": "date-sequence", "location": {"start": 0, "end": len(text)}},
-        {"class": "testimony-diff", "location": {"start": 21, "end": 26}},
-    ]
-    changes = change_record(text, "No 1 1688 alpha beta gamna", flags)
-    assert changes == [{"start": 24, "end": 25, "triggering_flag_class": "testimony-diff"}]
-
-    # A change the narrow flag does not cover still belongs to the wide one.
-    whole_act = change_record(text, "No 1 1687 alpha beta gamma", flags)
-    assert whole_act == [{"start": 8, "end": 9, "triggering_flag_class": "date-sequence"}]
 
 
 def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(tmp_path):
@@ -2136,13 +2105,13 @@ def test_failed_reproof_flows_to_held_review_and_partial_export(tmp_path, monkey
     """The stage-level regression for the failure a real A100 produced.
 
     A live re-proof completed its call (`stop`, not cut off) and rewrote text
-    far outside the span its flag identified. `change_record` refused it,
-    correctly -- and because nothing caught that refusal, one act's overreach
+    far outside the span its flag identified. The exact-edit response check
+    refused it, and because nothing caught that refusal, one act's overreach
     ended the whole run after other acts had already sealed sound findings.
 
     This drives the real Perlector `main` with a reader whose re-proof rewrites
     from the very first character, which no flag in this scenario covers. The
-    run must finish, the act must be held as `reproof-rejected`, and the
+    run must finish with the act held for review, and the
     rejected rewrite must never be the published text.
     """
     root = tmp_path / "runs"
