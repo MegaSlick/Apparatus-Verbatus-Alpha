@@ -1289,6 +1289,7 @@ def test_a_refusal_that_precedes_report_path_validation_writes_nothing(
 ROOT = Path(__file__).resolve().parents[2]
 PROVEN_TIER = "generic-48gb"
 WITNESS = "ABCEFGHJKMNPRSTUVWXYZabcdefghijkmnpqrstuvwx"
+ALTERNATE_WITNESS = WITNESS[::-1]
 
 
 def _checked_out_configuration_plan(
@@ -1818,7 +1819,7 @@ def _preflight_seams_swapping_the_page_on_call(  # type: ignore[no-untyped-def]
             # `render_golden_page` itself refuses to replace a page it did not
             # write, which is a different property, proven in test_smoke.py.
             swapped = page_path.with_name("swapped.png")
-            render_golden_page(swapped, "swappedPageWitnessDoesNotMatch99")
+            render_golden_page(swapped, ALTERNATE_WITNESS)
             page_path.write_bytes(swapped.read_bytes())
             swapped.unlink()
         return (UtilizationSample(Decimal("71"), Decimal("31")),)
@@ -1961,7 +1962,7 @@ def test_a_supplied_golden_page_is_read_with_the_witness_its_file_names(
     from .bootstrap_main import _build_preflight, build_parser, resolve_plan
 
     ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
-    witness = "operatorRenderedWitness0123456789abcdefXYZ"
+    witness = WITNESS
     page = ws.volume / "operator-golden-page.png"
     render_golden_page(page, witness)
     witness_file = ws.volume / "operator-witness.txt"
