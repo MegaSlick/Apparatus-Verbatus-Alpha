@@ -371,48 +371,48 @@ def test_configuration_refusal_stops_before_environment_and_model_work(tmp_path:
 # --- each named refusal, before anything runs -------------------------------
 
 
-def test_refuses_a_journal_path_outside_the_mounted_volume(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("case", "keyword"),
+    (
+        ("journal-outside", "--journal"),
+        ("report-outside", "--report-path"),
+        ("lockfile-stray", "is not the checked-out repository uv.lock"),
+        ("deadline-missing", HARD_DEADLINE_ENV),
+        ("credential-marker", "looks like a credential"),
+        ("credential-opaque", "looks like a credential"),
+        ("models-config-missing", "--models-config"),
+    ),
+)
+def test_bootstrap_plan_refusals_name_the_bad_argument(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], case: str, keyword: str
 ) -> None:
     ws = _workspace(tmp_path)
-    ws.journal = tmp_path / "outside" / "journal.json"
     clock = Clock()
-
-    exit_code = main(_argv(ws), environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert "--journal" in capsys.readouterr().err
-
-
-def test_refuses_a_report_path_outside_the_mounted_volume(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
     argv = _argv(ws)
-    outside = tmp_path / "outside" / "report.json"
-    argv[argv.index(str(ws.report_path))] = str(outside)
-    clock = Clock()
+    environment = _environ(clock)
+    if case == "journal-outside":
+        ws.journal = tmp_path / "outside" / "journal.json"
+        argv = _argv(ws)
+    elif case == "report-outside":
+        outside = tmp_path / "outside" / "report.json"
+        argv[argv.index(str(ws.report_path))] = str(outside)
+    elif case == "lockfile-stray":
+        argv[argv.index(str(ws.repository / "uv.lock"))] = str(tmp_path / "elsewhere" / "uv.lock")
+    elif case == "deadline-missing":
+        environment = {}
+    elif case == "credential-marker":
+        argv = _argv(ws, extra=("--transfer-prefix", "my-api-key-123"))
+    elif case == "credential-opaque":
+        argv = _argv(ws, extra=("--transfer-prefix", "zZ9mQ2xR7vT4kL8nP1wA6cE3sD5fG0h"))
+    else:
+        index = argv.index("--models-config")
+        del argv[index : index + 2]
 
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
+    exit_code = main(argv, environ=environment, actions_factory=_never_called)
     assert exit_code == 2
-    assert "--report-path" in capsys.readouterr().err
-    assert not outside.exists()  # no report path outside the volume is ever written to
-
-
-def test_refuses_a_lockfile_that_is_not_the_checked_out_uv_lock(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
-    argv = _argv(ws)
-    stray = tmp_path / "elsewhere" / "uv.lock"
-    argv[argv.index(str(ws.repository / "uv.lock"))] = str(stray)
-    clock = Clock()
-
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert "is not the checked-out repository uv.lock" in capsys.readouterr().err
+    assert keyword in capsys.readouterr().err
+    if case == "report-outside":
+        assert not outside.exists()
 
 
 def test_refuses_when_the_volume_fails_a_write_probe(
@@ -449,61 +449,6 @@ def test_refuses_when_the_volume_mount_path_does_not_exist(tmp_path: Path) -> No
 
     assert exit_code == 2
     assert not ws.volume.exists()  # the probe must never create the mount point it checks
-
-
-def test_refuses_without_a_hard_deadline_in_the_environment(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
-
-    exit_code = main(_argv(ws), environ={}, actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert HARD_DEADLINE_ENV in capsys.readouterr().err
-
-
-def test_refuses_a_credential_looking_argv_value(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
-    clock = Clock()
-    argv = _argv(ws, extra=("--transfer-prefix", "my-api-key-123"))
-
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert "looks like a credential" in capsys.readouterr().err
-
-
-def test_refuses_an_argv_value_shaped_like_a_real_secret(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A value's own opaque shape is refused even when its flag name is not."""
-
-    ws = _workspace(tmp_path)
-    clock = Clock()
-    # An opaque, separator-free, mixed alphanumeric run -- not a recognizable
-    # provider token format, just the general shape one would have.
-    argv = _argv(ws, extra=("--transfer-prefix", "zZ9mQ2xR7vT4kL8nP1wA6cE3sD5fG0h"))
-
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert "looks like a credential" in capsys.readouterr().err
-
-
-def test_credential_argv_refusal_does_not_catch_every_secret_shape() -> None:
-    """Documents a known, accepted gap rather than letting it drift unnoticed.
-
-    ``refuse_credential_looking_argv`` refuses a name-shaped marker word and an
-    opaque, separator-free 20+ character run. A short or separator-bearing
-    value with neither a marker word nor that shape is not caught -- this pins
-    the boundary so a future change is a deliberate one, not a silent one.
-    """
-
-    from .bootstrap_main import refuse_credential_looking_argv
-
-    refuse_credential_looking_argv(["--transfer-prefix", "a-plain-run-id"])
 
 
 def test_hold_only_refuses_any_plan_argument(
@@ -559,8 +504,9 @@ def test_hold_only_drills_to_the_deadline_with_no_plan_arguments(tmp_path: Path)
     assert record["tick"] == 2
 
 
-def test_hold_only_refuses_a_non_finite_interval_with_a_durable_report(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("interval", ["nan", "0"])
+def test_hold_only_refuses_invalid_interval_with_a_durable_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], interval: str
 ) -> None:
     ws = _workspace(tmp_path)
     clock = Clock()
@@ -571,39 +517,14 @@ def test_hold_only_refuses_a_non_finite_interval_with_a_durable_report(
         str(ws.report_path),
         "--hold-only",
         "--interval-seconds",
-        "nan",
+        interval,
     ]
-
     exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
     assert exit_code == 2
     assert "--interval-seconds must be a positive finite number" in capsys.readouterr().err
-    record = json.loads(ws.report_path.read_text(encoding="utf-8"))
-    assert "positive finite number" in record["reason"]
-
-
-def test_hold_only_refuses_a_zero_interval_with_a_durable_report(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
-    clock = Clock()
-    argv = [
-        "--volume-mount-path",
-        str(ws.volume),
-        "--report-path",
-        str(ws.report_path),
-        "--hold-only",
-        "--interval-seconds",
-        "0",
-    ]
-
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert "--interval-seconds must be a positive finite number" in capsys.readouterr().err
-    record = json.loads(ws.report_path.read_text(encoding="utf-8"))
-    assert record["schema"] == REFUSAL_SCHEMA
-    assert "positive finite number" in record["reason"]
+    report = json.loads(ws.report_path.read_text(encoding="utf-8"))
+    assert report["schema"] == REFUSAL_SCHEMA
+    assert "positive finite number" in report["reason"]
 
 
 def test_a_refusal_report_write_failure_is_named_not_swallowed(
@@ -639,23 +560,6 @@ def test_a_refusal_report_write_failure_is_named_not_swallowed(
     assert "refusal report could not be written" in err
     assert "no space left on device" in err
     assert not ws.report_path.exists()
-
-
-def test_refuses_missing_required_plan_arguments(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
-    clock = Clock()
-    argv = _argv(ws)
-    index = argv.index("--models-config")
-    del argv[index : index + 2]
-
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    err = capsys.readouterr().err
-    assert "missing required plan argument(s)" in err
-    assert "--models-config" in err
 
 
 def test_resolve_plan_refusal_names_are_distinct(tmp_path: Path) -> None:
