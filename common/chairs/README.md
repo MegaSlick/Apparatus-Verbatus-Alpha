@@ -103,10 +103,8 @@ those weights; only a serving receipt can make that claim. `verify_store`
 refuses a store snapshot used as a cache entry directly, naming that cause
 rather than reporting an extra file.
 
-Bootstrap uses `configured_cache_materialization_plan` for the selected roster.
-It verifies the retained store and binds each configured Hugging Face role to
-its exact repository, revision and manifest; an unconfigured pending local
-artifact does not block those roles. `StoreRoleFetcher` copies these sources
+Each configured Hugging Face role is bound to its exact repository, revision and
+manifest when its stage fills its cache. `StoreRoleFetcher` copies these sources
 into separate role caches, and `ChairRegistry` verifies and publishes each cache
 with its own identity descriptor. When making room, the registry may remove a
 configured role's unused cache and abandoned `.<role>.candidate-*` directories;

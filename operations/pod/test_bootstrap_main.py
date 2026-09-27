@@ -41,6 +41,7 @@ from .bootstrap_main import (
     scrub_environment,
 )
 from .conftest import SharedClock
+from .run_exits import EXIT_BOOTSTRAP_RED
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -346,7 +347,7 @@ def test_red_bootstrap_step_exits_nonzero_and_never_holds(tmp_path: Path) -> Non
         actions_factory=lambda plan: fake,
     )
 
-    assert exit_code == 3
+    assert exit_code == EXIT_BOOTSTRAP_RED
     assert BootstrapStep.PREFLIGHT not in fake.calls
     durable = json.loads(ws.report_path.read_text(encoding="utf-8"))
     assert durable["schema"] == "pod-bootstrap-result.v1"
@@ -369,7 +370,7 @@ def test_configuration_refusal_stops_before_environment_and_model_work(tmp_path:
         actions_factory=lambda plan: fake,
     )
 
-    assert exit_code == 3
+    assert exit_code == EXIT_BOOTSTRAP_RED
     assert fake.calls == [BootstrapStep.REPOSITORY, BootstrapStep.CONFIGURATION]
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     assert journal["failure"]["step"] == "configuration"
