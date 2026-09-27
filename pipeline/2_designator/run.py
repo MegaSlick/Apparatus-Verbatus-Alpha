@@ -860,20 +860,11 @@ def cut_minted_region(
     padding: dict | None = None,
     provenance: dict | None = None,
 ):
-    """Cut one region of one act and publish it.
+    """Cut and publish one act region.
 
-    Declared and minted acts are cut by this one function, so every crop,
-    fallback included, has one author.
-
-    `origin` is `proposal` (the original marking-out, continuations included) or
-    `recovery` (a later recrop); witnesses read only proposal regions.
-
-    `bounds` is the structural rectangle act identity binds, never the padded one.
-    `padding`, given only for a proposal cut, expands it into the capture
-    rectangle; a recovery request already names its exact rectangle.
-
-    `transform` keeps only the four fields `verify_exemplar_crop_lineage` reads
-    as a closed schema; `raw_bounds` and `padding` sit beside it as provenance.
+    Act identity binds structural bounds; proposal padding changes only the crop.
+    Recovery already names exact bounds. The transform has the four fields the
+    lineage verifier requires; raw bounds and padding remain beside it.
     """
     if provenance is None:
         provenance = structure_provenance(context)
@@ -1433,16 +1424,11 @@ def _publish_secondary_proposals(
     secondary: dict,
     grouping_policy: dict,
 ) -> bool:
-    """Cut and hold every non-authoritative rescue candidate for review.
+    """Cut non-authoritative rescue candidates for review, up to the page bound.
 
-    Separate from the conservation publisher so it can be tested on a hand-fed
-    analysis.
-
-    Bounded per page: a speckled page would otherwise mint thousands of crops
-    and make the run unopenable. Past `max_secondary_proposals` the pass becomes
-    one held record with the count and bound, and nothing is cut. Candidates are
-    counted, never filtered (principle 8). `secondary_enumeration` tells "no
-    candidate" apart from "counted, not cut".
+    A speckled page could otherwise mint thousands of crops. Beyond the bound,
+    keep one held count and cut none; candidates are counted, never filtered.
+    Enumeration distinguishes no candidate from counted but not cut.
     """
     if secondary["chair_state"] != "configured":
         return False
@@ -1861,20 +1847,12 @@ def _publish_page_fallback(
     *,
     reason: str | None = None,
 ) -> dict | None:
-    """Cut predetermined crops over a page with no eligible structural group.
+    """Send unclaimed fallback tiles downstream as one act per page.
 
-    A page with no found ink is still sent downstream whole, so the witnesses
-    and the Perlector decide whether it is blank.
-
-    One minted act per page with one region per tile: nothing established how
-    many acts the page holds, so counting tiles would invent an act count.
-    Declared crops are subtracted first, so no pixel is read under two acts;
-    if they already cover the page, nothing is minted.
-
-    The act is `proposed`, not `held`, because held acts are never read. Its
-    identity binds the ``page-fallback`` class and the page rectangle, which
-    `_verify_page_fallback_act_row` recomputes with the page's `structure-status`.
-    Tiles carry no padding: each already is the final rectangle, overlap included.
+    Readers decide blankness; counting tiles as acts would invent an act count.
+    Claimed crops are excluded so pixels do not reach readers under two acts.
+    This act is proposed so it can be read; page bounds bind its identity, and
+    each tile is already final bounds.
     """
     page_id = page_record["subject_id"]
     page_bounds = _page_bounds(analysis)
@@ -1926,55 +1904,17 @@ def _publish_page_fallback(
     return _seal_row(act_id, act_key, page_id, ordinal, "proposed", _by_path(evidence))
 
 
-def _publish_conservation_and_secondary(
-    context,
+def _build_conservation_payload(
     ordinal: int,
-    page_record: dict,
     analysis: dict,
-    claimed: list[dict],
-    secondary: dict,
-    grouping_policy: dict,
-) -> tuple[list[dict], bool]:
-    """Independent ink-vs-crop reconciliation, plus non-authoritative rescue crops.
-
-    Conservation rescans the page's own pixels rather than trusting grouping, so
-    it can prove no ink was missed entirely. Residuals are returned as seal rows,
-    so the proposal seal accounts for them.
-
-    A page with no inferable background reconciles nothing and says so
-    (`ink_measurable`); a substituted threshold would count dark paper as ink.
-    The record is published either way.
-
-    Every component is measured before presentation: those at either sealed floor
-    become held acts, the rest share one page review item; none is dropped.
-
-    The geometry this reconciliation actually ran under is published here too,
-    because conservation also runs on structure-held pages (principle 8).
-    """
+    result: dict,
+    component_count: int,
+    promoted: list[dict],
+    aggregated: list[dict],
+    measurable: bool,
+) -> dict:
+    """Keep every measured residual on the page record, promoted or aggregated."""
     thresholds = analysis["thresholds"]
-    measurable = analysis["background"] is not None
-    result = (
-        conservation.reconcile(
-            analysis["width"],
-            analysis["height"],
-            analysis["rows"],
-            background=analysis["background"],
-            claimed_bounds=[entry["bounds"] for entry in claimed],
-            gap_tolerance_px=thresholds.gap_tolerance_px,
-            review_priority_min_dimension_px=thresholds.review_priority_min_dimension_px,
-        )
-        if measurable
-        else {
-            "total_ink_pixel_count": None,
-            "claimed_pixel_count": None,
-            "residual_pixel_count": None,
-            "residual_components": [],
-        }
-    )
-    page_id = page_record["subject_id"]
-    components = result["residual_components"]
-    component_count = len(components)
-    promoted, aggregated = _partition_residual_components(components, thresholds)
     # `complete` on an unmeasured page too: nothing was withheld, and
     # `ink_measurable` already says nothing was measured.
     enumeration = RESIDUAL_ENUMERATION_AGGREGATED if aggregated else RESIDUAL_ENUMERATION_COMPLETE
@@ -2025,6 +1965,52 @@ def _publish_conservation_and_secondary(
     conservation_payload["residual_components"] = promoted
     if aggregated:
         conservation_payload["aggregated_residual_components"] = aggregated
+    return conservation_payload
+
+
+def _publish_conservation_and_secondary(
+    context,
+    ordinal: int,
+    page_record: dict,
+    analysis: dict,
+    claimed: list[dict],
+    secondary: dict,
+    grouping_policy: dict,
+) -> tuple[list[dict], bool]:
+    """Reconcile ink against crops, then publish conservation and rescue evidence.
+
+    The scan is independent of grouping so missed ink remains visible. Without
+    an inferable background, a substituted threshold would invent a measurement.
+    Residual holds enter the proposal seal; even structure-held pages retain the
+    geometry of this independent scan as evidence.
+    """
+    thresholds = analysis["thresholds"]
+    measurable = analysis["background"] is not None
+    result = (
+        conservation.reconcile(
+            analysis["width"],
+            analysis["height"],
+            analysis["rows"],
+            background=analysis["background"],
+            claimed_bounds=[entry["bounds"] for entry in claimed],
+            gap_tolerance_px=thresholds.gap_tolerance_px,
+            review_priority_min_dimension_px=thresholds.review_priority_min_dimension_px,
+        )
+        if measurable
+        else {
+            "total_ink_pixel_count": None,
+            "claimed_pixel_count": None,
+            "residual_pixel_count": None,
+            "residual_components": [],
+        }
+    )
+    page_id = page_record["subject_id"]
+    components = result["residual_components"]
+    component_count = len(components)
+    promoted, aggregated = _partition_residual_components(components, thresholds)
+    conservation_payload = _build_conservation_payload(
+        ordinal, analysis, result, component_count, promoted, aggregated, measurable
+    )
     _refuse_text_fields(conservation_payload)
     published = context.publish(
         kind="conservation",
@@ -2823,7 +2809,11 @@ def _collect_live_answers(
 
 
 def live_initial_pass(context, serving_factory, tier: str) -> bool:
-    """Mark out every sealed page through the served structure chair. True when held."""
+    """Mark out sealed pages through the served chair; return whether any were held.
+
+    Retained answers are published as they arrive, preserving paid work across
+    interruptions and each page's answering session for resume.
+    """
     records = page_records(context)
     pages = sealed_pages(records)
     if not pages:
