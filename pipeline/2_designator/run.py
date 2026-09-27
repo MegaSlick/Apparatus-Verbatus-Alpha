@@ -2748,42 +2748,18 @@ def _publish_live_fallbacks(
     return rows
 
 
-def live_initial_pass(context, serving_factory, tier: str) -> bool:
-    """Mark out every sealed page through the served structure chair. True when held.
-
-    Shares everything with `initial_pass` except the proposer: one retained
-    terminal answer per sealed page, from up to the sealed attempt limit of
-    served calls, replaces the fixture's declared acts, and the chair's real
-    receipt replaces the fixture provenance. `context.fixture` is never read.
-
-    Per page, the answer publishes before the status that cites it, then the
-    crops. A page the chair could not mark out goes into `failures`, so its hold
-    follows the fixture path's proven route.
-
-    The pass resumes: an answered page is read back, never asked again (a second
-    answer would conflict with the fixed artifact identity), and each answer is
-    published as it arrives so an interruption keeps what was paid for
-    (principle 2). Each page's artifacts name the session that answered it.
-    """
-    records = page_records(context)
-    pages = sealed_pages(records)
-    if not pages:
-        raise ContractError("the Designator found no sealed page to mark out")
-
-    padding, grouping_policy = _sealed_designator_policies(context)
-    # The sealed `[structure]` decoding posture, refused before any chair starts
-    # if the live seam cannot execute it.
-    decoding_policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
-    context.require_sealed_config("decoding", decoding_sha256)
-    temperature = structure_pass.executable_temperature(decoding_policy)
-    attempt_policy = structure_recovery_policy(decoding_policy)
-    identity = structure_pass.resolved_structure_chair(context)
-    secondary = _publish_secondary_provenance(context, _live_secondary_provenance(context))
-
-    page_cache: dict[int, dict] = {}
-    for ordinal, page_record in pages.items():
-        _analyze_page(page_cache, context, ordinal, page_record, grouping_policy)
-
+def _collect_live_answers(
+    context,
+    pages,
+    page_cache,
+    attempt_policy,
+    identity,
+    decoding_sha256,
+    temperature,
+    serving_factory,
+    tier,
+):
+    """Resume retained answers, then serve only pages still needing attempts."""
     answers, answer_refs = _resumed_structure_answers(context, pages, attempt_policy)
     unanswered = [ordinal for ordinal in sorted(pages) if ordinal not in answers]
     histories = {
@@ -2842,8 +2818,41 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
                     context, page_record, history
                 )
 
-    # Page order, so a resume seals the same `expected_acts` list as a fresh run.
-    answers = {ordinal: answers[ordinal] for ordinal in sorted(answers)}
+    # Page order keeps the proposal seal identical across resumes.
+    return {ordinal: answers[ordinal] for ordinal in sorted(answers)}, answer_refs
+
+
+def live_initial_pass(context, serving_factory, tier: str) -> bool:
+    """Mark out every sealed page through the served structure chair. True when held."""
+    records = page_records(context)
+    pages = sealed_pages(records)
+    if not pages:
+        raise ContractError("the Designator found no sealed page to mark out")
+
+    padding, grouping_policy = _sealed_designator_policies(context)
+    # The sealed decoding posture is checked before any chair starts.
+    decoding_policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
+    context.require_sealed_config("decoding", decoding_sha256)
+    temperature = structure_pass.executable_temperature(decoding_policy)
+    attempt_policy = structure_recovery_policy(decoding_policy)
+    identity = structure_pass.resolved_structure_chair(context)
+    secondary = _publish_secondary_provenance(context, _live_secondary_provenance(context))
+
+    page_cache: dict[int, dict] = {}
+    for ordinal, page_record in pages.items():
+        _analyze_page(page_cache, context, ordinal, page_record, grouping_policy)
+
+    answers, answer_refs = _collect_live_answers(
+        context,
+        pages,
+        page_cache,
+        attempt_policy,
+        identity,
+        decoding_sha256,
+        temperature,
+        serving_factory,
+        tier,
+    )
 
     failures: dict[int, str] = {}
     status_answers: dict[int, tuple[str | None, dict[str, str]]] = {}
