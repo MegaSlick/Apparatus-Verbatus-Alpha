@@ -8,10 +8,10 @@ malformed `data-bbox` below is spelled "defaulting to full image" on purpose:
 it is the vendor's own console message for that case, standing in the field
 where its substitute would have come from.)
 
-Two halves. The first pins the carry: the prompt renders to the digest recorded
+Two halves. The first checks the carry: the prompt renders to the digest recorded
 against `datalab-to/chandra @ d4f7467…`, states the scale the geometry divides
 by, and lists the 36 tags, 14 attributes and 19 labels. Each check is then
-made to fail on purpose, since a seal nobody has watched refuse is a comment.
+made to fail on purpose, so the test catches a changed prompt or vocabulary.
 
 The second half pins the reader, and above all the five departures from
 `chandra/output.py::parse_layout`. Each is asserted as a *fact about the

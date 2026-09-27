@@ -960,15 +960,37 @@ def test_materializer_joins_a_loaded_record_to_the_roster_before_indexing_it(tmp
         materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
 
 
-def test_materializer_does_not_call_another_writers_staging_entry_an_orphan(tmp_path):
+def test_materializer_clears_leftover_staging_before_fetch(tmp_path):
     staging = tmp_path / "staging"
     staging.mkdir()
     (staging / ".other-materializer.fetch-live").mkdir()
 
     receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
 
-    assert receipt["unattributed_staging_entries"] == [".other-materializer.fetch-live"]
-    assert "staging_orphans" not in receipt
+    assert receipt["unattributed_staging_entries"] == []
+    assert list(staging.iterdir()) == []
+
+
+def test_materializer_clears_staging_left_after_failed_cleanup_on_next_fetch(tmp_path, monkeypatch):
+    class FailingFetcher:
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            (destination / "partial.safetensors").write_bytes(b"partial")
+            raise RuntimeError("fetch transport failed")
+
+    real_rmtree = model_store.shutil.rmtree
+
+    def refuse_cleanup(path, **kwargs):
+        raise PermissionError("cleanup denied")
+
+    monkeypatch.setattr(model_store.shutil, "rmtree", refuse_cleanup)
+    with pytest.raises(RuntimeError, match="fetch transport failed"):
+        materialize_real_roster(tmp_path, FailingFetcher())
+    assert list((tmp_path / "staging").iterdir())
+
+    monkeypatch.setattr(model_store.shutil, "rmtree", real_rmtree)
+    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+    assert receipt["unattributed_staging_entries"] == []
+    assert list((tmp_path / "staging").iterdir()) == []
 
 
 def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_path, monkeypatch):

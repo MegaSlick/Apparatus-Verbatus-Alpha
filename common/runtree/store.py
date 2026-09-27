@@ -75,7 +75,7 @@ from common.durability import (
     PublishedUnsettled,
     atomic_create,
     atomic_replace,
-    is_temporary_name,
+    is_unpublished_blob_temporary,
 )
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, require_seal_method
 
@@ -613,7 +613,7 @@ class RunTree:
 
     def _atomic_write(self, relative: str, data: bytes) -> None:
         self._require_inventory_path(relative)
-        _atomic_write(self.resolve(relative), data)
+        _replace_file(self.resolve(relative), data)
 
     def _require_inventory_path(self, relative: str) -> None:
         if not any(
@@ -912,7 +912,7 @@ class RunTree:
                         raise SchemaRefusal(
                             f"{relative_path!r} is a non-canonical case variant of a sha256"
                         )
-                    if not is_temporary_name(name) or not is_sha256(name[1:].partition(".tmp-")[0]):
+                    if not is_unpublished_blob_temporary(name):
                         raise SchemaRefusal(f"{relative_path!r} has a noncanonical content address")
                     if not stat.S_ISREG(before.st_mode):
                         raise SchemaRefusal(f"{relative_path!r} is not a regular blob temporary")
@@ -1319,8 +1319,7 @@ class RunTree:
     def inventory_scope(self) -> tuple[str, ...]:
         """Every path prefix this store is able to write.
 
-        Every managed path any code writes must fall inside this scope; a static
-        test beside this module reads the writers from source and compares.  That
+        Writers call ``_require_inventory_path`` before publication. That
         includes `<stage>/serving-logs/`, written by the serving launcher, which
         `fetch-run` would otherwise refuse.
         """
@@ -1417,7 +1416,7 @@ def _verify_register_snapshot_present(tree: RunTree, digest: str) -> None:
     read_verified(tree.read_bytes, ref, what, IncompatibleReuse)
 
 
-def _atomic_write(target: Path, data: bytes) -> None:
+def _replace_file(target: Path, data: bytes) -> None:
     with _run_root_refusals(target):
         atomic_replace(target, data)
 

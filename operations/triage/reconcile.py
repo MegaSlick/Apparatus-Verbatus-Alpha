@@ -409,38 +409,34 @@ def _canonical_distinct_paths(
     try:
         canonical = canonical_distinct_paths(labelled)
     except PathCheckFailure as error:
-        if error.reason == "resolve":
-            message = (
+        messages = {
+            "resolve": (
                 "structural reconciliation path could not be resolved; nothing was written. "
                 "Repair the named path and retry."
-            )
-        elif error.reason == "spelling":
-            message = (
+            ),
+            "spelling": (
                 f"structural reconciliation paths for {error.prior} and {error.role} resolve to one file "
                 "or collide on a case-insensitive filesystem; "
                 "nothing was written. Give each input and output its own path."
-            )
-        elif error.reason == "inspect":
-            message = (
+            ),
+            "inspect": (
                 "structural reconciliation path identity could not be verified; nothing was "
                 "written. Restore readable paths and retry."
-            )
-        elif error.reason == "symlink":
-            message = (
+            ),
+            "symlink": (
                 f"structural reconciliation path for {error.role} is a symbolic link; nothing "
                 "was written. Supply a direct path."
-            )
-        elif error.reason == "type":
-            message = (
+            ),
+            "type": (
                 f"structural reconciliation path for {error.role} is not a regular file; "
                 "nothing was written. Supply a direct file path."
-            )
-        else:
-            message = (
+            ),
+            "inode": (
                 f"structural reconciliation paths for {error.prior} and {error.role} name one file; "
                 "nothing was written. Give each input and output its own path."
-            )
-        raise ReconciliationRefusal(message) from error
+            ),
+        }
+        raise ReconciliationRefusal(messages[error.reason]) from error
     count = len(sources)
     return canonical[:count], canonical[count], canonical[count + 1]
 

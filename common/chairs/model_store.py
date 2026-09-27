@@ -27,7 +27,7 @@ from typing import Any, Callable, Mapping, Protocol
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.durability import atomic_create, atomic_replace
 
-from .errors import ChairRefusal, DigestMismatchRefusal
+from .errors import DigestMismatchRefusal
 from .manifests import (
     build_manifest,
     read_manifest,
@@ -292,6 +292,8 @@ def _fetch_artifact(
     """Fetch, measure and promote one pinned artifact; return its present entry."""
     staging_root = _under(root, "staging")
     staging_root.mkdir(parents=True, exist_ok=True)
+    for leftover in staging_root.iterdir():
+        _cleanup_failed_staging(leftover)
     staging = Path(tempfile.mkdtemp(prefix=f".{requirement.artifact}.fetch-", dir=staging_root))
     try:
         fetcher.fetch(requirement.repo, requirement.revision, staging)
@@ -358,7 +360,7 @@ def _fetch_artifact(
 def _cleanup_failed_staging(staging: Path) -> None:
     """Best-effort removal of a failed fetch tree."""
     try:
-        if staging.is_symlink():
+        if staging.is_symlink() or not staging.is_dir():
             staging.unlink(missing_ok=True)
         else:
             shutil.rmtree(staging, ignore_errors=True)
@@ -628,10 +630,6 @@ def _reconcile_model_card_licence(snapshot: Path, requirement: RequiredArtifact)
         )
     try:
         metadata = load_model_card_metadata(model_card)
-    except ChairRefusal:
-        # A refusal about the client (e.g. huggingface_hub absent), not these
-        # bytes; relabelling it would send the operator to re-fetch intact bytes.
-        raise
     except Exception as error:
         raise DigestMismatchRefusal(
             requirement.artifact,

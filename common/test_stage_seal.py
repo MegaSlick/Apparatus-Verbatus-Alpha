@@ -496,8 +496,8 @@ def test_final_seal_returns_only_the_export_from_its_verified_manifest_snapshot(
         verify_final_seal(tree)
 
 
-def test_a_real_run_missing_the_named_hard_failure_digest_refuses_direct_entry(tmp_path):
-    """Losing the cap's proof cannot turn a real run into an uncapped legacy fixture."""
+def test_a_real_run_missing_all_sealed_config_digests_refuses_direct_entry(tmp_path):
+    """A legacy run without policy seals cannot pass the direct entry check."""
     registry = ChairRegistry.from_toml(MODELS_CONFIG)
     bindings = run_config_bindings(registry.config, {"fixture": "none"}, "test")
     tree = RunTree.create(
@@ -511,6 +511,30 @@ def test_a_real_run_missing_the_named_hard_failure_digest_refuses_direct_entry(t
     )
 
     with pytest.raises(ContractError, match="records no sealed configuration digests"):
+        refuse_halted_run(tree, PERLECTOR, ROOT / "config" / "hard_failure.toml")
+
+
+def test_a_real_run_missing_only_hard_failure_digest_refuses_direct_entry(tmp_path):
+    """Other policy seals cannot stand in for the hard-failure policy."""
+    registry = ChairRegistry.from_toml(MODELS_CONFIG)
+    bindings = run_config_bindings(registry.config, {"fixture": "none"}, "test")
+    digests = {
+        name: digest
+        for name, digest in bindings["sealed_config_digests"].items()
+        if name != "hard-failure"
+    }
+    tree = RunTree.create(
+        tmp_path,
+        "real-missing-cap",
+        source_manifest=[],
+        config_digest=bindings["config_digest"],
+        adapter_recipes=bindings["adapter_recipes"],
+        witness_chairs=bindings["witness_chairs"],
+        ingress={"mode": "real"},
+        sealed_config_digests=digests,
+    )
+
+    with pytest.raises(ContractError, match="sealed no digest for the hard-failure configuration"):
         refuse_halted_run(tree, PERLECTOR, ROOT / "config" / "hard_failure.toml")
 
 

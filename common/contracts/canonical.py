@@ -260,7 +260,7 @@ def is_plain_int(value: Any) -> bool:
 def is_sha256(value: Any) -> bool:
     """Whether a value is the lowercase hex shape every digest in this system uses."""
     return (
-        isinstance(value, str)
+        type(value) is str
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )

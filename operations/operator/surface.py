@@ -2941,7 +2941,7 @@ def _status_projection(
         # Only receipts claiming bytes moved must bind a digest; one refused
         # before transfer has none, and `status` must keep working after failures.
         if state in {"complete", "partial-transfer"}:
-            if not (is_sha256(recorded_sha256)):
+            if not is_sha256(recorded_sha256):
                 raise RecordError("saved upload record does not bind its submission record digest")
             lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
         lines.extend(_volume_status_lines(payload.get("volume")))

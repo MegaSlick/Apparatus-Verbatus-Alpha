@@ -1972,6 +1972,7 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
         changed = final["payload"]["text"] != frozen[act_key]
         if changed:
             changed_acts.append(act_key)
+            assert len(final["payload"]["text"]) != len(frozen[act_key])
         assert final["outcome"] == ("truncated" if changed else "read")
         assert final["payload"]["audit"]["examination"] == "incomplete"
         assert final["payload"]["audit"]["unresolved"] is True
@@ -1982,6 +1983,10 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
             "assessed" if expected_doubts else "not-assessed"
         )
         termination = findings[act_key]["reproof_truncation"]
+        assert termination["measure"]["characters"] == len(final["payload"]["text"])
+        assert final["payload"]["truncation"]["measure"]["characters"] == len(
+            final["payload"]["text"]
+        )
         assert termination["classification"] == expected_classification
         assert termination["signals"]["stop_reason_declared"] == stop_reason
         audit.validate_chain(tree, final, final["subject_id"])

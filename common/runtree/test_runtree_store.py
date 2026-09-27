@@ -2451,7 +2451,7 @@ def _fsync_kinds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return observed
 
 
-@pytest.mark.parametrize("publish", ["_atomic_write", "_atomic_create"])
+@pytest.mark.parametrize("publish", ["_replace_file", "_atomic_create"])
 def test_publication_syncs_the_file_then_the_name(
     tmp_path: Path, publish: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2474,7 +2474,7 @@ def test_publication_syncs_the_file_then_the_name(
     assert [entry.name for entry in tmp_path.iterdir()] == ["artifact.json"]
 
 
-@pytest.mark.parametrize("publish", ["_atomic_write", "_atomic_create"])
+@pytest.mark.parametrize("publish", ["_replace_file", "_atomic_create"])
 def test_a_filesystem_that_will_not_persist_a_name_refuses_the_publication(
     tmp_path: Path, publish: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2522,7 +2522,7 @@ def test_a_directory_that_cannot_be_opened_refuses_the_publication_too(
     monkeypatch.setattr(os, "open", refusing)
 
     with pytest.raises(SchemaRefusal, match="will not persist a directory entry"):
-        runtree_store._atomic_write(tmp_path / "artifact.json", b'{"a":1}')
+        runtree_store._replace_file(tmp_path / "artifact.json", b'{"a":1}')
 
 
 def test_a_tampered_run_receipt_is_refused_when_its_reference_is_read(tmp_path):

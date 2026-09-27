@@ -14,6 +14,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from common.contracts.canonical import is_sha256
+
 _NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 
 
@@ -62,6 +64,11 @@ def is_temporary_name(name: str) -> bool:
     """``.<target>.tmp-<unique>``: what an interrupted publication can leave behind."""
     target, separator, unique = name[1:].partition(".tmp-")
     return name.startswith(".") and bool(target and separator and unique)
+
+
+def is_unpublished_blob_temporary(name: str) -> bool:
+    """Only ``.<sha256>.tmp-<unique>`` is a blob publisher's temporary."""
+    return is_temporary_name(name) and is_sha256(name[1:].partition(".tmp-")[0])
 
 
 def atomic_replace(path: Path, data: bytes, *, strict: bool = True) -> None:

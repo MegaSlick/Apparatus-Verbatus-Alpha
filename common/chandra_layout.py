@@ -5,9 +5,9 @@ output grammar are adopted verbatim and pinned by digest. This module carries
 two things:
 
 1. **The prompt the vendor sends.** `OCR_LAYOUT_PROMPT`, reproduced from
-   `chandra/prompts.py` at the pinned commit and checked at import against
-   `OCR_LAYOUT_PROMPT_SHA256`/`PROMPT_ENDING_SHA256`, so an edited byte fails
-   to import rather than quietly changing what a chair is asked. The vendor
+   `chandra/prompts.py` at the pinned commit and checked by
+   `common/test_chandra_layout.py` against
+   `OCR_LAYOUT_PROMPT_SHA256`/`PROMPT_ENDING_SHA256`. The vendor
    file itself is not stored; `common/test_vendor_parity.py`'s network-gated
    arm re-fetches it and proves the equality against the vendor.
 
@@ -223,8 +223,8 @@ Use the following labels:
 
 # The nineteen labels the prompt above offers, in the order it offers them.
 # They are not interpolated into the prompt -- the vendor writes them out as a
-# literal bullet list -- so this tuple is checked against the prompt at import
-# rather than trusted: a label added here that the model was never offered, or
+# literal bullet list -- so `common/test_chandra_layout.py` checks this tuple
+# against the prompt: a label added here that the model was never offered, or
 # a label dropped from the prompt that a caller still switches on, is a
 # disagreement between what we ask for and what we claim to have asked for.
 OCR_LAYOUT_LABELS: Final[tuple[str, ...]] = (
@@ -255,14 +255,13 @@ BLANK_PAGE_LABEL: Final = "Blank-Page"
 UNLABELLED_BLOCK_LABEL: Final = "block"
 
 # SHA-256 of the two carried strings as rendered, against
-# `{VENDOR_REPOSITORY} @ {VENDOR_COMMIT}` `{VENDOR_PROMPT_SOURCE}`. Checked at
-# import (below) and again, against the vendor rather than against us, by
+# `{VENDOR_REPOSITORY} @ {VENDOR_COMMIT}` `{VENDOR_PROMPT_SOURCE}`. Checked by
+# `common/test_chandra_layout.py`, and against the vendor by
 # `common/test_vendor_parity.py`.
 PROMPT_ENDING_SHA256: Final = "f5d1ed0fb0ead54db6271c3e5dba9d581dcd8f9aa1709ab3b029761c00cb2233"
 OCR_LAYOUT_PROMPT_SHA256: Final = "025935f3e1de1acdfadd4c7d581ab17eb82e8caaffef7b64962621c80b7ca9a8"
 # `chandra/settings.py::Settings.BBOX_SCALE`. The prompt states the same number
-# in prose; the prompt text is checked by the layout tests at
-# import, so the two can never drift apart silently -- a re-pin that changed
+# in prose; the prompt text is checked by the layout tests, so a re-pin that changed
 # the scale in `settings.py` but not the sentence, or the sentence but not the
 # scale, would leave every reported box scaled by the wrong denominator with
 # nothing to show for it.

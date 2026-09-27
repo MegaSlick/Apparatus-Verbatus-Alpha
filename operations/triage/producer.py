@@ -1093,38 +1093,34 @@ def _canonical_distinct_destinations(**paths: Path) -> dict[str, Path]:
     try:
         canonical = canonical_distinct_paths(list(paths.items()))
     except PathCheckFailure as error:
-        if error.reason == "resolve":
-            message = (
+        messages = {
+            "resolve": (
                 "confirmed triage destination could not be resolved; nothing was written. "
                 "Repair the named path and retry."
-            )
-        elif error.reason == "spelling":
-            message = (
+            ),
+            "spelling": (
                 f"confirmed triage destinations for {error.prior} and {error.role} collide on a "
                 "case-insensitive filesystem; "
                 "nothing was written. Give every record role its own path."
-            )
-        elif error.reason == "inspect":
-            message = (
+            ),
+            "inspect": (
                 "confirmed triage destination identity could not be verified; nothing was "
                 "written. Restore readable destination paths and retry."
-            )
-        elif error.reason == "symlink":
-            message = (
+            ),
+            "symlink": (
                 f"confirmed triage destination for {error.role} is a symbolic link; nothing was "
                 "written. Supply a direct path."
-            )
-        elif error.reason == "type":
-            message = (
+            ),
+            "type": (
                 f"confirmed triage destination for {error.role} is not a regular file; nothing "
                 "was written. Supply a direct file path."
-            )
-        else:
-            message = (
+            ),
+            "inode": (
                 f"confirmed triage destinations for {error.prior} and {error.role} name one file; "
                 "nothing was written. Give every record role its own path."
-            )
-        raise ProducerRefusal(message) from error
+            ),
+        }
+        raise ProducerRefusal(messages[error.reason]) from error
     return dict(zip(paths, canonical, strict=True))
 
 

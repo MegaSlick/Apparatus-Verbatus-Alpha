@@ -91,7 +91,7 @@ from common.decoding import (
     load_decoding_policy,
     structure_recovery_policy,
 )
-from common.durability import is_temporary_name
+from common.durability import is_unpublished_blob_temporary
 from common.exemplar_boundary import read_sealed_page, verify_sealed_page_pixels
 from common.hard_failure import (
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -990,7 +990,7 @@ def _stage_blob_inventory(
                     "of a sha256; a seal witnesses no noncanonical content address"
                 )
             if not is_sha256(name):
-                if _is_unpublished_blob_temporary(name):
+                if is_unpublished_blob_temporary(name):
                     # A writer killed mid-publish leaves its temporary; skipped
                     # only once proven a plain regular file, never a link.
                     _refuse_unpublishable_temporary(directory_fd, name, stage)
@@ -1015,11 +1015,6 @@ def _stage_blob_inventory(
         ) from error
     finally:
         os.close(directory_fd)
-
-
-def _is_unpublished_blob_temporary(name: str) -> bool:
-    """True only for ``RunTree.put_blob``'s ``.<digest>.tmp-<unique>`` name."""
-    return is_temporary_name(name) and is_sha256(name[1:].partition(".tmp-")[0])
 
 
 def _refuse_unpublishable_temporary(directory_fd: int, name: str, stage: str) -> None:
@@ -1054,7 +1049,7 @@ def _publisher_link_allowance(
     for other in siblings:
         if other == name or not other.startswith(f".{name}.tmp-"):
             continue
-        if not _is_unpublished_blob_temporary(other):
+        if not is_unpublished_blob_temporary(other):
             continue
         try:
             sibling = os.stat(other, dir_fd=directory_fd, follow_symlinks=False)
