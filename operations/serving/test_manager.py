@@ -902,13 +902,8 @@ def manager_for(
     return manager, clock, http, launcher, registry, publisher
 
 
-def _value_after(argv: tuple[str, ...], flag: str) -> str:
-    return argv[argv.index(flag) + 1]
-
-
-def test_start_proves_exact_model_answer_then_publishes_and_stops(tmp_path: Path) -> None:
-    chair = identity("reader", "reader-v1")
-    manager, _, http, launcher, registry, publisher = manager_for(
+def reader_manager(tmp_path: Path, *, chair: ChairIdentity, **kwargs):
+    return manager_for(
         tmp_path,
         identities={chair.role: chair},
         profiles=(
@@ -917,7 +912,17 @@ def test_start_proves_exact_model_answer_then_publishes_and_stops(tmp_path: Path
             ),
         ),
         model_ids=("reader-api",),
+        **kwargs,
     )
+
+
+def _value_after(argv: tuple[str, ...], flag: str) -> str:
+    return argv[argv.index(flag) + 1]
+
+
+def test_start_proves_exact_model_answer_then_publishes_and_stops(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, registry, publisher = reader_manager(tmp_path, chair=chair)
 
     handle = manager.start(chair, TIER)
 
@@ -1104,16 +1109,8 @@ def test_readiness_refuses_http_200_when_exact_model_id_is_missing(tmp_path: Pat
 
 def test_readiness_refuses_exact_id_that_never_completes_a_valid_answer(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, http, launcher, _, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        bad_response=True,
+    manager, _, http, launcher, _, publisher = reader_manager(
+        tmp_path, chair=chair, bad_response=True
     )
 
     with pytest.raises(
@@ -1134,17 +1131,7 @@ def test_a_health_endpoint_answering_non_200_never_becomes_ready(tmp_path: Path)
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        health_status=503,
-    )
+    manager, _, _, launcher, _, publisher = reader_manager(tmp_path, chair=chair, health_status=503)
 
     with pytest.raises(
         ServingRecipeRefusal, match="VLLM_WATCHDOG_TIMEOUT.*VLLM_HEALTH_UNAVAILABLE.*503"
@@ -1164,16 +1151,8 @@ def test_an_endpoint_answering_as_a_different_model_never_becomes_ready(tmp_path
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        response_model="reader-api-shadow",
+    manager, _, _, launcher, _, publisher = reader_manager(
+        tmp_path, chair=chair, response_model="reader-api-shadow"
     )
 
     with pytest.raises(
@@ -1205,16 +1184,8 @@ def test_named_fatal_log_signatures_refuse_and_clean_up(
     tmp_path: Path, signature: str, expected_code: str
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, registry, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        log_tail=signature,
+    manager, _, _, launcher, registry, publisher = reader_manager(
+        tmp_path, chair=chair, log_tail=signature
     )
 
     with pytest.raises(ServingRecipeRefusal, match=expected_code):
@@ -1255,15 +1226,9 @@ def test_a_watchdog_timeout_while_the_engine_is_loading_says_so_and_carries_the_
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, http, launcher, registry, publisher = manager_for(
+    manager, _, http, launcher, registry, publisher = reader_manager(
         tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
+        chair=chair,
         log_tails=(
             "INFO 09-14 11:02:01 [gpu_model_runner.py:2213] Starting to load model reader\n"
             "Loading safetensors checkpoint shards:  21% Completed | 6/28 [01:20<04:56]\n",
@@ -1294,15 +1259,9 @@ def test_a_watchdog_timeout_with_no_sign_of_loading_says_connection_refused(
     """The other half of the same distinction: nothing in the log says it was loading."""
 
     chair = identity("reader", "reader-v1")
-    manager, _, http, launcher, _, publisher = manager_for(
+    manager, _, http, launcher, _, publisher = reader_manager(
         tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
+        chair=chair,
         log_tail="INFO 09-14 11:02:01 [api_server.py:1] vLLM API server version 0.27.1\n",
     )
     _never_answering(manager, launcher, http)
@@ -1324,17 +1283,8 @@ def test_a_watchdog_timeout_on_an_answering_endpoint_claims_neither(tmp_path: Pa
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        health_status=503,
-        log_tail="INFO: nothing interesting here\n",
+    manager, _, _, launcher, _, publisher = reader_manager(
+        tmp_path, chair=chair, health_status=503, log_tail="INFO: nothing interesting here\n"
     )
 
     with pytest.raises(
@@ -1435,15 +1385,9 @@ def test_a_loading_marker_that_never_moved_is_not_reported_as_current_progress(
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, http, launcher, _, publisher = manager_for(
+    manager, _, http, launcher, _, publisher = reader_manager(
         tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
+        chair=chair,
         log_tail="Loading safetensors checkpoint shards:  43% Completed | 12/28 [02:41<03:35]\n",
     )
     _never_answering(manager, launcher, http)
@@ -1566,15 +1510,9 @@ def test_a_credential_inside_a_structured_log_field_is_redacted() -> None:
 
 def test_an_unreadable_launch_log_is_a_named_readiness_refusal(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, registry, publisher = manager_for(
+    manager, _, _, launcher, registry, publisher = reader_manager(
         tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
+        chair=chair,
         log_tail="VLLM_LOG_UNREADABLE: could not read launch log /private/child.log: denied",
     )
 
@@ -1598,20 +1536,12 @@ def test_bare_runtimeerror_or_valueerror_in_the_log_does_not_abort_a_start_that_
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, _, registry, publisher = manager_for(
+    manager, _, _, _, registry, publisher = reader_manager(
         tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        log_tail=(
-            "INFO: warming up\n"
-            "RuntimeError: a transient benign message unrelated to any fatal condition\n"
-            "ValueError: also benign, also not one of the named signatures\n"
-        ),
+        chair=chair,
+        log_tail="INFO: warming up\n"
+        "RuntimeError: a transient benign message unrelated to any fatal condition\n"
+        "ValueError: also benign, also not one of the named signatures\n",
     )
 
     handle = manager.start(chair, TIER)
@@ -1635,22 +1565,14 @@ def test_a_benign_startup_traceback_does_not_abort_a_start_that_would_succeed(
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, _, registry, publisher = manager_for(
+    manager, _, _, _, registry, publisher = reader_manager(
         tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        log_tail=(
-            "WARNING 08-09 12:00:00 [__init__.py:32] Failed to import from vllm._C\n"
-            "Traceback (most recent call last):\n"
-            '  File "vllm/_C.py", line 1, in <module>\n'
-            "ModuleNotFoundError: no flashinfer\n"
-            "INFO: continuing\n"
-        ),
+        chair=chair,
+        log_tail="WARNING 08-09 12:00:00 [__init__.py:32] Failed to import from vllm._C\n"
+        "Traceback (most recent call last):\n"
+        '  File "vllm/_C.py", line 1, in <module>\n'
+        "ModuleNotFoundError: no flashinfer\n"
+        "INFO: continuing\n",
     )
 
     handle = manager.start(chair, TIER)
@@ -1666,15 +1588,9 @@ def test_bare_unknown_model_prose_without_a_colon_does_not_abort_a_start(
     """Only vLLM's own 'Unknown model:' rejection form is fatal, not the words."""
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, _, registry, publisher = manager_for(
+    manager, _, _, _, registry, publisher = reader_manager(
         tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
+        chair=chair,
         log_tail="INFO: this is an unknown model type warning, continuing anyway\n",
     )
 
@@ -1687,16 +1603,8 @@ def test_bare_unknown_model_prose_without_a_colon_does_not_abort_a_start(
 
 def test_process_exit_before_readiness_has_its_own_named_refusal(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        exits_immediately=23,
+    manager, _, _, launcher, _, publisher = reader_manager(
+        tmp_path, chair=chair, exits_immediately=23
     )
 
     with pytest.raises(ServingRecipeRefusal, match="VLLM_PROCESS_EXITED.*23"):
@@ -1792,16 +1700,8 @@ def test_unknown_endpoint_and_runtime_pin_refuse_before_process_start(tmp_path: 
 def test_pin_drift_refusal_retains_the_serving_failure_detail(tmp_path: Path) -> None:
     requested = identity("reader", "reader-v1")
     configured = identity("reader", "reader-v1", revision="c" * 40)
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={requested.role: requested},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        package_version="different",
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=requested, package_version="different"
     )
     manager.registry = ChairRegistry(ModelsConfig(witness_floor=0, chairs={"reader": configured}))
 
@@ -1838,16 +1738,8 @@ def test_every_declared_model_stack_package_is_exactly_asserted(tmp_path: Path) 
 
 def test_receipt_publication_failure_never_leaves_a_ready_process_live(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, registry, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        publisher_fail=True,
+    manager, _, _, launcher, registry, publisher = reader_manager(
+        tmp_path, chair=chair, publisher_fail=True
     )
 
     with pytest.raises(ServingRecipeRefusal, match="SERVING_RECEIPT_PUBLICATION_FAILED"):
@@ -1860,16 +1752,8 @@ def test_receipt_publication_failure_never_leaves_a_ready_process_live(tmp_path:
 
 def test_receipt_publication_requires_a_durable_launch_audit_reference(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        publisher_receipt_only=True,
+    manager, _, _, launcher, _, publisher = reader_manager(
+        tmp_path, chair=chair, publisher_receipt_only=True
     )
 
     with pytest.raises(ServingRecipeRefusal, match="durable launch-audit, and combined evidence"):
@@ -2099,18 +1983,8 @@ def test_two_manager_instances_share_the_pod_single_resident_lease(tmp_path: Pat
 
 def test_failed_cleanup_surfaces_stop_error_and_keeps_the_residency_lease(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, http, launcher, registry, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        publisher_fail=True,
-        ignore_terminate=True,
-        ignore_kill=True,
+    manager, _, http, launcher, registry, publisher = reader_manager(
+        tmp_path, chair=chair, publisher_fail=True, ignore_terminate=True, ignore_kill=True
     )
 
     with pytest.raises(ServingRecipeRefusal, match=ServiceStopError.code):
@@ -2147,17 +2021,8 @@ def test_failed_cleanup_surfaces_stop_error_and_keeps_the_residency_lease(tmp_pa
 
 def test_registry_refusal_and_failed_cleanup_are_reported_together(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, registry, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        ignore_terminate=True,
-        ignore_kill=True,
+    manager, _, _, launcher, registry, _ = reader_manager(
+        tmp_path, chair=chair, ignore_terminate=True, ignore_kill=True
     )
 
     def refuse_receipt(identity: ChairIdentity, details: ServingDetails):
@@ -2179,16 +2044,7 @@ def test_registry_refusal_and_failed_cleanup_are_reported_together(tmp_path: Pat
 
 def test_unexpected_start_failure_names_its_exception_type_in_the_refusal(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, registry, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, registry, _ = reader_manager(tmp_path, chair=chair)
 
     def fail_audit(**unused):  # type: ignore[no-untyped-def]
         raise LookupError("injected audit construction failure")
@@ -2206,16 +2062,7 @@ def test_interrupt_during_start_stops_the_child_and_preserves_the_interrupt(
     tmp_path: Path,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, _, publisher = reader_manager(tmp_path, chair=chair)
 
     def interrupt(*unused):  # type: ignore[no-untyped-def]
         raise KeyboardInterrupt("injected operator interrupt")
@@ -2270,16 +2117,7 @@ def test_an_unobservable_child_reaches_the_refusal_by_name_not_as_an_empty_reaso
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, _, _, _ = manager_for(
-        tmp_path / "stop",
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, _, _, _ = reader_manager(tmp_path / "stop", chair=chair)
     handle = manager.start(chair, TIER)
     handle.process = SilentPollFailure()  # type: ignore[assignment]
 
@@ -2298,15 +2136,8 @@ def test_an_unobservable_child_reaches_the_refusal_by_name_not_as_an_empty_reaso
             self.calls += 1
             return SilentPollFailure()
 
-    cleanup_manager, _, _, _, cleanup_registry, _ = manager_for(
-        tmp_path / "cleanup",
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
+    cleanup_manager, _, _, _, cleanup_registry, _ = reader_manager(
+        tmp_path / "cleanup", chair=chair
     )
     launcher = UnobservableLauncher()
     cleanup_manager.launcher = launcher  # type: ignore[assignment]
@@ -2335,17 +2166,8 @@ def test_an_interrupt_whose_cleanup_also_fails_reports_the_stop_failure_instead(
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        ignore_terminate=True,
-        ignore_kill=True,
+    manager, _, _, launcher, _, publisher = reader_manager(
+        tmp_path, chair=chair, ignore_terminate=True, ignore_kill=True
     )
 
     def interrupt(*unused):  # type: ignore[no-untyped-def]
@@ -2374,17 +2196,7 @@ def test_stop_refuses_to_release_residency_while_its_endpoint_still_answers(
     tmp_path: Path,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, http, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        sticky_after_stop=True,
-    )
+    manager, _, http, launcher, _, _ = reader_manager(tmp_path, chair=chair, sticky_after_stop=True)
     handle = manager.start(chair, TIER)
 
     with pytest.raises(ServiceStopError, match="still answered"):
@@ -2401,16 +2213,7 @@ def test_stop_retains_the_single_resident_lease_when_endpoint_failure_is_ambiguo
     tmp_path: Path,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, clock, http, launcher, registry, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, clock, http, launcher, registry, _ = reader_manager(tmp_path, chair=chair)
     handle = manager.start(chair, TIER)
     http.ambiguous_after_stop = True
 
@@ -2428,16 +2231,8 @@ def test_stop_retains_the_single_resident_lease_when_endpoint_failure_is_ambiguo
 
 def test_launch_refuses_an_ambiguous_loopback_endpoint_before_start(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        ambiguous_before_launch=True,
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, ambiguous_before_launch=True
     )
 
     with pytest.raises(ServingRecipeRefusal, match="did not prove absent"):
@@ -2473,16 +2268,8 @@ def test_prelaunch_residency_descriptor_fault_is_a_launch_refusal(tmp_path: Path
             return handle
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        residency_lease=ReleasedHandleLease(),  # type: ignore[arg-type]
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, residency_lease=ReleasedHandleLease()
     )
 
     with pytest.raises(ServingRecipeRefusal) as caught:
@@ -2776,16 +2563,7 @@ def test_read_tail_reports_a_launch_log_read_failure(tmp_path: Path) -> None:
 
 def test_each_manager_log_path_is_fresh_even_with_the_same_log_root(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, _, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, _, _, _ = reader_manager(tmp_path, chair=chair)
 
     first = manager._next_log_path(chair)
     second = manager._next_log_path(chair)
@@ -3943,16 +3721,7 @@ def test_a_manager_built_audit_reaches_a_real_stage_context_end_to_end(tmp_path:
 
 def test_serving_smoke_reader_uses_the_owned_service_and_always_stops(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, http, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, http, launcher, _, _ = reader_manager(tmp_path, chair=chair)
     placement = PlacementTier(
         identifier=TIER,
         min_vram_gib="40",
@@ -4013,16 +3782,7 @@ def test_serving_smoke_reader_uses_the_owned_service_and_always_stops(tmp_path: 
 
 def test_vision_smoke_call_refuses_an_unstarted_service_handle(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, _, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, _, _, _ = reader_manager(tmp_path, chair=chair)
     profile = manager.recipes.for_identity(chair, TIER)
     assert isinstance(profile, ServingProfile)
     unstarted = ServiceHandle(
@@ -4065,16 +3825,8 @@ def test_vision_smoke_call_marks_an_answer_producible_from_its_prompt_invalid(
     prompt_only_answer = "PAGE-WITNESS: <the page witness string>"
     assert PAGE_WITNESS not in vision_smoke().prompt
     assert prompt_only_answer != expected
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": prompt_only_answer},
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": prompt_only_answer}
     )
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
@@ -4095,16 +3847,8 @@ def test_vision_smoke_call_accepts_the_exact_model_answer_and_records_identity(
 ) -> None:
     chair = identity("reader", "reader-v1", revision="b" * 40)
     expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
-    manager, _, http, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": expected},
+    manager, _, http, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": expected}
     )
     fixture = tmp_path / "golden-page.png"
     fixture_bytes = write_golden_page(fixture)
@@ -4171,16 +3915,8 @@ def test_vision_smoke_call_reports_multiple_nonempty_choices_honestly(
 ) -> None:
     chair = identity("reader", "reader-v1")
     expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
-    manager, _, http, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": expected},
+    manager, _, http, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": expected}
     )
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
@@ -4222,16 +3958,8 @@ def test_vision_smoke_receipt_does_not_retain_a_witness_bearing_fixture_name(
 ) -> None:
     chair = identity("reader", "reader-v1")
     expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": expected},
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": expected}
     )
     fixture = tmp_path / f"{PAGE_WITNESS}.png"
     write_golden_page(fixture)
@@ -4259,16 +3987,8 @@ def test_vision_smoke_call_marks_text_outside_the_exact_witness_line_invalid(
     answer: str,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": answer},
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": answer}
     )
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
@@ -4290,16 +4010,8 @@ def test_vision_smoke_retains_exact_exchange_for_a_parsed_format_invalid_answer(
 ) -> None:
     chair = identity("reader", "reader-v1")
     invalid_answer = f"PAGE-WITNESS: {PAGE_WITNESS} "
-    manager, _, http, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": invalid_answer},
+    manager, _, http, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": invalid_answer}
     )
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
@@ -4362,16 +4074,7 @@ def test_vision_smoke_parser_failure_names_retained_exchange_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, http, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, http, launcher, _, _ = reader_manager(tmp_path, chair=chair)
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
     retained: dict[str, bytes] = {}
@@ -4485,16 +4188,8 @@ def test_vision_smoke_call_refuses_bytes_that_are_not_a_complete_decodable_png(
     """A signature alone must not send corrupt bytes under an image/png declaration."""
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"}
     )
     fixture = tmp_path / f"{PAGE_WITNESS}.png"
     fixture.write_bytes(fixture_bytes)
@@ -4514,16 +4209,8 @@ def test_vision_smoke_call_refuses_png_geometry_past_the_measured_placement(
     tmp_path: Path,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"}
     )
     fixture = tmp_path / "oversized-golden-page.png"
     Image.new("L", (2_000, 2_000), color="white").save(fixture, format="PNG")
@@ -4542,16 +4229,8 @@ def test_vision_smoke_call_bounds_encoded_png_bytes_before_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"}
     )
     fixture = tmp_path / "golden-page.png"
     fixture_bytes = write_golden_page(fixture)
@@ -4585,16 +4264,8 @@ def test_vision_smoke_call_checks_the_format_of_the_sealed_request_snapshot(
         prompt=call.prompt,
         mime_type="image/png",
     )
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"}
     )
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
@@ -4615,16 +4286,8 @@ def test_vision_smoke_call_checks_the_format_of_the_sealed_request_snapshot(
 
 def test_vision_smoke_call_refuses_an_untyped_utilization_sample_tuple(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"}
     )
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
@@ -4640,16 +4303,8 @@ def test_vision_smoke_call_refuses_an_untyped_utilization_sample_tuple(tmp_path:
 
 def test_vision_smoke_call_bounds_utilization_evidence_for_one_request(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"}
     )
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
@@ -4668,16 +4323,7 @@ def test_serving_smoke_reader_refuses_a_nominally_green_result_without_service_r
     tmp_path: Path,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
     placement = PlacementTier(
         identifier=TIER,
         min_vram_gib="40",
@@ -4705,16 +4351,7 @@ def test_serving_smoke_reader_refuses_a_text_only_request_as_golden_page_evidenc
     tmp_path: Path,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
     placement = PlacementTier(
         identifier=TIER,
         min_vram_gib="40",
@@ -4755,16 +4392,7 @@ def test_the_plain_reader_seam_gives_the_same_log_root_guarantee_as_the_callback
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     (tmp_path / "logs").symlink_to(elsewhere)
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
     placement = PlacementTier(
         identifier=TIER,
         min_vram_gib="40",
@@ -4788,16 +4416,7 @@ def test_the_plain_reader_seam_gives_the_same_log_root_guarantee_as_the_callback
 
 def test_fixture_request_refuses_image_bytes_from_another_local_page(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, _, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, _, _, _ = reader_manager(tmp_path, chair=chair)
     expected_fixture = tmp_path / "expected.png"
     other_fixture = tmp_path / "other.png"
     expected_fixture.write_bytes(b"expected synthetic page")
@@ -4818,16 +4437,7 @@ def test_fixture_request_refuses_an_image_hidden_outside_openai_chat_content(
     tmp_path: Path,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, _, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, _, _, _ = reader_manager(tmp_path, chair=chair)
     fixture = tmp_path / "golden-page.png"
     fixture.write_bytes(b"fixture page")
     valid = fixture_image_payload(fixture)
@@ -4848,16 +4458,7 @@ def test_fixture_request_requires_an_openai_image_object_at_the_active_content_b
     tmp_path: Path,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, _, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, _, _, _ = reader_manager(tmp_path, chair=chair)
     fixture = tmp_path / "golden-page.png"
     fixture.write_bytes(b"fixture page")
     malformed = json.loads(json.dumps(fixture_image_payload(fixture)))
@@ -4872,16 +4473,7 @@ def test_fixture_request_requires_an_openai_image_object_at_the_active_content_b
 
 def test_fixture_request_dispatches_the_same_payload_snapshot_it_validates(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, http, _, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, http, _, _, _ = reader_manager(tmp_path, chair=chair)
     fixture = tmp_path / "golden-page.png"
     fixture.write_bytes(b"fixture page")
     validated = json.loads(json.dumps(fixture_image_payload(fixture)))
@@ -4917,16 +4509,7 @@ def test_serving_smoke_reader_refuses_green_result_after_a_later_text_request(
     tmp_path: Path,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
     placement = PlacementTier(
         identifier=TIER,
         min_vram_gib="40",
@@ -4962,16 +4545,7 @@ def test_serving_smoke_reader_refuses_green_result_after_a_later_text_request(
 
 def test_serving_smoke_reader_requires_the_exact_fixture_response_token(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
     placement = PlacementTier(
         identifier=TIER,
         min_vram_gib="40",
@@ -5042,16 +4616,7 @@ def test_smoke_reader_refuses_image_calibration_when_local_fixture_bytes_drift(
 
 def test_smoke_reader_refuses_a_profile_dtype_not_assessed_by_preflight(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
     placement = PlacementTier(
         identifier=TIER,
         min_vram_gib="40",
@@ -5181,16 +4746,7 @@ def test_serving_smoke_reader_turns_an_invalid_page_result_into_existing_preflig
     tmp_path: Path,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
     placement = PlacementTier(
         identifier=TIER,
         min_vram_gib="40",
@@ -5443,16 +4999,7 @@ def test_generation_config_auto_records_the_generation_config_json_digest_in_the
 
 def test_generation_config_vllm_carries_no_digest(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, _, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, _, _, _ = reader_manager(tmp_path, chair=chair)
 
     handle = manager.start(chair, TIER)
 
@@ -5594,16 +5141,8 @@ def test_a_deterministic_probe_rejection_breaks_before_the_full_watchdog_wait(
     tmp_path: Path,
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, clock, _, launcher, _, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        probe_http_status=400,
+    manager, clock, _, launcher, _, publisher = reader_manager(
+        tmp_path, chair=chair, probe_http_status=400
     )
 
     with pytest.raises(ServingRecipeRefusal, match="VLLM_PROBE_HTTP_ERROR") as excinfo:
@@ -5622,17 +5161,7 @@ def test_a_transient_probe_status_still_retries_to_the_watchdog(tmp_path: Path) 
     """502/503 is the engine still booting, not rejecting the request shape."""
 
     chair = identity("reader", "reader-v1")
-    manager, clock, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-        probe_http_status=503,
-    )
+    manager, clock, _, launcher, _, _ = reader_manager(tmp_path, chair=chair, probe_http_status=503)
 
     with pytest.raises(ServingRecipeRefusal, match="VLLM_WATCHDOG_TIMEOUT.*VLLM_PROBE_HTTP_ERROR"):
         manager.start(chair, TIER)
@@ -5687,16 +5216,7 @@ def test_manager_start_refuses_a_discoverable_env_override_directly(
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, registry, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, registry, _ = reader_manager(tmp_path, chair=chair)
     operator_cwd = tmp_path / "operator-cwd"
     operator_cwd.mkdir()
     (operator_cwd / ".env").write_text("HF_TOKEN=leaked\n")
@@ -5713,16 +5233,7 @@ def test_serving_smoke_reader_refuses_a_discoverable_local_env_before_any_launch
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, registry, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, registry, _ = reader_manager(tmp_path, chair=chair)
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
     operator_cwd = tmp_path / "operator-cwd"
@@ -5967,16 +5478,7 @@ def test_render_vllm_argv_carries_enable_prompt_tokens_details(tmp_path: Path) -
     """Hostile review item H: the engine's own token counts must be requestable."""
 
     chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
 
     manager.start(chair, TIER).stop()
 
@@ -5999,16 +5501,7 @@ def test_the_readiness_poll_retries_a_transport_refusal_and_then_starts(tmp_path
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, http, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, http, launcher, _, _ = reader_manager(tmp_path, chair=chair)
 
     class RefusesTwiceOnceLaunched:
         """Refuse the first two post-launch health checks, then defer to the fake.
@@ -6051,16 +5544,7 @@ def test_a_readiness_probe_never_outlives_what_is_left_of_the_watchdog(tmp_path:
     """
 
     chair = identity("reader", "reader-v1")
-    manager, _, http, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(
-            profile_row(
-                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-            ),
-        ),
-        model_ids=("reader-api",),
-    )
+    manager, _, http, launcher, _, _ = reader_manager(tmp_path, chair=chair)
 
     class RecordingHealthBudgets:
         def __init__(self) -> None:
