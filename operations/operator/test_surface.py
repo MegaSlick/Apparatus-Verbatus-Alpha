@@ -170,6 +170,7 @@ class FastElapsedClock:
 def _surface(
     tmp_path: Path,
     *,
+    workspace: Path = ROOT,
     provider: FakeProvider | None = None,
     faults: Faults | None = None,
     output: list[str] | None = None,
@@ -177,7 +178,7 @@ def _surface(
     messages = output if output is not None else []
     clock = FastElapsedClock()
     return OperatorSurface(
-        ROOT,
+        workspace,
         tmp_path / "operator-state",
         provider=provider or OperatorFakeProvider(now=lambda: START),
         now=lambda: START,
@@ -5327,7 +5328,7 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
 ) -> None:
     volume, reader = _volume_run(tmp_path)
     messages: list[str] = []
-    surface = _surface(tmp_path, output=messages)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace", output=messages)
     into = tmp_path / "local-runs"
 
     receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
@@ -5360,7 +5361,7 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     assert repeated["fetched"] == 0
     assert repeated["reused"] == payload["fetched"]
     assert "canary_verdict" not in repeated
-    assert not (tmp_path / "private-canary").exists()
+    assert not (surface.workspace / "private" / "canary").exists()
 
 
 def test_fetch_run_seals_one_private_alarm_and_sends_one_decision_ping(tmp_path, monkeypatch):
@@ -5368,7 +5369,7 @@ def test_fetch_run_seals_one_private_alarm_and_sends_one_decision_ping(tmp_path,
     from operations.corpus import canary
 
     volume, reader = _volume_run(tmp_path)
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     pings = []
     surface.notifier = lambda event, message: (
         pings.append((event, message)) or notify_bridge.NotifyOutcome(False, True, "sent")
@@ -5401,6 +5402,10 @@ def test_fetch_run_seals_one_private_alarm_and_sends_one_decision_ping(tmp_path,
     assert conflict.value.code == ErrorCode.CANARY_VERDICT_CONFLICT
     assert "conflicts" in str(conflict.value)
     assert len(pings) == 1
+    assert any(
+        surface.receipts.read(path)["payload"]["state"] == "canary-verdict-conflict"
+        for path in surface.receipts.receipts.glob("*.json")
+    )
 
 
 def test_fetch_run_with_a_healthy_canary_is_silent(tmp_path, monkeypatch):
@@ -5408,7 +5413,7 @@ def test_fetch_run_with_a_healthy_canary_is_silent(tmp_path, monkeypatch):
     from operations.corpus import canary
 
     _volume, reader = _volume_run(tmp_path)
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     pings = []
     surface.notifier = lambda event, message: (
         pings.append((event, message)) or notify_bridge.NotifyOutcome(False, True, "sent")
@@ -5435,7 +5440,7 @@ def test_fetch_run_with_a_healthy_canary_is_silent(tmp_path, monkeypatch):
 
 def test_configured_canary_root_without_a_sealed_ledger_alarms_once(tmp_path):
     _volume, reader = _volume_run(tmp_path)
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     pings = []
     surface.notifier = lambda event, message: (
         pings.append((event, message)) or notify_bridge.NotifyOutcome(False, True, "sent")
@@ -5458,7 +5463,7 @@ def test_configured_canary_root_without_a_sealed_ledger_alarms_once(tmp_path):
 def test_partial_fetch_keeps_its_partial_state_when_a_canary_dies(tmp_path):
     volume, reader = _volume_run(tmp_path)
     (volume / "runs" / "brought-home" / "2_designator" / "manifest.json").unlink()
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     surface.notifier = lambda _event, _message: notify_bridge.NotifyOutcome(False, True, "sent")
     with pytest.raises(OperatorError) as error:
         surface.fetch_run(
@@ -5480,7 +5485,7 @@ def test_fetch_run_seals_and_pings_when_the_canary_check_raises(tmp_path, monkey
     from operations.corpus import canary
 
     _volume, reader = _volume_run(tmp_path)
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     pings = []
     surface.notifier = lambda event, message: (
         pings.append((event, message)) or notify_bridge.NotifyOutcome(False, True, "sent")
@@ -5509,7 +5514,7 @@ def test_verdict_save_failure_says_the_verdict_was_not_saved(tmp_path, monkeypat
     from operations.corpus import cache
 
     _volume, reader = _volume_run(tmp_path)
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     monkeypatch.setattr(cache, "write_new_file", lambda *_args: False)
     with pytest.raises(OperatorError) as error:
         surface.fetch_run(
@@ -5520,6 +5525,9 @@ def test_verdict_save_failure_says_the_verdict_was_not_saved(tmp_path, monkeypat
         )
     assert error.value.code == ErrorCode.CANARY_VERDICT_SAVE_FAILED
     assert "verdict could not be saved" in str(error.value)
+    receipts = list(surface.receipts.receipts.glob("*.json"))
+    assert len(receipts) == 1
+    assert surface.receipts.read(receipts[0])["payload"]["state"] == "canary-verdict-unsaved"
 
 
 # The three stages that serve a chair, and the module each one's
@@ -5646,7 +5654,7 @@ def test_fetch_run_brings_a_served_run_tree_home_and_names_its_logs_unverified(
     volume, reader = _volume_run(tmp_path)
     logs = _served_stage_leavings(volume)
     messages: list[str] = []
-    surface = _surface(tmp_path, output=messages)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace", output=messages)
     into = tmp_path / "local-runs"
 
     receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
@@ -5688,7 +5696,7 @@ def test_a_serving_log_that_grew_since_the_last_fetch_refuses_by_itself(
     volume, reader = _volume_run(tmp_path)
     logs = _served_stage_leavings(volume)
     messages: list[str] = []
-    surface = _surface(tmp_path, output=messages)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace", output=messages)
     into = tmp_path / "local-runs"
 
     surface.fetch_run(run_id="brought-home", into=into, reader=reader)
@@ -5730,7 +5738,7 @@ def test_a_serving_log_past_the_object_bound_refuses_by_itself(
     monkeypatch.setattr(surface_module, "MAX_FETCH_OBJECT_BYTES", 1024)
 
     messages: list[str] = []
-    surface = _surface(tmp_path, output=messages)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace", output=messages)
     into = tmp_path / "local-runs"
 
     receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
@@ -5767,7 +5775,7 @@ def test_a_symlink_where_a_serving_log_belongs_is_refused_and_left_alone(
     planted.symlink_to(tmp_path / "somewhere-else.log")
 
     messages: list[str] = []
-    surface = _surface(tmp_path, output=messages)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace", output=messages)
     receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
 
     payload = surface.receipts.read(receipt)["payload"]
@@ -5792,7 +5800,7 @@ def test_a_refused_serving_log_is_not_counted_among_what_was_verified(
     volume, reader = _volume_run(tmp_path)
     logs = _served_stage_leavings(volume)
     messages: list[str] = []
-    surface = _surface(tmp_path, output=messages)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace", output=messages)
     into = tmp_path / "local-runs"
 
     receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
@@ -5817,7 +5825,7 @@ def test_fetch_run_still_refuses_an_unaccounted_object_beside_the_serving_logs(
     _served_stage_leavings(volume)
     (volume / "runs" / "brought-home" / "pod-gpu.lock").write_bytes(b"")
 
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     into = tmp_path / "local"
 
     with pytest.raises(OperatorError) as refusal:
@@ -5867,7 +5875,7 @@ def test_fetch_run_refuses_a_directory_marker_key_rather_than_writing_it(tmp_pat
         return tuple(sorted({*keys, marker})) if marker.startswith(prefix) else keys
 
     reader.list_keys = list_with_marker  # type: ignore[method-assign]
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     into = tmp_path / "local"
 
     with pytest.raises(OperatorError) as refusal:
@@ -5908,7 +5916,7 @@ def test_fetch_run_brings_the_launch_evidence_home_and_names_what_it_did_not(
     volume, reader = _volume_run(tmp_path)
     written = _volume_evidence(volume)
     printed: list[str] = []
-    surface = _surface(tmp_path, output=printed)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace", output=printed)
     into = tmp_path / "local-runs"
 
     receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
@@ -5955,7 +5963,7 @@ def test_fetch_run_takes_a_named_evidence_key_and_records_one_it_cannot_read(
     report = b'{"schema":"pod-run-report.v1"}'
     (volume / "pod-run-report-launch7.json").write_bytes(report)
     printed: list[str] = []
-    surface = _surface(tmp_path, output=printed)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace", output=printed)
     into = tmp_path / "local-runs"
 
     receipt = surface.fetch_run(
@@ -5989,7 +5997,7 @@ def test_fetch_run_records_a_content_addressed_evidence_object_that_forged_its_n
     written = _volume_evidence(volume)
     [addressed] = [key for key in written if "/receipts/sha256/" in key]
     reader.overrides[addressed] = b'{"forged": true}'
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     into = tmp_path / "local-runs"
 
     receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
@@ -6009,7 +6017,7 @@ def test_fetch_run_refuses_a_receipt_that_does_not_hash_to_its_name(tmp_path: Pa
     [receipt] = [path for path in receipts_dir.iterdir() if path.is_file()]
     relative = receipt.relative_to(volume / "runs" / "brought-home").as_posix()
     reader.overrides[f"runs/brought-home/{relative}"] = b'{"forged": true}'
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     into = tmp_path / "local"
 
     with pytest.raises(OperatorError) as refusal:
@@ -6026,7 +6034,7 @@ def test_fetch_run_refuses_a_receipt_that_does_not_hash_to_its_name(tmp_path: Pa
 def test_fetch_run_refuses_an_object_no_stage_accounts_for(tmp_path: Path) -> None:
     volume, reader = _volume_run(tmp_path)
     (volume / "runs" / "brought-home" / "notes.txt").write_text("stray", encoding="utf-8")
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
@@ -6045,7 +6053,7 @@ def test_fetch_run_refuses_an_artifact_whose_bytes_differ_from_its_manifest(
     )
     [entry] = manifest["artifacts"]
     reader.overrides[f"runs/brought-home/{entry['relative_path']}"] = b'{"forged": true}'
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
@@ -6069,7 +6077,7 @@ def test_fetch_run_brings_home_a_stage_that_never_reached_finish(tmp_path: Path)
 
     volume, reader = _volume_run(tmp_path)
     (volume / "runs" / "brought-home" / "2_designator" / "manifest.json").unlink()
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     into = tmp_path / "local"
 
     receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
@@ -6095,7 +6103,7 @@ def test_fetch_run_still_refuses_a_forged_artifact_in_an_unmanifested_stage(
     [artifact_path] = [path for path in artifacts_dir.rglob("*.json") if path.is_file()]
     relative = artifact_path.relative_to(volume / "runs" / "brought-home").as_posix()
     reader.overrides[f"runs/brought-home/{relative}"] = b'{"forged": true}'
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
@@ -6113,7 +6121,7 @@ def test_fetch_run_refuses_a_blob_that_does_not_hash_to_its_name(tmp_path: Path)
     blobs = volume / "runs" / "brought-home" / "2_designator" / "blobs" / "sha256"
     [blob] = [path for path in blobs.iterdir() if path.is_file()]
     reader.overrides[f"runs/brought-home/2_designator/blobs/sha256/{blob.name}"] = b"other"
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
@@ -6140,7 +6148,7 @@ def test_fetch_run_refuses_a_manifest_the_fetched_artifacts_do_not_rebuild(
         }
     )
     reader.overrides["runs/brought-home/2_designator/manifest.json"] = canonical_bytes(manifest)
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
@@ -6163,7 +6171,7 @@ def test_fetch_run_refuses_a_hostilely_nested_manifest_instead_of_crashing(
     volume, reader = _volume_run(tmp_path)
     nested = b'{"extra":' + b"[" * 10_000 + b"]" * 10_000 + b"}"
     reader.overrides["runs/brought-home/2_designator/manifest.json"] = nested
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
@@ -6186,7 +6194,7 @@ def test_fetch_run_records_a_memory_error_from_the_walk_instead_of_crashing(
         raise MemoryError("cannot allocate the manifest")
 
     monkeypatch.setattr(surface_module, "_fetched_manifest", _starved)
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
@@ -6213,7 +6221,7 @@ def test_fetch_run_refuses_a_rebuildable_index_that_is_not_a_readable_record(
     # Nesting around a 4,301-digit integer: 3.12 refuses the nesting
     # (RecursionError), 3.14 walks it and refuses the integer (ValueError).
     index.write_bytes(b'{"extra":' + b"[" * 10_000 + b"9" * 4301 + b"]" * 10_000 + b"}")
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as nested:
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local-nested", reader=reader)
@@ -6230,7 +6238,7 @@ def test_fetch_run_refuses_a_rebuildable_index_that_is_not_a_readable_record(
     manifest_path = volume / "runs" / "brought-home" / "2_designator" / "manifest.json"
     assert index.stat().st_size > ceiling
     assert manifest_path.stat().st_size < ceiling
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(surface_module, "MAX_RECORD_READ_BYTES", ceiling)
         with pytest.raises(OperatorError) as oversized:
@@ -6262,7 +6270,7 @@ def test_fetch_run_never_overwrites_a_local_file_that_differs(tmp_path: Path) ->
     local_run = into / "brought-home" / "run.json"
     local_run.parent.mkdir(parents=True)
     local_run.write_bytes(b"a different run wearing this name\n")
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="brought-home", into=into, reader=reader)
@@ -6275,7 +6283,7 @@ def test_fetch_run_never_overwrites_a_local_file_that_differs(tmp_path: Path) ->
 
 def test_fetch_run_refuses_a_prefix_with_nothing_under_it(tmp_path: Path) -> None:
     _volume, reader = _volume_run(tmp_path)
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="never-written", into=tmp_path / "local", reader=reader)
@@ -6286,7 +6294,7 @@ def test_fetch_run_refuses_a_prefix_with_nothing_under_it(tmp_path: Path) -> Non
 def test_fetch_run_refuses_a_prefix_with_no_run_authority(tmp_path: Path) -> None:
     volume, reader = _volume_run(tmp_path)
     (volume / "runs" / "brought-home" / "run.json").unlink()
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
@@ -6300,7 +6308,7 @@ def test_fetch_run_refuses_a_tampered_run_authority(tmp_path: Path) -> None:
     authority = json.loads((volume / "runs" / "brought-home" / "run.json").read_text("utf-8"))
     authority["config_digest"] = "e" * 64
     reader.overrides["runs/brought-home/run.json"] = canonical_bytes(authority)
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
@@ -6310,7 +6318,7 @@ def test_fetch_run_refuses_a_tampered_run_authority(tmp_path: Path) -> None:
 
 
 def test_fetch_run_needs_a_network_volume_when_no_reader_is_supplied(tmp_path: Path) -> None:
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local")
@@ -6320,7 +6328,7 @@ def test_fetch_run_needs_a_network_volume_when_no_reader_is_supplied(tmp_path: P
 
 
 def test_fetch_run_refuses_a_bad_run_id_by_name(tmp_path: Path) -> None:
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError) as refusal:
         surface.fetch_run(
@@ -6334,7 +6342,7 @@ def test_fetch_run_refuses_a_bad_run_id_by_name(tmp_path: Path) -> None:
 def test_fetch_run_writes_a_partial_receipt_when_it_stops(tmp_path: Path) -> None:
     volume, reader = _volume_run(tmp_path)
     (volume / "runs" / "brought-home" / "stray.bin").write_bytes(b"?")
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
 
     with pytest.raises(OperatorError):
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
@@ -6919,7 +6927,7 @@ def test_derived_evidence_prefixes_reads_the_launch_receipt(tmp_path: Path) -> N
 
 
 def test_status_names_fetch_run_volumes_and_unexpected_failures(tmp_path: Path) -> None:
-    surface = _surface(tmp_path)
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
     volume, reader = _volume_run(tmp_path)
     spec = VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol123")
     surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader, volume=spec)

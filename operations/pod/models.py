@@ -631,6 +631,10 @@ def _required_timer_arguments(
                 report_paths.append((half, nested_path))
             elif flag == "--journal":
                 bootstrap_journal = nested_path
+    if bootstrap_journal is not None and bootstrap_journal in {
+        path for _half, path in report_paths
+    }:
+        raise ValueError("pod bootstrap journal path collides with a nested report path")
     run_path = next((path for half, path in report_paths if _runs_the_orchestrator(half)), None)
     if run_path is not None:
         bootstrap_paths = [

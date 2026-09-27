@@ -2007,6 +2007,49 @@ def test_real_door_refuses_invalid_canary_ingress(tmp_path, monkeypatch, case, m
         )
 
 
+@pytest.mark.parametrize(
+    ("record", "message"),
+    [
+        ("canary-manifest", "canary filename ledger cannot live inside"),
+        ("real-manifest", "submission filename ledger cannot live inside"),
+        ("run-root", "run root cannot live inside"),
+    ],
+)
+def test_real_door_refuses_canary_and_real_folder_cross_containment(
+    tmp_path, monkeypatch, record, message
+):
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"real.png": png(4, 3)}
+    )
+    birds = approved / "birds"
+    birds.mkdir()
+    (birds / "bird.png").write_bytes(png(3, 2))
+    bird_ledger_path = approved / "birds-ledger.json"
+    submit.submit(birds, bird_ledger_path, policy_path=policy_path)
+    run_root = approved / "runs"
+    if record == "canary-manifest":
+        nested = source / "birds-ledger.json"
+        nested.write_bytes(bird_ledger_path.read_bytes())
+        bird_ledger_path = nested
+    elif record == "real-manifest":
+        nested = birds / "real-ledger.json"
+        nested.write_bytes(ledger_path.read_bytes())
+        ledger_path = nested
+    else:
+        run_root = birds / "runs"
+
+    with pytest.raises(ContractError, match=message):
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id=f"cross-{record}",
+            extra=("--canary-folder", str(birds), "--canary-manifest", str(bird_ledger_path)),
+        )
+
+
 def test_operator_upload_layout_is_admitted_by_the_real_door(tmp_path, monkeypatch):
     """The default volume layout is the exact folder/ledger pair Boot B opens."""
 

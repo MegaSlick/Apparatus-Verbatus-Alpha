@@ -1756,6 +1756,9 @@ def real_submission(args, registry) -> int:
         ):
             raise ContractError("canary and real submission folders must be disjoint")
         _refuse_inside_submission(canary_manifest_path, canary_folder, "canary filename ledger")
+        _refuse_inside_submission(canary_manifest_path, submission_folder, "canary filename ledger")
+        _refuse_inside_submission(manifest_path, canary_folder, "submission filename ledger")
+        _refuse_inside_submission(run_root, canary_folder, "run root")
         canary_ledger = submission_ledger.load_manifest(canary_manifest_path)
         real_paths = {row["relative_path"] for row in ledger["files"]}
         real_digests = {row["sha256"] for row in ledger["files"]}

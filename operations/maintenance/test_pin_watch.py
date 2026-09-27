@@ -26,15 +26,34 @@ def test_pins_come_from_configured_chairs_and_vendor_source_constants() -> None:
         (pin_watch.ROOT / "config/models.toml", pin_watch.ROOT / "config/models-real.toml"),
         pin_watch.ROOT / "common/test_vendor_parity.py",
     )
-    assert [(pin.repo, pin.host) for pin in pins] == [
-        ("datalab-to/chandra-ocr-2", "huggingface"),
-        ("datalab-to/chandra-ocr-2", "huggingface"),
-        ("Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR", "huggingface"),
-        ("stanford-oval/churro-3B", "huggingface"),
-        ("Qwen/Qwen3.8-27B", "huggingface"),
-        ("datalab-to/chandra", "github"),
-        ("stanford-oval/Churro", "github"),
-        ("stanford-oval/Churro", "github"),
+    assert [(pin.repo, pin.revision, pin.host, pin.upstream_ref) for pin in pins] == [
+        (
+            "datalab-to/chandra-ocr-2",
+            "af93b47dba1b47b6640c86ccf487ed2260ab9a09",
+            "huggingface",
+            "HEAD",
+        ),
+        (
+            "datalab-to/chandra-ocr-2",
+            "af93b47dba1b47b6640c86ccf487ed2260ab9a09",
+            "huggingface",
+            "HEAD",
+        ),
+        (
+            "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR",
+            "e371095d4ffe585f31f4974462931ddbac61ff64",
+            "huggingface",
+            "HEAD",
+        ),
+        (
+            "stanford-oval/churro-3B",
+            "ca2150ea465d5a3d67818c50e234b9422619c75d",
+            "huggingface",
+            "HEAD",
+        ),
+        ("Qwen/Qwen3.8-27B", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", "huggingface", "HEAD"),
+        ("datalab-to/chandra", "d4f7467435aa4137d9539f000ddf0b7ced3eb43f", "github", "HEAD"),
+        ("stanford-oval/Churro", "4abb17386d9656199c2776195926545fc527a691", "github", "v0.3.0"),
     ]
 
 
@@ -76,10 +95,13 @@ def test_report_marks_unchanged_moved_and_unreachable() -> None:
 def test_notify_sends_one_decision_for_all_moved_pins(
     monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    pin = pin_watch.Pin("owner/model", "a" * 40, "huggingface")
+    pins = [
+        pin_watch.Pin("owner/first", "a" * 40, "huggingface"),
+        pin_watch.Pin("owner/second", "c" * 40, "huggingface"),
+    ]
     monkeypatch.setattr(pin_watch, "ROOT", Path("/repo"))
     monkeypatch.setattr(sys, "argv", ["pin_watch", "--notify"])
-    monkeypatch.setattr(pin_watch, "_pins", lambda *_: [pin])
+    monkeypatch.setattr(pin_watch, "_pins", lambda *_: pins)
     monkeypatch.setattr(
         pin_watch,
         "_get_json",
@@ -97,7 +119,8 @@ def test_notify_sends_one_decision_for_all_moved_pins(
     assert pin_watch.main() == 0
     assert len(sent) == 1
     assert sent[0][0] == "decision"
-    assert "upstream-moved" in sent[0][1]
+    assert "owner/first: upstream-moved" in sent[0][1]
+    assert "owner/second: upstream-moved" in sent[0][1]
     assert "upstream-moved" in capsys.readouterr().out
 
 

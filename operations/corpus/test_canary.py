@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from io import BytesIO
+from pathlib import Path
 from zipfile import ZIP_STORED, ZipFile
 
 import pytest
@@ -321,7 +322,7 @@ def test_check_exception_seals_a_dead_verdict_for_every_chair(monkeypatch, tmp_p
     assert verdict["self_hash"] == self_hash(verdict)
 
 
-def test_build_copies_only_selected_synthetic_reference_pages(tmp_path):
+def test_build_copies_only_selected_synthetic_reference_pages(tmp_path, monkeypatch):
     source = tmp_path / "source"
     (source / "pages").mkdir(parents=True)
     image = source / "pages" / "source.png"
@@ -348,7 +349,21 @@ def test_build_copies_only_selected_synthetic_reference_pages(tmp_path):
     )
     (source / "reference-pages.json").write_text(json.dumps([reference]))
     output = tmp_path / "private-canary"
-    assert canary.build(source, [sha], output) == output
+    original_read = Path.read_bytes
+    reads = 0
+
+    def read_once(path):
+        nonlocal reads
+        if path == chosen:
+            reads += 1
+            if reads > 1:
+                raise AssertionError("selected page was read more than once")
+        return original_read(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", read_once)
+        assert canary.build(source, [sha], output) == output
+    assert reads == 1
     assert (output / "pages" / chosen.name).read_bytes() == chosen.read_bytes()
     assert json.loads((output / "reference-pages.json").read_text()) == [reference]
     assert (
@@ -372,6 +387,10 @@ def test_build_copies_only_selected_synthetic_reference_pages(tmp_path):
         == 0
     )
     assert (command_output / "submission-manifest.json").exists()
+    chosen.rename(source / "pages" / "original.png")
+    chosen.symlink_to("original.png")
+    with pytest.raises(ValueError, match="symlink"):
+        canary.build(source, [sha], tmp_path / "symlink-canary")
 
 
 def test_build_derives_references_from_a_synthetic_recordgold_set(tmp_path):

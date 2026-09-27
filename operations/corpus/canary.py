@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import io
 import json
-import shutil
 import sqlite3
 from collections import Counter
 from pathlib import Path
@@ -402,8 +401,10 @@ def build(
         for row in ledger["rows"]:
             if row["decision"] == "admitted":
                 sha = row["page_sha256"]
-                image = (source / row["page_image"]).resolve()
-                if not image.is_relative_to(source):
+                image = source / row["page_image"]
+                if image.is_symlink():
+                    raise ValueError("selected page image is a symlink")
+                if not image.resolve().is_relative_to(source):
                     raise ValueError("admitted page image escapes the source directory")
                 if sha in images_by_sha and images_by_sha[sha] != image:
                     raise ValueError("admitted page digest names more than one image")
@@ -424,19 +425,20 @@ def build(
             image = images[0]
         if image.is_symlink():
             raise ValueError("selected page image is a symlink")
-        if digest_bytes(image.read_bytes()) != sha:
+        data = image.read_bytes()
+        if digest_bytes(data) != sha:
             raise ValueError("selected page image disagrees with its reference digest")
-        with Image.open(image) as opened:
+        with Image.open(io.BytesIO(data)) as opened:
             if opened.size != (references[sha]["page"]["width"], references[sha]["page"]["height"]):
                 raise ValueError("selected page image disagrees with its reference geometry")
         selected.append(references[sha])
-        copies.append(image)
+        copies.append((sha, image.suffix, data))
     if output.exists() and any(output.iterdir()):
         raise ValueError("canary output folder is not empty")
     pages = output / "pages"
     pages.mkdir(parents=True, exist_ok=True)
-    for image in copies:
-        shutil.copyfile(image, pages / f"{digest_bytes(image.read_bytes())}{image.suffix}")
+    for sha, suffix, data in copies:
+        (pages / f"{sha}{suffix}").write_bytes(data)
     (output / "reference-pages.json").write_bytes(canonical_bytes(selected))
     (output / "submission-manifest.json").write_bytes(
         canonical_bytes(build_manifest(walk_folder(pages)))

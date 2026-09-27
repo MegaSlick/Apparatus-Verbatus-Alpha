@@ -984,6 +984,7 @@ class OperatorSurface:
             marked = True
         canary_verdict = None
         verdict_path = None
+        canary_error = None
         if marked:
             from operations.corpus.cache import write_new_file
             from operations.corpus.canary import check_run, raised_verdict
@@ -1002,7 +1003,7 @@ class OperatorSurface:
                 verdict_bytes = canonical_bytes(canary_verdict)
                 if verdict_path.exists():
                     if verdict_path.read_bytes() != verdict_bytes:
-                        raise OperatorError(
+                        canary_error = OperatorError(
                             ErrorCode.CANARY_VERDICT_CONFLICT,
                             detail="an existing canary verdict differs from this run",
                         )
@@ -1011,10 +1012,10 @@ class OperatorSurface:
                 else:
                     new_verdict = True
             except (OSError, ValueError) as error:
-                raise OperatorError(
+                canary_error = OperatorError(
                     ErrorCode.CANARY_VERDICT_SAVE_FAILED, detail=str(error)
-                ) from error
-            if new_verdict and canary_verdict["dead"]:
+                )
+            if new_verdict and canary_error is None and canary_verdict["dead"]:
                 self._notify(
                     "milestone",
                     f"CANARY ALARM run {checked_id}: "
@@ -1054,15 +1055,29 @@ class OperatorSurface:
             "fetch-run",
             {
                 "summary": summary,
-                "state": "verified-partial"
-                if partial
-                else ("canary-alarm" if canary_verdict and canary_verdict["dead"] else "verified"),
+                "state": (
+                    "canary-verdict-conflict"
+                    if canary_error and canary_error.code == ErrorCode.CANARY_VERDICT_CONFLICT
+                    else "canary-verdict-unsaved"
+                    if canary_error
+                    else "verified-partial"
+                    if partial
+                    else "canary-alarm"
+                    if canary_verdict and canary_verdict["dead"]
+                    else "verified"
+                ),
                 **(
                     {"canary_alarm": True}
                     if partial and canary_verdict and canary_verdict["dead"]
                     else {}
                 ),
-                **({"canary_verdict": str(verdict_path)} if verdict_path else {}),
+                **(
+                    {"canary_verdict_path": str(verdict_path)}
+                    if canary_error and verdict_path
+                    else {"canary_verdict": str(verdict_path)}
+                    if verdict_path
+                    else {}
+                ),
                 "run_id": checked_id,
                 "prefix": prefix,
                 "into": str(destination_root),
@@ -1114,6 +1129,10 @@ class OperatorSurface:
             },
             descriptor_action="fetch-run",
         )
+        if canary_error is not None:
+            raise OperatorError(
+                canary_error.code, detail=f"{canary_error.detail} Saved receipt: {receipt}"
+            ) from canary_error
         self.present(
             f"Run {checked_id} is at {destination_root / checked_id}: "
             f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "

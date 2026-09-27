@@ -21,6 +21,7 @@ class Pin:
     repo: str
     revision: str
     host: str
+    upstream_ref: str = "HEAD"
 
 
 def _get_json(url: str) -> Mapping[str, object]:
@@ -48,10 +49,12 @@ def _pins(config_paths: tuple[Path, ...], vendor_path: Path) -> list[Pin]:
     for repository, revision in (
         ("CHANDRA_CODE_REPOSITORY", "CHANDRA_CODE_COMMIT"),
         ("CHURRO_CODE_REPOSITORY", "CHURRO_CODE_COMMIT"),
-        ("CHURRO_CODE_REPOSITORY", "CHURRO_PAPER_COMMIT"),
     ):
         repo = str(constants[repository]).removeprefix("github.com/")
-        pins.append(Pin(repo, str(constants[revision]), "github"))
+        # The Churro code pin names a tag. The paper-era commit has no moving
+        # upstream ref, so a HEAD comparison would announce a false move.
+        upstream_ref = "v0.3.0" if revision == "CHURRO_CODE_COMMIT" else "HEAD"
+        pins.append(Pin(repo, str(constants[revision]), "github", upstream_ref))
     return pins
 
 
@@ -59,7 +62,7 @@ def _upstream(pin: Pin, get_json: Callable[[str], Mapping[str, object]]) -> tupl
     if pin.host == "huggingface":
         data = get_json(f"https://huggingface.co/api/models/{pin.repo}")
         return str(data["sha"]), str(data["lastModified"])
-    data = get_json(f"https://api.github.com/repos/{pin.repo}/commits/HEAD")
+    data = get_json(f"https://api.github.com/repos/{pin.repo}/commits/{pin.upstream_ref}")
     commit = data["commit"]
     if not isinstance(commit, Mapping):
         raise ValueError("GitHub response has no commit object")

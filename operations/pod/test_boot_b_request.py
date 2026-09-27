@@ -302,6 +302,18 @@ def test_two_nested_report_paths_naming_one_file_are_refused() -> None:
         validated_pod_request(_with_nested_argv(filled_request(), nested))
 
 
+def test_bootstrap_journal_naming_the_bootstrap_report_is_refused() -> None:
+    base = validated_pod_request(filled_request())
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    reports = [index + 1 for index, value in enumerate(nested) if value == "--report-path"]
+    nested[nested.index("--journal") + 1] = nested[reports[1]]
+    command = list(base.docker_start_cmd)
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="journal path collides with a nested report path"):
+        replace(base, docker_start_cmd=tuple(command))
+
+
 def test_bootstrap_argument_named_pod_run_does_not_hide_report_collision() -> None:
     base = validated_pod_request(filled_request())
     command = list(base.docker_start_cmd)
