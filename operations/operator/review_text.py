@@ -541,7 +541,27 @@ def render(projection: dict[str, Any]) -> list[str]:
         lines.append(f"Review queue: not produced ({said})")
     else:
         review_items = _rows(projection, "review_items")
-        lines.append(f"Review queue ({len(review_items)})")
+        total = projection.get("review_items_total", len(review_items))
+        if total is None:
+            total = len(review_items)
+        page = projection.get("review_page", 1)
+        size = projection.get("review_page_size", max(1, len(review_items)))
+        if not isinstance(total, int) or not isinstance(page, int) or not isinstance(size, int):
+            raise ProjectionShapeError(
+                "review page", None, (total, page, size), expected="integer counts"
+            )
+        if total < 0 or page < 1 or size < 1 or len(review_items) > size:
+            raise ProjectionShapeError(
+                "review page", None, (total, page, size), expected="valid bounds"
+            )
+        first = (page - 1) * size + 1
+        last = min(page * size, total)
+        extent = f"items {first}-{last}" if first <= last else "no items on this page"
+        lines.append(f"Review queue ({total}) — page {page}, {extent}")
+        if last < total:
+            lines.append(
+                f"  Next: verbatus review --review-page {page + 1} with the same run arguments"
+            )
         for item in review_items:
             # An entry carrying a `row` key is this projection's wrapper
             # (bundle member and line number plus the row); an empty row

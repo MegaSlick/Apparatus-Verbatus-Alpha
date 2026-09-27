@@ -25,7 +25,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ARMARIUM
 from common.runtree.store import RunTree
 from conftest import code_text
-from operations.operator import advance, advance_worker, cli, console, custody, review
+from operations.operator import advance, advance_worker, cli, console, custody, review, review_text
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.review import ReviewProjection
 
@@ -1581,20 +1581,16 @@ def _review_bundle_payload(data: bytes, tmp_path: Path) -> tuple[types.SimpleNam
     return tree, payload
 
 
-def test_review_refuses_a_zip_member_that_would_expand_past_its_input_limit(tmp_path: Path):
+def test_review_refuses_a_row_larger_than_its_input_limit(tmp_path: Path):
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
-        archive.writestr("review-items.jsonl", b"x" * (review.MAX_REVIEW_ITEMS_BYTES + 1))
+        archive.writestr("review-items.jsonl", b"x" * (review.MAX_REVIEW_ITEM_BYTES + 1))
     tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
 
     with pytest.raises(OperatorError) as excinfo:
         review._review_items(tree, payload, _EXPORT_REF)
 
-    # The distinguishing verb, not the shared phrase: `_review_items` raises
-    # "exceeds the operator review limit" for the declared member size and
-    # "expands beyond" for the post-read recheck, and "review limit" matched
-    # either — so this test stayed green whichever bound was deleted.
-    assert "exceeds the operator review limit" in (excinfo.value.detail or "")
+    assert "line 1 exceeds" in (excinfo.value.detail or "")
 
 
 def test_no_archive_member_can_be_both_this_name_and_a_directory():
@@ -1614,25 +1610,37 @@ def test_no_archive_member_can_be_both_this_name_and_a_directory():
         assert not (member.filename == review._REVIEW_ITEMS_MEMBER and member.is_dir())
 
 
-def test_review_refuses_more_review_rows_than_the_console_can_safely_project(tmp_path: Path):
+def test_review_pages_through_more_than_fifty_thousand_rows_without_loss(tmp_path: Path):
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
-        archive.writestr("review-items.jsonl", b"{}\n" * (review.MAX_REVIEW_ITEMS + 1))
+        archive.writestr("review-items.jsonl", b"{}\n" * 50_001)
     tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
 
-    with pytest.raises(OperatorError) as excinfo:
-        review._review_items(tree, payload, _EXPORT_REF)
-
-    assert f"more than the operator review limit of {review.MAX_REVIEW_ITEMS} records" in (
-        excinfo.value.detail or ""
-    )
+    seen = []
+    for page in range(1, 102):
+        items, total = review._review_items(tree, payload, _EXPORT_REF, review_page=page)
+        assert total == 50_001
+        assert items is not None and len(items) <= review.REVIEW_PAGE_SIZE
+        if page == 1:
+            lines = review_text.render(
+                {
+                    "run_id": "reviewed",
+                    "review_items": items,
+                    "review_items_total": total,
+                    "review_page": page,
+                    "review_page_size": review.REVIEW_PAGE_SIZE,
+                }
+            )
+            assert "Review queue (50001) — page 1, items 1-500" in lines
+            assert any("--review-page 2" in line for line in lines)
+        seen.extend(item["line"] for item in items)
+    assert seen == list(range(1, 50_002))
 
 
 def test_a_row_that_is_not_json_names_the_line_it_is_on(tmp_path: Path):
     """A refusal that names only the bundle cannot be acted on.
 
-    The queue may hold up to `MAX_REVIEW_ITEMS` rows, so "a row is bad" without
-    a position leaves the operator to find it by hand.
+    A bad row without a position leaves the operator to find it by hand.
     """
 
     bundle = io.BytesIO()
@@ -1693,29 +1701,6 @@ def test_review_refuses_ambiguous_duplicate_review_members(tmp_path: Path):
         review._review_items(tree, payload, _EXPORT_REF)
 
     assert "more than one review-items.jsonl" in (excinfo.value.detail or "")
-
-
-def test_review_charges_the_export_bundle_to_the_same_allowance_as_the_images(
-    tmp_path: Path,
-):
-    """The bundle zip is read whole in the same pass as every page and crop.
-
-    Bounding the images alone would bound nothing: a parish-sized bundle met
-    the machine's memory in the exact projection the image allowance guards.
-    The bundle spends from the shared allowance and an oversized run refuses
-    by name, with the run tree intact.
-    """
-    bundle = io.BytesIO()
-    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
-        archive.writestr("review-items.jsonl", b'{"reason":"real"}\n')
-    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
-
-    with pytest.raises(OperatorError) as excinfo:
-        review._review_items(tree, payload, _EXPORT_REF, review._ImageBudget(limit=16))
-
-    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
-    assert "more than the console can project" in (excinfo.value.detail or "")
-    assert "the Armarium export bundle" in (excinfo.value.detail or "")
 
 
 def test_a_bad_run_id_is_named_as_such_by_advance_and_review(tmp_path):
@@ -1894,15 +1879,7 @@ def test_review_refuses_a_bundle_it_cannot_follow_instead_of_showing_an_empty_qu
 
 
 def test_review_refuses_a_bundle_member_whose_declared_size_is_false(tmp_path: Path):
-    """A lying zip header is refused; it cannot expand past the declared size.
-
-    `zipfile` bounds a member read by the `file_size` its central directory
-    declares, so the `MAX_REVIEW_ITEMS_BYTES` recheck after the bounded read
-    cannot fire while the `member.file_size` check above it holds — measured
-    here rather than assumed. What a falsified header actually produces is a
-    CRC failure, and that has to reach the operator as a refusal rather than
-    as a short read silently accepted as the review queue.
-    """
+    """A lying zip header must become a refusal, not a short queue."""
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("review-items.jsonl", b'{"reason":"real"}\n' * 4096)

@@ -680,6 +680,9 @@ def build_parser() -> PlainParser:
     )
     review.add_argument("--run-id", required=True, help="the sealed run to inspect")
     review.add_argument(
+        "--review-page", type=int, default=1, help="review queue page (1-based, 500 items per page)"
+    )
+    review.add_argument(
         "--json",
         action="store_true",
         help=(
@@ -903,7 +906,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             for line in SpendSurface(surface.receipts, surface.now()).show(policy):
                 _print(line)
         elif args.verb == "review":
-            _review_in_custody(args.run_root, args.run_id, workspace, raw=args.json)
+            _review_in_custody(
+                args.run_root, args.run_id, workspace, raw=args.json, review_page=args.review_page
+            )
         elif args.verb == "advance":
             _advance_with_confirmation(
                 args.run_root,
@@ -1077,7 +1082,9 @@ def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
         raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
 
 
-def _review_in_custody(run_root: Path, run_id: str, workspace: Path, *, raw: bool = False) -> None:
+def _review_in_custody(
+    run_root: Path, run_id: str, workspace: Path, *, raw: bool = False, review_page: int = 1
+) -> None:
     """Exec the renderer with no credential and a kernel-enforced no-write policy.
 
     The run tree is opened once, read-only, by the parent, and the child
@@ -1092,7 +1099,9 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path, *, raw: boo
     from common.runtree.store import RunTree
 
     _bound_run_tree(RunTree, run_root, run_id)
-    projection = dataclasses.asdict(ReadOnlyRun(run_root, run_id).projection())
+    projection = dataclasses.asdict(
+        ReadOnlyRun(run_root, run_id).projection(review_page=review_page)
+    )
     command = python_module_command("operations.operator.console")
     backend, completed = run_confined(
         command,
