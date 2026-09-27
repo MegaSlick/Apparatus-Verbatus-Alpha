@@ -7,6 +7,7 @@ import dataclasses
 import json
 import os
 import pwd
+import shutil
 import stat
 import sys
 import traceback
@@ -16,6 +17,7 @@ from typing import Final, Sequence
 
 from common.checkout import missing_checkout_resources
 from common.contracts.stages import STAGES
+from common.durability import is_temporary_name
 from common.stage import RUN_MODES
 from operations.pod.launch import launch_evidence_keys, launch_evidence_prefixes, launch_run_id
 from operations.pod.models import (
@@ -745,6 +747,14 @@ def build_parser() -> PlainParser:
     )
     triage.add_argument("--confirmation-out", type=Path, help="producer confirmation-file target")
     triage.add_argument("--preview-sha256", help="digest of the draft shown before writing")
+    clear = verbs.add_parser(
+        "clear-leftovers",
+        help="list, or with --apply remove, what interrupted publications left under a folder",
+    )
+    clear.add_argument(
+        "--root", type=Path, required=True, help="run tree, volume mount or export folder"
+    )
+    clear.add_argument("--apply", action="store_true", help="remove them instead of listing")
     scantailor = verbs.add_parser(
         "scantailor",
         help="name the separate ScanTailor desktop handoff, then import its saved geometry",
@@ -905,6 +915,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace, surface)
         elif args.verb == "triage":
             _triage_queue(args, workspace)
+        elif args.verb == "clear-leftovers":
+            _clear_leftovers(args.root, apply=args.apply)
         elif args.verb == "scantailor":
             from .scantailor import import_in_custody, instruction
 
@@ -935,6 +947,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print(record_unexpected(error, arguments, state).render())
         return 2
     return 0
+
+
+def _is_staging_name(name: str) -> bool:
+    target, separator, unique = name[1:].partition(".publishing-")
+    return name.startswith(".") and bool(target and separator and unique)
+
+
+def _clear_leftovers(root: Path, *, apply: bool) -> None:
+    if root.is_symlink() or not root.is_dir():
+        raise OperatorError(
+            ErrorCode.INVALID_COMMAND, detail=f"{root} is not a folder; name the real folder"
+        )
+    leftovers: list[Path] = []
+    for directory, subdirectories, files in os.walk(root):
+        for name in list(subdirectories):
+            path = Path(directory, name)
+            if _is_staging_name(name) and stat.S_ISDIR(os.lstat(path).st_mode):
+                subdirectories.remove(name)
+                leftovers.append(path)
+        leftovers += [
+            Path(directory, name)
+            for name in files
+            if is_temporary_name(name) and stat.S_ISREG(os.lstat(Path(directory, name)).st_mode)
+        ]
+    for path in leftovers:
+        if apply and path.is_dir():
+            shutil.rmtree(path)
+        elif apply:
+            path.unlink()
+        _print(f"{'Removed' if apply else 'Would remove'}: {path}")
+    _print(f"{len(leftovers)} leftover(s){'' if apply else '; add --apply to remove them'}.")
 
 
 def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):

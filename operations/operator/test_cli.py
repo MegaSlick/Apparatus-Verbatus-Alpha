@@ -66,3 +66,47 @@ def test_a_genuine_typo_after_the_verb_still_reads_as_a_plain_refusal():
 
     assert excinfo.value.code is ErrorCode.INVALID_COMMAND
     assert "is accepted only" not in excinfo.value.render()
+
+
+def test_clear_leftovers_lists_then_removes_only_publication_leftovers(tmp_path, capsys):
+    root = tmp_path / "run"
+    (root / "pages").mkdir(parents=True)
+    leftovers = [root / "pages" / ".IMG.tif.tmp-a1b2", root / ".delivery.publishing-x9"]
+    leftovers[0].write_bytes(b"partial")
+    (leftovers[1] / "inner").mkdir(parents=True)
+    kept = [
+        root / "pages" / "IMG.tmp-1.tif",
+        root / "pages" / ".hidden",
+        root / ".tmp-",
+        root / ".publishing-x",
+        root / "run.json",
+    ]
+    for path in kept:
+        path.write_bytes(b"real")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / ".x.tmp-1").write_bytes(b"not under the root")
+    (root / ".linked.tmp-1").symlink_to(outside / ".x.tmp-1")
+    (root / "mount").symlink_to(outside)
+    common = ["--workspace", str(tmp_path), "--state-dir", str(tmp_path / "state")]
+
+    assert cli.main([*common, "clear-leftovers", "--root", str(root)]) == 0
+    assert all(path.exists() for path in leftovers)
+    assert "2 leftover(s)" in capsys.readouterr().out
+
+    assert cli.main([*common, "clear-leftovers", "--root", str(root), "--apply"]) == 0
+    assert not any(path.exists() for path in leftovers)
+    assert all(path.read_bytes() == b"real" for path in kept)
+    assert (outside / ".x.tmp-1").exists() and (root / ".linked.tmp-1").is_symlink()
+
+
+def test_clear_leftovers_refuses_a_symlinked_root(tmp_path, capsys):
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / ".a.tmp-1").write_bytes(b"x")
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    arguments = ["--workspace", str(tmp_path), "--state-dir", str(tmp_path / "state")]
+
+    assert (
+        cli.main([*arguments, "clear-leftovers", "--root", str(tmp_path / "link"), "--apply"]) == 2
+    )
+    assert (tmp_path / "real" / ".a.tmp-1").exists()
