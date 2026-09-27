@@ -50,6 +50,26 @@ PAGES = {"page-1.png": png(4, 3), "page-2.png": png(5, 2)}
 REFUSED = {"page-3.png": b"not an image"}
 
 
+def test_exemplar_reconstructs_both_sealed_filename_ledgers():
+    real_file = {"relative_path": "canary/x.png", "sha256": "a" * 64, "bytes": 12}
+    bird_file = {"relative_path": "bird.png", "sha256": "b" * 64, "bytes": 13}
+    real_hash = self_hash({"schema": "submission-manifest.v1", "files": [real_file]})
+    bird_hash = self_hash({"schema": "submission-manifest.v1", "files": [bird_file]})
+    sources = {
+        1: {**real_file, "ledger_sha256": real_hash},
+        2: {**bird_file, "ledger_sha256": bird_hash},
+    }
+    run = {"ingress": real_ingress_record(), "sealed_config_digests": {"canary-ledger": bird_hash}}
+    _EXEMPLAR_RUN._verify_source_ledger(run, sources)
+    colliding_file = {**bird_file, "relative_path": real_file["relative_path"]}
+    colliding_hash = self_hash({"schema": "submission-manifest.v1", "files": [colliding_file]})
+    with pytest.raises(ContractError, match="overlaps"):
+        _EXEMPLAR_RUN._verify_source_ledger(
+            {**run, "sealed_config_digests": {"canary-ledger": colliding_hash}},
+            {**sources, 2: {**colliding_file, "ledger_sha256": colliding_hash}},
+        )
+
+
 def sealed_bindings() -> dict:
     """The real configuration bindings the walking skeleton's runs carry.
 
