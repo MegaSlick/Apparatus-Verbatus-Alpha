@@ -755,7 +755,7 @@ def test_the_materialization_fetcher_refuses_default_apfs_name_collisions(tmp_pa
     assert sorted(destination.iterdir()) == []
 
 
-def test_the_materialization_fetcher_names_a_per_call_cache_cleanup_failure(tmp_path, monkeypatch):
+def test_a_per_call_cache_cleanup_failure_does_not_fail_the_fetch(tmp_path, monkeypatch):
     class CachedSnapshotClientFake:
         def snapshot_download(self, **kwargs):
             source = Path(kwargs["cache_dir"]) / "snapshot"
@@ -763,20 +763,18 @@ def test_the_materialization_fetcher_names_a_per_call_cache_cleanup_failure(tmp_
             (source / "model.safetensors").write_bytes(b"pinned bytes")
             return source
 
-    def refuse_cleanup(path):
-        raise PermissionError("cache cleanup denied")
+    def refuse_cleanup(path, ignore_errors=False):
+        if not ignore_errors:
+            raise PermissionError("cache cleanup denied")
 
     monkeypatch.setattr("common.chairs.registry.shutil.rmtree", refuse_cleanup)
     destination = tmp_path / "staging"
     destination.mkdir()
 
-    with pytest.raises(
-        DigestMismatchRefusal,
-        match="per-call Hugging Face cache cleanup failed.*cache cleanup denied",
-    ):
-        HuggingFaceMaterializationFetcher(CachedSnapshotClientFake()).fetch(
-            "fixture-org/pinned", "a" * 40, destination
-        )
+    HuggingFaceMaterializationFetcher(CachedSnapshotClientFake()).fetch(
+        "fixture-org/pinned", "a" * 40, destination
+    )
+    assert (destination / "model.safetensors").read_bytes() == b"pinned bytes"
 
 
 @pytest.mark.hostile_local
