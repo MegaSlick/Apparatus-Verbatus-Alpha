@@ -37,6 +37,7 @@ from armarium_export import (  # noqa: E402
     ArmariumProjection,
     act_key_sort_key,
     build_armarium_bundle,
+    continuation_join_row,
     edge_hold_pages_from_rows,
 )
 
@@ -1313,6 +1314,58 @@ def artifacts_for(
     return records
 
 
+def continuation_joins(
+    context,
+    reviews: dict[str, dict],
+    projected_acts: list[dict],
+    manifest_cache: dict[str, dict],
+    selected_formats: tuple[str, ...],
+) -> tuple[dict, ...]:
+    """Each Designator continuation candidate as a join row over the delivered literals.
+
+    A candidate a named act's review does not cite is refused: the review is where the
+    Recensor saw it, so an uncited one reached no act's decision.
+    """
+    acts = {act["act_id"]: act for act in projected_acts}
+    delivered_texts = {
+        act_id: act["canonical_clean_text"]
+        for act_id, act in acts.items()
+        if act["category"] == ArmariumCategory.DELIVERED.value
+    }
+    candidates = []
+    for entry in _cached_manifest(context, DESIGNATOR, manifest_cache)["artifacts"]:
+        if entry["kind"] != "continuation-candidate":
+            continue
+        record = context.tree.read_artifact(DESIGNATOR, entry["kind"], entry["artifact_id"])
+        reference = context.artifact_ref(DESIGNATOR, entry["kind"], entry["artifact_id"])
+        payload = record["payload"]
+        sides = [[act["act_id"] for act in payload[side]] for side in ("acts_a", "acts_b")]
+        for act_id in sides[0] + sides[1]:
+            cited = reviews[acts[act_id]["act_key"]].get("continuation_candidate_refs", [])
+            if reference not in cited:
+                raise FatalAccounting(
+                    f"act {act_id}'s review does not cite Designator continuation candidate "
+                    f"{entry['artifact_id']}, which names it; a join no review saw is refused"
+                )
+        pages = (payload["page_a"]["page_ordinal"], payload["page_b"]["page_ordinal"])
+        candidates.append((pages, record["subject_id"], reference, sides))
+    rows = []
+    for index, (pages, _subject, reference, (head, tail)) in enumerate(sorted(candidates)):
+        rows.append(
+            continuation_join_row(
+                join_id=f"join-{pages[0]}-{pages[1]}-{index}",
+                candidate_ref=reference,
+                head_page_ordinal=pages[0],
+                tail_page_ordinal=pages[1],
+                head_act_ids=head,
+                tail_act_ids=tail,
+                delivered_texts=delivered_texts,
+                selected_formats=selected_formats,
+            )
+        )
+    return tuple(rows)
+
+
 def export_witnesses(context, reading: dict, act_id: str) -> list[dict]:
     """Project the exact evidence-backed witnesses without exporting their words."""
     payload = reading.get("payload")
@@ -1984,6 +2037,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     ink_map_pages = ink_map_page_rows(
         context, census, claimed_bounds_by_page(context, manifest_cache)
     )
+    joins = continuation_joins(context, reviews, projected_acts, manifest_cache, formats.formats)
     aggregate = run_aggregate(
         categories,
         coverages,
@@ -1992,6 +2046,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         act_pages=act_pages,
         act_text_status=act_text_status,
         edge_hold_pages=edge_hold_pages_from_rows(ink_map_pages),
+        continuation_joins=joins,
     )
     expected_count = len(expected)
     if len(categories) != expected_count:
@@ -2032,6 +2087,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             not_measured_basis=not_measured_basis(
                 context, manifest_cache, census, reviews, projected_acts
             ),
+            continuation_joins=joins,
         ),
         formats,
         context.tree.read_bytes,

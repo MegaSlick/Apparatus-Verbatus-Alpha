@@ -56,9 +56,11 @@ import json
 import shutil
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from zipfile import ZipFile
 
 import pytest
 
@@ -1442,11 +1444,10 @@ def page_break_run(work: Path) -> SimpleNamespace:
     )
 
 
-def test_an_act_split_across_a_page_break_is_held_not_delivered_complete(tmp_path):
-    """Two acts the chair drew for one act are read, held for review, and never delivered.
-
-    The link stays unmade: both acts remain their own records.
-    """
+def test_an_act_split_across_a_page_break_is_delivered_twice_with_a_labelled_reconstruction(
+    tmp_path,
+):
+    """Both halves leave as their own literals; the join is a labelled layer, never an act."""
     run = page_break_run(tmp_path)
     assert run.exits == (EXIT_COMPLETE, EXIT_COMPLETE, EXIT_COMPLETE)
 
@@ -1456,10 +1457,21 @@ def test_an_act_split_across_a_page_break_is_held_not_delivered_complete(tmp_pat
     assert [act["act_key"] for act in candidate["payload"]["acts_a"]] == [PAGE_BREAK_HEAD]
     assert [act["act_key"] for act in candidate["payload"]["acts_b"]] == [PAGE_BREAK_TAIL]
 
-    assert run.tail["pipeline/5_recensor/run.py"] == EXIT_HELD
     export = verify_final_seal(RunTree(run.run_root, RUN_ID))
     assert export["outcome"] != ArmariumCategory.DELIVERED.value
+    assert export["payload"]["expected_acts"] == 4
     aggregate = export["payload"]["aggregate"]
     assert aggregate["status"] == "partial"
-    assert aggregate["by_category"][ArmariumCategory.DELIVERED.value] == 2
-    assert sum(aggregate["by_category"].values()) == 4
+    assert aggregate["by_category"] == {ArmariumCategory.DELIVERED.value: 4}
+    (reason,) = aggregate["reasons"]
+    assert reason.startswith("continuation join join-1-2-0 (reconstructed)")
+
+    texts = {act["act_key"]: act["text"] for act in export["payload"]["delivered"]}
+    bundle = RunTree(run.run_root, RUN_ID).read_bytes(
+        export["payload"]["bundle"]["reference"]["relative_path"]
+    )
+    with ZipFile(BytesIO(bundle)) as archive:
+        (readings,) = [name for name in archive.namelist() if name.endswith("readings.txt")]
+        lines = archive.read(readings).decode("utf-8").split("\n")
+    joined = json.loads(lines[lines.index("reconstructed_text:") + 1])
+    assert joined == texts[PAGE_BREAK_HEAD] + "\n" + texts[PAGE_BREAK_TAIL]

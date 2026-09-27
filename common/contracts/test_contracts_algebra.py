@@ -405,6 +405,29 @@ def test_an_edge_hold_forces_partial_and_names_the_page_once():
     ]
 
 
+def test_a_continuation_join_forces_partial_over_two_delivered_acts():
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED, "act_b": ArmariumCategory.DELIVERED},
+        {name: witness_coverage({"s1": "read"}, 1) for name in ("act_a", "act_b")},
+        {1: {"outcome": "sealed"}, 2: {"outcome": "sealed"}},
+        act_pages={"act_a": [1], "act_b": [2]},
+        act_text_status={"act_a": "established", "act_b": "established"},
+        continuation_joins=[
+            {
+                "join_id": "join-1-2-0",
+                "status": "reconstructed",
+                "not_reconstructed_reason": None,
+                "head_page_ordinal": 1,
+                "tail_page_ordinal": 2,
+            }
+        ],
+    )
+    assert aggregate["status"] == "partial"
+    assert aggregate["by_category"] == {"delivered": 2}
+    (reason,) = aggregate["reasons"]
+    assert reason.startswith("continuation join join-1-2-0 (reconstructed)")
+
+
 def test_an_unaddressed_chair_is_named_once_however_often_it_is_supplied():
     """The chair list is a set of roles, like the edge holds beside it.
 

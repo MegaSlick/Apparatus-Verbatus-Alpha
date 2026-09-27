@@ -707,6 +707,7 @@ def run_aggregate(
     act_pages: Mapping[str, Sequence[int]] | None = None,
     act_text_status: Mapping[str, str] | None = None,
     edge_hold_pages: Sequence[int] | None = None,
+    continuation_joins: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -735,7 +736,8 @@ def run_aggregate(
 
     `edge_hold_pages` is page-scoped because no act can yet own the unclaimed
     ink, so a held page keeps the aggregate partial even if its acts were
-    delivered.
+    delivered. Each `continuation_joins` row does the same for a page break the
+    geometry says an act may cross: its sides are delivered apart, unjoined.
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
@@ -790,6 +792,22 @@ def run_aggregate(
             f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
             "Designator crop on the page claims, so its coverage is not reconciled"
         )
+
+    for join in continuation_joins or ():
+        crossing = (
+            f"continuation join {join['join_id']} ({join['status']}): an act may cross the "
+            f"break from page {join['head_page_ordinal']} to page {join['tail_page_ordinal']}; "
+        )
+        if join["status"] == "reconstructed":
+            reasons.append(
+                crossing + "each side is delivered as its own literal beside a labelled, "
+                "unconfirmed reconstruction"
+            )
+        else:
+            reasons.append(
+                crossing + f"no reconstruction was made ({join['not_reconstructed_reason']}), "
+                "and no act was joined"
+            )
 
     for act in sorted(act_categories):
         category = act_categories[act]
