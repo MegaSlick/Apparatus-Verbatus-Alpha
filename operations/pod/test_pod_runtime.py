@@ -5097,24 +5097,16 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
 ) -> None:
     observed: dict[str, object] = {}
 
-    def materialize(root, fetcher, *, capacity):  # type: ignore[no-untyped-def]
-        observed.update(root=root, fetcher=fetcher, capacity=capacity)
+    def materialize(root, fetcher):  # type: ignore[no-untyped-def]
+        observed.update(root=root, fetcher=fetcher)
         return {"artifacts": [], "complete": False}
 
     monkeypatch.setattr("operations.pod.bootstrap.materialize_real_roster", materialize)
     fetcher = object()
-    action = ModelStoreBootstrapAction(
-        tmp_path / "models",
-        fetcher,
-        capacity={"cleanup_owner": "pod operator"},  # type: ignore[arg-type]
-    )
+    action = ModelStoreBootstrapAction(tmp_path / "models", fetcher)  # type: ignore[arg-type]
 
     assert action.materialize() == {"artifacts": [], "complete": False}
-    assert observed == {
-        "root": tmp_path / "models",
-        "fetcher": fetcher,
-        "capacity": {"cleanup_owner": "pod operator"},
-    }
+    assert observed == {"root": tmp_path / "models", "fetcher": fetcher}
 
 
 def test_every_bootstrap_actions_implementation_covers_every_step() -> None:
