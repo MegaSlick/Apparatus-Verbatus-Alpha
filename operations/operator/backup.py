@@ -183,20 +183,20 @@ def sync_run_tree(
             snapshot_sha256 = digest_bytes(data)
             # A linked name survives a power cut only once its directory is synced; the
             # objects go first so a durable snapshot never names an object a crash dropped.
-            for directory in (
-                destination.root,
-                destination.objects_parent,
-                destination.objects,
-                destination.snapshots_parent,
+            for descriptor, part in (
+                (destination.root, ""),
+                (destination.objects_parent, "objects"),
+                (destination.objects, "objects/sha256"),
+                (destination.snapshots_parent, "snapshots"),
             ):
-                os.fsync(directory)
+                _sync_directory(descriptor, root / part)
             _publish_bytes(
                 destination.snapshots,
                 f"{snapshot_sha256}.json",
                 root / "snapshots" / "sha256" / f"{snapshot_sha256}.json",
                 data,
             )
-            os.fsync(destination.snapshots)
+            _sync_directory(destination.snapshots, root / "snapshots" / "sha256")
             return BackupReport(snapshot_sha256, copied, reused)
 
 
@@ -269,9 +269,14 @@ def prepare_backup_layout(source: Path, root: Path) -> None:
 
     _validate_backup_layout(source, root)
     try:
-        root.mkdir(exist_ok=True)
+        root.mkdir()
+    except FileExistsError:
+        pass
     except OSError as error:
         raise BackupRefusal(f"backup layout path {root} could not be created: {error}") from error
+    else:
+        with _open_directory(root.parent, what=f"backup layout parent {root.parent}") as parent:
+            _sync_directory(parent, root.parent)
     descriptors: list[int] = []
     try:
         root_descriptor = _open_directory_descriptor(root, what=f"backup layout path {root}")
@@ -316,6 +321,17 @@ def prepare_backup_layout(source: Path, root: Path) -> None:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
     _validate_backup_layout(source, root)
+
+
+def _sync_directory(descriptor: int, display: Path) -> None:
+    try:
+        os.fsync(descriptor)
+    except OSError as error:
+        raise BackupRefusal(
+            f"the backup folder {display} could not be synced to disk "
+            f"({error.strerror or error}), so this backup was not reported complete; "
+            "--mac-directory has to name a folder on a local disk"
+        ) from error
 
 
 def _open_directory_descriptor(
