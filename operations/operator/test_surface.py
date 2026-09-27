@@ -5205,16 +5205,13 @@ def test_the_operator_readme_lists_exactly_the_verbs_the_parser_declares() -> No
 
     counted = len(declared)
     spelled = {
-        13: ("thirteen", "Eleven"),
-        14: ("fourteen", "Twelve"),
-        15: ("fifteen", "Thirteen"),
+        16: ("sixteen", "Thirteen"),
     }
     assert counted in spelled, (
         f"{counted} verbs: extend this test's number words so the heading stays checkable"
     )
     total, doers = spelled[counted]
-    # The heading counts every word; the sentence counts every word but the
-    # two you can run any time (`status` and `spend show`).
+    # The heading counts every word; the sentence leaves out the ones you can run any time.
     assert f"## The {total} words" in readme
     assert f"\n{doers} things this tool can do," in readme
 
