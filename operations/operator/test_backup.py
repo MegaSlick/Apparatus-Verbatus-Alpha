@@ -294,7 +294,8 @@ def test_a_folder_that_cannot_be_synced_refuses_the_backup(tmp_path: Path, monke
     real_fsync = os.fsync
 
     def fsync(descriptor: int) -> None:
-        if os.path.samestat(os.fstat(descriptor), os.stat(mac / "objects" / "sha256")):
+        failing = mac / "objects" / "sha256"
+        if failing.exists() and os.path.samestat(os.fstat(descriptor), os.stat(failing)):
             raise OSError(errno.EIO, "Input/output error")
         real_fsync(descriptor)
 
