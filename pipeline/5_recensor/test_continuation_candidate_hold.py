@@ -1,9 +1,7 @@
-"""Both acts a Designator continuation candidate names are read, then held for review.
+"""Both acts a Designator continuation candidate names are read, accepted and cite it.
 
-Delivered alone, the head of an act crossing a page break is a truncation and
-its tail an act with no heading. The Recensor does not make the link, which is
-a decision for review; it holds both acts so neither is delivered as a whole
-act, and the export says partial.
+The Recensor does not make the link, which is a decision for review: each act is
+delivered as its literal page reading, and the export stays partial.
 """
 
 import sys
@@ -33,7 +31,7 @@ from common.runtree.store import RunTree  # noqa: E402
 from common.stage import verify_final_seal  # noqa: E402
 
 
-def test_both_acts_are_read_then_held_and_the_export_is_partial(tmp_path):
+def test_both_acts_are_read_accepted_and_cite_their_candidate(tmp_path):
     run = page_break_run(tmp_path)
     rows = seal_rows(run.run_root)
     act_ids = {key: row["act_id"] for key, row in rows.items()}
@@ -51,7 +49,7 @@ def test_both_acts_are_read_then_held_and_the_export_is_partial(tmp_path):
     }
     for key in (PAGE_BREAK_HEAD, PAGE_BREAK_TAIL):
         review = reviews[act_ids[key]]
-        assert review["outcome"] == "held-for-review"
+        assert review["outcome"] == "accepted"
         assert "continuation candidate" in review["payload"]["reason"]
         assert candidate_path in {reference["relative_path"] for reference in review["inputs"]}
         assert [

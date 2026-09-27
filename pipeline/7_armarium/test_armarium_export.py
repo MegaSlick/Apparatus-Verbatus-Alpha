@@ -30,11 +30,13 @@ from armarium_export import (
     _terminal_ledger,
     _validate_ink_map_pages,
     _verify_acts_schema,
+    _verify_continuation_joins,
     _verify_retained_references_bounded,
     _zip_bytes,
     act_key_sort_key,
     build_armarium_bundle,
     canonical_text_sha256,
+    continuation_join_row,
     edge_hold_pages_from_rows,
     verify_delivered_bundle,
     verify_export_bundle,
@@ -87,6 +89,10 @@ def _source_bytes(path: str) -> dict[str, bytes]:
     return {
         "1_exemplar/blobs/sha256/page": _pixels(80),
         "2_designator/blobs/sha256/crop": _pixels(40),
+        "1_exemplar/blobs/sha256/page-2": _pixels(81),
+        "2_designator/blobs/sha256/crop-2": _pixels(41),
+        "1_exemplar/blobs/sha256/page-3": _pixels(82),
+        "2_designator/blobs/sha256/crop-3": _pixels(42),
     }[path]
 
 
@@ -5123,3 +5129,430 @@ def test_a_resealed_cap_zero_uncertainty_count_cannot_exceed_delivered_acts(tmp_
 
     with pytest.raises(SchemaRefusal, match="more acts with uncertain spans than delivered acts"):
         verify_delivered_bundle(_resealed_manifest(contradict_counts), tmp_path / "delivered")
+
+
+_HEAD_TEXT, _TAIL_TEXT = "Cǣsar d’Amo-", "urs fils"
+_FORMATS_WITHOUT_TEXT = ArmariumFormats(("review-items", "salvage-tier"), False)
+
+
+def _later_page(
+    base: ArmariumProjection, ordinal: int, folder: str = "register"
+) -> tuple[dict, dict]:
+    page = _source_bytes(f"1_exemplar/blobs/sha256/page-{ordinal}")
+    crop = _source_bytes(f"2_designator/blobs/sha256/crop-{ordinal}")
+    row = {
+        **base.pages[0],
+        "ordinal": ordinal,
+        "declared_path": f"{folder}/folio-{ordinal}.png",
+        "declared_sha256": digest_bytes(page),
+        "page_id": f"pg-{ordinal}",
+        "image_path": f"1_exemplar/blobs/sha256/page-{ordinal}",
+        "image_sha256": digest_bytes(page),
+    }
+    first = base.acts[0]["source_regions"][0]
+    page_fields = {"source_page_ordinal": ordinal, "source_page_id": f"pg-{ordinal}"}
+    region = {
+        **first,
+        **page_fields,
+        "region_id": f"rgn-{ordinal}",
+        "image_path": f"2_designator/blobs/sha256/crop-{ordinal}",
+        "image_sha256": digest_bytes(crop),
+        "declared_path": row["declared_path"],
+        "declared_sha256": row["declared_sha256"],
+        "transform": {**first["transform"], **page_fields},
+    }
+    return row, region
+
+
+_CANDIDATE_REF = {
+    "relative_path": "2_designator/artifacts/continuation-candidate/c.json",
+    "sha256": "d" * 64,
+}
+_SPAN = {"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}
+
+
+def _joined(
+    *,
+    head_act_ids=("act-1",),
+    held_head=False,
+    pages=(1, 2),
+    formats=None,
+    chained=False,
+    head_uncertainty=None,
+    candidate_ref=_CANDIDATE_REF,
+    tail_folder="register",
+) -> ArmariumProjection:
+    """`one` ends page 1 and `three` opens page 2; `four` is a second act on page 1.
+
+    `chained` adds `five` on page 3, joined to `three` as well.
+    """
+    base = _otherwise_complete()
+    page_two, region_two = _later_page(base, 2, tail_folder)
+    page_three, region_three = _later_page(base, 3)
+    delivered = base.acts[0]
+    head = {**delivered, CANONICAL_TEXT_FIELD: _HEAD_TEXT}
+    if head_uncertainty is not None:
+        head["uncertainty"] = head_uncertainty
+    if held_head:
+        head = {
+            **{key: head[key] for key in ("act_id", "act_key", "evidence_refs")},
+            "category": "held-for-review",
+            CANONICAL_TEXT_FIELD: None,
+            "provenance": None,
+            "source_regions": [],
+            "reason": "the reading was truncated at the page edge",
+        }
+    acts = [
+        head,
+        {
+            **delivered,
+            "act_id": "act-3",
+            "act_key": "three",
+            CANONICAL_TEXT_FIELD: _TAIL_TEXT,
+            "source_regions": [region_two],
+        },
+        {**delivered, "act_id": "act-4", "act_key": "four", CANONICAL_TEXT_FIELD: "Anno 1690"},
+    ]
+    act_pages = {"one": [1], "three": [2], "four": [1]}
+    all_pages = [*base.pages, page_two]
+    candidates = [(head_act_ids, pages, ["act-3"])]
+    if chained:
+        acts.append(
+            {
+                **delivered,
+                "act_id": "act-5",
+                "act_key": "five",
+                CANONICAL_TEXT_FIELD: "et sa femme",
+                "source_regions": [region_three],
+            }
+        )
+        act_pages["five"] = [3]
+        all_pages.append(page_three)
+        candidates.append((["act-3"], (2, 3), ["act-5"]))
+    acts = tuple(acts)
+    coverage = base.aggregate_basis["coverage_records"]["one"]
+    basis = {
+        **base.aggregate_basis,
+        "coverage_records": {act["act_key"]: coverage for act in acts},
+        "act_pages": act_pages,
+        "act_text_status": {
+            act["act_key"]: act["text_status"] for act in acts if act["category"] == "delivered"
+        },
+    }
+    joins = tuple(
+        continuation_join_row(
+            join_id=f"join-{join_pages[0]}-{join_pages[1]}-{index}",
+            candidate_ref=candidate_ref,
+            head_page_ordinal=join_pages[0],
+            tail_page_ordinal=join_pages[1],
+            head_act_ids=list(heads),
+            tail_act_ids=tails,
+            delivered_texts={
+                act["act_id"]: act[CANONICAL_TEXT_FIELD]
+                for act in acts
+                if act["category"] == "delivered"
+            },
+            selected_formats=(formats or _formats(embed_pixels=False)).formats,
+        )
+        for index, (heads, join_pages, tails) in enumerate(candidates)
+    )
+    aggregate = run_aggregate(
+        {act["act_key"]: ArmariumCategory(act["category"]) for act in acts},
+        basis["coverage_records"],
+        {page["ordinal"]: page for page in all_pages},
+        unaddressed_chairs=basis["unaddressed_chairs"],
+        act_pages=basis["act_pages"],
+        act_text_status=basis["act_text_status"],
+        continuation_joins=joins,
+    )
+    return replace(
+        base,
+        acts=acts,
+        pages=tuple(all_pages),
+        source_manifest=tuple(
+            {
+                "ordinal": page["ordinal"],
+                "relative_path": page["declared_path"],
+                "sha256": page["declared_sha256"],
+            }
+            for page in all_pages
+        ),
+        ink_map_pages=tuple(_mapped_page(page["ordinal"]) for page in all_pages),
+        expected_acts=len(acts),
+        aggregate=aggregate,
+        aggregate_basis=basis,
+        not_measured_basis=_basis_for_acts(acts, sealed_pages=len(all_pages)),
+        continuation_joins=joins,
+    )
+
+
+def _joined_members(**fields) -> dict[str, bytes]:
+    bundle = build_armarium_bundle(_joined(**fields), _formats(embed_pixels=False), _source_bytes)
+    return _members(bundle.data)
+
+
+def _text(members: dict[str, bytes]) -> str:
+    return "".join(
+        content.decode("utf-8") for name, content in members.items() if name.startswith("text/")
+    )
+
+
+def test_a_reconstruction_joins_two_literals_and_stays_out_of_the_act_accounting(tmp_path):
+    bundle = build_armarium_bundle(_joined(), _formats(embed_pixels=False), _source_bytes)
+    manifest = verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+
+    (record,) = [json.loads(line) for line in members["reconstructions.jsonl"].splitlines()]
+    assert record["reconstructed_text"] == _HEAD_TEXT + "\n" + _TAIL_TEXT
+    assert record["break_offset"] == len(_HEAD_TEXT)
+    assert record["label"].startswith("RECONSTRUCTED: ")
+    assert record["head_text_status"] == record["tail_text_status"] == "established"
+    (join,) = json.loads(members["sources.json"])["continuation_joins"]
+    assert (join["status"], join["authoritative"]) == ("reconstructed", False)
+    text = _text(members)
+    assert "## RECONSTRUCTED join-1-2-0 (not an act)" in text
+    assert "head_text_status: established" in text
+    assert "possible-continuation-on: three (page 2) [join-1-2-0]" in text
+    assert "possible-continuation-from: one (page 1) [join-1-2-0]" in text
+
+    assert manifest["claims"]["status"] == "partial"
+    assert manifest["aggregate"]["by_category"] == {"delivered": 3}
+    assert manifest["claims"]["terminal_ledger"]["by_unit_type"]["act"] == 3
+    assert len(members["acts.jsonl"].splitlines()) == 3
+    assert members["review-items.jsonl"] == b""
+
+
+def _reforged(members: dict[str, bytes], in_text: bool, old: str, new: str) -> bytes:
+    (name,) = [
+        name
+        for name, content in members.items()
+        if name.startswith("text/") == in_text
+        and name != "sources.json"
+        and old.encode("utf-8") in content
+    ]
+    members[name] = members[name].decode("utf-8").replace(old, new, 1).encode("utf-8")
+    _refresh_manifest_member(members, name)
+    return _zip_bytes(members)
+
+
+_JOINED_JSON = json.dumps(_HEAD_TEXT + "\n" + _TAIL_TEXT, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("joined", ["Cǣsar d’Amours fils", "Cǣsar d’Amo- urs fils"])
+@pytest.mark.parametrize("in_text", [False, True])
+def test_a_tampered_or_de_hyphenated_reconstruction_is_refused(tmp_path, in_text, joined):
+    new = json.dumps(joined, ensure_ascii=False)
+    forged = _reforged(_joined_members(), in_text, _JOINED_JSON, new)
+    with pytest.raises(SchemaRefusal, match="does not recompute|head \\+ one U\\+000A"):
+        verify_export_bundle(forged, tmp_path / "forged")
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("label: RECONSTRUCTED: ", "label: "),
+        ("head_text_status: established", "head_text_status: partial"),
+        ("reconstructed_text_sha256: ", "reconstructed_text_sha256: 0"),
+        ('head_doubt: {"assessment": "not-assessed"', 'head_doubt: {"assessment": "assessed"'),
+    ],
+)
+def test_a_forged_line_in_a_reconstructed_section_is_refused(tmp_path, old, new):
+    forged = _reforged(_joined_members(), True, old, new)
+    with pytest.raises(SchemaRefusal, match="RECONSTRUCTED section does not recompute"):
+        verify_export_bundle(forged, tmp_path / "forged")
+
+
+def test_a_note_moved_to_another_act_is_refused(tmp_path):
+    members = _joined_members()
+    note = "possible-continuation-on: three (page 2) [join-1-2-0]\n"
+    (name,) = [name for name in members if name.startswith("text/")]
+    text = members[name].decode("utf-8").replace(note, "", 1)
+    anchor = "act-id: act-4\n"
+    members[name] = text.replace(anchor, anchor + note, 1).encode("utf-8")
+    _refresh_manifest_member(members, name)
+    with pytest.raises(SchemaRefusal, match="notes do not mirror"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "moved")
+
+
+@pytest.mark.parametrize("pages", [(1, 3), (2, 3), (1, 1), (True, 2)])
+def test_a_join_on_pages_its_acts_were_not_marked_out_on_is_refused(pages):
+    with pytest.raises(SchemaRefusal, match="adjacent pages"):
+        build_armarium_bundle(_joined(pages=pages), _formats(embed_pixels=False), _source_bytes)
+
+
+def test_a_text_bundle_only_export_carries_the_section_and_verifies(tmp_path):
+    formats = ArmariumFormats(("text-bundle",), False)
+    bundle = build_armarium_bundle(_joined(formats=formats), formats, _source_bytes)
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+    assert "reconstructions.jsonl" not in members
+    assert _JOINED_JSON in _text(members)
+
+
+def test_with_no_literal_format_a_joinable_candidate_is_not_reconstructed(tmp_path):
+    bundle = build_armarium_bundle(
+        _joined(formats=_FORMATS_WITHOUT_TEXT), _FORMATS_WITHOUT_TEXT, _source_bytes
+    )
+    verify_export_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+    (join,) = json.loads(members["sources.json"])["continuation_joins"]
+    assert join["not_reconstructed_reason"] == "no-reconstruction-format-selected"
+    assert join["head_canonical_text_sha256"] is join["tail_canonical_text_sha256"] is None
+    assert not any(_HEAD_TEXT.encode("utf-8") in content for content in members.values())
+
+
+@pytest.mark.parametrize(
+    ("fields", "reason"),
+    [
+        ({"head_act_ids": ("act-1", "act-4")}, "several-acts-on-a-side"),
+        ({"held_head": True}, "head-not-delivered"),
+    ],
+)
+def test_an_unjoinable_candidate_is_not_reconstructed_and_carries_no_text(tmp_path, fields, reason):
+    bundle = build_armarium_bundle(_joined(**fields), _formats(embed_pixels=False), _source_bytes)
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+    (join,) = json.loads(members["sources.json"])["continuation_joins"]
+    assert (join["status"], join["not_reconstructed_reason"]) == ("not-reconstructed", reason)
+    assert "reconstructions.jsonl" not in members
+    assert "RECONSTRUCTED" not in _text(members)
+    partial = json.loads(members[EXPORT_MANIFEST_NAME])["claims"]["partial_reasons"]
+    assert any(f"no reconstruction was made ({reason})" in line for line in partial)
+
+
+def test_a_dropped_join_row_fails_the_aggregate_recompute(tmp_path):
+    members = _joined_members()
+    sources = json.loads(members["sources.json"])
+    del sources["continuation_joins"]
+    members["sources.json"] = canonical_bytes(sources)
+    del members["reconstructions.jsonl"]
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    del manifest["self_hash"]
+    manifest["members"] = [row for row in manifest["members"] if row["path"] in members]
+    for row in manifest["members"]:
+        row["sha256"] = digest_bytes(members[row["path"]])
+        row["bytes"] = len(members[row["path"]])
+    _refresh_manifest(members, manifest)
+    with pytest.raises(SchemaRefusal, match="aggregate does not match"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "dropped")
+
+
+def test_the_doubt_on_each_half_travels_with_the_reconstruction(tmp_path):
+    layer = {
+        "uncertain_spans": [_SPAN, {**_SPAN, "start": 2, "end": 3}],
+        "gaps": [],
+        "self_revisions": [],
+        "assessment": {"state": "assessed", "problem": None},
+    }
+    bundle = build_armarium_bundle(
+        _joined(head_uncertainty=layer), _formats(embed_pixels=False), _source_bytes
+    )
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+    (record,) = [json.loads(line) for line in members["reconstructions.jsonl"].splitlines()]
+    assert record["head_doubt"] == {
+        "uncertain_spans": 2,
+        "gaps": 0,
+        "self_revisions": 0,
+        "assessment": "assessed",
+    }
+    assert record["tail_doubt"]["assessment"] == "not-assessed"
+    assert '"uncertain_spans": 2' in _text(members)
+    forged = _reforged(members, False, '"uncertain_spans":2', '"uncertain_spans":0')
+    with pytest.raises(SchemaRefusal, match="head \\+ one U\\+000A"):
+        verify_export_bundle(forged, tmp_path / "forged")
+
+
+def test_chained_joins_reconstruct_each_pair_and_mirror_both_notes(tmp_path):
+    bundle = build_armarium_bundle(
+        _joined(chained=True), _formats(embed_pixels=False), _source_bytes
+    )
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+    records = [json.loads(line) for line in members["reconstructions.jsonl"].splitlines()]
+    assert [record["reconstructed_text"] for record in records] == [
+        _HEAD_TEXT + "\n" + _TAIL_TEXT,
+        _TAIL_TEXT + "\n" + "et sa femme",
+    ]
+    text = _text(members)
+    assert "possible-continuation-from: one (page 1) [join-1-2-0]" in text
+    assert "possible-continuation-on: five (page 3) [join-2-3-1]" in text
+
+
+def test_an_acts_database_only_export_reconstructs_nothing(tmp_path):
+    formats = ArmariumFormats(("acts-database",), False)
+    bundle = build_armarium_bundle(_joined(formats=formats), formats, _source_bytes)
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+    (join,) = json.loads(members["sources.json"])["continuation_joins"]
+    assert join["not_reconstructed_reason"] == "no-reconstruction-format-selected"
+    assert join["head_canonical_text_sha256"] == canonical_text_sha256(_HEAD_TEXT)
+    partial = json.loads(members[EXPORT_MANIFEST_NAME])["claims"]["partial_reasons"]
+    assert any("no reconstruction was made" in line for line in partial)
+
+
+_NOTE = "possible-continuation-on: three (page 2) [join-1-2-0]\n"
+
+
+@pytest.mark.parametrize(
+    ("place", "refusal"),
+    [
+        (lambda text: text.replace(_NOTE, _NOTE + _NOTE, 1), "notes do not mirror"),
+        (lambda text: text.replace("\n\n", "\n" + _NOTE + "\n", 1), "outside its section"),
+    ],
+)
+def test_a_duplicated_or_stray_note_is_refused(tmp_path, place, refusal):
+    members = _joined_members()
+    (name,) = [name for name, content in members.items() if _NOTE.encode("utf-8") in content]
+    members[name] = place(members[name].decode("utf-8")).encode("utf-8")
+    _refresh_manifest_member(members, name)
+    with pytest.raises(SchemaRefusal, match=refusal):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "forged")
+
+
+def test_a_candidate_reference_with_an_extra_key_is_refused():
+    with pytest.raises(SchemaRefusal, match="names no valid join, candidate"):
+        build_armarium_bundle(
+            _joined(candidate_ref={**_CANDIDATE_REF, "note": "x"}),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    [
+        (lambda s: s["continuation_joins"][0].update(head_page_ordinal=1.0), "adjacent pages"),
+        (lambda s: s["aggregate_basis"]["act_pages"].update(one=["1"]), "not lists of page"),
+    ],
+)
+def test_a_join_over_non_integer_pages_is_refused_by_the_verifier(tmp_path, change, refusal):
+    """Floats cannot be written into a package, so the verifier is handed one directly."""
+    sources = json.loads(_joined_members()["sources.json"])
+    change(sources)
+    with pytest.raises(SchemaRefusal, match=refusal):
+        _verify_continuation_joins(tmp_path, ArmariumFormats(("review-items",), False), sources)
+
+
+def test_a_reconstructed_section_repeated_in_one_folder_is_refused(tmp_path):
+    members = _joined_members()
+    (name,) = [name for name in members if name.startswith("text/")]
+    text = members[name].decode("utf-8")
+    block = text[text.index("## RECONSTRUCTED ") :]
+    members[name] = (text + "\n" + block).encode("utf-8")
+    _refresh_manifest_member(members, name)
+    with pytest.raises(SchemaRefusal, match="appears twice"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "forged")
+
+
+def test_a_join_across_two_folders_writes_its_section_in_the_head_folder(tmp_path):
+    bundle = build_armarium_bundle(
+        _joined(tail_folder="other"), _formats(embed_pixels=False), _source_bytes
+    )
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+    head_text = members[TEXT_REGISTER].decode("utf-8")
+    tail_text = members["text/_source_folder/other/readings.txt"].decode("utf-8")
+    assert "## RECONSTRUCTED join-1-2-0" in head_text
+    assert "RECONSTRUCTED" not in tail_text
+    assert "possible-continuation-from: one (page 1) [join-1-2-0]" in tail_text
