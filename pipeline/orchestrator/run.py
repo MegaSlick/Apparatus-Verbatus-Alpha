@@ -377,6 +377,7 @@ def _record_stage_timing(
     entry: dict[str, object] = {
         "schema": STAGE_TIMING_JOURNAL_SCHEMA,
         "run_id": args.run_id,
+        "run_root": str(args.run_root),
         # The Door and the Exemplar share `1_exemplar/`, so name the member.
         "stage": _PROGRAM_NAMES.get(program, program),
         "program": program,
@@ -395,9 +396,21 @@ def _record_stage_timing(
         entry["repository_commit"] = commit
         entry["repository_commit_detail"] = commit_detail
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a+b") as handle:
+        descriptor = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "r+b") as handle:
             handle.seek(0, os.SEEK_END)
             if handle.tell():
+                handle.seek(0)
+                first_line = handle.readline()
+                try:
+                    first = json.loads(first_line)
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise ValueError("existing timing journal has no valid first line") from error
+                if (
+                    not isinstance(first, dict)
+                    or first.get("schema") != STAGE_TIMING_JOURNAL_SCHEMA
+                ):
+                    raise ValueError("existing timing journal is not stage-timing-journal.v2")
                 handle.seek(-1, os.SEEK_END)
                 if handle.read(1) != b"\n":
                     handle.write(b"\n")

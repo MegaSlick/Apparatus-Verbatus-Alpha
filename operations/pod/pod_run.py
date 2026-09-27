@@ -248,7 +248,7 @@ class RunPlan:
     def hold_path(self) -> Path:
         """The liveness line after the run, beside the run report, never over it."""
 
-        return self.report_path.with_name(f"{self.report_path.stem}-hold{self.report_path.suffix}")
+        return Path(run_report_paths(self.report_path)[1])
 
     @property
     def liveness_path(self) -> Path:
@@ -262,9 +262,7 @@ class RunPlan:
         word -- a partial result that does not look partial (principle 2).
         """
 
-        return self.report_path.with_name(
-            f"{self.report_path.stem}-liveness{self.report_path.suffix}"
-        )
+        return Path(run_report_paths(self.report_path)[2])
 
     @property
     def transcript_path(self) -> Path:
@@ -281,7 +279,7 @@ class RunPlan:
         (`_require_launch_token_named`), and this is derived from that name.
         """
 
-        return self.report_path.with_name(f"{self.report_path.stem}-transcript.log")
+        return Path(run_report_paths(self.report_path)[4])
 
     @property
     def timing_journal_path(self) -> Path:
@@ -296,9 +294,7 @@ class RunPlan:
         volume like the rest of them if nobody fetches it.
         """
 
-        return self.report_path.with_name(
-            f"{self.report_path.stem}-timings{self.report_path.suffix}"
-        )
+        return Path(run_report_paths(self.report_path)[3])
 
     @property
     def repository_commit(self) -> str:
@@ -399,7 +395,9 @@ def _run_report_path(path: Path, bootstrap: Plan, launch_token: str | None) -> P
         ("report", bootstrap.report_path),
         ("journal", bootstrap.journal),
     ):
-        if bootstrap_path is not None and bootstrap_path in run_report_paths(report_path):
+        if bootstrap_path is not None and bootstrap_path.resolve() in {
+            candidate.resolve() for candidate in run_report_paths(report_path)
+        }:
             raise RunRefusal(
                 f"the bootstrap {name} collides with the run report or one of its side "
                 "files; name separate records"
@@ -754,19 +752,33 @@ def _records_at_close(
         elif name == "timing_journal":
             try:
                 entries = 0
+                unreadable_lines = 0
+                foreign_lines = 0
                 with path.open("rb") as handle:
                     for line in handle:
                         if not line.endswith(b"\n"):
+                            unreadable_lines += 1
                             break  # A stopped writer may leave a torn final line.
                         try:
                             record = json.loads(line)
                         except (UnicodeDecodeError, json.JSONDecodeError):
+                            unreadable_lines += 1
                             continue  # A later append can leave a torn line in the middle.
-                        if not isinstance(record, dict):
-                            raise ValueError("timing line is not an object")
-                        entries += record.get("run_id") == plan.run_id
+                        if (
+                            not isinstance(record, dict)
+                            or record.get("schema") != "stage-timing-journal.v2"
+                        ):
+                            unreadable_lines += 1
+                            continue
+                        if record.get("run_id") != plan.run_id or record.get("run_root") != str(
+                            plan.run_root
+                        ):
+                            foreign_lines += 1
+                            continue
+                        entries += 1
                 entry["entries"] = entries
-                entry["run_id_matches"] = entries > 0
+                entry["unreadable_lines"] = unreadable_lines
+                entry["foreign_lines"] = foreign_lines
                 if not entries:
                     entry["failure"] = (
                         f"the journal at {path} has no entries for run {plan.run_id!r}"
@@ -815,7 +827,8 @@ class BoundedTranscript:
 
     def __init__(self, path: Path, *, head_bytes: int, tail_bytes: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = path.open("wb")
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        self._handle = os.fdopen(descriptor, "wb")
         self._head_room = head_bytes
         self._tail_bytes = tail_bytes
         self._tail = bytearray()

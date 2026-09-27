@@ -624,6 +624,19 @@ def _required_timer_arguments(
                     f"pod bootstrap command's {name} path collides with the run report "
                     "or one of its side files"
                 )
+    timer_paths = {report_path, report_path.with_name(f"{report_path.stem}-terminating.json")}
+    other_paths: set[PurePosixPath] = set()
+    for index, path in enumerate(report_paths):
+        if len(report_paths) == 2 and index == 0:
+            other_paths.update(run_report_paths(path))
+        else:
+            other_paths.update((path, path.with_name(f"{path.stem}-hold{path.suffix}")))
+    if bootstrap_journal is not None:
+        other_paths.add(bootstrap_journal)
+    if timer_paths & other_paths:
+        raise ValueError(
+            "pod timer report or terminating path collides with bootstrap or run evidence"
+        )
     # A bad interval would refuse inside the pod -- for a non-numeric value,
     # in argparse before the timer object even exists -- so refuse it here,
     # before any paid create, where refusals belong.  Both argv spellings the
