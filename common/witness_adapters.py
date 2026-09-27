@@ -8,7 +8,6 @@ scope, not a callable route into that stage.
 
 from __future__ import annotations
 
-import sys
 from typing import Final
 
 from common.chairs.models import AbsentChair, ModelsConfig
@@ -74,23 +73,11 @@ def resolve_witness_adapter_name(name: object) -> str:
 
 
 def validate_witness_adapter_bindings(models: ModelsConfig) -> None:
-    """Validate concrete model configs before any run-tree write.
-
-    Lightweight structural model doubles are outside this preflight. Unused
-    registry keys are reported rather than fatal because declarations and chair
-    configuration may be deployed independently.
-    """
+    """Validate concrete model configs before any run-tree write."""
 
     if not isinstance(models, ModelsConfig):
-        # A silent skip would read as a clean result (principle 2).
-        print(
-            f"witness adapter registry: preflight skipped for a {type(models).__name__} that is "
-            "not a ModelsConfig; no chair's adapter binding was checked",
-            file=sys.stderr,
-        )
-        return
+        raise TypeError("witness adapter bindings require a ModelsConfig")
 
-    declared: set[str] = set()
     for chair in models.witness_chairs:
         identity = models.chairs[chair]
         if isinstance(identity, AbsentChair):
@@ -107,14 +94,4 @@ def validate_witness_adapter_bindings(models: ModelsConfig) -> None:
                 "adapter cannot determine whether to run per page or per act. Set witness_scope "
                 "to exactly 'page' or 'act' before starting a run"
             )
-        declared.add(resolve_witness_adapter_name(identity.witness_adapter))
-
-    unused = sorted(KNOWN_WITNESS_ADAPTER_NAMES - declared)
-    if unused:
-        # Warnings can be suppressed globally while the run still succeeds;
-        # stderr keeps this non-fatal finding visible to the orchestrator.
-        print(
-            f"witness adapter registry: {unused} declared with no configured occupant naming "
-            "it. Reported, not fatal: an adapter may land before the chair that uses it",
-            file=sys.stderr,
-        )
+        resolve_witness_adapter_name(identity.witness_adapter)
