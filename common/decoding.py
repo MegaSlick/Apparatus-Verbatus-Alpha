@@ -31,9 +31,7 @@ def load_decoding_policy(
 def _validate_decoding_policy(policy: Any) -> None:
     """Close every section before its values can mint provenance identities.
 
-    The legacy schemas carry three sections; `decoding.v3` adds the exact,
-    closed Chandra native inference recipe admitted for Attestator 1, with no
-    enabled flag, so a v1/v2 run cannot acquire it on resume.
+    The exact, closed Chandra native inference recipe is required for Attestator 1.
     `reading_of_record` is pinned to temperature 0, the posture every
     Attestator and the Perlector read under. `structure` is the Designator's
     own posture and is admitted at any finite, non-negative temperature since
@@ -44,21 +42,24 @@ def _validate_decoding_policy(policy: Any) -> None:
     """
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")
-    expected_sections = {"schema", "reading_of_record", "variance_experiment", "structure"}
-    if policy.get("schema") == "decoding.v3":
-        expected_sections.add("chandra_native_inference")
+    schema = policy.get("schema")
+    if schema in {"decoding.v1", "decoding.v2"}:
+        raise ContractError(f"sealed under {schema}, which this build no longer reads; re-run")
+    if schema != "decoding.v3":
+        raise ContractError("decoding configuration has an unsupported schema")
+    expected_sections = {
+        "schema",
+        "reading_of_record",
+        "variance_experiment",
+        "structure",
+        "chandra_native_inference",
+    }
     if set(policy) != expected_sections:
         raise ContractError("decoding configuration has the wrong closed schema")
-    if policy["schema"] not in {"decoding.v1", "decoding.v2", "decoding.v3"}:
-        raise ContractError("decoding configuration has an unsupported schema")
     record = policy["reading_of_record"]
     variance = policy["variance_experiment"]
     structure = policy["structure"]
-    expected_structure_fields = (
-        {"temperature"}
-        if policy["schema"] == "decoding.v1"
-        else {"temperature", "recovery_seed_schedule", "recovery_max_attempts"}
-    )
+    expected_structure_fields = {"temperature", "recovery_seed_schedule", "recovery_max_attempts"}
     if (
         not isinstance(structure, dict)
         or set(structure) != expected_structure_fields
@@ -68,7 +69,7 @@ def _validate_decoding_policy(policy: Any) -> None:
         or structure["temperature"] < 0
     ):
         raise ContractError("decoding structure must declare one finite, non-negative temperature")
-    if policy["schema"] in {"decoding.v2", "decoding.v3"} and (
+    if (
         structure["recovery_seed_schedule"] != "base-plus-attempt-ordinal-minus-one"
         or not isinstance(structure["recovery_max_attempts"], int)
         or isinstance(structure["recovery_max_attempts"], bool)
@@ -78,11 +79,10 @@ def _validate_decoding_policy(policy: Any) -> None:
             "decoding structure recovery must declare the supported seed schedule and "
             "an integer maximum in 1..3"
         )
-    if policy["schema"] == "decoding.v3":
-        try:
-            validate_policy_record(policy["chandra_native_inference"])
-        except ContractError as error:
-            raise ContractError(str(error)) from error
+    try:
+        validate_policy_record(policy["chandra_native_inference"])
+    except ContractError as error:
+        raise ContractError(str(error)) from error
     if (
         not isinstance(record, dict)
         or set(record) != {"temperature"}
@@ -110,16 +110,8 @@ def _validate_decoding_policy(policy: Any) -> None:
 
 
 def structure_recovery_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the sealed structure recovery policy, including legacy v1 semantics.
-
-    ``decoding.v1`` predates structure recovery and therefore permits exactly
-    one request at the serving row's base seed.  New runs use ``v2``, where
-    both the attempt ceiling and deterministic seed schedule are explicit in
-    the bytes sealed into the run.
-    """
+    """Return the attempt ceiling and seed schedule sealed into the run."""
     _validate_decoding_policy(policy)
-    if policy["schema"] == "decoding.v1":
-        return {"max_attempts": 1, "seed_schedule": "fixed-base"}
     structure = policy["structure"]
     return {
         "max_attempts": structure["recovery_max_attempts"],
