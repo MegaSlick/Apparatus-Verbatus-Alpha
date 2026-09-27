@@ -493,7 +493,7 @@ def act_cross_capture_coverage(
             physical_page,
             {"expected_cells": expected, "captures": [], "required": []},
         )
-        # All component members must agree on the expected surface.
+        # A component cannot inherit whichever member's expected surface arrives first.
         if component["expected_cells"] != expected:
             raise FatalAccounting(
                 f"logical act {logical_act_id!r} component {physical_page!r} is surveyed over "
@@ -662,7 +662,7 @@ def act_attachment_facts(
             # Merge whole page rows; OR-ing flags would invent an unseen combination.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
-            # Rows share one attempt; a failed alignment must stay failed across pages.
+            # One failed page means the shared attempt cannot claim a located act line.
             bases_seen = (previous["anchor_basis"], fact["anchor_basis"])
             if "act-line-not-located" in bases_seen:
                 merged["anchor_basis"] = "act-line-not-located"
@@ -1073,7 +1073,8 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             "be counted from a superseded attempt"
         )
     coverage = witness_coverage(outcomes, floor, attachments=attachments)
-    # Cross-capture floor folds truncation into comparability for one-component acts.
+    # For one-component acts this must match the established floor; the primitive
+    # represents truncation through comparability rather than a separate fact.
     cross_capture_floor = same_chair_witness_floor(
         [
             {
@@ -2671,9 +2672,11 @@ def testimony_content_findings(context) -> dict[int, dict]:
                     f"coverage: {record['artifact_id']} for page {ordinal}, chair {chair!r}; "
                     "restore the retained Attestatores record"
                 )
+            # An unread outcome remains visible through the witness floor.
             continue
         text = payload.get("payload")
         if not isinstance(text, str):
+            # Structured testimony cannot supply comparable text for the floor.
             continue
         spans, declared_unanchored = _aligned_spans(rows_by_page_chair.get((ordinal, chair), []))
         covered_intervals = _covered_intervals(spans, len(text))
@@ -3331,6 +3334,8 @@ def _route_reading_outcome(
 ) -> tuple[str, str, dict | None]:
     blank_evidence = None
     if reading_class is not OutcomeClass.COMPLETED:
+        # Only the Perlector's positive no-readable-text finding may seal blank;
+        # one collapse supplies both current outcomes and corroborating evidence.
         current_attempts = chair_current_attempts(context, act_id)
         current_outcomes = chair_outcomes(current_attempts)
         corroborating_chairs = (
@@ -3344,9 +3349,11 @@ def _route_reading_outcome(
             if latest["outcome"] == "no-readable-text"
             else None
         )
+        # A continuation candidate may be only half of an act and cannot seal blank alone.
         blockers = [cause[1] for cause in hold_causes] + (
             [CONTINUATION_CANDIDATE_REASON] if act_id in candidate_refs else []
         )
+        # Validate first: even a held act must expose writer-impossible evidence.
         if blockers:
             corroborating_chairs = None
         if corroborating_chairs is not None:
@@ -3406,7 +3413,10 @@ def _verify_ink_recovery_request(
     page_ordinal: int,
     capture_digests: dict[int, str],
     funded_pages: set[int],
-    budget_counters: tuple[int, int, int],
+    *,
+    used_fallback: int,
+    allowed_fallback: int,
+    used_total: int,
     budget: dict,
 ) -> None:
     required = (
@@ -3423,7 +3433,6 @@ def _verify_ink_recovery_request(
             "Testimonium references; refusing before publishing a request the "
             "Designator cannot independently verify"
         )
-    used_fallback, allowed_fallback, used_total = budget_counters
     # Defence against loosening the live gate without loosening this one.
     dossier = latest_payload.get("dossier")
     gate = capture_specific_recovery(
@@ -3436,6 +3445,7 @@ def _verify_ink_recovery_request(
         # autopsia use; the source-manifest row is not a capture identity.
         source_sha256=capture_digest_for(capture_digests, page_ordinal, act_id),
         page_ordinal=page_ordinal,
+        # This helper is called only after measured ink confirms the observation.
         ink_confirmed=True,
         page_observation_grant_available=page_ordinal not in funded_pages,
         act_budget_available=(
@@ -3515,7 +3525,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
         state = recovery_state(context, act_id, budget)
         if state["outstanding_request_ids"]:
-            # A retry must not accept an act before its requested crop is cut.
+            # The matching review records the hold; publish nothing until the
+            # Designator cuts the requested crop.
             held += 1
             continue
 
@@ -3617,8 +3628,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         observation_hold = unresolved_observation_hold(
             outside_ink_requests, act["page_ordinal"], funded_pages
         )
+        # Requests count this act's requests, while reviews follow content ordinals.
         request_ordinal = used_total + 1
 
+        # Check kind, pooled and absolute limits here: the policy file can be edited.
         if (
             not continuation_shortfall
             # Cross-capture geometry neither funds nor vetoes recovery; only a measured
@@ -3628,7 +3641,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             and used_total < budget["allowed"]
             and used_total < budget["absolute_cap"]
         ):
-            # Page-level reread has no downstream handler; requesting it would turn a hold into failure.
+            # Page-level reread has no downstream handler; requesting it would
+            # turn a hold into failure.
             request_origin = recovery_request_origin(
                 declared=declared_recovery(scenario, act_key),
                 outside_ink_requests=outside_ink_requests,
@@ -3641,8 +3655,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     act["page_ordinal"],
                     capture_digests,
                     funded_pages,
-                    (used_fallback, allowed_fallback, used_total),
-                    budget,
+                    used_fallback=used_fallback,
+                    allowed_fallback=allowed_fallback,
+                    used_total=used_total,
+                    budget=budget,
                 )
             # The quality firewall reads this literal publication and its enclosing gate.
             recovery_payload = {
@@ -3711,6 +3727,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 inputs=[reading_ref, request_ref, *candidate_refs.get(act_id, [])],
                 payload={
                     "act_key": act_key,
+                    # This names the request answered, not the review's content ordinal.
                     "recovery_request_ordinal": request_ordinal,
                     "recovery_kind": FALLBACK_RECROP,
                     "coverage": coverage,
