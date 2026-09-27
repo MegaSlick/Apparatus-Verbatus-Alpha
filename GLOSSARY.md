@@ -69,6 +69,10 @@ whether the reader can read without help.
 **Perlectio** — what the Perlector returns: the reading, what it was based on, and where
 it departed from every witness (its dissent).
 
+**Reconstruction** — a labelled, unconfirmed export layer that joins two delivered
+literal page readings at a page break (head, one newline, tail, nothing else changed);
+it is not an act and not a reading, and never counts toward the act total.
+
 ## The distinction that matters
 
 **Testimonium** is report; **autopsia** is seeing the thing itself. Witnesses and reader
