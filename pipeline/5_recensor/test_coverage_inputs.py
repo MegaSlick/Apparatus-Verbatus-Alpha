@@ -175,7 +175,6 @@ def _conservation(
     counts=...,
     enumeration=RESIDUAL_ENUMERATION_COMPLETE,
     declared_count=...,
-    bound=2000,
 ):
     """One Designator conservation record as the Designator now publishes them.
 
@@ -201,7 +200,6 @@ def _conservation(
         "residual_component_count": (
             len(residual_components) if declared_count is ... else declared_count
         ),
-        "max_residual_components": bound,
         "residual_enumeration": enumeration,
     }
     payload["residual_components"] = residual_components
@@ -1515,15 +1513,15 @@ def test_geometry_coverage_accepts_a_matching_residual_partition(monkeypatch):
     }
 
 
-def test_an_enumerated_record_does_not_present_the_legacy_withheld_bound(monkeypatch):
-    context = _context(_conservation("conservation-1", components=[_component()], bound=None))
+def test_an_enumerated_record_has_the_review_key_shape(monkeypatch):
+    context = _context(_conservation("conservation-1", components=[_component()]))
     monkeypatch.setattr(
         RUN,
         "expected_acts",
         lambda unused: [{"act_key": "residual:1:0", "page_ordinal": 1, "outcome": "held"}],
     )
 
-    assert RUN.geometry_coverage_inputs(context)[1]["max_residual_components"] is None
+    assert set(RUN.geometry_coverage_inputs(context)[1]) == set(RUN.NO_PAGE_CONSERVATION)
 
 
 def test_retired_conservation_enumeration_is_refused_by_name(monkeypatch):

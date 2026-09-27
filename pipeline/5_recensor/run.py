@@ -110,6 +110,7 @@ from common.stage import (  # noqa: E402
     RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATIONS,
+    RETIRED_RESIDUAL_ENUMERATION,
     WITNESS_READING_OUTCOMES,
     expected_acts,
     is_real_ingress,
@@ -1937,10 +1938,8 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
     must equal the held residual acts in the proposal seal. An all-held page never
     reached sealing, so its absence stays absence.
 
-    A page that withheld its enumeration (more components than the sealed policy lets
-    one page list) is its own shape: no `residual_components`, exactly one page-residual
-    act and no per-component ones. Every condition is recomputed from the record and
-    the seal.
+    An aggregate page retains promoted and below-threshold components. Its promoted
+    acts and single page hold are checked against that retained partition.
     """
     acts = expected_acts(context)
     residual_keys = {act["act_key"] for act in acts if act["act_key"].startswith("residual:")}
@@ -1962,7 +1961,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         pixel_counts = {field: payload.get(field) for field in pixel_count_fields}
         if not is_plain_int(ordinal) or not isinstance(measurable, bool) or ordinal in findings:
             raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
-        if enumeration == "withheld-page-held":
+        if enumeration == RETIRED_RESIDUAL_ENUMERATION:
             raise FatalAccounting(
                 f"Designator conservation page {ordinal} was sealed under {enumeration}, "
                 "which this build no longer reads; re-run"

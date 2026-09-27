@@ -33,6 +33,7 @@ from common.stage import (
     _verify_every_conservation_residual_is_accounted,
     _verify_minted_act_rows,
     adapter_recipe_for,
+    fallback_page_act_key,
     page_residual_act_key,
     run_sealed_config_digests,
 )
@@ -345,6 +346,81 @@ def test_aggregate_partition_and_both_held_identities_verify(page):
     )
 
     page.verify()
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("both_rectangles", "names both a residual rectangle and a page"),
+        ("missing_digest", "sealed grouping"),
+        ("foreign_digest", "this run sealed at binding time"),
+        ("unsealed_digest", "sealed no designator-grouping digest at all"),
+        ("wrong_count", "never a second figure beside it"),
+        ("proposed_conservation", "rather than 'held'"),
+        ("complete_conservation", "rather than 'aggregate-page-held'"),
+        ("wrong_identity", "reserved page-residual class"),
+        ("wrong_key", "derived page-residual key"),
+        ("missing_input", "exactly one conservation artifact"),
+    ],
+)
+def test_aggregate_page_hold_refuses_unbound_claims(page, monkeypatch, change, message):
+    import common.stage as stage_module
+
+    payload = _aggregate_payload()
+    if change == "complete_conservation":
+        payload["residual_enumeration"] = RESIDUAL_ENUMERATION_COMPLETE
+    page.publish_conservation(
+        payload,
+        outcome="proposed" if change == "proposed_conservation" else "held",
+    )
+    options = {"count": 2, "extra": {"aggregated_component_count": 1}}
+    if change == "both_rectangles":
+        options["extra"]["residual_bounds"] = COMPONENT
+    elif change == "missing_digest":
+        options["grouping_config_sha256"] = None
+    elif change == "foreign_digest":
+        options["grouping_config_sha256"] = "0" * 64
+    elif change == "wrong_count":
+        options["count"] = 3
+    elif change == "wrong_identity":
+        options["act"] = derive_act_id(page.page_id, "page-fallback", page.rectangle)
+    elif change == "wrong_key":
+        options["act_key"] = fallback_page_act_key(ORDINAL)
+    elif change == "missing_input":
+        options["inputs"] = []
+    act = page.hold_page(**options)
+    if change == "unsealed_digest":
+        monkeypatch.setattr(stage_module, "run_sealed_config_digests", lambda run: {})
+    page.context.finish()
+
+    with pytest.raises(FatalAccounting, match=message):
+        _verify_minted_act_rows(page.context, {act: page.rows[act]})
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("missing_hold", "exactly one page-residual"),
+        ("two_holds", "exactly one page-residual"),
+        ("missing_promoted", "accounts for no held act"),
+        ("wrong_aggregate_count", "aggregate component count"),
+    ],
+)
+def test_aggregate_conservation_refuses_unaccounted_ink(page, change, message):
+    page.publish_conservation(_aggregate_payload())
+    if change != "missing_promoted":
+        page.hold_component(AGGREGATE_PROMOTED)
+    if change != "missing_hold":
+        page.hold_page(
+            count=2,
+            extra={"aggregated_component_count": 2 if change == "wrong_aggregate_count" else 1},
+        )
+    if change == "two_holds":
+        page.hold_page(bounds={**page.rectangle, "w": page.rectangle["w"] - 1})
+    page.context.finish()
+
+    with pytest.raises(FatalAccounting, match=message):
+        _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
 
 
 def test_aggregate_cannot_hide_a_component_at_the_promotion_floor(page):
