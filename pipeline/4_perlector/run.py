@@ -1748,8 +1748,7 @@ def _reading_already_sealed(context, act_id: str, ordinal: int, *, act_key: str)
     A failed Perlectio is validated before the chair is skipped, so malformed failure
     bytes cannot become a permanent resume bypass.
     """
-    attempt = perlector_attempt_id(act_id, "perlegere", ordinal)
-    identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
+    identifier = _attempt_artifact_id(act_id, "perlectio", "perlegere", ordinal)
     if not context.tree.resolve(
         context.tree.artifact_path(PERLECTOR, "perlectio", identifier)
     ).exists():
@@ -1758,16 +1757,6 @@ def _reading_already_sealed(context, act_id: str, ordinal: int, *, act_key: str)
     if reading["outcome"] == "failed" and "failure" in reading["payload"]:
         validate_failed_perlectio(context, reading, act_id, expected_act_key=act_key)
     return True
-
-
-def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
-    """Which pre-Perlectio artifacts of this attempt are already on disk.
-
-    An attempt that stopped part-way (abort, timeout, OOM, SIGKILL) leaves immutable
-    artifacts; a resume that simply read again would republish them from a second live
-    answer and be refused on every retry.
-    """
-    return frozenset(kind for kind, _identifier in _present_arms(context, act_id, ordinal))
 
 
 def _present_arms(context, act_id: str, ordinal: int):
@@ -1808,7 +1797,7 @@ def _acts_left_to_read(context, wanted: list[dict[str, Any]]) -> int:
         ordinal = _next_attempt(context, act_id, act_regions(context, act_id)[0])
         if _reading_already_sealed(context, act_id, ordinal, act_key=act["act_key"]):
             continue
-        if _sealed_pass_kinds(context, act_id, ordinal):
+        if any(_present_arms(context, act_id, ordinal)):
             half_read.append(act["act_key"])
         left += 1
     if half_read:
@@ -2150,14 +2139,6 @@ def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
     return None
 
 
-def _failure_evidence_inputs(failure: Mapping[str, Any]) -> list[dict[str, str]]:
-    return [
-        dict(failure[name])
-        for name in ("raw_response_ref", "call_record_ref", "receipt_ref")
-        if failure[name] is not None
-    ]
-
-
 def _failure_from_engine_call(
     context, engine_call: Mapping[str, Any] | None, *, detail: str
 ) -> dict[str, Any]:
@@ -2183,40 +2164,6 @@ def _failure_from_engine_call(
     return record
 
 
-def _publish_failed_perlectio(
-    context, *, act_id: str, ordinal: int, inputs: list[dict[str, str]], payload: dict[str, Any]
-) -> None:
-    """Fully validate the prospective immutable record before publishing it."""
-    attempt = perlector_attempt_id(act_id, "perlegere", ordinal)
-    inputs = _distinct_inputs(inputs)
-    candidate = build_envelope(
-        run_id=context.tree.run_id,
-        artifact_id=artifact_id(PERLECTOR, "perlectio", act_id, attempt),
-        subject_id=act_id,
-        stage=PERLECTOR,
-        kind="perlectio",
-        outcome="failed",
-        config_digest=context.config_digest,
-        adapter_revision=context.adapter_revision,
-        inputs=inputs,
-        payload=payload,
-        attempt=attempt,
-    )
-    validate_failed_perlectio(context, candidate, act_id, expected_act_key=payload.get("act_key"))
-    context.publish(
-        kind="perlectio",
-        subject_id=act_id,
-        outcome="failed",
-        attempt=attempt,
-        inputs=inputs,
-        payload=payload,
-    )
-    identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
-    validate_failed_perlectio(
-        context, context.tree.read_artifact(PERLECTOR, "perlectio", identifier), act_id
-    )
-
-
 def _publish_reading_failure(
     context,
     *,
@@ -2228,18 +2175,46 @@ def _publish_reading_failure(
     reason: str,
     provenance: dict[str, Any],
 ) -> None:
-    _publish_failed_perlectio(
-        context,
-        act_id=act_id,
-        ordinal=ordinal,
-        inputs=inputs + _failure_evidence_inputs(failure),
-        payload={
-            "act_key": act_key,
-            "attempt_ordinal": ordinal,
-            "reason": reason,
-            "failure": failure,
-            "provenance": provenance,
-        },
+    """Fully validate the prospective immutable failed Perlectio before publishing it."""
+    evidence = [
+        dict(failure[name])
+        for name in ("raw_response_ref", "call_record_ref", "receipt_ref")
+        if failure[name] is not None
+    ]
+    inputs = _distinct_inputs(inputs + evidence)
+    payload = {
+        "act_key": act_key,
+        "attempt_ordinal": ordinal,
+        "reason": reason,
+        "failure": failure,
+        "provenance": provenance,
+    }
+    attempt = perlector_attempt_id(act_id, "perlegere", ordinal)
+    identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
+    candidate = build_envelope(
+        run_id=context.tree.run_id,
+        artifact_id=identifier,
+        subject_id=act_id,
+        stage=PERLECTOR,
+        kind="perlectio",
+        outcome="failed",
+        config_digest=context.config_digest,
+        adapter_revision=context.adapter_revision,
+        inputs=inputs,
+        payload=payload,
+        attempt=attempt,
+    )
+    validate_failed_perlectio(context, candidate, act_id, expected_act_key=act_key)
+    context.publish(
+        kind="perlectio",
+        subject_id=act_id,
+        outcome="failed",
+        attempt=attempt,
+        inputs=inputs,
+        payload=payload,
+    )
+    validate_failed_perlectio(
+        context, context.tree.read_artifact(PERLECTOR, "perlectio", identifier), act_id
     )
 
 
@@ -3167,36 +3142,93 @@ class _Attempt:
     def provenance(self, context) -> dict:
         return provenance_for(context, self.chair, attempted=True, receipt_ref=self.receipt_ref)
 
+    def truncation(self, text: str, stop_reason: str | None) -> dict[str, Any]:
+        return truncation.classify(
+            text,
+            region_pixels=self.region_pixels,
+            page_pixels=self.page_pixels,
+            truncation_policy=self.protocol_config[protocol.TRUNCATION_TABLE],
+            stop_reason=stop_reason,
+        )
 
-def _publication_pass_data(
-    attempt: _Attempt, dossier: dict[str, Any], result: dict[str, Any]
-) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], str]:
+
+def _arm_reading(
+    context, attempt: _Attempt, dossier: dict[str, Any], result: dict[str, Any], testimonia
+) -> tuple[dict[str, Any], str, dict[str, dict[str, str]]]:
+    """The fields every arm's record shares, its outcome, and its Testimonium references."""
     sealed_dossier = _reseal_dossier(dossier)
     prompt = prompts.prompt_evidence(
         attempt.chair, sealed_dossier, attempt.protocol_config, attempt.protocol_sha256
     )
-    truncation_record = truncation.classify(
-        result["text"],
-        region_pixels=attempt.region_pixels,
-        page_pixels=attempt.page_pixels,
-        truncation_policy=attempt.protocol_config[protocol.TRUNCATION_TABLE],
-        stop_reason=result["stop_reason"],
-    )
+    truncation_record = attempt.truncation(result["text"], result["stop_reason"])
     outcome = _resolve_outcome(
         declared_failure=None, truncation_record=truncation_record, text=result["text"]
     )
     text = "" if outcome == "no-readable-text" else result["text"]
-    return sealed_dossier, prompt, outcome, truncation_record, text
+    references = _testimonium_references(context, testimonia)
+    assessment, spans, gaps = _published_doubt(
+        result,
+        text=text,
+        outcome=outcome,
+        whole_act_gaps=_whole_act_gap(testimonia, references),
+    )
+    payload = {
+        "act_key": attempt.act_key,
+        "attempt_ordinal": attempt.ordinal,
+        "text": text,
+        "dossier": sealed_dossier,
+        "prompt": prompt,
+        "truncation": truncation_record,
+        "uncertain_spans": spans,
+        "uncertainty_assessment": assessment,
+        "gaps": gaps,
+    }
+    return payload, outcome, references
 
 
-def _arm_image_inputs(
-    context, attempt: _Attempt, sealed_dossier: dict[str, Any]
-) -> list[dict[str, str]]:
-    return _reading_image_inputs(
-        context,
-        attempt.bases,
-        attempt.page_renders,
-        autopsia=sealed_dossier["cross_capture_autopsia"],
+def _publish_arm(
+    context,
+    attempt: _Attempt,
+    result: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    kind: str,
+    operation: str,
+    outcome: str,
+    fields: frozenset,
+    witness_inputs: list[dict[str, str]] | None = None,
+    approval_ref: ApprovalRecordBinding | None = None,
+) -> None:
+    """Validate one arm's record against exactly the inputs it cites, then publish it."""
+    fields = with_engine_call(payload, result, fields)
+    reading_inputs = (
+        _reading_image_inputs(
+            context,
+            attempt.bases,
+            attempt.page_renders,
+            autopsia=payload["dossier"]["cross_capture_autopsia"],
+        )
+        + (witness_inputs or [])
+        + engine_call_inputs(context, result.get("engine_call"))
+    )
+    validate_reading_payload(
+        payload,
+        outcome=outcome,
+        fields=fields,
+        run_id=context.tree.run_id,
+        config_digest=context.config_digest,
+        protocol_config=attempt.protocol_config,
+        protocol_sha256=attempt.protocol_sha256,
+        inputs=reading_inputs,
+    )
+    context.publish(
+        kind=kind,
+        subject_id=attempt.act_id,
+        outcome=outcome,
+        attempt=perlector_attempt_id(attempt.act_id, operation, attempt.ordinal),
+        inputs=reading_inputs
+        + ([approval_ref.reference.to_record()] if approval_ref is not None else []),
+        payload=payload,
     )
 
 
@@ -3237,51 +3269,25 @@ def _publish_lectio_nuda(
     approval_ref: ApprovalRecordBinding,
 ) -> None:
     """Publish outside Perlectio kind and attempt identity with no witness facts."""
-    nuda_dossier, prompt, outcome, truncation_record, nuda_text = _publication_pass_data(
-        attempt, dossier, result
-    )
-    nuda_assessment, nuda_spans, nuda_gaps = _published_doubt(
-        result,
-        text=nuda_text,
-        outcome=outcome,
-        whole_act_gaps=_whole_act_gap([], {}),
-    )
-    payload = {
-        "act_key": attempt.act_key,
-        "attempt_ordinal": attempt.ordinal,
-        "text": nuda_text,
-        "dossier": nuda_dossier,
-        "prompt": prompt,
-        "sampling": nuda.sampling_design(
+    payload, outcome, _ = _arm_reading(context, attempt, dossier, result, [])
+    payload.update(
+        sampling=nuda.sampling_design(
             nuda_per_mille=context.nuda_per_mille,
             approval_ref=approval_ref,
         ),
-        "dissent": [],
-        "truncation": truncation_record,
-        "uncertain_spans": nuda_spans,
-        "uncertainty_assessment": nuda_assessment,
-        "gaps": nuda_gaps,
-        "provenance": attempt.provenance(context),
-    }
-    fields = with_engine_call(payload, result, _LECTIO_NUDA_FIELDS)
-    reading_inputs = _arm_image_inputs(context, attempt, nuda_dossier) + engine_call_inputs(
-        context, result.get("engine_call")
+        dissent=[],
+        provenance=attempt.provenance(context),
     )
-    validate_reading_payload(
+    _publish_arm(
+        context,
+        attempt,
+        result,
         payload,
-        outcome=outcome,
-        fields=fields,
-        protocol_config=attempt.protocol_config,
-        protocol_sha256=attempt.protocol_sha256,
-        inputs=reading_inputs,
-    )
-    context.publish(
         kind=nuda.LECTIO_NUDA_KIND,
-        subject_id=attempt.act_id,
+        operation="lectio-nuda",
         outcome=outcome,
-        attempt=perlector_attempt_id(attempt.act_id, "lectio-nuda", attempt.ordinal),
-        inputs=reading_inputs + [approval_ref.reference.to_record()],
-        payload=payload,
+        fields=_LECTIO_NUDA_FIELDS,
+        approval_ref=approval_ref,
     )
 
 
@@ -3289,55 +3295,28 @@ def _publish_lectio_prior(
     context, attempt: _Attempt, dossier: dict[str, Any], result: dict[str, Any]
 ) -> dict:
     """Publish Pass A as a retained draft, never as a Perlectio."""
-    prior_dossier, prompt, outcome, truncation_record, text = _publication_pass_data(
-        attempt, dossier, result
+    payload, outcome, _ = _arm_reading(context, attempt, dossier, result, [])
+    payload.update(
+        dissent=[],
+        provenance=attempt.provenance(context),
+        protocol=_protocol_record(context, attempt.protocol_config),
     )
-    prior_assessment, prior_spans, prior_gaps = _published_doubt(
+    _publish_arm(
+        context,
+        attempt,
         result,
-        text=text,
-        outcome=outcome,
-        whole_act_gaps=_whole_act_gap([], {}),
-    )
-    payload = {
-        "act_key": attempt.act_key,
-        "attempt_ordinal": attempt.ordinal,
-        "text": text,
-        "dossier": prior_dossier,
-        "prompt": prompt,
-        "dissent": [],
-        "truncation": truncation_record,
-        "uncertain_spans": prior_spans,
-        "uncertainty_assessment": prior_assessment,
-        "gaps": prior_gaps,
-        "provenance": attempt.provenance(context),
-        "protocol": _protocol_record(context, attempt.protocol_config),
-    }
-    fields = with_engine_call(payload, result, _LECTIO_PRIOR_FIELDS)
-    reading_inputs = _arm_image_inputs(context, attempt, prior_dossier) + engine_call_inputs(
-        context, result.get("engine_call")
-    )
-    validate_reading_payload(
         payload,
-        outcome=outcome,
-        fields=fields,
-        protocol_config=attempt.protocol_config,
-        protocol_sha256=attempt.protocol_sha256,
-        inputs=reading_inputs,
-    )
-    context.publish(
         kind="lectio-prior",
-        subject_id=attempt.act_id,
+        operation="lectio-prior",
         outcome=outcome,
-        attempt=perlector_attempt_id(attempt.act_id, "lectio-prior", attempt.ordinal),
-        inputs=reading_inputs,
-        payload=payload,
+        fields=_LECTIO_PRIOR_FIELDS,
     )
     prior_artifact_id = _attempt_artifact_id(
         attempt.act_id, "lectio-prior", "lectio-prior", attempt.ordinal
     )
     return {
         "reference": context.artifact_ref(PERLECTOR, "lectio-prior", prior_artifact_id),
-        "text": text,
+        "text": payload["text"],
     }
 
 
@@ -3352,75 +3331,43 @@ def _publish_primed_without_prior(
     approval_ref: ApprovalRecordBinding,
 ) -> None:
     """The sampled control sees witnesses but never the Pass-A draft."""
-    control_dossier, prompt, outcome, truncation_record, text = _publication_pass_data(
-        attempt, dossier, result
+    payload, outcome, testimonium_references = _arm_reading(
+        context, attempt, dossier, result, testimonia
     )
-    testimonium_references = _testimonium_references(context, testimonia)
-    # `context.run` was verified when opened and nothing rewrites `run.json`, so it is
-    # not re-read per act.
-    membership = context.run["corpus_frame_membership"]
-    control_assessment, control_spans, control_gaps = _published_doubt(
-        result,
-        text=text,
-        outcome=outcome,
-        whole_act_gaps=_whole_act_gap(testimonia, testimonium_references),
-    )
-    payload = {
-        "act_key": attempt.act_key,
-        "attempt_ordinal": attempt.ordinal,
-        "text": text,
-        "basis": {
+    payload.update(
+        basis={
             "regions": attempt.bases,
             "testimonia": _testimonia_basis(testimonia, testimonium_references),
         },
-        "dossier": control_dossier,
-        "prompt": prompt,
-        "sampling": protocol.control_sampling_design(
+        sampling=protocol.control_sampling_design(
             per_mille=context.perlector_instrument_per_mille,
             selection_rule=attempt.protocol_config["selection_rule"],
             approval_ref=approval_ref,
         ),
-        # The digest draw above is keyed by the logical act. Record that same
-        # subject here; a local capture ID would make a clustered control's
-        # retained membership impossible to reproduce from its own facts.
-        "membership": {
-            **membership,
-            "act_id": control_dossier["logical_act_id"],
+        # The sampling draw is keyed by the logical act, so the membership records that
+        # subject; a capture ID would make a clustered control irreproducible. `context.run`
+        # was verified when opened and nothing rewrites `run.json`.
+        membership={
+            **context.run["corpus_frame_membership"],
+            "act_id": payload["dossier"]["logical_act_id"],
             "protocol_sha256": attempt.protocol_sha256,
         },
-        "dissent": dissent_against(text, dissent_testimonia(testimonia, attachment_view)),
-        "truncation": truncation_record,
-        "uncertain_spans": control_spans,
-        "uncertainty_assessment": control_assessment,
-        "gaps": control_gaps,
-        "provenance": attempt.provenance(context),
-        "lectio_kind": "primed-without-prior",
-        "protocol": _protocol_record(context, attempt.protocol_config),
-    }
-    fields = with_engine_call(payload, result, _PRIMED_WITHOUT_PRIOR_FIELDS)
-    reading_inputs = (
-        _arm_image_inputs(context, attempt, control_dossier)
-        + list(testimonium_references.values())
-        + [attachment_view["reference"]]
-        + engine_call_inputs(context, result.get("engine_call"))
+        dissent=dissent_against(payload["text"], dissent_testimonia(testimonia, attachment_view)),
+        provenance=attempt.provenance(context),
+        lectio_kind="primed-without-prior",
+        protocol=_protocol_record(context, attempt.protocol_config),
     )
-    validate_reading_payload(
+    _publish_arm(
+        context,
+        attempt,
+        result,
         payload,
-        outcome=outcome,
-        fields=fields,
-        run_id=context.tree.run_id,
-        config_digest=context.config_digest,
-        protocol_config=attempt.protocol_config,
-        protocol_sha256=attempt.protocol_sha256,
-        inputs=reading_inputs,
-    )
-    context.publish(
         kind="primed-without-prior",
-        subject_id=attempt.act_id,
+        operation="primed-without-prior",
         outcome=outcome,
-        attempt=perlector_attempt_id(attempt.act_id, "primed-without-prior", attempt.ordinal),
-        inputs=reading_inputs + [approval_ref.reference.to_record()],
-        payload=payload,
+        fields=_PRIMED_WITHOUT_PRIOR_FIELDS,
+        witness_inputs=list(testimonium_references.values()) + [attachment_view["reference"]],
+        approval_ref=approval_ref,
     )
 
 
@@ -3450,24 +3397,16 @@ def _established_row(
     prompt = prompts.prompt_evidence(
         attempt.chair, primed_dossier, attempt.protocol_config, attempt.protocol_sha256
     )
-    # A declared failure is refused in live mode before any call.
     reading = "" if declared_failure == "no-readable-text" else result["text"]
     truncation_record = _reconciled_truncation(
         declared_failure=declared_failure,
-        truncation_record=truncation.classify(
-            reading,
-            region_pixels=attempt.region_pixels,
-            page_pixels=attempt.page_pixels,
-            truncation_policy=attempt.protocol_config[protocol.TRUNCATION_TABLE],
-            stop_reason=result["stop_reason"],
-        ),
+        truncation_record=attempt.truncation(reading, result["stop_reason"]),
     )
     outcome = _resolve_outcome(
         declared_failure=declared_failure, truncation_record=truncation_record, text=reading
     )
     if outcome == "no-readable-text":
-        # Whitespace resolved as unreadable is published as the empty text its schema
-        # requires.
+        # Whitespace resolved as unreadable is published as the empty text it is.
         reading = ""
     testimonium_references = _testimonium_references(context, testimonia)
     sealed_doubt, reader_spans, gaps = _published_doubt(
