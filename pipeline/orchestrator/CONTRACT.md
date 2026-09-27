@@ -26,7 +26,10 @@ code `--all` does at that point.
 dispatch it: a `recovery_kind` other than `fallback-recrop` (the page-level reread belongs
 to the Perlector, which has not built it), or a recrop on a real submission (the Designator
 refuses `--operation recover` there by name, because a recrop's geometry still comes from a
-fixture's declared rectangle). Screening the batch first is what keeps an unanswerable
+fixture's declared rectangle); a measured-request dispatch also requires dict-valued
+`recovery_bounds`, `coverage_observation`, and `ink_map_ref`, `origin == "coverage-observation"`,
+and exactly integer (not boolean) nonnegative `x`, `y`, `w`, and `h` bounds with positive `w`
+and `h`. Screening the batch first is what keeps an unanswerable
 request from leaving half a round behind it, and screening the route here is what stops the
 Designator's refusal reaching an operator as a bare `pipeline/2_designator/run.py exited 2`.
 `report_undispatchable_recoveries` then names every refused act and request before the
