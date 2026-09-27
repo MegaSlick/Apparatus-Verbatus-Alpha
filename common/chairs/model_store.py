@@ -22,7 +22,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.durability import atomic_create, atomic_replace
@@ -796,7 +796,10 @@ def _read_limited_bytes(path: Path, limit: int, chair: str, label: str) -> bytes
 def load_download_record(store_root: str | Path) -> dict[str, Any]:
     """Load the canonical active record and prove its immutable version exists."""
 
-    root = Path(store_root).resolve()
+    return _load_custodied(Path(store_root).resolve(), _validate_record)
+
+
+def _load_custodied(root: Path, validate: Callable[[Mapping[str, Any]], None]) -> dict[str, Any]:
     active = root / "download_record.json"
     if _is_irregular(active):
         raise DigestMismatchRefusal(
@@ -821,7 +824,7 @@ def load_download_record(store_root: str | Path) -> dict[str, Any]:
             "whitespace, UTF-8, no trailing newline); write it with "
             "write_download_record rather than by hand",
         )
-    _validate_record(raw)
+    validate(raw)
     digest = digest_bytes(raw_bytes)
     archive = _under(root, f"records/{digest}.json")
     if _is_irregular(archive):
@@ -1304,17 +1307,40 @@ def _current_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:
         # damaged current record is not silently treated as legacy and replaced.
         return load_download_record(root)
     if isinstance(raw, Mapping) and raw.get("schema") == V1_STORE_SCHEMA:
-        migrated = _from_v1(raw)
-        _validate_record(migrated)
-        return migrated
+        return _v1_as_current(root)
     return None
 
 
-def _from_v1(raw: Mapping[str, Any]) -> dict[str, Any]:
-    # v2 dropped only v1's operator-declared capacity plan.
-    return {key: value for key, value in raw.items() if key != "capacity"} | {
-        "schema": STORE_SCHEMA
-    }
+def _v1_as_current(root: Path) -> dict[str, Any]:
+    """Custody-check the active v1 record exactly as v1 did, then drop its capacity plan."""
+
+    return _without_capacity(_load_custodied(root, _validate_v1_record))
+
+
+def _without_capacity(v1: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in v1.items() if key != "capacity"} | {"schema": STORE_SCHEMA}
+
+
+def _validate_v1_record(raw: Mapping[str, Any]) -> None:
+    capacity = raw.get("capacity")
+    byte_fields = ("snapshot_bytes", "promotion_headroom_bytes", "available_bytes")
+    if (
+        raw.get("schema") != V1_STORE_SCHEMA
+        or set(raw) != RECORD_FIELDS | {"capacity"}
+        or not isinstance(capacity, Mapping)
+        or set(capacity) != {*byte_fields, "cleanup_owner"}
+        or not all(type(capacity[key]) is int and capacity[key] >= 0 for key in byte_fields)
+        or not isinstance(capacity["cleanup_owner"], str)
+        or not capacity["cleanup_owner"].strip()
+        or capacity["promotion_headroom_bytes"] < capacity["snapshot_bytes"]
+        or capacity["available_bytes"]
+        < capacity["snapshot_bytes"] + capacity["promotion_headroom_bytes"]
+    ):
+        raise DigestMismatchRefusal(
+            "model-store",
+            "a v1 download record must carry a well-formed capacity plan to be migrated",
+        )
+    _validate_record(_without_capacity(raw))
 
 
 def _migrate_v1_record(root: Path) -> None:
@@ -1332,7 +1358,7 @@ def _migrate_v1_record(root: Path) -> None:
     except (UnicodeDecodeError, json.JSONDecodeError):
         return  # load_download_record names the failure.
     if isinstance(raw, Mapping) and raw.get("schema") == V1_STORE_SCHEMA:
-        write_download_record(_from_v1(raw), root)
+        write_download_record(_v1_as_current(root), root)
 
 
 def _validate_record_transition(
@@ -1372,7 +1398,12 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
     if raw.get("schema") != STORE_SCHEMA:
         raise DigestMismatchRefusal(
             "model-store",
-            f"download record schema must be {STORE_SCHEMA!r}, not {raw.get('schema')!r}",
+            f"download record schema must be {STORE_SCHEMA!r}, not {raw.get('schema')!r}"
+            + (
+                "; run materialize_real_roster once, which migrates a v1 record"
+                if raw.get("schema") == V1_STORE_SCHEMA
+                else ""
+            ),
         )
     if set(raw) != RECORD_FIELDS:
         missing = sorted(RECORD_FIELDS - set(raw), key=str)

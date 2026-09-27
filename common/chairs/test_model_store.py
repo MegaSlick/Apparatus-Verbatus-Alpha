@@ -1788,31 +1788,74 @@ def test_a_roster_divergence_names_the_pin_it_expected_and_the_one_it_found(tmp_
     assert "1" * 40 in message
 
 
-def _as_v1_on_disk(tmp_path):
-    """Rewrite the active record as the v1 shape a live volume may still hold."""
+_V1_CAPACITY = {
+    "snapshot_bytes": 100,
+    "promotion_headroom_bytes": 100,
+    "available_bytes": 200,
+    "cleanup_owner": "pod operator",
+}
+
+
+def _as_v1_on_disk(tmp_path, capacity=_V1_CAPACITY, archive=True):
+    """Rewrite the active record as the archived v1 shape a live volume may still hold."""
     v1 = load_download_record(tmp_path) | {
         "schema": "verbatus-model-store.v1",
-        "capacity": {"cleanup_owner": "host model-store operator"},
+        "capacity": capacity,
     }
     v1_bytes = canonical_bytes(v1)
+    if archive:
+        (tmp_path / "records" / f"{digest_bytes(v1_bytes)}.json").write_bytes(v1_bytes)
     (tmp_path / "download_record.json").write_bytes(v1_bytes)
-    return v1_bytes
+    return v1
 
 
 def test_a_v1_record_on_disk_is_migrated_once_without_refetching(tmp_path):
     fetcher = _FakeMaterializationFetcher()
     materialize_real_roster(tmp_path, fetcher)
     calls = list(fetcher.calls)
-    v1_bytes = _as_v1_on_disk(tmp_path)
+    v1 = _as_v1_on_disk(tmp_path)
 
     receipt = materialize_real_roster(tmp_path, fetcher)
 
     assert fetcher.calls == calls
     assert receipt["real_roster_complete"] is True
+    v1_bytes = canonical_bytes(v1)
     assert (tmp_path / "records" / f"{digest_bytes(v1_bytes)}.json").read_bytes() == v1_bytes
-    record = load_download_record(tmp_path)
-    assert record["schema"] == STORE_SCHEMA
-    assert "capacity" not in record
+    expected = {key: value for key, value in v1.items() if key != "capacity"}
+    assert load_download_record(tmp_path) == expected | {"schema": STORE_SCHEMA}
+
+
+@pytest.mark.parametrize(
+    ("damage", "refusal"),
+    [
+        ("unarchived", "immutable version"),
+        ("tampered", "differs from immutable version"),
+        ("malformed", "well-formed capacity plan"),
+    ],
+)
+def test_a_damaged_v1_record_is_refused_and_never_migrated(tmp_path, damage, refusal):
+    fetcher = _FakeMaterializationFetcher()
+    materialize_real_roster(tmp_path, fetcher)
+    capacity = dict(_V1_CAPACITY)
+    if damage == "malformed":
+        del capacity["cleanup_owner"]
+    v1 = _as_v1_on_disk(tmp_path, capacity, archive=damage != "unarchived")
+    if damage == "tampered":
+        v1["capacity"] = v1["capacity"] | {"available_bytes": 400}
+        (tmp_path / "download_record.json").write_bytes(canonical_bytes(v1))
+    active = (tmp_path / "download_record.json").read_bytes()
+
+    with pytest.raises(DigestMismatchRefusal, match=refusal):
+        materialize_real_roster(tmp_path, fetcher)
+    assert (tmp_path / "download_record.json").read_bytes() == active
+
+
+def test_a_v1_store_refusal_names_the_migration_that_clears_it(tmp_path):
+    _store(tmp_path)
+    _as_v1_on_disk(tmp_path)
+
+    with pytest.raises(DigestMismatchRefusal, match="run materialize_real_roster once"):
+        verify_store(tmp_path)
 
 
 def test_a_v1_record_cannot_be_replaced_by_one_that_returns_present_to_pending(tmp_path):
