@@ -91,7 +91,7 @@ from common.decoding import (
     load_decoding_policy,
     structure_recovery_policy,
 )
-from common.durability import is_temporary_name
+from common.durability import is_unpublished_blob_temporary
 from common.exemplar_boundary import read_sealed_page, verify_sealed_page_pixels
 from common.hard_failure import (
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -990,7 +990,7 @@ def _stage_blob_inventory(
                     "of a sha256; a seal witnesses no noncanonical content address"
                 )
             if not is_sha256(name):
-                if _is_unpublished_blob_temporary(name):
+                if is_unpublished_blob_temporary(name):
                     # A writer killed mid-publish leaves its temporary; skipped
                     # only once proven a plain regular file, never a link.
                     _refuse_unpublishable_temporary(directory_fd, name, stage)
@@ -1015,11 +1015,6 @@ def _stage_blob_inventory(
         ) from error
     finally:
         os.close(directory_fd)
-
-
-def _is_unpublished_blob_temporary(name: str) -> bool:
-    """True only for ``RunTree.put_blob``'s ``.<digest>.tmp-<unique>`` name."""
-    return is_temporary_name(name) and is_sha256(name[1:].partition(".tmp-")[0])
 
 
 def _refuse_unpublishable_temporary(directory_fd: int, name: str, stage: str) -> None:
@@ -1054,7 +1049,7 @@ def _publisher_link_allowance(
     for other in siblings:
         if other == name or not other.startswith(f".{name}.tmp-"):
             continue
-        if not _is_unpublished_blob_temporary(other):
+        if not is_unpublished_blob_temporary(other):
             continue
         try:
             sibling = os.stat(other, dir_fd=directory_fd, follow_symlinks=False)
@@ -1182,9 +1177,7 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: its decode-environment is missing or damaged"
         ) from error
-    previous_environment = _validate_decode_environment(
-        environment.get("payload"), f"{producer} stored"
-    )
+    _validate_decode_environment(environment.get("payload"), f"{producer} stored")
     actual_environment_sha256 = digest_bytes(environment_bytes)
     if payload.get("decode_environment_sha256") != actual_environment_sha256:
         raise SchemaRefusal(
@@ -1208,32 +1201,6 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: its named inventory no longer matches disk"
         )
-    # The producer's environment, rebuilt here: the reader's own decode work
-    # differs by construction.
-    current_environment = _validate_decode_environment(
-        _decode_environment(producer), f"{reader} current for {producer}"
-    )
-    differences = _decode_difference(previous_environment, current_environment)
-    if differences:
-        # Reported, not refused: no rule yet says when a difference is fatal.
-        print(
-            f"decode environment differs by name from {producer}: {differences}",
-            file=sys.stderr,
-        )
-
-
-def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
-    """Every decode-environment field that differs, by name."""
-    changes = []
-    previous_decoders = {row["name"]: row["version"] for row in previous["decoders"]}
-    current_decoders = {row["name"]: row["version"] for row in current["decoders"]}
-    for name in sorted(set(previous_decoders) | set(current_decoders)):
-        if previous_decoders.get(name) != current_decoders.get(name):
-            changes.append(name)
-    for field in ("platform", "machine", "decode_paths_used", "produced_pixels"):
-        if previous.get(field) != current.get(field):
-            changes.append(field)
-    return changes
 
 
 def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[str, str]:
@@ -4185,15 +4152,6 @@ def exemplar_page_ids(context) -> dict[int, str]:
 def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:
     """Apply the sealed run-level cap when no orchestrator guards stage entry."""
     run = tree.read_run()
-    sealed_digests = run.get(SEALED_CONFIG_DIGESTS_FIELD)
-    # Hand-built test trees may lack the policy; a real run never may.
-    if not isinstance(sealed_digests, Mapping) or "hard-failure" not in sealed_digests:
-        if is_real_ingress(run):
-            raise ContractError(
-                f"{stage} refuses to start: this real run authority seals no hard-failure "
-                "configuration digest, so its run-level cap cannot be proven"
-            )
-        return
     policy = load_hard_failure_policy(hard_failure_config_path)
     require_sealed_config(run_sealed_config_digests(run), "hard-failure", policy["config_sha256"])
     # Inputs are not verified here, so lineage damage is reported by the

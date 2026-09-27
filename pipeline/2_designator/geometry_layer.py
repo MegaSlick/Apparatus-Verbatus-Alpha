@@ -20,7 +20,7 @@ from common.chandra_custody import (  # noqa: F401  (re-export)
     read_retained_chandra_response,
     retain_chandra_response,
 )
-from common.contracts.canonical import digest_of, is_plain_int
+from common.contracts.canonical import digest_of, is_plain_int, is_sha256
 from common.contracts.envelope import build_envelope, validate_envelope
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -52,11 +52,7 @@ class Bounds(TypedDict):
 
 
 def _sha(value: object, what: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(c not in "0123456789abcdef" for c in value)
-    ):
+    if not is_sha256(value):
         raise SchemaRefusal(f"{what} is not a lowercase sha256")
     return value
 

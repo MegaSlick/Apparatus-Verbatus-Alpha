@@ -3243,6 +3243,20 @@ def declared_recovery(scenario: dict | None, act_key: str) -> bool:
     return act_key in scenario["recover_acts"]
 
 
+def _wants_recovery(
+    scenario: dict | None,
+    act_key: str,
+    outside_ink_requests: list,
+    page_ordinal: int,
+    funded_pages: set[int],
+    used_total: int,
+) -> bool:
+    return (
+        declared_recovery(scenario, act_key)
+        or (bool(outside_ink_requests) and page_ordinal not in funded_pages)
+    ) and used_total == 0
+
+
 def cross_capture_hold_of(reading: dict, act_id: str) -> str | None:
     """The Perlector's named hold on an act it cannot read from one capture, or `None`.
 
@@ -3621,10 +3635,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             cut_regions,
             minimum_ink_pixels=minimum_ink_pixels,
         )
-        wants_recovery = (
-            declared_recovery(scenario, act_key)
-            or (bool(outside_ink_requests) and act["page_ordinal"] not in funded_pages)
-        ) and used_total == 0
+        wants_recovery = _wants_recovery(
+            scenario, act_key, outside_ink_requests, act["page_ordinal"], funded_pages, used_total
+        )
         observation_hold = unresolved_observation_hold(
             outside_ink_requests, act["page_ordinal"], funded_pages
         )

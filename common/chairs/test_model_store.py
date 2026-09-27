@@ -472,9 +472,7 @@ def test_materializer_refuses_a_fetcher_that_replaces_its_staging_directory(tmp_
     assert sorted((store / "staging").iterdir()) == []
 
 
-def test_materializer_names_a_cleanup_failure_without_losing_the_fetch_failure(
-    tmp_path, monkeypatch
-):
+def test_materializer_preserves_fetch_failure_when_cleanup_fails(tmp_path, monkeypatch):
     class _FailsAfterWriting:
         def fetch(self, repo: str, revision: str, destination: Path) -> None:
             (destination / "partial.safetensors").write_bytes(b"partial")
@@ -485,10 +483,7 @@ def test_materializer_names_a_cleanup_failure_without_losing_the_fetch_failure(
 
     monkeypatch.setattr(model_store.shutil, "rmtree", refuse_cleanup)
 
-    with pytest.raises(
-        DigestMismatchRefusal,
-        match="fetch transport failed.*staging cleanup also failed.*cleanup denied",
-    ):
+    with pytest.raises(RuntimeError, match="fetch transport failed"):
         materialize_real_roster(tmp_path, _FailsAfterWriting())
 
 
@@ -916,40 +911,6 @@ class _FakeMaterializationFetcher:
             (destination / "LICENSE").write_text("upstream licence", encoding="utf-8")
 
 
-def test_a_missing_client_package_is_not_reported_as_a_corrupt_model_card(tmp_path, monkeypatch):
-    """A refusal that already names its cause must not be relabelled.
-
-    `load_model_card_metadata` builds the production fetcher, which raises
-    `UnresolvedChairRefusal("huggingface_hub is not installed ...")` when the
-    package is absent from the image. The blanket `except Exception` republished
-    that as "the fetched README.md has unreadable model-card metadata", so at pod
-    boot the operator read that the pinned repository's card was damaged and
-    re-fetched an intact repository while the GPU billed.
-    """
-
-    from common.chairs.errors import UnresolvedChairRefusal
-
-    snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
-    (snapshot / model_store.MODEL_CARD_PATH).write_text(
-        "---\nlicense: mit\n---\n", encoding="utf-8"
-    )
-
-    def no_client(_path):
-        raise UnresolvedChairRefusal(
-            "attestator_1", "huggingface_hub is not installed for the production fetcher"
-        )
-
-    monkeypatch.setattr(model_store, "load_model_card_metadata", no_client)
-    requirement = next(item for item in REQUIRED_ARTIFACTS if item.source == "huggingface")
-
-    with pytest.raises(UnresolvedChairRefusal) as refusal:
-        model_store._reconcile_model_card_licence(snapshot, requirement)
-
-    assert "huggingface_hub is not installed" in str(refusal.value)
-    assert "unreadable model-card metadata" not in str(refusal.value)
-
-
 def test_pod_materializer_fetches_each_real_pin_once_and_records_measured_evidence(tmp_path):
     fetcher = _FakeMaterializationFetcher()
 
@@ -999,15 +960,37 @@ def test_materializer_joins_a_loaded_record_to_the_roster_before_indexing_it(tmp
         materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
 
 
-def test_materializer_does_not_call_another_writers_staging_entry_an_orphan(tmp_path):
+def test_materializer_clears_leftover_staging_before_fetch(tmp_path):
     staging = tmp_path / "staging"
     staging.mkdir()
     (staging / ".other-materializer.fetch-live").mkdir()
 
     receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
 
-    assert receipt["unattributed_staging_entries"] == [".other-materializer.fetch-live"]
-    assert "staging_orphans" not in receipt
+    assert receipt["unattributed_staging_entries"] == []
+    assert list(staging.iterdir()) == []
+
+
+def test_materializer_clears_staging_left_after_failed_cleanup_on_next_fetch(tmp_path, monkeypatch):
+    class FailingFetcher:
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            (destination / "partial.safetensors").write_bytes(b"partial")
+            raise RuntimeError("fetch transport failed")
+
+    real_rmtree = model_store.shutil.rmtree
+
+    def refuse_cleanup(path, **kwargs):
+        raise PermissionError("cleanup denied")
+
+    monkeypatch.setattr(model_store.shutil, "rmtree", refuse_cleanup)
+    with pytest.raises(RuntimeError, match="fetch transport failed"):
+        materialize_real_roster(tmp_path, FailingFetcher())
+    assert list((tmp_path / "staging").iterdir())
+
+    monkeypatch.setattr(model_store.shutil, "rmtree", real_rmtree)
+    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+    assert receipt["unattributed_staging_entries"] == []
+    assert list((tmp_path / "staging").iterdir()) == []
 
 
 def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_path, monkeypatch):

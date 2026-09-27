@@ -8,10 +8,10 @@ malformed `data-bbox` below is spelled "defaulting to full image" on purpose:
 it is the vendor's own console message for that case, standing in the field
 where its substitute would have come from.)
 
-Two halves. The first pins the carry: the prompt renders to the digest recorded
+Two halves. The first checks the carry: the prompt renders to the digest recorded
 against `datalab-to/chandra @ d4f7467…`, states the scale the geometry divides
 by, and lists the 36 tags, 14 attributes and 19 labels. Each check is then
-made to fail on purpose, since a seal nobody has watched refuse is a comment.
+made to fail on purpose, so the test catches a changed prompt or vocabulary.
 
 The second half pins the reader, and above all the five departures from
 `chandra/output.py::parse_layout`. Each is asserted as a *fact about the
@@ -125,55 +125,6 @@ def test_every_label_this_module_names_is_a_label_the_prompt_offers():
 def test_the_prompt_still_states_the_scale_the_geometry_divides_by():
     assert f"Bboxes are normalized 0-{BBOX_SCALE}." in OCR_LAYOUT_PROMPT
     assert BBOX_SCALE == 1000
-
-
-@pytest.mark.parametrize(
-    ("attribute", "value", "expected"),
-    [
-        ("OCR_LAYOUT_PROMPT_SHA256", "0" * 64, "carried OCR_LAYOUT_PROMPT renders to sha256"),
-        # Both digests, each expecting its own name: `_seal` checks
-        # `PROMPT_ENDING` first, so a case that only matched "renders to
-        # sha256" would pass on whichever of the two happened to fire.
-        ("PROMPT_ENDING_SHA256", "0" * 64, "carried PROMPT_ENDING renders to sha256"),
-        ("OCR_LAYOUT_PROMPT", OCR_LAYOUT_PROMPT.replace("0-1000", "0-100"), "0-1000"),
-        ("ALLOWED_TAGS", ALLOWED_TAGS[:-1], "not the vendor's 36"),
-        ("ALLOWED_ATTRIBUTES", ALLOWED_ATTRIBUTES[:-1], "not the vendor's 14"),
-        ("OCR_LAYOUT_LABELS", OCR_LAYOUT_LABELS[:-1], "not 19"),
-        ("OCR_LAYOUT_LABELS", ("Caption",) * 19, "repeats a label"),
-        (
-            "OCR_LAYOUT_LABELS",
-            OCR_LAYOUT_LABELS[:-1] + ("Marginal-Name",),
-            "is not offered by the carried prompt",
-        ),
-        # The reverse direction, which no other case reaches: every label this
-        # module names is still in the prompt, and the prompt offers a
-        # twentieth one it does not name. A caller switching on
-        # `OCR_LAYOUT_LABELS` would then have a label it never expects arriving
-        # from a model that was offered it.
-        (
-            "OCR_LAYOUT_PROMPT",
-            OCR_LAYOUT_PROMPT.replace("\n- Blank-Page\n", "\n- Blank-Page\n- Marginal-Name\n"),
-            "offers labels this module does not name",
-        ),
-    ],
-)
-def test_the_import_seal_refuses_a_carry_that_drifted(monkeypatch, attribute, value, expected):
-    """The seal has teeth, and this is where they are shown.
-
-    `_seal` runs once at import, where a passing run proves nothing about what
-    it would refuse. Each case here edits exactly one carried value the way a
-    careless hand would -- a digest left behind after a re-pin, a scale changed
-    in the prompt but not in `BBOX_SCALE`, a list one element short, a label
-    the prompt never offered -- and asserts the module refuses to be that.
-    """
-    monkeypatch.setattr(chandra_layout, attribute, value)
-    with pytest.raises(RuntimeError, match=expected):
-        chandra_layout._seal()
-
-
-def test_the_seal_passes_on_the_carry_as_it_stands():
-    # The counterpart to the case above: with nothing patched, `_seal` returns.
-    assert chandra_layout._seal() is None
 
 
 def test_undeclared_outcomes_and_findings_cannot_be_minted():

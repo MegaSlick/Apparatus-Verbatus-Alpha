@@ -47,7 +47,7 @@ from common.background import (  # noqa: E402
 )
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.annotations import validate_annotations  # noqa: E402
-from common.contracts.canonical import digest_of, verify_self_hash  # noqa: E402
+from common.contracts.canonical import digest_of, is_sha256, verify_self_hash  # noqa: E402
 from common.contracts.envelope import read_verified, validate_input_refs  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import is_well_formed  # noqa: E402
@@ -211,12 +211,7 @@ def logical_act_projection_entry(
             or not captures
             # Element types before `set(...)`: an unhashable member would raise
             # TypeError out of the dedupe itself; the projection must refuse.
-            or any(
-                not isinstance(source, str)
-                or len(source) != 64
-                or any(character not in "0123456789abcdef" for character in source)
-                for source in captures
-            )
+            or any(not is_sha256(source) for source in captures)
             or captures != sorted(set(captures))
         ):
             raise SchemaRefusal(
@@ -252,9 +247,7 @@ def logical_act_projection_entry(
             # with the component captures: an unhashable digest would raise
             # TypeError out of the dedupe and end the whole export run instead
             # of refusing this one record by name.
-            or not isinstance(source_value, str)
-            or len(source_value) != 64
-            or any(character not in "0123456789abcdef" for character in source_value)
+            or not is_sha256(source_value)
             or not is_well_formed(page_id_value)
             or not page_id_value.startswith("pg_")
             or not isinstance(act_key_value, str)

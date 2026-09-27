@@ -196,6 +196,7 @@ def test_what_the_gate_is_computed_from_is_coverage_only():
     # all); it is a coverage-and-declaration fact drawn from `act_key` and
     # `scenario`, still nothing a reading said.
     assert sources <= {
+        "_wants_recovery",
         "act",
         "act_key",
         "bool",

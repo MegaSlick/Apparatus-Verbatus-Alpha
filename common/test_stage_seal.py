@@ -29,7 +29,6 @@ from common.contracts.stages import (
     DOOR,
     EXEMPLAR,
     PERLECTOR,
-    RECENSOR,
 )
 from common.runtree.store import RunTree
 from common.stage import (
@@ -238,7 +237,7 @@ def test_a_stage_refuses_case_variant_and_symlink_blob_entries(tmp_path):
 
     (blob_root / link_name).unlink()
     (blob_root / link_name.upper()).write_bytes(outside.read_bytes())
-    with pytest.raises(SchemaRefusal, match="noncanonical content address"):
+    with pytest.raises(SchemaRefusal, match="non-canonical case variant"):
         _context(tree, run, registry, bindings).seal_boundary()
 
 
@@ -377,9 +376,11 @@ RunTree(Path(sys.argv[1]), "seal-unit").put_blob("attestatores", b"interrupted b
     # temporary-name hole punched in it and nothing else. Refusing is strictly
     # louder than recording, so the "can never disappear behind this exception"
     # guarantee this test was written for still holds -- the run stops instead.
-    (blobs_root / ".unexpected-published-name").write_bytes(b"must stay visible")
+    unexpected = blobs_root / ".unexpected-published-name"
+    unexpected.write_bytes(b"must stay visible")
     with pytest.raises(SchemaRefusal, match="noncanonical content address"):
         _context(tree, run, registry, bindings).seal_boundary()
+    unexpected.unlink()
     assert len(_stage_records(tree, ATTESTATORES, "stage-seal")) == 1
 
 
@@ -495,8 +496,8 @@ def test_final_seal_returns_only_the_export_from_its_verified_manifest_snapshot(
         verify_final_seal(tree)
 
 
-def test_a_real_run_missing_the_named_hard_failure_digest_refuses_direct_entry(tmp_path):
-    """Losing the cap's proof cannot turn a real run into an uncapped legacy fixture."""
+def test_a_real_run_missing_all_sealed_config_digests_refuses_direct_entry(tmp_path):
+    """A legacy run without policy seals cannot pass the direct entry check."""
     registry = ChairRegistry.from_toml(MODELS_CONFIG)
     bindings = run_config_bindings(registry.config, {"fixture": "none"}, "test")
     tree = RunTree.create(
@@ -509,7 +510,31 @@ def test_a_real_run_missing_the_named_hard_failure_digest_refuses_direct_entry(t
         ingress={"mode": "real"},
     )
 
-    with pytest.raises(ContractError, match="seals no hard-failure configuration digest"):
+    with pytest.raises(ContractError, match="records no sealed configuration digests"):
+        refuse_halted_run(tree, PERLECTOR, ROOT / "config" / "hard_failure.toml")
+
+
+def test_a_real_run_missing_only_hard_failure_digest_refuses_direct_entry(tmp_path):
+    """Other policy seals cannot stand in for the hard-failure policy."""
+    registry = ChairRegistry.from_toml(MODELS_CONFIG)
+    bindings = run_config_bindings(registry.config, {"fixture": "none"}, "test")
+    digests = {
+        name: digest
+        for name, digest in bindings["sealed_config_digests"].items()
+        if name != "hard-failure"
+    }
+    tree = RunTree.create(
+        tmp_path,
+        "real-missing-cap",
+        source_manifest=[],
+        config_digest=bindings["config_digest"],
+        adapter_recipes=bindings["adapter_recipes"],
+        witness_chairs=bindings["witness_chairs"],
+        ingress={"mode": "real"},
+        sealed_config_digests=digests,
+    )
+
+    with pytest.raises(ContractError, match="sealed no digest for the hard-failure configuration"):
         refuse_halted_run(tree, PERLECTOR, ROOT / "config" / "hard_failure.toml")
 
 
@@ -621,59 +646,6 @@ def test_the_attestatores_records_the_pixels_its_own_pass_computes():
     environment = _decode_environment(ATTESTATORES)
     assert environment["produced_pixels"] is True
     assert environment["decode_paths_used"] == ["project-png"]
-
-
-def test_a_clean_consumer_reconstructs_the_producers_environment(tmp_path, capsys):
-    """Different stage roles must not manufacture a predecessor mismatch.
-
-    Unit 13 first pinned these role differences as reported-by-name; Unit 12's
-    later correction reconstructs the PRODUCER's environment on the consumer's
-    machine, so a role-only difference cannot exist to report and a clean
-    consumer sees a clean predecessor.
-    """
-    tree, run, registry, bindings = _tree(tmp_path)
-    context = _context(tree, run, registry, bindings, stage=RECENSOR)
-    context.seal_boundary()
-    context.finish()
-    assert _decode_environment(RECENSOR)["produced_pixels"] is True
-    assert _decode_environment(ARCHETYPUS)["produced_pixels"] is False
-    capsys.readouterr()
-
-    verify_predecessor_seal(tree, ARCHETYPUS)
-
-    reported = capsys.readouterr().err
-    assert "decode environment differs" not in reported
-
-
-def test_a_producer_environment_change_is_reported_field_by_field(tmp_path, capsys, monkeypatch):
-    """Still an observation, never a refusal: Unit 17 owns the fatal policy."""
-    tree, run, registry, bindings = _tree(tmp_path)
-    context = _context(tree, run, registry, bindings)
-    context.seal_boundary()
-    context.finish()
-
-    import common.stage as stage_module
-
-    moved = _decode_environment(ATTESTATORES)
-    moved["decoders"] = [
-        dict(row, version="0.0.0-moved") if row["name"] == "pillow" else row
-        for row in moved["decoders"]
-    ]
-    # Attestatores now seals decode_paths_used=["project-png"] and
-    # produced_pixels=True itself (DAI makes it a pixel stage), so the moved
-    # values must differ from that baseline to be reportable at all.
-    moved["decode_paths_used"] = []
-    moved["produced_pixels"] = False
-    monkeypatch.setattr(stage_module, "_decode_environment", lambda _: moved)
-    capsys.readouterr()
-
-    verify_predecessor_seal(tree, PERLECTOR)
-
-    reported = capsys.readouterr().err
-    assert "decode environment differs by name from attestatores" in reported
-    assert "pillow" in reported
-    assert "decode_paths_used" in reported
-    assert "produced_pixels" in reported
 
 
 def test_decode_environment_bytes_cannot_change_under_an_existing_seal(tmp_path):

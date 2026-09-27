@@ -37,7 +37,6 @@ it needs.
 import json
 import os
 import stat
-import sys
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -76,6 +75,7 @@ from common.durability import (
     PublishedUnsettled,
     atomic_create,
     atomic_replace,
+    is_unpublished_blob_temporary,
 )
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, require_seal_method
 
@@ -487,7 +487,7 @@ class RunTree:
         target = self.resolve(relative)
         data = canonical_bytes(checked)
         if target.exists():
-            existing = _existing_partition_receipt(target, relative)
+            existing = _existing_partition_receipt(target)
             if existing is not None and (
                 existing["run_id"] == checked["run_id"]
                 and existing["config_digest"] == checked["config_digest"]
@@ -499,18 +499,8 @@ class RunTree:
                     "the same run authority; the proposal-act denominator is sealed once and "
                     "cannot legitimately differ between two passes over the same run"
                 )
-            try:
-                # A file longer than `data` cannot be the same receipt.
-                if _read_bytes_bounded(target, max_bytes=len(data)) == data:
-                    return PublishResult(relative, reused=True)
-            except SchemaRefusal:
-                pass
-            except FileNotFoundError:
-                # Gone between `exists()` above and here: nothing to reuse or
-                # refuse, so publish it, as `_publish_bytes` does at the same seam.
-                pass
         target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(target, data)
+        self._atomic_write(relative, data)
         return PublishResult(relative, reused=False)
 
     def read_recensor_partition_receipt(self) -> dict[str, Any]:
@@ -596,6 +586,7 @@ class RunTree:
         return read_verified(self.read_bytes, ref, label, refusal)
 
     def _publish_bytes(self, relative: str, data: bytes) -> PublishResult:
+        self._require_inventory_path(relative)
         target = self.resolve(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -619,6 +610,17 @@ class RunTree:
                 "existing file was not touched"
             ) from None
         return PublishResult(relative, reused=False)
+
+    def _atomic_write(self, relative: str, data: bytes) -> None:
+        self._require_inventory_path(relative)
+        _replace_file(self.resolve(relative), data)
+
+    def _require_inventory_path(self, relative: str) -> None:
+        if not any(
+            relative.startswith(prefix) if prefix.endswith("/") else relative == prefix
+            for prefix in self.inventory_scope()
+        ):
+            raise SchemaRefusal(f"{relative!r} is outside this run tree's inventory scope")
 
     # --- Reading ----------------------------------------------------------------
 
@@ -887,9 +889,8 @@ class RunTree:
     def _walk_blobs(self, directory: Path) -> Iterator[str]:
         """Yield addressable regular blobs in name order.
 
-        Non-digest names include same-directory publication residue and are not
-        inventory members. Blob contents are verified when consumed rather than
-        during every manifest rebuild because they may be full page images.
+        Publisher temporaries are not inventory members. Blob contents are
+        verified when consumed because they may be full page images.
         """
         relative_root = str(directory.relative_to(self.root))
         directory_fd = self._open_relative_fd(
@@ -907,6 +908,14 @@ class RunTree:
                 if stat.S_ISLNK(before.st_mode):
                     self._raise_manifest_symlink(relative_path, frozenset())
                 if not is_sha256(name):
+                    if name != name.casefold() and is_sha256(name.casefold()):
+                        raise SchemaRefusal(
+                            f"{relative_path!r} is a non-canonical case variant of a sha256"
+                        )
+                    if not is_unpublished_blob_temporary(name):
+                        raise SchemaRefusal(f"{relative_path!r} has a noncanonical content address")
+                    if not stat.S_ISREG(before.st_mode):
+                        raise SchemaRefusal(f"{relative_path!r} is not a regular blob temporary")
                     continue
                 if not stat.S_ISREG(before.st_mode):
                     raise SchemaRefusal(
@@ -1250,7 +1259,7 @@ class RunTree:
         relative = self.manifest_path(stage)
         target = self.resolve(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(target, canonical_bytes(manifest))
+        self._atomic_write(relative, canonical_bytes(manifest))
         return PublishResult(relative, reused=False)
 
     def write_index(self, stage: str, index: dict[str, Any]) -> PublishResult:
@@ -1284,7 +1293,7 @@ class RunTree:
         relative = self.index_path(stage)
         target = self.resolve(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(target, data)
+        self._atomic_write(relative, data)
         return PublishResult(relative, reused=False)
 
     def read_index(self, stage: str) -> dict[str, Any]:
@@ -1310,8 +1319,7 @@ class RunTree:
     def inventory_scope(self) -> tuple[str, ...]:
         """Every path prefix this store is able to write.
 
-        Every managed path any code writes must fall inside this scope; a static
-        test beside this module reads the writers from source and compares.  That
+        Writers call ``_require_inventory_path`` before publication. That
         includes `<stage>/serving-logs/`, written by the serving launcher, which
         `fetch-run` would otherwise refuse.
         """
@@ -1360,27 +1368,13 @@ def _run_creation_lock(parent: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def _existing_partition_receipt(target: Path, relative: str) -> dict[str, Any] | None:
-    """The stored partition receipt, or `None` when it is unreadable or invalid.
-
-    The receipt is derived, so damage must not block rebuilding it; but the
-    damage is reported, because the next write erases the only trace of it.
-    `TypeError` and `RecursionError` are how strict canonicalization and a deeply
-    nested file refuse; `_read_json` already translates `OSError` and `ValueError`.
-    """
+def _existing_partition_receipt(target: Path) -> dict[str, Any] | None:
+    """The stored derived receipt, or `None` when it cannot be validated."""
     from common.recensor_receipt import validate_recensor_partition_receipt
 
     try:
         return validate_recensor_partition_receipt(_read_json(target))
-    except (ContractError, TypeError, RecursionError) as error:
-        print(
-            f"warning: the existing Recensor partition receipt at {relative} could "
-            f"not be read as a valid receipt and is being replaced "
-            f"({type(error).__name__}: {error}). This means a previous write did "
-            f"not complete; the receipt is derived and is being rebuilt, but the "
-            f"interruption itself is worth investigating.",
-            file=sys.stderr,
-        )
+    except (ContractError, TypeError, RecursionError):
         return None
 
 
@@ -1422,7 +1416,7 @@ def _verify_register_snapshot_present(tree: RunTree, digest: str) -> None:
     read_verified(tree.read_bytes, ref, what, IncompatibleReuse)
 
 
-def _atomic_write(target: Path, data: bytes) -> None:
+def _replace_file(target: Path, data: bytes) -> None:
     with _run_root_refusals(target):
         atomic_replace(target, data)
 

@@ -14,7 +14,7 @@ an export after pixels changed between stages.
 import json
 from typing import Any, Final
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256, verify_self_hash
 from common.contracts.envelope import read_verified, validate_envelope
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import PROPOSAL_SEAL_ID, artifact_id, page_id, region_id
@@ -89,7 +89,7 @@ def verify_sealed_page_pixels(
     _verify_page_source_facts(payload, rows[payload["ordinal"]], payload["ordinal"])
 
     source_digest = payload.get("source_sha256")
-    if not _is_sha256(source_digest):
+    if not is_sha256(source_digest):
         raise ContractError("a sealed Exemplar page has no lowercase pixel sha256")
     rendered = payload.get("rendered_from")
     # `_page_origin` type-checks every render field rather than only closing
@@ -200,7 +200,7 @@ def _validate_rendered_origin(rendered: Any) -> None:
         != {"container_format", "container_sha256", "container_page_index", "render_contract"}
         or not isinstance(rendered.get("container_format"), str)
         or not rendered["container_format"]
-        or not _is_sha256(rendered.get("container_sha256"))
+        or not is_sha256(rendered.get("container_sha256"))
         or not isinstance(rendered.get("container_page_index"), int)
         or isinstance(rendered["container_page_index"], bool)
         or rendered["container_page_index"] < 0
@@ -538,7 +538,7 @@ def verify_exemplar_crop_lineage(
     else:
         raise ContractError("a crop region has no recognized proposal or recovery origin")
     image_path, image_digest = payload.get("image_path"), payload.get("image_sha256")
-    if not isinstance(image_path, str) or not _is_sha256(image_digest):
+    if not isinstance(image_path, str) or not is_sha256(image_digest):
         raise ContractError("a crop region names no content-addressed crop image")
     crop = read_verified(
         tree.read_bytes,
@@ -1043,7 +1043,7 @@ def verify_triage_derivative(
         )
     _validate_embedded_triage_row(row)
     row_digest = row.get("manifest_row_sha256")
-    if not _is_sha256(row_digest):
+    if not is_sha256(row_digest):
         raise ContractError("a sealed derivative page's manifest row has no sha256")
     if (
         digest_bytes(
@@ -1169,15 +1169,7 @@ def _references_by_path(value: Any) -> dict[str, dict[str, str]]:
         if not isinstance(ref, dict):
             raise ContractError("a sealed Exemplar page has an invalid input reference")
         path, digest = ref.get("relative_path"), ref.get("sha256")
-        if not isinstance(path, str) or not _is_sha256(digest) or path in refs:
+        if not isinstance(path, str) or not is_sha256(digest) or path in refs:
             raise ContractError("a sealed Exemplar page has an invalid input reference")
         refs[path] = {"relative_path": path, "sha256": digest}
     return refs
-
-
-def _is_sha256(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )

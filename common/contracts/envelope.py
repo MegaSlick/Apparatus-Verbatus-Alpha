@@ -241,7 +241,7 @@ def validate_input_refs(inputs: Any) -> None:
                 "current-directory, and parent-directory segments are refused so one file "
                 "has one accounting name"
             )
-        if type(sha) is not str or len(sha) != 64 or not _is_hex(sha):
+        if not is_sha256(sha):
             raise SchemaRefusal(f"input reference {path!r} has no sha256 digest")
         if path in seen:
             conflict = (
@@ -333,7 +333,3 @@ def read_verified(
             "the bytes changed under a sealed reference"
         )
     return data
-
-
-def _is_hex(value: str) -> bool:
-    return all(character in "0123456789abcdef" for character in value)

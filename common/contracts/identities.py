@@ -22,7 +22,7 @@ import re
 import unicodedata
 from typing import Any, Final
 
-from .canonical import digest_of
+from .canonical import digest_of, is_sha256
 from .errors import IdentityRefusal
 from .stages import DESIGNATOR
 
@@ -100,11 +100,7 @@ def _closed(value: Any, fields: set[str], what: str) -> dict[str, Any]:
 
 
 def _sha256(value: Any, what: str) -> None:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    if not is_sha256(value):
         raise IdentityRefusal(f"{what} must be a lowercase SHA-256 digest")
 
 

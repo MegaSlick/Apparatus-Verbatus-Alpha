@@ -1972,6 +1972,7 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
         changed = final["payload"]["text"] != frozen[act_key]
         if changed:
             changed_acts.append(act_key)
+            assert len(final["payload"]["text"]) != len(frozen[act_key])
         assert final["outcome"] == ("truncated" if changed else "read")
         assert final["payload"]["audit"]["examination"] == "incomplete"
         assert final["payload"]["audit"]["unresolved"] is True
@@ -1982,6 +1983,10 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
             "assessed" if expected_doubts else "not-assessed"
         )
         termination = findings[act_key]["reproof_truncation"]
+        assert termination["measure"]["characters"] == len(final["payload"]["text"])
+        assert final["payload"]["truncation"]["measure"]["characters"] == len(
+            final["payload"]["text"]
+        )
         assert termination["classification"] == expected_classification
         assert termination["signals"]["stop_reason_declared"] == stop_reason
         audit.validate_chain(tree, final, final["subject_id"])
@@ -2799,71 +2804,39 @@ def test_an_unhashable_or_non_string_vocabulary_value_is_refused_by_name_not_typ
         audit.unresolved_state(bad)
 
 
-def test_an_emptied_reproof_is_re_measured_beside_the_text_it_publishes():
-    """The sealed termination must describe the reading the record publishes.
+def test_a_whitespace_reproof_publishes_empty_text_with_its_own_measure():
+    perlector = load_stage("4_perlector")
+    config = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0]
+    run = SimpleNamespace(protocol_config=config, context=SimpleNamespace())
+    row = {
+        "payload": {
+            "text": "abc",
+            "gaps": [],
+            "uncertain_spans": [],
+            "truncation": perlector.truncation.classify(
+                "abc",
+                region_pixels=160 * 10,
+                page_pixels=200 * 260,
+                truncation_policy=config[protocol.TRUNCATION_TABLE],
+                stop_reason="stop",
+            ),
+        },
+        "region_pixels": 160 * 10,
+        "page_pixels": 200 * 260,
+        "fields": frozenset(),
+        "testimonia": [],
+        "attachment_view": {"comparison_views": {}},
+        "prior": {"text": "abc"},
+        "declared_failure": None,
+    }
+    reproof = SimpleNamespace(reply={"stop_reason": "stop"}, text="   ", call_record=None)
 
-    A re-proof that returns whitespace is projected to `no-readable-text`: the
-    published text becomes `""`. The termination measured over the whitespace
-    still counted those characters, and `validate_finding` binds `measure.
-    characters` to the published text -- so the producer's own `validate_chain`
-    raised `SchemaRefusal` on a correct record and the pass stopped before the
-    later acts were processed.
+    measured = perlector._adopt_reproof_text(run, row, reproof)
 
-    Read from source because reaching this branch behaviourally needs a declared fixture scenario whose Pass-C
-    re-proof returns whitespace, and the whole shared skeleton would have to
-    grow one to assert a two-line ordering inside one branch. The binding this
-    protects is asserted behaviourally beside it, over the validator that
-    refused.
-    """
-    import ast
-
-    source = Path(load_stage("4_perlector").__file__).read_text(encoding="utf-8")
-    module = ast.parse(source)
-    read_the_acts = next(
-        node
-        for node in ast.walk(module)
-        if isinstance(node, ast.FunctionDef) and node.name == "_adopt_reproof_text"
-    )
-    branches = [
-        node
-        for node in ast.walk(read_the_acts)
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.Compare)
-        and any(
-            isinstance(comparator, ast.Constant) and comparator.value == "no-readable-text"
-            for comparator in node.test.comparators
-        )
-    ]
-    assert branches, "run.py no longer projects an emptied re-proof to no-readable-text"
-    emptying = [
-        branch
-        for branch in branches
-        if any(
-            isinstance(node, ast.Assign)
-            and any(
-                isinstance(target, ast.Subscript)
-                and isinstance(target.slice, ast.Constant)
-                and target.slice.value == "text"
-                for target in node.targets
-            )
-            and isinstance(node.value, ast.Constant)
-            and node.value.value == ""
-            for node in ast.walk(branch)
-        )
-    ]
-    assert emptying, "no branch empties the published text; this pin has lost its subject"
-    for branch in emptying:
-        assert any(
-            isinstance(node, ast.Assign)
-            and any(
-                isinstance(target, ast.Name) and target.id == "reproof_truncation"
-                for target in node.targets
-            )
-            for node in ast.walk(branch)
-        ), (
-            "the branch that empties the published text must re-measure the sealed "
-            "termination beside it, or the finding describes a reading nobody published"
-        )
+    assert row["outcome"] == "no-readable-text"
+    assert row["payload"]["text"] == ""
+    assert measured["measure"]["characters"] == 0
+    assert row["payload"]["truncation"]["measure"]["characters"] == 3
 
 
 def test_the_validator_that_refused_the_unmeasured_emptying_still_does():

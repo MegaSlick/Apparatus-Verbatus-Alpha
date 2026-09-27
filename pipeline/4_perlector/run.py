@@ -56,7 +56,12 @@ from common.contracts.approval import (  # noqa: E402
     ApprovalRecordReference,
     validate_approval_record,
 )
-from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of  # noqa: E402
+from common.contracts.canonical import (  # noqa: E402
+    canonical_bytes,
+    digest_bytes,
+    digest_of,
+    is_sha256,
+)
 from common.contracts.envelope import build_envelope, validate_input_refs  # noqa: E402
 from common.contracts.errors import (  # noqa: E402
     ApprovalRefusal,
@@ -144,7 +149,7 @@ def _receipt_name_digest(name: str) -> str | None:
     if not name.endswith(suffix):
         return None
     digest = name[: -len(suffix)]
-    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+    if not is_sha256(digest):
         return None
     return digest
 

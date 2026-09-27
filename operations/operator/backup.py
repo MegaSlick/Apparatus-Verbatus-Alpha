@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final, Iterator
 
-from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
 from common.runtree.store import RunTree
@@ -94,7 +94,7 @@ class BackupReport:
                 f"backup worker report declares schema {value['schema']!r}, not {SCHEMA!r}"
             )
         snapshot_sha256 = value["snapshot_sha256"]
-        if not _is_sha256(snapshot_sha256):
+        if not is_sha256(snapshot_sha256):
             raise BackupRefusal("backup worker report has no lowercase snapshot sha256")
         counts: dict[str, int] = {}
         for field in ("copied", "reused"):
@@ -687,14 +687,6 @@ def _sha256_descriptor(descriptor: int, *, what: str) -> str:
     return digest.hexdigest()
 
 
-def _is_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
 def _existing_digest(directory_descriptor: int, name: str, *, what: str) -> str | None:
     try:
         descriptor = _open_regular_descriptor(name, directory_descriptor, what=what)
@@ -955,7 +947,7 @@ def _verify_backup_snapshot(
         if not isinstance(row, dict) or set(row) != {"relative_path", "sha256"}:
             raise BackupRefusal("backup snapshot has a malformed file row")
         relative, digest = row["relative_path"], row["sha256"]
-        if not isinstance(relative, str) or not _is_sha256(digest):
+        if not isinstance(relative, str) or not is_sha256(digest):
             raise BackupRefusal("backup snapshot has a malformed relative path or sha256")
         try:
             _record_mac_spelling(relative, mac_spellings)

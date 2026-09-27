@@ -16,7 +16,6 @@ import hashlib
 import inspect
 import json
 import os
-import re
 import stat
 import sys
 from pathlib import Path
@@ -44,7 +43,7 @@ from common.runtree.store import (
     RunTree,
     _default_corpus_frame_membership,
 )
-from conftest import code_text, tree_snapshot
+from conftest import tree_snapshot
 
 PAGE_BYTES = b"synthetic page one"
 SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTES), "ordinal": 1}]
@@ -214,15 +213,12 @@ def test_a_write_that_grows_the_expected_act_count_is_also_refused(tmp_path):
         tree.write_recensor_partition_receipt(grown)
 
 
-def test_repeating_an_identical_receipt_is_reused_not_refused(tmp_path):
-    """The unchanged-denominator guard must not itself turn an idempotent
-    replay -- the ordinary case of resuming or re-running a finished pass --
-    into a refusal."""
+def test_repeating_an_identical_receipt_is_replaced_not_refused(tmp_path):
     tree = make_run(tmp_path)
     receipt = make_recensor_partition_receipt()
     tree.write_recensor_partition_receipt(receipt)
     result = tree.write_recensor_partition_receipt(receipt)
-    assert result.reused is True
+    assert result.reused is False
 
 
 # --- The run authority ---------------------------------------------------------
@@ -1695,6 +1691,16 @@ def test_the_blob_inventory_lists_stored_bytes_and_not_a_publication_that_was_ki
     assert tree.build_manifest(DESIGNATOR)["blobs"] == [digest]
 
 
+def test_a_manifest_refuses_unaddressable_blob_names(tmp_path):
+    tree = make_run(tmp_path)
+    blobs_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}")
+    blobs_root.mkdir(parents=True)
+    (blobs_root / "unknown").write_bytes(b"unaddressable")
+
+    with pytest.raises(SchemaRefusal, match="noncanonical content address"):
+        tree.build_manifest(DESIGNATOR)
+
+
 def test_a_manifest_still_builds_over_the_directories_the_store_itself_wrote(tmp_path):
     tree = make_run(tmp_path)
     envelope = make_envelope()
@@ -2038,51 +2044,12 @@ def test_a_commit_that_is_not_a_full_lowercase_revision_is_refused(tmp_path, val
         make_run(tmp_path, repository_commit=value)
 
 
-def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
-    """The static half of harvest #13, read from source rather than from a fixture.
-
-    The runtime test above proves the eight writers we know about stay in scope.
-    It cannot prove that a *ninth* writer added later was exercised at all — an
-    un-called writer leaves no trace to check. So this reads every immutable
-    publication in `RunTree` and requires it to route through one of the path
-    constructors `inventory_scope()` is derived from. A new writer that invents a
-    path fails here even though no test calls it.
-    """
-    source = code_text(runtree_store.RunTree)
-    constructors = set(re.findall(r"self\._publish_bytes\(\s*self\.(\w+)\(", source))
-    indirect = set(
-        re.findall(r"(\w+)\s*=\s*self\.(?:artifact_path|manifest_path|index_path)\(", source)
-    )
-    passed_through = set(re.findall(r"self\._publish_bytes\(\s*(\w+)\s*,", source))
-
-    assert constructors <= {"blob_path", "receipt_path"}, (
-        f"a store writer publishes through unknown path constructor(s) {sorted(constructors)}; "
-        "inventory_scope() is derived from artifact_path/blob_path/manifest_path/index_path/"
-        "receipt_path and cannot name another"
-    )
-    receipt_writer = code_text(runtree_store.RunTree.write_recensor_partition_receipt)
-    assert (
-        "recensor_partition_receipt_path" in receipt_writer and "_atomic_write" in receipt_writer
-    ), (
-        "the mutable Recensor partition receipt must use its named run-health path and atomic "
-        "publication; a replace-in-place writer is invisible to the _publish_bytes scan above, "
-        "so this is the only thing that keeps it from becoming a hidden unscoped write"
-    )
-    index_writer = code_text(runtree_store.RunTree.write_index)
-    assert "index_path" in index_writer and "_atomic_write" in index_writer, (
-        "the rewritable derived index must use its named path constructor and atomic "
-        "publication; write_index is the third replace-in-place writer the _publish_bytes "
-        "scan above cannot see, so this is what keeps it from becoming a hidden unscoped write"
-    )
-    assert passed_through <= indirect, (
-        "a store writer publishes bytes at a path that did not come from "
-        "artifact_path(), manifest_path() or index_path(); harvest #13 requires every managed "
-        f"path to be one the inventory scope can name (found {sorted(passed_through - indirect)})"
-    )
-    assert constructors and passed_through, (
-        "no publication sites were found at all — this test would pass vacuously, "
-        "which is the false green meta-invariant #88 refuses"
-    )
+@pytest.mark.parametrize("writer", ["_publish_bytes", "_atomic_write"])
+def test_store_writers_refuse_paths_outside_inventory(tmp_path, writer):
+    tree = make_run(tmp_path)
+    with pytest.raises(SchemaRefusal, match="outside this run tree's inventory scope"):
+        getattr(tree, writer)("unmanaged/artifact.json", b"payload")
+    assert not tree.resolve("unmanaged/artifact.json").exists()
 
 
 def test_a_rebuildable_index_may_be_replaced(tmp_path):
@@ -2484,7 +2451,7 @@ def _fsync_kinds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return observed
 
 
-@pytest.mark.parametrize("publish", ["_atomic_write", "_atomic_create"])
+@pytest.mark.parametrize("publish", ["_replace_file", "_atomic_create"])
 def test_publication_syncs_the_file_then_the_name(
     tmp_path: Path, publish: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2507,7 +2474,7 @@ def test_publication_syncs_the_file_then_the_name(
     assert [entry.name for entry in tmp_path.iterdir()] == ["artifact.json"]
 
 
-@pytest.mark.parametrize("publish", ["_atomic_write", "_atomic_create"])
+@pytest.mark.parametrize("publish", ["_replace_file", "_atomic_create"])
 def test_a_filesystem_that_will_not_persist_a_name_refuses_the_publication(
     tmp_path: Path, publish: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2555,7 +2522,7 @@ def test_a_directory_that_cannot_be_opened_refuses_the_publication_too(
     monkeypatch.setattr(os, "open", refusing)
 
     with pytest.raises(SchemaRefusal, match="will not persist a directory entry"):
-        runtree_store._atomic_write(tmp_path / "artifact.json", b'{"a":1}')
+        runtree_store._replace_file(tmp_path / "artifact.json", b'{"a":1}')
 
 
 def test_a_tampered_run_receipt_is_refused_when_its_reference_is_read(tmp_path):

@@ -20,7 +20,7 @@ of a human act at a moment — so the moment is the point.
 
 from typing import Any, Final
 
-from .canonical import self_hash, self_hash_refusal, verify_self_hash
+from .canonical import is_sha256, self_hash, self_hash_refusal, verify_self_hash
 from .errors import ApprovalRefusal
 
 # The only approver, recorded as a role rather than a person's name, and as a value
@@ -102,7 +102,7 @@ class ApprovalRecordBinding:
         # `type(...) is str`: a str subclass could override the comparison below.
         if type(subject) is not str or not subject.strip():
             raise ApprovalRefusal("an approval-record binding names no subject")
-        if not _is_sha256(target_version_hash):
+        if not is_sha256(target_version_hash):
             raise ApprovalRefusal("an approval-record binding names no target version")
         self.reference = reference
         self.subject = subject
@@ -174,7 +174,7 @@ def build_approval_record(
             f"part a reader six weeks out actually needs, and it must be no larger than "
             f"{MAX_APPROVAL_REASON_BYTES} UTF-8 bytes"
         )
-    if not _is_sha256(target_version_hash):
+    if not is_sha256(target_version_hash):
         raise ApprovalRefusal(
             "an approval must name the lowercase sha256 of the exact policy or target version "
             "it approved, or it goes on approving something that changed underneath it"
@@ -267,7 +267,7 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
                 f"whole point of writing it down; the field is bounded to {maximum} "
                 "UTF-8 bytes"
             )
-    if not _is_sha256(record["target_version_hash"]):
+    if not is_sha256(record["target_version_hash"]):
         raise ApprovalRefusal(
             "approval record target_version_hash is not a lowercase sha256; an approval "
             "without a checkable target version cannot be current"
@@ -283,14 +283,6 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
             "sealed, and an edited approval is not an approval"
         )
     return record
-
-
-def _is_sha256(value: Any) -> bool:
-    return (
-        type(value) is str
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 def _text_field_refusal(value: Any, maximum_bytes: int) -> str | None:

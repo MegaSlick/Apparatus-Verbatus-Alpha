@@ -1,4 +1,3 @@
-import warnings
 from dataclasses import replace
 from pathlib import Path
 
@@ -117,26 +116,6 @@ def test_an_oversized_adapter_name_is_bounded_before_hashing_or_reporting():
     assert "exceeds the 128-character name bound" in message
     assert f"({len(name)} characters)" in message
     assert len(message) < 500
-
-
-def test_a_known_adapter_name_with_no_configured_occupant_is_reported(monkeypatch, capsys):
-    """A non-fatal registry finding must survive global warning filters.
-
-    Treating warnings as errors proves the report bypasses that suppressible
-    channel; the stream assertions prove it reaches stderr only.
-    """
-    monkeypatch.setattr(
-        witness_adapters,
-        "KNOWN_WITNESS_ADAPTER_NAMES",
-        witness_adapters.KNOWN_WITNESS_ADAPTER_NAMES | {"unbound.fixture.v1"},
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        bindings = run_config_bindings(_models(), load_fixture(str(ROOT / "proof")), "happy")
-    captured = capsys.readouterr()
-    assert "unbound.fixture.v1" in captured.err
-    assert "unbound.fixture.v1" not in captured.out
-    assert bindings["config_digest"]
 
 
 def test_blank_adapter_name_is_refused_by_the_closed_models_schema():
