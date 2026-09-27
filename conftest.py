@@ -199,48 +199,9 @@ def is_immutable_evidence(path: str) -> bool:
 
 
 def tree_snapshot(root: Path) -> dict[str, str]:
-    """Every entry under `root`, described -- not only its regular files.
+    """Describe the root and every entry without following symlinks.
 
-    A refusal that tells the operator "Nothing was written" is a claim about a
-    directory, and the suites that check that claim compare a snapshot taken
-    before against one taken after. Filtering that snapshot by `is_file()` made
-    it unable to see most of what a half-finished refusal leaves behind: an
-    empty directory, a dangling symlink, a symlink to a directory, a fifo. Two
-    trees that differ by any of those compared equal, so the check passed by not
-    looking -- the shape GOVERNANCE 10 refuses, in the very test written to stop
-    a claim being taken on trust.
-
-    So every entry is described rather than skipped:
-
-    * a regular file, by the digest of its bytes -- names alone would miss an
-      overwrite of a file that already existed
-    * a directory, as a directory: a run root created and then disowned is a run
-      id claimed under inputs that were never accepted
-    * a symlink, by its target, **recorded without following it**. The link is
-      the thing that was left behind; where it points is somebody else's tree,
-      and a symlink to a directory read as a directory would report files this
-      run never wrote while hiding the link that reported them.
-    * anything else -- fifo, socket, device -- by a marker. What it is matters
-      less than that it appeared.
-
-    `os.walk` rather than `rglob`, and with `followlinks` left at its default:
-    the walk must not descend through a symlinked directory it has just recorded
-    as a symlink.
-
-    **`root` itself is described, under `"."`.** Describing only what is *under*
-    it left one blindness of exactly the shape above: `os.walk` of a path that
-    does not exist yields nothing, so a refusal that created the root and wrote
-    nothing into it produced the same empty snapshot as a refusal that created
-    nothing at all. That is not a detail -- the root is usually the run root,
-    and a run root that exists is a run id claimed under inputs that were
-    refused. A missing root is `{}` and an empty one is `{".": "directory"}`, so
-    the two can no longer compare equal, and every before/after probe that uses
-    this helper now also sees a root deleted, replaced, or swapped for a link
-    between its two snapshots.
-
-    A symlinked root is described and not walked, for the reason a symlinked
-    entry is: the link is what was left behind, and following it would report a
-    tree that lives somewhere else.
+    Include directories and special entries so refusal tests detect partial writes.
     """
 
     root = Path(root)
@@ -442,26 +403,7 @@ reason = "fixture test removes this witness without replacing it"
     return path
 
 
-# The session-wide notification sink. See `operations/notify/notify.sh`.
-#
-# `operations/notify/notify.sh` reads the topic from `NTFY_TOPIC` first and
-# from the gitignored `private/ntfy.conf` only if that is unset, so setting it
-# here takes the real topic out of reach of the whole test session -- every
-# child process inherits it, which is what matters, because the leak this
-# closes was a `subprocess.run` several frames below a test that believed it
-# had stubbed the notification out.
-#
-# It is set with `os.environ` at session scope rather than through `monkeypatch`
-# because `monkeypatch` is function-scoped and this must cover collection-time
-# and fixture-time spawns too. `NTFY_SERVER` is *not* touched: the script
-# refuses that variable outright, and a test asserting on that refusal must
-# still see whatever it sets.
-#
-# A suite that deliberately drives the script with its own topic still can:
-# `operations/notify/test_notify.py` builds a scrubbed environment by stripping
-# the whole `NTFY_` prefix, so this value never reaches the copy of the script
-# it tests. That is the intended way past the sink -- a fake `curl` and a
-# throwaway topic -- and not an accident of ordering.
+# Keep test subprocesses on a sink topic during collection and execution.
 NOTIFY_TEST_SINK_TOPIC = "verbatus-test-sink"
 
 
