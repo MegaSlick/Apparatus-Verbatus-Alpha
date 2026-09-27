@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
 
+import huggingface_hub
+
 from common.contracts.canonical import canonical_bytes
 
 from .config import load_models_toml
@@ -72,29 +74,15 @@ class HuggingFaceClient(Protocol):
 
 
 class HuggingFaceFetcher:
-    """Adapter over an injected Hugging Face client; no import-time network dependency."""
+    """Adapter over an injected Hugging Face client."""
 
     def __init__(self, client: HuggingFaceClient):
         self.client = client
 
     @classmethod
     def from_huggingface_hub(cls) -> "HuggingFaceFetcher":
-        """Construct the production adapter from the installed official client.
-
-        Importing lazily keeps offline config/receipt tests independent of the
-        optional runtime package, while production deliberately uses the declared
-        `huggingface_hub.snapshot_download` seam.
-        """
-
-        try:
-            from importlib import import_module
-
-            client = import_module("huggingface_hub")
-        except ImportError as error:
-            raise UnresolvedChairRefusal(
-                "huggingface", "huggingface_hub is not installed for the production fetcher"
-            ) from error
-        return cls(client)  # type: ignore[arg-type]
+        """Construct the production adapter from the declared client dependency."""
+        return cls(huggingface_hub)
 
     def fetch(self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]) -> None:
         if identity.source != "huggingface" or not identity.repo or not identity.revision:

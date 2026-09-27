@@ -44,8 +44,7 @@ and a run tree can never drift on what "canonical" means.
 identity, an explicit absence, or a refusal — no network, no filesystem walk
 beyond the one file. `ensure` is the only place a fetch may happen, and only for
 a `huggingface` chair; a `local-repository` chair never touches the network even
-there. `huggingface_hub` is reached through one function-scoped `importlib` call,
-so the whole package imports, parses and tests with the dependency absent.
+there. `huggingface_hub` is a declared dependency used by the production fetcher.
 
 **A `ServingReceipt` is a run receipt, never a stage artifact.** It carries a
 timestamp and a live endpoint — honestly non-deterministic — so it is written

@@ -15,7 +15,7 @@ Literal dynamic `import_module(...)` and `__import__(...)` calls are checked alo
 ordinary imports.
 They are executable imports just as much as a top-level statement is; letting a
 constant `pipeline...` string evade the AST walker would make the boundary a naming
-convention. The one allowed deferred hub import is counted explicitly below.
+convention.
 
 Meta-invariant #88: no loop here reports success over an empty population.
 """
@@ -23,16 +23,10 @@ Meta-invariant #88: no loop here reports success over an empty population.
 import ast
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[2]
 COMMON = ROOT / "common"
 CHAIRS = COMMON / "chairs"
 
-# `huggingface_hub` is on this list for a reason of its own. The whole package
-# must import, parse and run offline with the dependency absent, so the one
-# module allowed to reach it does so inside a function — and a top-level import
-# anywhere would turn every offline test into a dependency check.
 FORBIDDEN_ROOTS = ("pipeline", "proof")
 
 
@@ -142,104 +136,6 @@ def test_nothing_anywhere_under_common_imports_pipeline():
     )
 
 
-def _is_hub_loader(node: ast.AST) -> bool:
-    """A literal `import_module("huggingface_hub")` call, however it is nested."""
-    return (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "import_module"
-        and bool(node.args)
-        and isinstance(node.args[0], ast.Constant)
-        and node.args[0].value == "huggingface_hub"
-    )
-
-
-def _signature_parts(node: ast.AST) -> list[ast.AST]:
-    """The parts of a `def` that run where the `def` sits, not when it is called.
-
-    Argument defaults, decorators and annotations are all evaluated at the moment
-    the function is *defined*. `ast.walk` over a `FunctionDef` descends into them
-    exactly as it descends into the body, so
-    `def fetch(client=import_module("huggingface_hub")):` reads as function-scoped
-    while in fact running on import — which is the one thing this file exists to
-    forbid.
-    """
-    parts: list[ast.AST] = list(getattr(node, "decorator_list", []))
-    arguments = node.args
-    parts += [default for default in arguments.defaults if default is not None]
-    parts += [default for default in arguments.kw_defaults if default is not None]
-    for argument in arguments.posonlyargs + arguments.args + arguments.kwonlyargs:
-        if argument.annotation is not None:
-            parts.append(argument.annotation)
-    if getattr(node, "returns", None) is not None:
-        parts.append(node.returns)
-    return parts
-
-
-def _hub_loader_calls(source: str) -> list[tuple[str, bool]]:
-    """`(where, deferred)` per hub loader call. `deferred` means "only when called".
-
-    Deliberately not `ast.walk`: the question is not "does a function enclose this
-    call" but "does importing this module run it", and those differ wherever a
-    signature is evaluated.
-    """
-    found: list[tuple[str, bool]] = []
-
-    def scan(node: ast.AST, deferred: bool, where: str) -> None:
-        if _is_hub_loader(node):
-            found.append((where, deferred))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            name = getattr(node, "name", "<lambda>")
-            signature_scope = f"{where} -> signature of {name}"
-            for part in _signature_parts(node):
-                scan(part, deferred, signature_scope)
-            body = [node.body] if isinstance(node, ast.Lambda) else node.body
-            for statement in body:
-                scan(statement, True, f"{where} -> body of {name}")
-            return
-        for child in ast.iter_child_nodes(node):
-            scan(child, deferred, where)
-
-    scan(ast.parse(source), False, "module level")
-    return found
-
-
-def test_the_hub_is_reachable_from_exactly_one_module_and_only_inside_a_function():
-    """The dependency has one door. Naming it here means a second one — a
-    convenience import in `manifests.py`, say — fails this test rather than
-    silently making `resolve()` require a network client to be installed."""
-    doors = {
-        path.name: [full for root, full in _imports_in(path) if root == "huggingface_hub"]
-        for path in _modules()
-    }
-    reaching = {name: found for name, found in doors.items() if found}
-    assert reaching == {"registry.py": ["huggingface_hub"]}, (
-        "huggingface_hub must be reached only by registry.py's one deferred fetcher door; found "
-        + repr(reaching)
-    )
-
-    # The one door is still there, and it is `importlib` inside a function body:
-    # importing this package therefore cannot pull the dependency in, which is
-    # what lets every test above run with it absent.
-    #
-    # Parsed, not string-matched. A substring test proved only that the call text
-    # appears somewhere in the file, so moving the very same call to module level —
-    # the one change this test exists to catch, because it makes importing the
-    # package require the optional dependency — would have kept it green. Scope is
-    # the claim, so scope is what is asserted.
-    calls = _hub_loader_calls((CHAIRS / "registry.py").read_text(encoding="utf-8"))
-    assert calls, (
-        "registry.py no longer reaches huggingface_hub through a literal "
-        '`import_module("huggingface_hub")` call; either the seam is gone or it is '
-        "spelled in a way this boundary check can no longer see"
-    )
-    at_import = [where for where, deferred in calls if not deferred]
-    assert not at_import, (
-        "registry.py reaches huggingface_hub at import time, which makes importing this "
-        f"package require the optional dependency: {at_import}"
-    )
-
-
 def test_a_literal_dynamic_stage_import_is_detected(tmp_path):
     """A guard must prove its new dynamic branch can become red."""
     source = tmp_path / "dynamic_import.py"
@@ -250,55 +146,3 @@ def test_a_literal_dynamic_stage_import_is_detected(tmp_path):
     )
     assert ("pipeline", "pipeline.forbidden_stage") in _imports_in(source)
     assert ("pipeline", "pipeline.another_forbidden_stage") in _imports_in(source)
-
-
-HUB_LOADER = 'import_module("huggingface_hub")'
-
-DEFERRED_SPELLINGS = [
-    f"def fetch():\n    client = {HUB_LOADER}\n",
-    f"async def fetch():\n    client = {HUB_LOADER}\n",
-    f"def outer():\n    def inner():\n        return {HUB_LOADER}\n",
-    f"class Fetcher:\n    def build(self):\n        return {HUB_LOADER}\n",
-    f"def fetch():\n    loader = lambda: {HUB_LOADER}\n    return loader\n",
-]
-
-AT_IMPORT_SPELLINGS = [
-    # The plain case the substring check could not see.
-    f"client = {HUB_LOADER}\n",
-    # Every one of these sits syntactically inside a `def`, and every one of them
-    # runs the moment the module is imported.
-    f"def fetch(client={HUB_LOADER}):\n    return client\n",
-    f"def fetch(*, client={HUB_LOADER}):\n    return client\n",
-    f"@{HUB_LOADER}.cache\ndef fetch():\n    return None\n",
-    f"def fetch() -> {HUB_LOADER}.Client:\n    return None\n",
-    f"def fetch(client: {HUB_LOADER}.Client = None):\n    return client\n",
-    f"class Fetcher:\n    client = {HUB_LOADER}\n",
-]
-
-
-@pytest.mark.parametrize("source", DEFERRED_SPELLINGS)
-def test_a_hub_loader_that_runs_only_when_called_is_read_as_deferred(source):
-    calls = _hub_loader_calls(source)
-
-    assert calls, f"the loader call was not found at all in:\n{source}"
-    assert all(deferred for _where, deferred in calls), (
-        f"a call that only runs when the function is called was read as import-time:\n{source}"
-    )
-
-
-@pytest.mark.parametrize("source", AT_IMPORT_SPELLINGS)
-def test_a_hub_loader_that_runs_on_import_is_caught_however_it_is_spelled(source):
-    """A guard must prove its new branch can become red.
-
-    Six of these seven sit inside a `def`, which is what made the first version of
-    this check wrong: `ast.walk` descends into defaults, decorators and annotations
-    exactly as it descends into the body, so each would have been recorded as
-    function-scoped while running on import — the precise failure the check exists
-    to prevent.
-    """
-    calls = _hub_loader_calls(source)
-
-    assert calls, f"the loader call was not found at all in:\n{source}"
-    assert any(not deferred for _where, deferred in calls), (
-        f"an import-time call was read as deferred:\n{source}"
-    )
