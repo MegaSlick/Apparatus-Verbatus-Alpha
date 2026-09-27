@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
+import errno
 import json
 import os
 import pwd
@@ -971,6 +973,24 @@ def _is_fresh(name: str, descriptor: int, *, own_ctime: bool) -> bool:
     return time.time() - newest < LEFTOVER_QUIET_SECONDS
 
 
+def _move_no_clobber(source: str, target: str, descriptor: int, *, link: bool) -> bool:
+    """Move within one folder, or return False and move nothing when ``target`` is taken."""
+    try:
+        if link:
+            os.link(source, target, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+            os.unlink(source, dir_fd=descriptor)
+            return True
+        with contextlib.suppress(FileNotFoundError):
+            os.lstat(target, dir_fd=descriptor)
+            return False
+        os.rename(source, target, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        return True
+    except OSError as error:
+        if error.errno in (errno.EEXIST, errno.ENOTEMPTY, errno.ENOTDIR, errno.EISDIR):
+            return False
+        raise
+
+
 def _clear_one(name: str, descriptor: int, path: Path, *, folder: bool, apply: bool) -> bool:
     checked = os.lstat(name, dir_fd=descriptor)
     if not (stat.S_ISDIR if folder else stat.S_ISREG)(checked.st_mode):
@@ -982,18 +1002,23 @@ def _clear_one(name: str, descriptor: int, path: Path, *, folder: bool, apply: b
         # Moved aside so a racing publish's os.replace fails; the move sets its own ctime.
         base = re.sub(_CLEARING + "$", "", name)
         quarantine = f"{base}.clearing-{secrets.token_hex(4)}"
-        os.rename(name, quarantine, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        if not _move_no_clobber(name, quarantine, descriptor, link=False):
+            _print(f"Skipped, {quarantine} already exists: {path}")
+            return False
         moved = os.lstat(quarantine, dir_fd=descriptor)
-        if not os.path.samestat(moved, checked) or _is_fresh(
+        if os.path.samestat(moved, checked) and not _is_fresh(
             quarantine, descriptor, own_ctime=False
         ):
-            os.rename(quarantine, name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+            if folder:
+                shutil.rmtree(quarantine, dir_fd=descriptor)
+            else:
+                os.unlink(quarantine, dir_fd=descriptor)
+        elif _move_no_clobber(quarantine, name, descriptor, link=not folder):
             _print(f"Skipped, changed during the check: {path}")
             return False
-        if folder:
-            shutil.rmtree(quarantine, dir_fd=descriptor)
         else:
-            os.unlink(quarantine, dir_fd=descriptor)
+            _print(f"Left as {quarantine} because {path} now exists")
+            return False
     _print(f"{'Removed' if apply else 'Would remove'}: {path}")
     return True
 

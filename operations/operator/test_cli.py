@@ -219,3 +219,55 @@ def test_clear_leftovers_puts_back_a_fresh_item_swapped_in_before_the_move(
     assert f"Skipped, changed during the check: {name}" in capsys.readouterr().out
     assert name.is_dir() if folder else name.read_bytes() == b"new"
     assert not list(tmp_path.glob("*.clearing-*"))
+
+
+@pytest.mark.parametrize("folder", (False, True), ids=("file", "folder"))
+def test_clear_leftovers_never_moves_onto_a_taken_quarantine_name(
+    tmp_path, capsys, later, monkeypatch, folder
+):
+    name = tmp_path / (".delivery.publishing-abcdefgh" if folder else ".x.tmp-abcdefgh")
+    taken = tmp_path / f"{name.name}.clearing-0123abcd"
+    name.mkdir() if folder else name.write_bytes(b"old")
+    taken.mkdir() if folder else taken.write_bytes(b"other")
+    _fresh(taken, later)
+    monkeypatch.setattr(cli.secrets, "token_hex", lambda _size: "0123abcd")
+
+    assert _clear(tmp_path, tmp_path, "--apply") == 0
+    assert f"Skipped, {taken.name} already exists: {name}" in capsys.readouterr().out
+    assert name.is_dir() if folder else name.read_bytes() == b"old"
+    assert taken.is_dir() if folder else taken.read_bytes() == b"other"
+
+
+@pytest.mark.parametrize("folder", (False, True), ids=("file", "folder"))
+def test_clear_leftovers_never_restores_over_an_item_that_arrived(
+    tmp_path, capsys, later, monkeypatch, folder
+):
+    name = tmp_path / (".delivery.publishing-abcdefgh" if folder else ".x.tmp-abcdefgh")
+    name.mkdir() if folder else name.write_bytes(b"old")
+    real_rename, real_link = os.rename, os.link
+    moves = []
+
+    def arrive():
+        (name / "live").mkdir(parents=True) if folder else name.write_bytes(b"live")
+
+    def rename(source, target, **descriptors):
+        moves.append(target)
+        if len(moves) == 1:
+            name.rmdir() if folder else name.unlink()
+            name.mkdir() if folder else name.write_bytes(b"new")
+            _fresh(name, later)
+        else:
+            arrive()
+        return real_rename(source, target, **descriptors)
+
+    def link(source, target, **descriptors):
+        arrive()
+        return real_link(source, target, **descriptors)
+
+    monkeypatch.setattr(cli.os, "rename", rename)
+    monkeypatch.setattr(cli.os, "link", link)
+    assert _clear(tmp_path, tmp_path, "--apply") == 0
+    quarantine = tmp_path / moves[0]
+    assert f"Left as {moves[0]} because {name} now exists" in capsys.readouterr().out
+    assert (name / "live").is_dir() if folder else name.read_bytes() == b"live"
+    assert quarantine.is_dir() if folder else quarantine.read_bytes() == b"new"
