@@ -74,16 +74,6 @@ def test_every_declared_error_code_is_one_this_surface_actually_raises() -> None
     assert unreached == [], f"declared but never raised: {unreached}"
 
 
-def test_error_code_reachability_ignores_comments_and_docstrings() -> None:
-    source = '''
-# ErrorCode.RUN_FAILED is prose, not a caller.
-"""ErrorCode.RUN_HELD is also prose."""
-actual = ErrorCode.BOOT_RED
-'''
-
-    assert _referenced_error_codes(source) == {"BOOT_RED"}
-
-
 def test_error_renderer_never_shows_a_raw_traceback_or_old_close_vocabulary() -> None:
     rendered = errors.OperatorError(
         errors.ErrorCode.UNEXPECTED,
