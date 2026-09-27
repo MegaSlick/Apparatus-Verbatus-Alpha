@@ -171,9 +171,11 @@ def test_clear_leftovers_stops_at_a_folder_it_cannot_read(tmp_path, capsys):
 def test_clear_leftovers_finishes_an_interrupted_clear(tmp_path, capsys, later):
     interrupted = tmp_path / ".delivery.publishing-abcdefgh.clearing-0123abcd"
     (interrupted / "half").mkdir(parents=True)
+    (tmp_path / ".x.tmp-abcdefgh.clearing-0123abcd").write_bytes(b"partial")
 
     assert _clear(tmp_path, tmp_path, "--apply") == 0
     assert not interrupted.exists()
+    assert not (tmp_path / ".x.tmp-abcdefgh.clearing-0123abcd").exists()
     assert not list(tmp_path.glob(".delivery.publishing-*"))
 
 
@@ -193,3 +195,27 @@ def test_clear_leftovers_skips_a_name_that_vanishes_before_the_rename(
     printed = capsys.readouterr().out
     assert f"Skipped, changed during the check: {staging}" in printed
     assert "0 leftover(s)" in printed
+
+
+@pytest.mark.parametrize("folder", (False, True), ids=("file", "folder"))
+def test_clear_leftovers_puts_back_a_fresh_item_swapped_in_before_the_move(
+    tmp_path, capsys, later, monkeypatch, folder
+):
+    name = tmp_path / (".delivery.publishing-abcdefgh" if folder else ".x.tmp-abcdefgh")
+    name.mkdir() if folder else name.write_bytes(b"old")
+    real_rename = os.rename
+    moves = []
+
+    def rename(source, target, **descriptors):
+        if not moves:
+            name.rmdir() if folder else name.unlink()
+            name.mkdir() if folder else name.write_bytes(b"new")
+            _fresh(name, later)
+        moves.append(target)
+        return real_rename(source, target, **descriptors)
+
+    monkeypatch.setattr(cli.os, "rename", rename)
+    assert _clear(tmp_path, tmp_path, "--apply") == 0
+    assert f"Skipped, changed during the check: {name}" in capsys.readouterr().out
+    assert name.is_dir() if folder else name.read_bytes() == b"new"
+    assert not list(tmp_path.glob("*.clearing-*"))

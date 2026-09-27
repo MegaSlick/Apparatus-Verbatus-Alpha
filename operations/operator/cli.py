@@ -948,9 +948,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-# The exact names mkstemp/mkdtemp (8 characters) and surface's token_hex(16) produce.
-_TEMPORARY = re.compile(r"\..+\.tmp-(?:[a-z0-9_]{8}|[0-9a-f]{32})")
-_STAGING = re.compile(r"\..+\.publishing-[a-z0-9_]{8}(?:\.clearing-[0-9a-f]{8})?")
+# Exact names from mkstemp/mkdtemp (8 chars), surface's token_hex(16), and a clear's quarantine.
+_CLEARING = r"(?:\.clearing-[0-9a-f]{8})?"
+_TEMPORARY = re.compile(rf"\..+\.tmp-(?:[a-z0-9_]{{8}}|[0-9a-f]{{32}}){_CLEARING}")
+_STAGING = re.compile(rf"\..+\.publishing-[a-z0-9_]{{8}}{_CLEARING}")
 # Nothing holds a writer lock, so a leftover this fresh may still be in use.
 LEFTOVER_QUIET_SECONDS: Final = 3600
 
@@ -959,32 +960,40 @@ def _raise(error: OSError) -> None:
     raise error
 
 
-def _newest_change(name: str, descriptor: int) -> float:
-    newest = 0.0
-    for _, _, files, inner in os.fwalk(name, dir_fd=descriptor, onerror=_raise):
-        for details in (os.fstat(inner), *(os.lstat(f, dir_fd=inner) for f in files)):
-            newest = max(newest, details.st_mtime, details.st_ctime)
-    return newest
+def _is_fresh(name: str, descriptor: int, *, own_ctime: bool) -> bool:
+    details = os.lstat(name, dir_fd=descriptor)
+    newest = max(details.st_mtime, details.st_ctime if own_ctime else 0)
+    if stat.S_ISDIR(details.st_mode):
+        for _, subdirectories, files, inner in os.fwalk(name, dir_fd=descriptor, onerror=_raise):
+            for entry in (*subdirectories, *files):
+                below = os.lstat(entry, dir_fd=inner)
+                newest = max(newest, below.st_mtime, below.st_ctime)
+    return time.time() - newest < LEFTOVER_QUIET_SECONDS
 
 
 def _clear_one(name: str, descriptor: int, path: Path, *, folder: bool, apply: bool) -> bool:
-    details = os.lstat(name, dir_fd=descriptor)
-    if not (stat.S_ISDIR if folder else stat.S_ISREG)(details.st_mode):
+    checked = os.lstat(name, dir_fd=descriptor)
+    if not (stat.S_ISDIR if folder else stat.S_ISREG)(checked.st_mode):
         return False
-    changed = (
-        _newest_change(name, descriptor) if folder else max(details.st_mtime, details.st_ctime)
-    )
-    if time.time() - changed < LEFTOVER_QUIET_SECONDS:
+    if _is_fresh(name, descriptor, own_ctime=True):
         _print(f"Left alone, changed within the last hour: {path}")
         return False
-    if apply and folder:
-        # A racing publish's os.replace of the old name now fails instead of losing its files.
-        base = re.sub(r"\.clearing-[0-9a-f]{8}$", "", name)
+    if apply:
+        # Moved aside so a racing publish's os.replace fails; the move sets its own ctime.
+        base = re.sub(_CLEARING + "$", "", name)
         quarantine = f"{base}.clearing-{secrets.token_hex(4)}"
         os.rename(name, quarantine, src_dir_fd=descriptor, dst_dir_fd=descriptor)
-        shutil.rmtree(quarantine, dir_fd=descriptor)
-    elif apply:
-        os.unlink(name, dir_fd=descriptor)
+        moved = os.lstat(quarantine, dir_fd=descriptor)
+        if not os.path.samestat(moved, checked) or _is_fresh(
+            quarantine, descriptor, own_ctime=False
+        ):
+            os.rename(quarantine, name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+            _print(f"Skipped, changed during the check: {path}")
+            return False
+        if folder:
+            shutil.rmtree(quarantine, dir_fd=descriptor)
+        else:
+            os.unlink(quarantine, dir_fd=descriptor)
     _print(f"{'Removed' if apply else 'Would remove'}: {path}")
     return True
 
