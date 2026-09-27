@@ -3666,6 +3666,49 @@ def publish_page_testimonia_and_attachments(
         )
 
 
+def _publish_prepared_attempts(
+    context,
+    acts: list[dict[str, Any]],
+    ordinal: int,
+    regions_by_act: dict[str, tuple[list[dict], str | None]],
+    attempts_by_pair: dict[tuple[str, str], Attempt],
+    sealed_pairs: frozenset[tuple[str, str]],
+    *,
+    live: bool,
+) -> tuple[int, bool]:
+    recorded = 0
+    isolated_crop_failure = False
+    for act in acts:
+        regions, not_read = regions_by_act[act["act_id"]]
+        if not_read is not None and act["outcome"] != "held":
+            isolated_crop_failure = True
+        for chair in context.witness_chairs:
+            pair = (act["act_id"], chair)
+            if pair in sealed_pairs:
+                recorded += 1
+                continue
+            if live:
+                attempt = attempts_by_pair[pair]
+                if attempt is PENDING_LIVE_ATTEMPT:
+                    continue
+                resolved = context.registry.resolve(chair)
+            else:
+                resolved = context.registry.resolve(chair)
+                attempt = attempts_by_pair[pair]
+            publish_attempt(
+                context,
+                act=act,
+                chair=chair,
+                resolved=resolved,
+                ordinal=ordinal,
+                regions=regions,
+                attempt=attempt,
+                **({"live": True} if live else {}),
+            )
+            recorded += 1
+    return recorded, isolated_crop_failure
+
+
 def attempt_pass(
     context,
     acts: list[dict[str, Any]],
@@ -3674,36 +3717,10 @@ def attempt_pass(
     attempts_by_pair: dict[tuple[str, str], Attempt],
     sealed_pairs: frozenset[tuple[str, str]],
 ) -> tuple[int, bool]:
-    """Every configured chair's attempt at every expected act, at one ordinal.
-
-    Returns the records counted and whether any proposal crop was refused.
-    Publishes exactly the attempts preflight checked; already sealed pairs are
-    counted, not republished.
-    """
-    recorded = 0
-    isolated_crop_failure = False
-    for act in acts:
-        regions, not_read = regions_by_act[act["act_id"]]
-        if not_read is not None and act["outcome"] != "held":
-            # Isolated to this act: every chair gets a non-reading record.
-            isolated_crop_failure = True
-
-        for chair in context.witness_chairs:
-            if (act["act_id"], chair) in sealed_pairs:
-                recorded += 1
-                continue
-            resolved = context.registry.resolve(chair)
-            publish_attempt(
-                context,
-                act=act,
-                chair=chair,
-                resolved=resolved,
-                ordinal=ordinal,
-                regions=regions,
-                attempt=attempts_by_pair[(act["act_id"], chair)],
-            )
-            recorded += 1
-    return recorded, isolated_crop_failure
+    """Publish the fixture pass, counting sealed pairs without republishing them."""
+    return _publish_prepared_attempts(
+        context, acts, ordinal, regions_by_act, attempts_by_pair, sealed_pairs, live=False
+    )
 
 
 def witness_serving_modes(context, recipes: ServingRecipes, tier: str | None) -> dict[str, str]:
@@ -3948,6 +3965,40 @@ def resumed_page_captures(
     return captures
 
 
+def _live_work_schedule(
+    context,
+    acts,
+    acts_by_page,
+    page_chairs,
+    page_captures,
+    page_ids,
+    attempts_by_pair,
+):
+    # One schedule per chair keeps a page or act unit with its resident chair.
+    units: dict[tuple[str, str], Any] = {}
+    schedule: list[dict[str, str]] = []
+    for chair in sorted(set(context.witness_chairs)):
+        resolved = context.registry.resolve(chair)
+        if not isinstance(resolved, ChairIdentity):
+            continue
+        rows: list[dict[str, Any]] = []
+        if chair in page_chairs:
+            for page_ordinal in sorted(acts_by_page):
+                if (page_ordinal, chair) in page_captures:
+                    continue
+                unit_id = page_subject(context, page_ordinal, page_ids=page_ids)
+                units[(chair, unit_id)] = page_ordinal
+                rows.append({"act_id": unit_id, "page_ordinal": page_ordinal})
+        else:
+            for act in acts:
+                if attempts_by_pair[(act["act_id"], chair)] is not PENDING_LIVE_ATTEMPT:
+                    continue
+                units[(chair, act["act_id"])] = act
+                rows.append({"act_id": act["act_id"], "page_ordinal": act["page_ordinal"]})
+        schedule.extend(feeding.stage_major_schedule(context.tree.run_id, rows, [chair]))
+    return units, schedule
+
+
 def live_attempt_pass(
     context,
     acts: list[dict[str, Any]],
@@ -3959,13 +4010,10 @@ def live_attempt_pass(
     serving_factory,
     tier: str,
 ) -> tuple[int, bool, dict[tuple[int, str], tuple[Attempt, dict[str, Any]]]]:
-    """The same pass, asked of chairs that really serve: chair-outer, one request
-    at a time, and every response published before the next one is requested.
+    """Serve one resident chair at a time and publish before the next request.
 
-    One resident chair at a time, in a deterministic chair-outer order
-    (`feeding.stage_major_schedule`). Publishing on arrival means an interrupted
-    pass leaves its sealed responses on disk. A page-scoped chair is asked once
-    per page, and its act records derive from that response.
+    An interruption leaves every received response sealed; page chairs answer
+    once per page and supply that page's act views.
     """
     page_chairs = declared_page_witness_chairs(context)
     _contributing_pages, acts_by_page = page_denominator(context, acts, regions_by_act)
@@ -3984,34 +4032,11 @@ def live_attempt_pass(
         attempts_by_pair=attempts_by_pair,
         sealed_pairs=sealed_pairs,
     )
-    recorded = 0
-    isolated_crop_failure = False
-
     # Pairs needing no request are published first, so the folder accounts for
     # them if the first request refuses. Sealed pairs are only counted.
-    for act in acts:
-        regions, not_read = regions_by_act[act["act_id"]]
-        if not_read is not None and act["outcome"] != "held":
-            isolated_crop_failure = True
-        for chair in context.witness_chairs:
-            pair = (act["act_id"], chair)
-            if pair in sealed_pairs:
-                recorded += 1
-                continue
-            attempt = attempts_by_pair[pair]
-            if attempt is PENDING_LIVE_ATTEMPT:
-                continue
-            publish_attempt(
-                context,
-                act=act,
-                chair=chair,
-                resolved=context.registry.resolve(chair),
-                ordinal=ordinal,
-                regions=regions,
-                attempt=attempt,
-                live=True,
-            )
-            recorded += 1
+    recorded, isolated_crop_failure = _publish_prepared_attempts(
+        context, acts, ordinal, regions_by_act, attempts_by_pair, sealed_pairs, live=True
+    )
 
     # A resume may have stopped between a page's act views; publish any still
     # pending from the resumed capture. After the loop above, so nothing is
@@ -4029,30 +4054,9 @@ def live_attempt_pass(
             attempts_by_pair=attempts_by_pair,
         )
 
-    # One schedule per chair, concatenated, since a unit is a page or an act by
-    # scope; the executor's ordering guarantees still hold.
-    units: dict[tuple[str, str], Any] = {}
-    schedule: list[dict[str, str]] = []
-    for chair in sorted(set(context.witness_chairs)):
-        resolved = context.registry.resolve(chair)
-        if not isinstance(resolved, ChairIdentity):
-            continue
-        rows: list[dict[str, Any]] = []
-        if chair in page_chairs:
-            for page_ordinal in sorted(acts_by_page):
-                if (page_ordinal, chair) in page_captures:
-                    continue
-                # Addressed by the sealed Exemplar page id.
-                unit_id = page_subject(context, page_ordinal, page_ids=page_ids)
-                units[(chair, unit_id)] = page_ordinal
-                rows.append({"act_id": unit_id, "page_ordinal": page_ordinal})
-        else:
-            for act in acts:
-                if attempts_by_pair[(act["act_id"], chair)] is not PENDING_LIVE_ATTEMPT:
-                    continue
-                units[(chair, act["act_id"])] = act
-                rows.append({"act_id": act["act_id"], "page_ordinal": act["page_ordinal"]})
-        schedule.extend(feeding.stage_major_schedule(context.tree.run_id, rows, [chair]))
+    units, schedule = _live_work_schedule(
+        context, acts, acts_by_page, page_chairs, page_captures, page_ids, attempts_by_pair
+    )
 
     # `None` for an adapter with a single framing.
     framings = {
