@@ -83,7 +83,16 @@ class PreflightedActions(FakeActions):
                 "color": "green",
                 "placement_tier": TIER,
                 "serving_config_inputs": SERVING_INPUTS,
-                "smoke_receipts": [{"chair": "designator", "valid": True}],
+                "smoke_receipts": [
+                    {"chair": role, "valid": True}
+                    for role in (
+                        "designator_structure",
+                        "attestator_1",
+                        "attestator_2",
+                        "attestator_3",
+                        "perlector",
+                    )
+                ],
             },
         )
 
@@ -269,7 +278,9 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
         "--repository-commit",
         "a" * 40,
         "--cache-root",
-        str(ws.volume / "chair-cache"),
+        str(Path("/var/tmp/verbatus-chair-cache").resolve()),
+        "--store-root",
+        str(ws.store_root),
         "--placement-tier",
         TIER,
     ]
@@ -322,6 +333,36 @@ def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path:
     assert report["plan"]["selection"]["models"] == "small"
 
 
+def test_selection_refuses_missing_chair_smoke_after_preflight(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+
+    class PartialSmoke(PreflightedActions):
+        def run_preflight(self) -> dict[str, object]:
+            return self._step(
+                BootstrapStep.PREFLIGHT,
+                {
+                    "color": "green",
+                    "placement_tier": TIER,
+                    "serving_config_inputs": SERVING_INPUTS,
+                    "smoke_receipts": [{"chair": "attestator_1"}],
+                },
+            )
+
+    code = main(
+        _run_argv(ws, extra=("--models", "small")),
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PartialSmoke(),
+        runner=runner,
+    )
+    assert code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "attestator_2" in _report(ws)["reason"]
+
+
 def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
     tmp_path: Path,
 ) -> None:
@@ -371,7 +412,10 @@ def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
         == EXIT_COMPLETE
     )
     command = runner.calls[0][0]
-    assert command[command.index("--cache-root") + 1] == str(ws.volume / "chair-cache")
+    assert command[command.index("--cache-root") + 1] == str(
+        Path("/var/tmp/verbatus-chair-cache").resolve()
+    )
+    assert command[command.index("--store-root") + 1] == str(ws.store_root)
     for flag, path in (
         ("--triage-decision-manifest", decision),
         ("--triage-clusters", clusters),

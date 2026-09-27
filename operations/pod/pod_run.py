@@ -96,7 +96,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping, Sequence
@@ -356,6 +356,8 @@ class RunPlan:
         ]
         cache_root = _named(self.bootstrap.cache_root, "--cache-root")
         command += ["--cache-root", str(cache_root)]
+        store_root = _named(self.bootstrap.store_root, "--store-root")
+        command += ["--store-root", str(store_root)]
         if self.stage is not None:
             command += ["--stage", self.stage]
         if self.from_stage is not None and self.to_stage is not None:
@@ -428,11 +430,16 @@ class RunPlan:
     def ends_before_armarium(self) -> bool:
         return self.selected_stages()[-1] != "armarium"
 
-    @property
-    def needs_chair(self) -> bool:
-        return bool(
-            set(self.selected_stages()) & {"designator", "attestatores", "perlector", "recovery"}
-        )
+    def required_chairs(self) -> set[str]:
+        selected = set(self.selected_stages())
+        roles: set[str] = set()
+        if "designator" in selected:
+            roles.add("designator_structure")
+        if "attestatores" in selected:
+            roles.update(("attestator_1", "attestator_2", "attestator_3"))
+        if selected & {"perlector", "recovery"}:
+            roles.add("perlector")
+        return roles
 
 
 def _named(value: Path | None, flag: str) -> Path:
@@ -1122,6 +1129,11 @@ def main(
         )
         args = build_parser().parse_flags(run_argv, run_report)
         plan = resolve_run_plan(args, bootstrap_plan, launch_token)
+        roles = plan.required_chairs()
+        if "designator" in plan.selected_stages():
+            roles.add("secondary_proposer")
+        bootstrap_plan = replace(bootstrap_plan, preflight_roles=tuple(sorted(roles)))
+        plan = replace(plan, bootstrap=bootstrap_plan)
         approved_roots, skipped_roots = require_approved_submission_folder(plan)
     except PlanRefusal as refusal:
         return _refuse(refusal, now=now)
@@ -1174,10 +1186,17 @@ def main(
     try:
         placement_tier, serving_config_inputs = _placement_tier(report)
         receipt = report.receipts.get("preflight")
-        if plan.needs_chair and (
-            not isinstance(receipt, dict) or not receipt.get("smoke_receipts")
-        ):
-            raise RunRefusal("selection needs a chair but PREFLIGHT carries no green smoke receipt")
+        smokes = receipt.get("smoke_receipts") if isinstance(receipt, dict) else None
+        smoked = (
+            {item.get("chair") for item in smokes if isinstance(item, dict)}
+            if isinstance(smokes, list)
+            else set()
+        )
+        missing = plan.required_chairs() - smoked
+        if missing:
+            raise RunRefusal(
+                f"selection needs a chair without a green PREFLIGHT smoke receipt: {sorted(missing)}"
+            )
     except RunRefusal as refusal:
         refusal.report_path = plan.report_path
         _write_run_report(

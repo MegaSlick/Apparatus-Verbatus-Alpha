@@ -171,6 +171,15 @@ def _environ(
     return environment
 
 
+def test_cache_root_on_volume_is_refused_before_bootstrap(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    args = build_parser().parse_args(
+        _argv(ws, extra=("--cache-root", str(ws.volume / "chair-cache")))
+    )
+    with pytest.raises(PlanRefusal, match="network volume"):
+        resolve_plan(args, _environ(Clock()))
+
+
 def _preflight_publisher(root: Path) -> PodPreflightReceiptPublisher:
     return PodPreflightReceiptPublisher(root, object())  # type: ignore[arg-type]
 

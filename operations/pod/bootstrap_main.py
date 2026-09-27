@@ -10,14 +10,12 @@ correct immediate close for pod_timer to act on.
 
 Composition is deliberately **tracked**: every pinned input this process needs
 is an explicit flag, except the placement table, which is always the checkout's
-own ``config/pod_placement.toml`` because that is the table the stages seal.  ``ChairCacheBootstrapAction`` is
-constructed here in the tracked tree, wired with ``refetch_same_pin=None``
-(see the comment beside that call below), so the at-most-one same-pin
-re-fetch itself still does not ship.
+own ``config/pod_placement.toml`` because that is the table the stages seal.
+``CHAIR_CACHE`` records the role source plan without copying model bytes.
 
 **What ``PREFLIGHT`` measures, and through what.**  The chair-cache half is
 :class:`RegistryChairCacheVerifier`: ``ChairRegistry.ensure`` over the plan's
-``--models-config``, the same registry the ``CHAIR_CACHE`` step verified with,
+``--models-config``, using the pinned volume store as each role is needed,
 so a chair whose cache differs from its pin is red by that chair's name.  The
 smoke half is the serving package's own production seam --
 ``assemble_serving_smoke_reader`` around ``ServingManager`` -- fed
@@ -104,10 +102,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 
 from common.chairs.config import parse_models_config
-from common.chairs.model_store import (
-    VerifiedStoreFetcher,
-    configured_cache_materialization_plan,
-)
+from common.chairs.model_store import StoreRoleFetcher
 from common.chairs.models import ChairIdentity, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
@@ -153,7 +148,6 @@ from .bootstrap import (
     BootstrapReport,
     BootstrapStep,
     BootstrapStepFailure,
-    ChairCacheBootstrapAction,
     ModelStoreBootstrapAction,
     SubprocessBootstrapActions,
     verify_image_contract,
@@ -239,6 +233,7 @@ class Plan:
     store_root: Path | None = None
     models_config: Path | None = None
     cache_root: Path | None = None
+    preflight_roles: tuple[str, ...] | None = None
     fixture: Path | None = None
     page_witness_file: Path | None = None
     serving_recipes_config: Path | None = None
@@ -269,6 +264,9 @@ class Plan:
             "store_root": str(self.store_root) if self.store_root else None,
             "models_config": str(self.models_config) if self.models_config else None,
             "cache_root": str(self.cache_root) if self.cache_root else None,
+            "preflight_roles": list(self.preflight_roles)
+            if self.preflight_roles is not None
+            else None,
             "fixture": str(self.fixture) if self.fixture else None,
             "page_witness_file": str(self.page_witness_file) if self.page_witness_file else None,
             "serving_recipes_config": str(self.serving_recipes_config)
@@ -662,7 +660,13 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         report_path=report_path,
     )
 
-    cache_root = args.cache_root or (volume_mount_path / "chair-cache")
+    cache_root = (args.cache_root or Path("/var/tmp/verbatus-chair-cache")).resolve()
+    if cache_root.is_relative_to(volume_mount_path.resolve()):
+        raise PlanRefusal(
+            f"--cache-root {cache_root} is on the network volume; use container-local disk "
+            "for the one active chair cache",
+            report_path=report_path,
+        )
     if (args.fixture is None) != (args.page_witness_file is None):
         raise PlanRefusal(
             "--fixture and --page-witness-file name one golden page together: the page's "
@@ -1044,27 +1048,20 @@ def _build_model_store(plan: Plan) -> ModelStoreBootstrapAction:
     )
 
 
-def _build_cache(plan: Plan) -> ChairCacheBootstrapAction:
+def _build_cache(plan: Plan) -> dict[str, object]:
     registry = ChairRegistry.from_toml(
         plan.models_config,  # type: ignore[arg-type]
         cache_root=plan.cache_root,
     )
-    source_plan = configured_cache_materialization_plan(
-        plan.store_root,  # type: ignore[arg-type]
-        (
-            identity
-            for identity in registry.config.chairs.values()
-            if isinstance(identity, ChairIdentity)
-        ),
-    )
-    registry.fetcher = VerifiedStoreFetcher(source_plan["cache_root_entries"])
-    # No same-pin repair is wired: `ChairRegistry` has no public "clear this
-    # chair's cache" verb today, and inventing one to satisfy this optional
-    # callback risks corrupting a cache silently rather than leaving a named,
-    # single-attempt refusal for a human to repair. `ChairCacheBootstrapAction`
-    # already treats `refetch_same_pin=None` as "one failed verification is
-    # terminal", which is the honest behavior until that verb exists.
-    return ChairCacheBootstrapAction(registry, refetch_same_pin=None)
+    fetcher = StoreRoleFetcher(plan.store_root)  # type: ignore[arg-type]
+    chairs: list[dict[str, object]] = []
+    for role, identity in sorted(registry.config.chairs.items()):
+        if isinstance(identity, ChairIdentity) and identity.source == "huggingface":
+            source = fetcher.plan(identity)
+            chairs.append({"chair": role, "state": "planned", "snapshot": source["snapshot"]})
+        else:
+            chairs.append({"chair": role, "state": "not-cached"})
+    return {"chairs": chairs, "cache_root": str(plan.cache_root)}
 
 
 PREFLIGHT_DTYPE = "bfloat16"
@@ -1183,11 +1180,7 @@ def _build_preflight(
             )
         registry = ChairRegistry.from_toml(models_config, cache_root=plan.cache_root)
         if seams is None:
-            # CHAIR_CACHE has already copied every verified source into its
-            # role cache.  PREFLIGHT verifies those destination manifests; a
-            # missing file is a named cache failure, never a second download
-            # or another full retained-store verification.
-            registry.fetcher = VerifiedStoreFetcher({})
+            registry.fetcher = StoreRoleFetcher(plan.store_root)  # type: ignore[arg-type]
         else:
             registry.fetcher = chosen.fetcher_factory()
         # One read each, sealed from the table that is parsed: the serving
@@ -1249,6 +1242,9 @@ def _build_preflight(
             reader,
             fixture,
             serving_recipes=recipes,
+            selected_roles=frozenset(plan.preflight_roles)
+            if plan.preflight_roles is not None
+            else None,
         )
         report = runner.run(profile)
         record = report.to_record()
@@ -1302,7 +1298,7 @@ class _LazyChairCache:
         self._plan = plan
 
     def verify(self) -> dict[str, object]:
-        return _build_cache(self._plan).verify()
+        return _build_cache(self._plan)
 
 
 def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object]]:

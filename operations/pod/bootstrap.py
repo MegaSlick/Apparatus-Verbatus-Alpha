@@ -17,12 +17,9 @@ from typing import Callable, Mapping, Protocol
 
 from common.chairs.errors import ChairRefusal
 from common.chairs.model_store import MaterializationFetcher, materialize_real_roster
-from common.chairs.models import AbsentChair, ChairIdentity
-from common.chairs.registry import ChairRegistry
 
 from .durable import atomic_write, canonical_json
 from .models import require_utc, utc_now
-from .preflight import is_cache_mismatch
 
 BOOTSTRAP_SCHEMA = "pod-bootstrap.v3"
 """Bumped when ``CONFIGURATION`` was inserted after ``REPOSITORY`` and before
@@ -811,54 +808,8 @@ def _configuration_receipt_problem(receipt: object) -> str | None:
     return None
 
 
-class ChairCacheBootstrapAction:
-    """Spec-02 registry adapter with one explicitly supplied same-pin repair attempt."""
-
-    def __init__(
-        self,
-        registry: ChairRegistry,
-        *,
-        refetch_same_pin: Callable[[ChairIdentity], None] | None = None,
-    ) -> None:
-        self.registry = registry
-        self.refetch_same_pin = refetch_same_pin
-
-    def verify(self) -> dict[str, object]:
-        receipts: list[dict[str, object]] = []
-        for role, configured in sorted(self.registry.config.chairs.items()):
-            if isinstance(configured, AbsentChair):
-                receipts.append({"chair": role, "state": "absent", "reason": configured.reason})
-                continue
-            repaired = False
-            try:
-                snapshot = self.registry.ensure(configured)
-            except Exception as initial_error:
-                if not is_cache_mismatch(initial_error) or self.refetch_same_pin is None:
-                    raise BootstrapStepFailure(
-                        BootstrapStep.CHAIR_CACHE,
-                        f"chair {role} cache verification failed: {initial_error}",
-                        "Repair the exact pinned cache; no alternate chair or revision is allowed.",
-                    ) from initial_error
-                repaired = True
-                try:
-                    self.refetch_same_pin(configured)
-                    snapshot = self.registry.ensure(configured)
-                except Exception as retry_error:
-                    raise BootstrapStepFailure(
-                        BootstrapStep.CHAIR_CACHE,
-                        f"chair {role} differs from its pin after one re-fetch: {retry_error}",
-                        "Inspect the named cache and manifest; do not retry indefinitely or substitute a pin.",
-                    ) from retry_error
-            receipts.append(
-                {
-                    "chair": role,
-                    "state": "verified",
-                    "manifest_digest": snapshot.manifest_digest,
-                    "root": str(snapshot.root),
-                    "repaired_once": repaired,
-                }
-            )
-        return {"chairs": receipts}
+class ChairCachePlan(Protocol):
+    def verify(self) -> dict[str, object]: ...
 
 
 class ModelStoreBootstrapAction:
@@ -886,7 +837,7 @@ class SubprocessBootstrapActions:
         transfer: Callable[[], dict[str, object]],
         configuration: Callable[[], dict[str, object]],
         materialize_model_store: Callable[[], dict[str, object]],
-        cache: ChairCacheBootstrapAction,
+        cache: ChairCachePlan,
         preflight: Callable[[], dict[str, object]],
         runner: Callable[[list[str], Path], subprocess.CompletedProcess[str]] | None = None,
         executables: Mapping[str, str] = BOOTSTRAP_EXECUTABLES,

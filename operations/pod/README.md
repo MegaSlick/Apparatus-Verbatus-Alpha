@@ -206,14 +206,14 @@ it saw and how long it waited in a local evidence file. Boot A uses it.
 as `completed-early` and closes the pod. A red step exits non-zero at once, which is the
 correct immediate close.
 
-- **Chair cache.** `ChairCacheBootstrapAction` copies each role's pinned bytes from a
-  verified retained store and verifies them before publication. Only model-store
-  materialization fetches from Hugging Face. The at-most-one same-pin re-fetch is not wired
-  (`refetch_same_pin=None`, 04-8) because `ChairRegistry` has no cache-clear verb; a
-  mismatch is red and names the chair.
+- **Chair cache.** `CHAIR_CACHE` records the pinned source plan without copying weights.
+  PREFLIGHT and each stage copy one role from the volume store to the container-local cache,
+  verify the copy against its pinned manifest, and evict other roles before the next fill.
+  An adapter base remains available while its adapter is filled. The at-most-one same-pin
+  re-fetch is not wired (04-8); a mismatch is red and names the chair.
 - **Transfer is optional.** No submission manifest on the volume is a vacuous success; a
   manifest with no configured target is a refusal.
-- **`PREFLIGHT`** runs `ChairRegistry.ensure` over the roster, then a smoke read through the
+- **`PREFLIGHT`** runs `ChairRegistry.ensure` for the selected roles, then a smoke read through the
   serving package's production seam (`assemble_serving_smoke_reader` around
   `ServingManager`, fed `operations/serving/smoke.py::VisionSmokeCall`). The witness value
   is drawn from the CSPRNG on the pod and rendered onto a golden page under
@@ -530,7 +530,7 @@ the runtime report's `-terminating.json` breadcrumb are derived the same way.
 `verbatus fetch-run --launch-receipt <path>` derives every key except the transfer journal
 from the saved receipt's sealed `docker_start_cmd`.
 
-**Not records, deliberately not fetched:** `<volume>/chair-cache/` (weights),
+**Not records, deliberately not fetched:** `<volume>/store/` (weights),
 `<volume>/submission/` and `<volume>/submission-manifest.json` (page images and their
 ledger, kept beside rather than inside the folder because the Door refuses pipeline records
 among source images), `<volume>/pod-transfer/` (transferred bytes), and any other upload
@@ -573,8 +573,8 @@ setpriv --no-new-privs --landlock-access fs:write-file -- /bin/true
 A kernel without working Landlock is a refusal: choose another host, never bypass it.
 
 Keep the repository, `.venv` and `UV_CACHE_DIR` on container-local disk. The serving stack
-needs roughly 101 GB of model cache against a 200 GB container disk; keep inputs, outputs,
-evidence and materialized models on the network volume.
+keeps only the active model in its container-local cache. Keep inputs, outputs,
+evidence and the materialized model store on the network volume.
 
 ### What the image must carry
 
@@ -750,7 +750,7 @@ these IDs.
 | 04-5 | Untested seams | **Open**: the success paths of `sync_uv_environment`, `pod_timer.main`/`load_timer_context`, `cli.main` end to end through real `module:callable` factories (tests monkeypatch them), and `UrllibRunPodTransport`. |
 | 04-6 | Every RunPod field name is documented, not observed | **Open** until the first live run on each route in use; `--record-fixture` captures its exchanges to rebuild the offline suite on observed shapes. |
 | 04-7 | The close billing window was anchored on `lastStartedAt`, not creation | **Anchor closed under v2**: `created_at` is the pod's `createdAt`. **Still open**: that RunPod bills nothing before `createdAt` is unobserved, and v1 still anchors on `lastStartedAt` until it is deleted. |
-| 04-8 | The at-most-one same-pin cache re-fetch does not ship | **Partly closed.** Constructed with `refetch_same_pin=None` (no cache-clear verb); `_build_cache` is untested. |
+| 04-8 | The at-most-one same-pin cache re-fetch does not ship | **Superseded.** A role cache is filled from its pinned volume store when needed; a mismatch is named and refused, with no automatic repair attempt. |
 | 04-9 | Nothing proves billing buckets cover the declared window | **Window half closed under v2** when `metadata.query` is present: the declared window is the provider's resolved one, must cover the request, and an empty answer inside it reads `pending-reconciliation`. **Still open**: whether `metadata.query` appears on the `podId`-filtered route, and whether the buckets *fill* the window, wait on a live run; a coverage check written before that would guess, and a wrong guess turns every close red. |
 | 04-10 | The real serving stack could not be locked | **Closed**; see "The serving stack, re-planned and locked". |
 

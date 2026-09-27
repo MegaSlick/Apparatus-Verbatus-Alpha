@@ -177,6 +177,7 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
         "canary_manifest",
         *_TRIAGE_PATHS,
         "cache_root",
+        "store_root",
     ):
         value = getattr(args, attribute, None)
         if value is not None:
@@ -216,6 +217,7 @@ def _require_absolute_caller_paths(args: argparse.Namespace) -> None:
         "data_gate_policy",
         *_TRIAGE_PATHS,
         "cache_root",
+        "store_root",
     ):
         value = getattr(args, attribute, None)
         if value is not None and not Path(value).is_absolute():
@@ -260,6 +262,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         ),
     ]
     command += _argv((("--cache-root", getattr(args, "cache_root", None)),), omit_unset=True)
+    command += _argv((("--store-root", getattr(args, "store_root", None)),), omit_unset=True)
     # Later stages may read only the run tree the Door sealed, never source paths.
     if program == STAGE_PROGRAMS["door"]:
         # Only the Door creates the run authority, so only it can seal the commit.
@@ -504,6 +507,7 @@ def main() -> int:
         help="the sealed model-chair roster and recipes for this run",
     )
     parser.add_argument("--cache-root", default=None)
+    parser.add_argument("--store-root", default=None)
     parser.add_argument(
         "--mechanics-qualification",
         action="store_true",

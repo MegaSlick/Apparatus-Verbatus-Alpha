@@ -848,6 +848,7 @@ class PreflightRunner:
         fixture: str | Path,
         *,
         serving_recipes: ServingRecipes | None = None,
+        selected_roles: frozenset[str] | None = None,
     ) -> None:
         self.models = models
         self.placement = placement
@@ -855,6 +856,7 @@ class PreflightRunner:
         self.smoke_reader = smoke_reader
         self.fixture = Path(fixture)
         self.serving_recipes = serving_recipes
+        self.selected_roles = selected_roles
 
     def run(self, profile: GpuProfile) -> PreflightReport:
         from operations.serving.config import UnsupportedProfile
@@ -891,6 +893,8 @@ class PreflightRunner:
                 )
             )
         for role, configured in sorted(self.models.chairs.items()):
+            if self.selected_roles is not None and role not in self.selected_roles:
+                continue
             if isinstance(configured, AbsentChair):
                 placements.append(
                     ChairPlacement(role, None, None, None, None, None, None, None, "absent")
@@ -947,7 +951,7 @@ class PreflightRunner:
             served_by = self._smoke(configured, tier, issues, smoke_receipts, utilization)
             if served_by is not None:
                 served_reads.append((role, served_by))
-        if not smoke_receipts:
+        if not smoke_receipts and self.selected_roles != frozenset():
             # An all-absent or fully-failed roster produced placements and no
             # measurements; green here would claim a serving assembly nobody
             # smoke-read (principle 8).
