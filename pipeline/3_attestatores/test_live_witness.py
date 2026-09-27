@@ -1490,28 +1490,29 @@ def test_live_attempt_from_response_failed_on_a_parser_failure(tmp_path: Path):
     assert blob_store.has(response.response_sha256)  # raw blob retained even on failure
 
 
-def test_live_attempt_from_response_cut_off_and_parser_failure_names_both(tmp_path: Path):
-    # A response the provider cut off at its bound, and that the adapter's own
-    # parser then rejected, must read as both on the act path exactly as on
-    # the page path (`test_captured_page_attempt_cut_off_and_parser_failure_names_both`):
-    # naming only the parse failure would let a truncated act masquerade as
-    # bad ink instead of an exhausted bound.
+@pytest.mark.parametrize("path", ["act", "page"])
+def test_cut_off_and_parser_failure_name_both_on_each_witness_path(tmp_path: Path, path: str):
     response, _, _ = _read_one(
         tmp_path, script=ScriptedAnswer(content="<output>unclosed", finish_reason="length")
     )
     adapter = _stub_adapter(
         retain_result={"parse": {"state": "failed", "reason": "unterminated output element"}}
     )
-
-    attempt = live_witness.live_attempt_from_response(
-        _Context(tree=_FakeTree()),
-        adapter,
-        "dai.v1",
-        response,
-        generation_declared={},
-        parser="text",
-        **_dai_view_kwargs(),
-    )
+    context = _Context(tree=_FakeTree())
+    if path == "act":
+        attempt = live_witness.live_attempt_from_response(
+            context,
+            adapter,
+            "dai.v1",
+            response,
+            generation_declared={},
+            parser="text",
+            **_dai_view_kwargs(),
+        )
+    else:
+        attempt = live_witness.captured_page_attempt(
+            context, 1, "attestator_1", "churro.v1", adapter, response
+        )
 
     assert attempt.outcome == "failed"
     assert "stopped the response at its bound" in attempt.reason
@@ -1804,29 +1805,6 @@ def test_captured_page_attempt_cut_off_empty_is_failed_not_confirmed_blank(tmp_p
     assert attempt.outcome == "failed"
     assert "not a confirmed blank page" in attempt.reason
     assert attempt.health["truncated"] is True
-
-
-def test_captured_page_attempt_cut_off_and_parser_failure_names_both(tmp_path: Path):
-    # A response the provider cut off at its bound, and that the adapter's own
-    # parser then rejected, must read as both: naming only the parse failure
-    # would let a truncated response masquerade as bad ink instead of an
-    # exhausted bound.
-    response, _, _ = _read_one(
-        tmp_path, script=ScriptedAnswer(content="<output>unclosed", finish_reason="length")
-    )
-    adapter = _stub_adapter(
-        retain_result={"parse": {"state": "failed", "reason": "unterminated output element"}}
-    )
-
-    attempt = live_witness.captured_page_attempt(
-        _Context(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
-    )
-
-    assert attempt.outcome == "failed"
-    assert "stopped the response at its bound" in attempt.reason
-    assert "unterminated output element" in attempt.reason
-    assert "length" in attempt.health["truncation_basis"]
-    assert "unterminated output element" in attempt.health["truncation_basis"]
 
 
 def test_captured_page_attempt_unreported_empty_is_failed_not_confirmed_blank(tmp_path: Path):
