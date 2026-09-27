@@ -27,6 +27,7 @@ import tomllib
 from argparse import Namespace
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -180,6 +181,11 @@ def _submission(ws: Workspace) -> tuple[Path, Path]:
 
 def _prepared(tmp_path: Path) -> Workspace:
     ws = _workspace(tmp_path)
+    ws.models_config.parent.mkdir(parents=True, exist_ok=True)
+    ws.models_config.write_bytes((ROOT / "config" / "models.toml").read_bytes())
+    (ws.repository / "config" / "models-real.toml").write_bytes(
+        (ROOT / "config" / "models-real.toml").read_bytes()
+    )
     _policy(ws)
     _submission(ws)
     return ws
@@ -193,6 +199,9 @@ def _run_argv(
     extra: tuple[str, ...] = (),
     bootstrap_extra: tuple[str, ...] = (),
 ) -> list[str]:
+    if not ws.models_config.exists():
+        ws.models_config.parent.mkdir(parents=True, exist_ok=True)
+        ws.models_config.write_bytes((ROOT / "config" / "models.toml").read_bytes())
     return [
         "--report-path",
         str(report_path or ws.volume / "pod-run-report.json"),
@@ -331,6 +340,116 @@ def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path:
     assert report["state"] == "selection-complete"
     assert report["held_to_hard_deadline"] is False
     assert report["plan"]["selection"]["models"] == "small"
+    assert report["plan"]["bootstrap"]["preflight_roles"] == [
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+        "designator_structure",
+        "secondary_proposer",
+    ]
+
+
+def test_big_models_requires_the_attestatores_seal_before_bootstrap(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    actions = PreflightedActions()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws, extra=("--models", "big")),
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: actions,
+        runner=runner,
+    )
+    assert code == EXIT_REFUSED
+    assert "sealed attestatores" in _report(ws)["reason"]
+    assert actions.calls == []
+    assert runner.calls == []
+
+
+def test_big_models_maps_to_perlector_through_armarium(tmp_path: Path, monkeypatch) -> None:
+    ws = _prepared(tmp_path)
+    checked = []
+    monkeypatch.setattr(
+        pod_run, "verify_predecessor_seal", lambda tree, stage: checked.append((tree.run_id, stage))
+    )
+    clock = Clock()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws, extra=("--models", "big")),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    assert code == EXIT_COMPLETE
+    assert checked == [("first-real-run", "perlector")]
+    command = runner.calls[0][0]
+    assert command[command.index("--from") : command.index("--from") + 4] == [
+        "--from",
+        "perlector",
+        "--to",
+        "armarium",
+    ]
+    assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == ["perlector"]
+
+
+def test_a_held_selection_closes_without_paid_idle_time(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    code = main(
+        _run_argv(ws, extra=("--stage", "attestatores")),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=orchestrator.EXIT_HELD),
+    )
+    assert code == EXIT_HELD
+    assert clock.seconds == 0
+    assert _report(ws)["held_to_hard_deadline"] is False
+    assert not (ws.volume / "pod-run-report-hold.json").exists()
+
+
+def test_auto_and_empty_selection_preflight_roles(tmp_path: Path, capsys) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    for extra, expected in (((), None), (("--stage", "door"), [])):
+        assert (
+            main(
+                _run_argv(ws, extra=(*extra, "--dry-run")),
+                environ=_environ(clock),
+                now=clock.now,
+                sleeper=clock.sleep,
+            )
+            == EXIT_DRY_RUN
+        )
+        assert json.loads(capsys.readouterr().out)["bootstrap"]["preflight_roles"] == expected
+
+
+def test_attestatores_preflight_roles_follow_the_configured_roster(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(
+        pod_run,
+        "load_models_toml",
+        lambda path: SimpleNamespace(chairs={"attestator_7": object(), "perlector": object()}),
+    )
+    clock = Clock()
+    assert (
+        main(
+            _run_argv(ws, extra=("--models", "small", "--dry-run")),
+            environ=_environ(clock),
+            now=clock.now,
+            sleeper=clock.sleep,
+        )
+        == EXIT_DRY_RUN
+    )
+    roles = json.loads(capsys.readouterr().out)["bootstrap"]["preflight_roles"]
+    assert roles == ["attestator_7", "designator_structure", "secondary_proposer"]
 
 
 def test_selection_refuses_missing_chair_smoke_after_preflight(tmp_path: Path) -> None:

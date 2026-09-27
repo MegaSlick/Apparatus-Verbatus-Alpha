@@ -717,13 +717,10 @@ class SmokeResult:
 
 
 class ChairCacheVerifier(Protocol):
-    """One exact chair cache at a time; a mismatch receives one explicit repair."""
+    """Verify one exact chair cache at a time."""
 
     def verify(self, identity: ChairIdentity) -> dict[str, object]:
         """Return an identity-bound verification receipt or raise a named refusal."""
-
-    def refetch_once(self, identity: ChairIdentity) -> None:
-        """Stage one fresh fetch of the exact same pin, never a replacement chair."""
 
 
 class SmokeReader(Protocol):
@@ -1130,34 +1127,17 @@ class PreflightRunner:
         try:
             receipt = self.cache_verifier.verify(identity)
         except Exception as initial_error:
-            if not is_cache_mismatch(initial_error):
-                issues.append(
-                    PreflightIssue(
-                        "cache-verification-failed",
-                        f"chair {identity.role} cache verification failed: {initial_error}",
-                        "Repair the named chair cache and retry preflight.",
-                        identity.role,
-                    )
+            issues.append(
+                PreflightIssue(
+                    "cache-mismatch"
+                    if is_cache_mismatch(initial_error)
+                    else "cache-verification-failed",
+                    f"chair {identity.role} cache verification failed: {initial_error}",
+                    "Inspect the named cache and pinned manifest; repair the cause before retrying.",
+                    identity.role,
                 )
-                return False
-            try:
-                self.cache_verifier.refetch_once(identity)
-                receipt = self.cache_verifier.verify(identity)
-            except Exception as retry_error:
-                issues.append(
-                    PreflightIssue(
-                        "cache-mismatch-after-refetch",
-                        f"chair {identity.role} still differs from its pinned digest after one re-fetch: {retry_error}",
-                        "Inspect the named cache and pinned manifest; do not substitute a chair or revision.",
-                        identity.role,
-                    )
-                )
-                return False
-            normalized = self._bound_receipt(identity, receipt, issues, "cache")
-            if normalized is None:
-                return False
-            receipts.append({"chair": identity.role, "repaired_once": True, **normalized})
-            return True
+            )
+            return False
         normalized = self._bound_receipt(identity, receipt, issues, "cache")
         if normalized is None:
             return False

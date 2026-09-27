@@ -13,7 +13,7 @@ import pytest
 
 from common.chairs import model_store
 from common.chairs.config import load_models_toml, parse_models_config
-from common.chairs.errors import CacheRevisionRefusal, DigestMismatchRefusal
+from common.chairs.errors import DigestMismatchRefusal, DiskSpaceRefusal
 from common.chairs.manifests import build_manifest, write_manifest
 from common.chairs.model_store import (
     CHAIRS_WITHOUT_ROSTER_ROLE,
@@ -1610,7 +1610,7 @@ def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(
     monkeypatch.setattr(
         "common.chairs.registry.shutil.disk_usage", lambda path: type("Space", (), {"free": 0})()
     )
-    with pytest.raises(CacheRevisionRefusal, match="container disk too small for chair"):
+    with pytest.raises(DiskSpaceRefusal, match="container disk too small for chair"):
         restarted.ensure(source_identities[0])
 
 

@@ -24,6 +24,7 @@ from .durable import atomic_write, canonical_json
 from .models import POD_REPORT_SCHEMA, require_utc, terminating_path
 
 _CLOSE_ATTEMPTS = 3
+EXIT_SELECTION_COMPLETE = 8
 """Bounded re-attempts of a non-green close before the timer exits.
 
 An unbounded reconsideration loop would never report, and staying alive to
@@ -259,7 +260,7 @@ def run_with_bootstrap(
     while context.timer.now() < context.timer.lease.hard_deadline:
         exit_code = child.poll()
         if exit_code is not None:
-            if exit_code != 0:
+            if exit_code not in (0, EXIT_SELECTION_COMPLETE):
                 bootstrap_record = {
                     "argv": command,
                     "state": "failed",
@@ -293,14 +294,18 @@ def run_with_bootstrap(
                 bootstrap_record = {
                     "argv": command,
                     "state": "completed-early",
-                    "exit_code": 0,
+                    "exit_code": exit_code,
                     "remediation": (
-                        "Use a long-running bootstrap/service entrypoint; the pod was closed to avoid idle spend."
+                        "The selected stages finished; the pod was closed to avoid idle spend."
+                        if exit_code == EXIT_SELECTION_COMPLETE
+                        else "Use a long-running bootstrap/service entrypoint; the pod was closed to avoid idle spend."
                     ),
                 }
                 result, attempts, breadcrumb_failure = _close_with_retries(
                     context,
-                    "mandatory bootstrap child exited before hard deadline",
+                    "selected stages completed before hard deadline"
+                    if exit_code == EXIT_SELECTION_COMPLETE
+                    else "mandatory bootstrap child exited before hard deadline",
                     sleeper,
                     interval_seconds,
                     report=report,

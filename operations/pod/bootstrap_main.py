@@ -292,11 +292,8 @@ class RegistryChairCacheVerifier:
     ``ChairRegistry.ensure`` verifies the exact pinned snapshot in the cache
     the ``CHAIR_CACHE`` step already filled -- every row of the pinned
     manifest against the bytes on the volume -- and returns the verified
-    snapshot, or raises the chair's own named refusal.  ``refetch_once`` is
-    the same honest gap ``_build_cache`` records: the registry has no
-    cache-clear verb, so a mismatch is reported once, by chair, and never
-    repaired by a guess.  ``PreflightRunner`` turns that into
-    ``cache-mismatch-after-refetch`` naming the chair.
+    snapshot, or raises the chair's own named refusal. A mismatch is reported
+    once, by chair, with its original cause; no automatic repair is attempted.
     """
 
     def __init__(self, registry: ChairRegistry) -> None:
@@ -309,12 +306,6 @@ class RegistryChairCacheVerifier:
             "manifest_digest": snapshot.manifest_digest,
             "root": str(snapshot.root),
         }
-
-    def refetch_once(self, identity: ChairIdentity) -> None:
-        raise RuntimeError(
-            f"chair {identity.role} cache differs from its pin and ChairRegistry has no "
-            "cache-clear verb to stage one same-pin re-fetch; repair the named cache by hand"
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1137,7 +1128,8 @@ def _golden_page_digest(
     by name rather than reported green, since one preflight must prove one
     page. No smoke receipts at all means ``no-chair-verified`` has already
     put this report red; the digest taken at page-render time still names a
-    page in that failure's detail.
+    page in that failure's detail, except for an intentionally empty stage
+    selection, which has no chair to smoke-read.
     """
 
     digests = {receipt["supplied_fixture_sha256"] for receipt in smoke_receipts}

@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from common.chairs.config import load_models_toml
-from common.chairs.errors import DigestMismatchRefusal
+from common.chairs.errors import DigestMismatchRefusal, DiskSpaceRefusal
 from operations.http_deadline import CANCEL_GRACE_SECONDS
 
 from . import bootstrap as bootstrap_module
@@ -4955,6 +4955,36 @@ def test_pod_timer_closes_when_bootstrap_exits_early_to_avoid_idle_spend(tmp_pat
     assert report["green"] is False
 
 
+def test_pod_timer_records_selected_stages_as_completed_early(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.05")
+    lease = _lease(
+        LeaseStore(tmp_path / "timer-selection.json"),
+        record,
+        owner="laptop",
+        clock=clock,
+        deadline_seconds=3,
+    )
+
+    class SelectedChild:
+        def poll(self) -> int:
+            return 8
+
+    report_path = tmp_path / "selection-report.json"
+    result = run_with_bootstrap(
+        TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
+        report_path=report_path,
+        popen=lambda argv: SelectedChild(),  # type: ignore[arg-type]
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert result.close_report is not None and result.close_report.verified
+    assert report["bootstrap"]["state"] == "completed-early"
+    assert report["bootstrap"]["exit_code"] == 8
+
+
 def _fixture_configuration_receipt() -> dict[str, object]:
     return {
         "schema": CONFIGURATION_RECEIPT_SCHEMA,
@@ -5782,16 +5812,12 @@ class FakeCache:
     def __init__(self, *, always_mismatch: str | None = None) -> None:
         self.always_mismatch = always_mismatch
         self.verify_calls: dict[str, int] = {}
-        self.refetch_calls: dict[str, int] = {}
 
     def verify(self, identity):  # type: ignore[no-untyped-def]
         self.verify_calls[identity.role] = self.verify_calls.get(identity.role, 0) + 1
         if identity.role == self.always_mismatch:
             raise CacheMismatch("digest differs")
         return {"manifest_digest": identity.digest_manifest}
-
-    def refetch_once(self, identity):  # type: ignore[no-untyped-def]
-        self.refetch_calls[identity.role] = self.refetch_calls.get(identity.role, 0) + 1
 
 
 class FakeSmoke:
@@ -5966,19 +5992,37 @@ def test_a_placement_filesystem_failure_remains_a_read_refusal(tmp_path: Path) -
     assert isinstance(refused.value.__cause__, OSError)
 
 
-def test_digest_mismatch_refetches_once_then_refuses_without_substitution() -> None:
+def test_digest_mismatch_reports_its_first_cause_without_substitution() -> None:
     cache = FakeCache(always_mismatch="attestator_1")
     report = _preflight(cache, FakeSmoke()).run(
         GpuProfile("synthetic", "12.4", "550", (8, 0), Decimal("48"), Decimal("100"), "bfloat16")
     )
-
     assert report.color == "red"
-    assert cache.refetch_calls["attestator_1"] == 1
-    assert cache.verify_calls["attestator_1"] == 2
+    assert cache.verify_calls["attestator_1"] == 1
     assert any(
-        issue.code == "cache-mismatch-after-refetch" and issue.chair == "attestator_1"
+        issue.code == "cache-mismatch"
+        and issue.chair == "attestator_1"
+        and "digest differs" in issue.message
         for issue in report.issues
     )
+
+
+def test_disk_space_refusal_keeps_its_initial_cause() -> None:
+    class FullDisk(FakeCache):
+        def verify(self, identity):  # type: ignore[no-untyped-def]
+            if identity.role == "attestator_1":
+                raise DiskSpaceRefusal(
+                    identity.role, "container disk too small; increase container_disk_gb"
+                )
+            return super().verify(identity)
+
+    report = _preflight(FullDisk(), FakeSmoke()).run(
+        GpuProfile("synthetic", "12.4", "550", (8, 0), Decimal("48"), Decimal("100"), "bfloat16")
+    )
+    issue = next(issue for issue in report.issues if issue.chair == "attestator_1")
+    assert issue.code == "cache-verification-failed"
+    assert "container disk too small" in issue.message
+    assert "still differs" not in issue.message
 
 
 def test_smoke_read_failure_is_red_and_names_the_chair() -> None:

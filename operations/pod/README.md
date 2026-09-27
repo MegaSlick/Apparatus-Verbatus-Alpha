@@ -272,6 +272,7 @@ bootstrap checked and measured, and `--data-gate-policy` inside the repository. 
 | 5 | a red bootstrap step |
 | 6 | the orchestrator could not start or exited outside its vocabulary |
 | 7 | `--dry-run`: plan validated and printed, nothing ran |
+| 8 | selected stages completed before Armarium; the timer closes the pod |
 
 It refuses by name: no `--`; a `--hold-only` plan; a report path that is the bootstrap's or
 lacks the launch token; a run root or submission outside the volume or missing; a policy
@@ -291,11 +292,13 @@ run report records which resolved and which did not (`approved_storage_roots`,
 orchestrator and records it in the report. `--stage` runs one boundary, `--from` and
 `--to` run an inclusive range, and no selection runs the full sequence. `--models small`
 selects Door through Attestatores on a cheap card; `--models big` resumes Perlector
-through Armarium on a big card. The two model toggles use the same range validation.
+through Armarium on a big card, after verifying this run's sealed Attestatores
+stage on the volume before bootstrap. The two model toggles use the same range validation.
 
 **It holds only for a finished full run.** A selection ending before Armarium records
-`selection-complete` and returns at once so the pod timer closes the card. After
-`complete` or `held` it holds to the hard deadline (paid idle time), because the pod timer
+`selection-complete` and returns at once so the pod timer closes the card. A held
+selection ending before Armarium also closes promptly. A full `complete` or terminal
+`held` holds to the hard deadline (paid idle time), because the pod timer
 treats an early exit as non-green. After
 `halted`, `failed` or a failed start it returns at once and lets the timer close the pod:
 holding a card for a run that will produce nothing more is paying for nothing. Everything

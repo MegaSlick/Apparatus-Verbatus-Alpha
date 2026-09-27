@@ -309,9 +309,6 @@ class FixtureCache:
             raise CacheMismatch("injected fixture cache mismatch")
         return {"state": "fixture-verified", "chair": identity.role}
 
-    def refetch_once(self, identity):  # type: ignore[no-untyped-def]
-        del identity
-
 
 class FixtureSmokeReader:
     """A proof-page seam that never claims to have reached a model service."""

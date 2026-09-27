@@ -39,7 +39,7 @@ token, or colliding with bootstrap evidence) are refused on stderr only, so no o
 record is overwritten; and a refused bootstrap argv is recorded in the
 bootstrap report, not the run report.
 
-**The bootstrap-and-hold contract is unchanged for a run that finished.**
+**A full terminal run holds to the deadline.**
 ``pod_timer.run_with_bootstrap`` treats any child exit before the hard deadline
 -- exit 0 included -- as ``completed-early`` and closes the pod with a non-green
 timer report, so after a full ``complete`` or ``held`` run this process holds to the
@@ -48,9 +48,9 @@ liveness line beside the run report.  That hold is paid idle time between a
 finished run and the deadline; closing early on a complete run would be a
 ``pod_timer`` contract change and is not made here.
 
-A selected range ending before Armarium records ``selection-complete`` and
-returns at once. The pod timer closes the card; the run tree remains on the
-volume for the next selection.
+A selected range ending before Armarium records ``selection-complete`` when it
+completes, and returns at once when it holds. The pod timer closes the card;
+the run tree remains on the volume for the next selection.
 
 **Nothing the run printed dies with the pod.**  The orchestrator's stdout and
 stderr -- and, through inheritance, every stage's -- are teed into a bounded,
@@ -101,12 +101,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping, Sequence
 
+from common.chairs.config import load_models_toml
+from common.chairs.models import ChairIdentity, is_witness_role
 from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
+from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
 from common.stage import EXIT_FATAL as ORCHESTRATOR_FATAL
 from common.stage import EXIT_HELD as ORCHESTRATOR_HELD
 from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
+from common.stage import verify_predecessor_seal
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
@@ -430,15 +434,24 @@ class RunPlan:
     def ends_before_armarium(self) -> bool:
         return self.selected_stages()[-1] != "armarium"
 
-    def required_chairs(self) -> set[str]:
+    def required_chairs(self, *, configured_only: bool = False) -> set[str]:
         selected = set(self.selected_stages())
         roles: set[str] = set()
         if "designator" in selected:
-            roles.add("designator_structure")
-        if "attestatores" in selected:
-            roles.update(("attestator_1", "attestator_2", "attestator_3"))
+            roles.update(("designator_structure", "secondary_proposer"))
         if selected & {"perlector", "recovery"}:
             roles.add("perlector")
+        try:
+            configured = load_models_toml(self.models_config).chairs
+        except ContractError as error:
+            raise RunRefusal(
+                f"--models-config {self.models_config} cannot name selected chairs: {error}",
+                report_path=self.report_path,
+            ) from error
+        if "attestatores" in selected:
+            roles.update(role for role in configured if is_witness_role(role))
+        if configured_only:
+            roles = {role for role in roles if isinstance(configured.get(role), ChairIdentity)}
         return roles
 
 
@@ -1129,12 +1142,20 @@ def main(
         )
         args = build_parser().parse_flags(run_argv, run_report)
         plan = resolve_run_plan(args, bootstrap_plan, launch_token)
-        roles = plan.required_chairs()
-        if "designator" in plan.selected_stages():
-            roles.add("secondary_proposer")
-        bootstrap_plan = replace(bootstrap_plan, preflight_roles=tuple(sorted(roles)))
+        if plan.models is not None or plan.stage is not None or plan.from_stage is not None:
+            bootstrap_plan = replace(
+                bootstrap_plan, preflight_roles=tuple(sorted(plan.required_chairs()))
+            )
         plan = replace(plan, bootstrap=bootstrap_plan)
         approved_roots, skipped_roots = require_approved_submission_folder(plan)
+        if plan.models == "big":
+            try:
+                verify_predecessor_seal(RunTree(plan.run_root, plan.run_id), "perlector")
+            except ContractError as error:
+                raise RunRefusal(
+                    f"--models big requires this run's sealed attestatores stage: {error}",
+                    report_path=plan.report_path,
+                ) from error
     except PlanRefusal as refusal:
         return _refuse(refusal, now=now)
 
@@ -1192,7 +1213,7 @@ def main(
             if isinstance(smokes, list)
             else set()
         )
-        missing = plan.required_chairs() - smoked
+        missing = plan.required_chairs(configured_only=True) - smoked
         if missing:
             raise RunRefusal(
                 f"selection needs a chair without a green PREFLIGHT smoke receipt: {sorted(missing)}"
@@ -1276,7 +1297,9 @@ def main(
             "holds the evidence it was decided on"
         )
     state = _STATE_FOR_EXIT[exit_code]
-    holding = exit_code in _HOLD_AFTER_EXITS
+    holding = exit_code in _HOLD_AFTER_EXITS and not (
+        exit_code == EXIT_HELD and plan.ends_before_armarium
+    )
     records_at_close, records_missing = _records_at_close(
         plan, transcript_failure=transcript_failure
     )

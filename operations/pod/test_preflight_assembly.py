@@ -115,9 +115,6 @@ class Verifier:
     def verify(self, chair: ChairIdentity) -> dict[str, object]:
         return {"verified": True, "revision": chair.revision}
 
-    def refetch_once(self, chair: ChairIdentity) -> None:
-        raise AssertionError("no cache mismatch is staged in this module")
-
 
 class ServedHandle:
     """The attribute surface `_with_service_evidence` reads off a started handle.
@@ -216,6 +213,37 @@ def synthetic_profile() -> GpuProfile:
         disk_gib=Decimal("400"),
         dtype="bfloat16",
     )
+
+
+def test_selected_roles_include_only_named_chairs_and_allow_an_empty_selection(
+    fixture_page: Path,
+) -> None:
+    class RecordingVerifier(Verifier):
+        def __init__(self) -> None:
+            self.roles: list[str] = []
+
+        def verify(self, chair: ChairIdentity) -> dict[str, object]:
+            self.roles.append(chair.role)
+            return super().verify(chair)
+
+    verifier = RecordingVerifier()
+    for selected, expected in (
+        (frozenset({"attestator_2"}), ["attestator_2"]),
+        (frozenset(), []),
+    ):
+        verifier.roles.clear()
+        report = PreflightRunner(
+            Models("attestator_1", "attestator_2"),
+            table(),
+            verifier,
+            Reader(served=False),
+            fixture_page,
+            selected_roles=selected,
+        ).run(synthetic_profile())
+        assert [placement.chair for placement in report.placements] == expected
+        assert verifier.roles == expected
+        if not selected:
+            assert not any(issue.code == "no-chair-verified" for issue in report.issues)
 
 
 def two_identical_cards(argv: list[str]) -> subprocess.CompletedProcess[str]:
