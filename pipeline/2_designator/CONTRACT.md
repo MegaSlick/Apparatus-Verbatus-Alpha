@@ -387,9 +387,9 @@ sum of the two partition counts. `residual_enumeration` is `aggregate-page-held`
 exactly when the aggregate is nonempty. `residual_ink_fraction_bp` is
 `residual_pixel_count` over `total_ink_pixel_count` in basis points, recorded and
 gating nothing. The two `residual_aggregate_max_*` fields are the sealed
-presentation floors, not limits on the ink measurement. The legacy
-`withheld-page-held` shape remains a verifier compatibility path, not a producer
-output.
+presentation floors, not limits on the ink measurement. A conservation record
+sealed with the retired `withheld-page-held` enumeration is refused by name and
+must be produced again by this build.
 
 `page_width`, `page_height` and `reconciliation_thresholds` are what this scan
 actually executed on and under. The thresholds are exactly the two

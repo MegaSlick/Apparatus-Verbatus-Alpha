@@ -3085,8 +3085,8 @@ def _verify_every_conservation_residual_is_accounted(
 
     The reverse of `_verify_minted_act_rows`: a residual the seal never named
     leaves no artifact to miss, so without this it vanishes silently
-    (principle 2).  A page over the sealed residual bound may withhold its
-    list only if it is held as exactly one page-residual item.
+    (principle 2). A current record lists every component, either as an
+    individual hold or in the retained aggregate for a page hold.
     """
     if holds_by_subject is None:
         holds_by_subject = _designator_records_by_subject(context, "hold")
@@ -3094,11 +3094,11 @@ def _verify_every_conservation_residual_is_accounted(
     for page_id, record in _designator_records_by_subject(context, "conservation").items():
         payload = _payload_of(record)
         enumeration = payload.get("residual_enumeration")
-        if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
-            _verify_withheld_page_is_held_as_one_item(
-                page_id, payload, accounted_pages.get(page_id, [])
+        if enumeration == "withheld-page-held":
+            raise FatalAccounting(
+                f"page {page_id}'s conservation record was sealed under {enumeration}, "
+                "which this build no longer reads; re-run"
             )
-            continue
         if enumeration not in (RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_AGGREGATED):
             raise FatalAccounting(
                 f"the conservation record for page {page_id} records its residual enumeration as "
@@ -3318,35 +3318,6 @@ def _page_residual_holds_by_page(
     return by_page
 
 
-def _verify_withheld_page_is_held_as_one_item(
-    page_id: str, payload: Mapping[str, Any], holds: list[Mapping[str, Any]]
-) -> None:
-    """A record that withheld its components owes exactly one page-residual row.
-
-    That row must name the same bound the record applied.
-    """
-    if len(holds) != 1:
-        raise FatalAccounting(
-            f"page {page_id}'s conservation record withheld its residual components, but the run "
-            f"carries {len(holds)} page-residual holds for that page rather than exactly one; "
-            "unlisted ink is accounted for by the single review item that replaced it, or it is "
-            "lost silently"
-        )
-    bound = payload.get("max_residual_components")
-    if not _is_count(bound):
-        raise FatalAccounting(
-            f"page {page_id}'s conservation record withheld its residual components without "
-            "naming the integer bound it was judged against"
-        )
-    held_bound = holds[0].get("max_residual_components")
-    if not _is_count(held_bound) or held_bound != bound:
-        raise FatalAccounting(
-            f"page {page_id} is held against a bound of {held_bound!r} residual components "
-            f"while its own conservation record applied {bound}; the held page and the "
-            "reconciliation that held it must name one policy, as one integer"
-        )
-
-
 def fallback_page_act_key(page_ordinal: int) -> str:
     """The human-readable label of the one act a page's fallback crops belong to.
 
@@ -3359,15 +3330,12 @@ def fallback_page_act_key(page_ordinal: int) -> str:
 # residual" and "counted but not listed" stay distinguishable.
 RESIDUAL_ENUMERATION_COMPLETE: Final = "complete"
 RESIDUAL_ENUMERATION_AGGREGATED: Final = "aggregate-page-held"
-RESIDUAL_ENUMERATION_WITHHELD: Final = "withheld-page-held"
 RESIDUAL_ENUMERATIONS: Final = (
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATION_AGGREGATED,
-    RESIDUAL_ENUMERATION_WITHHELD,
 )
 
 # Page-residual hold causes, shared by the Designator and this verifier.
-PAGE_RESIDUAL_REASON_CODE: Final = "residual-components-over-page-bound"
 PAGE_RESIDUAL_AGGREGATE_REASON_CODE: Final = "residual-components-below-presentation-threshold"
 
 
@@ -3566,11 +3534,9 @@ def _verify_page_residual_act_row(
 ) -> None:
     """The held row that stands for a whole page, checked against its own evidence.
 
-    Aggregated records keep their components; legacy withheld records keep only
-    a count and bound.  Rectangle, identity, premise (the page's conservation
-    record), grouping digest (against the run's seal), component count
-    (principle 8) and cause are all recomputed; consumers route on the cause
-    code.
+    Aggregated records keep their components. Rectangle, identity, premise
+    (the page's conservation record), grouping digest (against the run's seal),
+    component count (principle 8) and cause are all recomputed.
     """
     payload = _payload_of(hold)
     if "residual_bounds" in payload:
@@ -3588,7 +3554,7 @@ def _verify_page_residual_act_row(
         )
     reason_code = payload.get("reason_code")
     if (
-        reason_code not in (PAGE_RESIDUAL_REASON_CODE, PAGE_RESIDUAL_AGGREGATE_REASON_CODE)
+        reason_code != PAGE_RESIDUAL_AGGREGATE_REASON_CODE
         or payload.get("blocking_page_ordinal") != ordinal
     ):
         raise FatalAccounting(
@@ -3647,11 +3613,16 @@ def _verify_page_residual_premise(
             f"act {act_id}'s page-residual hold does not name an integer residual component count"
         )
     enumeration = payload.get("residual_enumeration")
-    if enumeration not in (RESIDUAL_ENUMERATION_WITHHELD, RESIDUAL_ENUMERATION_AGGREGATED):
+    if enumeration == "withheld-page-held":
         raise FatalAccounting(
-            f"act {act_id} holds page {page_id} for withheld or aggregated residual enumeration, but that "
+            f"act {act_id}'s conservation record was sealed under {enumeration}, "
+            "which this build no longer reads; re-run"
+        )
+    if enumeration != RESIDUAL_ENUMERATION_AGGREGATED:
+        raise FatalAccounting(
+            f"act {act_id} holds page {page_id} for aggregated residual enumeration, but that "
             f"page's own conservation record records its enumeration as {enumeration!r} rather "
-            f"than {RESIDUAL_ENUMERATION_WITHHELD!r} or {RESIDUAL_ENUMERATION_AGGREGATED!r}; "
+            f"than {RESIDUAL_ENUMERATION_AGGREGATED!r}; "
             "a page may not be held as one review item over a reconciliation that separately "
             "presents every component"
         )
@@ -3662,12 +3633,6 @@ def _verify_page_residual_premise(
             f"act {act_id} holds page {page_id} as one review item, but that page's own "
             f"conservation record reports its outcome as {outcome!r} rather than 'held'; a "
             "record standing behind a held page may not still say it was proposed"
-        )
-    if enumeration == RESIDUAL_ENUMERATION_WITHHELD and "residual_components" in payload:
-        raise FatalAccounting(
-            f"act {act_id} holds page {page_id} for a withheld enumeration, but that page's "
-            "conservation record still carries a residual_components key; the key is omitted "
-            "when it is withheld, so that no consumer reads a present list as the complete one"
         )
     measured = payload.get("residual_component_count")
     if not _is_count(measured):
@@ -3681,38 +3646,19 @@ def _verify_page_residual_premise(
             f"conservation record measured {measured}; the count a reviewer is shown is the "
             "count the reconciliation took, never a second figure beside it"
         )
-    if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
-        bound = hold_payload.get("max_residual_components")
-        if not _is_count(bound):
-            raise FatalAccounting(
-                f"act {act_id}'s legacy withheld page-residual hold does not name the integer "
-                "bound it was judged against"
-            )
-        if hold_payload.get("reason_code") != PAGE_RESIDUAL_REASON_CODE:
-            raise FatalAccounting(f"act {act_id}'s legacy withheld page uses the wrong reason code")
-    else:
-        if hold_payload.get("reason_code") != PAGE_RESIDUAL_AGGREGATE_REASON_CODE:
-            raise FatalAccounting(f"act {act_id}'s aggregate page uses the wrong reason code")
-        bound = None
-    if enumeration == RESIDUAL_ENUMERATION_WITHHELD and measured <= bound:
+    if hold_payload.get("reason_code") != PAGE_RESIDUAL_AGGREGATE_REASON_CODE:
+        raise FatalAccounting(f"act {act_id}'s aggregate page uses the wrong reason code")
+    aggregate = payload.get("aggregated_residual_components")
+    aggregated_count = hold_payload.get("aggregated_component_count")
+    if (
+        not isinstance(aggregate, list)
+        or not _is_count(aggregated_count)
+        or aggregated_count != len(aggregate)
+    ):
         raise FatalAccounting(
-            f"act {act_id} holds page {page_id} against a bound of {bound} residual components, "
-            f"but that page's conservation record measured {measured}, which does not exceed it; "
-            "a page whose reconciliation stays within the bound owes one held act per residual, "
-            "not one held page"
+            f"act {act_id} holds page {page_id} for aggregate residual accounting without "
+            "the retained component count"
         )
-    if enumeration == RESIDUAL_ENUMERATION_AGGREGATED:
-        aggregate = payload.get("aggregated_residual_components")
-        aggregated_count = hold_payload.get("aggregated_component_count")
-        if (
-            not isinstance(aggregate, list)
-            or not _is_count(aggregated_count)
-            or aggregated_count != len(aggregate)
-        ):
-            raise FatalAccounting(
-                f"act {act_id} holds page {page_id} for aggregate residual accounting without "
-                "the retained component count"
-            )
 
 
 def _payload_of(record: Mapping[str, Any]) -> Mapping[str, Any]:

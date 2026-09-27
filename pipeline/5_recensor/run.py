@@ -109,7 +109,6 @@ from common.stage import (  # noqa: E402
     EXIT_HELD,
     RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
-    RESIDUAL_ENUMERATION_WITHHELD,
     RESIDUAL_ENUMERATIONS,
     WITNESS_READING_OUTCOMES,
     expected_acts,
@@ -1963,6 +1962,11 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         pixel_counts = {field: payload.get(field) for field in pixel_count_fields}
         if not is_plain_int(ordinal) or not isinstance(measurable, bool) or ordinal in findings:
             raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
+        if enumeration == "withheld-page-held":
+            raise FatalAccounting(
+                f"Designator conservation page {ordinal} was sealed under {enumeration}, "
+                "which this build no longer reads; re-run"
+            )
         if enumeration not in RESIDUAL_ENUMERATIONS:
             raise FatalAccounting(
                 f"Designator conservation page {ordinal} records its residual enumeration as "
@@ -1970,11 +1974,6 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
                 "this stage cannot tell a page with no unclaimed ink from one whose unclaimed "
                 "ink was counted and not listed without being told which it is"
             )
-        if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
-            findings[ordinal] = _withheld_page_conservation(
-                ordinal, payload, measurable, pixel_counts, residual_keys, page_residual_keys
-            )
-            continue
         if enumeration == RESIDUAL_ENUMERATION_AGGREGATED:
             findings[ordinal] = _aggregate_page_conservation(
                 context,
@@ -2219,81 +2218,6 @@ def _aggregate_page_conservation(
         "reason": (
             f"{len(promoted)} significant residual components remain individual held acts; "
             f"{len(aggregate)} below-threshold components remain retained on one page hold"
-        ),
-    }
-
-
-def _withheld_page_conservation(
-    ordinal: int,
-    payload: dict,
-    measurable: bool,
-    pixel_counts: dict,
-    residual_keys: set,
-    page_residual_keys: list,
-) -> dict:
-    """One page held as a single review item in place of its residual components.
-
-    Reconciled against the seal, like an enumerated page. Without the list the
-    per-component pixel sum cannot be recomputed, so the checks are the ink accounting
-    and the partition: exactly one page-residual act and no per-component ones. The
-    finding keeps the key set of every other shape, so consumers read one schema; each
-    value is true of this page.
-    """
-    if not measurable:
-        raise FatalAccounting(
-            f"unmeasured Designator conservation page {ordinal} withheld its residual "
-            "enumeration; a page with no threshold to separate ink from paper enumerated "
-            "nothing because nothing was measured, not because a bound stopped it"
-        )
-    if "residual_components" in payload:
-        raise FatalAccounting(
-            f"withheld Designator conservation page {ordinal} still carries a "
-            "residual_components key; the key is omitted when the enumeration is withheld, so "
-            "that no consumer reads a present list as the complete one"
-        )
-    count = payload.get("residual_component_count")
-    bound = payload.get("max_residual_components")
-    if any(not is_plain_int(value) or value < 0 for value in (count, bound)):
-        raise FatalAccounting(
-            f"withheld Designator conservation page {ordinal} names no integer residual "
-            "component count and no integer bound it was judged against"
-        )
-    if count <= bound:
-        raise FatalAccounting(
-            f"withheld Designator conservation page {ordinal} counted {count} residual "
-            f"components against a bound of {bound}, which it does not exceed; a page within "
-            "the bound owes one held act per residual, not a withheld enumeration"
-        )
-    _require_reconciled_pixels(ordinal, pixel_counts)
-    minted = sorted(key for key in residual_keys if key.startswith(f"residual:{ordinal}:"))
-    if minted:
-        raise FatalAccounting(
-            f"withheld Designator conservation page {ordinal} withheld its residual "
-            f"enumeration and still minted {len(minted)} per-component residual acts; the "
-            "unlisted ink is accounted for by the single item that replaced those acts, never "
-            "by both at once"
-        )
-    held_as_one = page_residual_keys.count(page_residual_act_key(ordinal))
-    if held_as_one != 1:
-        raise FatalAccounting(
-            f"withheld Designator conservation page {ordinal} is accounted for by "
-            f"{held_as_one} page-residual acts in the proposal seal rather than exactly one; "
-            "unlisted ink is accounted for by the single review item that replaced it, or it "
-            "is lost silently"
-        )
-    return {
-        "ink_measurable": measurable,
-        "residual_component_count": count,
-        "residual_act_count": 0,
-        "residual_enumeration": RESIDUAL_ENUMERATION_WITHHELD,
-        "max_residual_components": bound,
-        "page_residual_act_count": held_as_one,
-        "reason": (
-            f"this page's reconciliation counted {count} residual components against the "
-            f"sealed bound of {bound}, so the Designator held the page as one page-residual "
-            "review item and did not list them; no per-component held act exists for this "
-            "page by design, and the per-component pixel sum is the one reconciliation this "
-            "stage cannot recompute against a list that was deliberately not carried"
         ),
     }
 
