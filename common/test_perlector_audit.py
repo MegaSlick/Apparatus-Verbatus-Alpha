@@ -469,7 +469,17 @@ def test_renderer_identity_moves_only_with_renderer_code(tmp_path, change_render
         assert changed.validate_audit_prompt_evidence(evidence, request=request) == evidence
 
 
-def test_reproof_refuses_commentary_around_a_fenced_reply():
-    raw = 'Here are the edits:\n```json\n{"schema":"perlector-audit-response.v1","edits":[]}\n```'
+_EMPTY_EDITS = '{"schema":"perlector-audit-response.v1","edits":[]}'
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        f"Here are the edits:\n```json\n{_EMPTY_EDITS}\n```",
+        f"```json\n{_EMPTY_EDITS}\n```\nDone.",
+        f"```json\n{_EMPTY_EDITS}\n```\n```json\n{_EMPTY_EDITS}\n```",
+    ],
+)
+def test_reproof_refuses_anything_but_one_whole_reply_fence(raw):
     with pytest.raises(ReproofResponseRefusal, match="not valid JSON"):
         assemble_reproof_response(raw, _request())
