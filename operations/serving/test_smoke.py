@@ -11,6 +11,7 @@ runner is injected.
 
 from __future__ import annotations
 
+import math
 import subprocess
 from decimal import Decimal
 from pathlib import Path
@@ -20,6 +21,8 @@ from PIL import Image
 
 from .errors import ServingConfigurationError
 from .smoke import (
+    _PAGE_WITNESS_ALPHABET,
+    _PAGE_WITNESS_LENGTH,
     NvidiaSmiUtilization,
     VisionSmokeCall,
     fresh_page_witness,
@@ -35,6 +38,10 @@ def test_a_fresh_witness_is_one_the_smoke_callable_accepts_and_two_draws_differ(
     VisionSmokeCall(second)
     assert first != second
     assert 32 <= len(first) <= 128
+    assert len(first) == _PAGE_WITNESS_LENGTH
+    assert set(first) <= set(_PAGE_WITNESS_ALPHABET)
+    assert not set(first) & set("Il10Oo-_")
+    assert len(first) * math.log2(len(_PAGE_WITNESS_ALPHABET)) >= 256
 
 
 def test_the_rendered_golden_page_is_a_decodable_png_under_the_smallest_tier_cap(
@@ -123,11 +130,11 @@ def test_the_witness_line_fits_inside_the_page_bounds_for_the_worst_case_width(
 ) -> None:
     # `W` is one of the widest glyphs in the golden-page font; a witness built
     # entirely of it is close to the widest line the CSPRNG could ever draw
-    # (43 URL-safe characters, the production entropy length). At the fixed
-    # 40pt this line overruns the page and PIL clips it silently at the
-    # canvas edge; render_golden_page must shrink the font (or refuse) rather
-    # than let that happen.
-    worst_case_witness = "W" * 43
+    # (57 characters, preserving at least 256 bits over the production
+    # alphabet). At the fixed 40pt this line overruns the page and PIL clips it
+    # silently at the canvas edge; render_golden_page must shrink the font (or
+    # refuse) rather than let that happen.
+    worst_case_witness = "W" * _PAGE_WITNESS_LENGTH
     page = tmp_path / "worst-case.png"
 
     render_golden_page(page, worst_case_witness)

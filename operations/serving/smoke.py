@@ -2,7 +2,7 @@
 
 The lifecycle proves that a request carried the exact fixture bytes; the
 page-only witness proves that the chair read those bytes.  The fixture author
-must draw a fresh witness from a CSPRNG over the URL-safe ASCII token alphabet
+must draw a fresh witness from a CSPRNG over the clear uppercase ASCII alphabet
 whenever the page is rendered.  Generation quality cannot be inferred from the
 supplied value, so a weak or reused witness can make the smoke falsely green.
 
@@ -53,19 +53,20 @@ _MAXIMUM_UTILIZATION_SAMPLES = 1_024
 _MAXIMUM_PNG_BYTES = 64 * 1024 * 1024
 _FIXTURE_MIME_TYPE = "image/png"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-# 32 bytes of CSPRNG output, URL-safe: 43 characters, all inside the witness
-# alphabet `VisionSmokeCall` accepts and comfortably inside its length bound.
-_WITNESS_ENTROPY_BYTES = 32
+# Uppercase letters omit I, L and O, whose shapes are easy to confuse in a
+# rendered token. Fifty-seven independent draws retain at least 256 bits.
+_PAGE_WITNESS_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ"
+_PAGE_WITNESS_LENGTH = 57
 # The rendered page: large type on a wide page under the smallest tier's
 # longest-edge cap (config/pod_placement.toml), so `_verify_png` never refuses
 # it. The witness line's width varies with which characters the CSPRNG drew,
 # so `render_golden_page` shrinks the font from `_GOLDEN_PAGE_FONT_SIZE` down
 # to `_GOLDEN_PAGE_FONT_FLOOR` until it fits, refusing rather than letting PIL
 # clip a line off the canvas.
-_GOLDEN_PAGE_SIZE = (1280, 400)
-_GOLDEN_PAGE_MARGIN = 48
+_GOLDEN_PAGE_SIZE = (1344, 400)
+_GOLDEN_PAGE_MARGIN = 32
 _GOLDEN_PAGE_FONT_SIZE = 40
-_GOLDEN_PAGE_FONT_FLOOR = 24
+_GOLDEN_PAGE_FONT_FLOOR = 20
 _GOLDEN_PAGE_FONT_STEP = 2
 _NVIDIA_SMI_TIMEOUT_SECONDS = 30.0
 
@@ -95,7 +96,7 @@ def fresh_page_witness() -> str:
     preflight by ``bootstrap_main`` immediately before the page is rendered.
     """
 
-    return secrets.token_urlsafe(_WITNESS_ENTROPY_BYTES)
+    return "".join(secrets.choice(_PAGE_WITNESS_ALPHABET) for _ in range(_PAGE_WITNESS_LENGTH))
 
 
 def render_golden_page(path: Path, witness: str) -> bytes:
