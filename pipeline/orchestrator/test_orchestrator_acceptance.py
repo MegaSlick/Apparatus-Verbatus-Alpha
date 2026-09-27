@@ -4293,7 +4293,7 @@ def test_a_run_whose_caller_names_no_commit_records_none_rather_than_a_placehold
     assert orchestrate(root, "r", "happy", stage_timing_journal=journal).returncode == 0
 
     assert "repository_commit" not in RunTree(root, "r").read_run()
-    entry = json.loads(journal.read_text(encoding="utf-8"))["entries"][0]
+    entry = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
     assert entry["repository_commit"] is None
     assert "no --repository-commit was named" in entry["repository_commit_detail"]
 
@@ -4326,15 +4326,15 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tm
         == 0
     )
 
-    record = json.loads(journal.read_text(encoding="utf-8"))
-    assert record["schema"] == "stage-timing-journal.v1"
-    assert record["run_id"] == "r"
-    stages = [entry["stage"] for entry in record["entries"]]
+    entries = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert all(entry["schema"] == "stage-timing-journal.v2" for entry in entries)
+    assert all(entry["run_id"] == "r" for entry in entries)
+    stages = [entry["stage"] for entry in entries]
     # Every program the automatic sequence invokes, the Door and the Exemplar
     # named apart although they share `1_exemplar/`.
     assert stages[:2] == ["door", "exemplar"]
     assert stages[-1] == "armarium"
-    for entry in record["entries"]:
+    for entry in entries:
         assert entry["exit_code"] == 0
         assert entry["duration_ms"] >= 0
         assert entry["operation"] == "run"
@@ -4396,15 +4396,8 @@ def test_a_timing_journal_inside_the_run_tree_is_refused_before_anything_runs(tm
     assert not (root / "r" / "timings.json").exists()
 
 
-def test_a_timing_journal_belonging_to_another_run_is_left_unchanged(tmp_path):
-    """Two runs at one journal path: the second must not inherit the first's entries.
-
-    Nothing checked the identity of an existing journal before appending, so
-    the first run's entries were kept while the top-level `run_id` was replaced
-    with the second's -- a file attributing one run's stage timings to another
-    -- the conflict is reported on stderr like every other
-    journal fault, because a stopwatch never fails a stage.
-    """
+def test_a_timing_journal_can_append_another_runs_entries(tmp_path):
+    """Every line owns its run identity, even when runs share a log path."""
 
     root = tmp_path / "runs"
     journal = tmp_path / "timings.json"
@@ -4414,8 +4407,9 @@ def test_a_timing_journal_belonging_to_another_run_is_left_unchanged(tmp_path):
     second = orchestrate(root, "second", "happy", stage_timing_journal=journal)
 
     assert second.returncode == 0
-    assert journal.read_text(encoding="utf-8") == before
-    assert "already belongs to" in second.stderr
+    after = journal.read_text(encoding="utf-8")
+    assert after.startswith(before)
+    assert {json.loads(line)["run_id"] for line in after.splitlines()} == {"first", "second"}
 
 
 def test_naming_no_timing_journal_leaves_the_run_tree_exactly_as_it_was(tmp_path):

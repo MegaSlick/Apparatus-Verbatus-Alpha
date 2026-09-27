@@ -21,7 +21,7 @@ from typing import Callable, Mapping, Sequence
 
 from .controllers import ControllerResult, ControllerState, PodDeadmanTimer
 from .durable import atomic_write, canonical_json
-from .models import POD_REPORT_SCHEMA, require_utc
+from .models import POD_REPORT_SCHEMA, require_utc, terminating_path
 
 _CLOSE_ATTEMPTS = 3
 """Bounded re-attempts of a non-green close before the timer exits.
@@ -78,17 +78,6 @@ _MAX_CLOSE_RETRY_WAIT_SECONDS = 60.0
 """The retry wait is the monitoring interval, capped: the interval is an
 operator-supplied command-line value with no upper bound, and a pod at this
 point bills the full running rate for every second the timer sleeps."""
-
-
-def terminating_path(report: Path) -> Path:
-    """Where the pre-DELETE breadcrumb goes: beside the report, never over it.
-
-    The report is the record the DELETE below destroys this container in the
-    middle of writing; putting the breadcrumb in the same file would mean the
-    breadcrumb and the record it distinguishes share a fate.
-    """
-
-    return report.with_name(f"{report.stem}-terminating{report.suffix}")
 
 
 def _note_termination(

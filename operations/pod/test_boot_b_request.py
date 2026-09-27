@@ -14,7 +14,7 @@ import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -28,7 +28,7 @@ from .boot_b_request import (
 )
 from .cli import _request
 from .launch import _bind_report_path_to_launch
-from .models import DEFAULT_CONTAINER_DISK_GB, PodCreateRequest
+from .models import DEFAULT_CONTAINER_DISK_GB, PodCreateRequest, run_report_paths, terminating_path
 from .preflight import load_placement_table
 from .spend import SpendPolicy, load_spend_policy
 
@@ -311,8 +311,84 @@ def test_two_nested_report_paths_naming_one_file_are_refused() -> None:
         if item == "--report-path":
             nested[index + 1] = collision
 
-    with pytest.raises(ValueError, match="name one file"):
+    with pytest.raises(ValueError, match="collides with the run report"):
         validated_pod_request(_with_nested_argv(filled_request(), nested))
+
+
+def test_bootstrap_argument_named_pod_run_does_not_hide_report_collision() -> None:
+    base = validated_pod_request(filled_request())
+    command = list(base.docker_start_cmd)
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    report_indexes = [i + 1 for i, value in enumerate(nested) if value == "--report-path"]
+    run_path = PurePosixPath(nested[report_indexes[0]])
+    nested[report_indexes[1]] = str(run_report_paths(run_path)[1])
+    nested[nested.index("--repository") + 1] = "/opt/pod_run.py"
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="bootstrap report path collides with the run report"):
+        replace(base, docker_start_cmd=tuple(command))
+
+
+@pytest.mark.parametrize(
+    "target", ("run", "hold", "liveness", "timings", "transcript", "bootstrap", "journal")
+)
+def test_timer_report_and_terminating_path_cannot_overlap_run_records(target: str) -> None:
+    base = validated_pod_request(filled_request())
+    command = list(base.docker_start_cmd)
+    outer = PurePosixPath(command[command.index("--report-path") + 1])
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    report_indexes = [i + 1 for i, value in enumerate(nested) if value == "--report-path"]
+    if target == "bootstrap":
+        nested[report_indexes[1]] = str(outer)
+    elif target == "journal":
+        nested[nested.index("--journal") + 1] = str(outer)
+    else:
+        token = base.metadata["VERBATUS_LAUNCH_TOKEN"]
+        run_path = PurePosixPath(f"{BOOT_B_VOLUME_MOUNT_PATH}/run-evidence-{token}.json")
+        side_index = {"run": 0, "hold": 1, "liveness": 2, "timings": 3, "transcript": 4}
+        command[command.index("--report-path") + 1] = str(
+            run_report_paths(run_path)[side_index[target]]
+        )
+        nested[report_indexes[0]] = str(run_path)
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="pod timer report or terminating path collides"):
+        replace(base, docker_start_cmd=tuple(command))
+
+
+@pytest.mark.parametrize("target", ("run", "bootstrap", "journal"))
+def test_timer_terminating_path_cannot_overlap_another_report(target: str) -> None:
+    base = validated_pod_request(filled_request())
+    command = list(base.docker_start_cmd)
+    outer = PurePosixPath(command[command.index("--report-path") + 1])
+    terminating = terminating_path(outer)
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    reports = [i + 1 for i, value in enumerate(nested) if value == "--report-path"]
+    index = (
+        nested.index("--journal") + 1
+        if target == "journal"
+        else reports[0 if target == "run" else 1]
+    )
+    nested[index] = str(terminating)
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="pod timer report or terminating path collides"):
+        replace(base, docker_start_cmd=tuple(command))
+
+
+def test_log_timer_terminating_path_cannot_be_a_bootstrap_report() -> None:
+    base = validated_pod_request(filled_request())
+    command = list(base.docker_start_cmd)
+    timer_index = command.index("--report-path") + 1
+    timer_report = PurePosixPath(command[timer_index]).with_suffix(".log")
+    command[timer_index] = str(timer_report)
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    reports = [i + 1 for i, value in enumerate(nested) if value == "--report-path"]
+    nested[reports[1]] = str(terminating_path(timer_report))
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="pod timer report or terminating path collides"):
+        replace(base, docker_start_cmd=tuple(command))
 
 
 def test_a_nested_journal_outside_the_volume_is_refused() -> None:
