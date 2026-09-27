@@ -5496,6 +5496,37 @@ def test_cuda_compat_command_timeouts_are_named(
     assert seen == [("nvidia-smi", 30), ("apt-cache", 300), ("apt-get", 300)]
 
 
+def test_git_and_uv_command_timeouts_are_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[str, int | None]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.append((Path(argv[0]).name, kwargs["timeout"]))
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        executables=bootstrap_module.BOOTSTRAP_EXECUTABLES
+        | {"git": "/opt/boot/repo-tool", "uv": "/opt/boot/env-tool"},
+    )
+    for name, step, seconds in (
+        ("git", BootstrapStep.REPOSITORY, 600),
+        ("uv", BootstrapStep.UV_ENVIRONMENT, 3600),
+    ):
+        with pytest.raises(BootstrapStepFailure) as failure:
+            actions._command([name], step)
+        assert failure.value.step is step
+        assert failure.value.detail == f"command {name!r} timed out after {seconds} seconds"
+    assert seen == [("repo-tool", 600), ("env-tool", 3600)]
+
+
 def test_new_enough_cuda_host_keeps_library_path_untouched(tmp_path: Path) -> None:
     environment = {"LD_LIBRARY_PATH": "/original"}
     actions = SubprocessBootstrapActions(

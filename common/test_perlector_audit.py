@@ -46,20 +46,23 @@ def _request(text: str = "alpha βeta gamma") -> dict:
     )
 
 
-def test_reproof_edits_assemble_only_from_exact_unicode_anchored_originals():
+@pytest.mark.parametrize("wrap", ["{}", "```json\n{}\n```", "```\n{}\n```\n"])
+def test_reproof_edits_assemble_only_from_exact_unicode_anchored_originals(wrap):
     request = _request()
-    raw = json.dumps(
-        {
-            "schema": "perlector-audit-response.v1",
-            "edits": [
-                {
-                    "class": "testimony-diff",
-                    "location": {"start": 6, "end": 10},
-                    "original": "βeta",
-                    "replacement": "beta",
-                }
-            ],
-        }
+    raw = wrap.format(
+        json.dumps(
+            {
+                "schema": "perlector-audit-response.v1",
+                "edits": [
+                    {
+                        "class": "testimony-diff",
+                        "location": {"start": 6, "end": 10},
+                        "original": "βeta",
+                        "replacement": "beta",
+                    }
+                ],
+            }
+        )
     )
     assembled, response = assemble_reproof_response(raw, request)
     assert assembled == "alpha beta gamma"
@@ -464,3 +467,19 @@ def test_renderer_identity_moves_only_with_renderer_code(tmp_path, change_render
     else:
         assert changed.AUDIT_PROMPT_RENDERER_SHA256 == evidence["renderer_sha256"]
         assert changed.validate_audit_prompt_evidence(evidence, request=request) == evidence
+
+
+_EMPTY_EDITS = '{"schema":"perlector-audit-response.v1","edits":[]}'
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        f"Here are the edits:\n```json\n{_EMPTY_EDITS}\n```",
+        f"```json\n{_EMPTY_EDITS}\n```\nDone.",
+        f"```json\n{_EMPTY_EDITS}\n```\n```json\n{_EMPTY_EDITS}\n```",
+    ],
+)
+def test_reproof_refuses_anything_but_one_whole_reply_fence(raw):
+    with pytest.raises(ReproofResponseRefusal, match="not valid JSON"):
+        assemble_reproof_response(raw, _request())

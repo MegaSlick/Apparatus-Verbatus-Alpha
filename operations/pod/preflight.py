@@ -912,9 +912,12 @@ class PreflightRunner:
                     )
                 )
                 continue
-            if self.serving_recipes is not None and isinstance(
-                self.serving_recipes.for_identity(configured, tier.identifier), UnsupportedProfile
-            ):
+            serving_profile = (
+                self.serving_recipes.for_identity(configured, tier.identifier)
+                if self.serving_recipes is not None
+                else None
+            )
+            if isinstance(serving_profile, UnsupportedProfile):
                 placements.append(
                     ChairPlacement(
                         role,
@@ -926,6 +929,15 @@ class PreflightRunner:
                         None,
                         None,
                         "unservable-at-tier",
+                    )
+                )
+                issues.append(
+                    PreflightIssue(
+                        "chair-unservable-at-tier",
+                        f"chair {role} cannot be served at measured tier {tier.identifier}: "
+                        f"{serving_profile.reason}",
+                        "Select a tier with a supported serving profile for this chair.",
+                        role,
                     )
                 )
                 continue

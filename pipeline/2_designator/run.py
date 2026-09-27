@@ -1,26 +1,14 @@
-"""Designator: marks out the acts and cuts the crops. It establishes no text.
+"""Designator marks acts and cuts crops; it establishes no text.
 
-Only this stage cuts crops; the Recensor may request a recrop, so every crop has
-one author. It also emits the **proposal seal**, the immutable list of every act
-this run expects, so an act lost between later stages leaves a visible hole.
+Only this stage cuts, including Recensor-requested recrops, so each crop has one
+author. The proposal seal accounts for every act; holds name their cause and
+exit held, so an act lost later leaves a visible hole. Regions are append-only:
+witnesses read proposal regions; ink only a recovery uncovered was never shown
+to a witness. Act identity survives recrops; region identity binds the transform.
 
-Each seal entry is `proposed` or `held`; a held act gets a `hold` artifact naming
-why (page unsealed, continuation unsealed, or structure pass failed), so it is
-still accounted for. A run that held anything exits `EXIT_HELD`.
-
-Regions are append-only per act. Each carries an `origin`: **proposal** regions
-(the first crop and any continuation) are what witnesses read; **recovery**
-regions are later recrops, so ink only a recovery uncovered was never shown to a
-witness. Act identity binds the original proposal and survives recrops; region
-identity binds the transform and changes with it.
-
-Sibling modules do the marking-out: `structure.py` finds ink regions,
-`grouping.py` assembles them into acts by geometry alone (principle 1),
-`geometry.py` pads a rectangle into the capture rectangle, and `conservation.py`
-reconciles each page's ink against what was claimed. Their thresholds come from
-`grouping_config.py`, resolved against each page's own size in `_analyze_page`
-only, because a page-fraction threshold cannot be fixed pixels across a fixture
-and a full scan.
+`structure` finds ink, `grouping` assembles by geometry alone, `geometry` pads
+crops, and `conservation` reconciles claimed ink. `_analyze_page` resolves sealed
+thresholds per page because page fractions cannot be fixed pixels across scans.
 
     python pipeline/2_designator/run.py --run-root <dir> --run-id <id>
     python pipeline/2_designator/run.py ... --operation recover --act <act_id>
@@ -28,6 +16,7 @@ and a full scan.
 
 import dataclasses
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -98,6 +87,7 @@ from common.stage import (  # noqa: E402
     validate_serving_provenance,
     verify_structure_attempt_call,
 )
+from operations.serving.client import ChairClient  # noqa: E402
 
 DESCRIPTION = "Designator: marks out the acts and cuts the crops. It establishes no text."
 
@@ -860,20 +850,11 @@ def cut_minted_region(
     padding: dict | None = None,
     provenance: dict | None = None,
 ):
-    """Cut one region of one act and publish it.
+    """Cut and publish one act region.
 
-    Declared and minted acts are cut by this one function, so every crop,
-    fallback included, has one author.
-
-    `origin` is `proposal` (the original marking-out, continuations included) or
-    `recovery` (a later recrop); witnesses read only proposal regions.
-
-    `bounds` is the structural rectangle act identity binds, never the padded one.
-    `padding`, given only for a proposal cut, expands it into the capture
-    rectangle; a recovery request already names its exact rectangle.
-
-    `transform` keeps only the four fields `verify_exemplar_crop_lineage` reads
-    as a closed schema; `raw_bounds` and `padding` sit beside it as provenance.
+    Declared and minted acts are cut here, so every crop has one author.
+    Act identity binds structural bounds; padding changes only the crop.
+    The transform is a closed four-field schema; raw bounds stay beside it.
     """
     if provenance is None:
         provenance = structure_provenance(context)
@@ -996,24 +977,13 @@ def publish_structure_status(
     answers: dict[int, tuple[str | None, dict[str, str]]] | None = None,
     provenance_by_page: dict[int, dict] | None = None,
 ) -> dict:
-    """One visible per-page outcome for the structure pass: scanned or held.
+    """Publish scanned/held status for every sealed page and return its reference.
 
-    Published for every sealed page, so a successful scan is a record, not an
-    absence a reader must infer from crops (principle 2). `state` says "scanned",
-    not "marked out": a scanned page may carry no act.
-
-    It records how the page was read (`background_source`, `structure_evidence`)
-    and the geometry actually executed (`page_width`, `page_height`,
-    `resolved_thresholds`), since pixel thresholds depend on each page's size and
-    re-deriving them later can silently drift (principle 6). All are null on a
-    page held before analysis. `max_residual_components` is omitted because this
-    producer does not use it.
-
-    Live path only: `answers` makes `structure_evidence` the chair's answer and
-    adds `structure_answer_ref`; `provenance_by_page` names the serving session
-    that answered each page of a resumed pass.
-
-    Returns each page's status reference, which a page-fallback act must cite.
+    An explicit scan record prevents absence being mistaken for success; scanned
+    does not mean an act was found. Record per-page thresholds so later replay
+    cannot silently drift; pre-analysis holds carry null measurement fields.
+    Live answers retain each page's answering session across resumes. Fallback
+    acts cite these references. Unused max_residual_components is omitted.
     """
     published: dict[int, dict[str, str]] = {}
     for ordinal in sorted(pages):
@@ -1100,15 +1070,10 @@ def _fallback_grid(width: int, height: int, thresholds) -> list[dict]:
 def _analyze_page(
     cache: dict, context, ordinal: int, page_record: dict, grouping_policy: dict
 ) -> dict:
-    """Structure-pass and grouping results for one sealed page, computed once.
+    """Cache pixels with resolved sealed thresholds for every later consumer.
 
-    A page whose background cannot be inferred is still cut into the fallback
-    grid, since every page must be read, but its ink is not measured:
-    `background` stays None rather than a guessed stand-in.
-
-    Every geometric threshold is resolved here from the sealed policy and this
-    page's own size, and cached with the pixels so every later consumer runs
-    under the same numbers.
+    If background is unknowable, fallback crops still reach readers while ink
+    stays unmeasured; a guessed threshold would invent evidence.
     """
     if ordinal not in cache:
         try:
@@ -1166,7 +1131,6 @@ def _analyze_page(
             "rows": rows,
             "background": background,
             "background_source": evidence["source"],
-            # None where the interior-mode branch did not run.
             "dark_distribution": evidence["dark_distribution"],
             # None when the background could not be inferred.
             "ink_margin": ink_margin,
@@ -1395,15 +1359,10 @@ def _contains(outer: dict, inner: dict) -> bool:
 
 
 def _secondary_rescue_candidates(claimed: list[dict], candidates: list[dict]) -> list[dict]:
-    """Every secondary-scan candidate that genuinely adds coverage, none that refine one.
+    """Exclude candidates fully inside one claim; keep partial overlaps.
 
-    A candidate inside one claim adds nothing; one merely touching a claim does.
-    Each is returned with the number of claimed acts it touches, since one
-    spanning two acts is the shape a reviewer must see (a merged boundary).
-
-    That count is recorded, never acted on: padded claims can abut, so a single
-    pen mark can touch two acts, and the secondary proposer adds recall, never
-    verdicts.
+    Count touching acts: a spanning mark may show a merged boundary, but padded
+    claims can abut, so the count is review evidence, never a verdict.
     """
     rescues = []
     for candidate in candidates:
@@ -1433,16 +1392,11 @@ def _publish_secondary_proposals(
     secondary: dict,
     grouping_policy: dict,
 ) -> bool:
-    """Cut and hold every non-authoritative rescue candidate for review.
+    """Cut non-authoritative rescue candidates for review, up to the page bound.
 
-    Separate from the conservation publisher so it can be tested on a hand-fed
-    analysis.
-
-    Bounded per page: a speckled page would otherwise mint thousands of crops
-    and make the run unopenable. Past `max_secondary_proposals` the pass becomes
-    one held record with the count and bound, and nothing is cut. Candidates are
-    counted, never filtered (principle 8). `secondary_enumeration` tells "no
-    candidate" apart from "counted, not cut".
+    A speckled page could otherwise mint thousands of crops. Beyond the bound,
+    keep one held count and cut none; candidates are counted, never filtered.
+    Enumeration distinguishes no candidate from counted but not cut.
     """
     if secondary["chair_state"] != "configured":
         return False
@@ -1861,20 +1815,12 @@ def _publish_page_fallback(
     *,
     reason: str | None = None,
 ) -> dict | None:
-    """Cut predetermined crops over a page with no eligible structural group.
+    """Send unclaimed fallback tiles downstream as one act per page.
 
-    A page with no found ink is still sent downstream whole, so the witnesses
-    and the Perlector decide whether it is blank.
-
-    One minted act per page with one region per tile: nothing established how
-    many acts the page holds, so counting tiles would invent an act count.
-    Declared crops are subtracted first, so no pixel is read under two acts;
-    if they already cover the page, nothing is minted.
-
-    The act is `proposed`, not `held`, because held acts are never read. Its
-    identity binds the ``page-fallback`` class and the page rectangle, which
-    `_verify_page_fallback_act_row` recomputes with the page's `structure-status`.
-    Tiles carry no padding: each already is the final rectangle, overlap included.
+    Readers decide blankness; counting tiles as acts would invent an act count.
+    Declared crops are excluded so pixels do not reach readers under two acts;
+    when they cover the page, nothing is minted. The page rectangle binds
+    identity, recomputed by _verify_page_fallback_act_row with structure-status.
     """
     page_id = page_record["subject_id"]
     page_bounds = _page_bounds(analysis)
@@ -1926,55 +1872,17 @@ def _publish_page_fallback(
     return _seal_row(act_id, act_key, page_id, ordinal, "proposed", _by_path(evidence))
 
 
-def _publish_conservation_and_secondary(
-    context,
+def _build_conservation_payload(
     ordinal: int,
-    page_record: dict,
     analysis: dict,
-    claimed: list[dict],
-    secondary: dict,
-    grouping_policy: dict,
-) -> tuple[list[dict], bool]:
-    """Independent ink-vs-crop reconciliation, plus non-authoritative rescue crops.
-
-    Conservation rescans the page's own pixels rather than trusting grouping, so
-    it can prove no ink was missed entirely. Residuals are returned as seal rows,
-    so the proposal seal accounts for them.
-
-    A page with no inferable background reconciles nothing and says so
-    (`ink_measurable`); a substituted threshold would count dark paper as ink.
-    The record is published either way.
-
-    Every component is measured before presentation: those at either sealed floor
-    become held acts, the rest share one page review item; none is dropped.
-
-    The geometry this reconciliation actually ran under is published here too,
-    because conservation also runs on structure-held pages (principle 8).
-    """
+    result: dict,
+    promoted: list[dict],
+    aggregated: list[dict],
+    measurable: bool,
+) -> dict:
+    """Keep every measured residual on the page record, promoted or aggregated."""
     thresholds = analysis["thresholds"]
-    measurable = analysis["background"] is not None
-    result = (
-        conservation.reconcile(
-            analysis["width"],
-            analysis["height"],
-            analysis["rows"],
-            background=analysis["background"],
-            claimed_bounds=[entry["bounds"] for entry in claimed],
-            gap_tolerance_px=thresholds.gap_tolerance_px,
-            review_priority_min_dimension_px=thresholds.review_priority_min_dimension_px,
-        )
-        if measurable
-        else {
-            "total_ink_pixel_count": None,
-            "claimed_pixel_count": None,
-            "residual_pixel_count": None,
-            "residual_components": [],
-        }
-    )
-    page_id = page_record["subject_id"]
-    components = result["residual_components"]
-    component_count = len(components)
-    promoted, aggregated = _partition_residual_components(components, thresholds)
+    component_count = len(result["residual_components"])
     # `complete` on an unmeasured page too: nothing was withheld, and
     # `ink_measurable` already says nothing was measured.
     enumeration = RESIDUAL_ENUMERATION_AGGREGATED if aggregated else RESIDUAL_ENUMERATION_COMPLETE
@@ -2025,6 +1933,51 @@ def _publish_conservation_and_secondary(
     conservation_payload["residual_components"] = promoted
     if aggregated:
         conservation_payload["aggregated_residual_components"] = aggregated
+    return conservation_payload
+
+
+def _publish_conservation_and_secondary(
+    context,
+    ordinal: int,
+    page_record: dict,
+    analysis: dict,
+    claimed: list[dict],
+    secondary: dict,
+    grouping_policy: dict,
+) -> tuple[list[dict], bool]:
+    """Reconcile ink against crops, then publish conservation and rescue evidence.
+
+    The scan is independent of grouping so missed ink remains visible. Without
+    an inferable background, a substituted threshold would invent a measurement.
+    Components at either sealed floor become held acts; the rest share one
+    page review item, so none is dropped. The record publishes either way.
+    """
+    thresholds = analysis["thresholds"]
+    measurable = analysis["background"] is not None
+    result = (
+        conservation.reconcile(
+            analysis["width"],
+            analysis["height"],
+            analysis["rows"],
+            background=analysis["background"],
+            claimed_bounds=[entry["bounds"] for entry in claimed],
+            gap_tolerance_px=thresholds.gap_tolerance_px,
+            review_priority_min_dimension_px=thresholds.review_priority_min_dimension_px,
+        )
+        if measurable
+        else {
+            "total_ink_pixel_count": None,
+            "claimed_pixel_count": None,
+            "residual_pixel_count": None,
+            "residual_components": [],
+        }
+    )
+    page_id = page_record["subject_id"]
+    components = result["residual_components"]
+    promoted, aggregated = _partition_residual_components(components, thresholds)
+    conservation_payload = _build_conservation_payload(
+        ordinal, analysis, result, promoted, aggregated, measurable
+    )
     _refuse_text_fields(conservation_payload)
     published = context.publish(
         kind="conservation",
@@ -2045,7 +1998,7 @@ def _publish_conservation_and_secondary(
                 page_id,
                 ordinal,
                 _page_bounds(analysis),
-                residual_component_count=component_count,
+                residual_component_count=len(components),
                 aggregated_component_count=len(aggregated),
                 grouping_config_sha256=grouping_policy["config_sha256"],
                 conservation_ref=conservation_ref,
@@ -2055,10 +2008,7 @@ def _publish_conservation_and_secondary(
 
 
 def _conservation_reason(measurable: bool, aggregated: bool, component_count: int) -> str | None:
-    """The one sentence a reviewer reads about why this record is not ordinary.
-
-    Unmeasurable, aggregated, or None when the record is ordinary.
-    """
+    """Explain an unmeasured or aggregated conservation record."""
     if not measurable:
         return (
             "this page's background could not be inferred, so it has no threshold to "
@@ -2161,6 +2111,93 @@ def _initial_pass_has_holds(
     return any(hold_facts)
 
 
+def _cut_and_group_declared_act(
+    context,
+    act: dict,
+    act_id: str,
+    continuation: dict | None,
+    pages: dict[int, dict],
+    failures: dict[int, str],
+    page_cache: dict[int, dict],
+    padding: dict,
+    provenance: dict,
+    grouping_policy: dict,
+) -> tuple[list[dict], bool, tuple | None]:
+    """Cut the available regions, then group only a complete act."""
+    page_ordinal = act["page_ordinal"]
+    evidence = []
+    continuation_cut = False
+    hold_cause = None
+    analysis = _analyze_page(
+        page_cache, context, page_ordinal, pages[page_ordinal], grouping_policy
+    )
+    primary = cut_region(
+        context,
+        act,
+        pages[page_ordinal],
+        act_bounds(act),
+        1,
+        page_ordinal,
+        "proposal",
+        padding=padding,
+        provenance=provenance,
+    )
+    evidence.append(context.input_ref(primary.relative_path))
+
+    # A continuation is a second region of the same act, never a new act.
+    far_ordinal = continuation["page_ordinal"] if continuation else None
+    continuation_analysis = None
+    if continuation and far_ordinal in pages and far_ordinal not in failures:
+        continuation_analysis = _analyze_page(
+            page_cache, context, far_ordinal, pages[far_ordinal], grouping_policy
+        )
+        continuation_region = cut_region(
+            context,
+            act,
+            pages[far_ordinal],
+            _bounds_of(continuation),
+            2,
+            far_ordinal,
+            "proposal",
+            padding=padding,
+            provenance=provenance,
+        )
+        evidence.append(context.input_ref(continuation_region.relative_path))
+        continuation_cut = True
+
+    if continuation and not continuation_cut:
+        # The near side stays cut as evidence, but the act is held: reading
+        # it alone would pass a truncation as complete.
+        if far_ordinal in failures:
+            hold_cause = (
+                far_ordinal,
+                f"the act continues onto page {far_ordinal}, which the structure "
+                f"pass could not mark out ({failures[far_ordinal]}), so its "
+                "continuation could not be cut",
+                "structure-pass-held-on-continuation",
+            )
+        else:
+            hold_cause = (
+                far_ordinal,
+                f"the act continues onto page {far_ordinal}, "
+                "which was not sealed, so its continuation could not be cut",
+                "exemplar-continuation-not-sealed",
+            )
+    else:
+        _publish_act_group(
+            context,
+            act,
+            act_id,
+            pages[page_ordinal],
+            analysis,
+            continuation if continuation_cut else None,
+            pages[far_ordinal] if continuation_cut else None,
+            continuation_analysis,
+        )
+
+    return evidence, continuation_cut, hold_cause
+
+
 def _account_for_declared_act(
     context,
     act: dict,
@@ -2178,7 +2215,6 @@ def _account_for_declared_act(
     continuation = continuation_for(context.fixture, act["key"])
     continuation_cut = False
     evidence = []
-    # (blocking page ordinal, reason, reason code) when the act is held.
     hold_cause = None
 
     if page_ordinal not in pages:
@@ -2199,72 +2235,18 @@ def _account_for_declared_act(
             "structure-pass-held",
         )
     else:
-        analysis = _analyze_page(
-            page_cache, context, page_ordinal, pages[page_ordinal], grouping_policy
-        )
-        primary = cut_region(
+        evidence, continuation_cut, hold_cause = _cut_and_group_declared_act(
             context,
             act,
-            pages[page_ordinal],
-            act_bounds(act),
-            1,
-            page_ordinal,
-            "proposal",
-            padding=padding,
-            provenance=provenance,
+            act_id,
+            continuation,
+            pages,
+            failures,
+            page_cache,
+            padding,
+            provenance,
+            grouping_policy,
         )
-        evidence.append(context.input_ref(primary.relative_path))
-
-        # A continuation is a second region of the same act, never a new act.
-        far_ordinal = continuation["page_ordinal"] if continuation else None
-        continuation_analysis = None
-        if continuation and far_ordinal in pages and far_ordinal not in failures:
-            continuation_analysis = _analyze_page(
-                page_cache, context, far_ordinal, pages[far_ordinal], grouping_policy
-            )
-            continuation_region = cut_region(
-                context,
-                act,
-                pages[far_ordinal],
-                _bounds_of(continuation),
-                2,
-                far_ordinal,
-                "proposal",
-                padding=padding,
-                provenance=provenance,
-            )
-            evidence.append(context.input_ref(continuation_region.relative_path))
-            continuation_cut = True
-
-        if continuation and not continuation_cut:
-            # The near side stays cut as evidence, but the act is held: reading
-            # it alone would pass a truncation as complete.
-            if far_ordinal in failures:
-                hold_cause = (
-                    far_ordinal,
-                    f"the act continues onto page {far_ordinal}, which the structure "
-                    f"pass could not mark out ({failures[far_ordinal]}), so its "
-                    "continuation could not be cut",
-                    "structure-pass-held-on-continuation",
-                )
-            else:
-                hold_cause = (
-                    far_ordinal,
-                    f"the act continues onto page {far_ordinal}, "
-                    "which was not sealed, so its continuation could not be cut",
-                    "exemplar-continuation-not-sealed",
-                )
-        else:
-            _publish_act_group(
-                context,
-                act,
-                act_id,
-                pages[page_ordinal],
-                analysis,
-                continuation if continuation_cut else None,
-                pages[far_ordinal] if continuation_cut else None,
-                continuation_analysis,
-            )
 
     if hold_cause is not None:
         blocking_ordinal, reason, reason_code = hold_cause
@@ -2306,6 +2288,15 @@ def _sealed_designator_policies(context) -> tuple[dict, dict]:
     return padding, grouping_policy
 
 
+def _initial_pages_and_policies(context) -> tuple[dict, dict, dict, dict]:
+    records = page_records(context)
+    pages = sealed_pages(records)
+    if not pages:
+        raise ContractError("the Designator found no sealed page to mark out")
+    padding, grouping_policy = _sealed_designator_policies(context)
+    return records, pages, padding, grouping_policy
+
+
 def _publish_proposal_seal(context, expected: list[dict], inputs: list, provenance: dict) -> None:
     """Emitted once, never rewritten: downstream stages reconcile against it."""
     payload = {"expected_acts": expected, "count": len(expected), "provenance": provenance}
@@ -2321,12 +2312,7 @@ def _publish_proposal_seal(context, expected: list[dict], inputs: list, provenan
 
 def initial_pass(context) -> bool:
     """Mark out every act on every sealed page. True when anything was held."""
-    records = page_records(context)
-    pages = sealed_pages(records)
-    if not pages:
-        raise ContractError("the Designator found no sealed page to mark out")
-
-    padding, grouping_policy = _sealed_designator_policies(context)
+    records, pages, padding, grouping_policy = _initial_pages_and_policies(context)
     provenance = structure_provenance(context)
     secondary = _publish_secondary_provenance(context, secondary_provenance(context))
     # Decided once, before any crop is cut.
@@ -2748,42 +2734,22 @@ def _publish_live_fallbacks(
     return rows
 
 
-def live_initial_pass(context, serving_factory, tier: str) -> bool:
-    """Mark out every sealed page through the served structure chair. True when held.
+def _serve_unanswered_pages(
+    context: StageContext,
+    pages: dict[int, dict],
+    page_cache: dict[int, dict],
+    attempt_policy: Mapping[str, Any],
+    identity: ChairIdentity,
+    decoding_sha256: str,
+    temperature: float,
+    serving_factory: Callable[[StageContext, ChairIdentity, str], ChairClient],
+    tier: str,
+) -> tuple[dict[int, structure_pass.PageAnswer], dict[int, dict[str, str]]]:
+    """Serve only unanswered pages, within each page's sealed attempt limit.
 
-    Shares everything with `initial_pass` except the proposer: one retained
-    terminal answer per sealed page, from up to the sealed attempt limit of
-    served calls, replaces the fixture's declared acts, and the chair's real
-    receipt replaces the fixture provenance. `context.fixture` is never read.
-
-    Per page, the answer publishes before the status that cites it, then the
-    crops. A page the chair could not mark out goes into `failures`, so its hold
-    follows the fixture path's proven route.
-
-    The pass resumes: an answered page is read back, never asked again (a second
-    answer would conflict with the fixed artifact identity), and each answer is
-    published as it arrives so an interruption keeps what was paid for
-    (principle 2). Each page's artifacts name the session that answered it.
+    A sealed answer is never asked again: a second would conflict with its fixed
+    artifact identity. Publish each attempt before deciding whether to retry.
     """
-    records = page_records(context)
-    pages = sealed_pages(records)
-    if not pages:
-        raise ContractError("the Designator found no sealed page to mark out")
-
-    padding, grouping_policy = _sealed_designator_policies(context)
-    # The sealed `[structure]` decoding posture, refused before any chair starts
-    # if the live seam cannot execute it.
-    decoding_policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
-    context.require_sealed_config("decoding", decoding_sha256)
-    temperature = structure_pass.executable_temperature(decoding_policy)
-    attempt_policy = structure_recovery_policy(decoding_policy)
-    identity = structure_pass.resolved_structure_chair(context)
-    secondary = _publish_secondary_provenance(context, _live_secondary_provenance(context))
-
-    page_cache: dict[int, dict] = {}
-    for ordinal, page_record in pages.items():
-        _analyze_page(page_cache, context, ordinal, page_record, grouping_policy)
-
     answers, answer_refs = _resumed_structure_answers(context, pages, attempt_policy)
     unanswered = [ordinal for ordinal in sorted(pages) if ordinal not in answers]
     histories = {
@@ -2842,8 +2808,40 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
                     context, page_record, history
                 )
 
-    # Page order, so a resume seals the same `expected_acts` list as a fresh run.
-    answers = {ordinal: answers[ordinal] for ordinal in sorted(answers)}
+    # Page order keeps the proposal seal identical across resumes.
+    return {ordinal: answers[ordinal] for ordinal in sorted(answers)}, answer_refs
+
+
+def live_initial_pass(context, serving_factory, tier: str) -> bool:
+    """Mark out sealed pages through the served chair; return whether any were held.
+
+    The live pass never reads context.fixture. Per page, the answer publishes
+    before the status that cites it, then the crops; paid work survives resume.
+    """
+    records, pages, padding, grouping_policy = _initial_pages_and_policies(context)
+    # The sealed decoding posture is checked before any chair starts.
+    decoding_policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
+    context.require_sealed_config("decoding", decoding_sha256)
+    temperature = structure_pass.executable_temperature(decoding_policy)
+    attempt_policy = structure_recovery_policy(decoding_policy)
+    identity = structure_pass.resolved_structure_chair(context)
+    secondary = _publish_secondary_provenance(context, _live_secondary_provenance(context))
+
+    page_cache: dict[int, dict] = {}
+    for ordinal, page_record in pages.items():
+        _analyze_page(page_cache, context, ordinal, page_record, grouping_policy)
+
+    answers, answer_refs = _serve_unanswered_pages(
+        context,
+        pages,
+        page_cache,
+        attempt_policy,
+        identity,
+        decoding_sha256,
+        temperature,
+        serving_factory,
+        tier,
+    )
 
     failures: dict[int, str] = {}
     status_answers: dict[int, tuple[str | None, dict[str, str]]] = {}
@@ -3106,11 +3104,8 @@ def _declared_recovery(context, act_key: str) -> tuple[dict, list[dict]]:
     return act, recovery
 
 
-def recovery_pass(context, act_id: str, request_id: str) -> None:
-    """Cut one replacement region for one act, at the Recensor's request.
-
-    The Recensor asks; only the Designator cuts, so crops keep one author.
-    """
+def _validated_recrop_request(context, act_id: str, request_id: str):
+    """Require a current Recensor recrop for a proposed act."""
     # The shared consumer verifies the seal and every minted premise first.
     match = [item for item in expected_acts(context) if item["act_id"] == act_id]
     if not match:
@@ -3153,9 +3148,21 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             "kind names a different owning stage, not a substitute crop"
         )
 
+    return match[0], request, request_payload, ordinal
+
+
+def recovery_pass(context, act_id: str, request_id: str) -> None:
+    """Cut one replacement region for one act, at the Recensor's request.
+
+    The Recensor asks; only the Designator cuts, so crops keep one author.
+    """
+    sealed_act, request, request_payload, ordinal = _validated_recrop_request(
+        context, act_id, request_id
+    )
+
     real_input = parse_ingress_record(context.run.get("ingress")) == REAL_INGRESS
     # Real ingress has no fixture: its recrop geometry comes from the request.
-    act, recovery = (None, []) if real_input else _declared_recovery(context, match[0]["act_key"])
+    act, recovery = (None, []) if real_input else _declared_recovery(context, sealed_act["act_key"])
 
     pages = sealed_pages(page_records(context))
     if real_input:
@@ -3165,7 +3172,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
                 "a real-ingress recovery request has no ink-confirmed recovery_bounds; a "
                 "Designator must never substitute fixture geometry"
             )
-        page_ordinal = match[0]["page_ordinal"]
+        page_ordinal = sealed_act["page_ordinal"]
     else:
         bounds = _bounds_of(recovery[0])
         page_ordinal = act["page_ordinal"]
@@ -3179,7 +3186,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             context,
             request,
             request_payload,
-            match[0],
+            sealed_act,
             page_record["subject_id"],
             page_ordinal,
             page_w,
@@ -3221,7 +3228,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
         cut_minted_region(
             context,
             act_id,
-            match[0]["act_key"],
+            sealed_act["act_key"],
             page_record,
             bounds,
             region_ordinal,

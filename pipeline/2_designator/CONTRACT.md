@@ -1331,20 +1331,16 @@ share one `page-residual` hold. `residual_enumeration` names that partition.
 The number this closes is measured on this build: a synthetic A4 page at 300 dpi
 with 3% scattered ink reconciles to ~60,000 residual components (this tree now
 measures ~254,000 at a 33px pitch), each of which used to mint its own held act,
-hold artifact and seal row. `operations/operator/review.py` refuses a run past
-`MAX_REVIEW_ITEMS` by name, so one such page made every *other* page's findings
-unreadable on the only surface a person uses.
+hold artifact and seal row. The operator review surface pages through the
+queue, so a dense page does not make the other pages' findings unreadable.
 
-**The presentation floors apply per component and the console's ceiling is per
-run.** Promoted components can still carry a run past the console's 50,000-item
-limit. Nothing in the pipeline counts the run-wide total while a run is produced,
-and the Designator deliberately does
-not: the queue an operator opens is assembled in the Armarium's export from
-every stage's review items, so a total counted in this stage would be a fraction
-of the run's presented as the whole of it, which principle 8 forbids more
-firmly than it wants the check. A run-wide accounting belongs where the queue is
-assembled if it is wanted; until then the ceiling is enforced at the console
-against the queue it actually reads.
+**The presentation floors apply per component; the review page size applies to
+the assembled queue.** Promoted components can make the run-wide queue large.
+The operator reads 500 at a time in stable bundle order and reports the
+run-wide total; every page remains addressable with `--review-page`. The
+Designator does not count a run-wide total while producing its records: the
+Armarium assembles the queue from every stage's review items, so a count made
+here would present a fraction as the whole.
 
 **The secondary rescue pass is bounded the same way, on the same page.**
 `max_secondary_proposals` caps how many rescue candidates one page cuts and

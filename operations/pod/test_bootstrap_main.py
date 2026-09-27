@@ -1009,6 +1009,43 @@ def test_an_explicit_malformed_context_is_refused_by_configuration_after_checkou
 # --- the chair cache is built lazily, only when CHAIR_CACHE actually runs ---
 
 
+def test_chair_cache_receipt_says_sources_were_planned(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    class Identity:
+        source = "huggingface"
+
+    class Fetcher:
+        def __init__(self, root: Path) -> None:
+            assert root == Path("/volume/store")
+
+        def plan(self, identity: Identity) -> dict[str, str]:
+            assert isinstance(identity, Identity)
+            return {"snapshot": "pinned-snapshot"}
+
+    monkeypatch.setattr(bootstrap_main, "ChairIdentity", Identity)
+    monkeypatch.setattr(
+        bootstrap_main.ChairRegistry,
+        "from_toml",
+        lambda *args, **kwargs: SimpleNamespace(
+            config=SimpleNamespace(chairs={"perlector": Identity()})
+        ),
+    )
+    monkeypatch.setattr(bootstrap_main, "StoreRoleFetcher", Fetcher)
+    plan = SimpleNamespace(
+        models_config=Path("/repo/models.toml"),
+        cache_root=Path("/volume/cache"),
+        store_root=Path("/volume/store"),
+    )
+
+    assert bootstrap_main._build_cache(plan) == {
+        "chairs": [
+            {"chair": "perlector", "state": "source-planned", "snapshot": "pinned-snapshot"}
+        ],
+        "cache_root": "/volume/cache",
+    }
+
+
 def test_build_actions_does_not_read_models_config_before_configuration_runs(
     tmp_path: Path,
 ) -> None:

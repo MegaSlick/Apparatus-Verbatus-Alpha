@@ -14,6 +14,7 @@ import subprocess
 import sys
 import types
 import zipfile
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ARMARIUM
 from common.runtree.store import RunTree
 from conftest import code_text
-from operations.operator import advance, advance_worker, cli, console, custody, review
+from operations.operator import advance, advance_worker, cli, console, custody, review, review_text
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.review import ReviewProjection
 
@@ -676,7 +677,9 @@ def test_a_broken_projection_pipe_never_reads_as_damaged_run_tree_evidence(tmp_p
 
     monkeypatch.setattr(cli, "run_confined", _truncated)
     monkeypatch.setattr(
-        cli, "ReadOnlyRun", lambda *_args: types.SimpleNamespace(projection=lambda: _EMPTY_VIEW)
+        cli,
+        "ReadOnlyRun",
+        lambda *_args: types.SimpleNamespace(projection=lambda **_kwargs: _EMPTY_VIEW),
     )
     monkeypatch.setattr(cli, "_bound_run_tree", lambda *_args: None)
 
@@ -1561,6 +1564,43 @@ def test_review_refuses_bundle_bytes_that_do_not_match_the_export_reference(tmp_
     assert "but its bytes have digest" in (excinfo.value.detail or "")
 
 
+def test_review_hashes_and_parses_one_bundle_handle(tmp_path: Path):
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("review-items.jsonl", b"{}\n")
+    data = bundle.getvalue()
+    digest = digest_bytes(data)
+
+    class OneOpenBundle:
+        def __init__(self):
+            self.opens = 0
+
+        def open(self, mode):
+            assert mode == "rb"
+            self.opens += 1
+            assert self.opens == 1
+            return io.BytesIO(data)
+
+    source = OneOpenBundle()
+    tree = types.SimpleNamespace(
+        resolve=lambda _path: source,
+        blob_path=lambda stage, value: f"7_armarium/blobs/sha256/{value}",
+    )
+    payload = {
+        "bundle": {
+            "reference": {
+                "relative_path": f"7_armarium/blobs/sha256/{digest}",
+                "sha256": digest,
+            },
+            "sha256": digest,
+        }
+    }
+
+    items, total = review._review_items(tree, payload, _EXPORT_REF)
+    assert source.opens == 1
+    assert total == 1 and items[0]["line"] == 1
+
+
 def _review_bundle_payload(data: bytes, tmp_path: Path) -> tuple[types.SimpleNamespace, dict]:
     digest = digest_bytes(data)
     blob = tmp_path / "bundle-blob"
@@ -1581,20 +1621,16 @@ def _review_bundle_payload(data: bytes, tmp_path: Path) -> tuple[types.SimpleNam
     return tree, payload
 
 
-def test_review_refuses_a_zip_member_that_would_expand_past_its_input_limit(tmp_path: Path):
+def test_review_refuses_a_row_larger_than_its_input_limit(tmp_path: Path):
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
-        archive.writestr("review-items.jsonl", b"x" * (review.MAX_REVIEW_ITEMS_BYTES + 1))
+        archive.writestr("review-items.jsonl", b"x" * (review.MAX_REVIEW_ITEM_BYTES + 1))
     tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
 
     with pytest.raises(OperatorError) as excinfo:
         review._review_items(tree, payload, _EXPORT_REF)
 
-    # The distinguishing verb, not the shared phrase: `_review_items` raises
-    # "exceeds the operator review limit" for the declared member size and
-    # "expands beyond" for the post-read recheck, and "review limit" matched
-    # either — so this test stayed green whichever bound was deleted.
-    assert "exceeds the operator review limit" in (excinfo.value.detail or "")
+    assert "line 1 exceeds" in (excinfo.value.detail or "")
 
 
 def test_no_archive_member_can_be_both_this_name_and_a_directory():
@@ -1614,25 +1650,146 @@ def test_no_archive_member_can_be_both_this_name_and_a_directory():
         assert not (member.filename == review._REVIEW_ITEMS_MEMBER and member.is_dir())
 
 
-def test_review_refuses_more_review_rows_than_the_console_can_safely_project(tmp_path: Path):
+def test_review_pages_across_boundaries_without_loss(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(review, "REVIEW_PAGE_SIZE", 2)
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
-        archive.writestr("review-items.jsonl", b"{}\n" * (review.MAX_REVIEW_ITEMS + 1))
+        archive.writestr("review-items.jsonl", b"{}\n" * 5)
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
+
+    seen = []
+    for page in range(1, 4):
+        items, total = review._review_items(tree, payload, _EXPORT_REF, review_page=page)
+        assert total == 5
+        assert items is not None and len(items) <= review.REVIEW_PAGE_SIZE
+        if page == 1:
+            lines = review_text.render(
+                {
+                    "run_id": "reviewed",
+                    "review_items": items,
+                    "review_items_total": total,
+                    "review_page": page,
+                    "review_page_size": review.REVIEW_PAGE_SIZE,
+                }
+            )
+            assert "Review queue (5) — page 1, items 1-2" in lines
+            assert any("--review-page 2" in line for line in lines)
+        seen.extend(item["line"] for item in items)
+    assert seen == list(range(1, 6))
+
+
+def test_projection_selects_a_later_review_page(tmp_path: Path, monkeypatch):
+    run_root, run_id = _make_run(tmp_path, scenario="review")
+    monkeypatch.setattr(review, "REVIEW_PAGE_SIZE", 2)
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr(
+            "review-items.jsonl", b'{"reason":"one"}\n{"reason":"two"}\n{"reason":"three"}\n'
+        )
+    queue_tree, queue_payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
+    read_items = review._review_items
+
+    def use_queue(_tree, _payload, export_ref, *, review_page):
+        return read_items(queue_tree, queue_payload, export_ref, review_page=review_page)
+
+    monkeypatch.setattr(review, "_review_items", use_queue)
+    projected = review.ReadOnlyRun(run_root, run_id).projection(review_page=2)
+
+    assert projected.review_page == 2
+    assert projected.review_page_size == 2
+    assert projected.review_items_total == 3
+    assert [item["line"] for item in projected.review_items] == [3]
+    assert "Review queue (3) — page 2, items 3-3" in review_text.render(asdict(projected))
+
+
+def test_projection_refuses_review_page_before_one(tmp_path: Path):
+    with pytest.raises(OperatorError) as excinfo:
+        review.ReadOnlyRun(tmp_path, "absent").projection(review_page=0)
+    assert excinfo.value.code == ErrorCode.INVALID_COMMAND
+    assert "review page must be at least 1" in (excinfo.value.detail or "")
+
+
+def test_bad_row_on_later_page_refuses_first_page(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(review, "REVIEW_PAGE_SIZE", 2)
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("review-items.jsonl", b"{}\n{}\nnot json\n")
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload, _EXPORT_REF, review_page=1)
+    assert "line 3" in (excinfo.value.detail or "")
+
+
+def test_review_page_byte_allowance_names_the_first_excess_row(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(review, "MAX_REVIEW_PAGE_BYTES", 15)
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("review-items.jsonl", b'{"x":1}\n{"x":2}\n{"x":3}\n')
     tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
 
     with pytest.raises(OperatorError) as excinfo:
         review._review_items(tree, payload, _EXPORT_REF)
+    assert "review-items.jsonl line 3" in (excinfo.value.detail or "")
+    assert "review page 1 past 15 bytes" in (excinfo.value.detail or "")
 
-    assert f"more than the operator review limit of {review.MAX_REVIEW_ITEMS} records" in (
-        excinfo.value.detail or ""
+
+def test_review_row_limit_excludes_line_ending(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(review, "MAX_REVIEW_ITEM_BYTES", 2)
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("review-items.jsonl", b"{}\r\n")
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
+
+    items, total = review._review_items(tree, payload, _EXPORT_REF)
+    assert total == 1
+    assert items[0]["line"] == 1
+
+
+def test_review_refuses_cr_only_rows_by_name(tmp_path: Path):
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("review-items.jsonl", b"{}\r{}\r")
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload, _EXPORT_REF)
+    assert "review-items.jsonl line 1" in (excinfo.value.detail or "")
+    assert "bare carriage return" in (excinfo.value.detail or "")
+
+
+def test_review_page_past_end_refuses_but_empty_queue_is_empty(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(review, "REVIEW_PAGE_SIZE", 2)
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("review-items.jsonl", b"{}\n{}\n")
+    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload, _EXPORT_REF, review_page=2)
+    assert excinfo.value.code == ErrorCode.INVALID_COMMAND
+    assert "past the end" in (excinfo.value.detail or "")
+
+    empty = io.BytesIO()
+    with zipfile.ZipFile(empty, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("review-items.jsonl", b"")
+    tree, payload = _review_bundle_payload(empty.getvalue(), tmp_path)
+    items, total = review._review_items(tree, payload, _EXPORT_REF)
+    assert items == () and total == 0
+    assert "Review queue (0) — page 1, empty" in review_text.render(
+        {
+            "run_id": "reviewed",
+            "review_items": items,
+            "review_items_total": total,
+            "review_page": 1,
+            "review_page_size": review.REVIEW_PAGE_SIZE,
+        }
     )
 
 
 def test_a_row_that_is_not_json_names_the_line_it_is_on(tmp_path: Path):
     """A refusal that names only the bundle cannot be acted on.
 
-    The queue may hold up to `MAX_REVIEW_ITEMS` rows, so "a row is bad" without
-    a position leaves the operator to find it by hand.
+    A bad row without a position leaves the operator to find it by hand.
     """
 
     bundle = io.BytesIO()
@@ -1693,29 +1850,6 @@ def test_review_refuses_ambiguous_duplicate_review_members(tmp_path: Path):
         review._review_items(tree, payload, _EXPORT_REF)
 
     assert "more than one review-items.jsonl" in (excinfo.value.detail or "")
-
-
-def test_review_charges_the_export_bundle_to_the_same_allowance_as_the_images(
-    tmp_path: Path,
-):
-    """The bundle zip is read whole in the same pass as every page and crop.
-
-    Bounding the images alone would bound nothing: a parish-sized bundle met
-    the machine's memory in the exact projection the image allowance guards.
-    The bundle spends from the shared allowance and an oversized run refuses
-    by name, with the run tree intact.
-    """
-    bundle = io.BytesIO()
-    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
-        archive.writestr("review-items.jsonl", b'{"reason":"real"}\n')
-    tree, payload = _review_bundle_payload(bundle.getvalue(), tmp_path)
-
-    with pytest.raises(OperatorError) as excinfo:
-        review._review_items(tree, payload, _EXPORT_REF, review._ImageBudget(limit=16))
-
-    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
-    assert "more than the console can project" in (excinfo.value.detail or "")
-    assert "the Armarium export bundle" in (excinfo.value.detail or "")
 
 
 def test_a_bad_run_id_is_named_as_such_by_advance_and_review(tmp_path):
@@ -1894,15 +2028,7 @@ def test_review_refuses_a_bundle_it_cannot_follow_instead_of_showing_an_empty_qu
 
 
 def test_review_refuses_a_bundle_member_whose_declared_size_is_false(tmp_path: Path):
-    """A lying zip header is refused; it cannot expand past the declared size.
-
-    `zipfile` bounds a member read by the `file_size` its central directory
-    declares, so the `MAX_REVIEW_ITEMS_BYTES` recheck after the bounded read
-    cannot fire while the `member.file_size` check above it holds — measured
-    here rather than assumed. What a falsified header actually produces is a
-    CRC failure, and that has to reach the operator as a refusal rather than
-    as a short read silently accepted as the review queue.
-    """
+    """A lying zip header must become a refusal, not a short queue."""
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("review-items.jsonl", b'{"reason":"real"}\n' * 4096)
@@ -2529,7 +2655,9 @@ def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_t
         advance_records=(),
     )
     monkeypatch.setattr(
-        cli, "ReadOnlyRun", lambda root, run_id: types.SimpleNamespace(projection=lambda: hostile)
+        cli,
+        "ReadOnlyRun",
+        lambda root, run_id: types.SimpleNamespace(projection=lambda **_kwargs: hostile),
     )
 
     cli._review_in_custody(tmp_path, "hostile", ROOT)

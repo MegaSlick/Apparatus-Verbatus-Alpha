@@ -19,6 +19,7 @@ import base64
 import inspect
 import json
 import math
+import re
 from typing import Any, Final
 
 from common.contracts import uncertainty
@@ -891,6 +892,9 @@ def reproof_response_from_text(request: dict[str, Any], proposed_text: str) -> s
     )
 
 
+_WHOLE_REPLY_FENCE: Final = re.compile(r"\A```(?:json)?\n(.*)\n```\s*\Z", re.DOTALL)
+
+
 def assemble_reproof_response(
     raw_response: str, request: dict[str, Any]
 ) -> tuple[str, dict[str, Any]]:
@@ -912,7 +916,10 @@ def assemble_reproof_response(
     if not isinstance(raw_response, str):
         raise ReproofResponseRefusal("an audit re-proof response is not text")
     try:
-        response = json.loads(raw_response, object_pairs_hook=_closed_json_object)
+        fenced = _WHOLE_REPLY_FENCE.match(raw_response)
+        response = json.loads(
+            fenced.group(1) if fenced else raw_response, object_pairs_hook=_closed_json_object
+        )
     except json.JSONDecodeError as error:
         raise ReproofResponseRefusal("an audit re-proof response is not valid JSON") from error
     if not isinstance(response, dict) or set(response) != {"schema", "edits"}:
