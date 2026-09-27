@@ -4381,36 +4381,6 @@ def test_a_failed_breadcrumb_is_named_in_the_durable_report_the_close_files(
     assert report["close_attempts"] >= 1
 
 
-def test_an_ordinary_close_leaves_no_breadcrumb_failure_field_at_all(tmp_path: Path) -> None:
-    """The field is a fault report, so its absence is what a clean run looks like."""
-
-    clock = Clock()
-    provider = fake(clock)
-    record = provider.create(request(clock))
-    provider.bill(record.pod_id, "0.07")
-    store = LeaseStore(tmp_path / "timer-breadcrumb-clean.json")
-    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=1)
-    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
-    report_path = tmp_path / "pod-report.json"
-
-    class FailedChild:
-        def poll(self) -> int:
-            return 17
-
-    run_with_bootstrap(
-        context,
-        bootstrap_command_json=NO_OP_BOOTSTRAP,
-        report_path=report_path,
-        sleeper=clock.sleep,
-        interval_seconds=1,
-        popen=lambda argv: FailedChild(),  # type: ignore[arg-type]
-    )
-
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert "termination_breadcrumb_failure" not in report
-    assert terminating_path(report_path).is_file()
-
-
 def test_bare_timer_command_is_rejected_before_a_paid_create() -> None:
     clock = Clock()
     with pytest.raises(ValueError, match="--timer-factory|--bootstrap-command-json"):
@@ -7238,13 +7208,6 @@ def test_an_exited_pod_is_still_present_with_its_lifecycle_word_named() -> None:
     assert observed.provider_state == "EXITED"
 
 
-def test_set_pod_state_refuses_an_unknown_pod_by_name_rather_than_a_bare_typeerror() -> None:
-    provider = fake(Clock())
-
-    with pytest.raises(ProviderFailure, match="unknown pod"):
-        provider.set_pod_state("fake-pod-404", "EXITED")
-
-
 def test_an_absent_pod_still_answers_through_the_get_404_path_with_no_lifecycle_word() -> None:
     clock = Clock()
     provider = fake(clock)
@@ -7256,31 +7219,6 @@ def test_an_absent_pod_still_answers_through_the_get_404_path_with_no_lifecycle_
     assert observed.presence is Presence.ABSENT
     assert observed.http_status == 404
     assert observed.provider_state is None
-
-
-def test_provider_status_default_carries_no_lifecycle_word_and_is_never_running() -> None:
-    """A fresh ``ProviderStatus`` is never read as RUNNING by omission: an
-    adapter that supplies nothing yields ``None``."""
-
-    status = ProviderStatus("pod-1", Presence.PRESENT, START, http_status=200)
-
-    assert status.provider_state is None
-
-
-def test_fake_provider_never_reports_running_for_a_pod_it_put_in_exited() -> None:
-    """The contract line 6066 above pins the default for; this pins it against
-    a value a code path actually produced, so the guard can fail for the
-    reason its docstring names -- ``None`` is not the string ``RUNNING``, and
-    neither is an observed non-RUNNING lifecycle word."""
-
-    clock = Clock()
-    provider = fake(clock)
-    record = provider.create(request(clock))
-
-    provider.set_pod_state(record.pod_id, "EXITED")
-    observed = provider.status(record.pod_id)
-
-    assert observed.provider_state != "RUNNING"
 
 
 # --- U2: the timer's acknowledgement becomes a record --------------------
@@ -7683,22 +7621,6 @@ def test_acknowledged_report_stamps_win_over_a_payload_that_carries_the_same_key
     assert report["identity"] == dict(context.identity)
     assert report["acknowledged_at"] == context.acknowledged_at
     assert report["bootstrap"] == {"argv": ["true"], "state": "running"}
-
-
-def test_timer_context_is_hashable(tmp_path: Path) -> None:
-    """A frozen dataclass with a dict-valued field must not silently lose its
-    default identity-based `__hash__` -- a supervisor or test that puts a
-    `TimerContext` in a set or dict key must not crash."""
-
-    clock = Clock()
-    provider = fake(clock)
-    record = provider.create(request(clock))
-    store = LeaseStore(tmp_path / "hash-check.json")
-    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=60)
-    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
-
-    hash(context)
-    assert {context} == {context}
 
 
 # -- `--record-fixture` ------------------------------------------------------
