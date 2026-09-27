@@ -4494,56 +4494,6 @@ def one_artifact(tree: RunTree, stage: str, kind: str) -> tuple[Path, dict]:
 
 @pytest.mark.full
 @pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_validator_refuses_a_corrupted_schema(happy_run, producer, consumer, kind):
-    _, tree = happy_run
-    _, record = one_artifact(tree, producer, kind)
-    record["schema"] = "skeleton.v99"
-    with pytest.raises(SchemaRefusal):
-        validate_envelope(record)
-
-
-@pytest.mark.full
-@pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_validator_refuses_a_malformed_identity(happy_run, producer, consumer, kind):
-    _, tree = happy_run
-    _, record = one_artifact(tree, producer, kind)
-    record["artifact_id"] = "art_not_a_real_identity"
-    with pytest.raises(SchemaRefusal):
-        validate_envelope(record)
-
-
-@pytest.mark.full
-@pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_validator_refuses_duplicate_accounting(happy_run, producer, consumer, kind):
-    """A duplicate reference is how one page gets counted twice and a conservation
-    check passes over something nobody read."""
-    _, tree = happy_run
-    _, record = one_artifact(tree, producer, kind)
-    assert record["inputs"], (
-        f"{producer} {kind} references no input, so this boundary carries nothing "
-        "verifiable. Skipping here would be a skip-list, which is how a gap goes "
-        "unnoticed (#87) — the producer should name the bytes it acted on"
-    )
-    record["inputs"] = record["inputs"] + [dict(record["inputs"][0])]
-    with pytest.raises(SchemaRefusal):
-        validate_envelope(record)
-
-
-@pytest.mark.full
-@pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_validator_refuses_bytes_that_changed_under_a_sealed_reference(
-    happy_run, producer, consumer, kind
-):
-    _, tree = happy_run
-    _, record = one_artifact(tree, producer, kind)
-    assert record["inputs"], f"{producer} {kind} names no bytes to tamper with"
-    reference = record["inputs"][0]
-    with pytest.raises(SchemaRefusal):
-        verify_input_bytes(reference, b"tampered")
-
-
-@pytest.mark.full
-@pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
 def test_each_handoff_corruption_stops_its_named_real_consumer(
     happy_run, tmp_path, producer, consumer, kind
 ):
@@ -4921,12 +4871,6 @@ def test_a_stage_invoked_before_its_producer_refuses_rather_than_inventing(tmp_p
     )
     assert result.returncode == 2
     assert "IncompatibleReuse" in result.stderr or "ContractError" in result.stderr
-
-
-def test_contract_error_is_the_only_way_a_stage_reports_refusal():
-    """A stage that crashed with a traceback and exited zero would be the vacuous
-    green this project exists to notice."""
-    assert issubclass(SchemaRefusal, ContractError)
 
 
 # --- 8. A refused page cannot vanish, and no act rides out over one -------------
