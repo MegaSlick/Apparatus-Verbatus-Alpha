@@ -12,6 +12,7 @@ runner is injected.
 from __future__ import annotations
 
 import math
+import secrets
 import subprocess
 from decimal import Decimal
 from pathlib import Path
@@ -22,29 +23,31 @@ from PIL import Image
 
 from .errors import ServingConfigurationError
 from .smoke import (
-    _PAGE_WITNESS_ALPHABET,
-    _PAGE_WITNESS_LENGTH,
     NvidiaSmiUtilization,
     VisionSmokeCall,
     fresh_page_witness,
     render_golden_page,
 )
+from .witness import PAGE_WITNESS_ALPHABET, PAGE_WITNESS_LENGTH
 
 
-def test_a_fresh_witness_is_one_the_smoke_callable_accepts_and_two_draws_differ() -> None:
+def test_a_fresh_witness_is_one_the_smoke_callable_accepts_and_two_draws_differ(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choices = iter(PAGE_WITNESS_ALPHABET * 2)
+    monkeypatch.setattr(secrets, "choice", lambda _alphabet: next(choices))
     first = fresh_page_witness()
     second = fresh_page_witness()
 
     VisionSmokeCall(first)  # the callable's own bounds and alphabet, at construction
     VisionSmokeCall(second)
     assert first != second
-    assert 32 <= len(first) <= 128
-    assert len(first) == _PAGE_WITNESS_LENGTH
-    assert set(first) <= set(_PAGE_WITNESS_ALPHABET)
-    assert set(_PAGE_WITNESS_ALPHABET) == set(ascii_letters + digits) - set("IlL10OoQD")
+    assert len(first) == PAGE_WITNESS_LENGTH
+    assert set(first) <= set(PAGE_WITNESS_ALPHABET)
+    assert set(PAGE_WITNESS_ALPHABET) == set(ascii_letters + digits) - set("IlL10OoQD")
     assert not set(first) & set("IlL10OoQD")
     assert all(first[index] != first[index + 1] for index in range(len(first) - 1))
-    assert len(first) * math.log2(len(_PAGE_WITNESS_ALPHABET)) >= 200
+    assert len(first) * math.log2(len(PAGE_WITNESS_ALPHABET)) >= 200
 
 
 def test_the_rendered_golden_page_is_a_decodable_png_under_the_smallest_tier_cap(
@@ -135,7 +138,7 @@ def test_the_witness_line_fits_inside_the_page_bounds_for_the_worst_case_width(
     # 40pt this line can overrun the page and PIL clips it silently at the
     # canvas edge; render_golden_page must shrink the font (or refuse) rather
     # than let that happen.
-    worst_case_witness = "W" * _PAGE_WITNESS_LENGTH
+    worst_case_witness = "".join("WV"[index % 2] for index in range(PAGE_WITNESS_LENGTH))
     page = tmp_path / "worst-case.png"
 
     render_golden_page(page, worst_case_witness)
@@ -151,17 +154,14 @@ def test_the_witness_line_fits_inside_the_page_bounds_for_the_worst_case_width(
         assert max(ink_columns) < width - 1
 
 
-def test_rendering_refuses_a_witness_too_wide_to_fit_even_at_the_legibility_floor(
+def test_rendering_refuses_a_witness_that_exceeds_the_generator_length(
     tmp_path: Path,
 ) -> None:
-    # A witness at the callable's own maximum length, built from the widest
-    # glyphs, cannot be shrunk to fit the page even at the legibility floor.
-    # render_golden_page must refuse rather than draw a clipped page.
-    too_wide_witness = "W" * 128
-    page = tmp_path / "too-wide.png"
+    too_long_witness = "".join("WV"[index % 2] for index in range(PAGE_WITNESS_LENGTH + 1))
+    page = tmp_path / "too-long.png"
 
     with pytest.raises(ServingConfigurationError):
-        render_golden_page(page, too_wide_witness)
+        render_golden_page(page, too_long_witness)
     assert not page.exists()
 
 

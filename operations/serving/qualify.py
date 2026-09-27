@@ -22,7 +22,8 @@ from .config import (
     profile_preflight_digest,
 )
 from .errors import ServingConfigurationError
-from .smoke import answer_contains_page_witness
+from .smoke import answer_is_page_witness
+from .witness import is_page_witness
 
 DESCRIPTION = """Verify a real-silicon preflight and render profile proof candidates.
 
@@ -277,11 +278,7 @@ def _verify_smoke(
         raise QualificationRefusal(
             f"chair {identity.role!r} page witness artifact is not ASCII"
         ) from error
-    if (
-        not 32 <= len(witness) <= 128
-        or not witness
-        or not all(character.isalnum() or character in "-_" for character in witness)
-    ):
+    if not is_page_witness(witness):
         raise QualificationRefusal(f"chair {identity.role!r} page witness artifact is malformed")
     if digest_bytes(witness_bytes) != smoke["page_witness_sha256"]:
         raise QualificationRefusal(
@@ -306,9 +303,9 @@ def _verify_smoke(
     choice = choices[0]
     message = choice.get("message") if isinstance(choice, dict) else None
     answer = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(answer, str) or not answer_contains_page_witness(answer, witness):
+    if not isinstance(answer, str) or not answer_is_page_witness(answer, witness):
         raise QualificationRefusal(
-            f"chair {identity.role!r} output did not contain the retained page witness exactly"
+            f"chair {identity.role!r} output was not the retained page witness exactly"
         )
     if smoke["smoke_fixture_output_sha256"] != digest_bytes(canonical_bytes([answer])):
         raise QualificationRefusal(

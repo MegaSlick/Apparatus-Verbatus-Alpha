@@ -165,9 +165,13 @@
 # allows from process launch to a healthy endpoint, the exact model id and a
 # completed inference probe; on expiry the chair is killed and PREFLIGHT goes
 # red.  It should cover weight bytes / volume read rate + torch.compile +
-# profiling and warm-up + margin.  Chandra, Churro and DAI use 600 s after
-# 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurements (~220 s,
-# up to ~210 s on a loaded host, and ~60 s respectively). The Perlector on
+# profiling and warm-up + margin.  At generic-24gb, Chandra
+# (`designator_structure`, `attestator_1`) uses 600 s after its ~220 s cold
+# RTX 4090 measurement; Churro (`attestator_3`) after its measurement of up to
+# ~210 s on a loaded host; and DAI (`attestator_2`) after its ~60 s measurement
+# (all 2026-09-27).
+# The 48 GB and 80 GB+ witness-row budgets extrapolate those 24 GB measurements;
+# they are not measurements at those tiers (principle 8). The Perlector on
 # `generic-80gb-plus` is sized from retained vLLM logs (a cold start measured
 # about 375 s on 2026-09-22/23: weights 95 s off the volume,
 # torch.compile 107 s, profiling 76 s, multimodal warm-up 20 s).  The Perlector
@@ -206,7 +210,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "vllm"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -237,7 +241,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "vllm"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # EXTRAPOLATED from designator_structure 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -268,7 +272,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "vllm"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # EXTRAPOLATED from designator_structure 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -299,7 +303,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -330,7 +334,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_1 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -361,7 +365,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_1 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -400,7 +404,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -431,7 +435,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_2 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -462,7 +466,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_2 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -493,7 +497,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -524,7 +528,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_3 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -555,7 +559,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 600  # 2026-09-27 RTX 4090 cold compile-cache launch-to-ready measurement; see header
+startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_3 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }

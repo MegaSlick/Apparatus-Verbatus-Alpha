@@ -771,7 +771,7 @@ def fixture_image_payload(fixture: Path) -> Mapping[str, object]:
     ).request_payload()
 
 
-PAGE_WITNESS = "h6GMQDVxeNmr7RYvT82PqWkJz3BLaF9C"
+PAGE_WITNESS = "ABCEFGHJKMNPRSTUVWXYZabcdefghijkmnpqrstuvwx"
 
 
 def write_golden_page(fixture: Path) -> bytes:
@@ -4315,6 +4315,8 @@ def test_vision_smoke_receipt_does_not_retain_a_witness_bearing_fixture_name(
     "answer",
     [
         f" PAGE-WITNESS: {PAGE_WITNESS}",
+        f"page-witness: {PAGE_WITNESS}",
+        f"PAGE-WITNESS:  {PAGE_WITNESS}",
         f"PAGE-WITNESS: {PAGE_WITNESS} ",
         f"PAGE-WITNESS: {PAGE_WITNESS}\n",
         f"\nPAGE-WITNESS: {PAGE_WITNESS}",
@@ -4498,24 +4500,30 @@ def test_vision_smoke_call_refuses_ambiguous_whitespace_in_a_witness_token(
 ) -> None:
     """A page token must not depend on preserving ambiguous whitespace glyphs."""
 
-    assert len(witness) >= 32
-    with pytest.raises(ServingConfigurationError, match="must contain no whitespace"):
+    with pytest.raises(ServingConfigurationError, match="generator alphabet"):
         VisionSmokeCall(witness)
 
 
-@pytest.mark.parametrize("witness", ["short", " " * 40, "a" * 129, 1234, None])
-def test_vision_smoke_call_refuses_a_non_string_blank_or_out_of_bounds_witness(
+@pytest.mark.parametrize("witness", ["short", " " * 40, "a" * 44, 1234, None])
+def test_vision_smoke_call_refuses_a_non_string_or_wrong_length_witness(
     witness: object,
 ) -> None:
-    with pytest.raises(ServingConfigurationError, match="non-blank string between 32 and 128"):
+    with pytest.raises(ServingConfigurationError, match="43 characters"):
         VisionSmokeCall(witness)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("witness", ["\x00" * 32, "\u200b" * 32, "\u0301" * 32, "!" * 32])
-def test_vision_smoke_call_refuses_a_witness_that_is_not_a_visible_url_safe_token(
+def test_vision_smoke_call_refuses_a_witness_outside_the_generator_alphabet(
     witness: str,
 ) -> None:
-    with pytest.raises(ServingConfigurationError, match="visible URL-safe ASCII"):
+    with pytest.raises(ServingConfigurationError, match="generator alphabet"):
+        VisionSmokeCall(witness)
+
+
+def test_vision_smoke_call_refuses_adjacent_repeated_witness_characters() -> None:
+    witness = PAGE_WITNESS[0] * 2 + PAGE_WITNESS[2:]
+
+    with pytest.raises(ServingConfigurationError, match="adjacent repeats"):
         VisionSmokeCall(witness)
 
 

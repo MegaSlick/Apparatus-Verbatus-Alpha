@@ -18,7 +18,7 @@ from .qualify import QualificationRefusal, _verified_artifact_bytes, qualificati
 from .qualify import main as qualification_main
 
 HASH = "a" * 64
-PAGE_WITNESS = "qualification-witness-0123456789abcdef"
+PAGE_WITNESS = "ABCEFGHJKMNPRSTUVWXYZabcdefghijkmnpqrstuvwx"
 
 
 def _write_artifact(root: Path, kind: str, value: dict[str, object]) -> dict[str, str]:
@@ -38,6 +38,16 @@ def _write_bytes_artifact(root: Path, kind: str, data: bytes) -> dict[str, str]:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
     return {"relative_path": relative, "sha256": digest}
+
+
+def _replace_smoke_response(
+    paths: dict[str, Path], smoke: dict[str, object], response: dict[str, object]
+) -> None:
+    response_bytes = canonical_bytes(response)
+    reference = _write_bytes_artifact(paths["evidence"], "smoke-responses", response_bytes)
+    smoke["smoke_response_reference"] = reference
+    smoke["smoke_fixture_response_sha256"] = digest_bytes(response_bytes)
+    smoke["fixture_response_sha256"] = digest_bytes(response_bytes)
 
 
 def _qualification_fixture(
@@ -367,6 +377,47 @@ def test_qualification_refuses_a_witness_digest_that_disagrees_with_its_artifact
     paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
 
     with pytest.raises(QualificationRefusal, match="witness digest disagrees"):
+        _qualify(paths)
+
+
+def test_qualification_refuses_a_response_digest_that_disagrees_with_its_artifact(
+    tmp_path: Path,
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smoke = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"][0]  # type: ignore[index]
+    smoke["smoke_fixture_response_sha256"] = "e" * 64  # type: ignore[index]
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match="response digest disagrees"):
+        _qualify(paths)
+
+
+@pytest.mark.parametrize("change", ["model", "output-shape"])
+def test_qualification_refuses_a_response_with_a_different_model_or_output_shape(
+    tmp_path: Path, change: str
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smoke = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"][0]  # type: ignore[index]
+    reference = smoke["smoke_response_reference"]  # type: ignore[index]
+    response = json.loads((paths["evidence"] / reference["relative_path"]).read_bytes())
+    if change == "model":
+        response["model"] = "another-served-model"
+    else:
+        response["choices"].append(response["choices"][0])
+    _replace_smoke_response(paths, smoke, response)
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match="different model or output shape"):
+        _qualify(paths)
+
+
+def test_qualification_refuses_a_missing_smoke_response_reference(tmp_path: Path) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smoke = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"][0]  # type: ignore[index]
+    del smoke["smoke_response_reference"]  # type: ignore[index]
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match="smoke response reference"):
         _qualify(paths)
 
 

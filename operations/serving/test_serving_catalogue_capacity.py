@@ -141,7 +141,7 @@ def _request_shapes(row):
         f"{item.chair}@{item.tier}" if hasattr(item, "chair") else item[0].replace(" ", "-")
     ),
 )
-def test_every_shipped_real_row_can_serve_the_requests_its_chair_sends(row, case):
+def test_catalogue_capacity_arithmetic_accepts_each_shipped_row_request_shape(row, case):
     """The catalogue's own claim, checked against the arithmetic that falsified it.
 
     Every row must hold the images its chair really sends at its own
