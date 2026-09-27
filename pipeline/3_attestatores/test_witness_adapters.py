@@ -264,7 +264,7 @@ def test_dai_crop_refuses_bytes_swapped_after_page_artifact_verification():
     context.tree.read_artifact = verified_before_swap
     adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
 
-    with pytest.raises(SchemaRefusal, match="no longer matches its sealed digest"):
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         adapters.resolve_runnable_adapter("dai.v1").present(context, _dai_region(20, 10))
     assert context.tree.blobs == {}
 

@@ -291,7 +291,7 @@ def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tm
         changed.save(output, format="PNG")
     blob_path.write_bytes(output.getvalue())
 
-    with pytest.raises(ContractError, match="no longer matches its recorded digest"):
+    with pytest.raises(ContractError, match="changed under a sealed reference"):
         designator.page_pixels(
             context,
             page_record,
