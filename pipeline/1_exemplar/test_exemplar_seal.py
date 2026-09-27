@@ -36,6 +36,10 @@ from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage
 from operations.submit import gate, submit
 
+PDF_SETTINGS = door.render_config.load_pdf_render_settings(
+    minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+)
+
 ROOT = Path(__file__).resolve().parents[2]
 DOOR_CLI = ROOT / "pipeline" / "1_exemplar" / "door.py"
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
@@ -147,6 +151,7 @@ def build_door_run(
         sources,
         lambda path: files[path],
         policy=load_format_policy(),
+        pdf_settings=PDF_SETTINGS,
     )
     context.seal_boundary()
     context.finish(DOOR)
@@ -214,6 +219,7 @@ def build_refused_real_door_run(
         sources,
         lambda path: files[path],
         policy=load_format_policy(),
+        pdf_settings=PDF_SETTINGS,
     )
     return tree, files
 
@@ -796,6 +802,7 @@ def test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar(tmp_path)
         sources,
         lambda path: files[path],
         policy=load_format_policy(),
+        pdf_settings=PDF_SETTINGS,
     )
     context.seal_boundary()
     context.finish(DOOR)

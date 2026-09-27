@@ -117,6 +117,7 @@ testpaths = ["."]
 python_files = ["test_*.py"]
 addopts = "-q -p no:tach"
 markers = [
+    "hostile_local: recipient-side adversarial cases that run in CI only",
     "full: slower integration and exhaustive boundary cases reserved for the full gate",
     "scanner: core credential-detection cases the everyday gate runs even though they are also full",
     # The one marked test reaches the network, by design: it fetches the pinned

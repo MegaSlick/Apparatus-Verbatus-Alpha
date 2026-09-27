@@ -1369,7 +1369,14 @@ def _validate_record_transition(
     old = {item["artifact"]: item for item in previous["artifacts"]}
     new = {item["artifact"]: item for item in replacement["artifacts"]}
     for artifact, old_item in old.items():
-        replacement_item = new[artifact]
+        replacement_item = new.get(artifact)
+        if replacement_item is None:
+            raise DigestMismatchRefusal(
+                artifact,
+                "the replacement download record does not name this recorded artifact; "
+                "an entry is superseded by a new version of itself, never dropped from "
+                "the record",
+            )
         if old_item["state"] == "present" and replacement_item["state"] == "pending-fetch":
             raise DigestMismatchRefusal(
                 artifact,

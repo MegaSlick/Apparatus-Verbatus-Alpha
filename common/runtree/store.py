@@ -1406,7 +1406,7 @@ def _verify_compatible_reuse(tree: RunTree, run_id: str, authority: dict[str, An
     differing = [
         field
         for field in _BOUND_FIELDS + optional_bound_fields
-        if existing[field] != authority.get(field)
+        if field not in existing or existing[field] != authority.get(field)
     ]
     if differing:
         raise IncompatibleReuse(

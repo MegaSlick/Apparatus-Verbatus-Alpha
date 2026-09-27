@@ -470,7 +470,7 @@ def decide(
     data: bytes | None,
     source: SourceEntry,
     policy: dict[str, str],
-    pdf_settings: render_config.PdfRenderSettings | None = None,
+    pdf_settings: render_config.PdfRenderSettings,
     *,
     source_digest: str | None = None,
     detected_format: str | None = None,
@@ -482,8 +482,6 @@ def decide(
     streamed from the same anchored descriptor, so PDFium never reopens a mutable
     path or needs the whole file in memory.
     """
-    if pdf_settings is None:
-        pdf_settings = render_config.load_pdf_render_settings(minimum_dpi=pdf_render.MIN_RENDER_DPI)
     if data is None:
         if source_digest is None:
             raise ValueError("a streamed decision needs its source digest")
@@ -949,7 +947,7 @@ def process_sources(
     read_bytes: Callable[[str], bytes],
     *,
     policy: dict[str, str],
-    pdf_settings: render_config.PdfRenderSettings | None = None,
+    pdf_settings: render_config.PdfRenderSettings,
     open_source: Callable[[str], Any] | None = None,
 ) -> int:
     """Admit or refuse every declared source. Returns the count admitted.
@@ -964,8 +962,6 @@ def process_sources(
     Byte-identical pages within one PDF stay distinct, and a second path with the
     same bytes is admitted under its own ordinal with a duplicate fact.
     """
-    if pdf_settings is None:
-        pdf_settings = render_config.load_pdf_render_settings(minimum_dpi=pdf_render.MIN_RENDER_DPI)
     admitted = 0
     seen_sources: dict[str, tuple[str, int]] = {}
     # One cached raster, not a map: a path's ordinals are contiguous, and a map

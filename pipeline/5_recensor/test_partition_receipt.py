@@ -1065,3 +1065,17 @@ def test_the_reading_outcome_set_has_exactly_one_definition():
         for outcome, klass in vocabulary.VOCABULARIES[vocabulary.ATTESTATORES].items()
         if klass is vocabulary.OutcomeClass.COMPLETED
     }, "a reading outcome is completed-class, but the completed class is wider"
+
+
+def test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_denominator(tmp_path):
+    root = tmp_path / "runs"
+    through_perlector(root, "manifest", "happy")
+    assert invoke(root, "manifest", "happy", "pipeline/5_recensor/run.py").returncode == 0
+    tree = RunTree(root, "manifest")
+    tree.resolve(tree.manifest_path(RECENSOR)).write_text("{}", encoding="utf-8")
+    recensor = load_stage("5_recensor")
+    args = _recensor_args(root, "manifest")
+    context = recensor.open_context(args, RECENSOR)
+
+    with pytest.raises(FatalAccounting, match="manifest disagrees"):
+        recensor.write_partition_receipt(context, context.recovery_policy)

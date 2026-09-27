@@ -85,55 +85,6 @@ def review_run(tmp_path_factory):
     return root
 
 
-def _reseal_export_bundle(tree: RunTree, mutate) -> None:
-    """Keep all seals coherent so tests reach the publisher's semantic checks."""
-    export_path = tree.resolve(
-        tree.artifact_path(
-            ARMARIUM,
-            "export",
-            artifact_id(ARMARIUM, "export", "export", None),
-        )
-    )
-    export = json.loads(export_path.read_text(encoding="utf-8"))
-    old_reference = export["payload"]["bundle"]["reference"]
-    with ZipFile(BytesIO(tree.read_bytes(old_reference["relative_path"]))) as archive:
-        members = {name: archive.read(name) for name in archive.namelist()}
-    package_manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    mutate(members, package_manifest)
-    for row in package_manifest["members"]:
-        row["sha256"] = digest_bytes(members[row["path"]])
-        row["bytes"] = len(members[row["path"]])
-    package_manifest["self_hash"] = self_hash(package_manifest)
-    members[EXPORT_MANIFEST_NAME] = canonical_bytes(package_manifest)
-
-    buffer = BytesIO()
-    with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
-        for name in [EXPORT_MANIFEST_NAME] + sorted(
-            name for name in members if name != EXPORT_MANIFEST_NAME
-        ):
-            info = ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-            info.compress_type = ZIP_STORED
-            info.external_attr = 0o100644 << 16
-            archive.writestr(info, members[name])
-    resealed = buffer.getvalue()
-    resealed_digest = digest_bytes(resealed)
-    resealed_relative = tree.blob_path(ARMARIUM, resealed_digest)
-    tree.resolve(resealed_relative).write_bytes(resealed)
-    new_reference = {"relative_path": resealed_relative, "sha256": resealed_digest}
-    export["inputs"] = [
-        new_reference if item == old_reference else item for item in export["inputs"]
-    ]
-    export["payload"]["bundle"].update(
-        {
-            "manifest_self_hash": package_manifest["self_hash"],
-            "reference": new_reference,
-            "sha256": resealed_digest,
-        }
-    )
-    export["self_hash"] = self_hash(export)
-    export_path.write_bytes(canonical_bytes(export))
-
-
 def test_the_sealed_bundle_is_published_and_verifies_outside_the_run_tree(tmp_path, happy_run):
     out = tmp_path / "delivery"
     result = _publish(happy_run, "r", out)

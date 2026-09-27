@@ -1323,3 +1323,20 @@ def test_chandra_custody_is_not_stored_after_the_seal():
             page_ordinal=PAGE_ORDINAL,
         )
     assert tree.blobs == {}
+
+
+def test_chandra_custody_refuses_a_blob_changed_under_its_reference():
+    tree = _FixtureTree()
+    stored = retain_chandra_response(
+        _Context(tree=tree), b"fixture", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+    )
+    tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered"
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
+        read_retained_chandra_response(
+            tree,
+            stored["response_ref"],
+            RECEIPT,
+            stored["custody_ref"],
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+        )

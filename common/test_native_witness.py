@@ -1684,6 +1684,9 @@ def test_native_parse_refusal_names_failed_and_unrecognized_shape():
     assert native_parse_refusal({"state": "unrecognized-shape", "outcome": "invalid-json"}) == (
         "the response shape was not recognized: invalid-json"
     )
+    for state in ("parsed", "pending", "not-requested"):
+        with pytest.raises(SchemaRefusal, match="carries no refusal to name"):
+            native_parse_refusal({"state": state, "text": "x"})
 
 
 # ============ Unit 3: the vocabulary the vendor grammars arrive through ===========

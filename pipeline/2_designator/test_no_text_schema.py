@@ -136,9 +136,3 @@ def test_a_real_act_group_artifact_carries_no_forbidden_field(tmp_path):
     assert len(act_groups) == 2  # a1 and a2, both proposed in the happy scenario
     for record in act_groups:
         designator._validate_act_group_payload(record["payload"])  # closed schema; must not raise
-
-
-def tree_read(context, published):
-    return context.tree.read_artifact(
-        context.stage, "act-group", published.relative_path.rsplit("/", 1)[-1].removesuffix(".json")
-    )

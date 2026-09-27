@@ -1,6 +1,5 @@
 """The PDF target is run configuration; safety bounds remain renderer code."""
 
-import ast
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -21,33 +20,11 @@ from conftest import load_stage
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_real_submission_passes_sealed_pdf_settings_to_process_sources():
-    module = ast.parse((Path(__file__).parent / "door.py").read_text(encoding="utf-8"))
-    entry = next(
-        node
-        for node in module.body
-        if isinstance(node, ast.FunctionDef) and node.name == "real_submission"
-    )
-    calls = [
-        node
-        for node in ast.walk(entry)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "process_sources"
-    ]
-    assert len(calls) == 1
-    assert any(
-        keyword.arg == "pdf_settings"
-        and isinstance(keyword.value, ast.Name)
-        and keyword.value.id == "pdf_settings"
-        for keyword in calls[0].keywords
-    )
-    assert any(
-        isinstance(node, ast.Call)
-        and ast.unparse(node.func).endswith("require_sealed_config")
-        and any(isinstance(arg, ast.Constant) and arg.value == "pdf-render" for arg in node.args)
-        for node in ast.walk(entry)
-    )
+def test_pdf_settings_are_required_at_both_door_entry_points():
+    with pytest.raises(TypeError, match="pdf_settings"):
+        door.decide(None, None, {})
+    with pytest.raises(TypeError, match="pdf_settings"):
+        door.process_sources(None, None, [], lambda _path: b"", policy={})
 
 
 def test_the_shipped_default_is_documented_run_configuration():

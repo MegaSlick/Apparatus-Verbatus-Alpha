@@ -1135,7 +1135,10 @@ def native_parse_refusal(parse: dict[str, Any]) -> str:
         return parse["reason"]
     if parse["state"] == "unrecognized-shape":
         return f"the response shape was not recognized: {parse['outcome']}"
-    return parse["reason"]
+    raise SchemaRefusal(
+        f"a {parse['state']!r} native parse record carries no refusal to name; "
+        "only a failed or unrecognized-shape parse describes one"
+    )
 
 
 def detect_repetition(raw: bytes | bytearray | str) -> dict[str, Any] | None:

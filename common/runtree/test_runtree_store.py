@@ -2556,3 +2556,13 @@ def test_a_directory_that_cannot_be_opened_refuses_the_publication_too(
 
     with pytest.raises(SchemaRefusal, match="will not persist a directory entry"):
         runtree_store._atomic_write(tmp_path / "artifact.json", b'{"a":1}')
+
+
+def test_a_tampered_run_receipt_is_refused_when_its_reference_is_read(tmp_path):
+    tree = make_run(tmp_path)
+    reference, _ = tree.write_run_receipt(make_receipt())
+    tree.resolve(reference.relative_path).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(SchemaRefusal) as caught:
+        tree.read_run_receipt(reference)
+    assert "digest" in str(caught.value)

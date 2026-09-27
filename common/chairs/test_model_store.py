@@ -1938,3 +1938,39 @@ def test_repository_owned_cache_path_is_manifested_not_deleted_or_called_client_
         if entry["state"] != "present":
             continue
         assert (tmp_path / entry["snapshot"] / ".cache/repository-owned.json").is_file()
+
+
+def test_a_recorded_artifact_cannot_be_renamed_out_of_the_next_record_version(tmp_path):
+    """A dropped name must refuse by name, not escape the closed refusal taxonomy.
+
+    Five unique artifacts in, five out, so renaming one drops the old name. The
+    transition check read the replacement by that key directly and raised a bare
+    ``KeyError`` naming no chair — outside ``errors.py``'s "complete public
+    taxonomy", and silent about which artifact left the record.
+    """
+
+    record = _store(tmp_path)
+    replacement = copy.deepcopy(record)
+    entry = next(item for item in replacement["artifacts"] if item["artifact"] == "churro-3B")
+    entry["artifact"] = "churro-3B-renamed"
+    entry["snapshot"] = "hf/churro-3B-renamed"
+    entry["manifest"] = "manifests/churro-3B-renamed.json"
+
+    with pytest.raises(DigestMismatchRefusal, match="does not name this recorded artifact"):
+        write_download_record(replacement, tmp_path)
+
+    assert load_download_record(tmp_path) == record
+    rejected_digest = hashlib.sha256(canonical_bytes(replacement)).hexdigest()
+    assert not (tmp_path / "records" / f"{rejected_digest}.json").exists()
+
+
+def test_verify_store_refuses_a_manifest_tampered_after_it_was_written(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
+    manifest_path = tmp_path / entry["manifest"]
+    raw = json.loads(manifest_path.read_bytes())
+    raw[0]["sha256"] = "0" * 64
+    manifest_path.write_bytes(canonical_bytes(raw))
+
+    with pytest.raises(DigestMismatchRefusal, match="manifest differs"):
+        verify_store(tmp_path)
