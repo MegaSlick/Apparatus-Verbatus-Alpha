@@ -499,16 +499,6 @@ class RunTree:
                     "the same run authority; the proposal-act denominator is sealed once and "
                     "cannot legitimately differ between two passes over the same run"
                 )
-            try:
-                # A file longer than `data` cannot be the same receipt.
-                if _read_bytes_bounded(target, max_bytes=len(data)) == data:
-                    return PublishResult(relative, reused=True)
-            except SchemaRefusal:
-                pass
-            except FileNotFoundError:
-                # Gone between `exists()` above and here: nothing to reuse or
-                # refuse, so publish it, as `_publish_bytes` does at the same seam.
-                pass
         target.parent.mkdir(parents=True, exist_ok=True)
         self._atomic_write(relative, data)
         return PublishResult(relative, reused=False)
