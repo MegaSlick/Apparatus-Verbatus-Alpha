@@ -64,9 +64,10 @@ grant.
 
 **The measured request carries geometry.** A `coverage-observation` request
 includes `recovery_bounds`, the located `coverage_observation`, `ink_map_ref`,
-`outside_ink_pixels`, and `minimum_ink_pixels`. Designator checks that evidence
-against the sealed page before cutting. A fixture-declared recrop instead uses
-the fixture's declared recovery rectangle.
+`outside_ink_pixels`, and `minimum_ink_pixels`. On real ingress, Designator
+checks that evidence against the sealed page before cutting. The fixture route
+uses the fixture's declared recovery rectangle, without that measured-evidence
+check.
 
 **Known limit, named rather than hidden:** the grant is scoped by `page_of`, which
 reads each act's *primary* `page_ordinal` -- the same field the writer records, so

@@ -408,8 +408,10 @@ routes.
 text. Reported geometry overlapping the proposal attaches a chair on its own
 evidence. A page witness without reported geometry can instead attach by
 `anchor-line` when its alignment locates an act span; the basis is recorded rather
-than attributed as that chair's geometry. An unlocated alignment remains
-`attached: false` and `comparable: false`.
+than attributed as that chair's geometry. An unlocated alignment does not attach
+by `anchor-line`; reported geometry can still attach the chair independently.
+Such a geometrically attached row can therefore have `attached: true` and
+`comparable: false` when its alignment is unlocated.
 
 **Unit 12 tried to close that for Churro by asking; U10 retired the question.**
 Unit 12 asked the served chair for a `box_1000` per block, in a modified carry
