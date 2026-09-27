@@ -140,20 +140,12 @@ DEFAULT_FORMAT_CAPABILITIES = {
 
 
 def _declared_format_capabilities(adapter: Any) -> dict[str, Any]:
-    """What this adapter's own grammar can carry, validated, for a pre-send refusal.
-
-    A request refused before sending still names a real adapter, and its declared
-    expressiveness is recorded either way.
-    """
+    """Record adapter expressiveness even when a request is refused pre-send."""
     return witness_adapters.declared_format_capabilities(adapter)
 
 
 def real_ingress(context) -> bool:
-    """Whether this context opened a real submission, read off its run authority.
-
-    Read from `run.json`, never `context.scenario`: the ingress record is inside the
-    run's self-hash, so argv or a fixture scenario cannot switch the route.
-    """
+    """Read real ingress from self-hashed run authority, never fixture scenario."""
     return is_real_ingress(context.run)
 
 
@@ -201,11 +193,7 @@ _MAX_NATIVE_DEPTH = 64
 
 
 def proposed_regions(context, act_id: str) -> list[dict]:
-    """Every original Designator region the chair was actually shown.
-
-    Later recovery regions are not substituted: a Testimonium binds to the exact
-    pixels shown.
-    """
+    """Bind testimony to original proposal pixels, never a later recovery crop."""
     regions = []
     for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] == "region" and entry["subject_id"] == act_id:
@@ -225,11 +213,7 @@ def proposed_regions(context, act_id: str) -> list[dict]:
 
 
 def sealed_page_proposal_regions(context, page_ordinal: int) -> list[dict]:
-    """Every sealed Designator proposal on one page, independent of act state.
-
-    A held act's proposal is included: the Recensor re-derives the same denominator
-    from the whole sealed set and must agree with it.
-    """
+    """Include held proposals so the page denominator matches Recensor's sealed set."""
     regions = []
     for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] != "region":
@@ -294,11 +278,7 @@ REGION_TRANSFORM_FIELDS: Final = ("source_page_id", "source_page_ordinal")
 
 
 def presentation_for_region(region: dict[str, Any]) -> dict[str, Any]:
-    """Derive one region presentation from a sealed proposal record.
-
-    The validator also calls this on untrusted records, so missing fields are
-    named rather than raised as a bare KeyError.
-    """
+    """Name missing fields when an untrusted proposal has no presentation."""
     payload = region.get("payload")
     transform = payload.get("transform") if isinstance(payload, dict) else None
     if not isinstance(payload, dict) or not isinstance(transform, dict):
@@ -328,11 +308,7 @@ def page_witness_attempted(
     chair: str,
     attempts_by_pair: dict[tuple[str, str], "Attempt"],
 ) -> bool:
-    """Whether this page-scoped chair was shown pixels for at least one of its acts.
-
-    Not `page_join`'s `reading`: a failed response was still shown an image, and
-    must not be recorded as never shown (principle 2).
-    """
+    """A failed page response still saw pixels and cannot count as never shown."""
     return any(
         attempts_by_pair[(act["act_id"], chair)].outcome in ATTEMPTED_WITNESS_OUTCOMES
         for act in page_acts
@@ -421,12 +397,7 @@ FIXTURE_NATIVE_RESPONSE_ADAPTERS: Final = frozenset({"chandra.v1"})
 
 
 def _derives_partition_from_response(resolved: Any, page_captures: Any) -> bool:
-    """Whether this chair's page partition is re-derived from its own response bytes.
-
-    True for a geometry-reporting (`takes_page_size`) adapter on the live path, and
-    in fixture runs only for adapters allowed fixture response bytes; the others
-    keep the declared-observation route.
-    """
+    """Use response geometry live, or for fixture adapters that permit it."""
     if not isinstance(resolved, ChairIdentity):
         return False
     # Unguarded on purpose: an adapter with no runnable binding must be refused,
@@ -440,12 +411,10 @@ def _derives_partition_from_response(resolved: Any, page_captures: Any) -> bool:
 
 
 def _partition_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The reported boxes a page partition may be derived from, or a named refusal.
+    """Refuse a mix of reported boxes and presentation echoes.
 
-    All reported: returned unchanged. None reported: empty; the page publisher
-    substitutes the presentation echo. A mix is refused, not filtered: half a
-    record would look like a complete partition (principle 2). An echo is excluded
-    because it restates the image shown, not what the witness reported.
+    Filtering a mix would make half a report look complete; an echo is shown
+    pixels, not witness geometry.
     """
     reported = [item for item in observed if item["bounds_source"] in REPORTED_BOUNDS_SOURCES]
     if reported and len(reported) != len(observed):
@@ -464,11 +433,9 @@ def page_partition_entries(
     page_size: tuple[int, int],
     raw_response_ref: dict[str, str] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return a page witness's surviving boxes and response-linked page-edge findings.
+    """Split boxes against the sealed page and retain auditable edge findings.
 
-    `page_size` is the sealed source page, never a presentation crop: a block may
-    cross the crop edge and still be valid page geometry. A finding without its raw
-    response reference cannot be audited, so it is refused before publication.
+    A box may cross the shown crop; a finding must name its raw response.
     """
     survivors, overshoots = split_page_edge_overshoots(observed, page_size=page_size)
     if overshoots and (
@@ -635,12 +602,10 @@ def testimony_for(context, act_key: str, chair: str, ordinal: int) -> dict[str, 
 def declared_response(
     context, act_key: str, chair: str, declarations: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """The one response the fixture declares this chair returned for this request.
+    """Read fixture responses, deriving outcomes from retained bytes.
 
-    `[[testimony]]` and `[[witness_empty]]` declare responses, never outcomes; the
-    outcome is derived from what is retained. A `witness_empty` row overrides the
-    base response for its scenario, and one that collides with a scenario
-    `[[testimony]]` row is refused here, since `declarations_for` cannot see it.
+    A scenario empty row overrides the base; a scenario testimony collision
+    refuses here because `declarations_for` cannot see it.
     """
     response = testimony_for(context, act_key, chair, declarations["ordinal"])
     if (act_key, chair) not in declarations["empty"]:
@@ -1186,12 +1151,10 @@ def validate_retained_response_pairing(payload: dict[str, Any]) -> None:
 
 
 def validate_live_serving_fields(payload: dict[str, Any]) -> None:
-    """Close the fields only a live reading writes onto an act Testimonium.
+    """Bind live captures and call records to their retained response bytes.
 
-    `native_capture` must name the same blob as the record. `serving_call_ref`
-    needs a retained response beside it, except for a Chandra error trace. A live
-    record that retains a response must say whether it is model output or a
-    transport body, and a capture can only describe model output.
+    A Chandra error trace may have no response; captures describe model output
+    only, while a retained live body names its response kind.
     """
     kind = payload.get("raw_response_kind")
     if kind is not None:
@@ -1425,11 +1388,9 @@ def _records_at_ordinal(
 def require_appendable_ordinal(
     history: AttemptHistory, act_id: str, chair: str, ordinal: int
 ) -> None:
-    """Allow only a rerun of an attempt that exists, or exactly the next one.
+    """Allow existing or next ordinals; RunTree checks repeat bytes.
 
-    Any ordinal up to the current one is a resume (ordinals are contiguous;
-    `latest_attempt` refuses a gap), which the RunTree refuses if the bytes differ. Lower ordinals are admitted because a reread moves one chair
-    ahead, and the orchestrator's ordinal-1 pass must remain a no-op resume.
+    Lower ordinals let an ordinal-1 pass resume after one chair was reread.
     """
     records = history.get((act_id, chair), [])
     if not records:
@@ -1720,11 +1681,9 @@ def validate_tallied_testimonium(
 
 
 def require_accounted_unrecordable_channel(record: dict[str, Any], payload: dict[str, Any]) -> None:
-    """Tell a witness whose output could not be kept from an evidence channel nobody can read.
+    """Count an unrecordable response as failed, without holding other witnesses.
 
-    An unrecordable response is accounted as a `failed` attempt with a reason, so
-    one bad witness does not hold the folder. Only a record claiming a reading it
-    could not retain is refused, which makes the tally UNKNOWN.
+    A claimed reading with no retained channel makes the tally UNKNOWN.
     """
     if record["outcome"] in WITNESS_READING_OUTCOMES:
         raise SchemaRefusal(
@@ -1899,11 +1858,7 @@ def pending_live_attempt(context, act, chair, resolved, declarations) -> Any:
 
 
 def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
-    """Crash resume must rehydrate retained Chandra bytes for page geometry.
-
-    The response still feeds the derived page record, so its blob must be present
-    and digest-identical.
-    """
+    """Rehydrate digest-identical Chandra bytes needed for the derived page record."""
     payload = record["payload"]
     raw_response_ref = payload.get("raw_response_ref")
     observation_payload = None
@@ -2008,11 +1963,7 @@ def churro_page_response_bytes(row: dict[str, Any]) -> tuple[bytes, str]:
 
 
 def validate_declared_churro_page_responses(context, page_chairs: set[str]) -> None:
-    """Refuse current-scenario rows no declared page-scoped chair can consume.
-
-    Absent occupants remain valid roster facts, and rows for other scenarios are
-    outside this pass.
-    """
+    """Refuse unusable current-scenario rows; absent chairs remain valid roster facts."""
     declared_pages = {
         page.get("ordinal") for page in context.fixture.get("page", []) if isinstance(page, dict)
     }
@@ -2238,11 +2189,7 @@ def real_declarations(ordinal: int) -> dict[str, Any]:
 def _fixture_raw_response_attempt(
     context, response: dict[str, Any], witness_adapter: str
 ) -> Attempt:
-    """A fixture row's declared response bytes, retained and parsed as Chandra's own.
-
-    Geometry derives only from declared response bytes, never from JSON
-    synthesized from `payload`.
-    """
+    """Derive Chandra fixture geometry from declared response bytes, never payload JSON."""
     if witness_adapter not in FIXTURE_NATIVE_RESPONSE_ADAPTERS:
         raise SchemaRefusal(
             f"fixture raw_response has no native byte route for adapter {witness_adapter!r}"
@@ -2371,12 +2318,7 @@ def resolve_attempt(
 
 
 def declared_page_witness_chairs(context) -> set[str]:
-    """Read page-witness scope from the sealed model configuration.
-
-    Scope comes from the sealed roster's `witness_scope`, never a fixture. Every
-    write path uses this, since an immutable record with the wrong scope cannot be
-    repaired downstream.
-    """
+    """Use sealed roster scope; an immutable wrong-scope record cannot be repaired."""
     roster = context.witness_chairs
     # Exact `str`, not `isinstance`: a subclass could override hashing or
     # formatting used below.
@@ -2643,11 +2585,9 @@ class PageJoin(NamedTuple):
 
 
 def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]], joined: int) -> str:
-    """Why a page record failed, derived from the unjoined attempts' own outcomes.
+    """Keep structured unjoined readings distinct from unread attempts.
 
-    Unjoined rows are either non-readings or structured readings the text join
-    cannot concatenate, and the reason must not call the latter unread. `joined`
-    separates a page read as blank from one not read at all.
+    A joined blank page differs from a page never read.
     """
 
     unread = [
@@ -2788,11 +2728,7 @@ def act_scoped_attachment_entry(
     attempt: "Attempt",
     ordinal: int,
 ) -> dict[str, Any]:
-    """One act-scoped chair's derived attachment view of one attempt.
-
-    Shared by the whole pass and the reread so the two cannot drift. There is no
-    page reading to align into, so the span is the whole delivered reading.
-    """
+    """Share the whole-reading span between pass and reread attachment paths."""
     attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
     act_attempt = attempt_id(act["act_id"], f"read:{chair}", ordinal)
     return {
@@ -2823,11 +2759,7 @@ def act_scoped_attachment_entry(
 
 
 def non_reading_alignment_reason(outcome: str, *, native_page_capture: bool) -> str:
-    """Name the record whose non-reading outcome prevents page alignment.
-
-    With a native page capture the page record's outcome gates; with the synthetic
-    join it is the act attempt's, since the page can read on another act.
-    """
+    """Gate native alignment on the page outcome, legacy joins on the act's."""
     if outcome in WITNESS_READING_OUTCOMES:
         raise FatalAccounting(
             f"a reading outcome {outcome!r} cannot explain a non-reading page alignment. "
@@ -2843,11 +2775,7 @@ def require_live_page_capture(
     page_ordinal: int,
     chair: str,
 ) -> tuple["Attempt", dict[str, Any]]:
-    """The live response this page record is derived from, or a named refusal.
-
-    Falling back to the act-view join would describe a response nobody made
-    (principle 8).
-    """
+    """Require the live page response; a synthetic join would invent one."""
     captured = page_captures.get((page_ordinal, chair))
     if captured is None:
         raise FatalAccounting(
@@ -2859,11 +2787,7 @@ def require_live_page_capture(
 
 
 def _declared_pages(context, act: dict[str, Any], refusal: str | None) -> list[int]:
-    """An act's pages from its sealed proposal and continuation declaration alone.
-
-    The page denominator when no region verified: the non-reading testimony must
-    still account for every such page.
-    """
+    """Count declared continuation pages even when no region verified."""
     if refusal is None:
         raise FatalAccounting(
             f"act {act['act_id']} has neither verified proposal regions nor a "
@@ -2897,11 +2821,7 @@ def page_denominator(
     acts: list[dict[str, Any]],
     regions_by_act: dict[str, tuple[list[dict], str | None]],
 ) -> tuple[dict[str, list[int]], dict[int, list[dict[str, Any]]]]:
-    """Which pages every proposed act stands on, and which acts stand on each page.
-
-    Shared by the page publisher and the live pass so the pages asked about and
-    the pages published cannot drift.
-    """
+    """Share one page denominator between live requests and published records."""
     contributing_pages_by_act: dict[str, list[int]] = {}
     by_page: dict[int, list[dict[str, Any]]] = {}
     for act in acts:
@@ -2941,12 +2861,10 @@ def _response_partition(
     live: bool,
     fixture_observed: list[dict[str, Any]] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]], list[dict[str, Any]]]:
-    """The page geometry a chair's own responses report, the responses it names, and
-    its page-edge findings.
+    """Partition page geometry and response-linked edge findings.
 
-    Live, the source is the single page response; in a fixture, one declared
-    response per act whose primary page this is — a continuation's primary-page
-    response must not become geometry on its far page.
+    A fixture continuation's primary-page response cannot become geometry
+    on its far page; live mode uses one response for the whole page.
     """
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
     page_size = _sealed_source_page(context, presented)[2]
@@ -3026,11 +2944,7 @@ def _measured_line_bbox(line: dict[str, Any], page_ordinal: int) -> dict[str, in
 def _declared_anchor(
     context, page_ordinal: int, page_acts: list[dict[str, Any]]
 ) -> tuple[str | None, dict[str, dict[str, Any]]]:
-    """A fixture page's declared Chandra anchor markup and each proposed act's located line.
-
-    A malformed declaration is refused, never treated as absent: skipping it would
-    detach page witnesses under a reason naming an absent anchor (principles 2, 8).
-    """
+    """Refuse malformed fixture anchors before they masquerade as absent ones."""
     anchors = [
         row
         for row in context.fixture.get("chandra_anchor", [])
@@ -3098,11 +3012,7 @@ def _declared_anchor(
 def _blank_reading_alignment(
     act_anchor: dict[str, Any] | None, *, page_anchored: bool, anchor_chair: str | None
 ) -> dict[str, Any]:
-    """A genuinely empty reading attaches trivially at a zero-length span.
-
-    Alignment can never match an empty string, so the blank would otherwise stay
-    permanently unaligned (principles 2, 8).
-    """
+    """Attach an empty reading at zero length; alignment cannot match no text."""
     located = act_anchor is not None
     start = act_anchor["start"] if located else 0
     return {
@@ -3134,11 +3044,9 @@ def _blank_reading_alignment(
 def _act_span_alignment(
     result: dict[str, Any], act_anchor: dict[str, Any], anchor_chair: str | None
 ) -> dict[str, Any]:
-    """Clip a page alignment to one act's anchor range and store it in raw indices.
+    """Clip in normalized space, then store raw indices for consumers.
 
-    Clipping happens in normalized space, since whole blocks would hand every act
-    the whole page; the span is translated once, at storage, because every
-    consumer indexes the raw text.
+    Whole alignment blocks would give every act the whole page.
     """
     clipped = []
     # Measured here, where the fragments exist; the record keeps only a hull. The
@@ -3241,11 +3149,9 @@ def _page_witness_entries(
     page_records: dict[tuple[int, str], dict[str, str]],
     page_texts: dict[tuple[int, str], str],
 ) -> list[dict[str, Any]]:
-    """One attachment entry per page the act spans; only its primary page carries the alignment.
+    """Attach on each contributing page; align only on the primary page.
 
-    An entry is attached by reported ink over the proposal or, where there is none
-    (Churro reports no geometry), by a located anchor line. The anchor places
-    text; it never judges a reading (principle 1).
+    Reported ink or a located anchor line attaches; the anchor never judges text.
     """
     entries = []
     for contributing_page in contributing_pages:
@@ -3295,6 +3201,165 @@ def _page_witness_entries(
     return entries
 
 
+def _page_witness_capture(
+    context,
+    page_ordinal,
+    page_acts,
+    chair,
+    resolved,
+    attempts_by_pair,
+    page_captures,
+    page_outcomes,
+):
+    if page_captures is None:
+        captured = captured_churro_page_attempt(
+            context, page_ordinal, chair, resolved.witness_adapter
+        )
+    else:
+        captured = require_live_page_capture(page_captures, page_ordinal, chair)
+    if captured is None:
+        join = page_join([(act, attempts_by_pair[(act["act_id"], chair)]) for act in page_acts])
+        page_attempt_result, native_capture = join, None
+        unjoined_act_attempts = join.unjoined_act_attempts
+    else:
+        page_attempt_result, native_capture = captured
+        unjoined_act_attempts = []
+        page_outcomes[(page_ordinal, chair)] = page_attempt_result.outcome
+    return (
+        captured,
+        page_attempt_result,
+        native_capture,
+        page_attempt_result.native_payload,
+        page_attempt_result.outcome,
+        unjoined_act_attempts,
+    )
+
+
+def _page_witness_observations(
+    context,
+    resolved,
+    page_captures,
+    page_ordinal,
+    chair,
+    presented,
+    page_acts,
+    attempts_by_pair,
+    page_attempt_result,
+    adapter,
+    native_payload,
+):
+    page_response_refs: list[dict[str, str]] = []
+    page_edge_overshoots: list[dict[str, Any]] = []
+    # For a Chandra chair, declared observations add to derived geometry.
+    fixture_observed = (
+        _fixture_native_observations(context, chair=chair, page_ordinal=page_ordinal)
+        if page_captures is None
+        else None
+    )
+    if not presented:
+        observed: list[dict[str, Any]] = []
+    elif _derives_partition_from_response(resolved, page_captures):
+        observed, page_response_refs, page_edge_overshoots = _response_partition(
+            context,
+            resolved=resolved,
+            presented=presented,
+            page_ordinal=page_ordinal,
+            page_acts=page_acts,
+            chair=chair,
+            attempts_by_pair=attempts_by_pair,
+            page_attempt_result=page_attempt_result,
+            live=page_captures is not None,
+            fixture_observed=fixture_observed,
+        )
+    elif fixture_observed is not None:
+        observed = fixture_observed
+    elif adapter is not None:
+        observed = adapter.observe(presented, native_payload)
+    else:
+        # Unreachable while absent chairs are never attempted.
+        observed = observed_from_presentation(presented)
+    return observed, page_response_refs, page_edge_overshoots
+
+
+class _AttachmentEvidence(NamedTuple):
+    page_records: dict
+    page_observations: dict
+    page_texts: dict
+    page_outcomes: dict
+    anchor_texts: dict
+    page_alignments: dict
+    anchor_ranges: dict
+    contributing_pages_by_act: dict
+
+
+def _act_attachment_rows(
+    context,
+    acts,
+    ordinal,
+    regions_by_act,
+    attempts_by_pair,
+    page_chairs,
+    anchor_chair,
+    limits,
+    evidence,
+):
+    (
+        page_records,
+        page_observations,
+        page_texts,
+        page_outcomes,
+        anchor_texts,
+        page_alignments,
+        anchor_ranges,
+        contributing_pages_by_act,
+    ) = evidence
+    attachment_rows: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    for act in acts:
+        entries: list[dict[str, Any]] = []
+        for chair in context.witness_chairs:
+            act_attempt = attempts_by_pair[(act["act_id"], chair)]
+            if chair not in page_chairs or act["outcome"] != "proposed":
+                entries.append(
+                    act_scoped_attachment_entry(context, act, chair, act_attempt, ordinal)
+                )
+                continue
+            page_key = (act["page_ordinal"], chair)
+            # The outcome of the page record this entry names: the native capture's
+            # where there is one, else the act attempt the legacy join came from.
+            captured_outcome = page_outcomes.get(page_key)
+            alignment = _page_witness_alignment(
+                page_outcome=(
+                    captured_outcome if captured_outcome is not None else act_attempt.outcome
+                ),
+                native_page_capture=captured_outcome is not None,
+                act_anchor=anchor_ranges.get((act["page_ordinal"], act["act_id"])),
+                page_text=page_texts.get(page_key),
+                anchor_text=anchor_texts.get(act["page_ordinal"]),
+                anchor_chair=anchor_chair,
+                page_alignments=page_alignments,
+                page_key=page_key,
+                limits=limits,
+            )
+            entries.extend(
+                _page_witness_entries(
+                    act=act,
+                    chair=chair,
+                    act_attempt=act_attempt,
+                    alignment=alignment,
+                    contributing_pages=contributing_pages_by_act[act["act_id"]],
+                    act_regions=regions_by_act[act["act_id"]][0],
+                    page_outcomes=page_outcomes,
+                    page_observations=page_observations,
+                    page_records=page_records,
+                    page_texts=page_texts,
+                )
+            )
+        attachment_rows.append((act, entries))
+
+    refuse_ambiguous_act_alignments([entries for _act, entries in attachment_rows])
+    return attachment_rows
+
+
 def publish_page_testimonia_and_attachments(
     context,
     *,
@@ -3331,28 +3396,23 @@ def publish_page_testimonia_and_attachments(
                 raise FatalAccounting(
                     f"page witness chair {chair!r} did not resolve to a configured identity"
                 )
-            if page_captures is None:
-                captured = captured_churro_page_attempt(
-                    context, page_ordinal, chair, resolved.witness_adapter
-                )
-            else:
-                captured = require_live_page_capture(page_captures, page_ordinal, chair)
-            if captured is None:
-                # Legacy fixture rows keep the synthetic join.
-                join = page_join(
-                    [(act, attempts_by_pair[(act["act_id"], chair)]) for act in page_acts]
-                )
-                page_attempt_result, native_capture = join, None
-                native_payload, outcome = join.native_payload, join.outcome
-                unjoined_act_attempts = join.unjoined_act_attempts
-            else:
-                page_attempt_result, native_capture = captured
-                native_payload, outcome = (
-                    page_attempt_result.native_payload,
-                    page_attempt_result.outcome,
-                )
-                unjoined_act_attempts = []
-                page_outcomes[(page_ordinal, chair)] = page_attempt_result.outcome
+            (
+                captured,
+                page_attempt_result,
+                native_capture,
+                native_payload,
+                outcome,
+                unjoined_act_attempts,
+            ) = _page_witness_capture(
+                context,
+                page_ordinal,
+                page_acts,
+                chair,
+                resolved,
+                attempts_by_pair,
+                page_captures,
+                page_outcomes,
+            )
             reading = outcome in WITNESS_READING_OUTCOMES
             # Whether a response arrived, judged by retained bytes: an unparsable
             # live body arrived (principle 2), but a request refused before
@@ -3398,36 +3458,19 @@ def publish_page_testimonia_and_attachments(
                 for act in page_acts
             }
             page_role = roles.pop() if len(roles) == 1 else "mixed"
-            page_response_refs: list[dict[str, str]] = []
-            page_edge_overshoots: list[dict[str, Any]] = []
-            # For a Chandra chair, declared observations add to derived geometry.
-            fixture_observed = (
-                _fixture_native_observations(context, chair=chair, page_ordinal=page_ordinal)
-                if page_captures is None
-                else None
+            observed, page_response_refs, page_edge_overshoots = _page_witness_observations(
+                context,
+                resolved,
+                page_captures,
+                page_ordinal,
+                chair,
+                presented,
+                page_acts,
+                attempts_by_pair,
+                page_attempt_result,
+                adapter,
+                native_payload,
             )
-            if not presented:
-                observed: list[dict[str, Any]] = []
-            elif _derives_partition_from_response(resolved, page_captures):
-                observed, page_response_refs, page_edge_overshoots = _response_partition(
-                    context,
-                    resolved=resolved,
-                    presented=presented,
-                    page_ordinal=page_ordinal,
-                    page_acts=page_acts,
-                    chair=chair,
-                    attempts_by_pair=attempts_by_pair,
-                    page_attempt_result=page_attempt_result,
-                    live=page_captures is not None,
-                    fixture_observed=fixture_observed,
-                )
-            elif fixture_observed is not None:
-                observed = fixture_observed
-            elif adapter is not None:
-                observed = adapter.observe(presented, native_payload)
-            else:
-                # Unreachable while absent chairs are never attempted.
-                observed = observed_from_presentation(presented)
             page_artifact_id = artifact_id(
                 ATTESTATORES, "page-testimonium", page_subject_id, page_attempt
             )
@@ -3543,50 +3586,26 @@ def publish_page_testimonia_and_attachments(
             for act_id, act_anchor in declared_ranges.items():
                 anchor_ranges[(page_ordinal, act_id)] = act_anchor
 
-    attachment_rows: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
-    for act in acts:
-        entries: list[dict[str, Any]] = []
-        for chair in context.witness_chairs:
-            act_attempt = attempts_by_pair[(act["act_id"], chair)]
-            if chair not in page_chairs or act["outcome"] != "proposed":
-                entries.append(
-                    act_scoped_attachment_entry(context, act, chair, act_attempt, ordinal)
-                )
-                continue
-            page_key = (act["page_ordinal"], chair)
-            # The outcome of the page record this entry names: the native capture's
-            # where there is one, else the act attempt the legacy join came from.
-            captured_outcome = page_outcomes.get(page_key)
-            alignment = _page_witness_alignment(
-                page_outcome=(
-                    captured_outcome if captured_outcome is not None else act_attempt.outcome
-                ),
-                native_page_capture=captured_outcome is not None,
-                act_anchor=anchor_ranges.get((act["page_ordinal"], act["act_id"])),
-                page_text=page_texts.get(page_key),
-                anchor_text=anchor_texts.get(act["page_ordinal"]),
-                anchor_chair=anchor_chair,
-                page_alignments=page_alignments,
-                page_key=page_key,
-                limits=limits,
-            )
-            entries.extend(
-                _page_witness_entries(
-                    act=act,
-                    chair=chair,
-                    act_attempt=act_attempt,
-                    alignment=alignment,
-                    contributing_pages=contributing_pages_by_act[act["act_id"]],
-                    act_regions=regions_by_act[act["act_id"]][0],
-                    page_outcomes=page_outcomes,
-                    page_observations=page_observations,
-                    page_records=page_records,
-                    page_texts=page_texts,
-                )
-            )
-        attachment_rows.append((act, entries))
-
-    refuse_ambiguous_act_alignments([entries for _act, entries in attachment_rows])
+    attachment_rows = _act_attachment_rows(
+        context,
+        acts,
+        ordinal,
+        regions_by_act,
+        attempts_by_pair,
+        page_chairs,
+        anchor_chair,
+        limits,
+        _AttachmentEvidence(
+            page_records,
+            page_observations,
+            page_texts,
+            page_outcomes,
+            anchor_texts,
+            page_alignments,
+            anchor_ranges,
+            contributing_pages_by_act,
+        ),
+    )
 
     for act, entries in attachment_rows:
         context.publish(
@@ -3663,11 +3682,7 @@ def attempt_pass(
 
 
 def witness_serving_modes(context, recipes: ServingRecipes, tier: str | None) -> dict[str, str]:
-    """`fixture` or `live` for every configured witness chair, and never a mix.
-
-    A mixed roster would put fixture and live evidence side by side in one
-    attempt layer, unmarked. Absent chairs have no mode.
-    """
+    """Refuse a roster mixing unmarked fixture and live evidence in one layer."""
     modes: dict[str, str] = {}
     for chair in context.witness_chairs:
         resolved = context.registry.resolve(chair)
@@ -3693,11 +3708,7 @@ def witness_serving_modes(context, recipes: ServingRecipes, tier: str | None) ->
 
 
 def require_every_witness_served(modes: dict[str, str]) -> None:
-    """On a real submission every configured witness chair serves, or nothing runs.
-
-    A real run has no fixture, so a fixture-posture chair could never answer, and
-    a run with no served chair would read no ink.
-    """
+    """Require served chairs on real ingress, where fixture chairs cannot answer."""
     unserved = sorted(chair for chair, mode in modes.items() if mode != "live")
     if unserved:
         raise ContractError(
@@ -3766,11 +3777,7 @@ def _sealed_page_testimonia(context, ordinal: int) -> dict[tuple[int, str], dict
 
 
 def served_live(context, provenance: Any) -> bool:
-    """Did a chair really serve the record this provenance belongs to?
-
-    Read from the receipt endpoint, not inferred from optional fields: a live
-    Chandra page record may carry neither a capture nor a call reference.
-    """
+    """Use the receipt; a live Chandra page may lack capture and call fields."""
     reference = provenance.get("receipt_ref") if isinstance(provenance, dict) else None
     if not isinstance(reference, dict):
         return False
@@ -3781,11 +3788,7 @@ def served_live(context, provenance: Any) -> bool:
 def _page_capture_from_record(
     context, record: dict[str, Any], what: str
 ) -> tuple[Attempt, dict[str, Any] | None]:
-    """Rebuild one page capture from a record the interrupted pass already sealed.
-
-    A live chair cannot reproduce immutable bytes, so the page is rebuilt, not
-    re-asked (principle 4). A fixture-served record is refused.
-    """
+    """Rebuild sealed live bytes instead of re-asking an unreproducible chair."""
     payload = record["payload"]
     provenance = payload.get("provenance")
     if not served_live(context, provenance):
@@ -4195,11 +4198,7 @@ def publish_page_act_views(
     regions_by_act: dict[str, tuple[list[dict], str | None]],
     attempts_by_pair: dict[tuple[str, str], Attempt],
 ) -> int:
-    """Publish every still-pending act view one page chair's response feeds.
-
-    Only acts whose primary page is this one; a continuation reaches its act
-    through the page record. Pairs already sealed are left untouched.
-    """
+    """Publish pending primary-page act views; continuations use the page record."""
     recorded = 0
     for act in page_acts:
         pair = (act["act_id"], chair)
@@ -5224,11 +5223,7 @@ def witness_bound_reading_acts(context) -> frozenset[str]:
 
 
 def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what: str) -> None:
-    """Refuse a new witness attempt on an act the Perlector has already read.
-
-    Checked before any write; otherwise the collision surfaces stages later with
-    no way forward (principle 4). Callers apply it to appends only, not resumes.
-    """
+    """Refuse new attempts before they collide with an immutable Perlectio."""
     if act["act_id"] in closed:
         raise ContractError(
             f"act {act['act_id']} ({act['act_key']}) already carries a Perlectio, so its "
@@ -5259,11 +5254,7 @@ def reread_pass(
     chair: str,
     index: "AttemptIndex",
 ) -> int:
-    """Append one new attempt for one named chair on one named act.
-
-    Every other chair's current record stays as it was. The reread is shown the
-    original proposal regions, never a recovery crop.
-    """
+    """Reread one chair on original proposal pixels, leaving other chairs current."""
     act = next((row for row in acts if row["act_id"] == act_id), None)
     if act is None:
         raise ContractError(
@@ -5324,11 +5315,9 @@ def prepared_act_attachment(
     act: dict[str, Any],
     chair: str,
 ) -> tuple[int, list[dict[str, Any] | None]]:
-    """Every refusal for the reread's re-derived attachment, WITHOUT writing.
+    """Preflight reread attachments before writing the new Testimonium.
 
-    Run before the Testimonium is published, so a refusal leaves the folder
-    untouched. The reread chair's slot is `None` until its new Testimonium exists;
-    other chairs' entries are carried forward after a staleness check.
+    Its chair's slot is pending; other entries carry forward after staleness checks.
     """
     records = index.attachments_by_act.get(act["act_id"], [])
     if not records:
@@ -5407,11 +5396,7 @@ def republish_act_attachment(
 
 
 def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
-    """Say, once and out loud, which fixture declarations a live pass does not read.
-
-    A live pass uses the fixture's corpus but none of its declared responses; the
-    operator is told so (principle 2). A real submission has no fixture.
-    """
+    """Disclose ignored fixture responses when live chairs read its corpus."""
     if real_ingress(context):
         return
     families = ("testimony", "witness_failure", "witness_empty", "witness_not_run")
