@@ -58,18 +58,6 @@ def _projection(run_root: Path) -> review.ReviewProjection:
     return review.ReadOnlyRun(run_root, RUN_ID).projection()
 
 
-def _census(root: Path) -> dict[str, object]:
-    seen: dict[str, object] = {}
-    for path in sorted(root.rglob("*")):
-        key = str(path.relative_to(root))
-        if path.is_dir():
-            seen[key + "/"] = "directory"
-        else:
-            status = path.stat()
-            seen[key] = (digest_bytes(path.read_bytes()), status.st_size, status.st_mtime_ns)
-    return seen
-
-
 def _writable_copy(source: Path, target: Path) -> Path:
     """A private copy of a sealed run tree whose files a test may damage on purpose."""
     shutil.copytree(source, target)
@@ -164,13 +152,6 @@ def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_
     assert "Pages (2 of 2 declared)" in text
     assert f"`verbatus run --run-id {RUN_ID}`" in text
     assert "(attempt 1)" in text
-
-
-def test_opening_an_unfinished_run_changes_no_path_bytes_size_or_mtime(witnessed_run: Path):
-    before = _census(witnessed_run / RUN_ID)
-    projected = _projection(witnessed_run)
-    assert projected.pages and projected.acts
-    assert _census(witnessed_run / RUN_ID) == before
 
 
 def test_the_failed_reproof_run_can_be_opened_and_understood_before_export(

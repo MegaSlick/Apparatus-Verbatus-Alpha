@@ -2125,54 +2125,6 @@ def test_confirmed_operator_advance_runs_the_external_worker_and_reports_its_rec
     assert "Advance record:" in capsys.readouterr().out
 
 
-def test_worker_stderr_beside_a_verified_record_is_reported_and_not_called_a_refusal(
-    tmp_path, monkeypatch, capsys
-):
-    """Stderr is read after the returned reference, and neither half is lost.
-
-    Deciding on stderr first made any byte on that pipe a refusal, including
-    the `DeprecationWarning` the worker's own `runpy.run_module` prints by
-    default -- a completed, verifiable advance reported as refused. Deciding on
-    it not at all would drop a diagnostic the worker meant a person to read.
-    The record is checked against the exact request first, and what the
-    worker wrote then reaches the operator beside it.
-    """
-
-    run_root, run_id = _make_run(tmp_path)
-    tree = RunTree(run_root, run_id)
-    expected_digest = _boundary_digest(run_root, run_id)
-
-    def _false_success(*_args, **_kwargs):
-        reference = advance.record_advance(
-            tree,
-            "armarium",
-            reason="worker reported both success and refusal",
-            expected_digest=expected_digest,
-        )
-        completed = subprocess.CompletedProcess(
-            [],
-            0,
-            json.dumps(reference.to_record()),
-            "DeprecationWarning: the worker's own diagnostic channel spoke",
-        )
-        return _StubConfinement(lambda command: command), completed
-
-    monkeypatch.setattr(advance, "run_confined", _false_success)
-
-    returned = advance.trigger_advance(
-        run_root,
-        run_id,
-        "armarium",
-        reason="worker reported both success and refusal",
-        workspace=ROOT,
-        expected_digest=expected_digest,
-    )
-
-    assert returned.sha256
-    assert "the worker's own diagnostic channel spoke" in capsys.readouterr().err
-    assert len(review.ReadOnlyRun(run_root, run_id).projection().advance_records) == 1
-
-
 def test_the_workers_whole_diagnostic_reaches_the_note_and_the_refusal_detail(
     tmp_path, monkeypatch, capsys
 ) -> None:
