@@ -23,6 +23,7 @@ Findings: F2 (2a wedge, 2b whole-pass refusal, 2c currency loss, 2d stale
 `complete` export) and Sol-S5 (the lax recovery counter at the Perlector).
 """
 
+
 from __future__ import annotations
 
 import json
@@ -43,6 +44,7 @@ from common.stage import (
     load_fixture,
     load_recovery_policy,
 )
+from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -135,14 +137,6 @@ def artifacts(tree: RunTree, stage: str, kind: str, subject: str) -> list[dict]:
         for entry in tree.build_manifest(stage)["artifacts"]
         if entry["kind"] == kind and entry["subject_id"] == subject
     ]
-
-
-def snapshot(run_root: Path) -> dict[str, bytes]:
-    return {
-        str(path.relative_to(run_root)): path.read_bytes()
-        for path in sorted(run_root.rglob("*"))
-        if path.is_file()
-    }
 
 
 def reseal(path: Path, record: dict) -> None:

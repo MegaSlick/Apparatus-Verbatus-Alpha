@@ -1,5 +1,6 @@
 """The staged driver is one sequence, irrespective of how an operator enters it."""
 
+
 from __future__ import annotations
 
 import argparse
@@ -9,6 +10,7 @@ from pathlib import Path
 
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
+from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,15 +51,6 @@ def drive(root: Path, run_id: str, scenario: str, *selection: str) -> subprocess
         capture_output=True,
         text=True,
     )
-
-
-def snapshot(root: Path) -> dict[str, bytes]:
-    """Require literal tree identity; semantic normalization would hide mode leaks."""
-    return {
-        str(path.relative_to(root)): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 def test_all_and_manual_stages_write_the_identical_happy_run_tree(tmp_path):

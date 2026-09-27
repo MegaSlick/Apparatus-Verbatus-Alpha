@@ -10,7 +10,6 @@ Meta-invariant #88: no test reports success over an empty population. Every loop
 asserts an exact expected count.
 """
 
-import hashlib
 import json
 import shutil
 import sqlite3
@@ -68,7 +67,14 @@ from common.stage import (
     stage_parser,
     verify_final_seal,
 )
-from conftest import load_stage, programs_through, stage_programs
+from conftest import file_digest_snapshot as snapshot
+from conftest import (
+    file_identities,
+    is_immutable_evidence,
+    load_stage,
+    programs_through,
+    stage_programs,
+)
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 from operations.operator import surface, volume_s3
 from operations.operator.custody import credential_free_environment
@@ -842,55 +848,6 @@ def run_through_recensor(
         result = invoke_stage(run_root, run_id, scenario, program)
         expected = {0, 3} if allow_held else {0}
         assert result.returncode in expected, f"{program}: {result.stderr}"
-
-
-def snapshot(root: Path) -> dict[str, str]:
-    return {
-        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
-
-
-def file_identities(root: Path) -> dict[str, tuple[int, int]]:
-    """The device and inode of every file, which is what distinguishes reuse.
-
-    A digest cannot tell a reused artifact from one deleted and rewritten with
-    the same bytes, so a test that only compares digests proves the tree is
-    right and says nothing about the claim in its own name (principle 8).
-    Identity can tell them apart: `RunTree` publishes through a temporary that
-    is then `os.link`-ed or `os.replace`-d into place, so every write lands a
-    *new* inode, while both reuse paths (`_publish_bytes` on identical bytes,
-    and the receipt's equal-bytes short circuit) return without touching the
-    file at all. The device is carried beside the inode because inode numbers
-    are only unique within a filesystem.
-    """
-    return {
-        str(path.relative_to(root)): (path.stat().st_dev, path.stat().st_ino)
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
-
-
-DERIVED_INVENTORY_SUFFIXES = (
-    "/manifest.json",
-    "/manifest-door.json",
-    "/index.json",
-    "run-health/recensor-partition-receipt.json",
-)
-
-
-def is_immutable_evidence(path: str) -> bool:
-    """Whether a path is evidence, as against a derived inventory or receipt.
-
-    A resume legitimately rebuilds the inventories and current-state receipts
-    that *name* the evidence -- appending to a tree changes what the manifest
-    lists, so republishing it is the append, not a rewrite. The evidence those
-    inventories name is immutable, and it is the only thing whose identity a
-    resume may not disturb. `test_volume_hosted_run_tree` drew this same line
-    for the same reason; it is named here so both tests draw it identically.
-    """
-    return not path.endswith(DERIVED_INVENTORY_SUFFIXES)
 
 
 def _sqlite_logical_digest(data: bytes) -> str:

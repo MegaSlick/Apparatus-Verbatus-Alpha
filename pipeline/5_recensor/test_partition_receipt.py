@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -17,33 +16,14 @@ from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.native_witness import partition_disagreement
 from common.runtree.store import RunTree
 from common.stage import stage_parser
-from conftest import load_stage, programs_through
+from conftest import load_stage, run_through
+from conftest import run_stage as invoke
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def invoke(
-    root: Path, run_id: str, scenario: str, program: str, **extra
-) -> subprocess.CompletedProcess:
-    command = [
-        sys.executable,
-        str(ROOT / program),
-        "--run-root",
-        str(root),
-        "--run-id",
-        run_id,
-        "--scenario",
-        scenario,
-    ]
-    for key, value in extra.items():
-        command.extend((f"--{key.replace('_', '-')}", str(value)))
-    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-
-
 def through_perlector(root: Path, run_id: str, scenario: str) -> None:
-    for program in programs_through("perlector"):
-        result = invoke(root, run_id, scenario, program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
+    run_through(root, run_id, scenario, "perlector")
 
 
 def _recensor_args(root: Path, run_id: str):

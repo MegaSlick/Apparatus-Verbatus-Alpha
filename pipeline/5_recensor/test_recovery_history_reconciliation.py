@@ -7,8 +7,6 @@ whether a normal restart can publish a new ordinal over a broken history.
 
 import copy
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
@@ -28,42 +26,16 @@ from common.perlector_audit import (
 )
 from common.recovery import FALLBACK_RECROP
 from common.runtree.store import RunTree
-from conftest import programs_through
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
+from conftest import run_stage as invoke
+from conftest import run_through
+from conftest import stage_artifacts as records
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def invoke(
-    root: Path, run_id: str, scenario: str, program: str, **extra
-) -> subprocess.CompletedProcess:
-    command = [
-        sys.executable,
-        str(ROOT / program),
-        "--run-root",
-        str(root),
-        "--run-id",
-        run_id,
-        "--scenario",
-        scenario,
-    ]
-    for key, value in extra.items():
-        command.extend((f"--{key.replace('_', '-')}", str(value)))
-    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-
-
 def through_perlector(root: Path, run_id: str, scenario: str) -> None:
-    for program in programs_through("perlector"):
-        result = invoke(root, run_id, scenario, program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-
-
-def records(tree: RunTree, stage: str, kind: str, act_id: str | None = None) -> list[dict]:
-    return [
-        tree.read_artifact(stage, kind, entry["artifact_id"])
-        for entry in tree.build_manifest(stage)["artifacts"]
-        if entry["kind"] == kind and (act_id is None or entry["subject_id"] == act_id)
-    ]
+    run_through(root, run_id, scenario, "perlector")
 
 
 def test_an_unrequested_second_perlectio_is_refused_before_recensor_publishes(tmp_path):

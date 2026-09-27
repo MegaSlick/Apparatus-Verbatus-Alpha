@@ -32,6 +32,7 @@ from common.exemplar_boundary import verify_sealed_page_pixels
 from common.imaging import encode_image_deterministic
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, StageContext
+from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage
 from operations.submit import gate, submit
 
@@ -487,14 +488,6 @@ def run_exemplar(
 
 def seal_of(tree: RunTree) -> dict:
     return tree.read_artifact(EXEMPLAR, "seal", artifact_id(EXEMPLAR, "seal", SEAL_SUBJECT))
-
-
-def snapshot(root: Path) -> dict[str, bytes]:
-    return {
-        str(path.relative_to(root)): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 # --- The seal exists, is one per run, and covers every outcome -------------------

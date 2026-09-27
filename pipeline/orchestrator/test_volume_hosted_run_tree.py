@@ -18,13 +18,9 @@ import pytest
 from common.contracts.errors import SchemaRefusal
 from common.durability import is_temporary_name
 from common.runtree.store import RunTree
-from conftest import load_stage
+from conftest import file_digest_snapshot as snapshot
+from conftest import file_identities, is_immutable_evidence
 from operations.operator.backup import _is_publication_temporary, sync_run_tree
-
-_acceptance = load_stage("orchestrator", "test_orchestrator_acceptance")
-snapshot = _acceptance.snapshot
-file_identities = _acceptance.file_identities
-is_immutable_evidence = _acceptance.is_immutable_evidence
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"

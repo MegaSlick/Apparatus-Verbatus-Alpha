@@ -31,6 +31,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, DOOR, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 from common.stage import _stage_seal_payload, latest_attempt
+from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -137,14 +138,6 @@ def rebind_perlector_seal(tree: RunTree) -> None:
 
 def has_any_artifact(tree: RunTree, stage: str) -> bool:
     return bool(tree.build_manifest(stage)["artifacts"])
-
-
-def snapshot(root: Path) -> dict[str, bytes]:
-    return {
-        str(path.relative_to(root)): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_path):

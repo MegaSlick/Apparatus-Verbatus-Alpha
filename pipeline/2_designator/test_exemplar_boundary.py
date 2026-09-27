@@ -21,18 +21,12 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR, INK_MAP
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, EXIT_HELD, open_context, stage_parser
+from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
-
-
-def snapshot(root: Path) -> dict[str, bytes]:
-    """Raw tree bytes for assertions after deliberately breaking validation."""
-    return {
-        str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()
-    }
 
 
 def populated_run(tmp_path, scenario: str = "happy") -> RunTree:
