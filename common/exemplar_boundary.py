@@ -15,7 +15,7 @@ import json
 from typing import Any, Final
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
-from common.contracts.envelope import validate_envelope, verify_input_bytes
+from common.contracts.envelope import read_verified, validate_envelope
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import PROPOSAL_SEAL_ID, artifact_id, page_id, region_id
 from common.contracts.stages import (
@@ -131,9 +131,13 @@ def verify_sealed_page_pixels(
     if blob_ref != {"relative_path": blob_path, "sha256": source_digest}:
         raise ContractError("a sealed Exemplar page's pixel input is not content-addressed")
 
-    page_bytes = _read_checked(tree, blob_ref, "the sealed Exemplar pixel blob")
+    page_bytes = read_verified(
+        tree.read_bytes, blob_ref, "the sealed Exemplar pixel blob", ContractError
+    )
 
-    admission_data = _read_checked(tree, refs[admission_path], "the sealed Door admission")
+    admission_data = read_verified(
+        tree.read_bytes, refs[admission_path], "the sealed Door admission", ContractError
+    )
     try:
         admission = validate_envelope(json.loads(admission_data.decode("utf-8")))
     except (SchemaRefusal, UnicodeDecodeError, ValueError, TypeError) as error:
@@ -142,7 +146,13 @@ def verify_sealed_page_pixels(
     return page_bytes
 
 
-def sealed_page_bytes(tree: RunTree, page: dict[str, Any], *, what: str = "") -> bytes:
+def sealed_page_bytes(
+    tree: RunTree,
+    page: dict[str, Any],
+    *,
+    what: str = "",
+    refusal: type[ContractError] = SchemaRefusal,
+) -> bytes:
     """Read a sealed Exemplar page's pixels once, checked against its sealed digest.
 
     Image work must use these same bytes: a second read reopens the gap a swap
@@ -152,26 +162,21 @@ def sealed_page_bytes(tree: RunTree, page: dict[str, Any], *, what: str = "") ->
     payload = page.get("payload")
     image_path = payload.get("image_path") if isinstance(payload, dict) else None
     if not isinstance(image_path, str) or not image_path:
-        raise SchemaRefusal(f"{subject} has no image path")
-    try:
-        data = tree.read_bytes(image_path)
-    except OSError as error:
-        raise SchemaRefusal(f"{subject} could not be read: {error}") from error
-    actual = digest_bytes(data)
-    if actual != payload.get("source_sha256"):
-        raise SchemaRefusal(
-            f"{subject} no longer matches its sealed digest: "
-            f"read {actual}, sealed {payload.get('source_sha256')}"
-        )
-    return data
+        raise refusal(f"{subject} has no image path")
+    ref = {"relative_path": image_path, "sha256": payload.get("source_sha256")}
+    return read_verified(tree.read_bytes, ref, subject, refusal)
 
 
 def read_sealed_page(
-    tree: RunTree, page_id: str, *, what: str = ""
+    tree: RunTree,
+    page_id: str,
+    *,
+    what: str = "",
+    refusal: type[ContractError] = SchemaRefusal,
 ) -> tuple[dict[str, Any], bytes]:
     """One Exemplar page artifact and its pixels, read once through `sealed_page_bytes`."""
     page = tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    return page, sealed_page_bytes(tree, page, what=what)
+    return page, sealed_page_bytes(tree, page, what=what, refusal=refusal)
 
 
 def _page_origin(source_digest: str, rendered: Any) -> dict[str, Any]:
@@ -239,7 +244,9 @@ def verify_refused_page_evidence(
     refs = _references_by_path(page.get("inputs"))
     if set(refs) != {admission_path}:
         raise ContractError("a refused Exemplar page must input exactly its Door admission")
-    admission_data = _read_checked(tree, refs[admission_path], "the refused Door admission")
+    admission_data = read_verified(
+        tree.read_bytes, refs[admission_path], "the refused Door admission", ContractError
+    )
     try:
         admission = validate_envelope(json.loads(admission_data.decode("utf-8")))
     except (SchemaRefusal, UnicodeDecodeError, ValueError, TypeError) as error:
@@ -485,10 +492,11 @@ def verify_exemplar_crop_lineage(
 
     page_path = page["payload"]["image_path"]
     page_digest = page["payload"]["source_sha256"]
-    page_pixels = _read_checked(
-        tree,
+    page_pixels = read_verified(
+        tree.read_bytes,
         {"relative_path": page_path, "sha256": page_digest},
         "the sealed Exemplar page",
+        ContractError,
     )
     page_width, page_height = dimensions(page_pixels)
     if (
@@ -532,10 +540,11 @@ def verify_exemplar_crop_lineage(
     image_path, image_digest = payload.get("image_path"), payload.get("image_sha256")
     if not isinstance(image_path, str) or not _is_sha256(image_digest):
         raise ContractError("a crop region names no content-addressed crop image")
-    crop = _read_checked(
-        tree,
+    crop = read_verified(
+        tree.read_bytes,
         {"relative_path": image_path, "sha256": image_digest},
         "the sealed Designator crop",
+        ContractError,
     )
     expected_crop = crop_png(page_pixels, bounds)
     if crop != expected_crop:
@@ -825,8 +834,12 @@ def _verify_admission(
         if isinstance(reference, dict)
     } != expected_inputs or len(admission.get("inputs", [])) != len(expected_inputs):
         raise ContractError("a sealed derivative page does not input exactly its pixels and master")
-    parent_bytes = _read_checked(tree, parent_ref, "the derivative page's submitted master")
-    sealed_bytes = _read_checked(tree, blob_ref, "the sealed derivative page")
+    parent_bytes = read_verified(
+        tree.read_bytes, parent_ref, "the derivative page's submitted master", ContractError
+    )
+    sealed_bytes = read_verified(
+        tree.read_bytes, blob_ref, "the sealed derivative page", ContractError
+    )
     verify_triage_derivative(rendered["render_contract"], parent_bytes, parent, sealed_bytes)
 
 
@@ -1160,18 +1173,6 @@ def _references_by_path(value: Any) -> dict[str, dict[str, str]]:
             raise ContractError("a sealed Exemplar page has an invalid input reference")
         refs[path] = {"relative_path": path, "sha256": digest}
     return refs
-
-
-def _read_checked(tree: RunTree, ref: dict[str, str], label: str) -> bytes:
-    try:
-        data = tree.read_bytes(ref["relative_path"])
-    except OSError as error:
-        raise ContractError(f"{label} could not be read") from error
-    try:
-        verify_input_bytes(ref, data)
-    except SchemaRefusal as error:
-        raise ContractError(f"{label} no longer matches its sealed input digest") from error
-    return data
 
 
 def _is_sha256(value: Any) -> bool:

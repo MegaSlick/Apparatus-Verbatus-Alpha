@@ -972,7 +972,7 @@ def test_act_tally_rechecks_retained_response_bytes(tmp_path):
     reference = {"relative_path": published.relative_path, "sha256": digest}
     attestatores.validate_retained_response_blob(tree, reference)
     tree.resolve(published.relative_path).write_bytes(b"changed")
-    with pytest.raises(SchemaRefusal, match="differs from its digest"):
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         attestatores.validate_retained_response_blob(tree, reference)
 
 

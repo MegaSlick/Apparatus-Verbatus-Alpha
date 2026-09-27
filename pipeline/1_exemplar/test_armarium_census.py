@@ -210,5 +210,5 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
     assert {row["declared_sha256"] for row in linked} == {digest_bytes(data)}
 
     tree.resolve(first_blob.relative_path).write_bytes(b"changed crop pixels")
-    with pytest.raises(FatalAccounting, match="crop bytes changed before export"):
+    with pytest.raises(FatalAccounting, match="changed under a sealed reference"):
         armarium.export_source_regions(tree, linked, census)

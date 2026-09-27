@@ -69,7 +69,7 @@ import feeding
 import witness_adapters
 
 from common.chair_wire import chandra_wire_fields
-from common.contracts.canonical import digest_bytes
+from common.contracts.envelope import read_verified
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import (
     ENGINE_STOP_COMPLETE,
@@ -185,14 +185,11 @@ def _presented_image_bytes(context: Any, presented: Mapping[str, Any]) -> bytes:
     what was recorded. Checked here, by digest, rather than assumed.
     """
 
-    image_bytes = context.tree.read_bytes(presented["image_path"])
-    actual = digest_bytes(image_bytes)
-    if actual != presented["image_sha256"]:
-        raise SchemaRefusal(
-            "an adapter's presented image bytes do not match its own declared digest: "
-            f"expected {presented['image_sha256']}, read {actual}"
-        )
-    return image_bytes
+    return read_verified(
+        context.tree.read_bytes,
+        {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]},
+        "an adapter's presented image",
+    )
 
 
 # Which numbered chair each adapter name occupies -- the serving row and

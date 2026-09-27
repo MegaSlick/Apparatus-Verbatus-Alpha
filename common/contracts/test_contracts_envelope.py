@@ -18,6 +18,7 @@ from common.contracts.canonical import SCHEMA_LABEL, digest_bytes, self_hash
 from common.contracts.envelope import (
     build_envelope,
     digest_ref,
+    read_verified,
     validate_envelope,
     verify_input_bytes,
 )
@@ -414,6 +415,21 @@ def test_bytes_that_do_not_match_the_sealed_reference_are_refused():
     with pytest.raises(SchemaRefusal) as caught:
         verify_input_bytes(PAGE_REF, b"different bytes")
     assert "changed under a sealed reference" in str(caught.value)
+
+
+def test_read_verified_refuses_unreadable_or_changed_bytes_in_the_callers_class():
+    assert (
+        read_verified({PAGE_REF["relative_path"]: PAGE_BYTES}.__getitem__, PAGE_REF, "p")
+        == PAGE_BYTES
+    )
+
+    def missing(path):
+        raise FileNotFoundError(path)
+
+    with pytest.raises(FatalAccounting, match="could not be read"):
+        read_verified(missing, PAGE_REF, "page", FatalAccounting)
+    with pytest.raises(FatalAccounting, match="changed under a sealed reference"):
+        read_verified(lambda _: b"different bytes", PAGE_REF, "page", FatalAccounting)
 
 
 # --- Corruption kind 4: duplicate accounting ----------------------------------

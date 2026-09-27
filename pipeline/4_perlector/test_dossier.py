@@ -641,7 +641,7 @@ def test_a_page_render_refuses_page_bytes_swapped_after_the_artifact_check(evide
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact", verified_before_swap)
-    with pytest.raises(SchemaRefusal, match="no longer matches"):
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         dossier.build_page_render(
             context,
             source_page_id=page_id,

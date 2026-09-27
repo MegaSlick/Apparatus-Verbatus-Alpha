@@ -570,7 +570,7 @@ def test_page_retained_response_reference_rechecks_the_blob_bytes():
     validate_retained_response_refs(
         {"raw_response_refs": [reference]}, read_bytes=lambda _path: raw
     )
-    with pytest.raises(SchemaRefusal, match="differs from its digest"):
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         validate_retained_response_refs(
             {"raw_response_refs": [reference]}, read_bytes=lambda _path: b"changed"
         )
@@ -631,7 +631,7 @@ def test_the_public_page_seam_actually_reaches_the_retained_response_check():
     value = _page_payload(raw_response_refs=[reference])
     assert validate_page_testimonium_payload(value, read_bytes=lambda _path: raw) is value
 
-    with pytest.raises(SchemaRefusal, match="differs from its digest"):
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         validate_page_testimonium_payload(
             _page_payload(raw_response_refs=[reference]), read_bytes=lambda _path: b"changed"
         )
