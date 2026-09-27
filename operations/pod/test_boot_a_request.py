@@ -17,6 +17,7 @@ from .boot_a_request import (
     render_boot_a_request,
 )
 from .cli import _request
+from .conftest import configured_spend_toml
 from .models import PodCreateRequest, utc_now
 from .preflight import load_placement_table
 from .spend import SpendPolicy, load_spend_policy
@@ -137,14 +138,7 @@ def test_a_card_above_the_hourly_ceiling_is_named_as_a_coming_refusal() -> None:
 
 
 def test_the_pod_request_validates_once_the_project_lead_supplies_four_values() -> None:
-    """``hard_deadline`` is a value the project lead supplies too -- ``pod_request``
-
-    carries no runtime that fills it in, unlike ``metadata``'s billing-cutoff
-    margin, which the launch seals from the spend policy on its own. This
-    supplies all four (image, volume id, repository commit, hard deadline)
-    exactly the way the rendered request asks for them, rather than patching
-    hard_deadline and metadata past the placeholders the rendering leaves.
-    """
+    """``hard_deadline`` is a value the project lead supplies too -- ``pod_request``"""
 
     card = cheapest_card(load_placement_table(PLACEMENT))
     hard_deadline = (utc_now().replace(microsecond=0)).isoformat().replace("+00:00", "Z")
@@ -304,23 +298,7 @@ def test_main_exits_zero_on_a_configured_policy(
 ) -> None:
     spend = tmp_path / "spend.toml"
     spend.write_text(
-        "\n".join(
-            (
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "2.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 5",
-                "billing_cutoff_margin_seconds = 3600",
-            )
-        )
-        + "\n",
+        configured_spend_toml(shutdown_deadline_seconds=5),
         encoding="utf-8",
     )
 

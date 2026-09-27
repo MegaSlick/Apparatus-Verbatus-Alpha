@@ -24,6 +24,7 @@ from .errors import (
     ChairRefusal,
     ConfigurationRefusal,
     DigestMismatchRefusal,
+    DiskSpaceRefusal,
     LocalPathRefusal,
     ReceiptRefusal,
     ServingRecipeRefusal,
@@ -512,6 +513,7 @@ class ChairRegistry:
             raise UnresolvedChairRefusal(
                 identity.role, "no fetcher is configured for a missing pinned snapshot"
             )
+        self._make_room(identity, manifest)
         with _cache_write(identity.role, "no candidate cache directory could be created"):
             candidate = Path(
                 tempfile.mkdtemp(prefix=f".{identity.role}.candidate-", dir=self.cache_root)
@@ -540,6 +542,44 @@ class ChairRegistry:
             if candidate.exists():
                 shutil.rmtree(candidate, ignore_errors=True)
             raise
+
+    def _make_room(self, identity: ChairIdentity, manifest: DigestManifest) -> None:
+        cache_root = self.cache_root
+        if cache_root is None:
+            raise UnresolvedChairRefusal(identity.role, "no cache_root was supplied")
+        keep = {identity.role, identity.adapter_of}
+        keep.update(
+            role
+            for role, configured in self.config.chairs.items()
+            if isinstance(configured, ChairIdentity) and configured.adapter_of == identity.role
+        )
+        configured_roles = {
+            role
+            for role, configured in self.config.chairs.items()
+            if isinstance(configured, ChairIdentity)
+        }
+        with _cache_write(identity.role, "other chair caches could not be evicted"):
+            for other in cache_root.iterdir():
+                if other.name in keep:
+                    continue
+                if other.name not in configured_roles and not any(
+                    other.name.startswith(f".{role}.candidate-") for role in configured_roles
+                ):
+                    continue
+                if other.is_symlink():
+                    other.unlink()
+                elif other.is_dir():
+                    shutil.rmtree(other)
+        required = sum(row.size for row in manifest.rows)
+        with _cache_write(identity.role, "container-local free space could not be measured"):
+            free = shutil.disk_usage(cache_root).free
+        if free < required:
+            raise DiskSpaceRefusal(
+                identity.role,
+                f"container disk too small for chair {identity.role}: {free} bytes free "
+                f"under {cache_root}, need at least {required} bytes for its pinned "
+                "snapshot; increase container_disk_gb",
+            )
 
     def _cache_descriptor(self, identity: ChairIdentity) -> dict[str, object]:
         """Bind an adapter cache to its configured base identity as well.

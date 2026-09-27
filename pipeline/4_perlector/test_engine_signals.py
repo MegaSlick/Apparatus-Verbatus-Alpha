@@ -4,32 +4,15 @@ no-readable-text path end to end, over the real orchestrator; plus the older
 not contradict.
 """
 
-import subprocess
-import sys
 from pathlib import Path
 
 from common.contracts.outcomes import OutcomeClass, classify
 from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
+from conftest import run_orchestrator as orchestrate
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
-
-
-def orchestrate(run_root: Path, run_id: str, scenario: str):
-    command = [
-        sys.executable,
-        str(ORCHESTRATOR),
-        "--fixture",
-        "synthetic-two-page-v0",
-        "--scenario",
-        scenario,
-        "--run-id",
-        run_id,
-        "--run-root",
-        str(run_root),
-    ]
-    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
 def _perlectio_for(tree, act_key):

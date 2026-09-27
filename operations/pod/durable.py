@@ -19,6 +19,7 @@ be: these are local operational records, not pipeline artifacts.
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 from typing import Mapping
 
@@ -39,10 +40,25 @@ def canonical_json(value: Mapping[str, object]) -> bytes:
     ).encode("utf-8")
 
 
+def _refuse_symlink_ancestors(path: Path) -> None:
+    parent = path.parent.absolute()
+    while True:
+        try:
+            if stat.S_ISLNK(parent.lstat().st_mode):
+                raise OSError(f"pod evidence path has a symlinked directory: {parent}")
+        except FileNotFoundError:
+            pass
+        if parent == parent.parent:
+            break
+        parent = parent.parent
+
+
 def atomic_write(path: Path, payload: bytes) -> None:
     """Replace ``path`` with ``payload`` or leave the previous content intact."""
 
+    _refuse_symlink_ancestors(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _refuse_symlink_ancestors(path)
     atomic_replace(path, payload, strict=False)
 
 
@@ -57,5 +73,7 @@ def exclusive_write(path: Path, payload: bytes, *, strict: bool = False) -> None
     is for money evidence, which must refuse unless the directory entry is proved.
     """
 
+    _refuse_symlink_ancestors(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _refuse_symlink_ancestors(path)
     atomic_create(path, payload, strict=strict)

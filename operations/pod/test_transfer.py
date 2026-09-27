@@ -151,6 +151,7 @@ def test_a_journaled_row_the_target_lost_is_reported_as_sent_again(tmp_path: Pat
     assert second.to_record()["state"] == "complete"
 
 
+@pytest.mark.hostile_local
 def test_open_verified_regular_file_refuses_a_symlink_leaf_directly(tmp_path: Path) -> None:
     """The final O_NOFOLLOW open, not only `_under`'s pre-check, refuses a symlink.
 
@@ -170,6 +171,7 @@ def test_open_verified_regular_file_refuses_a_symlink_leaf_directly(tmp_path: Pa
         _open_verified_regular_file(leaf, relative="page.bin")
 
 
+@pytest.mark.hostile_local
 def test_submission_path_cannot_traverse_a_source_symlink(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()

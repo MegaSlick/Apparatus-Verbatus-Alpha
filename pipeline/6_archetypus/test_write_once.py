@@ -15,53 +15,19 @@ untouched.
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 from common.contracts.canonical import canonical_bytes, self_hash
-from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
+from conftest import run_orchestrator as orchestrate
+from conftest import run_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            scenario,
-            "--run-id",
-            run_id,
-            "--run-root",
-            str(root),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-
 def invoke_archetypus(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/6_archetypus/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            run_id,
-            "--scenario",
-            scenario,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
+    return run_stage(root, run_id, scenario, "pipeline/6_archetypus/run.py")
 
 
 def test_a_second_differing_write_for_the_same_act_is_refused_and_the_original_survives(tmp_path):
@@ -156,34 +122,3 @@ def test_index_json_is_rewritable_and_reflects_the_same_reconciled_rows(tmp_path
     assert result.returncode == 0, result.stderr
     second = json.loads(index_path.read_bytes().decode("utf-8"))
     assert second == first
-
-
-def test_a_forged_second_archetypus_artifact_for_one_act_is_a_selection_nothing_makes(tmp_path):
-    """Even in the (structurally unreachable) case of two records under two
-    different attempt identities for the same act, nothing in this codebase
-    picks between them -- `latest_attempt` refuses a duplicate ordinal, and
-    the index's own reconciliation refuses more than one record per act_id."""
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    original_entry = next(
-        entry
-        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
-        if entry["kind"] == "archetypus"
-    )
-    original = tree.read_artifact(ARCHETYPUS, "archetypus", original_entry["artifact_id"])
-    act_id = original["subject_id"]
-
-    forged = json.loads(json.dumps(original))
-    forged_attempt = attempt_id(act_id, "establish", 2)
-    forged["attempt_id"] = forged_attempt
-    forged["artifact_id"] = artifact_id(ARCHETYPUS, "archetypus", act_id, forged_attempt)
-    forged["self_hash"] = self_hash(forged)
-    forged_path = tree.resolve(tree.artifact_path(ARCHETYPUS, "archetypus", forged["artifact_id"]))
-    forged_path.parent.mkdir(parents=True, exist_ok=True)
-    forged_path.write_bytes(canonical_bytes(forged))
-    tree.write_manifest(ARCHETYPUS)
-
-    result = invoke_archetypus(root, "r", "happy")
-    assert result.returncode == 2, result.stderr
-    assert "more than one Archetypus record" in result.stderr

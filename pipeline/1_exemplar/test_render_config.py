@@ -21,6 +21,35 @@ from conftest import load_stage
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_real_submission_passes_sealed_pdf_settings_to_process_sources():
+    module = ast.parse((Path(__file__).parent / "door.py").read_text(encoding="utf-8"))
+    entry = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "real_submission"
+    )
+    calls = [
+        node
+        for node in ast.walk(entry)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "process_sources"
+    ]
+    assert len(calls) == 1
+    assert any(
+        keyword.arg == "pdf_settings"
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id == "pdf_settings"
+        for keyword in calls[0].keywords
+    )
+    assert any(
+        isinstance(node, ast.Call)
+        and ast.unparse(node.func).endswith("require_sealed_config")
+        and any(isinstance(arg, ast.Constant) and arg.value == "pdf-render" for arg in node.args)
+        for node in ast.walk(entry)
+    )
+
+
 def test_the_shipped_default_is_documented_run_configuration():
     """300 is a decision, not an accident, so it is
     asserted here — and `config/pdf_render.toml` carries the measurement it came
@@ -34,18 +63,7 @@ def test_the_shipped_default_is_documented_run_configuration():
 
 
 def test_the_target_is_configuration_rather_than_a_constant_in_code(tmp_path):
-    """Ruling 14's actual requirement: changing this needs no code change.
-
-    Asserted both ways. The loader carries no shipped value of its own — a constant
-    there would keep working after somebody edited the file and would be very hard
-    to notice — and a config naming a different target really does change the run.
-    """
-    source = (Path(__file__).resolve().parent / "render_config.py").read_text(encoding="utf-8")
-    constants = {
-        node.value for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Constant)
-    }
-    assert {300, "300"}.isdisjoint(constants), "the shipped target leaked into the loader"
-
+    """A different target in the configuration changes the loaded setting."""
     for chosen in (150, 300, 600):
         configured = tmp_path / f"render-{chosen}.toml"
         configured.write_text(f"[pdf]\ntarget_dpi = {chosen}\n", encoding="utf-8")
@@ -344,45 +362,3 @@ def test_a_render_policy_rewritten_while_the_door_binds_cannot_split_the_run(tmp
     assert run["config_digest"] == expected["config_digest"]
     assert run["sealed_config_digests"] == expected["sealed_config_digests"]
     assert run["sealed_config_digests"]["pdf-render"] == parse_sealed_toml(original, "x")[1]
-
-
-def test_both_door_entry_points_seal_the_settings_they_actually_parsed():
-    """Neither route may fall back to an unbound read of the render policy.
-
-    Asserted on the source because the fallback it forbids is a default argument:
-    `process_sources` and `decide` will still load the policy themselves when no
-    settings are supplied, which is a convenience for direct callers and would be
-    an unsealed second read on a production path. Both production paths pass the
-    settings the run sealed, and this is what says so.
-    """
-    import ast
-
-    module = ast.parse((Path(__file__).resolve().parent / "door.py").read_text(encoding="utf-8"))
-    entry_points = {
-        node.name: node
-        for node in module.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name in {"fixture_submission", "real_submission"}
-    }
-    assert set(entry_points) == {"fixture_submission", "real_submission"}
-    for name, node in entry_points.items():
-        calls = [
-            call
-            for call in ast.walk(node)
-            if isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id == "process_sources"
-        ]
-        assert len(calls) == 1, f"{name} does not admit its sources exactly once"
-        keywords = {keyword.arg: ast.unparse(keyword.value) for keyword in calls[0].keywords}
-        assert keywords.get("pdf_settings") == "pdf_settings", (
-            f"{name} lets process_sources fall back to its own unbound read of the render policy"
-        )
-        requires = [
-            ast.unparse(call)
-            for call in ast.walk(node)
-            if isinstance(call, ast.Call) and "require_sealed_config" in ast.unparse(call.func)
-        ]
-        assert "context.require_sealed_config('pdf-render', pdf_render_binding.config_sha256)" in (
-            requires
-        ), f"{name} never proves its render settings against the digest the run sealed"

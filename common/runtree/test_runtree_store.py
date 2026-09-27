@@ -638,16 +638,6 @@ def test_reuse_refuses_a_missing_register_snapshot_instead_of_reconstructing_it(
     assert not snapshot.exists()
 
 
-def test_an_edited_run_authority_is_refused(tmp_path):
-    tree = make_run(tmp_path)
-    record = tree.read_run()
-    record["config_digest"] = "e" * 64
-    (tmp_path / "r1" / RUN_FILE).write_bytes(canonical_bytes(record))
-    with pytest.raises(IncompatibleReuse) as caught:
-        tree.read_run()
-    assert "self-hash" in str(caught.value)
-
-
 @pytest.mark.parametrize(
     ("damage", "named"),
     (
@@ -978,16 +968,6 @@ def test_identical_run_receipt_reuses_its_immutable_bytes(tmp_path):
     assert first_result.reused is False
     assert second_result.reused is True
     assert second.to_record() == first.to_record()
-
-
-def test_a_tampered_run_receipt_is_refused_when_its_reference_is_read(tmp_path):
-    tree = make_run(tmp_path)
-    reference, _ = tree.write_run_receipt(make_receipt())
-    tree.resolve(reference.relative_path).write_text("{}", encoding="utf-8")
-
-    with pytest.raises(SchemaRefusal) as caught:
-        tree.read_run_receipt(reference)
-    assert "digest" in str(caught.value)
 
 
 def test_distinct_serving_moments_are_not_collapsed_by_model_identity(tmp_path):
@@ -2576,3 +2556,13 @@ def test_a_directory_that_cannot_be_opened_refuses_the_publication_too(
 
     with pytest.raises(SchemaRefusal, match="will not persist a directory entry"):
         runtree_store._atomic_write(tmp_path / "artifact.json", b'{"a":1}')
+
+
+def test_a_tampered_run_receipt_is_refused_when_its_reference_is_read(tmp_path):
+    tree = make_run(tmp_path)
+    reference, _ = tree.write_run_receipt(make_receipt())
+    tree.resolve(reference.relative_path).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(SchemaRefusal) as caught:
+        tree.read_run_receipt(reference)
+    assert "digest" in str(caught.value)

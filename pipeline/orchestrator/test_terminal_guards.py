@@ -397,6 +397,7 @@ def test_archetypus_refuses_to_resurrect_a_designator_held_act(monkeypatch):
         "act_id": "act_held",
         "act_key": "held",
         "page_id": "pg_held",
+        "page_ordinal": 1,
         "outcome": "held",
     }
     accepted_review = {"artifact_id": "art_accepted", "outcome": "accepted"}
@@ -433,6 +434,7 @@ def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(mo
         "act_id": "act_held",
         "act_key": "held",
         "page_id": "pg_held",
+        "page_ordinal": 1,
         "outcome": "held",
     }
     accepted_review = _accepted_review()
@@ -470,6 +472,7 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
         "act_id": "act_proposed",
         "act_key": "proposed",
         "page_id": "pg_proposed",
+        "page_ordinal": 1,
         "outcome": "proposed",
     }
     accepted_review = _accepted_review()
@@ -516,6 +519,106 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     assert bundle_record["reference"]["sha256"] == expected_digest
 
 
+def test_only_sealed_canary_acts_leave_the_bundle_and_real_canary_named_paths_stay(
+    monkeypatch,
+):
+    armarium = load_stage("7_armarium")
+    context = _RecordingContext()
+    context.run = {
+        "sealed_config_digests": {"canary-ledger": "c" * 64},
+        "source_manifest": [
+            {"ordinal": 1, "relative_path": "canary/x.jpg", "ledger_sha256": "a" * 64},
+            {"ordinal": 2, "relative_path": "bird.jpg", "ledger_sha256": "c" * 64},
+        ],
+    }
+    context.conservation_records["page-2"] = {
+        "artifact_id": "page-2",
+        "payload": {"page_ordinal": 2, "ink_measurable": True},
+    }
+    acts = [
+        {"act_id": "real", "act_key": "a1", "page_ordinal": 1, "outcome": "proposed"},
+        {"act_id": "bird", "act_key": "a2", "page_ordinal": 2, "outcome": "proposed"},
+    ]
+    projections = []
+    monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
+    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(
+        armarium,
+        "page_census",
+        lambda _context: {
+            **_sealed_page_census(context),
+            2: {"outcome": "sealed", "_pixel_dimensions": context.sealed_page_dimensions},
+        },
+    )
+    monkeypatch.setattr(armarium, "pages_marked_out", lambda *_args: {"real": [1], "bird": []})
+    monkeypatch.setattr(armarium, "expected_acts", lambda _context: acts)
+    monkeypatch.setattr(
+        armarium,
+        "categorize",
+        lambda *_args: (ArmariumCategory.HELD_FOR_REVIEW, _accepted_review(), None),
+    )
+    monkeypatch.setattr(armarium, "ink_map_page_rows", lambda *_args: [])
+    monkeypatch.setattr(armarium, "continuation_joins", lambda *_args: [])
+    monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
+
+    def bundle(projection, *_args):
+        projections.append(projection)
+        return SimpleNamespace(
+            data=b"synthetic bundle",
+            manifest={"self_hash": "c" * 64, "claims": {"status": "partial"}},
+        )
+
+    monkeypatch.setattr(armarium, "build_armarium_bundle", bundle)
+    assert armarium.main() == EXIT_HELD
+    (projection,) = projections
+    assert [row["act_id"] for row in projection.acts] == ["real"]
+    assert [row["ordinal"] for row in projection.pages] == [1]
+    assert projection.aggregate["by_category"] == {"held-for-review": 1}
+    assert projection.not_measured_basis["page-ink-conservation"]["pages_sealed"] == 1
+    assert [row["relative_path"] for row in projection.source_manifest] == ["canary/x.jpg"]
+    export = next(row["payload"] for row in context.published if row["kind"] == "export")
+    assert export["canary"] == {
+        "ordinals": [2],
+        "acts": [
+            {"act_id": "bird", "act_key": "a2", "category": "held-for-review", "page_ordinals": [2]}
+        ],
+    }
+    assert [row["subject_id"] for row in context.published if row["kind"] == "manifest-entry"] == [
+        "real",
+        "bird",
+    ]
+
+
+def test_an_act_touching_real_and_canary_pages_is_fatal(monkeypatch):
+    armarium = load_stage("7_armarium")
+    context = _RecordingContext()
+    context.run = {
+        "sealed_config_digests": {"canary-ledger": "c" * 64},
+        "source_manifest": [
+            {"ordinal": 1, "ledger_sha256": "a" * 64},
+            {"ordinal": 2, "ledger_sha256": "c" * 64},
+        ],
+    }
+    monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
+    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(
+        armarium,
+        "page_census",
+        lambda _context: {1: {"outcome": "sealed"}, 2: {"outcome": "sealed"}},
+    )
+    monkeypatch.setattr(armarium, "pages_marked_out", lambda *_args: {"mixed": [2]})
+    monkeypatch.setattr(
+        armarium,
+        "expected_acts",
+        lambda _context: [
+            {"act_id": "mixed", "act_key": "a1", "page_ordinal": 1, "outcome": "proposed"}
+        ],
+    )
+    with pytest.raises(FatalAccounting, match="both canary and real pages"):
+        armarium.main()
+    assert context.published == []
+
+
 def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(monkeypatch):
     """A bundle whose own face says `partial` may not leave under an exit code of 0.
 
@@ -533,6 +636,7 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
         "act_id": "act_proposed",
         "act_key": "proposed",
         "page_id": "pg_proposed",
+        "page_ordinal": 1,
         "outcome": "proposed",
     }
     accepted_review = _accepted_review()
@@ -588,6 +692,7 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
         "act_id": "act_proposed",
         "act_key": "proposed",
         "page_id": "pg_proposed",
+        "page_ordinal": 1,
         "outcome": "proposed",
     }
     accepted_review = _accepted_review()

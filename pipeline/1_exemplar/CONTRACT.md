@@ -138,6 +138,15 @@ Declared synthetic fixtures remain the only ledger-free route. They carry the
 same core source rows but not a real filename ledger. Neither route needs an
 approval-record artifact — see "Data handling and scope" below.
 
+For a real run with golden canaries, the Door also takes a disjoint private page
+folder and its own self-hashed `submission-manifest.v1` through
+`--canary-folder` and `--canary-manifest`. It refuses overlap by relative path
+or source digest. Real pages keep the first ordinals; canary pages receive the
+last ordinals and carry their own ledger hash in `source_manifest`. Only the
+Door's `sealed_config_digests["canary-ledger"]` marks those rows as canaries.
+The canary ledger also enters `config_digest`; without it, neither the digest
+input nor the sealed run authority gains a canary field.
+
 ## Decoder routes and alarms
 
 `admission.py` derives how each detected format is read, never a policy

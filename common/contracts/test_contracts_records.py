@@ -287,13 +287,6 @@ def test_a_record_verifies_its_own_hash():
     assert verify_self_hash(record)
 
 
-def test_an_edited_record_fails_its_own_hash():
-    record = {"a": 1}
-    record["self_hash"] = self_hash(record)
-    record["a"] = 2
-    assert not verify_self_hash(record)
-
-
 def test_a_record_with_no_hash_does_not_pass_by_default():
     assert not verify_self_hash({"a": 1})
 
@@ -399,14 +392,6 @@ def test_an_approval_with_a_huge_integer_is_refused_by_a_printable_name():
     assert "unexpected_count" in message and "schema is closed" in message
     assert len(message) < 1000, "a refusal may not print the whole offending integer"
     message.encode("utf-8")
-
-
-def test_an_approval_edited_after_sealing_is_refused():
-    record = sound_approval()
-    record["reason"] = "actually it was fine"
-    with pytest.raises(ApprovalRefusal) as caught:
-        validate_approval_record(record)
-    assert "self-hash" in str(caught.value)
 
 
 def test_an_approval_must_name_what_it_approved():

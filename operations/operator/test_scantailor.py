@@ -68,6 +68,7 @@ def test_a_traversing_file_name_is_refused(tmp_path: Path) -> None:
         scantailor_worker.parse(hostile, tmp_path / "hostile.ScanTailor")
 
 
+@pytest.mark.hostile_local
 def test_a_symlink_that_escapes_the_project_directory_is_refused(tmp_path: Path) -> None:
     """Every component looks like a safe relative path; only `.resolve()` reveals the escape."""
     outside = tmp_path / "outside"
@@ -174,12 +175,10 @@ def test_parent_sequences_preview_then_commit_through_a_stand_in_worker(
 def test_parent_refuses_a_committed_summary_whose_project_digest_does_not_match_the_pin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The confined child checks its own pin before answering "committed"; the
-    parent must not take that answer on faith. A worker that reports success
-    for a project other than the one it was pinned to must still be refused
-    here, the same way every other field of its response is re-checked rather
-    than trusted.
-    """
+    """The confined child checks its own pin before answering "committed"; the parent must
+    not take that answer on faith. A worker that reports success for a project other
+    than the one it was pinned to must still be refused here, the same way every
+    other field of its response is re-checked rather than trusted."""
     from subprocess import CompletedProcess
 
     from operations.operator.errors import ErrorCode, OperatorError
@@ -332,6 +331,7 @@ def _case_variant_project(tmp_path: Path) -> bytes:
     )
 
 
+@pytest.mark.hostile_local
 def test_case_variant_paths_for_one_physical_page_refuse_on_default_apfs_darwin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -348,6 +348,7 @@ def test_case_variant_paths_for_one_physical_page_refuse_on_default_apfs_darwin(
         scantailor_worker.parse(hostile, tmp_path / "case-variant.ScanTailor")
 
 
+@pytest.mark.hostile_local
 def test_case_variant_paths_are_distinct_pages_off_darwin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -367,12 +368,7 @@ def test_case_variant_paths_are_distinct_pages_off_darwin(
 def test_a_coordinate_that_is_not_a_finite_number_refuses_by_name(
     tmp_path: Path, coordinate: bytes
 ) -> None:
-    """The exact spelling is preserved, so the spelling has to be checked.
-
-    Nothing converts these strings before they are published, which means an
-    unchecked attribute puts arbitrary text -- or a value that is no number at
-    all -- inside a digest-bound geometry record.
-    """
+    """The exact spelling is preserved, so the spelling has to be checked."""
     hostile = PROJECT.replace(b'<point x="0" y="0"/>', b'<point x="' + coordinate + b'" y="0"/>', 1)
     with pytest.raises(ValueError, match="coordinate is not a finite decimal number"):
         scantailor_worker.parse(hostile, tmp_path / "coordinate.ScanTailor")
@@ -397,12 +393,7 @@ def test_the_preview_counts_source_images_and_geometry_records_separately(
 def test_a_missing_output_folder_refuses_before_the_operator_is_shown_a_pinned_preview(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    """The preview holds no write allowance, so it cannot be the thing that finds this.
-
-    Left to the commit, a mistyped folder surfaces as the kernel refusing to build
-    a Landlock rule over a path that is not there -- a custody fault, reported
-    after a person has already been shown a digest and a pinned promise.
-    """
+    """The preview holds no write allowance, so it cannot be the thing that finds this."""
     project = tmp_path / "scan.ScanTailor"
     project.write_bytes(PROJECT)
     code, response = _invoke_main(
@@ -421,6 +412,7 @@ def test_a_missing_output_folder_refuses_before_the_operator_is_shown_a_pinned_p
     assert "output folder does not exist" in response["reason"]
 
 
+@pytest.mark.hostile_local
 def test_a_symlinked_output_folder_refuses_rather_than_writing_through_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
@@ -450,17 +442,11 @@ def test_a_symlinked_output_folder_refuses_rather_than_writing_through_it(
     assert not any((tmp_path / "real").iterdir())
 
 
+@pytest.mark.hostile_local
 def test_an_existing_document_that_is_not_a_regular_file_refuses_rather_than_blocking(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    """The repeated-commit comparison reads a file in an operator-named folder.
-
-    That read is no more trustworthy than the project file's. A `read_bytes` by
-    name -- or a blocking open -- on a planted FIFO hangs the confined child
-    having printed nothing, instead of refusing it. A bounded deadline turns a
-    regression back into that blocking open into a named test failure instead
-    of a suite that never finishes.
-    """
+    """The repeated-commit comparison reads a file in an operator-named folder."""
     project = tmp_path / "scan.ScanTailor"
     project.write_bytes(PROJECT)
     output = tmp_path / "geometry"
@@ -636,6 +622,7 @@ def test_a_vanished_output_folder_is_not_recreated_by_the_commit(
     assert not output.exists()
 
 
+@pytest.mark.hostile_local
 def test_an_output_folder_swapped_after_its_check_is_not_the_one_written_to(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:

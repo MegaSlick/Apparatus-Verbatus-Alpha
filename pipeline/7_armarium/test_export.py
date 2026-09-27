@@ -86,6 +86,7 @@ def test_armarium_seals_a_self_verifying_product_bundle(tmp_path):
 
     tree = RunTree(root, "bundle")
     export = _export(tree)
+    assert "canary" not in export["payload"]
     bundle = export["payload"]["bundle"]
     reference = bundle["reference"]
     assert export["inputs"] == [reference]

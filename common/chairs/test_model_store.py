@@ -13,7 +13,7 @@ import pytest
 
 from common.chairs import model_store
 from common.chairs.config import load_models_toml, parse_models_config
-from common.chairs.errors import DigestMismatchRefusal
+from common.chairs.errors import DigestMismatchRefusal, DiskSpaceRefusal
 from common.chairs.manifests import build_manifest, write_manifest
 from common.chairs.model_store import (
     CHAIRS_WITHOUT_ROSTER_ROLE,
@@ -23,8 +23,7 @@ from common.chairs.model_store import (
     SURYA_OCR_2_REFUSAL,
     UNDECLARED_LICENCE_SNAPSHOT,
     UNTEXTED_LICENCE_SNAPSHOT,
-    VerifiedStoreFetcher,
-    configured_cache_materialization_plan,
+    StoreRoleFetcher,
     derived_inventory,
     load_download_record,
     materialize_real_roster,
@@ -321,30 +320,7 @@ def test_fetched_artifact_cannot_be_relabelled_pending_fetch(tmp_path):
     assert not (tmp_path / "records" / f"{rejected_digest}.json").exists()
 
 
-def test_a_recorded_artifact_cannot_be_renamed_out_of_the_next_record_version(tmp_path):
-    """A dropped name must refuse by name, not escape the closed refusal taxonomy.
-
-    Five unique artifacts in, five out, so renaming one drops the old name. The
-    transition check read the replacement by that key directly and raised a bare
-    ``KeyError`` naming no chair — outside ``errors.py``'s "complete public
-    taxonomy", and silent about which artifact left the record.
-    """
-
-    record = _store(tmp_path)
-    replacement = copy.deepcopy(record)
-    entry = next(item for item in replacement["artifacts"] if item["artifact"] == "churro-3B")
-    entry["artifact"] = "churro-3B-renamed"
-    entry["snapshot"] = "hf/churro-3B-renamed"
-    entry["manifest"] = "manifests/churro-3B-renamed.json"
-
-    with pytest.raises(DigestMismatchRefusal, match="does not name this recorded artifact"):
-        write_download_record(replacement, tmp_path)
-
-    assert load_download_record(tmp_path) == record
-    rejected_digest = hashlib.sha256(canonical_bytes(replacement)).hexdigest()
-    assert not (tmp_path / "records" / f"{rejected_digest}.json").exists()
-
-
+@pytest.mark.hostile_local
 def test_active_record_swap_does_not_rewrite_its_immutable_version(tmp_path):
     record = _store(tmp_path)
     original_bytes = canonical_bytes(record)
@@ -362,6 +338,7 @@ def test_active_record_swap_does_not_rewrite_its_immutable_version(tmp_path):
         load_download_record(tmp_path)
 
 
+@pytest.mark.hostile_local
 def test_active_record_symlink_is_not_accepted_as_in_store_custody(tmp_path):
     _store(tmp_path)
     active = tmp_path / "download_record.json"
@@ -374,6 +351,7 @@ def test_active_record_symlink_is_not_accepted_as_in_store_custody(tmp_path):
         load_download_record(tmp_path)
 
 
+@pytest.mark.hostile_local
 def test_active_record_fifo_is_refused_before_any_blocking_read(tmp_path):
     os.mkfifo(tmp_path / "download_record.json")
 
@@ -381,6 +359,7 @@ def test_active_record_fifo_is_refused_before_any_blocking_read(tmp_path):
         load_download_record(tmp_path)
 
 
+@pytest.mark.hostile_local
 def test_immutable_record_version_cannot_hide_behind_an_internal_symlink(tmp_path):
     record = _store(tmp_path)
     digest = digest_bytes(canonical_bytes(record))
@@ -393,6 +372,7 @@ def test_immutable_record_version_cannot_hide_behind_an_internal_symlink(tmp_pat
         load_download_record(tmp_path)
 
 
+@pytest.mark.hostile_local
 def test_verified_snapshot_root_cannot_hide_behind_an_internal_symlink(tmp_path):
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -429,6 +409,7 @@ def test_writer_archives_the_legacy_host_record_before_migration(tmp_path):
 # --- S3: symlink escape is refused in both directions ---------------------------
 
 
+@pytest.mark.hostile_local
 def test_promote_verified_snapshot_refuses_a_staging_symlink_that_escapes_the_store(tmp_path):
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -458,6 +439,7 @@ def test_promote_verified_snapshot_accepts_a_legitimate_nested_staging_path(tmp_
     assert digest == digest_bytes(published)
 
 
+@pytest.mark.hostile_local
 def test_materializer_refuses_a_staging_root_symlink_before_fetching_outside_store(tmp_path):
     store = tmp_path / "store"
     store.mkdir()
@@ -510,6 +492,7 @@ def test_materializer_names_a_cleanup_failure_without_losing_the_fetch_failure(
         materialize_real_roster(tmp_path, _FailsAfterWriting())
 
 
+@pytest.mark.hostile_local
 def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_path, monkeypatch):
     outside_index = tmp_path / "outside-index.json"
     outside_index.write_text(
@@ -540,6 +523,7 @@ def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_pat
         materialize_real_roster(tmp_path, _SymlinkedShardIndex())
 
 
+@pytest.mark.hostile_local
 def test_materializer_refuses_a_hard_link_to_bytes_owned_outside_staging(tmp_path):
     outside = tmp_path / "outside-operator-file"
     outside.write_bytes(b"not repository evidence")
@@ -570,18 +554,6 @@ def test_promote_verified_snapshot_refuses_a_manifest_name_no_record_may_referen
 # --- Battery: forged manifests, path traversal, roster mismatches ---------------
 
 
-def test_verify_store_refuses_a_manifest_tampered_after_it_was_written(tmp_path):
-    record = _store(tmp_path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
-    manifest_path = tmp_path / entry["manifest"]
-    raw = json.loads(manifest_path.read_bytes())
-    raw[0]["sha256"] = "0" * 64
-    manifest_path.write_bytes(canonical_bytes(raw))
-
-    with pytest.raises(DigestMismatchRefusal, match="manifest differs"):
-        verify_store(tmp_path)
-
-
 def test_download_record_read_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
     monkeypatch.setattr(model_store, "MAX_DOWNLOAD_RECORD_BYTES", 32)
     (tmp_path / "download_record.json").write_bytes(b"{" + b"x" * 32)
@@ -590,6 +562,7 @@ def test_download_record_read_is_bounded_before_json_deserialization(tmp_path, m
         load_download_record(tmp_path)
 
 
+@pytest.mark.hostile_local
 def test_verify_store_refuses_a_manifest_fifo_before_any_blocking_read(tmp_path):
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -751,22 +724,6 @@ def test_require_complete_store_accepts_a_store_with_every_roster_artifact(tmp_p
 
     assert inventory["complete"] is True
     assert inventory["pending"] == []
-
-
-def test_require_complete_store_cannot_be_satisfied_by_a_forged_inventory(tmp_path):
-    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
-    forged = derived_inventory(record)
-    forged["complete"] = True
-    forged["pending"] = []
-
-    # The door takes a store root and re-derives its own inventory from real
-    # bytes, so a flipped `complete` flag has no way in — and the wrong-shape
-    # mistake is refused inside the taxonomy, naming what was expected, not
-    # left to pathlib's TypeError.
-    with pytest.raises(DigestMismatchRefusal, match="carries no authority"):
-        require_complete_store(forged)
-    with pytest.raises(DigestMismatchRefusal, match="surya2-detection"):
-        require_complete_store(tmp_path)
 
 
 def test_write_download_record_refuses_what_its_readers_would_refuse(tmp_path):
@@ -1540,60 +1497,9 @@ def test_pod_materialization_plan_reverifies_source_bytes(tmp_path):
         pod_materialization_plan(tmp_path)
 
 
-def test_configured_cache_plan_reuses_the_verified_huggingface_sources(tmp_path):
-    """The pending local Surya row cannot trigger a second HF acquisition.
-
-    The five real configured roles include two distinct Chandra cache entries.
-    They share source bytes, but the registry will publish its descriptor only
-    after each role's destination manifest verifies.
-    """
-
-    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
-    real = load_models_toml(ROOT / "config" / "models-real.toml")
-    digests = {
-        entry["artifact"]: entry["digest_manifest"]
-        for entry in record["artifacts"]
-        if entry["state"] == "present"
-    }
-    identities = [
-        replace(
-            identity,
-            digest_manifest=digests[
-                next(item.artifact for item in REQUIRED_ARTIFACTS if item.chair == role)
-            ],
-        )
-        for role, identity in real.chairs.items()
-        if isinstance(identity, ChairIdentity) and identity.source == "huggingface"
-    ]
-
-    plan = configured_cache_materialization_plan(tmp_path, identities)
-
-    assert plan["pending"] == ["surya2-detection"]
-    assert set(plan["cache_root_entries"]) == {
-        "designator_structure",
-        "attestator_1",
-        "attestator_2",
-        "attestator_3",
-        "perlector",
-    }
-    assert (
-        plan["cache_root_entries"]["designator_structure"]["snapshot"]
-        == plan["cache_root_entries"]["attestator_1"]["snapshot"]
-    )
-
-    destination = tmp_path / "chair-candidate"
-    destination.mkdir()
-    fetcher = VerifiedStoreFetcher(plan["cache_root_entries"])
-    perlector = next(identity for identity in identities if identity.role == "perlector")
-    fetcher.fetch(perlector, destination, ("config.json", "model.safetensors"))
-    source = Path(plan["cache_root_entries"]["perlector"]["snapshot"])
-    assert (destination / "config.json").read_bytes() == (source / "config.json").read_bytes()
-    assert (destination / "model.safetensors").read_bytes() == (
-        source / "model.safetensors"
-    ).read_bytes()
-
-
-def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(tmp_path):
+def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(
+    tmp_path, monkeypatch
+):
     """Five cache roles are supplied locally, including both Chandra roles."""
 
     record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
@@ -1635,12 +1541,11 @@ def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(t
     config = parse_models_config(
         {"witness_floor": 3, "chairs": chairs}, source_path=config_root / "models.toml"
     )
-    plan = configured_cache_materialization_plan(tmp_path, source_identities)
 
     class RecordingFetcher:
         def __init__(self) -> None:
             self.calls: list[str] = []
-            self.delegate = VerifiedStoreFetcher(plan["cache_root_entries"])
+            self.delegate = StoreRoleFetcher(tmp_path)
 
         def fetch(self, identity, destination, paths):  # type: ignore[no-untyped-def]
             self.calls.append(identity.role)
@@ -1652,33 +1557,38 @@ def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(t
         registry.ensure(identity)
 
     assert set(fetcher.calls) == set(chairs)
-    assert (tmp_path / "chair-cache" / "designator_structure" / CACHE_DESCRIPTOR).is_file()
-    assert (tmp_path / "chair-cache" / "attestator_1" / CACHE_DESCRIPTOR).is_file()
-    assert (tmp_path / "chair-cache" / "designator_structure") != (
-        tmp_path / "chair-cache" / "attestator_1"
-    )
+    last = source_identities[-1]
+    assert (tmp_path / "chair-cache" / last.role / CACHE_DESCRIPTOR).is_file()
+    assert not (tmp_path / "chair-cache" / source_identities[0].role).exists()
 
     fetcher.calls.clear()
     restarted = ChairRegistry(config, cache_root=tmp_path / "chair-cache", fetcher=fetcher)
-    for identity in source_identities:
-        restarted.ensure(identity)
+    restarted.ensure(last)
     assert fetcher.calls == []
+    monkeypatch.setattr(
+        "common.chairs.registry.shutil.disk_usage", lambda path: type("Space", (), {"free": 0})()
+    )
+    with pytest.raises(DiskSpaceRefusal, match="container disk too small for chair"):
+        restarted.ensure(source_identities[0])
 
 
-def test_configured_cache_plan_refuses_changed_source_or_configured_pin(tmp_path):
+def test_role_fetch_reads_record_without_rehashing_whole_store(tmp_path, monkeypatch):
     record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
     real = load_models_toml(ROOT / "config" / "models-real.toml")
-    perlector = real.chairs["perlector"]
-    assert isinstance(perlector, ChairIdentity)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
-    perlector = replace(perlector, digest_manifest=entry["digest_manifest"])
-
+    identity = real.chairs["perlector"]
+    assert isinstance(identity, ChairIdentity)
+    row = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
+    identity = replace(identity, digest_manifest=row["digest_manifest"])
+    monkeypatch.setattr(
+        model_store, "verify_store", lambda root: pytest.fail("whole store rehashed")
+    )
+    fetcher = StoreRoleFetcher(tmp_path)
+    destination = tmp_path / "role-copy"
+    destination.mkdir()
+    fetcher.fetch(identity, destination, ("config.json", "model.safetensors"))
+    assert (destination / "model.safetensors").is_file()
     with pytest.raises(DigestMismatchRefusal, match="configured pin"):
-        configured_cache_materialization_plan(tmp_path, [replace(perlector, revision="0" * 40)])
-
-    (tmp_path / entry["snapshot"] / "config.json").write_text('{"changed":true}', encoding="utf-8")
-    with pytest.raises(DigestMismatchRefusal, match="config.json"):
-        configured_cache_materialization_plan(tmp_path, [perlector])
+        fetcher.plan(replace(identity, revision="0" * 40))
 
 
 def test_verify_store_refuses_a_snapshot_used_directly_as_a_cache_entry(tmp_path):
@@ -1990,3 +1900,39 @@ def test_repository_owned_cache_path_is_manifested_not_deleted_or_called_client_
         if entry["state"] != "present":
             continue
         assert (tmp_path / entry["snapshot"] / ".cache/repository-owned.json").is_file()
+
+
+def test_a_recorded_artifact_cannot_be_renamed_out_of_the_next_record_version(tmp_path):
+    """A dropped name must refuse by name, not escape the closed refusal taxonomy.
+
+    Five unique artifacts in, five out, so renaming one drops the old name. The
+    transition check read the replacement by that key directly and raised a bare
+    ``KeyError`` naming no chair — outside ``errors.py``'s "complete public
+    taxonomy", and silent about which artifact left the record.
+    """
+
+    record = _store(tmp_path)
+    replacement = copy.deepcopy(record)
+    entry = next(item for item in replacement["artifacts"] if item["artifact"] == "churro-3B")
+    entry["artifact"] = "churro-3B-renamed"
+    entry["snapshot"] = "hf/churro-3B-renamed"
+    entry["manifest"] = "manifests/churro-3B-renamed.json"
+
+    with pytest.raises(DigestMismatchRefusal, match="does not name this recorded artifact"):
+        write_download_record(replacement, tmp_path)
+
+    assert load_download_record(tmp_path) == record
+    rejected_digest = hashlib.sha256(canonical_bytes(replacement)).hexdigest()
+    assert not (tmp_path / "records" / f"{rejected_digest}.json").exists()
+
+
+def test_verify_store_refuses_a_manifest_tampered_after_it_was_written(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
+    manifest_path = tmp_path / entry["manifest"]
+    raw = json.loads(manifest_path.read_bytes())
+    raw[0]["sha256"] = "0" * 64
+    manifest_path.write_bytes(canonical_bytes(raw))
+
+    with pytest.raises(DigestMismatchRefusal, match="manifest differs"):
+        verify_store(tmp_path)

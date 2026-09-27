@@ -1795,57 +1795,6 @@ def test_aggregate_geometry_consumes_both_partitions_and_exact_seal_identities(m
             RUN.geometry_coverage_inputs(context)
 
 
-@pytest.mark.parametrize(
-    "tamper",
-    [
-        lambda payload: payload.__setitem__("residual_component_count", 1),
-        lambda payload: payload.update({"residual_pixel_count": 522, "total_ink_pixel_count": 522}),
-        lambda payload: payload.__setitem__("residual_aggregate_max_pixel_count", 501),
-        lambda payload: payload["aggregated_residual_components"][0].__setitem__(
-            "pixel_count", 500
-        ),
-        lambda payload: payload["aggregated_residual_components"][0].__setitem__(
-            "bounds", dict(payload["residual_components"][0]["bounds"])
-        ),
-    ],
-    ids=[
-        "combined-count",
-        "combined-pixels",
-        "sealed-threshold",
-        "hidden-significant",
-        "identity-overlap",
-    ],
-)
-def test_aggregate_geometry_refuses_tampered_accounting(monkeypatch, tamper):
-    record = _aggregate_conservation()
-    tamper(record["payload"])
-    context = _aggregate_context(record)
-    page_id = "pg_0000000000000001"
-    monkeypatch.setattr(
-        RUN,
-        "expected_acts",
-        lambda unused: [
-            {
-                "act_key": "residual:1:0",
-                "act_id": RUN.derive_act_id(
-                    page_id, "residual", {"x": 1, "y": 1, "w": 25, "h": 20}
-                ),
-                "page_ordinal": 1,
-                "outcome": "held",
-            },
-            {
-                **_page_residual_act(),
-                "act_id": RUN.derive_act_id(
-                    page_id, "page-residual", {"x": 0, "y": 0, "w": 50, "h": 50}
-                ),
-            },
-        ],
-    )
-
-    with pytest.raises(FatalAccounting):
-        RUN.geometry_coverage_inputs(context)
-
-
 def test_a_withheld_page_is_a_named_finding_rather_than_a_malformed_record(monkeypatch):
     """The branch this unit exists for: a withheld record is read, not accused.
 

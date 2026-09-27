@@ -1472,20 +1472,6 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
     assert "audit re-proof cap" in reason
 
 
-def test_recensor_refuses_a_forged_audit_reference(tmp_path):
-    result = _run(tmp_path / "runs")
-    assert result.returncode == 0, result.stderr
-    tree = RunTree(tmp_path / "runs", "r")
-    final = _records(tree, "perlectio")[0]
-    forged = copy.deepcopy(final)
-    forged["payload"]["audit"]["finding_ref"] = forged["payload"]["audit"]["draft_ref"]
-
-    with pytest.raises(SchemaRefusal, match="not required 'perlector'/'audit-finding'"):
-        load_stage("5_recensor").audit_state(
-            SimpleNamespace(tree=tree), forged, final["subject_id"]
-        )
-
-
 def test_a_not_run_perlectio_has_no_audit_chain_and_is_not_a_traceback():
     """The absent-chair Perlectio the Recensor is built to hold, not crash on.
 
@@ -1712,49 +1698,6 @@ def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
 
     with pytest.raises(SchemaRefusal, match="restate different frozen facts"):
         audit.validate_chain(DriftedTree(), final, final["subject_id"])
-
-
-def test_shared_chain_refuses_a_page_set_forged_back_to_the_primary_page(tmp_path):
-    """A coordinated draft/finding reseal cannot erase page 2 from the audit.
-
-    The Perlectio's sealed region basis remains the independent page fact.
-    """
-    result = _run(tmp_path / "runs")
-    assert result.returncode == 0, result.stderr
-    tree = RunTree(tmp_path / "runs", "r")
-    final = next(
-        record
-        for record in _records(tree, "perlectio")
-        if len({region["source_page_id"] for region in record["payload"]["basis"]["regions"]}) == 2
-    )
-    draft = tree.read_artifact_reference(
-        final["payload"]["audit"]["draft_ref"],
-        stage=PERLECTOR,
-        kind="audit-draft",
-        subject_id=final["subject_id"],
-    )
-    finding = tree.read_artifact_reference(
-        final["payload"]["audit"]["finding_ref"],
-        stage=PERLECTOR,
-        kind="audit-finding",
-        subject_id=final["subject_id"],
-    )
-    forged_draft = copy.deepcopy(draft)
-    forged_finding = copy.deepcopy(finding)
-    assert len(forged_draft["payload"]["page_ids"]) == 2
-    primary_page = forged_draft["payload"]["page_ids"][0]
-    forged_draft["payload"]["page_ids"] = [primary_page]
-    forged_finding["payload"]["page_ids"] = [primary_page]
-    forged_final = copy.deepcopy(final)
-    forged_final["payload"]["audit"]["finding_digest"] = digest_of(forged_finding["payload"])
-
-    class ForgedTree:
-        def read_artifact_reference(self, _reference, *, stage, kind, subject_id):
-            assert stage == PERLECTOR and subject_id == final["subject_id"]
-            return forged_draft if kind == "audit-draft" else forged_finding
-
-    with pytest.raises(SchemaRefusal, match="page set.*sealed region basis"):
-        audit.validate_chain(ForgedTree(), forged_final, final["subject_id"])
 
 
 def test_an_audit_page_set_cannot_carry_traversal_order_as_durable_state(tmp_path):

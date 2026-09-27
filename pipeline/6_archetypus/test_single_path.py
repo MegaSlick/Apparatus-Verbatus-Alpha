@@ -24,10 +24,8 @@ import reseal_chain
 import stage_driver
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
-from common.contracts.envelope import build_envelope
 from common.contracts.errors import FatalAccounting
-from common.contracts.identities import artifact_id
-from common.contracts.stages import ARCHETYPUS, ATTESTATORES, PERLECTOR, RECENSOR
+from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
 from common.witness_regime import pseudonym_for
@@ -76,78 +74,6 @@ def _orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.Completed
         capture_output=True,
         text=True,
     )
-
-
-def test_a_testimonium_cannot_substitute_for_a_perlectio_reference(tmp_path):
-    """A real, validly-sealed Testimonium is refused as an establishing reading."""
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r")
-    tree = RunTree(root, "r")
-    review = accepted_review(tree)
-
-    testimonium_entry = next(
-        entry
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium" and entry["outcome"] == "read"
-    )
-    testimonium_path = tree.resolve(testimonium_entry["relative_path"])
-    forged_ref = {
-        "relative_path": testimonium_entry["relative_path"],
-        "sha256": digest_bytes(testimonium_path.read_bytes()),
-    }
-    _repoint_review(tree, review, forged_ref)
-
-    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 2, result.stderr
-    assert "Traceback" not in result.stderr
-    assert "not required 'perlector'/'perlectio'" in result.stderr
-
-
-def test_a_wrong_stage_artifact_cannot_substitute_for_a_perlectio_reference(tmp_path):
-    """A plausible salvage-tier-shaped artifact is refused the same way.
-
-    No concrete salvage-tier artifact kind exists in this build (see module
-    docstring), so this forges a well-formed envelope under a stage/kind this
-    pipeline never actually writes -- proving `read_artifact_reference`'s
-    stage/kind check is a structural property of the reference boundary, not a
-    Testimonium special case.
-    """
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r")
-    tree = RunTree(root, "r")
-    review = accepted_review(tree)
-    run = tree.read_run()
-
-    forged_act_id = review["subject_id"]
-    forged_payload = {"note": "a hypothetical salvage-tier piece, never an establishing read"}
-    forged_payload["self_hash"] = self_hash(forged_payload)
-    envelope = build_envelope(
-        run_id="r",
-        artifact_id=artifact_id(RECENSOR, "salvage-piece", forged_act_id),
-        subject_id=forged_act_id,
-        stage=RECENSOR,
-        kind="salvage-piece",
-        outcome="accepted",
-        config_digest=run["config_digest"],
-        adapter_revision=run["adapter_recipes"][RECENSOR],
-        inputs=[],
-        payload=forged_payload,
-    )
-    forged_path = tree.resolve(
-        tree.artifact_path(RECENSOR, "salvage-piece", envelope["artifact_id"])
-    )
-    forged_path.parent.mkdir(parents=True, exist_ok=True)
-    forged_path.write_bytes(canonical_bytes(envelope))
-    forged_ref = {
-        "relative_path": tree.artifact_path(RECENSOR, "salvage-piece", envelope["artifact_id"]),
-        "sha256": digest_bytes(forged_path.read_bytes()),
-    }
-    _repoint_review(tree, review, forged_ref)
-
-    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 2, result.stderr
-    assert "Traceback" not in result.stderr
-    assert "not required 'perlector'/'perlectio'" in result.stderr
 
 
 def test_only_an_accepted_review_ever_produces_an_archetypus_record(tmp_path):

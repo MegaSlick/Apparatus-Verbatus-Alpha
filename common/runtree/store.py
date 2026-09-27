@@ -1386,11 +1386,9 @@ def _existing_partition_receipt(target: Path, relative: str) -> dict[str, Any] |
 
 def _verify_compatible_reuse(tree: RunTree, run_id: str, authority: dict[str, Any]) -> None:
     existing = tree.read_run()
-    # `.get`, not `[...]`: a run.json missing a bound field must become a named
-    # refusal instead of a KeyError traceback.
-    if existing.get("schema") != authority["schema"]:
+    if existing["schema"] != authority["schema"]:
         raise IncompatibleReuse(
-            f"run {run_id!r} was written under schema {existing.get('schema')!r} and this is "
+            f"run {run_id!r} was written under schema {existing['schema']!r} and this is "
             f"{authority['schema']!r}; the two describe different shapes and cannot share a tree"
         ) from None
     if _SEALED_CONFIG_DIGESTS_FIELD in existing:

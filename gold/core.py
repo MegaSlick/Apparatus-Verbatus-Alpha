@@ -309,7 +309,15 @@ def _rank(frame: dict[str, str], page: dict[str, Any]) -> str:
     )
 
 
-def _catalog(rows: Any, source: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _canaries_in_run(path: str | Path) -> set[int]:
+    from common.stage import canary_ordinals
+
+    return canary_ordinals(read_json(path))
+
+
+def _catalog(
+    rows: Any, source: list[dict[str, Any]], canaries: set[int] | None = None
+) -> list[dict[str, Any]]:
     _refuse(not isinstance(rows, list), "catalog must be a JSON list")
     expected = {(page["ordinal"], page["sha256"]) for page in source}
     found: set[tuple[int, str]] = set()
@@ -329,6 +337,11 @@ def _catalog(rows: Any, source: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         _sha(page_sha, "catalog sha256")
         _refuse(not isinstance(stratum, str) or not stratum.strip(), "catalog stratum is empty")
+        if canaries is not None:
+            _refuse(
+                (ordinal in canaries) != (stratum == "canary"),
+                "catalog canary stratum disagrees with the sealed canary ledger mark",
+            )
         for dimension in ("width", "height"):
             _refuse(
                 not isinstance(row[dimension], int)
@@ -461,6 +474,8 @@ def _quotas(plan: Any, strata: set[str]) -> dict[str, dict[str, int]]:
                 not isinstance(quota, int) or isinstance(quota, bool) or quota < 0,
                 "sample quota is not a non-negative integer",
             )
+        if "canary" in strata:
+            _refuse(declared["canary"] != 0, "canary stratum quota must be zero")
         quotas[gold_set] = dict(declared)
     return quotas
 
@@ -468,7 +483,7 @@ def _quotas(plan: Any, strata: set[str]) -> dict[str, dict[str, int]]:
 def sample_stratified(run_path: str | Path, catalog_rows: Any, plan: Any) -> list[dict[str, Any]]:
     """Select quota pages by seed ranking only after the structural set partition."""
     frame, source = load_run_frame(run_path)
-    catalog = _catalog(catalog_rows, source)
+    catalog = _catalog(catalog_rows, source, _canaries_in_run(run_path))
     plan = _quotas(plan, {row["stratum"] for row in catalog})
     return _select_stratified(frame, catalog, plan)
 
@@ -515,7 +530,7 @@ def build_sampling_draw(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Retain every input and selected member needed to replay one seeded draw."""
     frame, source = load_run_frame(run_path)
-    catalog = _catalog(catalog_rows, source)
+    catalog = _catalog(catalog_rows, source, _canaries_in_run(run_path))
     normalized_plan = _quotas(plan, {row["stratum"] for row in catalog})
     selected = _select_stratified(frame, catalog, normalized_plan)
     record = {
@@ -577,7 +592,7 @@ def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> d
         _sha(page_sha, "sampling draw catalog sha256")
         source.append({"ordinal": ordinal, "sha256": page_sha})
     source.sort(key=lambda page: page["ordinal"] if isinstance(page["ordinal"], int) else -1)
-    catalog = _catalog(raw_catalog, source)
+    catalog = _catalog(raw_catalog, source, _canaries_in_run(run_path) if run_path else None)
     page_digest = digest_bytes(canonical_bytes(source))
     _refuse(
         frame["page_digest"] != page_digest
@@ -730,6 +745,7 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
         not in {(p["ordinal"], p["sha256"]) for p in source},
         "manual pick page is outside the sealed corpus frame",
     )
+    _refuse(page["ordinal"] in _canaries_in_run(run_path), "manual pick names a canary page")
     _refuse(
         not isinstance(pick["set"], str) or pick["set"] not in SETS,
         "manual pick set is not recognized. The picker's stated partition would otherwise "
@@ -1214,6 +1230,7 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     if run_path is not None:
         run_frame, source = load_run_frame(run_path)
         _refuse(frame != run_frame, "sample frame diverges from the R0 run authority")
+        _refuse(page["ordinal"] in _canaries_in_run(run_path), "sample names a canary page")
         _refuse(
             (page["ordinal"], page["sha256"]) not in {(p["ordinal"], p["sha256"]) for p in source},
             "sample page is outside the R0 run authority",

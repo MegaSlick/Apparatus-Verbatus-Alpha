@@ -111,19 +111,7 @@ def test_the_help_text_names_both_shipped_armers(capsys: pytest.CaptureFixture[s
 def test_a_missing_armer_factory_refuses_in_this_surface_s_own_record(
     command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The refusal is a JSON record on stdout and exit 2, not argparse usage.
-
-    `--controller-armer-factory` became optional when `close` landed, and
-    `create` and `adopt` check for it themselves. Reporting that through
-    `parser.error` would have exited 2 as well -- but with usage text on
-    stderr, in a shape nothing that reads this command's records can parse.
-    Every other refusal here is `{"state": "refused", "green": false,
-    "detail": ...}` on stdout, and a refusal only argparse can explain is a
-    refusal half lost (principle 2).
-
-    Nothing is loaded before the check: `--provider-factory` below names a
-    module that does not exist, and the refusal is still this one.
-    """
+    """The refusal is a JSON record on stdout and exit 2, not argparse usage."""
 
     argv = [
         "--provider-factory",

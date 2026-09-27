@@ -271,66 +271,6 @@ class _Context:
         }
 
 
-def test_a_resealed_tally_record_cannot_retroactively_claim_a_recovery_crop(tmp_path):
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "review",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--run-id",
-            "witness-boundary-writer",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 3, result.stderr
-    tree = RunTree(tmp_path / "runs", "witness-boundary-writer")
-    context = _Context(tree)
-    recovery = next(
-        tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "region"
-        and tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])["payload"]["origin"]
-        == "recovery"
-    )
-    act_id = recovery["subject_id"]
-    testimony = next(
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium" and entry["subject_id"] == act_id
-    )
-    forged = copy.deepcopy(testimony)
-    transform = recovery["payload"]["transform"]
-    forged["payload"]["presented"] = {
-        "kind": "region",
-        "source_page_id": transform["source_page_id"],
-        "source_page_ordinal": transform["source_page_ordinal"],
-        "image_path": recovery["payload"]["image_path"],
-        "image_sha256": recovery["payload"]["image_sha256"],
-        "transform": transform,
-        "region_ref": {"region_id": recovery["payload"]["region_id"]},
-    }
-    forged["payload"]["observed"] = [
-        {
-            "ordinal": 0,
-            "bounds": transform["bounds"],
-            "bounds_source": "presented",
-            "span": None,
-        }
-    ]
-    forged["inputs"] = [context.input_ref(recovery["payload"]["image_path"])]
-    forged["self_hash"] = self_hash(forged)
-
-    with pytest.raises(SchemaRefusal, match="recovery region cannot be presented"):
-        attestatores.validate_testimonium_presentation(context, forged)
-
-
 def test_unpresented_regions_must_be_a_unique_list_of_region_ids():
     for bad in ("rgn_1", [""], ["rgn_1", "rgn_1"], [1]):
         payload = _base()

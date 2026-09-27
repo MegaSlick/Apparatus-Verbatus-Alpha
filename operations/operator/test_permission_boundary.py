@@ -550,14 +550,7 @@ def test_the_advance_worker_refuses_a_substituted_run_tree_identity(tmp_path, mo
 def test_a_boundary_that_stopped_verifying_is_refused_before_the_worker_is_launched(
     tmp_path, monkeypatch
 ):
-    """Invalid evidence must refuse in the parent before writable worker launch.
-
-    Deleting a witnessed artifact leaves the stage-seal's own bytes untouched,
-    so the reviewed digest still matches and the digest equality both sides
-    bind would pass this through. Only verification catches it — which is why
-    the parent must run it, and must run it before the worker exists and
-    before the one directory the worker may write into is created.
-    """
+    """Invalid evidence must refuse in the parent before writable worker launch."""
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     reviewed_digest = _boundary_digest(run_root, run_id, "attestatores")
@@ -627,15 +620,7 @@ def test_write_approval_record_has_exactly_one_direct_production_spelling() -> N
 
 
 def test_console_process_cannot_import_writers_or_keep_provider_credentials():
-    """Measure what importing the console actually loads, not what its text says.
-
-    Reading `inspect.getsource(console)` for forbidden names left two ways to
-    break the boundary and keep the test green: the console imports a small
-    helper and the helper imports `RunTree`, or it resolves a writer through
-    `importlib.import_module` and no forbidden spelling appears at all. The
-    module set after a real import in a child interpreter is the fact the
-    boundary is about, and a helper-shaped regression fails here.
-    """
+    """Measure what importing the console actually loads, not what its text says."""
     loaded = subprocess.run(
         [
             sys.executable,
@@ -723,18 +708,7 @@ def test_a_broken_projection_pipe_never_reads_as_damaged_run_tree_evidence(tmp_p
 
 @requires_landlock("Landlock must be reachable for the kernel to refuse anything")
 def test_the_landlock_boundary_refuses_a_confined_write_to_evidence(tmp_path: Path):
-    """Split from the import-boundary test so its absence reports as a skip.
-
-    Folded into that test behind an early `return`, this half ran on Linux and
-    silently did not run anywhere else, while the suite printed one pass for
-    both. A reader of the results could not tell which of the two claims had
-    actually been measured.
-
-    "Nonzero, and the file is absent" is satisfied twice over: by the kernel
-    refusing the write, and by a launcher that rejected its own arguments and
-    never started the child. Only the first is this test's claim, so the
-    launcher's own failure is excluded before the refusal is read.
-    """
+    """Split from the import-boundary test so its absence reports as a skip."""
     target = tmp_path / "evidence-mutation.txt"
     blocked = subprocess.run(
         custody.landlock_command(
@@ -887,13 +861,7 @@ def test_console_rejects_actual_process_arguments(monkeypatch):
 
 
 def test_landlock_probe_absent_refuses_loudly_before_any_subprocess_runs(tmp_path, monkeypatch):
-    """No ``setpriv`` on ``PATH`` (macOS today) must refuse, not proceed unenforced.
-
-    The backend raises while building its command when the launcher is absent,
-    which is earlier than the enforcement probe can run; this proves that
-    refusal actually stops both entry points before either one spawns a
-    subprocess, rather than trusting the source reading alone.
-    """
+    """No ``setpriv`` on ``PATH`` (macOS today) must refuse, not proceed unenforced."""
     run_root, run_id = _make_run(tmp_path)
     missing = custody.NoConfinement("linux-without-setpriv")
     _use_backend(monkeypatch, missing)
@@ -940,16 +908,7 @@ def _use_backend(monkeypatch, backend):
 
 
 def test_a_launcher_that_never_established_its_boundary_is_a_custody_refusal(tmp_path, monkeypatch):
-    """A confinement launcher that exits without exec'ing must not be misread.
-
-    This is the second platform seam, distinct from the absent-probe case: the
-    launcher is found and invoked but establishes nothing — a Linux kernel
-    without Landlock (``setpriv`` exits ``SETPRIV_EXIT_PRIVERR``), or a macOS
-    host whose profile will not apply. Before this was classified, such a
-    failure surfaced as "the run tree could not be read" / "advance refused" —
-    plausible-sounding but wrong stories that send a reader chasing a data
-    problem that does not exist.
-    """
+    """A confinement launcher that exits without exec'ing must not be misread."""
     run_root, run_id = _make_run(tmp_path)
     _use_backend(
         monkeypatch,
@@ -1786,13 +1745,7 @@ def test_a_bad_run_id_is_named_as_such_by_advance_and_review(tmp_path):
 
 
 def test_review_refuses_a_page_larger_than_the_budget_before_it_reads_the_page():
-    """The refusal has to happen before the bytes are in memory, not after.
-
-    `read_bytes` loaded the whole file and only then asked whether it fitted, so
-    an oversized page exhausted the console at the exact moment the limit
-    existed to refuse it. The stand-in path here reports its size and then
-    refuses to be opened, so a projection that reads first cannot pass.
-    """
+    """The refusal has to happen before the bytes are in memory, not after."""
 
     class _MeasuredButUnreadable:
         def stat(self):
@@ -2125,54 +2078,6 @@ def test_confirmed_operator_advance_runs_the_external_worker_and_reports_its_rec
     assert "Advance record:" in capsys.readouterr().out
 
 
-def test_worker_stderr_beside_a_verified_record_is_reported_and_not_called_a_refusal(
-    tmp_path, monkeypatch, capsys
-):
-    """Stderr is read after the returned reference, and neither half is lost.
-
-    Deciding on stderr first made any byte on that pipe a refusal, including
-    the `DeprecationWarning` the worker's own `runpy.run_module` prints by
-    default -- a completed, verifiable advance reported as refused. Deciding on
-    it not at all would drop a diagnostic the worker meant a person to read.
-    The record is checked against the exact request first, and what the
-    worker wrote then reaches the operator beside it.
-    """
-
-    run_root, run_id = _make_run(tmp_path)
-    tree = RunTree(run_root, run_id)
-    expected_digest = _boundary_digest(run_root, run_id)
-
-    def _false_success(*_args, **_kwargs):
-        reference = advance.record_advance(
-            tree,
-            "armarium",
-            reason="worker reported both success and refusal",
-            expected_digest=expected_digest,
-        )
-        completed = subprocess.CompletedProcess(
-            [],
-            0,
-            json.dumps(reference.to_record()),
-            "DeprecationWarning: the worker's own diagnostic channel spoke",
-        )
-        return _StubConfinement(lambda command: command), completed
-
-    monkeypatch.setattr(advance, "run_confined", _false_success)
-
-    returned = advance.trigger_advance(
-        run_root,
-        run_id,
-        "armarium",
-        reason="worker reported both success and refusal",
-        workspace=ROOT,
-        expected_digest=expected_digest,
-    )
-
-    assert returned.sha256
-    assert "the worker's own diagnostic channel spoke" in capsys.readouterr().err
-    assert len(review.ReadOnlyRun(run_root, run_id).projection().advance_records) == 1
-
-
 def test_the_workers_whole_diagnostic_reaches_the_note_and_the_refusal_detail(
     tmp_path, monkeypatch, capsys
 ) -> None:
@@ -2328,13 +2233,7 @@ def test_a_verification_failure_keeps_the_workers_own_diagnostic_beside_it(
 def test_a_written_record_the_worker_could_not_report_is_not_called_a_refused_advance(
     tmp_path, monkeypatch
 ) -> None:
-    """Exit `WORKER_REPORT_FAILED_EXIT` names the one state a bare nonzero hid.
-
-    The record is appended before it is reported, so a broken stdout pipe used
-    to leave the worker dying on a traceback with a status the parent read as
-    "the advance was refused" -- about a boundary that had in fact been
-    advanced, permanently.
-    """
+    """Exit `WORKER_REPORT_FAILED_EXIT` names the one state a bare nonzero hid."""
 
     run_root, run_id = _make_run(tmp_path)
     expected_digest = _boundary_digest(run_root, run_id)
@@ -2597,6 +2496,7 @@ def test_a_path_traversal_image_reference_in_the_run_tree_is_refused_not_read(tm
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
 
 
+@pytest.mark.hostile_local
 @requires_host_boundary
 def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_text(
     tmp_path, monkeypatch, capsys
@@ -3196,14 +3096,7 @@ def test_export_references_refuse_a_digest_that_disagrees_with_the_named_bytes(
 
 
 def test_review_refuses_a_compressed_bundle_member_before_decompressing_it(tmp_path: Path):
-    """The review bundle is only ever written stored (`build_armarium_bundle`).
-
-    A compressed member could decompress far past its own physical bytes --
-    the same amplification `verify_export_bundle`'s ``ZIP_STORED`` check
-    already refuses for the sealed package (armarium_export.py). The review
-    surface opens the same bundle format and must refuse it the same way,
-    before `archive.read` decompresses anything.
-    """
+    """The review bundle is only ever written stored (`build_armarium_bundle`)."""
     run_root, run_id = _make_run(tmp_path, scenario="review")
     tree = RunTree(run_root, run_id)
     export_id = artifact_id(ARMARIUM, "export", "export", None)

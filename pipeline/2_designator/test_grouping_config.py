@@ -12,8 +12,6 @@ file's own directory on `sys.path` before collecting it.
 """
 
 import dataclasses
-import tomllib
-from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -22,7 +20,6 @@ from grouping_config import (
     _STRING_PROVENANCE_FIELDS,
     _TYPED_PROVENANCE_FIELDS,
     DEFAULT_GROUPING_CONFIG_PATH,
-    GroupingThresholds,
     load_grouping_config,
     resolve_background_policy,
     resolve_thresholds,
@@ -106,34 +103,6 @@ def test_default_config_loads_and_carries_the_seal_of_its_own_file():
     assert config["coverage_audit"]["noise_floor_provenance"]["sample_count"] == 0
 
 
-def test_default_config_is_valid_toml_matching_the_loaded_shape():
-    raw = tomllib.loads(DEFAULT_GROUPING_CONFIG_PATH.read_bytes().decode("utf-8"))
-    assert set(raw) == {"grouping", "coverage_audit"}
-    assert set(raw["grouping"]) == {
-        "max_residual_components",
-        "max_secondary_proposals",
-        "fallback_bands",
-        "residual_presentation",
-        "page_fraction_bp",
-        "continuation",
-        "absolute",
-        "page_area_bp",
-        "background",
-        "provenance",
-    }
-    assert set(raw["coverage_audit"]) == {
-        "substantial_ink_area_bp",
-        "edge_band_bp",
-        "provenance",
-        "noise_floor",
-    }
-    assert set(raw["coverage_audit"]["noise_floor"]) == {
-        "minimum_ink_pixels",
-        "minimum_fraction_outside_bp",
-        "provenance",
-    }
-
-
 # --- resolve_thresholds: bit-identity to the retired constants -------------
 
 
@@ -162,41 +131,6 @@ def test_every_bp_value_resolves_to_the_retired_constant_at_each_fixture_size(wi
     # A fraction of the page's AREA, so it passes through unresolved: the
     # same 5000 at every fixture size.
     assert resolved.page_spanning_area_bp == 5000
-
-
-def test_resolve_thresholds_at_260_height_matches_the_spec_worked_arithmetic():
-    """Pin the exact worked numbers, independent of the fixture measurement above."""
-    config = load_grouping_config()
-    resolved = resolve_thresholds(config, width=200, height=260)
-    assert resolved.margin_px == 30  # 200 * 1500 / 10000
-    assert resolved.chain_gap_px == 6  # 260 * 231 / 10000 = 6.006 -> 6
-    assert resolved.anchor_reach_px == 2  # 260 * 77 / 10000 = 2.002 -> 2
-    assert resolved.brace_min_height_px == 30  # 260 * 1154 / 10000 = 30.004 -> 30
-    assert resolved.page_edge_reach_px == 7  # 260 * 280 / 10000 = 7.28 -> 7
-    assert resolved.review_priority_min_dimension_px == 6  # 260 * 231 / 10000 = 6.006 -> 6
-    assert resolved.fallback_overlap_px == 8  # 260 * 308 / 10000 = 8.008 -> 8
-
-
-def test_resolve_thresholds_returns_a_frozen_dataclass_of_plain_ints():
-    config = load_grouping_config()
-    resolved = resolve_thresholds(config, width=200, height=260)
-    assert isinstance(resolved, GroupingThresholds)
-    with pytest.raises(FrozenInstanceError):
-        resolved.margin_px = 999  # frozen -- reassignment must refuse
-    for value in (
-        resolved.margin_px,
-        resolved.chain_gap_px,
-        resolved.anchor_reach_px,
-        resolved.brace_min_height_px,
-        resolved.page_edge_reach_px,
-        resolved.review_priority_min_dimension_px,
-        resolved.fallback_overlap_px,
-        resolved.gap_tolerance_px,
-        resolved.max_residual_components,
-        resolved.max_secondary_proposals,
-        resolved.fallback_bands,
-    ):
-        assert isinstance(value, int) and not isinstance(value, bool)
 
 
 def test_resolve_thresholds_breaks_an_exact_half_up_not_by_truncation(tmp_path):

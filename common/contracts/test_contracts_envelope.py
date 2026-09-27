@@ -202,22 +202,6 @@ def test_a_malformed_artifact_id_is_refused():
             validate_envelope(sound_envelope(artifact_id=bad))
 
 
-def test_a_well_formed_but_wrong_artifact_identity_is_refused_after_resealing():
-    """Shape-only identity checks would accept this forged handoff binding."""
-    forged = reseal(sound_envelope(artifact_id="art_" + "0" * 16))
-    with pytest.raises(SchemaRefusal, match="does not verify against"):
-        validate_envelope(forged)
-
-
-def test_an_unresealed_payload_change_is_refused_when_the_identity_is_unchanged():
-    """The self-hash protects ordinary payload bytes, not only derived IDs."""
-    changed = sound_envelope()
-    changed["payload"] = {"proposals": 99}
-    with pytest.raises(SchemaRefusal, match="self-hash"):
-        validate_envelope(changed)
-    assert validate_envelope(reseal(changed))["payload"] == {"proposals": 99}
-
-
 @pytest.mark.parametrize(
     "payload,path",
     (

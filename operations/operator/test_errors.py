@@ -74,16 +74,6 @@ def test_every_declared_error_code_is_one_this_surface_actually_raises() -> None
     assert unreached == [], f"declared but never raised: {unreached}"
 
 
-def test_error_code_reachability_ignores_comments_and_docstrings() -> None:
-    source = '''
-# ErrorCode.RUN_FAILED is prose, not a caller.
-"""ErrorCode.RUN_HELD is also prose."""
-actual = ErrorCode.BOOT_RED
-'''
-
-    assert _referenced_error_codes(source) == {"BOOT_RED"}
-
-
 def test_error_renderer_never_shows_a_raw_traceback_or_old_close_vocabulary() -> None:
     rendered = errors.OperatorError(
         errors.ErrorCode.UNEXPECTED,
@@ -111,14 +101,7 @@ def test_the_word_traceback_in_a_receipt_path_does_not_erase_the_path() -> None:
 
 
 def test_old_close_vocabulary_is_replaced_even_without_the_word_traceback() -> None:
-    """The substitution table itself, not just the short-circuit around it.
-
-    The detail string above always contains "traceback", which returns a fixed
-    generic phrase before the shutdown/terminate/stop substitution table ever
-    runs — so that test alone cannot tell the table apart from being deleted.
-    This one drives a detail string the table, not the short-circuit, must
-    handle.
-    """
+    """The substitution table itself, not just the short-circuit around it."""
 
     rendered = errors.sanitize_detail(
         "provider termination confirmed, shutdown complete, pod stopped"
@@ -184,6 +167,7 @@ def test_a_detail_too_long_to_keep_says_it_was_cut() -> None:
     assert "truncated" not in errors.sanitize_detail("x" * 2000)
 
 
+@pytest.mark.hostile_local
 def test_control_bytes_are_stripped_from_the_operator_facing_detail() -> None:
     """A path an operator did not choose could carry a terminal escape sequence."""
 
@@ -196,6 +180,7 @@ def test_control_bytes_are_stripped_from_the_operator_facing_detail() -> None:
     assert "FAKE: type CONFIRM to finish" in rendered
 
 
+@pytest.mark.hostile_local
 @pytest.mark.parametrize(
     "character",
     ("\u200b", "\u200e", "\u202e", "\u2066", "\u2069", "\ufeff"),

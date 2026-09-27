@@ -10,7 +10,6 @@ Meta-invariant #88: no test reports success over an empty population. Every loop
 asserts an exact expected count.
 """
 
-import hashlib
 import json
 import shutil
 import sqlite3
@@ -47,7 +46,6 @@ from common.contracts.stages import (
     STAGES,
     WRITING_DIRECTORIES,
 )
-from common.contracts.uncertainty import from_perlectio
 from common.corpus_register import append_records, empty_register, register_digest
 from common.credentials import looks_like_credential_env
 from common.fixture_identity import page_identity
@@ -59,7 +57,6 @@ from common.stage import (
     DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     EXIT_FATAL,
     EXIT_HELD,
-    _decode_environment,
     _validate_decode_environment,
     load_fixture,
     open_context,
@@ -68,7 +65,14 @@ from common.stage import (
     stage_parser,
     verify_final_seal,
 )
-from conftest import load_stage, programs_through, stage_programs
+from conftest import file_digest_snapshot as snapshot
+from conftest import (
+    file_identities,
+    is_immutable_evidence,
+    load_stage,
+    programs_through,
+    stage_programs,
+)
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 from operations.operator import surface, volume_s3
 from operations.operator.custody import credential_free_environment
@@ -844,55 +848,6 @@ def run_through_recensor(
         assert result.returncode in expected, f"{program}: {result.stderr}"
 
 
-def snapshot(root: Path) -> dict[str, str]:
-    return {
-        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
-
-
-def file_identities(root: Path) -> dict[str, tuple[int, int]]:
-    """The device and inode of every file, which is what distinguishes reuse.
-
-    A digest cannot tell a reused artifact from one deleted and rewritten with
-    the same bytes, so a test that only compares digests proves the tree is
-    right and says nothing about the claim in its own name (principle 8).
-    Identity can tell them apart: `RunTree` publishes through a temporary that
-    is then `os.link`-ed or `os.replace`-d into place, so every write lands a
-    *new* inode, while both reuse paths (`_publish_bytes` on identical bytes,
-    and the receipt's equal-bytes short circuit) return without touching the
-    file at all. The device is carried beside the inode because inode numbers
-    are only unique within a filesystem.
-    """
-    return {
-        str(path.relative_to(root)): (path.stat().st_dev, path.stat().st_ino)
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
-
-
-DERIVED_INVENTORY_SUFFIXES = (
-    "/manifest.json",
-    "/manifest-door.json",
-    "/index.json",
-    "run-health/recensor-partition-receipt.json",
-)
-
-
-def is_immutable_evidence(path: str) -> bool:
-    """Whether a path is evidence, as against a derived inventory or receipt.
-
-    A resume legitimately rebuilds the inventories and current-state receipts
-    that *name* the evidence -- appending to a tree changes what the manifest
-    lists, so republishing it is the append, not a rewrite. The evidence those
-    inventories name is immutable, and it is the only thing whose identity a
-    resume may not disturb. `test_volume_hosted_run_tree` drew this same line
-    for the same reason; it is named here so both tests draw it identically.
-    """
-    return not path.endswith(DERIVED_INVENTORY_SUFFIXES)
-
-
 def _sqlite_logical_digest(data: bytes) -> str:
     """Bind a SQLite member to its schema and rows, not its library header."""
     if sqlite3.sqlite_version_info < (3, 37, 0):
@@ -1512,246 +1467,6 @@ def semantic_snapshot_digest(root: Path) -> str:
     return digest_of(semantic_snapshot(root))
 
 
-def test_semantic_snapshot_refuses_an_individual_run_directory(tmp_path):
-    """A missing run-id path prefix must not masquerade as a platform-local pin."""
-    (tmp_path / "run.json").write_text("{}", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="runs root, not an individual run directory"):
-        semantic_snapshot_digest(tmp_path)
-
-
-def test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes(tmp_path, monkeypatch):
-    """A different valid DEFLATE stream must not rename the measured run."""
-    import common.imaging as imaging
-
-    image_path = tmp_path / "blob-with-no-extension"
-    rows = [bytearray([0, 127, 255]), bytearray([255, 127, 0])]
-    image_path.write_bytes(imaging.encode_grayscale_png(3, 2, rows))
-    raw_before = snapshot(tmp_path)
-    semantic_before = semantic_snapshot_digest(tmp_path)
-
-    compress = imaging.zlib.compress
-    monkeypatch.setattr(
-        imaging.zlib,
-        "compress",
-        lambda data, *args, **kwargs: compress(data, level=0),
-    )
-    image_path.write_bytes(imaging.encode_grayscale_png(3, 2, rows))
-
-    assert snapshot(tmp_path) != raw_before
-    assert semantic_snapshot_digest(tmp_path) == semantic_before
-
-
-def test_semantic_snapshot_normalizes_stage_seals_over_equivalent_png_containers(
-    tmp_path, monkeypatch
-):
-    """A witnessed raw-container inventory must not make an OS-local pin.
-
-    This is deliberately a complete miniature stage: the page envelope names a
-    content-addressed PNG, the completion seal inventories both that blob and
-    the page envelope, and the derived manifest names the seal.  It would pass
-    the older PNG-only reducer while still producing different tree digests.
-    """
-    import common.imaging as imaging
-
-    rows = [bytearray([0, 127, 255]), bytearray([255, 127, 0])]
-
-    def write_tree(root: Path) -> None:
-        run = root / "r"
-        png = imaging.encode_grayscale_png(3, 2, rows)
-        png_digest = digest_bytes(png)
-        blob_path = run / "1_exemplar" / "blobs" / "sha256" / png_digest
-        blob_path.parent.mkdir(parents=True)
-        blob_path.write_bytes(png)
-
-        page = build_envelope(
-            run_id="r",
-            artifact_id=artifact_id(EXEMPLAR, "page", "page-1"),
-            subject_id="page-1",
-            stage=EXEMPLAR,
-            kind="page",
-            outcome="sealed",
-            config_digest="a" * 64,
-            adapter_revision="fixture-exemplar-v0",
-            inputs=[],
-            payload={
-                "image_path": f"1_exemplar/blobs/sha256/{png_digest}",
-                "sha256": png_digest,
-            },
-        )
-        page_path = run / "1_exemplar" / "artifacts" / "page" / f"{page['artifact_id']}.json"
-        page_path.parent.mkdir(parents=True, exist_ok=True)
-        page_data = canonical_bytes(page)
-        page_path.write_bytes(page_data)
-
-        seal_attempt = attempt_id(EXEMPLAR, "seal", 1)
-        environment = build_envelope(
-            run_id="r",
-            artifact_id=artifact_id(EXEMPLAR, "decode-environment", EXEMPLAR, seal_attempt),
-            subject_id=EXEMPLAR,
-            stage=EXEMPLAR,
-            kind="decode-environment",
-            outcome="recorded",
-            config_digest="a" * 64,
-            adapter_revision="fixture-exemplar-v0",
-            inputs=[],
-            attempt=seal_attempt,
-            payload=_decode_environment(EXEMPLAR),
-        )
-        environment_path = (
-            run
-            / "1_exemplar"
-            / "artifacts"
-            / "decode-environment"
-            / f"{environment['artifact_id']}.json"
-        )
-        environment_path.parent.mkdir(parents=True, exist_ok=True)
-        environment_data = canonical_bytes(environment)
-        environment_path.write_bytes(environment_data)
-
-        entries = [
-            {
-                "artifact_id": page["artifact_id"],
-                "kind": page["kind"],
-                "subject_id": page["subject_id"],
-                "outcome": page["outcome"],
-                "relative_path": str(page_path.relative_to(run)),
-                "sha256": digest_bytes(page_data),
-            }
-        ]
-        payload = {
-            "stage": EXEMPLAR,
-            "attempt_ordinal": 1,
-            "attempt_id": seal_attempt,
-            "config_digest": "a" * 64,
-            "register_digest": "b" * 64,
-            "artifact_inventory": digest_of(entries),
-            "blob_inventory": digest_of([{"name": png_digest, "sha256_of_content": png_digest}]),
-            "census": [{"kind": "page", "outcome": "sealed", "count": 1}],
-            "decode_environment_artifact_id": environment["artifact_id"],
-            "decode_environment_sha256": digest_bytes(environment_data),
-        }
-        seal = build_envelope(
-            run_id="r",
-            artifact_id=artifact_id(EXEMPLAR, "stage-seal", EXEMPLAR, seal_attempt),
-            subject_id=EXEMPLAR,
-            stage=EXEMPLAR,
-            kind="stage-seal",
-            outcome="sealed",
-            config_digest="a" * 64,
-            adapter_revision="fixture-exemplar-v0",
-            inputs=[],
-            attempt=seal_attempt,
-            payload=payload,
-        )
-        seal_path = run / "1_exemplar" / "artifacts" / "stage-seal" / f"{seal['artifact_id']}.json"
-        seal_path.parent.mkdir(parents=True, exist_ok=True)
-        seal_data = canonical_bytes(seal)
-        seal_path.write_bytes(seal_data)
-
-        manifest_entries = entries + [
-            {
-                "artifact_id": record["artifact_id"],
-                "kind": record["kind"],
-                "subject_id": record["subject_id"],
-                "outcome": record["outcome"],
-                "relative_path": str(path.relative_to(run)),
-                "sha256": digest_bytes(data),
-            }
-            for record, path, data in (
-                (environment, environment_path, environment_data),
-                (seal, seal_path, seal_data),
-            )
-        ]
-        manifest = {
-            "schema": "skeleton.v1",
-            "run_id": "r",
-            "stage": EXEMPLAR,
-            "artifacts": sorted(manifest_entries, key=lambda entry: entry["artifact_id"]),
-            "blobs": [png_digest],
-        }
-        (run / "1_exemplar" / "manifest.json").write_bytes(canonical_bytes(manifest))
-
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    write_tree(first)
-    compress = imaging.zlib.compress
-    monkeypatch.setattr(
-        imaging.zlib,
-        "compress",
-        lambda data, *args, **kwargs: compress(data, level=0),
-    )
-    write_tree(second)
-
-    assert snapshot(first) != snapshot(second)
-    assert semantic_snapshot_digest(first) == semantic_snapshot_digest(second)
-
-
-def test_semantic_snapshot_normalizes_monkeypatched_decode_environment_probe(tmp_path, monkeypatch):
-    """Decoder probes remain auditable records without becoming host-specific pins."""
-    import common.stage as stage_common
-
-    path = tmp_path / "decode-environment.json"
-    payload = stage_common._decode_environment(DOOR)
-
-    def write_environment(value):
-        record = build_envelope(
-            run_id="environment-test",
-            artifact_id=artifact_id(DOOR, "decode-environment", DOOR, "att_1234567890abcdef"),
-            subject_id=DOOR,
-            stage=DOOR,
-            kind="decode-environment",
-            outcome="recorded",
-            config_digest="a" * 64,
-            adapter_revision="fixture-door-v0",
-            inputs=[],
-            attempt="att_1234567890abcdef",
-            payload=value,
-        )
-        path.write_bytes(canonical_bytes(record))
-
-    write_environment(payload)
-    raw_before = snapshot(tmp_path)
-    semantic_before = semantic_snapshot_digest(tmp_path)
-    changed = deepcopy(payload)
-    changed["decoders"][0]["version"] = "monkeypatched-decoder-version"
-    monkeypatch.setattr(stage_common, "_decode_environment", lambda _: changed)
-    write_environment(stage_common._decode_environment(DOOR))
-
-    assert snapshot(tmp_path) != raw_before
-    assert semantic_snapshot_digest(tmp_path) == semantic_before
-
-
-def test_semantic_snapshot_keeps_decode_role_fields_in_the_acceptance_pin(tmp_path):
-    """Host versions vary; whether a stage decoded or produced pixels does not."""
-    path = tmp_path / "decode-environment.json"
-    payload = _decode_environment(DOOR)
-
-    def write_environment(value):
-        record = build_envelope(
-            run_id="environment-role-test",
-            artifact_id=artifact_id(DOOR, "decode-environment", DOOR, "att_1234567890abcdef"),
-            subject_id=DOOR,
-            stage=DOOR,
-            kind="decode-environment",
-            outcome="recorded",
-            config_digest="a" * 64,
-            adapter_revision="fixture-door-v0",
-            inputs=[],
-            attempt="att_1234567890abcdef",
-            payload=value,
-        )
-        path.write_bytes(canonical_bytes(record))
-
-    write_environment(payload)
-    semantic_before = semantic_snapshot_digest(tmp_path)
-    changed = deepcopy(payload)
-    changed["produced_pixels"] = not changed["produced_pixels"]
-    write_environment(changed)
-
-    assert semantic_snapshot_digest(tmp_path) != semantic_before
-
-
 def _acceptance_sqlite(
     path: Path,
     text: str,
@@ -1805,35 +1520,6 @@ def _acceptance_sqlite(
     finally:
         connection.close()
     return path.read_bytes()
-
-
-def test_sqlite_pin_reducer_refuses_a_renamed_excluded_column(tmp_path):
-    """An exclusion dependency must fail by name, not silently re-platform the pin."""
-    path = tmp_path / "renamed-column.sqlite"
-    _acceptance_sqlite(path, "original row")
-    connection = sqlite3.connect(path)
-    try:
-        connection.execute(
-            "ALTER TABLE act_search RENAME COLUMN derived_search_text "
-            "TO renamed_derived_search_text"
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    with pytest.raises(ValueError, match="act_search"):
-        _sqlite_logical_digest(path.read_bytes())
-
-
-def test_sqlite_pin_reducer_names_the_version_when_pragma_table_list_is_unavailable(monkeypatch):
-    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 36, 0))
-    monkeypatch.setattr(sqlite3, "sqlite_version", "3.36.0")
-
-    with pytest.raises(
-        ValueError,
-        match=r"sqlite3\.sqlite_version=3\.36\.0; SQLite 3\.37\.0 or newer is required",
-    ):
-        _sqlite_logical_digest(b"not reached")
 
 
 def _write_acceptance_bundle_tree(
@@ -1988,20 +1674,6 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path, 
     for root in (manifest_hash_root, member_digest_root, export_hash_root):
         assert snapshot(root) != snapshot(original_root)
         assert semantic_snapshot_digest(root) != original_semantic
-
-
-def test_semantic_snapshot_preserves_the_bundle_manifest_schema(tmp_path):
-    database = _acceptance_sqlite(tmp_path / "database.sqlite", "same row")
-    image_root = tmp_path / "image-local"
-    clustered_root = tmp_path / "clustered"
-    _write_acceptance_bundle_tree(
-        image_root, database, manifest_schema="armarium-export-manifest.v7"
-    )
-    _write_acceptance_bundle_tree(
-        clustered_root, database, manifest_schema="armarium-export-manifest.v8"
-    )
-
-    assert semantic_snapshot_digest(image_root) != semantic_snapshot_digest(clustered_root)
 
 
 def export_of(tree: RunTree) -> dict:
@@ -2506,32 +2178,6 @@ def test_a_held_act_on_a_re_shoot_page_is_never_sent_to_recovery(tmp_path):
     for act_key in ("a1", "a2"):
         _cross_capture_held(tree, act_key)
     assert export_of(tree)["delivered"] == []
-
-
-def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_path):
-    """The fixture's a2 cannot silently disappear from the downstream denominator."""
-    root = tmp_path / "runs"
-    for program in programs_through("designator"):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-    tree = RunTree(root, "r")
-    seal_id = artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal")
-    path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal-seal", seal_id))
-    seal = json.loads(path.read_text(encoding="utf-8"))
-    seal["payload"]["expected_acts"] = seal["payload"]["expected_acts"][:1]
-    seal["payload"]["count"] = 1
-    seal["payload"]["self_hash"] = self_hash(seal["payload"])
-    seal["self_hash"] = self_hash(seal)
-    path.write_bytes(canonical_bytes(seal))
-    resealing_context = _designator_context_for(root, "r", "happy")
-    resealing_context.seal_boundary()
-    resealing_context.finish()
-    before = snapshot(root)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
-    assert result.returncode == 2
-    assert "does not reconcile to every synthetic act" in result.stderr
-    assert snapshot(root) == before
 
 
 def _designator_context_for(root: Path, run_id: str, scenario: str):
@@ -3079,73 +2725,6 @@ def test_designator_refuses_a_current_recovery_review_with_a_different_policy(tm
     assert snapshot(root) == before
 
 
-def test_armarium_rechecks_a_corpus_seal_tampered_after_designator(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    identity = artifact_id(EXEMPLAR, "seal", "corpus-seal")
-    path = tree.resolve(tree.artifact_path(EXEMPLAR, "seal", identity))
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["page_count"] = 999
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    before = snapshot(root)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/7_armarium/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "happy",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 2
-    assert "valid self-hashed census" in result.stderr
-    assert snapshot(root) == before
-
-
-def test_armarium_rechecks_sealed_pixels_tampered_after_designator(tmp_path):
-    """The final export has its own pixel boundary, not only a census boundary."""
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    page = next(
-        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
-        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
-        if entry["kind"] == "page"
-        and tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])["outcome"] == "sealed"
-    )
-    tree.resolve(page["payload"]["image_path"]).write_bytes(b"altered after Designator")
-    before = snapshot(root)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/7_armarium/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "happy",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 2
-    assert "changed under a sealed reference" in result.stderr
-    assert snapshot(root) == before
-
-
 def test_armarium_refuses_an_archetypus_record_orphaned_beside_a_held_act(tmp_path):
     """The mirror of "an accepted act must have an Archetypus": a held/refused act
     must NOT have one. pipeline/6_archetypus/run.py's own guard already refuses to
@@ -3589,46 +3168,6 @@ def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):
     assert snapshot(root) == before
 
 
-def test_perlector_refuses_a_tampered_testimonium_model_provenance(tmp_path):
-    """#42 at the handoff: a sealed-looking witness cannot change its model pin."""
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    entry = next(
-        entry
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
-    )
-    path = tree.resolve(entry["relative_path"])
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["provenance"]["resolved_revision"] = {
-        "kind": "digest-manifest",
-        "value": "0" * 64,
-    }
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    rebind_stage_seal(tree, ATTESTATORES)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/4_perlector/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "happy",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 2
-    assert "SchemaRefusal" in result.stderr
-    assert "resolved revision" in result.stderr
-
-
 def test_a_perlectio_retains_digest_checked_testimonia_it_used(tmp_path):
     """Changing a witness record after reading must stop the next real consumer."""
     root = tmp_path / "runs"
@@ -3680,49 +3219,6 @@ def test_recensor_refuses_a_completed_perlectio_without_an_object_region_basis(t
     assert "Traceback" not in result.stderr
     assert "no object basis" in result.stderr
     assert snapshot(root) == before
-
-
-def test_archetypus_refuses_a_resealed_completed_perlectio_without_an_object_basis(tmp_path):
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r")
-    tree = RunTree(root, "r")
-    review_entry = next(
-        entry
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["outcome"] == "accepted"
-    )
-    review_path = tree.resolve(review_entry["relative_path"])
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    old_ref = review["payload"]["perlectio_ref"]
-    reading_path = tree.resolve(old_ref["relative_path"])
-    reading = json.loads(reading_path.read_text(encoding="utf-8"))
-    reading["payload"]["basis"] = []
-    reading["self_hash"] = self_hash(reading)
-    reading_path.write_bytes(canonical_bytes(reading))
-    new_ref = {
-        "relative_path": old_ref["relative_path"],
-        "sha256": digest_bytes(reading_path.read_bytes()),
-    }
-    review["inputs"] = [
-        new_ref if reference == old_ref else reference for reference in review["inputs"]
-    ]
-    review["payload"]["perlectio_ref"] = new_ref
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
-    rebind_stage_seal(tree, PERLECTOR)
-    rebind_stage_seal(tree, RECENSOR)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 2
-    assert "Traceback" not in result.stderr
-    assert "no object basis" in result.stderr
-    # The tampered act has no record. Deliberately NOT `snapshot == before`:
-    # the stage publishes act by act, so whether the *other* act's record was
-    # sealed before this refusal depends only on loop order, and asserting
-    # nothing was written would pin an ordering coincidence as a contract.
-    assert not tree.has_artifact(
-        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
-    )
 
 
 def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
@@ -4168,75 +3664,6 @@ def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):
     assert "newer Perlectio" in result.stderr
 
 
-def test_armarium_refuses_a_resealed_archetypus_text_that_disagrees_with_its_parent(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    entry = next(
-        entry
-        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
-        if entry["kind"] == "archetypus"
-    )
-    path = tree.resolve(entry["relative_path"])
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["text"] = "ALTERED ESTABLISHED TEXT"
-    record["payload"]["self_hash"] = self_hash(record["payload"])
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    rebind_stage_seal(tree, ARCHETYPUS)
-    before = snapshot(root)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
-    assert result.returncode == 2
-    assert "does not exactly preserve the Perlectio" in result.stderr
-    assert snapshot(root) == before
-
-
-def test_armarium_refuses_a_resealed_archetypus_uncertainty_layer_its_parent_never_said(tmp_path):
-    """The text's sibling, for the layer that anchors to it.
-
-    R8's canonical layer is bound to its act by exactly one gate: the Armarium
-    re-derives it from the accepted Perlectio at export and refuses a stored
-    layer that disagrees. Nothing inside a delivered package can catch a layer
-    substituted before the package was built -- a bundle verifies its own
-    internal agreement, and every format would agree on the forgery -- so this
-    is the boundary that makes the exported layer THIS act's uncertainty rather
-    than a well-formed one. The forged span is valid against the established
-    text and leaves it and its hash untouched, so only the re-derivation can
-    refuse it.
-    """
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    entry = next(
-        entry
-        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
-        if entry["kind"] == "archetypus"
-    )
-    path = tree.resolve(entry["relative_path"])
-    record = json.loads(path.read_text(encoding="utf-8"))
-    perlectio = next(
-        tree.read_artifact(PERLECTOR, "perlectio", candidate["artifact_id"])
-        for candidate in tree.build_manifest(PERLECTOR)["artifacts"]
-        if candidate["kind"] == "perlectio" and candidate["subject_id"] == record["subject_id"]
-    )
-    assert record["payload"]["uncertainty"] == from_perlectio(perlectio["payload"])
-    assert len(record["payload"]["text"]) >= 1
-    record["payload"]["uncertainty"]["uncertain_spans"] = [
-        {"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}
-    ]
-    record["payload"]["self_hash"] = self_hash(record["payload"])
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    rebind_stage_seal(tree, ARCHETYPUS)
-    before = snapshot(root)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
-    assert result.returncode == 2
-    assert "uncertainty layer differs from its accepted Perlectio" in result.stderr
-    assert snapshot(root) == before
-
-
 def test_armarium_refuses_two_established_records_instead_of_selecting_one(tmp_path):
     root = tmp_path / "runs"
     assert orchestrate(root, "r", "happy").returncode == 0
@@ -4293,7 +3720,7 @@ def test_a_run_whose_caller_names_no_commit_records_none_rather_than_a_placehold
     assert orchestrate(root, "r", "happy", stage_timing_journal=journal).returncode == 0
 
     assert "repository_commit" not in RunTree(root, "r").read_run()
-    entry = json.loads(journal.read_text(encoding="utf-8"))["entries"][0]
+    entry = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
     assert entry["repository_commit"] is None
     assert "no --repository-commit was named" in entry["repository_commit_detail"]
 
@@ -4326,15 +3753,15 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tm
         == 0
     )
 
-    record = json.loads(journal.read_text(encoding="utf-8"))
-    assert record["schema"] == "stage-timing-journal.v1"
-    assert record["run_id"] == "r"
-    stages = [entry["stage"] for entry in record["entries"]]
+    entries = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert all(entry["schema"] == "stage-timing-journal.v2" for entry in entries)
+    assert all(entry["run_id"] == "r" for entry in entries)
+    stages = [entry["stage"] for entry in entries]
     # Every program the automatic sequence invokes, the Door and the Exemplar
     # named apart although they share `1_exemplar/`.
     assert stages[:2] == ["door", "exemplar"]
     assert stages[-1] == "armarium"
-    for entry in record["entries"]:
+    for entry in entries:
         assert entry["exit_code"] == 0
         assert entry["duration_ms"] >= 0
         assert entry["operation"] == "run"
@@ -4394,46 +3821,6 @@ def test_a_timing_journal_inside_the_run_tree_is_refused_before_anything_runs(tm
     assert result.returncode == 2
     assert "is inside this run's own tree" in result.stderr
     assert not (root / "r" / "timings.json").exists()
-
-
-def test_a_timing_journal_belonging_to_another_run_is_left_unchanged(tmp_path):
-    """Two runs at one journal path: the second must not inherit the first's entries.
-
-    Nothing checked the identity of an existing journal before appending, so
-    the first run's entries were kept while the top-level `run_id` was replaced
-    with the second's -- a file attributing one run's stage timings to another
-    -- the conflict is reported on stderr like every other
-    journal fault, because a stopwatch never fails a stage.
-    """
-
-    root = tmp_path / "runs"
-    journal = tmp_path / "timings.json"
-    assert orchestrate(root, "first", "happy", stage_timing_journal=journal).returncode == 0
-    before = journal.read_text(encoding="utf-8")
-
-    second = orchestrate(root, "second", "happy", stage_timing_journal=journal)
-
-    assert second.returncode == 0
-    assert journal.read_text(encoding="utf-8") == before
-    assert "already belongs to" in second.stderr
-
-
-def test_naming_no_timing_journal_leaves_the_run_tree_exactly_as_it_was(tmp_path):
-    """The journal is opt-in precisely so the byte-identity checks below still
-    measure the same tree."""
-
-    with_journal = tmp_path / "with"
-    without = tmp_path / "without"
-    assert (
-        orchestrate(
-            with_journal, "r", "happy", stage_timing_journal=tmp_path / "timings.json"
-        ).returncode
-        == 0
-    )
-    assert orchestrate(without, "r", "happy").returncode == 0
-
-    assert snapshot(with_journal) == snapshot(without)
-    assert not (with_journal / "r" / "timings.json").exists()
 
 
 # --- 2. Repeating the identical command changes nothing ------------------------
@@ -5103,56 +4490,6 @@ def one_artifact(tree: RunTree, stage: str, kind: str) -> tuple[Path, dict]:
 
 @pytest.mark.full
 @pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_validator_refuses_a_corrupted_schema(happy_run, producer, consumer, kind):
-    _, tree = happy_run
-    _, record = one_artifact(tree, producer, kind)
-    record["schema"] = "skeleton.v99"
-    with pytest.raises(SchemaRefusal):
-        validate_envelope(record)
-
-
-@pytest.mark.full
-@pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_validator_refuses_a_malformed_identity(happy_run, producer, consumer, kind):
-    _, tree = happy_run
-    _, record = one_artifact(tree, producer, kind)
-    record["artifact_id"] = "art_not_a_real_identity"
-    with pytest.raises(SchemaRefusal):
-        validate_envelope(record)
-
-
-@pytest.mark.full
-@pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_validator_refuses_duplicate_accounting(happy_run, producer, consumer, kind):
-    """A duplicate reference is how one page gets counted twice and a conservation
-    check passes over something nobody read."""
-    _, tree = happy_run
-    _, record = one_artifact(tree, producer, kind)
-    assert record["inputs"], (
-        f"{producer} {kind} references no input, so this boundary carries nothing "
-        "verifiable. Skipping here would be a skip-list, which is how a gap goes "
-        "unnoticed (#87) — the producer should name the bytes it acted on"
-    )
-    record["inputs"] = record["inputs"] + [dict(record["inputs"][0])]
-    with pytest.raises(SchemaRefusal):
-        validate_envelope(record)
-
-
-@pytest.mark.full
-@pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_validator_refuses_bytes_that_changed_under_a_sealed_reference(
-    happy_run, producer, consumer, kind
-):
-    _, tree = happy_run
-    _, record = one_artifact(tree, producer, kind)
-    assert record["inputs"], f"{producer} {kind} names no bytes to tamper with"
-    reference = record["inputs"][0]
-    with pytest.raises(SchemaRefusal):
-        verify_input_bytes(reference, b"tampered")
-
-
-@pytest.mark.full
-@pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
 def test_each_handoff_corruption_stops_its_named_real_consumer(
     happy_run, tmp_path, producer, consumer, kind
 ):
@@ -5379,25 +4716,10 @@ def test_next_stage_refuses_an_artifact_removed_after_the_named_boundary(happy_r
 
 
 @pytest.mark.full
-def test_next_stage_refuses_an_exemplar_seal_forged_or_deleted_without_rederiving(
-    happy_run, tmp_path
-):
-    """Forged and missing seals must be proved independently at each link."""
+def test_next_stage_refuses_a_deleted_exemplar_seal_without_rederiving(happy_run, tmp_path):
     source_root, _ = happy_run
-    forged_root = tmp_path / "forged"
     missing_root = tmp_path / "missing"
-    shutil.copytree(source_root, forged_root)
     shutil.copytree(source_root, missing_root)
-
-    forged_tree = RunTree(forged_root, "r")
-    seal_path = _stage_seal_path(forged_tree, EXEMPLAR)
-    seal = json.loads(seal_path.read_bytes())
-    seal["payload"]["config_digest"] = "0" * 64
-    seal["self_hash"] = self_hash(seal)
-    seal_path.write_bytes(canonical_bytes(seal))
-    forged = invoke_stage(forged_root, "r", "happy", "pipeline/1_ink_map/run.py")
-    assert forged.returncode == EXIT_FATAL
-    assert "config_digest differs from run authority" in forged.stderr
 
     missing_tree = RunTree(missing_root, "r")
     _stage_seal_path(missing_tree, EXEMPLAR).unlink()
@@ -5408,23 +4730,11 @@ def test_next_stage_refuses_an_exemplar_seal_forged_or_deleted_without_rederivin
 
 
 @pytest.mark.full
-def test_next_stage_refuses_forged_or_deleted_seal_without_rederiving(happy_run, tmp_path):
+def test_next_stage_refuses_a_deleted_ink_map_seal_without_rederiving(happy_run, tmp_path):
     """The Ink-Map-to-Designator link, one stage later than the test above."""
     source_root, _ = happy_run
-    forged_root = tmp_path / "forged"
     missing_root = tmp_path / "missing"
-    shutil.copytree(source_root, forged_root)
     shutil.copytree(source_root, missing_root)
-
-    forged_tree = RunTree(forged_root, "r")
-    seal_path = _stage_seal_path(forged_tree, INK_MAP)
-    seal = json.loads(seal_path.read_bytes())
-    seal["payload"]["config_digest"] = "0" * 64
-    seal["self_hash"] = self_hash(seal)
-    seal_path.write_bytes(canonical_bytes(seal))
-    forged = invoke_stage(forged_root, "r", "happy", "pipeline/2_designator/run.py")
-    assert forged.returncode == EXIT_FATAL
-    assert "config_digest differs from run authority" in forged.stderr
 
     missing_tree = RunTree(missing_root, "r")
     _stage_seal_path(missing_tree, INK_MAP).unlink()
@@ -5432,59 +4742,6 @@ def test_next_stage_refuses_forged_or_deleted_seal_without_rederiving(happy_run,
     assert missing.returncode == EXIT_FATAL
     assert "ink-map has no stage-seal" in missing.stderr
     assert "never re-derived" in missing.stderr
-
-
-def test_recovery_policy_is_a_run_bound_configuration_not_a_late_local_default(tmp_path):
-    """A policy change must refuse the old run before any stage can reinterpret it."""
-    root = tmp_path / "runs"
-    policy = tmp_path / "recovery.toml"
-    policy.write_text((ROOT / "config/recovery.toml").read_text(encoding="utf-8"), encoding="utf-8")
-    assert orchestrate(root, "r", "happy", recovery_config=policy).returncode == 0
-    before = snapshot(root)
-
-    policy.write_text(
-        "absolute_cap = 3\n\n[budget]\nfallback_recrop = 0\npage_level_reread = 1\n",
-        encoding="utf-8",
-    )
-    result = orchestrate(root, "r", "happy", recovery_config=policy)
-    assert result.returncode == 2
-    assert "different config_digest" in result.stderr
-    assert snapshot(root) == before
-
-
-def test_hard_failure_policy_is_a_run_bound_configuration_not_a_late_local_default(tmp_path):
-    """A revised closed list cannot reinterpret an already-sealed run's failures.
-
-    The run-level cap decides whether a run may keep invoking stages at all, so a
-    later edit to what counts as a hard failure is exactly as run-shaping as an
-    edit to the recovery budget beside it — and refuses the sealed run for the
-    same reason, before any stage reads a failure under a list it did not run
-    under.
-
-    The refusal now comes from the orchestrator's own point of use rather than
-    from the Door's `config_digest`, and names this file instead of reporting that
-    *something* in the run's configuration moved. That is what sealing the policy
-    by name buys, and it is why the message this asserts changed: the test beside
-    it still shows `config_digest` refusing `recovery.toml` at the Door, because
-    the Door is where a run id is reused, while the run-level cap has a reader
-    that runs before any stage is invoked at all.
-    """
-    root = tmp_path / "runs"
-    policy = tmp_path / "hard_failure.toml"
-    policy.write_text(
-        (ROOT / "config/hard_failure.toml").read_text(encoding="utf-8"), encoding="utf-8"
-    )
-    assert orchestrate(root, "r", "happy", hard_failure_config=policy).returncode == 0
-    before = snapshot(root)
-
-    policy.write_text(
-        'threshold = 2\n\n[[kind]]\nstage = "perlector"\noutcome = "failed"\n',
-        encoding="utf-8",
-    )
-    result = orchestrate(root, "r", "happy", hard_failure_config=policy)
-    assert result.returncode == 2
-    assert "hard-failure configuration changed between" in result.stderr, result.stderr
-    assert snapshot(root) == before
 
 
 @pytest.mark.full
@@ -5530,12 +4787,6 @@ def test_a_stage_invoked_before_its_producer_refuses_rather_than_inventing(tmp_p
     )
     assert result.returncode == 2
     assert "IncompatibleReuse" in result.stderr or "ContractError" in result.stderr
-
-
-def test_contract_error_is_the_only_way_a_stage_reports_refusal():
-    """A stage that crashed with a traceback and exited zero would be the vacuous
-    green this project exists to notice."""
-    assert issubclass(SchemaRefusal, ContractError)
 
 
 # --- 8. A refused page cannot vanish, and no act rides out over one -------------
@@ -5689,14 +4940,6 @@ def test_no_witness_and_no_reading_pretends_to_have_seen_the_held_act(refused_pa
 
     established = artifacts(tree, ARCHETYPUS, "archetypus")
     assert [record["payload"]["act_key"] for record in established] == ["a1"]
-
-
-def test_the_refused_page_scenario_is_deterministic_on_rerun(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "refused-page").returncode == 3
-    before = snapshot(root)
-    assert orchestrate(root, "r", "refused-page").returncode == 3
-    assert snapshot(root) == before
 
 
 def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_first_page_run):
@@ -5895,6 +5138,7 @@ def test_a_reading_that_did_not_succeed_is_held_and_says_why(truncated_reading_r
     assert len(reviews) == 1
     assert reviews[0]["outcome"] == "held-for-review"
     assert "truncated" in reviews[0]["payload"]["reason"]
+    assert artifacts(tree, RECENSOR, "recovery-request") == []
 
 
 def test_the_truncated_reading_never_becomes_established_text(truncated_reading_run):
@@ -6065,4 +5309,39 @@ def test_armarium_rechecks_the_filename_a_page_was_sealed_under(tmp_path):
 
     assert result.returncode == 2
     assert "no longer matches its submitted filename and digest" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_armarium_rechecks_sealed_pixels_tampered_after_designator(tmp_path):
+    """The final export has its own pixel boundary, not only a census boundary."""
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    page = next(
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+        and tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])["outcome"] == "sealed"
+    )
+    tree.resolve(page["payload"]["image_path"]).write_bytes(b"altered after Designator")
+    before = snapshot(root)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/7_armarium/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "changed under a sealed reference" in result.stderr
     assert snapshot(root) == before

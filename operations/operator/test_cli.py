@@ -79,6 +79,17 @@ def _clear(tmp_path, root, *extra):
     return cli.main([*common, "clear-leftovers", "--root", str(root), *extra])
 
 
+def test_interactive_clear_leftovers_explains_a_blank_folder(capsys, monkeypatch):
+    answers = iter(("clear-leftovers", ""))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert cli._interactive_arguments() == []
+    assert (
+        "Clear-leftovers needs a folder to check for leftovers. "
+        "It was left blank, so nothing changed."
+    ) in capsys.readouterr().out
+
+
 @pytest.fixture
 def later(monkeypatch):
     """Two hours from now: what exists now is quiet; what is stamped `later` is fresh."""
@@ -146,6 +157,7 @@ def test_clear_leftovers_lists_then_removes_only_publication_leftovers(tmp_path,
     assert (root / ".x.publishing-abcdefgh").is_symlink()
 
 
+@pytest.mark.hostile_local
 def test_clear_leftovers_refuses_a_symlinked_root(tmp_path, later):
     (tmp_path / "real").mkdir()
     (tmp_path / "real" / ".a.tmp-abcdefgh").write_bytes(b"x")
@@ -179,6 +191,7 @@ def test_clear_leftovers_finishes_an_interrupted_clear(tmp_path, capsys, later):
     assert not list(tmp_path.glob(".delivery.publishing-*"))
 
 
+@pytest.mark.hostile_local
 def test_clear_leftovers_skips_a_name_that_vanishes_before_the_rename(
     tmp_path, capsys, later, monkeypatch
 ):
@@ -197,6 +210,7 @@ def test_clear_leftovers_skips_a_name_that_vanishes_before_the_rename(
     assert "0 leftover(s)" in printed
 
 
+@pytest.mark.hostile_local
 @pytest.mark.parametrize("folder", (False, True), ids=("file", "folder"))
 def test_clear_leftovers_puts_back_a_fresh_item_swapped_in_before_the_move(
     tmp_path, capsys, later, monkeypatch, folder
@@ -238,6 +252,7 @@ def test_clear_leftovers_never_moves_onto_a_taken_quarantine_name(
     assert taken.is_dir() if folder else taken.read_bytes() == b"other"
 
 
+@pytest.mark.hostile_local
 @pytest.mark.parametrize("folder", (False, True), ids=("file", "folder"))
 def test_clear_leftovers_never_restores_over_an_item_that_arrived(
     tmp_path, capsys, later, monkeypatch, folder

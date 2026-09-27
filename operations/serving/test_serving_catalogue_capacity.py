@@ -29,7 +29,7 @@ from common.request_capacity import (
     row_image_geometry,
     sendable_max_tokens,
 )
-from operations.serving.config import ServingProfile, load_serving_recipes
+from operations.serving.config import ServingProfile, UnsupportedProfile, load_serving_recipes
 
 _ATTESTATORES_DIR = Path(__file__).resolve().parents[2] / "pipeline" / "3_attestatores"
 if str(_ATTESTATORES_DIR) not in sys.path:
@@ -141,24 +141,8 @@ def _request_shapes(row):
         f"{item.chair}@{item.tier}" if hasattr(item, "chair") else item[0].replace(" ", "-")
     ),
 )
-def test_every_shipped_real_row_can_serve_the_requests_its_chair_sends(row, case):
-    """The catalogue's own claim, checked against the arithmetic that falsified it.
-
-    Every row must hold the images its chair really sends at its own
-    `max_pixels`, plus that chair's measured prompt, plus the answer that
-    request reserves.  Before U15 no row held every witness chair at its own
-    trained geometry; a per-tier generic pixel/context ladder either refused
-    the chair outright or left an answer no dense page could fit in.  A row
-    that provably cannot answer is not unproven; it is wrong, and the
-    catalogue is not allowed to ship one.
-
-    Churro is weighed here as the live chair is really asked -- the vendor's
-    own registry-resolved system string, 27 tokens, and U14's re-measured
-    dense-page answer over the `HistoricalDocument` grammar it is actually
-    read under (1,905, not the retired 1,631 JSON-contract figure).  All three
-    of its rows hold the request with the margin the catalogue's own header
-    comment states.
-    """
+def test_catalogue_capacity_arithmetic_accepts_each_shipped_row_request_shape(row, case):
+    """The catalogue's own claim, checked against the arithmetic that falsified it."""
 
     _label, images, answer_budget = case
     record = request_fits(row, images, PROMPT_TOKENS[row.chair], answer_budget)
@@ -225,25 +209,8 @@ def test_chandra_80gb_admits_its_native_bound_after_the_observed_page_three_prom
     assert sendable_max_tokens(row.chair, old_capacity) == {}
 
 
-def test_the_two_view_page_fallback_act_fits_every_tiers_context():
-    """The one measured Perlector shape that used to overrun a shipped row.
-
-    This is a context-arithmetic claim only, not a claim that the Perlector
-    can be served at every tier: `config/serving_recipes_real.toml` marks its
-    24 GB and 48 GB rows unservable against 51.7 GiB of measured bf16 weights
-    (hostile review Q5, a 64 GiB floor), independent of what fits below.
-
-    An act whose bounds are the whole page, seen from two captures, sends four
-    page-sized images.  At 24 GB and 48 GB the context holds them; at 80 GB+
-    the same four images cost 20,400 tokens on their own -- against the old
-    16,384 context this catalogue could not hold the request, which is why
-    this test was once named for the tier it could not serve.  The project
-    lead's ruling raises `generic-80gb-plus`'s `context_cap` to 32,768
-    for exactly this shape, and the request now fits at every tier.  Pinned
-    rather than passed over: the arithmetic no longer refuses it on this
-    laptop, and a later edit that quietly lowers the context again changes
-    this test.
-    """
+def test_the_two_view_page_fallback_act_fits_the_supported_tiers_context():
+    """The one measured Perlector shape that used to overrun a shipped row."""
 
     needs = {}
     for row in _shipped_rows():
@@ -258,13 +225,19 @@ def test_the_two_view_page_fallback_act_fits_every_tiers_context():
         )
         needs[row.tier] = (record["need"], record["fits"])
     assert needs == {
-        # 4x1,715 + 1,173 + 1,318
-        "generic-24gb": (9351, True),
-        # 4x3,102 + 1,173 + 1,318
-        "generic-48gb": (14899, True),
         # 4x5,100 + 1,173 + 1,318, against 32,768
         "generic-80gb-plus": (22891, True),
     }
+
+
+def test_smaller_perlector_tiers_name_the_measured_refusal():
+    rows = [
+        row
+        for row in load_serving_recipes(REAL_RECIPES).profiles
+        if isinstance(row, UnsupportedProfile) and row.chair == "perlector"
+    ]
+    assert {row.tier for row in rows} == {"generic-24gb", "generic-48gb"}
+    assert all("51.7 GiB" in row.reason for row in rows)
 
 
 @pytest.mark.parametrize("row", _shipped_rows(), ids=lambda row: f"{row.chair}@{row.tier}")
@@ -324,15 +297,20 @@ def test_the_measured_failures_this_change_answers_are_still_failures_at_the_old
         assert record["fits"] is False, (chair, tier)
 
 
-def test_only_rows_sized_from_retained_logs_depart_from_the_300s_placeholder() -> None:
-    exceptions = [
+def test_measured_witness_rows_have_a_600s_startup_budget() -> None:
+    measured = [
         (profile.chair, profile.tier, profile.startup_timeout_seconds)
         for profile in _shipped_rows()
-        if profile.startup_timeout_seconds != 300
+        if profile.chair in {"designator_structure", "attestator_1", "attestator_2", "attestator_3"}
     ]
-    assert exceptions == [
-        ("designator_structure", "generic-80gb-plus", 600),
-        ("perlector", "generic-80gb-plus", 600),
+    assert len(measured) == 12
+    assert all(timeout == 600 for _, _, timeout in measured)
+    assert [
+        (profile.tier, profile.startup_timeout_seconds)
+        for profile in _shipped_rows()
+        if profile.chair == "perlector"
+    ] == [
+        ("generic-80gb-plus", 600),
     ]
 
 

@@ -35,18 +35,22 @@ cannot be mistaken for a completed run.  Whatever the outcome, the report at
 before the exit code says it.  The exceptions: the dry run writes no report at
 all (see below); a credential-looking argv, a missing ``--`` and a refused
 ``--report-path`` itself (missing, outside the volume, without the launch
-token, or the bootstrap's own report) are refused on stderr only, so no other
+token, or colliding with bootstrap evidence) are refused on stderr only, so no other
 record is overwritten; and a refused bootstrap argv is recorded in the
 bootstrap report, not the run report.
 
-**The bootstrap-and-hold contract is unchanged for a run that finished.**
+**A full terminal run holds to the deadline.**
 ``pod_timer.run_with_bootstrap`` treats any child exit before the hard deadline
 -- exit 0 included -- as ``completed-early`` and closes the pod with a non-green
-timer report, so after a ``complete`` or ``held`` run this process holds to the
+timer report, so after a full ``complete`` or ``held`` run this process holds to the
 shared hard deadline exactly as ``bootstrap_main`` does, re-journaling a
 liveness line beside the run report.  That hold is paid idle time between a
 finished run and the deadline; closing early on a complete run would be a
 ``pod_timer`` contract change and is not made here.
+
+A selected range ending before Armarium records ``selection-complete`` when it
+completes, and returns at once when it holds. The pod timer closes the card;
+the run tree remains on the volume for the next selection.
 
 **Nothing the run printed dies with the pod.**  The orchestrator's stdout and
 stderr -- and, through inheritance, every stage's -- are teed into a bounded,
@@ -68,12 +72,9 @@ with no pod running.  The run report records which way it went in
 ``held_to_hard_deadline``, so the choice is in the durable record and not
 only here (principle 2).
 
-**No placement-tier flag.**  The consult that asked for this entrypoint named
-``--placement-tier``; neither the orchestrator nor any stage parser accepts one
-as the code stands, and no stage reads a tier.  The tier the sealed launch
-measured is the one thing this process can honestly carry: it is read from the
-green bootstrap's ``PREFLIGHT`` receipt and recorded in the run report, and a
-green bootstrap whose receipt carries no tier is refused by name.
+**The measured placement tier is forwarded.**  The green bootstrap's
+``PREFLIGHT`` receipt supplies the tier recorded here and passed to the
+orchestrator; a receipt without one is refused by name.
 
 **The data gate is checked before the bootstrap spends anything.**  The
 orchestrator's Door refuses a submission folder outside the policy's approved
@@ -95,20 +96,25 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping, Sequence
 
+from common.chairs.config import load_models_toml
+from common.chairs.models import ChairIdentity, is_witness_role
 from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
+from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
 from common.stage import EXIT_FATAL as ORCHESTRATOR_FATAL
 from common.stage import EXIT_HELD as ORCHESTRATOR_HELD
 from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
+from common.stage import verify_predecessor_seal
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
+from pipeline.orchestrator.run import SEQUENCE_NAMES
 
 from . import boot_a_request, bootstrap_main
 from .bootstrap import BootstrapActions, BootstrapReport
@@ -123,7 +129,17 @@ from .bootstrap_main import (
     refuse_credential_looking_argv,
 )
 from .durable import atomic_write, canonical_json
-from .models import utc_now
+from .models import run_report_paths, utc_now
+from .run_exits import (
+    EXIT_BOOTSTRAP_RED,
+    EXIT_COMPLETE,
+    EXIT_DRY_RUN,
+    EXIT_FAILED,
+    EXIT_HALTED,
+    EXIT_HELD,
+    EXIT_REFUSED,
+    EXIT_SELECTION_COMPLETE,
+)
 
 RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
@@ -146,18 +162,6 @@ TRANSCRIPT_TAIL_BYTES = 1 * 1024 * 1024
 # final run report from ever being written. The child
 # is dead by then, so nothing this waits for is the run's own output.
 TRANSCRIPT_READER_JOIN_SECONDS = 30.0
-# The stage-timing journal is read back at close to audit it; a file past this
-# bound is not a journal the orchestrator wrote and is not read whole.
-TIMING_JOURNAL_READ_BYTES = 4 * 1024 * 1024
-
-EXIT_COMPLETE = 0
-EXIT_REFUSED = 2
-EXIT_HELD = 3
-EXIT_HALTED = 4
-EXIT_BOOTSTRAP_RED = 5
-EXIT_FAILED = 6
-EXIT_DRY_RUN = 7
-
 _STATE_FOR_EXIT = {
     EXIT_COMPLETE: "complete",
     EXIT_REFUSED: "refused",
@@ -166,6 +170,7 @@ _STATE_FOR_EXIT = {
     EXIT_BOOTSTRAP_RED: "bootstrap-red",
     EXIT_FAILED: "failed",
     EXIT_DRY_RUN: "dry-run",
+    EXIT_SELECTION_COMPLETE: "selection-complete",
 }
 
 _ORCHESTRATOR_EXITS = {
@@ -215,6 +220,12 @@ class RunPlan:
     fixture: str
     interval_seconds: float
     dry_run: bool
+    stage: str | None = None
+    from_stage: str | None = None
+    to_stage: str | None = None
+    models: str | None = None
+    canary_folder: Path | None = None
+    canary_manifest: Path | None = None
     triage_decision_manifest: Path | None = None
     triage_clusters: Path | None = None
     triage_producer_recipe: Path | None = None
@@ -252,7 +263,7 @@ class RunPlan:
     def hold_path(self) -> Path:
         """The liveness line after the run, beside the run report, never over it."""
 
-        return self.report_path.with_name(f"{self.report_path.stem}-hold{self.report_path.suffix}")
+        return Path(run_report_paths(self.report_path)[1])
 
     @property
     def liveness_path(self) -> Path:
@@ -266,9 +277,7 @@ class RunPlan:
         word -- a partial result that does not look partial (principle 2).
         """
 
-        return self.report_path.with_name(
-            f"{self.report_path.stem}-liveness{self.report_path.suffix}"
-        )
+        return Path(run_report_paths(self.report_path)[2])
 
     @property
     def transcript_path(self) -> Path:
@@ -285,7 +294,7 @@ class RunPlan:
         (`_require_launch_token_named`), and this is derived from that name.
         """
 
-        return self.report_path.with_name(f"{self.report_path.stem}-transcript.log")
+        return Path(run_report_paths(self.report_path)[4])
 
     @property
     def timing_journal_path(self) -> Path:
@@ -300,9 +309,7 @@ class RunPlan:
         volume like the rest of them if nobody fetches it.
         """
 
-        return self.report_path.with_name(
-            f"{self.report_path.stem}-timings{self.report_path.suffix}"
-        )
+        return Path(run_report_paths(self.report_path)[3])
 
     @property
     def repository_commit(self) -> str:
@@ -354,11 +361,19 @@ class RunPlan:
         ]
         cache_root = _named(self.bootstrap.cache_root, "--cache-root")
         command += ["--cache-root", str(cache_root)]
+        store_root = _named(self.bootstrap.store_root, "--store-root")
+        command += ["--store-root", str(store_root)]
+        if self.stage is not None:
+            command += ["--stage", self.stage]
+        if self.from_stage is not None and self.to_stage is not None:
+            command += ["--from", self.from_stage, "--to", self.to_stage]
         for value, flag in (
             (self.triage_decision_manifest, "--triage-decision-manifest"),
             (self.triage_clusters, "--triage-clusters"),
             (self.triage_producer_recipe, "--triage-producer-recipe"),
             (self.corpus_register, "--corpus-register"),
+            (self.canary_folder, "--canary-folder"),
+            (self.canary_manifest, "--canary-manifest"),
         ):
             if value is not None:
                 command += [flag, str(value)]
@@ -371,6 +386,14 @@ class RunPlan:
             "run_root": str(self.run_root),
             "submission_folder": str(self.submission_folder),
             "submission_manifest": str(self.submission_manifest),
+            **(
+                {
+                    "canary_folder": str(self.canary_folder),
+                    "canary_manifest": str(self.canary_manifest),
+                }
+                if self.canary_folder and self.canary_manifest
+                else {}
+            ),
             "data_gate_policy": str(self.data_gate_policy),
             "models_config": str(self.models_config),
             "serving_recipes_config": str(self.serving_recipes_config),
@@ -378,6 +401,7 @@ class RunPlan:
             "fixture": self.fixture,
             "interval_seconds": self.interval_seconds,
             "dry_run": self.dry_run,
+            "selection": self.selection_record(),
             "triage_decision_manifest": str(self.triage_decision_manifest)
             if self.triage_decision_manifest
             else None,
@@ -389,6 +413,48 @@ class RunPlan:
             "bootstrap": self.bootstrap.to_record(),
         }
 
+    def selected_stages(self) -> tuple[str, ...]:
+        if self.stage is not None:
+            return (self.stage,)
+        if self.from_stage is not None and self.to_stage is not None:
+            return SEQUENCE_NAMES[
+                SEQUENCE_NAMES.index(self.from_stage) : SEQUENCE_NAMES.index(self.to_stage) + 1
+            ]
+        return SEQUENCE_NAMES
+
+    def selection_record(self) -> dict[str, object]:
+        return {
+            "stage": self.stage,
+            "from": self.from_stage,
+            "to": self.to_stage,
+            "models": self.models,
+            "stages": list(self.selected_stages()),
+        }
+
+    @property
+    def ends_before_armarium(self) -> bool:
+        return self.selected_stages()[-1] != "armarium"
+
+    def required_chairs(self, *, configured_only: bool = False) -> set[str]:
+        selected = set(self.selected_stages())
+        roles: set[str] = set()
+        if "designator" in selected:
+            roles.update(("designator_structure", "secondary_proposer"))
+        if selected & {"perlector", "recovery"}:
+            roles.add("perlector")
+        try:
+            configured = load_models_toml(self.models_config).chairs
+        except ContractError as error:
+            raise RunRefusal(
+                f"--models-config {self.models_config} cannot name selected chairs: {error}",
+                report_path=self.report_path,
+            ) from error
+        if "attestatores" in selected:
+            roles.update(role for role in configured if is_witness_role(role))
+        if configured_only:
+            roles = {role for role in roles if isinstance(configured.get(role), ChairIdentity)}
+        return roles
+
 
 def _named(value: Path | None, flag: str) -> Path:
     if value is None:
@@ -399,11 +465,17 @@ def _named(value: Path | None, flag: str) -> Path:
 def _run_report_path(path: Path, bootstrap: Plan, launch_token: str | None) -> Path:
     report_path = _require_contained(path, bootstrap.volume_mount_path, "--report-path")
     _require_launch_token_named(report_path, launch_token, "--report-path", report_path=None)
-    if report_path == bootstrap.report_path:
-        raise RunRefusal(
-            "--report-path is the bootstrap's own report path; the run report and the "
-            "bootstrap report are two records and may not overwrite each other"
-        )
+    for name, bootstrap_path in (
+        ("report", bootstrap.report_path),
+        ("journal", bootstrap.journal),
+    ):
+        if bootstrap_path is not None and bootstrap_path.resolve() in {
+            candidate.resolve() for candidate in run_report_paths(report_path)
+        }:
+            raise RunRefusal(
+                f"the bootstrap {name} collides with the run report or one of its side "
+                "files; name separate records"
+            )
     return report_path
 
 
@@ -414,6 +486,8 @@ def build_parser() -> bootstrap_main.RefusingParser:
     parser.add_argument("--run-root", type=Path)
     parser.add_argument("--submission-folder", type=Path, required=True)
     parser.add_argument("--submission-manifest", type=Path, required=True)
+    parser.add_argument("--canary-folder", type=Path)
+    parser.add_argument("--canary-manifest", type=Path)
     parser.add_argument("--triage-decision-manifest", type=Path)
     parser.add_argument("--triage-clusters", type=Path)
     parser.add_argument("--triage-producer-recipe", type=Path)
@@ -428,6 +502,11 @@ def build_parser() -> bootstrap_main.RefusingParser:
     )
     parser.add_argument("--interval-seconds", type=float, default=15.0)
     parser.add_argument("--dry-run", action="store_true")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--stage", choices=SEQUENCE_NAMES)
+    selection.add_argument("--from", dest="from_stage", choices=SEQUENCE_NAMES)
+    selection.add_argument("--models", choices=("small", "big"))
+    parser.add_argument("--to", dest="to_stage", choices=SEQUENCE_NAMES)
     return parser
 
 
@@ -506,6 +585,24 @@ def resolve_run_plan(
             f"--submission-manifest {submission_manifest} is not a file on the volume",
             report_path=report_path,
         )
+    if (args.canary_folder is None) != (args.canary_manifest is None):
+        raise RunRefusal(
+            "--canary-folder and --canary-manifest must be supplied together",
+            report_path=report_path,
+        )
+    canary_folder = None
+    canary_manifest = None
+    if args.canary_folder is not None:
+        canary_folder = _require_contained(
+            args.canary_folder, volume, "--canary-folder", report_path=report_path
+        )
+        canary_manifest = _require_contained(
+            args.canary_manifest, volume, "--canary-manifest", report_path=report_path
+        )
+        if not canary_folder.is_dir() or not canary_manifest.is_file():
+            raise RunRefusal(
+                "canary folder or ledger is missing on the volume", report_path=report_path
+            )
     triage_paths: dict[str, Path | None] = {}
     for value, flag in (
         (args.triage_decision_manifest, "--triage-decision-manifest"),
@@ -544,6 +641,20 @@ def resolve_run_plan(
     if not isinstance(args.fixture, str) or not args.fixture.strip():
         raise RunRefusal("--fixture must be a non-blank fixture name", report_path=report_path)
     interval = bootstrap_main._positive_interval(args.interval_seconds, report_path=report_path)
+    if args.to_stage is not None and args.from_stage is None:
+        raise RunRefusal("--to requires --from", report_path=report_path)
+    if args.from_stage is not None and args.to_stage is None:
+        raise RunRefusal("--from requires --to", report_path=report_path)
+    if args.from_stage is not None and SEQUENCE_NAMES.index(args.from_stage) > SEQUENCE_NAMES.index(
+        args.to_stage
+    ):
+        raise RunRefusal("--from comes after --to", report_path=report_path)
+    stage = args.stage
+    from_stage, to_stage = args.from_stage, args.to_stage
+    if args.models == "small":
+        from_stage, to_stage = "door", "attestatores"
+    elif args.models == "big":
+        from_stage, to_stage = "perlector", "armarium"
     return RunPlan(
         bootstrap=bootstrap,
         report_path=report_path,
@@ -551,10 +662,16 @@ def resolve_run_plan(
         run_root=run_root,
         submission_folder=submission_folder,
         submission_manifest=submission_manifest,
+        canary_folder=canary_folder,
+        canary_manifest=canary_manifest,
         data_gate_policy=data_gate_policy,
         fixture=args.fixture,
         interval_seconds=interval,
         dry_run=args.dry_run or bootstrap.dry_run,
+        stage=stage,
+        from_stage=from_stage,
+        to_stage=to_stage,
+        models=args.models,
         triage_decision_manifest=triage_paths["--triage-decision-manifest"],
         triage_clusters=triage_paths["--triage-clusters"],
         triage_producer_recipe=triage_paths["--triage-producer-recipe"],
@@ -728,16 +845,9 @@ def _records_at_close(
 ) -> tuple[dict[str, dict[str, object]], list[str]]:
     """What each record the report names actually left on the volume at close.
 
-    The orchestrator's stage-timing journal, the liveness record and the
-    transcript are all written best-effort by design: a stopwatch or a tick
-    must never be the reason a running orchestrator is abandoned, so each
-    writer says so on stderr and carries on. That stderr line lives in the
-    transcript, which is bounded, and nothing else said whether the file the
-    report *names* was actually there -- a fetched report could read
-    ``complete`` over an absent journal. This audits the three at close and names each missing, unreadable
-    or foreign one in the report itself, and a run whose named records did
-    not all come home is held rather than complete, so the absence is a
-    durable fact in the state rather than a line a reader has to grep for.
+    Audit the three best-effort records beside the run tree. Their absences
+    are named in the report; the stopwatch never changes a completed run's
+    state.
 
     ``transcript_failure`` is what the runner reports about its own tee: a
     transcript whose pump failed part-way, or whose reader was still attached
@@ -760,25 +870,37 @@ def _records_at_close(
             missing.append(name)
         elif name == "timing_journal":
             try:
+                entries = 0
+                unreadable_lines = 0
+                foreign_lines = 0
                 with path.open("rb") as handle:
-                    data = handle.read(TIMING_JOURNAL_READ_BYTES + 1)
-                if len(data) > TIMING_JOURNAL_READ_BYTES:
-                    raise ValueError(
-                        f"larger than {TIMING_JOURNAL_READ_BYTES} bytes, which no stage-timing "
-                        "journal the orchestrator writes is"
-                    )
-                journal = json.loads(data.decode("utf-8"))
-                entries = journal.get("entries") if isinstance(journal, dict) else None
-                owner = journal.get("run_id") if isinstance(journal, dict) else None
-                entry["entries"] = len(entries) if isinstance(entries, list) else None
-                entry["run_id_matches"] = owner == plan.run_id
-                if not entry["entries"] or not entry["run_id_matches"]:
-                    # No entries is as missing as no file: at least one stage
-                    # ran, so an empty journal is a journal every write failed.
+                    for line in handle:
+                        if not line.endswith(b"\n"):
+                            unreadable_lines += 1
+                            break  # A stopped writer may leave a torn final line.
+                        try:
+                            record = json.loads(line)
+                        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+                            unreadable_lines += 1
+                            continue  # A later append can leave a torn line in the middle.
+                        if (
+                            not isinstance(record, dict)
+                            or record.get("schema") != "stage-timing-journal.v2"
+                        ):
+                            unreadable_lines += 1
+                            continue
+                        if record.get("run_id") != plan.run_id or record.get("run_root") != str(
+                            plan.run_root
+                        ):
+                            foreign_lines += 1
+                            continue
+                        entries += 1
+                entry["entries"] = entries
+                entry["unreadable_lines"] = unreadable_lines
+                entry["foreign_lines"] = foreign_lines
+                if not entries:
                     entry["failure"] = (
-                        f"the journal at {path} belongs to run {owner!r} or has no entries; "
-                        "the orchestrator refuses to merge into a foreign journal and says "
-                        "so in the transcript"
+                        f"the journal at {path} has no entries for run {plan.run_id!r}"
                     )
                     missing.append(name)
             except (OSError, ValueError, RecursionError, MemoryError) as error:
@@ -824,7 +946,8 @@ class BoundedTranscript:
 
     def __init__(self, path: Path, *, head_bytes: int, tail_bytes: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = path.open("wb")
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        self._handle = os.fdopen(descriptor, "wb")
         self._head_room = head_bytes
         self._tail_bytes = tail_bytes
         self._tail = bytearray()
@@ -1020,7 +1143,20 @@ def main(
         )
         args = build_parser().parse_flags(run_argv, run_report)
         plan = resolve_run_plan(args, bootstrap_plan, launch_token)
+        if plan.models is not None or plan.stage is not None or plan.from_stage is not None:
+            bootstrap_plan = replace(
+                bootstrap_plan, preflight_roles=tuple(sorted(plan.required_chairs()))
+            )
+        plan = replace(plan, bootstrap=bootstrap_plan)
         approved_roots, skipped_roots = require_approved_submission_folder(plan)
+        if plan.selected_stages()[0] == "perlector":
+            try:
+                verify_predecessor_seal(RunTree(plan.run_root, plan.run_id), "perlector")
+            except ContractError as error:
+                raise RunRefusal(
+                    f"starting at perlector requires this run's sealed attestatores stage: {error}",
+                    report_path=plan.report_path,
+                ) from error
     except PlanRefusal as refusal:
         return _refuse(refusal, now=now)
 
@@ -1044,7 +1180,9 @@ def main(
     }
     _write_run_report(plan, {**base, "state": "bootstrapping", "exit_code": None})
 
-    report = bootstrap_main.run_bootstrap(bootstrap_plan, now=now, actions_factory=actions_factory)
+    report = bootstrap_main.run_bootstrap(
+        bootstrap_plan, now=now, actions_factory=actions_factory, environment=environment
+    )
     if isinstance(report, int):
         _write_run_report(
             plan,
@@ -1071,6 +1209,18 @@ def main(
         return EXIT_BOOTSTRAP_RED
     try:
         placement_tier, serving_config_inputs = _placement_tier(report)
+        receipt = report.receipts.get("preflight")
+        smokes = receipt.get("smoke_receipts") if isinstance(receipt, dict) else None
+        smoked = (
+            {item.get("chair") for item in smokes if isinstance(item, dict)}
+            if isinstance(smokes, list)
+            else set()
+        )
+        missing = plan.required_chairs(configured_only=True) - smoked
+        if missing:
+            raise RunRefusal(
+                f"selection needs a chair without a green PREFLIGHT smoke receipt: {sorted(missing)}"
+            )
     except RunRefusal as refusal:
         refusal.report_path = plan.report_path
         _write_run_report(
@@ -1122,6 +1272,8 @@ def main(
         failure_detail = f"the orchestrator could not start: {error}"
         transcript_failure = None
     exit_code = _ORCHESTRATOR_EXITS.get(orchestrator_exit, EXIT_FAILED)
+    if exit_code == EXIT_COMPLETE and plan.ends_before_armarium:
+        exit_code = EXIT_SELECTION_COMPLETE
     if exit_code == EXIT_FAILED and failure_detail is None:
         # `EXIT_FATAL` is a *named* orchestrator exit (`common/stage.py`:
         # structural or fatal), it simply has no run state of its own here. It
@@ -1148,7 +1300,9 @@ def main(
             "holds the evidence it was decided on"
         )
     state = _STATE_FOR_EXIT[exit_code]
-    holding = exit_code in _HOLD_AFTER_EXITS
+    holding = exit_code in _HOLD_AFTER_EXITS and not (
+        exit_code == EXIT_HELD and plan.ends_before_armarium
+    )
     records_at_close, records_missing = _records_at_close(
         plan, transcript_failure=transcript_failure
     )
@@ -1158,14 +1312,7 @@ def main(
             f"run's: {', '.join(records_missing)}; the writer's own reason is in "
             f"{plan.transcript_path} if that survived"
         )
-        if exit_code == EXIT_COMPLETE:
-            # A run is not complete while a record its own report names is
-            # missing: the timings are what the first live run exists to
-            # measure, and a transcript or liveness record that never landed
-            # is the diagnosis a later session would go looking for. It is
-            # held for review rather than failed -- the run tree is intact and
-            # the orchestrator finished -- and `held` holds to the hard
-            # deadline exactly as `complete` does, so the meter is unchanged.
+        if exit_code == EXIT_COMPLETE and any(name != "timing_journal" for name in records_missing):
             exit_code = EXIT_HELD
             state = _STATE_FOR_EXIT[exit_code]
             holding = True

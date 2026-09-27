@@ -118,6 +118,7 @@ python_files = ["test_*.py"]
 addopts = "-q -p no:tach"
 markers = [
     "full: slower integration and exhaustive boundary cases reserved for the full gate",
+    "hostile_local: hostile local filesystem and terminal input cases run only in CI",
     "scanner: core credential-detection cases the everyday gate runs even though they are also full",
     # The one marked test reaches the network, by design: it fetches the pinned
     # vendor sources into a temporary directory, diffs this repository's carried

@@ -30,6 +30,7 @@ def test_every_regular_file_is_found_sorted_hashed_and_retained(tmp_path):
     assert found[0].sha256 == __import__("hashlib").sha256(b"first").hexdigest()
 
 
+@pytest.mark.hostile_local
 def test_a_symlink_inside_a_submission_is_refused_rather_than_followed(tmp_path):
     """A link points at something the submitter did not submit. Following it would
     put bytes nobody chose into a sealed corpus."""
@@ -44,6 +45,7 @@ def test_a_symlink_inside_a_submission_is_refused_rather_than_followed(tmp_path)
         read_submission(folder, max_bytes=LIMIT)
 
 
+@pytest.mark.hostile_local
 def test_a_submitted_folder_that_is_itself_a_symlink_is_refused(tmp_path):
     real = tmp_path / "real"
     real.mkdir()
@@ -55,6 +57,7 @@ def test_a_submitted_folder_that_is_itself_a_symlink_is_refused(tmp_path):
         read_submission(link, max_bytes=LIMIT)
 
 
+@pytest.mark.hostile_local
 def test_a_non_regular_entry_is_refused_rather_than_read(tmp_path):
     folder = tmp_path / "batch"
     folder.mkdir()
@@ -105,18 +108,9 @@ def test_aggregate_bytes_read_are_bounded_even_when_nothing_is_retained(tmp_path
         read_submission(folder, max_bytes=0)
 
 
+@pytest.mark.hostile_local
 def test_a_source_changed_while_its_digest_is_read_is_a_named_refusal(tmp_path, monkeypatch):
-    """A ledger may only bind one stable file, never a sequence of its revisions.
-
-    The real in-place rewrite still happens mid-read, so `_read_once` genuinely
-    reads a file that changed under it. What is mocked is only the *detection*
-    side (`_stable_file_metadata`, called exactly once before and once after):
-    a same-size rewrite's real effect on `mtime_ns`/`ctime_ns` is at the mercy of
-    the filesystem's clock resolution, and under enough scheduler load two writes
-    microseconds apart can land in the same tick -- making this test flake on a
-    real timer without the check itself being wrong. Forcing the two metadata
-    reads to disagree proves `_walk`'s own comparison, not the host clock.
-    """
+    """A ledger may only bind one stable file, never a sequence of its revisions."""
     folder = tmp_path / "batch"
     folder.mkdir()
     source = folder / "page.png"
@@ -188,6 +182,7 @@ def test_reopening_a_source_reads_an_ordinary_nested_file(tmp_path):
         opened.assert_unchanged(expected_sha256=hashlib.sha256(b"real bytes").hexdigest())
 
 
+@pytest.mark.hostile_local
 def test_reopening_refuses_a_leaf_swapped_for_a_symlink_after_the_walk(tmp_path):
     """The exact case a second plain-path open would miss.
 
@@ -212,6 +207,7 @@ def test_reopening_refuses_a_leaf_swapped_for_a_symlink_after_the_walk(tmp_path)
             pass
 
 
+@pytest.mark.hostile_local
 def test_reopening_refuses_a_symlinked_intermediate_directory(tmp_path):
     """A component earlier in the path, not only the leaf, can be swapped."""
     outside = tmp_path / "outside"
@@ -260,6 +256,7 @@ def test_reopening_a_name_with_an_embedded_nul_is_a_named_refusal_not_a_crash(tm
             pass
 
 
+@pytest.mark.hostile_local
 def test_an_atomic_replacement_of_the_name_leaves_the_held_descriptor_admissible(tmp_path):
     """Replacing the *name* is not a change to the bytes this descriptor holds.
 
@@ -281,6 +278,7 @@ def test_an_atomic_replacement_of_the_name_leaves_the_held_descriptor_admissible
         opened.assert_unchanged(expected_sha256=hashlib.sha256(b"original bytes").hexdigest())
 
 
+@pytest.mark.hostile_local
 def test_a_rewrite_disguised_as_a_name_replacement_is_refused_by_the_ledgered_digest(tmp_path):
     """The name-replacement exemption cannot be worn by a rewrite.
 
@@ -321,6 +319,7 @@ def test_a_rewrite_disguised_as_a_name_replacement_is_refused_by_the_ledgered_di
             opened.assert_unchanged(expected_sha256=ledgered)
 
 
+@pytest.mark.hostile_local
 def test_a_name_replacement_still_passes_when_the_bytes_match_the_ledger(tmp_path):
     """The legitimate case survives the stricter check: same bytes, one name gone."""
     folder = tmp_path / "batch"
@@ -336,6 +335,7 @@ def test_a_name_replacement_still_passes_when_the_bytes_match_the_ledger(tmp_pat
         opened.assert_unchanged(expected_sha256=ledgered)
 
 
+@pytest.mark.hostile_local
 def test_a_source_rewritten_in_place_under_the_reader_is_a_named_refusal(tmp_path):
     """The other half: the same inode, different bytes, while it is being read."""
     folder = tmp_path / "batch"
@@ -350,6 +350,7 @@ def test_a_source_rewritten_in_place_under_the_reader_is_a_named_refusal(tmp_pat
             opened.assert_unchanged(expected_sha256=hashlib.sha256(b"original bytes").hexdigest())
 
 
+@pytest.mark.hostile_local
 def test_a_same_size_rewrite_cannot_hide_by_restoring_its_mtime(tmp_path):
     """Size and mtime alone are not a stable identity; ctime exposes the write."""
     folder = tmp_path / "batch"

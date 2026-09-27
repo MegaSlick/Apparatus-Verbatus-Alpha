@@ -49,7 +49,6 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP, RECENSOR  # noqa: E402
 from common.credentials import looks_like_credential_env  # noqa: E402
-from common.durability import atomic_replace  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
     load_hard_failure_policy,
@@ -130,10 +129,14 @@ _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_
 # from wall-clock differences is wrong across a clock adjustment, and a
 # monotonic reading names no instant a reader could compare across records.
 _clock = time.monotonic
-STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v1"
+STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v2"
 
 
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
+    if (getattr(args, "canary_folder", None) is None) != (
+        getattr(args, "canary_manifest", None) is None
+    ):
+        raise ContractError("--canary-folder and --canary-manifest must be supplied together")
     if args.submission_folder is not None:
         if (
             getattr(args, "triage_clusters", None) is not None
@@ -149,6 +152,8 @@ def require_coherent_ingress_options(args: argparse.Namespace) -> None:
             "the walking skeleton's declared synthetic pages are not gated input "
             "(--submission-manifest was supplied without --submission-folder)"
         )
+    if getattr(args, "canary_folder", None) is not None:
+        raise ContractError("canary input requires a real submission folder")
     if args.data_gate_policy is not None:
         raise ContractError(
             "--data-gate-policy is meaningful only with --submission-folder; the synthetic "
@@ -168,8 +173,11 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
     for attribute in (
         "submission_folder",
         "submission_manifest",
+        "canary_folder",
+        "canary_manifest",
         *_TRIAGE_PATHS,
         "cache_root",
+        "store_root",
     ):
         value = getattr(args, attribute, None)
         if value is not None:
@@ -204,9 +212,12 @@ def _require_absolute_caller_paths(args: argparse.Namespace) -> None:
         "run_root",
         "submission_folder",
         "submission_manifest",
+        "canary_folder",
+        "canary_manifest",
         "data_gate_policy",
         *_TRIAGE_PATHS,
         "cache_root",
+        "store_root",
     ):
         value = getattr(args, attribute, None)
         if value is not None and not Path(value).is_absolute():
@@ -251,6 +262,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         ),
     ]
     command += _argv((("--cache-root", getattr(args, "cache_root", None)),), omit_unset=True)
+    command += _argv((("--store-root", getattr(args, "store_root", None)),), omit_unset=True)
     # Later stages may read only the run tree the Door sealed, never source paths.
     if program == STAGE_PROGRAMS["door"]:
         # Only the Door creates the run authority, so only it can seal the commit.
@@ -261,6 +273,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
                 ("--repository-commit", commit),
                 ("--submission-folder", args.submission_folder),
                 ("--submission-manifest", args.submission_manifest),
+                ("--canary-folder", getattr(args, "canary_folder", None)),
+                ("--canary-manifest", getattr(args, "canary_manifest", None)),
                 ("--data-gate-policy", args.data_gate_policy),
                 ("--triage-decision-manifest", getattr(args, "triage_decision_manifest", None)),
                 ("--triage-clusters", getattr(args, "triage_clusters", None)),
@@ -367,8 +381,7 @@ def _record_stage_timing(
     Outside the run tree, because the tree is pinned byte-identical across
     reruns and resumes and a clock is not. Best effort, because refusing a
     completed stage over its stopwatch would destroy work to protect a record
-    of it; a failure is said on stderr (principle 2). Rewritten whole, because
-    a torn append is a journal no reader can parse.
+    of it; a failure is said on stderr.
     """
 
     journal = getattr(args, "stage_timing_journal", None)
@@ -377,6 +390,9 @@ def _record_stage_timing(
     path = Path(journal)
     subject = extra.get("act")
     entry: dict[str, object] = {
+        "schema": STAGE_TIMING_JOURNAL_SCHEMA,
+        "run_id": args.run_id,
+        "run_root": str(args.run_root),
         # The Door and the Exemplar share `1_exemplar/`, so name the member.
         "stage": _PROGRAM_NAMES.get(program, program),
         "program": program,
@@ -389,54 +405,37 @@ def _record_stage_timing(
     }
     try:
         # Inside the try: this runs from a `finally`, and a refusal here would
-        # replace the stage failure already propagating. Recorded per entry so
-        # a resume at another commit is visible; run.json is never rewritten.
+        # replace the stage failure already propagating. A resume at another
+        # commit is visible in each line; run.json is never rewritten.
         commit, commit_detail = repository_commit(args)
         entry["repository_commit"] = commit
         entry["repository_commit_detail"] = commit_detail
-        entries = _prior_journal_entries(path, args)
-        entries.append(entry)
-        _atomic_json(
-            path,
-            {
-                "schema": STAGE_TIMING_JOURNAL_SCHEMA,
-                "run_id": args.run_id,
-                "run_root": str(args.run_root),
-                "entries": entries,
-            },
-        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "r+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell():
+                handle.seek(0)
+                first_line = handle.readline()
+                try:
+                    first = json.loads(first_line)
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise ValueError("existing timing journal has no valid first line") from error
+                if (
+                    not isinstance(first, dict)
+                    or first.get("schema") != STAGE_TIMING_JOURNAL_SCHEMA
+                ):
+                    raise ValueError("existing timing journal is not stage-timing-journal.v2")
+                handle.seek(-1, os.SEEK_END)
+                if handle.read(1) != b"\n":
+                    handle.write(b"\n")
+            handle.write(json.dumps(entry, sort_keys=True).encode("utf-8") + b"\n")
     except Exception as error:  # noqa: BLE001 -- a stopwatch never fails a stage
         print(
             f"run {args.run_id}: the {program} timing entry could not be journaled "
             f"to {path}: {error}",
             file=sys.stderr,
         )
-
-
-def _prior_journal_entries(path: Path, args: argparse.Namespace) -> list:
-    """The entries to carry forward, refusing a journal that names another run.
-
-    Known limitation: only a dict journal is guarded. A non-dict one is
-    overwritten, and a non-list `entries` is dropped.
-    """
-    existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
-    if not isinstance(existing, dict):
-        return []
-    identity = (existing.get("schema"), existing.get("run_id"), existing.get("run_root"))
-    expected = (STAGE_TIMING_JOURNAL_SCHEMA, args.run_id, str(args.run_root))
-    if identity != expected:
-        raise ContractError(
-            f"the timing journal at {path} already belongs to {identity!r}, and this "
-            f"run is {expected!r}; it was left unchanged rather than merged"
-        )
-    if isinstance(existing.get("entries"), list):
-        return list(existing["entries"])
-    return []
-
-
-def _atomic_json(path: Path, record: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_replace(path, json.dumps(record, sort_keys=True, indent=2).encode("utf-8"), strict=False)
 
 
 def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, str, str]]:
@@ -471,6 +470,8 @@ def main() -> int:
     parser.add_argument("--fixture", required=True)
     parser.add_argument("--submission-folder")
     parser.add_argument("--submission-manifest")
+    parser.add_argument("--canary-folder")
+    parser.add_argument("--canary-manifest")
     parser.add_argument("--triage-decision-manifest", default=None)
     parser.add_argument("--triage-clusters", default=None)
     parser.add_argument("--triage-producer-recipe", default=None)
@@ -506,6 +507,7 @@ def main() -> int:
         help="the sealed model-chair roster and recipes for this run",
     )
     parser.add_argument("--cache-root", default=None)
+    parser.add_argument("--store-root", default=None)
     parser.add_argument(
         "--mechanics-qualification",
         action="store_true",

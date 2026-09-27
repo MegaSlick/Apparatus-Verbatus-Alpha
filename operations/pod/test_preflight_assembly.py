@@ -42,6 +42,7 @@ from pathlib import Path
 import pytest
 
 from common.chairs.models import ChairIdentity
+from operations.serving.config import FixtureProfile, ServingRecipes, UnsupportedProfile
 from operations.serving.preflight import _with_service_evidence
 
 from .preflight import (
@@ -113,9 +114,6 @@ class Models:
 class Verifier:
     def verify(self, chair: ChairIdentity) -> dict[str, object]:
         return {"verified": True, "revision": chair.revision}
-
-    def refetch_once(self, chair: ChairIdentity) -> None:
-        raise AssertionError("no cache mismatch is staged in this module")
 
 
 class ServedHandle:
@@ -217,6 +215,37 @@ def synthetic_profile() -> GpuProfile:
     )
 
 
+def test_selected_roles_include_only_named_chairs_and_allow_an_empty_selection(
+    fixture_page: Path,
+) -> None:
+    class RecordingVerifier(Verifier):
+        def __init__(self) -> None:
+            self.roles: list[str] = []
+
+        def verify(self, chair: ChairIdentity) -> dict[str, object]:
+            self.roles.append(chair.role)
+            return super().verify(chair)
+
+    verifier = RecordingVerifier()
+    for selected, expected in (
+        (frozenset({"attestator_2"}), ["attestator_2"]),
+        (frozenset(), []),
+    ):
+        verifier.roles.clear()
+        report = PreflightRunner(
+            Models("attestator_1", "attestator_2"),
+            table(),
+            verifier,
+            Reader(served=False),
+            fixture_page,
+            selected_roles=selected,
+        ).run(synthetic_profile())
+        assert [placement.chair for placement in report.placements] == expected
+        assert verifier.roles == expected
+        if not selected:
+            assert not any(issue.code == "no-chair-verified" for issue in report.issues)
+
+
 def two_identical_cards(argv: list[str]) -> subprocess.CompletedProcess[str]:
     """Two visible, identical cards."""
 
@@ -305,6 +334,63 @@ def fixture_page(tmp_path: Path) -> Path:
 
 def runner(fixture: Path, *, roles: tuple[str, ...], reader: Reader) -> PreflightRunner:
     return PreflightRunner(Models(*roles), table(), Verifier(), reader, fixture)
+
+
+def test_unsupported_tier_is_placed_without_cache_or_smoke(fixture_page: Path) -> None:
+    class CountingVerifier(Verifier):
+        calls: list[str] = []
+
+        def verify(self, chair: ChairIdentity) -> dict[str, object]:
+            self.calls.append(chair.role)
+            return super().verify(chair)
+
+    class CountingReader(Reader):
+        calls: list[str] = []
+
+        def read(
+            self, chair: ChairIdentity, fixture: Path, placement: PlacementTier
+        ) -> SmokeResult:
+            self.calls.append(chair.role)
+            return super().read(chair, fixture, placement)
+
+    unsupported = UnsupportedProfile(
+        "perlector-recipe", "perlector", "generic-24gb", "51.7 GiB weights exceed this tier"
+    )
+    serving = FixtureProfile(
+        "attestator_3-recipe", "attestator_3", "generic-24gb", "offline test chair"
+    )
+    recipes = ServingRecipes((unsupported, serving))
+    verifier = CountingVerifier()
+    reader = CountingReader(served=True)
+    runner = PreflightRunner(
+        Models("perlector", "attestator_3"),
+        table(),
+        verifier,
+        reader,
+        fixture_page,
+        serving_recipes=recipes,
+    )
+    report = runner.run(measured_profile())
+
+    assert report.color == "green"
+    assert {placement.chair: placement.state for placement in report.placements} == {
+        "attestator_3": "planned",
+        "perlector": "unservable-at-tier",
+    }
+    assert verifier.calls == reader.calls == ["attestator_3"]
+    assert [receipt["chair"] for receipt in report.smoke_receipts] == ["attestator_3"]
+
+    all_unsupported = PreflightRunner(
+        Models("perlector"),
+        table(),
+        verifier,
+        reader,
+        fixture_page,
+        serving_recipes=ServingRecipes((unsupported,)),
+    ).run(measured_profile())
+    assert all_unsupported.color == "red"
+    assert {issue.code for issue in all_unsupported.issues} == {"no-chair-verified"}
+    assert verifier.calls == reader.calls == ["attestator_3"]
 
 
 def test_a_real_card_and_a_served_chair_prove_the_assembly(fixture_page: Path) -> None:
@@ -436,8 +522,7 @@ def test_a_smoke_adapter_cannot_write_the_runtime_owned_served_engine_field(
 ) -> None:
     """The field the assembly claim is published under is the runtime's to write.
 
-    Same posture as `repaired_once` on a cache receipt: an adapter that could
-    pre-populate it could assert its own proof.
+    An adapter that could pre-populate it could assert its own proof.
     """
 
     class Forger(Reader):
@@ -491,14 +576,7 @@ def test_served_by_must_be_a_real_name_or_nothing() -> None:
 
 
 def test_a_caller_built_profile_cannot_claim_a_measured_card(fixture_page: Path) -> None:
-    """The hole this guard closes, stated as the caller would have exploited it.
-
-    `PreflightRunner.run` takes the profile from its caller, and `measured` was
-    an ordinary constructor argument -- so anything that could call `run` could
-    hand it a profile declaring a card nobody read, and the receipt would have
-    published "real assembly measured on <whatever the caller typed>". The
-    profile is now refused at construction, before it can reach a runner at all.
-    """
+    """The hole this guard closes, stated as the caller would have exploited it."""
 
     with pytest.raises(ValueError, match="cannot declare itself measured"):
         GpuProfile(

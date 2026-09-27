@@ -38,6 +38,7 @@ def _within_ten_seconds(call: Callable[[], object]) -> BaseException:
     return raised[0]
 
 
+@pytest.mark.hostile_local
 def test_reading_a_record_from_a_fifo_refuses_instead_of_hanging(tmp_path: Path):
     """The protection `sha256_file` carries, applied to the other reader.
 
@@ -54,6 +55,7 @@ def test_reading_a_record_from_a_fifo_refuses_instead_of_hanging(tmp_path: Path)
     assert caught.errno == errno.EINVAL
 
 
+@pytest.mark.hostile_local
 def test_a_digest_of_a_fifo_refuses_the_same_way(tmp_path: Path):
     """Invariant #14's shape: the sibling this was copied from still refuses too."""
     fifo = tmp_path / "not-a-file"
@@ -92,6 +94,7 @@ def test_a_fifo_in_a_sealed_source_folder_refuses_instead_of_hanging_the_upload(
     assert "not a regular file" in str(caught) or "absent" in str(caught)
 
 
+@pytest.mark.hostile_local
 def test_reusing_a_receipt_path_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
     target = tmp_path / "existing.json"
     os.mkfifo(target)
@@ -361,16 +364,11 @@ def test_operator_descriptor_publication_reports_a_directory_sync_failure(
         ),
     ],
 )
+@pytest.mark.hostile_local
 def test_a_dangling_receipt_directory_link_refuses_rather_than_reading_as_empty(
     tmp_path: Path, read: Callable[[records.ReceiptStore], object]
 ) -> None:
-    """`exists()` follows the link, so a dangling one is not "no receipts yet".
-
-    Both readers asked `exists()` first and returned an empty history, so an
-    unsafe receipt location was reported to the operator as nothing recorded —
-    no saved balance observation, no alert, and no sign that anything was
-    wrong. The link is named before anything asks whether it resolves.
-    """
+    """`exists()` follows the link, so a dangling one is not "no receipts yet"."""
 
     state = tmp_path / "operator-state"
     state.mkdir()
@@ -392,6 +390,7 @@ def test_an_absent_receipt_directory_is_still_an_empty_history(tmp_path: Path) -
     assert store.readable_records_of_kind("balance-observation") == ([], [])
 
 
+@pytest.mark.hostile_local
 @pytest.mark.parametrize(
     "read",
     [
@@ -443,6 +442,7 @@ def test_a_receipt_directory_swapped_after_its_check_is_not_the_one_read(
     assert not (state / "receipts" / real.name).exists()
 
 
+@pytest.mark.hostile_local
 def test_a_receipt_entry_swapped_for_a_link_after_the_listing_is_refused_not_followed(
     tmp_path: Path,
 ) -> None:

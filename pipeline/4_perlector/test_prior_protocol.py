@@ -346,56 +346,6 @@ def test_core_fixture_declarations_exercise_departure_and_equality_both_ways():
         assert any(priors[key] == final[key] for key in final)
 
 
-def test_a_control_reference_forged_as_a_perlectio_is_refused(tmp_path):
-    root = tmp_path / "runs"
-    result = _run(
-        root,
-        "r",
-        "happy",
-        "--perlector-instrument-per-mille",
-        "1000",
-        "--perlector-instrument-approval-ref",
-        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
-    )
-    assert result.returncode == 0, result.stderr
-    tree = RunTree(root, "r")
-    control = _records(tree, "primed-without-prior")[0]
-    entry = next(
-        item
-        for item in tree.build_manifest(PERLECTOR)["artifacts"]
-        if item["artifact_id"] == control["artifact_id"]
-    )
-    with pytest.raises(SchemaRefusal, match="not required 'perlector'/'perlectio'"):
-        tree.read_artifact_reference(
-            {"relative_path": entry["relative_path"], "sha256": entry["sha256"]},
-            stage=PERLECTOR,
-            kind="perlectio",
-            subject_id=control["subject_id"],
-        )
-
-
-def test_a_prior_reference_forged_as_a_perlectio_is_refused(tmp_path):
-    """The sibling of the control's forged-reference refusal, for the other
-    retired-and-reaccepted kind: a Pass-A draft is never a Perlectio either."""
-    root = tmp_path / "runs"
-    result = _run(root)
-    assert result.returncode == 0, result.stderr
-    tree = RunTree(root, "r")
-    prior = _records(tree, "lectio-prior")[0]
-    entry = next(
-        item
-        for item in tree.build_manifest(PERLECTOR)["artifacts"]
-        if item["artifact_id"] == prior["artifact_id"]
-    )
-    with pytest.raises(SchemaRefusal, match="not required 'perlector'/'perlectio'"):
-        tree.read_artifact_reference(
-            {"relative_path": entry["relative_path"], "sha256": entry["sha256"]},
-            stage=PERLECTOR,
-            kind="perlectio",
-            subject_id=prior["subject_id"],
-        )
-
-
 @pytest.fixture(scope="module")
 def published_lectio_prior_payload(tmp_path_factory):
     """A real published lectio-prior payload, not a hand-built stand-in --

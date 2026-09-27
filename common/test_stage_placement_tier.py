@@ -63,11 +63,14 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         corpus_register=None,
         submission_folder=None,
         submission_manifest=None,
+        canary_folder=None,
+        canary_manifest=None,
         data_gate_policy=None,
         triage_decision_manifest=None,
         triage_clusters=None,
         triage_producer_recipe=None,
         cache_root=None,
+        store_root=None,
     )
     fields.update(overrides)
     return fields

@@ -54,6 +54,7 @@ from typing import Callable, Iterator, Sequence
 import pytest
 
 from . import pod_timer, supervise
+from .conftest import SharedClock, configured_spend_toml, standard_request, verified_shutdown
 from .controller_armer import (
     ChannelControllerArmer,
     ObservingControllerArmer,
@@ -67,7 +68,6 @@ from .fake_provider import FakeProvider
 from .launch import LaunchResult, LaunchState, PodRuntime
 from .lease import LeaseStore
 from .models import (
-    BILLING_CUTOFF_MARGIN_ENV,
     POD_REPORT_SCHEMA,
     LeaseOwnershipError,
     PodCreateRequest,
@@ -97,59 +97,16 @@ BOOTSTRAP_ARGV = ["python", "-m", "operations.pod.bootstrap_main", "--hold-only"
 
 SUPERVISOR_PID = 90001
 
-SPEND_TOML = "\n".join(
-    [
-        'schema = "pod-spend.v3"',
-        'state = "configured"',
-        'currency = "USD"',
-        'max_hourly_usd = "1.00"',
-        'max_estimated_metered_cost_usd = "2.00"',
-        'account_balance_floor_usd = "50.00"',
-        'account_balance_alert_usd = "75.00"',
-        "hard_lifetime_seconds = 3600",
-        "laptop_heartbeat_timeout_seconds = 30",
-        "shutdown_poll_interval_seconds = 1",
-        "shutdown_deadline_seconds = 8",
-        "billing_cutoff_margin_seconds = 3600",
-        "",
-    ]
-)
+SPEND_TOML = configured_spend_toml()
 
 
-class Clock:
-    """One fake clock for the launcher, the pod timer and the supervisor alike.
-
-    They are three processes in production and would each read their own
-    clock; sharing one here is what makes an ordering claim -- the
-    acknowledgement happened before the receipt observed it -- mean something
-    rather than depend on which fixture ran first.
-    """
-
-    def __init__(self) -> None:
-        self.seconds = 0.0
-
-    def now(self) -> datetime:
-        return START + timedelta(seconds=self.seconds)
-
-    def monotonic(self) -> float:
-        return self.seconds
-
-    def sleep(self, seconds: float) -> None:
-        self.seconds += seconds
+class Clock(SharedClock):
+    def __init__(self, seconds: float = 0.0) -> None:
+        super().__init__(START, seconds)
 
 
 class BillingFake(FakeProvider):
-    """`FakeProvider`, plus the billing record a *verified* close needs.
-
-    Three of the drills below close the pod from inside `create` itself, which
-    leaves no window in which a test could install billing for a pod that did
-    not exist a moment earlier.  Without it every one of those closes is
-    legitimately unverified -- `FakeProvider.capture_cost` refuses to infer
-    zero -- and the drills would then assert the wrong thing about a money
-    path.  Billing each pod as it is created is the same evidence
-    `FakeProvider.bill` installs afterwards, moved to the only moment that
-    works.
-    """
+    """A close during create needs billing installed then to verify shutdown."""
 
     def create(self, request: PodCreateRequest):  # type: ignore[no-untyped-def]
         record = super().create(request)
@@ -158,39 +115,15 @@ class BillingFake(FakeProvider):
 
 
 def closer(provider: FakeProvider, clock: Clock, *, timeout: float = 8) -> VerifiedShutdown:
-    return VerifiedShutdown(
-        provider,
-        timeout_seconds=timeout,
-        poll_seconds=1,
-        billing_cutoff_margin_seconds=3600,
-        monotonic=clock.monotonic,
-        sleeper=clock.sleep,
-        now=clock.now,
-    )
+    return verified_shutdown(provider, clock, timeout=timeout)
 
 
 def request(clock: Clock, *, lifetime: int) -> PodCreateRequest:
-    return PodCreateRequest(
-        name="launch-drill",
-        gpu_type="fake-48gb",
-        image="registry.example/verbatus@sha256:" + "a" * 64,
-        template="pinned-template",
-        volume_id="test-volume",
-        volume_mount_path=MOUNT,
-        docker_start_cmd=(
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "untracked.timer:factory",
-            "--bootstrap-command-json",
-            json.dumps(BOOTSTRAP_ARGV),
-            "--report-path",
-            REPORT_PATH,
-        ),
+    return standard_request(
         hard_deadline=clock.now() + timedelta(seconds=lifetime),
-        repository_commit="b" * 40,
-        metadata={BILLING_CUTOFF_MARGIN_ENV: "3600"},
+        name="launch-drill",
+        report_path=REPORT_PATH,
+        bootstrap_command_json=json.dumps(BOOTSTRAP_ARGV),
     )
 
 
@@ -557,16 +490,7 @@ def build_observing_drill(
 def test_a_green_launch_arms_on_the_pods_own_report_and_hands_the_lease_to_the_supervisor(
     build_drill: Callable[..., Drill],
 ) -> None:
-    """The whole arming order, in one create.
-
-    The supervisor is started and its identity recorded before the first read
-    of this launch's report object; the pod's own timer then files the report
-    the armer is waiting for; the receipt that observation produces survives
-    both validators and reaches the durable lease; and the supervisor -- which
-    resumed *this launch's* owner token rather than minting one of its own --
-    then ticks as the lease's legitimate owner and guards the pod instead of
-    closing it.
-    """
+    """The whole arming order, in one create."""
 
     drill = build_drill(lifetime=300)
     drill.pod_writes_at(2)  # the launcher's first read of the bound key misses
@@ -707,16 +631,7 @@ def test_b_a_launcher_that_dies_mid_poll_leaves_a_supervisor_that_closes_the_una
 def test_c_a_report_that_never_appears_closes_the_pod_inside_the_create_that_made_it(
     build_drill: Callable[..., Drill],
 ) -> None:
-    """No report, no proof the pod can be closed -- so it is closed now.
-
-    The bound is clamped down to what is left of the lease *less the close
-    budget*, the refusal names it, and `launch._arm_or_close` closes the pod
-    before `create` returns. Reserving that budget is what keeps this close
-    inside the hard deadline instead of starting after it. The close is
-    checked against provider state, not against the armer's
-    word for it: terminated once, absent to a GET, absent from the list, and
-    durably recorded as ``closed-verified``.
-    """
+    """No report, no proof the pod can be closed -- so it is closed now."""
 
     lifetime = 60
     drill = build_drill(lifetime=lifetime)  # nothing ever writes to the volume
@@ -798,13 +713,7 @@ def test_c2_a_pod_stuck_provisioning_is_waited_for_then_closed_when_arming_expir
 def test_d_a_pod_that_exits_under_a_fresh_heartbeat_is_closed_by_the_supervisor(
     build_drill: Callable[..., Drill],
 ) -> None:
-    """Deferral 04-4's real harm, from the green launch that precedes it.
-
-    The lease is armed, the heartbeat is perfectly fresh and the deadline is an
-    hour away -- everything `LaptopSupervisor.run_once` looks at says healthy.
-    The pod is nonetheless EXITED and billing its attached volume, and only the
-    provider lifecycle word `supervise_tick` reads on every tick can see that.
-    """
+    """An exited pod must close even while its supervisor heartbeat is fresh."""
 
     drill = build_drill(lifetime=3600)
     drill.pod_writes_at(1)

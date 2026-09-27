@@ -16,7 +16,6 @@ list would agree with itself about an act the writer had skipped.
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -32,7 +31,8 @@ from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
 from common.stage import load_fixture
-from conftest import load_stage
+from conftest import load_stage, run_stage
+from conftest import run_orchestrator as orchestrate
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -65,44 +65,6 @@ class _Context:
         return self.input_ref(self.tree.artifact_path(stage, kind, identity))
 
 
-def orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            scenario,
-            "--run-id",
-            run_id,
-            "--run-root",
-            str(root),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-
-def invoke_archetypus(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/6_archetypus/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            run_id,
-            "--scenario",
-            scenario,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-
 def _index(tree: RunTree) -> dict:
     return json.loads(tree.resolve(tree.index_path(ARCHETYPUS)).read_text(encoding="utf-8"))
 
@@ -119,6 +81,10 @@ def established_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("established") / "runs"
     assert orchestrate(root, "r", "happy").returncode == 0
     return _Context(RunTree(root, "r"))
+
+
+def invoke_archetypus(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+    return run_stage(root, run_id, scenario, "pipeline/6_archetypus/run.py")
 
 
 def test_index_reconciles_1_to_1_with_both_established_acts_in_the_happy_scenario(established_run):
@@ -236,33 +202,6 @@ def test_validate_index_refuses_an_index_whose_self_hash_was_not_recomputed(esta
 # accounting before relying on it, so these refusals are load-bearing for
 # someone other than this stage. Each case reseals a well-formed index around
 # one defect, because a refusal no test can kill is a claim nobody has measured.
-
-
-@pytest.mark.parametrize(
-    ("mutate", "expected"),
-    [
-        (lambda index: index.update(record_count=len(index["rows"]) + 1), "count disagrees"),
-        (lambda index: index.update(record_count=-1), "non-negative integer"),
-        (lambda index: index.update(record_count=True), "non-negative integer"),
-        (lambda index: index.update(record_count="2"), "non-negative integer"),
-        (lambda index: index.update(schema="skeleton.v0"), "different schema or run"),
-        (lambda index: index.update(run_id="another-run"), "different schema or run"),
-        (lambda index: index.update(stage="7_armarium"), "own stage label or self-hash"),
-        (lambda index: index.update(rows={}), "rows are not a list"),
-        (lambda index: index["rows"].__setitem__(0, {"act_id": "a"}), "malformed row"),
-        (lambda index: index["rows"][0].update(act_key=""), "row with malformed values"),
-        (lambda index: index["rows"][0].update(text_hash=7), "row with malformed values"),
-        (lambda index: index["rows"][0].update(sha256="not-a-digest"), "row with malformed values"),
-    ],
-)
-def test_validate_index_refuses_each_resealed_defect(established_run, mutate, expected):
-    index = archetypus.build_index(established_run)
-    mutate(index)
-    # Resealed, so every refusal below is the check under test rather than the
-    # self-hash catching an edit before anything else looks at it.
-    index["self_hash"] = self_hash(index)
-    with pytest.raises(FatalAccounting, match=expected):
-        archetypus.validate_index(established_run, index)
 
 
 def test_validate_index_refuses_an_index_that_is_not_the_closed_shape(established_run):

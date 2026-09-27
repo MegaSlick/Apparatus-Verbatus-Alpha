@@ -268,6 +268,7 @@ def test_a_cache_holding_tampered_bytes_is_refused_before_any_refetch(hf_world):
     assert hf_world.fetcher.calls == []
 
 
+@pytest.mark.hostile_local
 def test_a_cached_symlink_directory_is_refused_before_any_refetch(hf_world, tmp_path):
     identity = hf_world.identity()
     snapshot = hf_world.registry.ensure(identity)
@@ -400,6 +401,7 @@ def test_manifest_read_is_bounded_before_json_deserialization(tmp_path, monkeypa
         read_manifest(path, expected_digest="0" * 64, chair="attestator_1")
 
 
+@pytest.mark.hostile_local
 def test_a_manifest_path_that_is_a_symlink_is_refused_rather_than_followed(tmp_path):
     """The target is a genuinely valid, one-row manifest pinned to its own real
     digest -- not an empty one `_validate_manifest` would reject outright -- so
@@ -416,6 +418,7 @@ def test_a_manifest_path_that_is_a_symlink_is_refused_rather_than_followed(tmp_p
         read_manifest(link, expected_digest=pin, chair="attestator_1")
 
 
+@pytest.mark.hostile_local
 def test_a_manifest_fifo_is_refused_before_any_blocking_read(tmp_path):
     """A regression here is a hang, not a failure -- asserted from a worker
     thread with a deadline so it surfaces as a failed test rather than a suite
@@ -443,6 +446,7 @@ def test_a_manifest_fifo_is_refused_before_any_blocking_read(tmp_path):
     assert "must be a regular file" in str(outcome[0])
 
 
+@pytest.mark.hostile_local
 def test_a_symlinked_file_inside_a_snapshot_is_refused_rather_than_followed(tmp_path):
     """Hashing through a symlink would let a snapshot verify against bytes that
     are not in it, and that live somewhere nothing pinned."""
@@ -607,6 +611,7 @@ def test_the_materialization_fetcher_separates_client_state_without_deleting_rep
     assert not Path(f"{destination}.huggingface-cache").exists()
 
 
+@pytest.mark.hostile_local
 def test_the_materialization_fetcher_refuses_a_symlinked_destination(tmp_path):
     class ClientMustNotRun:
         def snapshot_download(self, **kwargs):
@@ -645,6 +650,7 @@ def test_the_materialization_fetcher_refuses_a_snapshot_outside_its_per_call_cac
     assert sorted(destination.iterdir()) == []
 
 
+@pytest.mark.hostile_local
 def test_the_materialization_fetcher_never_reads_an_external_cache_symlink(tmp_path):
     outside = tmp_path / "operator-secret"
     outside.write_bytes(b"must not enter model evidence")
@@ -681,6 +687,7 @@ def test_the_materialization_fetcher_never_reads_an_external_cache_symlink(tmp_p
     assert sorted(destination.iterdir()) == []
 
 
+@pytest.mark.hostile_local
 def test_the_materialization_fetcher_copies_only_internal_cache_symlink_bytes(tmp_path):
     class ReturnsInternalBlobLink:
         def snapshot_download(self, **kwargs):
@@ -705,6 +712,7 @@ def test_the_materialization_fetcher_copies_only_internal_cache_symlink_bytes(tm
     assert copied.read_bytes() == b"pinned model bytes"
 
 
+@pytest.mark.hostile_local
 def test_the_materialization_fetcher_refuses_default_apfs_name_collisions(tmp_path):
     class ReturnsCaseCollidingFiles:
         def snapshot_download(self, **kwargs):
@@ -771,6 +779,7 @@ def test_the_materialization_fetcher_names_a_per_call_cache_cleanup_failure(tmp_
         )
 
 
+@pytest.mark.hostile_local
 def test_a_validated_file_swapped_for_a_fifo_is_refused_instead_of_hanging_the_boot(tmp_path):
     """A check/use swap must end in a refusal, never in an open that never returns.
 

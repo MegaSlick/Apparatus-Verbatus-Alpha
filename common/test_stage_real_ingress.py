@@ -61,6 +61,7 @@ from common.stage import (
     StageContext,
     _designator_records_by_subject,
     adapter_recipe_for,
+    canary_ordinals,
     exemplar_page_ids,
     expected_acts,
     load_fixture,
@@ -1150,6 +1151,21 @@ def test_exemplar_page_ids_on_a_real_run_derive_from_the_sealed_bytes(real_root,
 
 
 # --- submission_identity refuses a forged or absent filename ledger --------------
+
+
+def test_only_a_sealed_canary_ledger_marks_pages_and_preserves_submission_identity():
+    real, canary = "a" * 64, "b" * 64
+    run = {
+        "ingress": real_ingress_record(),
+        "sealed_config_digests": {"canary-ledger": canary},
+        "source_manifest": [
+            {"ordinal": 1, "ledger_sha256": real, "relative_path": "canary/x.jpg"},
+            {"ordinal": 2, "ledger_sha256": canary, "relative_path": "bird.jpg"},
+        ],
+    }
+    assert canary_ordinals(run) == {2}
+    assert submission_identity(run) == real
+    assert canary_ordinals({**run, "sealed_config_digests": {}}) == set()
 
 
 def test_submission_identity_refuses_a_real_run_with_no_source_manifest():

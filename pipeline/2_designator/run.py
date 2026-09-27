@@ -85,6 +85,7 @@ from common.stage import (  # noqa: E402
     STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
     StageContext,
     _stage_records,
+    canary_ordinals,
     continuation_for,
     current_recovery_request,
     expected_acts,
@@ -1302,9 +1303,10 @@ def _publish_continuation_candidates(
     side with no proposed act over its group is published empty, never
     dropped: that ink is also unclaimed, and conservation holds it.
     """
+    canaries = canary_ordinals(context.run)
     for ordinal_a in sorted(acts_by_page):
         ordinal_b = ordinal_a + 1
-        if ordinal_b not in acts_by_page:
+        if ordinal_b not in acts_by_page or ordinal_a in canaries or ordinal_b in canaries:
             continue
         analysis_a, analysis_b = page_cache[ordinal_a], page_cache[ordinal_b]
         # Fallback tiles touch both edges by construction and would pair any two pages.

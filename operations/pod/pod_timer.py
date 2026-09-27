@@ -21,7 +21,8 @@ from typing import Callable, Mapping, Sequence
 
 from .controllers import ControllerResult, ControllerState, PodDeadmanTimer
 from .durable import atomic_write, canonical_json
-from .models import POD_REPORT_SCHEMA, require_utc
+from .models import POD_REPORT_SCHEMA, require_utc, terminating_path
+from .run_exits import EXIT_HELD, EXIT_SELECTION_COMPLETE
 
 _CLOSE_ATTEMPTS = 3
 """Bounded re-attempts of a non-green close before the timer exits.
@@ -78,17 +79,6 @@ _MAX_CLOSE_RETRY_WAIT_SECONDS = 60.0
 """The retry wait is the monitoring interval, capped: the interval is an
 operator-supplied command-line value with no upper bound, and a pod at this
 point bills the full running rate for every second the timer sleeps."""
-
-
-def terminating_path(report: Path) -> Path:
-    """Where the pre-DELETE breadcrumb goes: beside the report, never over it.
-
-    The report is the record the DELETE below destroys this container in the
-    middle of writing; putting the breadcrumb in the same file would mean the
-    breadcrumb and the record it distinguishes share a fate.
-    """
-
-    return report.with_name(f"{report.stem}-terminating{report.suffix}")
 
 
 def _note_termination(
@@ -270,7 +260,7 @@ def run_with_bootstrap(
     while context.timer.now() < context.timer.lease.hard_deadline:
         exit_code = child.poll()
         if exit_code is not None:
-            if exit_code != 0:
+            if exit_code not in (0, EXIT_HELD, EXIT_SELECTION_COMPLETE):
                 bootstrap_record = {
                     "argv": command,
                     "state": "failed",
@@ -301,17 +291,29 @@ def run_with_bootstrap(
                 )
                 return result
             if bootstrap_record["state"] == "running":
+                if exit_code == EXIT_HELD:
+                    early_reason = "selected stages held before hard deadline"
+                    remediation = "The selected stages held for review; the pod was closed to avoid idle spend."
+                elif exit_code == EXIT_SELECTION_COMPLETE:
+                    early_reason = "selected stages completed before hard deadline"
+                    remediation = (
+                        "The selected stages finished; the pod was closed to avoid idle spend."
+                    )
+                else:
+                    early_reason = "mandatory bootstrap child exited before hard deadline"
+                    remediation = (
+                        "Use a long-running bootstrap/service entrypoint; the pod was closed "
+                        "to avoid idle spend."
+                    )
                 bootstrap_record = {
                     "argv": command,
                     "state": "completed-early",
-                    "exit_code": 0,
-                    "remediation": (
-                        "Use a long-running bootstrap/service entrypoint; the pod was closed to avoid idle spend."
-                    ),
+                    "exit_code": exit_code,
+                    "remediation": remediation,
                 }
                 result, attempts, breadcrumb_failure = _close_with_retries(
                     context,
-                    "mandatory bootstrap child exited before hard deadline",
+                    early_reason,
                     sleeper,
                     interval_seconds,
                     report=report,

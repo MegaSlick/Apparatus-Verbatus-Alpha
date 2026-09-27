@@ -25,8 +25,8 @@ from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
 from operations.pod.launch import launch_evidence_keys, launch_evidence_prefixes, launch_run_id
 from operations.pod.models import (
-    DEFAULT_CONTAINER_DISK_GB,
     PodCreateRequest,
+    container_disk_gb_for_tier,
     require_utc,
 )
 from operations.pod.transfer import normalize_transfer_prefix
@@ -584,6 +584,9 @@ def build_parser() -> PlainParser:
     )
     fetch_run.add_argument("--run-id", required=True, help="the run pod_run wrote on the volume")
     fetch_run.add_argument(
+        "--canary-root", type=Path, help="private canary references and verdicts"
+    )
+    fetch_run.add_argument(
         "--into",
         type=Path,
         required=True,
@@ -877,6 +880,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "into": args.into,
                 "volume": volume,
                 "evidence_keys": evidence_keys,
+                "canary_root": args.canary_root,
             }
             # Passed only when named or derived, so the surface's own default
             # (the whole preflight/ tree) applies when neither is.
@@ -1492,7 +1496,7 @@ def load_request(path: str | Path) -> PodCreateRequest:
             hard_deadline=require_utc(deadline, "hard deadline"),
             repository_commit=raw["repository_commit"],
             # Absent falls back to the reviewed default, not the provider's.
-            container_disk_gb=raw.get("container_disk_gb", DEFAULT_CONTAINER_DISK_GB),
+            container_disk_gb=raw.get("container_disk_gb", container_disk_gb_for_tier(None)),
             template=raw.get("template"),
             metadata=metadata,
             interruptible=interruptible,
@@ -1672,7 +1676,13 @@ def _interactive_arguments() -> list[str]:
         return arguments
     if verb == "clear-leftovers":
         root = _ask("Folder to check for leftovers")
-        return ["clear-leftovers", "--root", root] if root else []
+        if not root:
+            _print(
+                "Clear-leftovers needs a folder to check for leftovers. "
+                "It was left blank, so nothing changed."
+            )
+            return []
+        return ["clear-leftovers", "--root", root]
     if verb == "run":
         run_id = _ask("A short name for this run", default="dry-run")
         return ["run", "--run-id", run_id]

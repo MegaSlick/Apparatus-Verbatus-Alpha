@@ -23,15 +23,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, DOOR, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 from common.stage import _stage_seal_payload, latest_attempt
+from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage, programs_through
+from conftest import run_orchestrator as orchestrate
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -63,26 +63,6 @@ def run_through_perlector(run_root: Path, run_id: str, scenario: str) -> None:
     for program in STAGES_THROUGH_PERLECTOR:
         result = call_stage(run_root, run_id, scenario, program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
-
-
-def orchestrate(run_root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ORCHESTRATOR),
-            "--fixture",
-            FIXTURE,
-            "--scenario",
-            scenario,
-            "--run-id",
-            run_id,
-            "--run-root",
-            str(run_root),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
 
 
 def forge_perlector_failure(tree: RunTree, fake_subject: str) -> None:
@@ -137,14 +117,6 @@ def rebind_perlector_seal(tree: RunTree) -> None:
 
 def has_any_artifact(tree: RunTree, stage: str) -> bool:
     return bool(tree.build_manifest(stage)["artifacts"])
-
-
-def snapshot(root: Path) -> dict[str, bytes]:
-    return {
-        str(path.relative_to(root)): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_path):
@@ -385,10 +357,6 @@ def test_a_breach_inside_a_recovery_round_stops_before_the_archetypus(monkeypatc
     assert orchestrator.STAGE_PROGRAMS["archetypus"] not in invoked
     assert orchestrator.STAGE_PROGRAMS["armarium"] not in invoked
     assert orchestrator.STAGE_PROGRAMS["recensor"] in invoked
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
 
 
 # --- The policy is sealed, and its point of use requires it ---------------------

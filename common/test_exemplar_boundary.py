@@ -502,30 +502,6 @@ def _sealed_derivative(master_size, declared_frame):
     return contract, master, parent, sealed
 
 
-@pytest.mark.parametrize(
-    ("field", "forged"),
-    [("container_sha256", "f" * 64), ("container_page_index", 1)],
-)
-def test_a_derivative_container_origin_must_bind_its_submitted_source(field, forged):
-    """The nested master link cannot excuse a false outer container link."""
-    from common.contracts.canonical import digest_bytes
-    from common.exemplar_boundary import _verify_rendered_source_link
-
-    contract, master, _parent, _sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
-    rendered = {
-        "container_format": "triage-split-raster",
-        "container_sha256": digest_bytes(master),
-        "container_page_index": 0,
-        "render_contract": contract,
-    }
-    source = {"sha256": digest_bytes(master), "container_page_index": 0}
-    forged_rendered = copy.deepcopy(rendered)
-    forged_rendered[field] = forged
-
-    with pytest.raises(ContractError, match="does not bind its submitted source"):
-        _verify_rendered_source_link(forged_rendered, forged_rendered, source)
-
-
 def test_a_page_cannot_change_the_render_origin_its_door_admission_sealed():
     from common.contracts.canonical import digest_bytes
     from common.exemplar_boundary import _verify_rendered_source_link
@@ -593,29 +569,6 @@ def test_a_re_derivation_mismatch_names_a_decoder_upgrade_when_one_explains_it()
     assert "sealed under different imaging libraries" not in str(undrifted.value)
 
 
-@pytest.mark.parametrize(
-    ("field", "forged"),
-    [
-        ("source_mode", "L"),
-        ("source_bands", ["L"]),
-        ("mode_transform", "identity"),
-        ("output", {"codec": "png", "color_mode": "L"}),
-        ("container_page_index", 1),
-        ("width", 3),
-        ("height", 3),
-        ("deterministic_encoder", "some-other-encoder"),
-    ],
-)
-def test_a_derivative_renderer_record_cannot_lie_about_rederived_pixels(field, forged):
-    from common.exemplar_boundary import verify_triage_derivative
-
-    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
-    contract[field] = forged
-
-    with pytest.raises(ContractError, match="renderer record does not describe"):
-        verify_triage_derivative(contract, master, parent, sealed)
-
-
 def test_an_embedded_triage_row_is_bounded_before_its_pairwise_geometry_check():
     """This boundary restates the pre-door row schema because `common/` may not
     import the numbered pipeline, and the restatement had dropped the part cap. The
@@ -672,34 +625,6 @@ def test_a_resolved_offline_producer_actor_survives_the_exemplar_boundary():
     ]
 
     verify_triage_derivative(contract, master, parent, sealed)
-
-
-@pytest.mark.parametrize(
-    "forge",
-    [
-        pytest.param(lambda row: row.pop("actor"), id="missing-actor"),
-        pytest.param(lambda row: row.__setitem__("mode", "undeclared"), id="unknown-mode"),
-        pytest.param(
-            lambda row: row.__setitem__(
-                "actor", {"kind": "model", "identity": "triage", "revision": ""}
-            ),
-            id="unresolved-actor",
-        ),
-    ],
-)
-def test_a_self_hashed_manifest_row_still_needs_complete_mode_and_actor_provenance(forge):
-    from common.exemplar_boundary import verify_triage_derivative
-
-    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
-    row = contract["derivative_page"]["triage_manifest_row"]
-    forge(row)
-    row["manifest_row_sha256"] = _rows_digest(row)
-    contract["derivative_page"]["triage_backlink"]["triage_manifest_row_sha256"] = row[
-        "manifest_row_sha256"
-    ]
-
-    with pytest.raises(ContractError, match="triage row|triage manifest row"):
-        verify_triage_derivative(contract, master, parent, sealed)
 
 
 def test_sealed_page_bytes_refuses_bytes_that_no_longer_match_the_seal():

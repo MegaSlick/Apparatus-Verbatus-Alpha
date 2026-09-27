@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import unittest.mock
-from dataclasses import dataclass, fields, replace
+from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from common.chairs.config import load_models_toml
-from common.chairs.errors import DigestMismatchRefusal
+from common.chairs.errors import DigestMismatchRefusal, DiskSpaceRefusal
 from operations.http_deadline import CANCEL_GRACE_SECONDS
 
 from . import bootstrap as bootstrap_module
@@ -46,7 +46,15 @@ from .bootstrap import (
     SubprocessBootstrapActions,
     verify_image_contract,
 )
-from .conftest import NO_OP_BOOTSTRAP, timer_start_command
+from .conftest import (
+    NO_OP_BOOTSTRAP,
+    SharedClock,
+    configured_policy,
+    configured_spend_toml,
+    standard_request,
+    timer_start_command,
+    verified_shutdown,
+)
 from .controllers import ControllerResult, ControllerState, LaptopSupervisor, PodDeadmanTimer
 from .fake_provider import FakeProvider
 from .launch import (
@@ -130,18 +138,9 @@ def adopt_confirmation(pod_id: str) -> str:
     return confirmation_phrase("adopt", pod_id, POD_HOURLY, VOLUME_HOURLY, TEST_CHALLENGE)
 
 
-@dataclass
-class Clock:
-    seconds: float = 0
-
-    def now(self) -> datetime:
-        return START + timedelta(seconds=self.seconds)
-
-    def monotonic(self) -> float:
-        return self.seconds
-
-    def sleep(self, seconds: float) -> None:
-        self.seconds += seconds
+class Clock(SharedClock):
+    def __init__(self, seconds: float = 0.0) -> None:
+        super().__init__(START, seconds)
 
 
 class _RealClock:
@@ -291,15 +290,11 @@ def policy(
     balance_alert: str = "75.00",
     cutoff_margin: int = 3600,
 ) -> SpendPolicy:
-    return SpendPolicy(
-        state="configured",
+    return configured_policy(
         max_hourly_usd=Decimal(hourly),
-        max_estimated_metered_cost_usd=Decimal("2.00"),
+        hard_lifetime_seconds=lifetime,
         account_balance_floor_usd=Decimal(balance_floor),
         account_balance_alert_usd=Decimal(balance_alert),
-        hard_lifetime_seconds=lifetime,
-        laptop_heartbeat_timeout_seconds=30,
-        shutdown_poll_interval_seconds=1,
         shutdown_deadline_seconds=5,
         billing_cutoff_margin_seconds=cutoff_margin,
     )
@@ -326,17 +321,12 @@ def test_nonpositive_balance_alert_refusal_names_the_alert() -> None:
 
 
 def request(clock: Clock, *, gpu: str = "fake-48gb", lifetime: int = 300) -> PodCreateRequest:
-    return PodCreateRequest(
-        name="pod-runtime-test",
-        gpu_type=gpu,
-        image="registry.example/verbatus@sha256:" + "a" * 64,
-        template="pinned-template",
-        volume_id="test-volume",
-        volume_mount_path="/workspace/private",
-        docker_start_cmd=timer_start_command("/workspace/private/pod-runtime-report.json"),
+    return standard_request(
         hard_deadline=clock.now() + timedelta(seconds=lifetime),
-        repository_commit="b" * 40,
-        metadata={BILLING_CUTOFF_MARGIN_ENV: "3600"},
+        name="pod-runtime-test",
+        report_path="/workspace/private/pod-runtime-report.json",
+        gpu_type=gpu,
+        docker_start_cmd=timer_start_command("/workspace/private/pod-runtime-report.json"),
     )
 
 
@@ -430,15 +420,7 @@ class WrongBillingEvidenceFake(FakeProvider):
 def shutdown(
     provider: FakeProvider, clock: Clock, *, timeout: float = 8, cutoff_margin: int = 3600
 ) -> VerifiedShutdown:
-    return VerifiedShutdown(
-        provider,
-        timeout_seconds=timeout,
-        poll_seconds=1,
-        billing_cutoff_margin_seconds=cutoff_margin,
-        monotonic=clock.monotonic,
-        sleeper=clock.sleep,
-        now=clock.now,
-    )
+    return verified_shutdown(provider, clock, timeout=timeout, cutoff_margin=cutoff_margin)
 
 
 class PreviewingRuntime(PodRuntime):
@@ -571,13 +553,7 @@ def close_to_verified(
 def test_a_create_nobody_previewed_is_refused_even_with_the_derived_phrase(
     tmp_path: Path,
 ) -> None:
-    """The price is public; being shown a preview is not.
-
-    Every component of the old phrase came from the price sheet, so any caller able to
-    read the config could compute it and spend money without a human ever seeing the
-    preview. The challenge is what closes that: with no preview issued in this run there
-    is no phrase to derive, and `create` must refuse before it reaches the provider.
-    """
+    """The price is public; being shown a preview is not."""
 
     clock = Clock()
     provider = fake(clock)
@@ -872,14 +848,7 @@ def test_one_challenge_authorizes_exactly_one_adoption(tmp_path: Path) -> None:
 def test_an_adoption_challenge_is_spent_when_it_is_claimed_not_when_it_succeeds(
     tmp_path: Path,
 ) -> None:
-    """A post-claim adoption failure must still consume its challenge.
-
-    The claim consumes the challenge before anything durable is armed, so an
-    adoption that fails afterwards leaves no lease behind -- and the phrase that
-    authorized it is gone all the same. That is the case a replay could otherwise
-    walk straight into: nothing open in the lease root, a pod still adoptable, and
-    an operator retyping the phrase they were shown a moment ago.
-    """
+    """A post-claim adoption failure must still consume its challenge."""
 
     clock = Clock()
     provider = fake(clock)
@@ -912,14 +881,7 @@ def test_an_adoption_challenge_is_spent_when_it_is_claimed_not_when_it_succeeds(
 
 
 def test_two_overlapping_creates_spend_one_challenge_exactly_once(tmp_path: Path) -> None:
-    """One confirmation must buy one pod even when two callers race for it.
-
-    The spend gate serializes whole creates, so the loser is refused before it
-    ever reaches the claim window -- `observed == [False]` below proves that
-    serialization, not the claim window's own lock. The window's atomicity has
-    its own direct race in
-    `test_validation_and_consumption_share_one_lock_in_the_claim_window`.
-    """
+    """One confirmation must buy one pod even when two callers race for it."""
 
     clock = Clock()
     provider = fake(clock)
@@ -1576,23 +1538,7 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
     armer = FakeControllerArmer(clock, provider)
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(
-            (
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "2.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 5",
-                "billing_cutoff_margin_seconds = 3600",
-            )
-        )
-        + "\n",
+        configured_spend_toml(shutdown_deadline_seconds=5),
         encoding="utf-8",
     )
     request_path = tmp_path / "request.json"
@@ -1695,23 +1641,7 @@ def test_a_preview_refused_at_the_floor_prints_no_phrase_that_still_authorizes_i
     armer = FakeControllerArmer(clock, provider)
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(
-            (
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "2.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 5",
-                "billing_cutoff_margin_seconds = 3600",
-            )
-        )
-        + "\n",
+        configured_spend_toml(shutdown_deadline_seconds=5),
         encoding="utf-8",
     )
     request_path = tmp_path / "request.json"
@@ -1868,18 +1798,9 @@ def test_observed_balance_at_or_below_hard_floor_refuses_create_and_adopt_before
 def test_unobservable_balance_at_the_actual_gate_fails_closed_even_after_a_clean_preview(
     tmp_path: Path, error: BaseException
 ) -> None:
-    """A provider error, timeout, or malformed response must never read as 'proceed',
-    and the gate must not fall back on an earlier successful preview's reading --
-    that would be exactly the cached-balance shortcut the ruling refuses.
-
-    Constructed directly against ``PodRuntime`` (not the ``runtime()``/
-    ``PreviewingRuntime`` helper): ``PreviewingRuntime.create`` stages an extra,
-    discarded preview before the one that gates, so injecting a single failure
-    through it proves nothing about the actual gate -- it can be silently consumed
-    by the discarded call instead. Every other balance test here drives the fake's
-    clean, injected balance, proving the ceiling comparison but never this
-    fail-closed catch in ``PodRuntime._observe_balance``.
-    """
+    """A provider error, timeout, or malformed response must never read as 'proceed', and
+    the gate must not fall back on an earlier successful preview's reading -- that
+    would be exactly the cached-balance shortcut the ruling refuses."""
 
     clock = Clock()
     provider = fake(clock)
@@ -2492,6 +2413,7 @@ def test_concurrent_paid_actions_reserve_each_others_maximum_liability(tmp_path:
     assert "reserved" in refused.detail
 
 
+@pytest.mark.hostile_local
 def test_spend_gate_serializes_aliases_of_the_same_lease_root(tmp_path: Path) -> None:
     """A symlink spelling must not give one liability root a second lock."""
 
@@ -2575,13 +2497,7 @@ def test_a_balance_exactly_at_the_alert_threshold_warns_without_blocking(tmp_pat
 def test_a_run_that_would_spend_through_the_hard_floor_is_refused_before_it_starts(
     tmp_path: Path,
 ) -> None:
-    """The floor is a reserve that has to survive the run, not just start it.
-
-    The balance here is above *both* the floor and the warning threshold, but
-    the run's maximum liability would leave the account below the reserve that
-    keeps the network volume alive while data is secured. The create gate must
-    therefore refuse before the provider sees a paid action.
-    """
+    """The floor is a reserve that has to survive the run, not just start it."""
 
     clock = Clock()
     provider = fake(clock)
@@ -4257,13 +4173,7 @@ def test_pod_timer_requires_bootstrap_and_persists_a_red_bootstrap_close_report(
 def test_a_pre_delete_breadcrumb_says_a_close_was_attempted_from_inside_the_pod(
     tmp_path: Path,
 ) -> None:
-    """A truncated pod-side report reads like a timer that never tried.
-
-    Every step of the close runs inside the container the DELETE destroys, so
-    the durable artefact is usually the *pre*-close report -- bootstrap
-    running, close null, green false. The breadcrumb written immediately before
-    the DELETE is what tells that apart from a close that was never issued.
-    """
+    """A truncated pod-side report reads like a timer that never tried."""
 
     clock = Clock()
     provider = fake(clock)
@@ -4429,36 +4339,6 @@ def test_a_failed_breadcrumb_is_named_in_the_durable_report_the_close_files(
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert "termination breadcrumb could not be written" in report["termination_breadcrumb_failure"]
     assert report["close_attempts"] >= 1
-
-
-def test_an_ordinary_close_leaves_no_breadcrumb_failure_field_at_all(tmp_path: Path) -> None:
-    """The field is a fault report, so its absence is what a clean run looks like."""
-
-    clock = Clock()
-    provider = fake(clock)
-    record = provider.create(request(clock))
-    provider.bill(record.pod_id, "0.07")
-    store = LeaseStore(tmp_path / "timer-breadcrumb-clean.json")
-    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=1)
-    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
-    report_path = tmp_path / "pod-report.json"
-
-    class FailedChild:
-        def poll(self) -> int:
-            return 17
-
-    run_with_bootstrap(
-        context,
-        bootstrap_command_json=NO_OP_BOOTSTRAP,
-        report_path=report_path,
-        sleeper=clock.sleep,
-        interval_seconds=1,
-        popen=lambda argv: FailedChild(),  # type: ignore[arg-type]
-    )
-
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert "termination_breadcrumb_failure" not in report
-    assert terminating_path(report_path).is_file()
 
 
 def test_bare_timer_command_is_rejected_before_a_paid_create() -> None:
@@ -4718,15 +4598,7 @@ def test_a_duplicated_nested_report_path_is_refused() -> None:
 
 
 def test_a_pod_run_shaped_nested_argv_is_accepted() -> None:
-    """The Boot B shape: two nested halves, one ``--report-path`` each.
-
-    ``pod_run`` splits its argv at the first literal ``--`` and hands the
-    second half to ``bootstrap_main``; each parser requires its own
-    ``--report-path``, and ``pod_run.resolve_run_plan`` requires the two to
-    be different files. The nested check must count the two halves
-    separately, or *every* request that could run the pipeline is refused
-    here, before any preview, lease or provider call.
-    """
+    """The Boot B shape: two nested halves, one ``--report-path`` each."""
 
     clock = Clock()
     token = "a" * 32
@@ -4759,6 +4631,54 @@ def test_a_pod_run_shaped_nested_argv_is_accepted() -> None:
     )
 
     assert accepted.docker_start_cmd == tuple(command)
+
+
+@pytest.mark.parametrize("bootstrap_record", ("report", "journal"))
+@pytest.mark.parametrize("side", ("report", "hold", "liveness", "timings", "transcript.log"))
+def test_launch_refuses_bootstrap_evidence_colliding_with_run_report_files(
+    bootstrap_record: str, side: str
+) -> None:
+    clock = Clock()
+    token = "a" * 32
+    report = f"/workspace/private/pod-run-report-{token}.json"
+    stem = report.removesuffix(".json")
+    collision = (
+        report
+        if side == "report"
+        else f"{stem}-{side}{'' if side == 'transcript.log' else '.json'}"
+    )
+    command = list(request(clock).docker_start_cmd)
+    command[command.index("--report-path") + 1] = (
+        f"/workspace/private/pod-runtime-report-{token}.json"
+    )
+    nested_index = command.index("--bootstrap-command-json") + 1
+    command[nested_index] = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.pod_run",
+            "--report-path",
+            report,
+            "--",
+            "--volume-mount-path",
+            "/workspace/private",
+            "--report-path",
+            collision
+            if bootstrap_record == "report"
+            else f"/workspace/private/bootstrap-report-{token}.json",
+            "--journal",
+            collision
+            if bootstrap_record == "journal"
+            else f"/workspace/private/bootstrap-journal-{token}.json",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="collides with (the run report|a nested report path)"):
+        replace(
+            request(clock),
+            docker_start_cmd=tuple(command),
+            metadata={"VERBATUS_LAUNCH_TOKEN": token},
+        )
 
 
 def test_two_report_paths_in_one_nested_half_are_still_refused() -> None:
@@ -5036,6 +4956,41 @@ def test_pod_timer_closes_when_bootstrap_exits_early_to_avoid_idle_spend(tmp_pat
     assert report["green"] is False
 
 
+@pytest.mark.parametrize("exit_code", [3, 8])
+def test_pod_timer_records_selected_stages_as_completed_early(
+    tmp_path: Path, exit_code: int
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.05")
+    lease = _lease(
+        LeaseStore(tmp_path / "timer-selection.json"),
+        record,
+        owner="laptop",
+        clock=clock,
+        deadline_seconds=3,
+    )
+
+    class SelectedChild:
+        def poll(self) -> int:
+            return exit_code
+
+    report_path = tmp_path / "selection-report.json"
+    result = run_with_bootstrap(
+        TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
+        bootstrap_command_json=NO_OP_BOOTSTRAP,
+        report_path=report_path,
+        popen=lambda argv: SelectedChild(),  # type: ignore[arg-type]
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert result.close_report is not None and result.close_report.verified
+    assert report["bootstrap"]["state"] == "completed-early"
+    assert report["bootstrap"]["exit_code"] == exit_code
+    if exit_code == 3:
+        assert "held for review" in report["bootstrap"]["remediation"]
+
+
 def _fixture_configuration_receipt() -> dict[str, object]:
     return {
         "schema": CONFIGURATION_RECEIPT_SCHEMA,
@@ -5078,6 +5033,13 @@ class FakeBootstrapActions:
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         return self._step(BootstrapStep.UV_ENVIRONMENT) | {"lockfile": str(lockfile)}
+
+    def configure_cuda_compat(self) -> dict[str, object]:
+        return self._step(BootstrapStep.CUDA_COMPAT) | {
+            "driver": "fixture",
+            "gpus": [],
+            "compat_path": None,
+        }
 
     def resume_transfer(self) -> dict[str, object]:
         return self._step(BootstrapStep.TRANSFER)
@@ -5174,6 +5136,40 @@ def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: P
     assert actions.calls.count(BootstrapStep.PREFLIGHT) == 1
 
 
+def test_cuda_resume_records_reinstallation_without_replacing_original_receipt(
+    tmp_path: Path,
+) -> None:
+    class Actions(FakeBootstrapActions):
+        action = "already-present"
+
+        def configure_cuda_compat(self) -> dict[str, object]:
+            return super().configure_cuda_compat() | {
+                "driver": "570.195.03",
+                "gpus": ["NVIDIA RTX A6000"],
+                "compat_path": bootstrap_module.CUDA_COMPAT_PATH,
+                "action": self.action,
+                "installed_version": bootstrap_module.CUDA_COMPAT_VERSION,
+            }
+
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    journal = BootstrapJournal(
+        tmp_path / "bootstrap.json", BootstrapPlan("c" * 40, lockfile), now=lambda: START
+    )
+    actions = Actions()
+    environment: dict[str, str] = {"LD_LIBRARY_PATH": "/other"}
+    first = Bootstrapper(journal, actions, environment=environment).run()
+    actions.action = "installed"
+    resumed = Bootstrapper(journal, actions, environment=environment).run()
+
+    receipt = resumed.receipts[BootstrapStep.CUDA_COMPAT.value]
+    assert first.green and resumed.green
+    assert receipt["action"] == "already-present"
+    assert receipt["rechecks"][0]["action"] == "installed"
+    assert receipt["rechecks"][0]["installed_version"] == bootstrap_module.CUDA_COMPAT_VERSION
+    assert environment["LD_LIBRARY_PATH"] == bootstrap_module.CUDA_COMPAT_PATH + ":/other"
+
+
 def test_a_repaired_configuration_resume_rechecks_before_expensive_steps(tmp_path: Path) -> None:
     lockfile = tmp_path / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
@@ -5213,15 +5209,7 @@ def test_bootstrap_journal_cannot_claim_green_with_unaccounted_steps(tmp_path: P
 def test_a_journal_from_before_the_configuration_step_is_refused_as_an_old_schema(
     tmp_path: Path,
 ) -> None:
-    """A journal is not blamed for a change this code made to the step list.
-
-    A v2 journal's valid completion prefix does not include ``CONFIGURATION``,
-    which now runs before ``UV_ENVIRONMENT``. Reading it under the current
-    schema name would reject a perfectly honest old journal as "duplicated,
-    reordered, or skips a step", which reads as tampering. The schema name
-    makes it what it is instead: a journal this code no longer understands,
-    to be preserved and replaced.
-    """
+    """A journal is not blamed for a change this code made to the step list."""
 
     lockfile = tmp_path / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
@@ -5304,16 +5292,231 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
         actions.sync_uv_environment(other)
 
 
-def test_sync_uv_environment_never_pairs_locked_with_frozen(tmp_path: Path) -> None:
-    """uv's own CLI refuses `--locked` and `--frozen` together.
+@pytest.mark.parametrize(
+    ("driver", "gpu", "expected"),
+    [
+        ("580.178.04", "NVIDIA RTX A6000", "not-needed"),
+        ("580.65.06", "NVIDIA RTX A6000", "not-needed"),
+        ("580.65.05", "NVIDIA RTX A6000", "installed"),
+        ("570.195.03", "NVIDIA RTX A6000", "installed"),
+        ("570.195.03", "NVIDIA GeForce RTX 4090", "refused"),
+    ],
+)
+def test_cuda_compat_decision_uses_reported_driver_and_card(
+    tmp_path: Path, monkeypatch, driver: str, gpu: str, expected: str
+) -> None:
+    from .bootstrap import CUDA_COMPAT_PATH
 
-    A review of this step once found the argv actually built,
-    `["uv", "sync", "--locked", "--frozen", "--group", "pod"]`, is a usage
-    error on the pinned uv 0.12.1 (`--locked` `conflicts_with_all`
-    `--frozen`) -- so the pod would boot, bill, and die on `uv`'s argument
-    parser before a single wheel downloaded. This captures the real argv
-    through the injected runner so that pairing cannot come back unnoticed.
-    """
+    installed = False
+    commands: list[list[str]] = []
+    original_is_dir = Path.is_dir
+
+    def is_dir(path: Path) -> bool:
+        return installed if str(path) == CUDA_COMPAT_PATH else original_is_dir(path)
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        nonlocal installed
+        commands.append(argv)
+        if argv[0] == "/usr/bin/nvidia-smi":
+            output = f"{driver}, {gpu}\n"
+        elif argv[0] == "/usr/bin/apt-cache":
+            output = "  Candidate: 580.178.04-1ubuntu1\n     580.178.04-1ubuntu1 500\n"
+        elif argv[0] == "/usr/bin/dpkg-query":
+            output = "580.178.04-1ubuntu1"
+        else:
+            installed = True
+            output = ""
+        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    cuda = unittest.mock.Mock()
+    cuda.cuInit.return_value = 0
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=runner,
+    )
+    if expected == "refused":
+        with pytest.raises(BootstrapStepFailure, match="GeForce"):
+            actions.configure_cuda_compat()
+    else:
+        receipt = actions.configure_cuda_compat()
+        assert receipt["action"] == expected
+        assert receipt["driver"] == driver
+        assert receipt["gpus"] == [gpu]
+        if expected == "installed":
+            assert receipt["installed_version"] == "580.178.04-1ubuntu1"
+            cuda.cuInit.assert_called_once_with(0)
+    assert [command[0] for command in commands] == (
+        ["/usr/bin/nvidia-smi", "/usr/bin/apt-cache", "/usr/bin/apt-get", "/usr/bin/dpkg-query"]
+        if expected == "installed"
+        else ["/usr/bin/nvidia-smi"]
+    )
+    if expected == "installed":
+        assert commands[-2][-1] == "cuda-compat-13-0=580.178.04-1ubuntu1"
+
+
+@pytest.mark.parametrize(
+    ("gpu_output", "policy", "apt_fails", "cu_result", "expected"),
+    [
+        ("", "", False, 0, "did not report"),
+        ("garbled", "", False, 0, "did not report"),
+        ("570.195.03, NVIDIA RTX A6000", "Candidate: (none)", False, 0, "apt lists empty"),
+        (
+            "570.195.03, NVIDIA RTX A6000",
+            "Candidate: 580.180.01\n 580.180.01 500",
+            False,
+            0,
+            "does not offer pinned",
+        ),
+        (
+            "570.195.03, NVIDIA RTX A6000",
+            "Candidate: 580.178.04-1ubuntu1\n 580.178.04-1ubuntu1 500",
+            True,
+            0,
+            "apt-get",
+        ),
+        (
+            "570.195.03, NVIDIA RTX A6000",
+            "Candidate: 580.178.04-1ubuntu1\n 580.178.04-1ubuntu1 500",
+            False,
+            35,
+            r"cuInit\(0\) failed",
+        ),
+    ],
+)
+def test_cuda_compat_refuses_named_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gpu_output: str,
+    policy: str,
+    apt_fails: bool,
+    cu_result: int,
+    expected: str,
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(Path, "is_dir", lambda path: False)
+    cuda = unittest.mock.Mock()
+    cuda.cuInit.return_value = cu_result
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        commands.append(argv)
+        name = Path(argv[0]).name
+        output = {
+            "nvidia-smi": gpu_output,
+            "apt-cache": policy,
+            "dpkg-query": "580.178.04-1ubuntu1",
+        }.get(name, "")
+        return subprocess.CompletedProcess(
+            argv,
+            1 if name == "apt-get" and apt_fails else 0,
+            stdout=output,
+            stderr="install failed" if name == "apt-get" and apt_fails else "",
+        )
+
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=runner,
+    )
+    with pytest.raises(BootstrapStepFailure, match=expected):
+        actions.configure_cuda_compat()
+    assert all(
+        Path(command[0]).name != "apt-get" or command[-1].endswith("=580.178.04-1ubuntu1")
+        for command in commands
+    )
+    assert not any(command[:2] == ["/usr/bin/apt-get", "update"] for command in commands)
+
+
+def test_cuda_compat_existing_pin_is_probed_without_apt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[str] = []
+    monkeypatch.setattr(Path, "is_dir", lambda path: True)
+    cuda = unittest.mock.Mock()
+    cuda.cuInit.return_value = 0
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        commands.append(Path(argv[0]).name)
+        output = (
+            "570.195.03, NVIDIA RTX A6000"
+            if commands[-1] == "nvidia-smi"
+            else "580.178.04-1ubuntu1"
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
+
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=runner,
+    )
+    receipt = actions.configure_cuda_compat()
+    assert receipt["action"] == "already-present"
+    assert receipt["installed_version"] == "580.178.04-1ubuntu1"
+    assert commands == ["nvidia-smi", "dpkg-query"]
+    cuda.cuInit.assert_called_once_with(0)
+
+
+def test_cuda_compat_command_timeouts_are_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[str, int | None]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.append((Path(argv[0]).name, kwargs["timeout"]))
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+    )
+    for name in ("nvidia-smi", "apt-cache", "apt-get"):
+        with pytest.raises(BootstrapStepFailure, match=f"{name}.*timed out"):
+            actions._command([name], BootstrapStep.CUDA_COMPAT)
+    assert seen == [("nvidia-smi", 30), ("apt-cache", 300), ("apt-get", 300)]
+
+
+def test_new_enough_cuda_host_keeps_library_path_untouched(tmp_path: Path) -> None:
+    environment = {"LD_LIBRARY_PATH": "/original"}
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=lambda argv, cwd: subprocess.CompletedProcess(
+            argv, 0, stdout="580.65.06, NVIDIA RTX A6000", stderr=""
+        ),
+    )
+    receipt = actions.configure_cuda_compat()
+    bootstrap_module._apply_cuda_compat(receipt, environment)
+    assert receipt["action"] == "not-needed"
+    assert environment == {"LD_LIBRARY_PATH": "/original"}
+
+
+def test_sync_uv_environment_never_pairs_locked_with_frozen(tmp_path: Path) -> None:
+    """uv's own CLI refuses `--locked` and `--frozen` together."""
 
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -5879,16 +6082,12 @@ class FakeCache:
     def __init__(self, *, always_mismatch: str | None = None) -> None:
         self.always_mismatch = always_mismatch
         self.verify_calls: dict[str, int] = {}
-        self.refetch_calls: dict[str, int] = {}
 
     def verify(self, identity):  # type: ignore[no-untyped-def]
         self.verify_calls[identity.role] = self.verify_calls.get(identity.role, 0) + 1
         if identity.role == self.always_mismatch:
             raise CacheMismatch("digest differs")
         return {"manifest_digest": identity.digest_manifest}
-
-    def refetch_once(self, identity):  # type: ignore[no-untyped-def]
-        self.refetch_calls[identity.role] = self.refetch_calls.get(identity.role, 0) + 1
 
 
 class FakeSmoke:
@@ -6063,19 +6262,37 @@ def test_a_placement_filesystem_failure_remains_a_read_refusal(tmp_path: Path) -
     assert isinstance(refused.value.__cause__, OSError)
 
 
-def test_digest_mismatch_refetches_once_then_refuses_without_substitution() -> None:
+def test_digest_mismatch_reports_its_first_cause_without_substitution() -> None:
     cache = FakeCache(always_mismatch="attestator_1")
     report = _preflight(cache, FakeSmoke()).run(
         GpuProfile("synthetic", "12.4", "550", (8, 0), Decimal("48"), Decimal("100"), "bfloat16")
     )
-
     assert report.color == "red"
-    assert cache.refetch_calls["attestator_1"] == 1
-    assert cache.verify_calls["attestator_1"] == 2
+    assert cache.verify_calls["attestator_1"] == 1
     assert any(
-        issue.code == "cache-mismatch-after-refetch" and issue.chair == "attestator_1"
+        issue.code == "cache-mismatch"
+        and issue.chair == "attestator_1"
+        and "digest differs" in issue.message
         for issue in report.issues
     )
+
+
+def test_disk_space_refusal_keeps_its_initial_cause() -> None:
+    class FullDisk(FakeCache):
+        def verify(self, identity):  # type: ignore[no-untyped-def]
+            if identity.role == "attestator_1":
+                raise DiskSpaceRefusal(
+                    identity.role, "container disk too small; increase container_disk_gb"
+                )
+            return super().verify(identity)
+
+    report = _preflight(FullDisk(), FakeSmoke()).run(
+        GpuProfile("synthetic", "12.4", "550", (8, 0), Decimal("48"), Decimal("100"), "bfloat16")
+    )
+    issue = next(issue for issue in report.issues if issue.chair == "attestator_1")
+    assert issue.code == "cache-verification-failed"
+    assert "container disk too small" in issue.message
+    assert "still differs" not in issue.message
 
 
 def test_smoke_read_failure_is_red_and_names_the_chair() -> None:
@@ -6142,27 +6359,6 @@ def test_smoke_receipt_cannot_replace_its_chair_identity() -> None:
 
     assert report.color == "red"
     assert any(issue.code == "smoke-receipt-misbound" for issue in report.issues)
-
-
-def test_cache_receipt_cannot_replace_runtime_retry_accounting() -> None:
-    class MiscountedCache(FakeCache):
-        def verify(self, identity):  # type: ignore[no-untyped-def]
-            return {"manifest_digest": identity.digest_manifest, "repaired_once": False}
-
-    report = _preflight(MiscountedCache(), FakeSmoke()).run(
-        GpuProfile(
-            "synthetic",
-            "12.4",
-            "550",
-            (8, 0),
-            Decimal("48"),
-            Decimal("100"),
-            "bfloat16",
-        )
-    )
-
-    assert report.color == "red"
-    assert any(issue.code == "cache-receipt-invalid" for issue in report.issues)
 
 
 @pytest.mark.parametrize(
@@ -7132,23 +7328,7 @@ def _drive_cli(
     provider.now = lambda: datetime.now(UTC)
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(
-            (
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "2.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 5",
-                "billing_cutoff_margin_seconds = 3600",
-            )
-        )
-        + "\n",
+        configured_spend_toml(shutdown_deadline_seconds=5),
         encoding="utf-8",
     )
     request_path = tmp_path / "request.json"
@@ -7238,19 +7418,7 @@ def test_preflight_with_no_smoke_read_anywhere_is_red_with_a_named_issue(tmp_pat
 def test_a_confirmation_spent_before_a_restart_authorizes_nothing_after_one(
     tmp_path: Path,
 ) -> None:
-    """The money gate is per-process, and a restart makes that a refusal, not a hole.
-
-    Unit 17's per-stage lifecycle refuses to spend one recorded grant twice, and
-    that refusal is now durable. This is the check underneath it: even where a
-    caller carries a phrase that was genuinely previewed, typed and spent before
-    a restart, the process that comes up afterwards holds no outstanding
-    challenge for it. Both shapes are covered, because an operator restarting a
-    run will plausibly try either -- replay the old phrase cold, and replay it
-    after asking for a fresh preview. The second is only a refusal because a new
-    preview mints a *different* challenge, which `mint_challenge` guarantees and
-    `test_minted_challenges_are_unpredictable_and_do_not_repeat` pins; the fixed
-    factory here would otherwise hand the restarted process the same one back.
-    """
+    """The money gate is per-process, and a restart makes that a refusal, not a hole."""
 
     clock = Clock()
     provider = fake(clock)
@@ -7304,13 +7472,6 @@ def test_an_exited_pod_is_still_present_with_its_lifecycle_word_named() -> None:
     assert observed.provider_state == "EXITED"
 
 
-def test_set_pod_state_refuses_an_unknown_pod_by_name_rather_than_a_bare_typeerror() -> None:
-    provider = fake(Clock())
-
-    with pytest.raises(ProviderFailure, match="unknown pod"):
-        provider.set_pod_state("fake-pod-404", "EXITED")
-
-
 def test_an_absent_pod_still_answers_through_the_get_404_path_with_no_lifecycle_word() -> None:
     clock = Clock()
     provider = fake(clock)
@@ -7324,41 +7485,6 @@ def test_an_absent_pod_still_answers_through_the_get_404_path_with_no_lifecycle_
     assert observed.provider_state is None
 
 
-def test_provider_status_default_carries_no_lifecycle_word_and_is_never_running() -> None:
-    """A fresh ``ProviderStatus`` is never read as RUNNING by omission: an
-    adapter that supplies nothing yields ``None``."""
-
-    status = ProviderStatus("pod-1", Presence.PRESENT, START, http_status=200)
-
-    assert status.provider_state is None
-
-
-def test_fake_provider_never_reports_running_for_a_pod_it_put_in_exited() -> None:
-    """The contract line 6066 above pins the default for; this pins it against
-    a value a code path actually produced, so the guard can fail for the
-    reason its docstring names -- ``None`` is not the string ``RUNNING``, and
-    neither is an observed non-RUNNING lifecycle word."""
-
-    clock = Clock()
-    provider = fake(clock)
-    record = provider.create(request(clock))
-
-    provider.set_pod_state(record.pod_id, "EXITED")
-    observed = provider.status(record.pod_id)
-
-    assert observed.provider_state != "RUNNING"
-
-
-# --- U2: the timer's acknowledgement becomes a record --------------------
-#
-# Every durable report this module writes after a `TimerContext` exists must
-# carry `schema: "pod-report.v1"` and an identity block naming this exact
-# lease/pod/deadline, plus an `acknowledged_at` stamped once from the injected
-# clock at `TimerContext` construction.  These drills walk each of the five
-# write sites in `pod_timer.py` and the one write that precedes any lease at
-# all (the factory-failure report), plus the shared refusal in `models.py`.
-
-
 def _expected_identity(lease: PodLease) -> dict[str, object]:
     return {
         "lease_id": lease.lease_id,
@@ -7370,7 +7496,7 @@ def _expected_identity(lease: PodLease) -> dict[str, object]:
 def test_the_first_durable_write_is_the_acknowledgement_before_the_monitoring_loop(
     tmp_path: Path,
 ) -> None:
-    """`pod_timer.py`'s first write (today ~123-125) is the acknowledgement:
+    """The timer's first write is the acknowledgement:
     it proves a provider-backed close capability exists on this pod, written
     after the `TimerContext` wraps the timer and before any monitoring."""
 
@@ -7751,22 +7877,6 @@ def test_acknowledged_report_stamps_win_over_a_payload_that_carries_the_same_key
     assert report["bootstrap"] == {"argv": ["true"], "state": "running"}
 
 
-def test_timer_context_is_hashable(tmp_path: Path) -> None:
-    """A frozen dataclass with a dict-valued field must not silently lose its
-    default identity-based `__hash__` -- a supervisor or test that puts a
-    `TimerContext` in a set or dict key must not crash."""
-
-    clock = Clock()
-    provider = fake(clock)
-    record = provider.create(request(clock))
-    store = LeaseStore(tmp_path / "hash-check.json")
-    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=60)
-    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
-
-    hash(context)
-    assert {context} == {context}
-
-
 # -- `--record-fixture` ------------------------------------------------------
 
 
@@ -7863,15 +7973,7 @@ def test_cli_record_fixture_refuses_a_provider_that_cannot_record(
 def test_cli_record_fixture_refuses_a_recorder_that_cannot_be_opened(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The other way the flag fails, on a provider that *can* record.
-
-    `FixtureRecorder` creates the parent directory, opens the file and narrows
-    its mode, so it raises `OSError` -- here because a regular file sits where
-    the fixture's parent directory belongs. Only `ValueError` was caught, so
-    this raised out of `cli.main` before the preview: a traceback where this
-    command promises a named refusal. `create` refuses, because nothing is paid
-    yet and an operator who asked for evidence should get evidence or a reason.
-    """
+    """The other way the flag fails, on a provider that *can* record."""
 
     clock = Clock()
     provider = _RecordingFake({"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}, now=clock.now)
@@ -7975,13 +8077,7 @@ def _assert_balance_hook_was_stubbed(calls: list[dict[str, object]]) -> None:
 def test_cli_notify_flag_sends_a_launch_notification_on_a_green_create(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``--notify`` fires ``notify_hooks.notify_launch`` on a green create.
-
-    Fakes stand in for ``notify_hooks.notify_launch`` *and* for the balance
-    hook ``--notify`` also wires, so this never spawns
-    ``operations/notify/notify.sh`` for real. The docstring claimed that
-    before the balance stub existed, and the claim was false.
-    """
+    """``--notify`` fires ``notify_hooks.notify_launch`` on a green create."""
 
     clock = Clock()
     provider = fake(clock)

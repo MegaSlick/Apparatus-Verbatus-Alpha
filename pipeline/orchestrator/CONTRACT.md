@@ -7,6 +7,10 @@ re-entered from any process on any machine. This file says what its driver
 vocabulary means, because a word that appears in a `--flag` and nowhere in a document is
 a word two branches can define differently.
 
+On real ingress, `--canary-folder` and `--canary-manifest` are an inseparable
+pair forwarded to the Door. Fixture ingress refuses the pair. The pod runner
+forwards the same two paths from its volume-bound run plan.
+
 ## The one sequence
 
 ```
@@ -22,9 +26,11 @@ code `--all` does at that point.
 `undispatchable_recovery_reason` answers, per request, why this orchestrator cannot
 dispatch it: a `recovery_kind` other than `fallback-recrop` (the page-level reread belongs
 to the Perlector, which has not built it), or a legacy real recrop lacking measured
-`recovery_bounds`, `coverage_observation`, or `ink_map_ref`. Real requests with that
-shape are dispatched to Designator, which verifies their evidence before cutting.
-Screening the batch first keeps an unanswerable request from leaving half a round behind it.
+`recovery_bounds`, `coverage_observation`, or `ink_map_ref`. A measured request is dispatched
+only when those three are dicts, `origin == "coverage-observation"`, and the `x`, `y`, `w` and
+`h` bounds are exact nonnegative integers (not booleans) with positive `w` and `h`; Designator
+then verifies its evidence before cutting. Screening the batch first keeps an unanswerable
+request from leaving half a round behind it.
 `report_undispatchable_recoveries` then names every refused act and request before the
 `ContractError` is raised — console output records the dispatch it would not
 make (principle 2); the durable evidence is the

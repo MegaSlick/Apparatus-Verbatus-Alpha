@@ -160,7 +160,3 @@ def test_a_request_above_the_sealed_cap_is_refused_at_the_accounting_boundary(tm
 
     with pytest.raises(FatalAccounting, match="above its sealed total budget"):
         recensor.recovery_state(_MiniContext(tree), "act_1", BUDGET)
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))

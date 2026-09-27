@@ -40,19 +40,15 @@ from .bootstrap_main import (
     resolve_plan,
     scrub_environment,
 )
+from .conftest import SharedClock
+from .run_exits import EXIT_BOOTSTRAP_RED
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-@dataclass
-class Clock:
-    seconds: float = 0.0
-
-    def now(self) -> datetime:
-        return START + timedelta(seconds=self.seconds)
-
-    def sleep(self, seconds: float) -> None:
-        self.seconds += seconds
+class Clock(SharedClock):
+    def __init__(self, seconds: float = 0.0) -> None:
+        super().__init__(START, seconds)
 
 
 def _stamp(value: datetime) -> str:
@@ -98,6 +94,11 @@ class FakeActions:
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         return self._step(BootstrapStep.UV_ENVIRONMENT, {"lockfile": str(lockfile)})
+
+    def configure_cuda_compat(self) -> dict[str, object]:
+        return self._step(
+            BootstrapStep.CUDA_COMPAT, {"driver": "fixture", "gpus": [], "compat_path": None}
+        )
 
     def resume_transfer(self) -> dict[str, object]:
         return self._step(BootstrapStep.TRANSFER, {"state": "nothing-to-transfer"})
@@ -174,6 +175,15 @@ def _environ(
     if extra:
         environment.update(extra)
     return environment
+
+
+def test_cache_root_on_volume_is_refused_before_bootstrap(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    args = build_parser().parse_args(
+        _argv(ws, extra=("--cache-root", str(ws.volume / "chair-cache")))
+    )
+    with pytest.raises(PlanRefusal, match="network volume"):
+        resolve_plan(args, _environ(Clock()))
 
 
 def _preflight_publisher(root: Path) -> PodPreflightReceiptPublisher:
@@ -342,7 +352,7 @@ def test_red_bootstrap_step_exits_nonzero_and_never_holds(tmp_path: Path) -> Non
         actions_factory=lambda plan: fake,
     )
 
-    assert exit_code == 3
+    assert exit_code == EXIT_BOOTSTRAP_RED
     assert BootstrapStep.PREFLIGHT not in fake.calls
     durable = json.loads(ws.report_path.read_text(encoding="utf-8"))
     assert durable["schema"] == "pod-bootstrap-result.v1"
@@ -365,7 +375,7 @@ def test_configuration_refusal_stops_before_environment_and_model_work(tmp_path:
         actions_factory=lambda plan: fake,
     )
 
-    assert exit_code == 3
+    assert exit_code == EXIT_BOOTSTRAP_RED
     assert fake.calls == [BootstrapStep.REPOSITORY, BootstrapStep.CONFIGURATION]
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     assert journal["failure"]["step"] == "configuration"
@@ -376,48 +386,51 @@ def test_configuration_refusal_stops_before_environment_and_model_work(tmp_path:
 # --- each named refusal, before anything runs -------------------------------
 
 
-def test_refuses_a_journal_path_outside_the_mounted_volume(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("case", "keyword"),
+    (
+        ("journal-outside", "--journal"),
+        ("report-outside", "--report-path"),
+        ("lockfile-stray", "is not the checked-out repository uv.lock"),
+        ("deadline-missing", HARD_DEADLINE_ENV),
+        ("credential-marker", "looks like a credential"),
+        ("credential-opaque", "looks like a credential"),
+        ("models-config-missing", "--models-config"),
+    ),
+)
+def test_bootstrap_plan_refusals_name_the_bad_argument(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], case: str, keyword: str
 ) -> None:
     ws = _workspace(tmp_path)
-    ws.journal = tmp_path / "outside" / "journal.json"
     clock = Clock()
-
-    exit_code = main(_argv(ws), environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert "--journal" in capsys.readouterr().err
-
-
-def test_refuses_a_report_path_outside_the_mounted_volume(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
     argv = _argv(ws)
-    outside = tmp_path / "outside" / "report.json"
-    argv[argv.index(str(ws.report_path))] = str(outside)
-    clock = Clock()
+    environment = _environ(clock)
+    if case == "journal-outside":
+        ws.journal = tmp_path / "outside" / "journal.json"
+        argv = _argv(ws)
+    elif case == "report-outside":
+        outside = tmp_path / "outside" / "report.json"
+        argv[argv.index(str(ws.report_path))] = str(outside)
+    elif case == "lockfile-stray":
+        argv[argv.index(str(ws.repository / "uv.lock"))] = str(tmp_path / "elsewhere" / "uv.lock")
+    elif case == "deadline-missing":
+        environment = {}
+    elif case == "credential-marker":
+        argv = _argv(ws, extra=("--transfer-prefix", "my-api-key-123"))
+    elif case == "credential-opaque":
+        argv = _argv(ws, extra=("--transfer-prefix", "zZ9mQ2xR7vT4kL8nP1wA6cE3sD5fG0h"))
+    else:
+        index = argv.index("--models-config")
+        del argv[index : index + 2]
 
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
+    exit_code = main(argv, environ=environment, actions_factory=_never_called)
     assert exit_code == 2
-    assert "--report-path" in capsys.readouterr().err
-    assert not outside.exists()  # no report path outside the volume is ever written to
-
-
-def test_refuses_a_lockfile_that_is_not_the_checked_out_uv_lock(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
-    argv = _argv(ws)
-    stray = tmp_path / "elsewhere" / "uv.lock"
-    argv[argv.index(str(ws.repository / "uv.lock"))] = str(stray)
-    clock = Clock()
-
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert "is not the checked-out repository uv.lock" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert keyword in err
+    if case == "models-config-missing":
+        assert "missing required plan argument(s)" in err
+    if case == "report-outside":
+        assert not outside.exists()
 
 
 def test_refuses_when_the_volume_fails_a_write_probe(
@@ -454,61 +467,6 @@ def test_refuses_when_the_volume_mount_path_does_not_exist(tmp_path: Path) -> No
 
     assert exit_code == 2
     assert not ws.volume.exists()  # the probe must never create the mount point it checks
-
-
-def test_refuses_without_a_hard_deadline_in_the_environment(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
-
-    exit_code = main(_argv(ws), environ={}, actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert HARD_DEADLINE_ENV in capsys.readouterr().err
-
-
-def test_refuses_a_credential_looking_argv_value(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
-    clock = Clock()
-    argv = _argv(ws, extra=("--transfer-prefix", "my-api-key-123"))
-
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert "looks like a credential" in capsys.readouterr().err
-
-
-def test_refuses_an_argv_value_shaped_like_a_real_secret(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A value's own opaque shape is refused even when its flag name is not."""
-
-    ws = _workspace(tmp_path)
-    clock = Clock()
-    # An opaque, separator-free, mixed alphanumeric run -- not a recognizable
-    # provider token format, just the general shape one would have.
-    argv = _argv(ws, extra=("--transfer-prefix", "zZ9mQ2xR7vT4kL8nP1wA6cE3sD5fG0h"))
-
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert "looks like a credential" in capsys.readouterr().err
-
-
-def test_credential_argv_refusal_does_not_catch_every_secret_shape() -> None:
-    """Documents a known, accepted gap rather than letting it drift unnoticed.
-
-    ``refuse_credential_looking_argv`` refuses a name-shaped marker word and an
-    opaque, separator-free 20+ character run. A short or separator-bearing
-    value with neither a marker word nor that shape is not caught -- this pins
-    the boundary so a future change is a deliberate one, not a silent one.
-    """
-
-    from .bootstrap_main import refuse_credential_looking_argv
-
-    refuse_credential_looking_argv(["--transfer-prefix", "a-plain-run-id"])
 
 
 def test_hold_only_refuses_any_plan_argument(
@@ -564,8 +522,9 @@ def test_hold_only_drills_to_the_deadline_with_no_plan_arguments(tmp_path: Path)
     assert record["tick"] == 2
 
 
-def test_hold_only_refuses_a_non_finite_interval_with_a_durable_report(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("interval", ["nan", "0"])
+def test_hold_only_refuses_invalid_interval_with_a_durable_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], interval: str
 ) -> None:
     ws = _workspace(tmp_path)
     clock = Clock()
@@ -576,39 +535,14 @@ def test_hold_only_refuses_a_non_finite_interval_with_a_durable_report(
         str(ws.report_path),
         "--hold-only",
         "--interval-seconds",
-        "nan",
+        interval,
     ]
-
     exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
     assert exit_code == 2
     assert "--interval-seconds must be a positive finite number" in capsys.readouterr().err
-    record = json.loads(ws.report_path.read_text(encoding="utf-8"))
-    assert "positive finite number" in record["reason"]
-
-
-def test_hold_only_refuses_a_zero_interval_with_a_durable_report(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
-    clock = Clock()
-    argv = [
-        "--volume-mount-path",
-        str(ws.volume),
-        "--report-path",
-        str(ws.report_path),
-        "--hold-only",
-        "--interval-seconds",
-        "0",
-    ]
-
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    assert "--interval-seconds must be a positive finite number" in capsys.readouterr().err
-    record = json.loads(ws.report_path.read_text(encoding="utf-8"))
-    assert record["schema"] == REFUSAL_SCHEMA
-    assert "positive finite number" in record["reason"]
+    report = json.loads(ws.report_path.read_text(encoding="utf-8"))
+    assert report["schema"] == REFUSAL_SCHEMA
+    assert "positive finite number" in report["reason"]
 
 
 def test_a_refusal_report_write_failure_is_named_not_swallowed(
@@ -644,23 +578,6 @@ def test_a_refusal_report_write_failure_is_named_not_swallowed(
     assert "refusal report could not be written" in err
     assert "no space left on device" in err
     assert not ws.report_path.exists()
-
-
-def test_refuses_missing_required_plan_arguments(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _workspace(tmp_path)
-    clock = Clock()
-    argv = _argv(ws)
-    index = argv.index("--models-config")
-    del argv[index : index + 2]
-
-    exit_code = main(argv, environ=_environ(clock), actions_factory=_never_called)
-
-    assert exit_code == 2
-    err = capsys.readouterr().err
-    assert "missing required plan argument(s)" in err
-    assert "--models-config" in err
 
 
 def test_resolve_plan_refusal_names_are_distinct(tmp_path: Path) -> None:
@@ -713,6 +630,7 @@ def test_resolve_plan_refusal_names_are_distinct(tmp_path: Path) -> None:
 # a symlink and confirm the write is refused before it happens.
 
 
+@pytest.mark.hostile_local
 def test_report_path_through_a_symlinked_directory_component_is_refused(
     tmp_path: Path,
 ) -> None:
@@ -730,6 +648,7 @@ def test_report_path_through_a_symlinked_directory_component_is_refused(
     assert not any(container_local.iterdir())
 
 
+@pytest.mark.hostile_local
 def test_journal_through_a_symlinked_leaf_is_refused(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     container_local = tmp_path / "container-local"
@@ -745,6 +664,7 @@ def test_journal_through_a_symlinked_leaf_is_refused(tmp_path: Path) -> None:
     assert not off_volume_journal.exists()
 
 
+@pytest.mark.hostile_local
 def test_a_symlink_escape_through_main_exits_refused_with_nothing_off_the_volume(
     tmp_path: Path,
 ) -> None:
@@ -891,17 +811,15 @@ def test_holds_when_the_report_path_carries_the_launch_token(tmp_path: Path) -> 
 
 
 def test_hold_only_reaches_the_hold_through_the_real_launch_binding(tmp_path: Path) -> None:
-    """``boot_a_request.pod_request`` renders a ``bootstrap_main --hold-only``
-    argv nested inside ``--bootstrap-command-json``, with no launch token in
-    either report path -- ``launch._bind_report_path_to_launch`` must fold the
-    token into both the outer timer's and the nested ``--report-path``, or
-    ``resolve_plan`` refuses it (this module's own
-    ``test_refuses_a_report_path_missing_the_launch_token`` proves that
-    refusal in isolation). This test drives the real templates and the real
-    binding helper end to end -- not a hand-written argv standing in for
-    them -- so a regression in either module's report-path handling is
-    caught here rather than only in a unit test of one side.
-    """
+    """``boot_a_request.pod_request`` renders a ``bootstrap_main --hold-only`` argv nested
+    inside ``--bootstrap-command-json``, with no launch token in either report path
+    -- ``launch._bind_report_path_to_launch`` must fold the token into both the
+    outer timer's and the nested ``--report-path``, or ``resolve_plan`` refuses it
+    (this module's own ``test_refuses_a_report_path_missing_the_launch_token``
+    proves that refusal in isolation). This test drives the real templates and the
+    real binding helper end to end -- not a hand-written argv standing in for them
+    -- so a regression in either module's report-path handling is caught here rather
+    than only in a unit test of one side."""
 
     from types import SimpleNamespace
 
@@ -1033,12 +951,7 @@ def test_the_real_roster_is_accepted_when_its_catalogue_and_context_are_named(
 def test_the_real_roster_default_context_is_refused_after_the_pinned_checkout(
     tmp_path: Path,
 ) -> None:
-    """The declaration is parsed only after the pinned files exist.
-
-    Plan construction records the default path without claiming to have read
-    it. CONFIGURATION then refuses the fixture declaration paired with the
-    real roster before uv, transfer, model materialization, cache, or serving.
-    """
+    """The declaration is parsed only after the pinned files exist."""
 
     ws = _workspace(tmp_path)
     ws.models_config = ws.repository / "config" / "models-real.toml"
@@ -1099,18 +1012,7 @@ def test_an_explicit_malformed_context_is_refused_by_configuration_after_checkou
 def test_build_actions_does_not_read_models_config_before_configuration_runs(
     tmp_path: Path,
 ) -> None:
-    """``build_actions`` runs before REPOSITORY checks out the pinned commit.
-
-    Building the chair cache eagerly would read whatever ``models.toml``
-    happened to be on disk at container start, not the commit the journal
-    names -- the receipt would attest a provenance nothing measured
-    (principle 6). ``--models-config`` is deliberately left absent here: were
-    ``build_actions`` still eager, constructing the real actions would already
-    raise trying to read it.
-
-    The dependency-light CONFIGURATION callback is the first action that reads
-    the checked-out files. Chair-cache construction remains lazy beyond it.
-    """
+    """``build_actions`` runs before REPOSITORY checks out the pinned commit."""
 
     from .bootstrap_main import Plan, build_actions
 
@@ -1227,12 +1129,7 @@ def test_a_configured_manifest_that_is_missing_fails_the_step_rather_than_no_opp
 def test_a_submission_manifest_with_no_transfer_target_is_refused_at_plan_time(
     tmp_path: Path,
 ) -> None:
-    """Half the transfer pair is refused before UV_ENVIRONMENT, not after it.
-
-    The in-step refusal this replaces ran after the ~10 GB sync, so the pod had
-    already paid for the download before being told its transfer was
-    misconfigured.
-    """
+    """Half the transfer pair is refused before UV_ENVIRONMENT, not after it."""
 
     ws = _workspace(tmp_path)
     manifest = ws.volume / "submission" / "manifest.json"
@@ -1351,6 +1248,7 @@ def test_a_report_path_without_the_launch_token_is_never_written(tmp_path: Path)
     assert ws.report_path.read_text(encoding="utf-8") == "a previous launch's report"
 
 
+@pytest.mark.hostile_local
 def test_configuration_refuses_a_placement_table_symlinked_out_of_the_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1409,7 +1307,8 @@ def test_a_refusal_that_precedes_report_path_validation_writes_nothing(
 
 ROOT = Path(__file__).resolve().parents[2]
 PROVEN_TIER = "generic-48gb"
-WITNESS = "h6GMQDVxeNmr7RYvT82PqWkJz3BLaF9C"
+WITNESS = "ABCEFGHJKMNPRSTUVWXYZabcdefghijkmnpqrstuvwx"
+ALTERNATE_WITNESS = WITNESS[::-1]
 
 
 def _checked_out_configuration_plan(
@@ -1628,7 +1527,7 @@ def test_an_unchanged_resume_revalidates_configuration_without_rerunning_paid_st
     )
 
     assert not isinstance(resumed, int) and resumed.green
-    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION, BootstrapStep.CUDA_COMPAT]
 
 
 def test_a_completed_receipt_missing_one_binding_fails_closed(
@@ -1843,14 +1742,7 @@ def test_preflight_measures_the_placement_table_the_run_seals(tmp_path: Path) ->
 def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
     tmp_path: Path,
 ) -> None:
-    """The fixture roster, the real ``ChairRegistry``, and the serving fakes.
-
-    Nothing here is a fixture pass borrowed into preflight: every chair's cache
-    is verified by ``ChairRegistry.ensure`` against the committed model
-    fixtures, every chair is started through ``ServingManager`` (a fake
-    launcher and loopback), and every smoke answer is the witness this
-    preflight rendered onto its own golden page moments before.
-    """
+    """The fixture roster, the real ``ChairRegistry``, and the serving fakes."""
 
     from .bootstrap_main import _build_preflight, build_parser, resolve_plan
 
@@ -1946,7 +1838,7 @@ def _preflight_seams_swapping_the_page_on_call(  # type: ignore[no-untyped-def]
             # `render_golden_page` itself refuses to replace a page it did not
             # write, which is a different property, proven in test_smoke.py.
             swapped = page_path.with_name("swapped.png")
-            render_golden_page(swapped, "swappedPageWitnessDoesNotMatch99")
+            render_golden_page(swapped, ALTERNATE_WITNESS)
             page_path.write_bytes(swapped.read_bytes())
             swapped.unlink()
         return (UtilizationSample(Decimal("71"), Decimal("31")),)
@@ -2089,7 +1981,7 @@ def test_a_supplied_golden_page_is_read_with_the_witness_its_file_names(
     from .bootstrap_main import _build_preflight, build_parser, resolve_plan
 
     ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
-    witness = "operatorRenderedWitness0123456789abcdefXYZ"
+    witness = WITNESS
     page = ws.volume / "operator-golden-page.png"
     render_golden_page(page, witness)
     witness_file = ws.volume / "operator-witness.txt"

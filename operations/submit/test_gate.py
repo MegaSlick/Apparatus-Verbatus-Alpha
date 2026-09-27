@@ -231,6 +231,7 @@ def test_a_location_outside_every_approved_root_is_refused(tmp_path, policy):
         gate.require_approved_storage_location(elsewhere, roots, "folder")
 
 
+@pytest.mark.hostile_local
 def test_a_symlink_cannot_walk_material_into_an_approved_root(tmp_path, policy):
     approved = tmp_path / "approved"
     approved.mkdir()
@@ -242,6 +243,7 @@ def test_a_symlink_cannot_walk_material_into_an_approved_root(tmp_path, policy):
         gate.require_approved_storage_location(approved / "link", roots, "folder")
 
 
+@pytest.mark.hostile_local
 def test_an_intermediate_symlink_below_the_approved_root_is_also_refused(tmp_path, policy):
     approved = tmp_path / "approved"
     actual = approved / "actual"
@@ -278,6 +280,7 @@ def test_an_unapproved_location_is_named_as_unapproved_not_as_a_redirect(tmp_pat
     assert "crosses a symlink" not in str(refusal.value)
 
 
+@pytest.mark.hostile_local
 def test_containment_is_judged_by_filesystem_identity_not_spelling(tmp_path):
     """Case variants must remain contained when text comparison disagrees."""
     source = tmp_path / "masters"

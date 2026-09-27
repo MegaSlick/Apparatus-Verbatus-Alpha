@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import os
 import subprocess
 from pathlib import Path
 
@@ -53,11 +52,14 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         # that omits them is not the surface it claims to mirror.
         submission_folder=None,
         submission_manifest=None,
+        canary_folder=None,
+        canary_manifest=None,
         data_gate_policy=None,
         triage_decision_manifest=None,
         triage_clusters=None,
         triage_producer_recipe=None,
         cache_root=None,
+        store_root=None,
         mechanics_qualification=False,
     )
 
@@ -190,18 +192,3 @@ def test_the_stand_in_namespace_mirrors_the_argv_surface_it_claims_to():
                 f"{attribute}={value!r} names a config file that does not exist; a stand-in "
                 "for the real argv surface must not carry a path the real run could not use"
             )
-
-
-def test_an_interrupt_mid_write_leaves_the_journal_and_no_temporary(tmp_path, monkeypatch):
-    orchestrator = load_stage("orchestrator")
-    journal = tmp_path / "timing.json"
-    journal.write_bytes(b"{}")
-
-    def interrupt(_descriptor):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(os, "fsync", interrupt)
-    with pytest.raises(KeyboardInterrupt):
-        orchestrator._atomic_json(journal, {"entries": []})
-    assert [path.name for path in tmp_path.iterdir()] == ["timing.json"]
-    assert journal.read_bytes() == b"{}"

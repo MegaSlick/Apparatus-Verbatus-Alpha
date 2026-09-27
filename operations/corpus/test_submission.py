@@ -544,6 +544,7 @@ def test_clean_folder_passes_the_images_only_guard(scratch):
     refuse_non_image_files(Path(report["shards"][0]["folder"]))  # does not raise
 
 
+@pytest.mark.hostile_local
 def test_symlinked_directory_inside_submission_folder_refused(scratch):
     rows = [_row("rec-1", "val", VAL_PAGE_URL)]
     page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")
@@ -780,13 +781,7 @@ def test_validate_sidecar_refuses_extra_field():
 
 
 def test_validate_sidecar_refuses_a_non_string_element_in_splits_present_by_name():
-    """A non-string in `splits_present` must refuse by name, not leak a bare `TypeError`.
-
-    `splits_present != sorted(set(splits_present))` sorts before checking element
-    types; mixing `str` and `int` raises an unguarded `TypeError` in CPython, and
-    an unhashable element (a `dict` or a `list`) raises inside `set()` before the
-    sort even runs.
-    """
+    """A non-string in `splits_present` must refuse by name, not leak a bare `TypeError`."""
     from operations.corpus.sidecar import build_sidecar
 
     good = build_sidecar(

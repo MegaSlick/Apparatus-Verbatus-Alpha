@@ -21,7 +21,7 @@ import pytest
 from common.contracts.errors import FatalAccounting
 from common.contracts.stages import DESIGNATOR, RECENSOR
 from common.runtree.store import RunTree
-from conftest import load_stage, programs_through
+from conftest import load_stage, programs_through, run_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -134,25 +134,8 @@ def test_evidence_of_a_continuation_the_seal_denies_is_fatal():
 # --- End to end: the real fixture's continuation fact travels in the review ----
 
 
-def _invoke(root, run_id, scenario, program):
-    import subprocess
-    import sys as _sys
-
-    result = subprocess.run(
-        [
-            _sys.executable,
-            str(ROOT / program),
-            "--run-root",
-            str(root),
-            "--run-id",
-            run_id,
-            "--scenario",
-            scenario,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
+def _invoke(root: Path, run_id: str, scenario: str, program: str) -> None:
+    result = run_stage(root, run_id, scenario, program)
     assert result.returncode in (0, 3), f"{program}: {result.stderr}"
 
 
@@ -273,7 +256,3 @@ def test_a_designator_held_act_with_no_region_at_all_carries_empty_facts(tmp_pat
             "flagged_pages": [],
             "unmeasurable_pages": [],
         }
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))

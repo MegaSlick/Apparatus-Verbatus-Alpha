@@ -257,7 +257,7 @@ def _reference_pages(path: Path) -> dict[str, dict[str, Any]]:
     return pages
 
 
-def _sealed_page_bindings(tree: ReadOnlyRunTree) -> dict[str, _SealedPageBinding]:
+def sealed_page_bindings(tree: ReadOnlyRunTree) -> dict[str, _SealedPageBinding]:
     """Verify every sealed Exemplar page and retain its immutable binding facts."""
     run = tree.read_run()
     sources: dict[int, dict[str, Any]] = {}
@@ -341,13 +341,13 @@ def _validate_page_binding(
         ) from error
 
 
-def _attachment_index(
+def attachment_index(
     tree: ReadOnlyRunTree,
     *,
     sealed_pages: Mapping[str, _SealedPageBinding] | None = None,
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
     if sealed_pages is None:
-        sealed_pages = _sealed_page_bindings(tree)
+        sealed_pages = sealed_page_bindings(tree)
     histories: dict[str, list[dict[str, Any]]] = {}
     act_testimonia: dict[tuple[str, str], list[dict[str, Any]]] = {}
     page_testimonia: dict[tuple[int, str], list[dict[str, Any]]] = {}
@@ -597,7 +597,7 @@ def evaluate_run(
         selected[page_id] = next(iter(identities))
 
     read_only = ReadOnlyRunTree(tree)
-    sealed_pages = _sealed_page_bindings(read_only)
+    sealed_pages = sealed_page_bindings(read_only)
     source_shas = load_exemplar_page_shas(read_only)
     ordinal_by_sha: dict[str, int] = {}
     for ordinal, digest in source_shas.items():
@@ -605,7 +605,7 @@ def evaluate_run(
             raise Refusal("malformed-record: two sealed source pages carry the same sha256")
         ordinal_by_sha[digest] = ordinal
     proposals = load_pipeline_proposal_acts(read_only)
-    attached = _attachment_index(read_only, sealed_pages=sealed_pages)
+    attached = attachment_index(read_only, sealed_pages=sealed_pages)
     page_records = [
         read_only.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
         for entry in read_only.build_manifest(ATTESTATORES)["artifacts"]

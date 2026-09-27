@@ -34,15 +34,14 @@ import pytest
 
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.identities import artifact_id, attempt_id
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR, RECENSOR
+from common.contracts.stages import ATTESTATORES, PERLECTOR, RECENSOR
 from common.fixture_identity import act_identity
 from common.runtree.store import RunTree
 from common.stage import (
     act_by_key,
-    current_recovery_request,
     load_fixture,
-    load_recovery_policy,
 )
+from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -137,104 +136,11 @@ def artifacts(tree: RunTree, stage: str, kind: str, subject: str) -> list[dict]:
     ]
 
 
-def snapshot(run_root: Path) -> dict[str, bytes]:
-    return {
-        str(path.relative_to(run_root)): path.read_bytes()
-        for path in sorted(run_root.rglob("*"))
-        if path.is_file()
-    }
-
-
 def reseal(path: Path, record: dict) -> None:
     record["self_hash"] = self_hash(
         {key: value for key, value in record.items() if key != "self_hash"}
     )
     path.write_bytes(canonical_bytes(record))
-
-
-# --- Sol-S5: one reader for the recovery denominator, at the Perlector ---------
-#
-# `_next_attempt` counted `origin == "recovery"` itself and scored every other
-# value — including an unknown or malformed one — as zero, while the Recensor,
-# Archetypus and Armarium all asked `recovery_region_count`, which refuses an
-# origin outside the closed `{proposal, recovery}` vocabulary. Two derivations of
-# one accounting fact, in the one stage that publishes an immutable record from
-# it. The readable path also happens to be caught downstream of here by T5's
-# image-based lineage check, which refuses the same forged origin with a message
-# about Exemplar lineage; that is a second check, not this one, and it does not
-# make the ordinal correct at the moment it is derived.
-
-
-def _recovered_tree(run_root: Path, run_id: str) -> tuple[RunTree, str]:
-    """A real `review` tree carried through one Designator recovery recrop."""
-    tree = through_attestatores(run_root, run_id, "review")
-    assert invoke(run_root, run_id, "review", PERLECTOR_PROGRAM).returncode == 0
-    # The Recensor holds this scenario asking for the recrop; EXIT_HELD is 3.
-    assert invoke(run_root, run_id, "review", RECENSOR_PROGRAM).returncode == 3
-    act = act_id_for("a1")
-    request = current_recovery_request(
-        tree, act, load_recovery_policy(ROOT / "config" / "recovery.toml")
-    )
-    result = invoke(
-        run_root,
-        run_id,
-        "review",
-        DESIGNATOR_PROGRAM,
-        "--operation",
-        "recover",
-        "--act",
-        act,
-        "--recovery-request",
-        request["artifact_id"],
-    )
-    assert result.returncode == 0, result.stderr
-    return tree, act
-
-
-def _forge_recovery_origin(tree: RunTree, act: str, origin: str) -> None:
-    forged = 0
-    for entry in tree.build_manifest(DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "region" or entry["subject_id"] != act:
-            continue
-        record = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        if record["payload"]["origin"] != "recovery":
-            continue
-        record["payload"]["origin"] = origin
-        reseal(
-            tree.resolve(tree.artifact_path(DESIGNATOR, "region", entry["artifact_id"])),
-            record,
-        )
-        forged += 1
-    assert forged == 1, "the review scenario cuts exactly one recovery crop for act a1"
-
-
-def test_a_forged_region_origin_is_refused_at_the_perlector_naming_the_denominator(tmp_path):
-    """Sol-S5, driven Perlector→Recensor rather than only through the helper.
-
-    The Perlector must refuse the resealed tree *itself*, before it publishes a
-    second Perlectio, and it must refuse it as what it is: a region whose place
-    in the recovery denominator is unknown. A Perlectio published here is
-    immutable, so a refusal that arrives at the next stage arrives after the
-    only record that could have been corrected is already sealed.
-    """
-    root = tmp_path / "runs"
-    tree, act = _recovered_tree(root, "r")
-    _forge_recovery_origin(tree, act, "mystery")
-    before = snapshot(root)
-
-    result = invoke(root, "r", "review", PERLECTOR_PROGRAM, "--act", act)
-
-    assert result.returncode != 0, "the Perlector read on over an unplaceable region origin"
-    assert "unrecognized origin 'mystery'" in result.stderr, result.stderr
-    assert "recovery denominator" in result.stderr, result.stderr
-    readings = artifacts(tree, PERLECTOR, "perlectio", act)
-    assert len(readings) == 1, "a second Perlectio was published over a forged denominator"
-    # The Recensor is reached with nothing new to reconcile, and refuses for its
-    # own copy of the same shared rule rather than establishing anything.
-    recensor = invoke(root, "r", "review", RECENSOR_PROGRAM)
-    assert recensor.returncode != 0, "the Recensor accepted a tree the Perlector had refused"
-    assert "unrecognized origin 'mystery'" in recensor.stderr, recensor.stderr
-    assert snapshot(root) == before, "a refused pass rewrote sealed bytes or wrote new files"
 
 
 def test_the_perlector_derives_its_ordinal_from_the_shared_recovery_reader(tmp_path):

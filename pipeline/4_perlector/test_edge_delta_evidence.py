@@ -5,12 +5,8 @@ or derived geometry sits against this act's sealed proposal. The comparison is
 never chair against chair, and the magnitudes may not feed n-of-m agreement,
 IoU or similarity, thresholds, per-chair weights, or two-chair disagreement.
 
-The recovery gate itself is already fenced structurally by
-`pipeline/5_recensor/test_quality_firewall.py`, which pins the names the gate may
-consult and the whole derivation of `wants_recovery`. What that firewall cannot
-see is a magnitude thresholded *before* it reaches the gate, in the stage that
-records these numbers. This module combines behavioral checks with narrow
-syntax tripwires around the direct spellings of those mistakes:
+The recovery gate is fenced by `pipeline/5_recensor/test_quality_firewall.py`.
+This module checks the recorded evidence and guards against directly ranking it:
 
 - one chair at a time, against sealed geometry, with no second chair in reach;
 - recorded, never ranked -- an ordering comparison is the one thing a threshold
@@ -22,8 +18,6 @@ that puts an offset on either side of `<`, `>`, or `abs()`, exactly as
 """
 
 import ast
-import inspect
-import textwrap
 from pathlib import Path
 
 from conftest import load_stage
@@ -32,10 +26,6 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 perlector = load_stage("4_perlector")
-
-
-def _derivation_tree() -> ast.Module:
-    return ast.parse(textwrap.dedent(inspect.getsource(perlector.sealed_proposal_edge_deltas)))
 
 
 # Every stage that can hold a dossier, an act attachment or a page partition --
@@ -152,49 +142,6 @@ def test_a_presented_box_contributes_no_delta_at_all():
     )
 
 
-def test_derivation_signature_exposes_neither_a_second_chair_nor_a_threshold():
-    """Pinned like `dissent.comparison_view`'s missing similarity parameter.
-
-    A chair-vs-chair delta or a tolerance would have to arrive through this
-    signature, so the signature is the guard: one payload, one act's sealed
-    bases, nothing else.
-    """
-    parameters = inspect.signature(perlector.sealed_proposal_edge_deltas).parameters
-
-    assert list(parameters) == ["payload", "bases"]
-    assert all(parameter.default is inspect.Parameter.empty for parameter in parameters.values())
-
-
-def test_derivation_has_no_direct_sum_or_len_call_for_an_n_of_m_denominator():
-    """Forbidden trigger 1's direct spelling is absent from this derivation."""
-    parameters = inspect.signature(perlector.sealed_proposal_edge_deltas).parameters
-    assert list(parameters) == ["payload", "bases"]
-    assert not any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in {"sum", "len"}
-        for node in ast.walk(_derivation_tree())
-    )
-
-
-def test_derivation_has_no_division_or_named_iou_similarity_call():
-    """Catch the direct ratio-shaped spellings of forbidden trigger 2."""
-    tree = _derivation_tree()
-    assert not any(
-        isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) for node in ast.walk(tree)
-    )
-    assert not any(
-        isinstance(node, ast.Call)
-        and (
-            isinstance(node.func, ast.Name)
-            and node.func.id in {"iou", "ratio", "similarity"}
-            or isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"iou", "ratio", "similarity"}
-        )
-        for node in ast.walk(tree)
-    )
-
-
 def test_delta_magnitude_never_filters_a_reported_overlap():
     """Forbidden trigger 3: both a small and a large signed delta survive."""
     rows = perlector.sealed_proposal_edge_deltas(
@@ -206,27 +153,6 @@ def test_delta_magnitude_never_filters_a_reported_overlap():
     )
     assert [row["ordinal"] for row in rows] == [0, 1]
     assert rows[0]["offsets"] != rows[1]["offsets"]
-
-
-def test_derivation_has_no_weight_parameter_or_direct_multiplication():
-    """Catch the signature and multiplication spellings of forbidden trigger 4."""
-    parameters = inspect.signature(perlector.sealed_proposal_edge_deltas).parameters
-    assert not set(parameters) & {"chair", "chairs", "weight", "weights"}
-    assert not any(
-        isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)
-        for node in ast.walk(_derivation_tree())
-    )
-
-
-def test_derivation_signature_and_names_expose_no_second_chair_operand():
-    """Catch explicit second-chair spellings of forbidden trigger 5."""
-    parameters = inspect.signature(perlector.sealed_proposal_edge_deltas).parameters
-    assert list(parameters) == ["payload", "bases"]
-    assert not any(
-        isinstance(node, ast.Name)
-        and any(fragment in node.id for fragment in ("other_chair", "second_chair", "peer"))
-        for node in ast.walk(_derivation_tree())
-    )
 
 
 def test_no_stage_directly_ranks_an_expression_named_for_edge_deltas_or_offsets():

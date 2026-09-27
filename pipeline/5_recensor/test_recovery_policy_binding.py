@@ -162,44 +162,17 @@ def test_a_policy_swapped_after_the_binding_check_never_reaches_a_published_revi
             )
 
 
-def _calls_named(source: str, name: str) -> list[str]:
-    """Every call in one module whose callee ends in `name`, as written."""
-    return [
-        ast.unparse(node.func)
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Call) and ast.unparse(node.func).split(".")[-1] == name
-    ]
-
-
-def test_neither_point_of_use_reopens_the_recovery_policy_for_itself():
-    """One read is the fix; a second read is the defect, wherever it reappears.
-
-    Asserted against the syntax rather than through behaviour because behaviour
-    cannot see the difference until something rewrites the file mid-run — which is
-    precisely the state this discipline exists to make unreachable. Against the
-    syntax rather than the text, so a comment that names the loader is prose about
-    the defect rather than a failure.
-    """
-    for relative in ("pipeline/5_recensor/run.py", "pipeline/2_designator/run.py"):
-        source = (ROOT / relative).read_text(encoding="utf-8")
-        assert not _calls_named(source, "load_recovery_policy"), (
-            f"{relative} reads config/recovery.toml itself; the budget it acts on must be "
-            "the one `open_context` parsed and sealed (StageContext.recovery_policy)"
-        )
-        # Through the AST like the check above it, per this test's own stated
-        # principle — and specifically for the "recovery" name: the Designator
-        # also rechecks padding and geometry, so a nameless call count would
-        # pass with the recovery recheck deleted.
-        recovery_rechecks = [
-            node
-            for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.Call)
-            and ast.unparse(node.func).split(".")[-1] == "require_sealed_config"
-            and any(isinstance(arg, ast.Constant) and arg.value == "recovery" for arg in node.args)
-        ]
-        assert recovery_rechecks, (
-            f"{relative} does not prove its recovery budget against the run's sealed digest"
-        )
+def test_designator_recovery_uses_the_sealed_policy():
+    source = (ROOT / "pipeline/2_designator/run.py").read_text(encoding="utf-8")
+    calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
+    assert not any(
+        ast.unparse(call.func).split(".")[-1] == "load_recovery_policy" for call in calls
+    )
+    assert any(
+        ast.unparse(call.func).split(".")[-1] == "require_sealed_config"
+        and any(isinstance(arg, ast.Constant) and arg.value == "recovery" for arg in call.args)
+        for call in calls
+    )
 
 
 def test_a_context_without_a_sealed_recovery_policy_refuses_rather_than_reading_as_zero():

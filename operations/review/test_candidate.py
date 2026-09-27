@@ -232,13 +232,7 @@ def test_receipt_requires_the_exact_full_base_sha_in_the_report(tmp_path):
 
 
 def test_receipt_accepts_a_report_saved_with_windows_line_endings(tmp_path):
-    """A reviewer on Windows names its candidate correctly; the receipt must see it.
-
-    `$` in multiline mode matches before the `\\n`, so CRLF leaves a `\\r` between the SHA
-    and the line end. Without the `\\r?` in `report_names`, this refuses a report that does
-    name its candidate and tells the reviewer the SHA is missing. Nothing else in this
-    file writes CRLF, so removing that `\\r?` would otherwise break no test.
-    """
+    """A reviewer on Windows names its candidate correctly; the receipt must see it."""
 
     base, candidate = repository(tmp_path)
     report = tmp_path / "workbench" / "raw" / "review.md"
@@ -252,6 +246,7 @@ def test_receipt_accepts_a_report_saved_with_windows_line_endings(tmp_path):
     assert Path(record["report"]).read_bytes() == report.read_bytes()
 
 
+@pytest.mark.hostile_local
 def test_receipt_refuses_a_symlinked_report(tmp_path):
     base, candidate = repository(tmp_path)
     report = tmp_path / "workbench" / "raw" / "review.md"
@@ -365,6 +360,7 @@ def test_partial_write_never_publishes_a_receipt_or_leaves_a_temp_file(tmp_path,
     assert not list(directory.glob(".*.tmp-*"))
 
 
+@pytest.mark.hostile_local
 def test_receipt_refuses_a_preexisting_symlink_at_its_final_name(tmp_path):
     base, candidate = repository(tmp_path)
     report = tmp_path / "workbench" / "raw" / "review.md"

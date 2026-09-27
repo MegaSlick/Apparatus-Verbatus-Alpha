@@ -22,7 +22,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Callable, Iterable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.durability import atomic_create, atomic_replace
@@ -158,44 +158,41 @@ class MaterializationFetcher(Protocol):
         """Write the exact repository revision below ``destination``, or raise."""
 
 
-class VerifiedStoreFetcher:
-    """Copy cache files from a verified, role-bound model-store source plan.
+class StoreRoleFetcher:
+    """Plan one configured role from the durable record and its pinned manifest."""
 
-    ``ChairRegistry`` stays the cache authority. This fetcher has no network
-    client and cannot fill a cache from a source the plan did not prove first.
-    """
+    def __init__(self, store_root: str | Path) -> None:
+        self.root = Path(store_root).resolve()
 
-    def __init__(self, entries: Mapping[str, Mapping[str, Any]]) -> None:
-        self._entries = {role: dict(entry) for role, entry in entries.items()}
+    def plan(self, identity: ChairIdentity) -> dict[str, Any]:
+        record = load_download_record(self.root)
+        required = next((item for item in REQUIRED_ARTIFACTS if item.chair == identity.role), None)
+        if required is None:
+            raise DigestMismatchRefusal(identity.role, "no model-store artifact names this chair")
+        row = next(
+            (item for item in record["artifacts"] if item["artifact"] == required.artifact), None
+        )
+        if row is None or row["state"] != "present":
+            raise DigestMismatchRefusal(identity.role, "model-store artifact is not present")
+        for field, expected in (
+            ("source", identity.source),
+            ("repo", identity.repo),
+            ("revision", identity.revision),
+            ("digest_manifest", identity.digest_manifest),
+        ):
+            if row[field] != expected:
+                raise DigestMismatchRefusal(
+                    identity.role, f"model-store {field} differs from the configured pin"
+                )
+        manifest_path = _under(self.root, row["manifest"])
+        read_manifest(manifest_path, expected_digest=identity.digest_manifest, chair=identity.role)
+        snapshot = _under(self.root, row["snapshot"])
+        if not snapshot.is_dir() or snapshot.is_symlink():
+            raise DigestMismatchRefusal(identity.role, "model-store snapshot is not a directory")
+        return {"snapshot": str(snapshot), "identity": identity.cache_descriptor()}
 
     def fetch(self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]) -> None:
-        entry = self._entries.get(identity.role)
-        if entry is None:
-            raise DigestMismatchRefusal(
-                identity.role, "no verified model-store source was planned for this chair"
-            )
-        if entry.get("identity") != identity.cache_descriptor():
-            raise DigestMismatchRefusal(
-                identity.role,
-                "verified model-store source differs from the configured identity",
-            )
-        snapshot = entry.get("snapshot")
-        if not isinstance(snapshot, str):
-            raise DigestMismatchRefusal(
-                identity.role, "model-store source plan has no snapshot path"
-            )
-        source_root = Path(snapshot)
-        try:
-            source_root = source_root.resolve(strict=True)
-        except OSError as error:
-            raise DigestMismatchRefusal(
-                identity.role, f"verified model-store snapshot cannot resolve: {error}"
-            ) from error
-        if source_root.is_symlink() or not source_root.is_dir():
-            raise DigestMismatchRefusal(
-                identity.role,
-                "verified model-store snapshot is not a regular directory",
-            )
+        source_root = Path(self.plan(identity)["snapshot"])
         for relative in paths:
             source = source_root / relative
             try:
@@ -973,57 +970,6 @@ def pod_materialization_plan(store_root: str | Path) -> dict[str, Any]:
     }
 
 
-def configured_cache_materialization_plan(
-    store_root: str | Path, identities: Iterable[ChairIdentity]
-) -> dict[str, Any]:
-    """Plan only the configured Hugging Face chairs from verified store bytes.
-
-    A pending local-only row stays visible in the inventory but does not make
-    the configured Hugging Face chairs fetch again.
-    """
-
-    root = Path(store_root).resolve()
-    inventory = verify_store(root)
-    rows = {str(row["chair"]): row for row in inventory["artifacts"]}
-    entries: dict[str, dict[str, Any]] = {}
-    for identity in identities:
-        if identity.source != "huggingface":
-            continue
-        row = rows.get(identity.role)
-        if row is None:
-            raise DigestMismatchRefusal(
-                identity.role, "configured chair has no model-store inventory row"
-            )
-        if row.get("state") != "present":
-            raise DigestMismatchRefusal(
-                identity.role,
-                f"configured chair's model-store artifact is {row.get('state')!r}, not present",
-            )
-        for field, expected in (
-            ("source", identity.source),
-            ("repo", identity.repo),
-            ("revision", identity.revision),
-            ("digest_manifest", identity.digest_manifest),
-        ):
-            if row.get(field) != expected:
-                raise DigestMismatchRefusal(
-                    identity.role,
-                    f"model-store {field} differs from the configured pin: expected "
-                    f"{expected!r}, the store says {row.get(field)!r}",
-                )
-        snapshot = _under(root, str(row["snapshot"]))
-        entries[identity.role] = {
-            "snapshot": str(snapshot),
-            "identity": identity.cache_descriptor(),
-        }
-    return {
-        "provenance_scope": "verified-configured-cache-source-only",
-        "download_record_sha256": inventory["download_record_sha256"],
-        "cache_root_entries": entries,
-        "pending": inventory["pending"],
-    }
-
-
 def require_complete_store(store_root: str | Path) -> dict[str, Any]:
     """Verify the store's real bytes and refuse a partial result by name.
 
@@ -1371,12 +1317,6 @@ def _validate_record_transition(
     for artifact, old_item in old.items():
         replacement_item = new.get(artifact)
         if replacement_item is None:
-            # Both records hold the roster's full set of unique artifacts, so a name the
-            # replacement does not carry was renamed or swapped for another.
-            # Reading `new[artifact]` here raised a bare `KeyError` that named
-            # no chair, which is the one thing `errors.py`'s "complete public
-            # taxonomy" forbids; an artifact leaving the record silently is
-            # also what principle 2 forbids.
             raise DigestMismatchRefusal(
                 artifact,
                 "the replacement download record does not name this recorded artifact; "

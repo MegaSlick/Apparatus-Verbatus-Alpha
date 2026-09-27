@@ -14,7 +14,7 @@ import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -28,7 +28,14 @@ from .boot_b_request import (
 )
 from .cli import _request
 from .launch import _bind_report_path_to_launch
-from .models import DEFAULT_CONTAINER_DISK_GB, PodCreateRequest
+from .models import (
+    BIG_CARD_CONTAINER_DISK_GB,
+    DEFAULT_CONTAINER_DISK_GB,
+    PodCreateRequest,
+    container_disk_gb_for_tier,
+    run_report_paths,
+    terminating_path,
+)
 from .preflight import load_placement_table
 from .spend import SpendPolicy, load_spend_policy
 
@@ -116,6 +123,67 @@ def test_the_committed_policy_renders_a_boot_b_request() -> None:
         assert phrase in rendered.text, phrase
 
 
+def test_boot_b_container_disk_follows_the_selected_card_tier() -> None:
+    placement = load_placement_table(PLACEMENT)
+    cards = {card.tier: card for card in placement.card_profiles}
+
+    def disk_for(tier: str) -> object:
+        return pod_request(
+            cards[tier],
+            image=IMAGE,
+            volume_id="volume-abc",
+            repository_commit=COMMIT,
+            run_id="boot-b-0001",
+            hard_deadline=_deadline(),
+        )["container_disk_gb"]
+
+    assert disk_for("generic-80gb-plus") == BIG_CARD_CONTAINER_DISK_GB
+    assert disk_for("generic-48gb") == DEFAULT_CONTAINER_DISK_GB
+
+
+def test_boot_b_forwards_canary_inputs_only_as_a_pair() -> None:
+    args = dict(
+        image=IMAGE,
+        volume_id="volume-abc",
+        repository_commit=COMMIT,
+        run_id="boot-b-0001",
+        hard_deadline=_deadline(),
+    )
+    card = cheapest_card(load_placement_table(PLACEMENT))
+    nested = _nested_argv(pod_request(card, **args))
+    assert "--canary-folder" not in nested
+    with pytest.raises(ValueError, match="together"):
+        pod_request(card, **args, canary_folder="/volume/canary")
+    nested = _nested_argv(
+        pod_request(
+            card, **args, canary_folder="/volume/canary", canary_manifest="/volume/canary.json"
+        )
+    )
+    assert nested[nested.index("--canary-folder") + 1] == "/volume/canary"
+    assert nested[nested.index("--canary-manifest") + 1] == "/volume/canary.json"
+
+
+def test_rendered_boot_b_request_carries_a_parsed_canary_pair() -> None:
+    rendered = render_boot_b_request(
+        configured(),
+        load_placement_table(PLACEMENT),
+        image=IMAGE,
+        volume_id="volume-abc",
+        repository_commit=COMMIT,
+        run_id="boot-b-0001",
+        hard_deadline=_deadline(),
+        canary_folder="/volume/canary/pages",
+        canary_manifest="/volume/canary/submission-manifest.json",
+    )
+    request = json.loads(rendered.text.split("```json\n", 1)[1].split("\n```", 1)[0])
+    parsed = validated_pod_request(request)
+    nested = _sealed_nested_argv(parsed.docker_start_cmd)
+    assert nested[nested.index("--canary-folder") + 1] == "/volume/canary/pages"
+    assert (
+        nested[nested.index("--canary-manifest") + 1] == "/volume/canary/submission-manifest.json"
+    )
+
+
 def test_an_unconfigured_policy_refuses_rather_than_rendering_blanks() -> None:
     rendered = render_boot_b_request(
         SpendPolicy(state="unconfigured"),  # type: ignore[arg-type]
@@ -135,14 +203,7 @@ def test_a_card_the_placement_table_has_not_reviewed_is_refused() -> None:
 
 
 def test_the_rendered_request_carries_no_transfer_half() -> None:
-    """Boot B consumes a submission already on the volume.
-
-    A bootstrap ``--submission-manifest`` with no ``--transfer-target-factory``
-    would be refused after pod creation, but before the ~10 GB environment
-    sync. The run half's own ``--submission-manifest`` -- a different flag,
-    read rather than sent -- is still there, because that is the submission
-    the run reads.
-    """
+    """Boot B consumes a submission already on the volume."""
 
     nested = _nested_argv(filled_request())
     separator = nested.index("--")
@@ -153,23 +214,11 @@ def test_the_rendered_request_carries_no_transfer_half() -> None:
     assert f"{BOOT_B_VOLUME_MOUNT_PATH}/submission-manifest.json" in run_half
 
 
-def test_the_rendered_request_states_a_container_disk() -> None:
-    """The bootstrap fills this disk twice over; nothing may leave it to a default."""
-
-    assert filled_request()["container_disk_gb"] == 60
-
-
 # --- the shape the money path has to accept --------------------------------
 
 
 def test_a_real_pod_run_argv_constructs_a_pod_create_request() -> None:
-    """Two nested halves, one ``--report-path`` each, and they differ.
-
-    Before the fix ``PodCreateRequest.__post_init__`` counted both halves
-    together and raised "at most one nested --report-path value" for every
-    Boot B request that could exist, before any preview, lease or provider
-    call.
-    """
+    """Two nested halves, one ``--report-path`` each, and they differ."""
 
     request = validated_pod_request(filled_request())
 
@@ -195,12 +244,9 @@ def test_the_rendered_json_is_accepted_by_the_create_surface(tmp_path: Path) -> 
     loaded = _request(path)
 
     assert loaded.volume_mount_path == BOOT_B_VOLUME_MOUNT_PATH
-    # Against the constant that carries the arithmetic, not against the number
-    # it currently holds: the first boot replaces that number with a
-    # measurement, and a request still printing the old one would be found by
-    # a free-space refusal on a rented card.
-    assert loaded.container_disk_gb == DEFAULT_CONTAINER_DISK_GB
-    assert request["container_disk_gb"] == DEFAULT_CONTAINER_DISK_GB
+    expected_disk = container_disk_gb_for_tier(cheapest_card(load_placement_table(PLACEMENT)).tier)
+    assert loaded.container_disk_gb == expected_disk
+    assert request["container_disk_gb"] == expected_disk
     assert BOOT_B_REPOSITORY_PATH in _sealed_nested_argv(loaded.docker_start_cmd)[-1]
 
 
@@ -268,8 +314,96 @@ def test_two_nested_report_paths_naming_one_file_are_refused() -> None:
         if item == "--report-path":
             nested[index + 1] = collision
 
-    with pytest.raises(ValueError, match="name one file"):
+    with pytest.raises(ValueError, match="collides with the run report"):
         validated_pod_request(_with_nested_argv(filled_request(), nested))
+
+
+def test_bootstrap_journal_naming_the_bootstrap_report_is_refused() -> None:
+    base = validated_pod_request(filled_request())
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    reports = [index + 1 for index, value in enumerate(nested) if value == "--report-path"]
+    nested[nested.index("--journal") + 1] = nested[reports[1]]
+    command = list(base.docker_start_cmd)
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="journal path collides with a nested report path"):
+        replace(base, docker_start_cmd=tuple(command))
+
+
+def test_bootstrap_argument_named_pod_run_does_not_hide_report_collision() -> None:
+    base = validated_pod_request(filled_request())
+    command = list(base.docker_start_cmd)
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    report_indexes = [i + 1 for i, value in enumerate(nested) if value == "--report-path"]
+    run_path = PurePosixPath(nested[report_indexes[0]])
+    nested[report_indexes[1]] = str(run_report_paths(run_path)[1])
+    nested[nested.index("--repository") + 1] = "/opt/pod_run.py"
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="bootstrap report path collides with the run report"):
+        replace(base, docker_start_cmd=tuple(command))
+
+
+@pytest.mark.parametrize(
+    "target", ("run", "hold", "liveness", "timings", "transcript", "bootstrap", "journal")
+)
+def test_timer_report_and_terminating_path_cannot_overlap_run_records(target: str) -> None:
+    base = validated_pod_request(filled_request())
+    command = list(base.docker_start_cmd)
+    outer = PurePosixPath(command[command.index("--report-path") + 1])
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    report_indexes = [i + 1 for i, value in enumerate(nested) if value == "--report-path"]
+    if target == "bootstrap":
+        nested[report_indexes[1]] = str(outer)
+    elif target == "journal":
+        nested[nested.index("--journal") + 1] = str(outer)
+    else:
+        token = base.metadata["VERBATUS_LAUNCH_TOKEN"]
+        run_path = PurePosixPath(f"{BOOT_B_VOLUME_MOUNT_PATH}/run-evidence-{token}.json")
+        side_index = {"run": 0, "hold": 1, "liveness": 2, "timings": 3, "transcript": 4}
+        command[command.index("--report-path") + 1] = str(
+            run_report_paths(run_path)[side_index[target]]
+        )
+        nested[report_indexes[0]] = str(run_path)
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="pod timer report or terminating path collides"):
+        replace(base, docker_start_cmd=tuple(command))
+
+
+@pytest.mark.parametrize("target", ("run", "bootstrap", "journal"))
+def test_timer_terminating_path_cannot_overlap_another_report(target: str) -> None:
+    base = validated_pod_request(filled_request())
+    command = list(base.docker_start_cmd)
+    outer = PurePosixPath(command[command.index("--report-path") + 1])
+    terminating = terminating_path(outer)
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    reports = [i + 1 for i, value in enumerate(nested) if value == "--report-path"]
+    index = (
+        nested.index("--journal") + 1
+        if target == "journal"
+        else reports[0 if target == "run" else 1]
+    )
+    nested[index] = str(terminating)
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="pod timer report or terminating path collides"):
+        replace(base, docker_start_cmd=tuple(command))
+
+
+def test_log_timer_terminating_path_cannot_be_a_bootstrap_report() -> None:
+    base = validated_pod_request(filled_request())
+    command = list(base.docker_start_cmd)
+    timer_index = command.index("--report-path") + 1
+    timer_report = PurePosixPath(command[timer_index]).with_suffix(".log")
+    command[timer_index] = str(timer_report)
+    nested = _sealed_nested_argv(base.docker_start_cmd)
+    reports = [i + 1 for i, value in enumerate(nested) if value == "--report-path"]
+    nested[reports[1]] = str(terminating_path(timer_report))
+    command[command.index("--bootstrap-command-json") + 1] = json.dumps(nested)
+
+    with pytest.raises(ValueError, match="pod timer report or terminating path collides"):
+        replace(base, docker_start_cmd=tuple(command))
 
 
 def test_a_nested_journal_outside_the_volume_is_refused() -> None:
