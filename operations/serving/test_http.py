@@ -355,7 +355,7 @@ def test_a_complete_error_response_keeps_its_status_and_body(status: int) -> Non
 def test_the_declared_timeout_bounds_the_whole_call_not_one_receive(
     status: bytes, headers_slowly: bool
 ) -> None:
-    """Connect, headers and body come out of one monotonic deadline."""
+    """A dribbling peer must not reset the shared connect, header and body deadline."""
 
     with dribbling_loopback_server(status, headers_slowly=headers_slowly) as base:
         started = time.monotonic()

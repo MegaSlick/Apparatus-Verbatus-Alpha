@@ -5297,6 +5297,7 @@ def test_reconcile_usage_against_capacity_localizes_mismatch(
     )
     finding = reconciled.to_finding()
     assert finding is not None
+    assert finding["kind"] == "usage-capacity-mismatch"
     assert finding["localized_to"] == localized
     if observed_image is not None:
         assert finding["observed_image_tokens"] == observed_image
@@ -5354,9 +5355,6 @@ def test_render_vllm_argv_carries_enable_prompt_tokens_details(tmp_path: Path) -
     manager.start(chair, TIER).stop()
 
     assert "--enable-prompt-tokens-details" in launcher.calls[0][0]
-
-
-# --- tests merged from origin/main (#103/#104: readiness budgets, error bodies, deadlines) ---
 
 
 def test_the_readiness_poll_retries_a_transport_refusal_and_then_starts(tmp_path: Path) -> None:

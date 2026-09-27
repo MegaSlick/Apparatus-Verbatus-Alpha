@@ -1,4 +1,4 @@
-"""Offline RunPod REST v2 adapter tests using documented response shapes."""
+"""Offline v2 adapter tests prove handling of documented shapes, not live provider responses."""
 
 from __future__ import annotations
 

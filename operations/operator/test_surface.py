@@ -8,6 +8,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -4038,6 +4039,25 @@ def test_mac_wrapper_refuses_an_empty_project_root(
     assert "Traceback" not in completed.stderr
 
 
+def test_no_usable_scratch_directory_is_reported_in_the_operator_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unavailable scratch root needs the same operator refusal as other failures."""
+
+    monkeypatch.setattr(dry_run.tempfile, "gettempdir", lambda: str(ROOT / "inside"))
+    monkeypatch.setattr(dry_run, "_is_within", lambda path, directory: True)
+
+    with pytest.raises(OperatorError) as refusal:
+        dry_run._scratch_root()
+
+    assert refusal.value.code is ErrorCode.UNEXPECTED
+    assert "no temporary directory outside the checkout" in str(refusal.value.detail)
+
+    exit_code = dry_run.main(["--output", str(tmp_path / "rehearsal.txt")])
+
+    assert exit_code == 1
+
+
 def test_rehearsal_scratch_containment_compares_directory_identity(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     scratch = checkout / "scratch"
@@ -4321,6 +4341,55 @@ def test_a_symlink_alias_cannot_hide_that_default_state_is_inside_the_checkout(
     state = cli._default_state_dir(workspace)
 
     assert state == tmp_path / "home" / ".local" / "state" / "verbatus"
+
+
+def test_state_default_failure_uses_the_operator_error_contract(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def unavailable(_workspace: Path | None = None) -> Path:
+        raise RuntimeError("no safe state root")
+
+    monkeypatch.setattr(cli, "_default_state_dir", unavailable)
+
+    assert cli.main(["status"]) == 2
+    output = capsys.readouterr().out
+    assert "Verbatus met a problem it could not classify" in output
+    assert "no safe state root" in output
+    assert "Traceback" not in output
+
+
+@pytest.mark.parametrize("value", ("", ".", "relative/state"))
+def test_a_non_absolute_xdg_state_home_does_not_put_records_back_in_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """The Base Directory specification requires ignoring non-absolute values."""
+
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", value)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    default = cli._default_state_dir()
+
+    assert default.is_absolute()
+    assert workspace not in default.parents
+    assert default == tmp_path / "home" / ".local" / "state" / "verbatus"
+
+
+def test_a_relative_home_cannot_make_the_default_state_root_relative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", "")
+    monkeypatch.setenv("HOME", "relative-home")
+
+    default = cli._default_state_dir()
+
+    assert default.is_absolute()
+    assert workspace not in default.parents
 
 
 def test_an_old_in_checkout_verbatus_directory_is_named_not_silently_abandoned(
@@ -5356,6 +5425,24 @@ def test_every_serving_stage_writes_its_engine_log_inside_the_inventory_scope() 
         assert surface_module._is_serving_log(log), (
             f"{stage}'s engine log is in scope but is not classified as a serving log, "
             "so the fetch would try to verify it against a manifest nothing wrote"
+        )
+
+
+def test_no_serving_stage_spells_its_own_log_directory() -> None:
+    """A stage-local log path can leave serving logs outside the run inventory."""
+
+    assert re.search(
+        r"log_root=context\.tree\.resolve\(\s*context\.tree\.serving_log_path\(context\.stage\)",
+        (ROOT / "operations/serving/assembly.py").read_text(encoding="utf-8"),
+    ), "stage_chair_client does not build its serving log root from RunTree.serving_log_path"
+    for relative in sorted(_SERVING_STAGE_SOURCES.values()):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "stage_chair_client" in source, f"{relative} builds its own chair client"
+        assert "ServingManager(" not in source and "ChairClient(" not in source, (
+            f"{relative} builds its own manager or client instead of stage_chair_client"
+        )
+        assert '"serving-logs"' not in source and "'serving-logs'" not in source, (
+            f"{relative} spells the serving-log directory for itself; the store owns it"
         )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -12,7 +13,7 @@ from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal
 from common.contracts.stages import STAGES
 from common.runtree.store import RunTree
-from common.stage import RUN_MODES, held_advance_boundaries
+from common.stage import ALWAYS_HELD_BOUNDARIES, EXIT_HELD, RUN_MODES, held_advance_boundaries
 from operations.operator.errors import ErrorCode, OperatorError
 
 from . import advance, cli, review
@@ -80,6 +81,101 @@ def test_review_run_seals_attestatores_before_the_terminal_hold(tmp_path: Path) 
     tree = RunTree(root, run_id)
     assert any(
         entry["kind"] == "stage-seal" for entry in tree.build_manifest("attestatores")["artifacts"]
+    )
+
+
+def test_mode_independent_driver_holds_match_advance_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pipeline.orchestrator import run as driver
+
+    stopped: set[str] = set()
+    monkeypatch.setattr(driver, "checkpoint", lambda *_args: None)
+    monkeypatch.setattr(
+        driver, "_run_tree", lambda _args: type("Tree", (), {"read_run": lambda self: {}})()
+    )
+    monkeypatch.setattr(driver, "_require_sealed_hard_failure_policy", lambda *_args: None)
+    monkeypatch.setattr(driver, "verify_final_seal", lambda *_args: {})
+    monkeypatch.setattr(driver, "terminal_report", lambda _export: ("partial", []))
+
+    for stage in STAGES:
+        visited: list[str] = []
+
+        def invoke(
+            program: str, _args: object, *, visited: list[str] = visited, stage: str = stage
+        ) -> int:
+            name = next(name for name, path in driver.STAGE_PROGRAMS.items() if path == program)
+            visited.append(name)
+            return EXIT_HELD if name == stage else 0
+
+        monkeypatch.setattr(driver, "invoke", invoke)
+        args = type("Args", (), {"run_root": str(tmp_path), "run_id": "probe"})()
+        names = (
+            (stage,) if stage == "armarium" else (stage, "exemplar" if stage == "door" else "door")
+        )
+        result = driver.run_sequence(args, names, "auto", {})
+        if result == EXIT_HELD and visited == [stage]:
+            stopped.add(stage)
+
+    assert stopped == ALWAYS_HELD_BOUNDARIES
+
+
+def test_attestatores_final_tally_hold_seals_and_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ORCHESTRATOR),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--scenario",
+            "happy",
+            "--run-id",
+            "staged",
+            "--run-root",
+            str(root),
+            "--from",
+            "door",
+            "--to",
+            "designator",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    path = ROOT / "pipeline" / "3_attestatores" / "run.py"
+    spec = importlib.util.spec_from_file_location("attestatores_tally_probe", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module, "attempt_tally", lambda *_args, **_kwargs: {"hold": True, "reason": "probe"}
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(path),
+            "--fixture-root",
+            "proof",
+            "--scenario",
+            "happy",
+            "--run-id",
+            "staged",
+            "--run-root",
+            str(root),
+        ],
+    )
+
+    assert module.main() == EXIT_HELD
+    tree = RunTree(root, "staged")
+    assert any(
+        row["kind"] == "stage-seal" for row in tree.build_manifest("attestatores")["artifacts"]
     )
 
 

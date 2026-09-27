@@ -410,7 +410,10 @@ def test_bootstrap_plan_refusals_name_the_bad_argument(
 
     exit_code = main(argv, environ=environment, actions_factory=_never_called)
     assert exit_code == 2
-    assert keyword in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert keyword in err
+    if case == "models-config-missing":
+        assert "missing required plan argument(s)" in err
     if case == "report-outside":
         assert not outside.exists()
 

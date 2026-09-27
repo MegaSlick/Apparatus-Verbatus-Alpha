@@ -106,17 +106,7 @@ class Clock(SharedClock):
 
 
 class BillingFake(FakeProvider):
-    """`FakeProvider`, plus the billing record a *verified* close needs.
-
-    Three of the drills below close the pod from inside `create` itself, which
-    leaves no window in which a test could install billing for a pod that did
-    not exist a moment earlier.  Without it every one of those closes is
-    legitimately unverified -- `FakeProvider.capture_cost` refuses to infer
-    zero -- and the drills would then assert the wrong thing about a money
-    path.  Billing each pod as it is created is the same evidence
-    `FakeProvider.bill` installs afterwards, moved to the only moment that
-    works.
-    """
+    """A close during create needs billing installed then to verify shutdown."""
 
     def create(self, request: PodCreateRequest):  # type: ignore[no-untyped-def]
         record = super().create(request)

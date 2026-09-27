@@ -783,9 +783,6 @@ def test_content_missing_retains_and_yields_parse_problem_never_raises(tmp_path:
     assert response.parse_problem == "CHAIR_RESPONSE_CONTENT_MISSING"
 
 
-# --- finish_reason, verbatim -------------------------------------------------
-
-
 # --- response-as-arrival -------------------------------------------------------
 
 

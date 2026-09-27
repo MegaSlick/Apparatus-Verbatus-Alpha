@@ -404,6 +404,54 @@ def test_request_reading_refuses_once_the_owned_process_has_exited(tmp_path) -> 
 # --- assert_wire_part_order: the request-wide walker request_body wires in (F133 follow-up) ---
 
 
+@pytest.mark.parametrize(
+    ("payload", "refuses"),
+    (
+        ({"messages": "not-a-list"}, False),
+        ({}, False),
+        ({"messages": [{"role": "system", "content": [{"type": "image_url"}]}]}, False),
+        ({"messages": [{"role": "user", "content": "READY"}]}, False),
+        ({"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}, False),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
+                            {"type": "text", "text": "hi"},
+                        ],
+                    }
+                ]
+            },
+            False,
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "hi"},
+                            {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
+                        ],
+                    }
+                ]
+            },
+            True,
+        ),
+    ),
+)
+def test_assert_wire_part_order_handles_each_content_shape(
+    payload: dict[str, object], refuses: bool
+) -> None:
+    if refuses:
+        with pytest.raises(ServingConfigurationError, match="request for reader-api"):
+            assert_wire_part_order(payload, label="request for reader-api")
+    else:
+        assert_wire_part_order(payload, label="probe")
+
+
 def test_assert_wire_part_order_catches_a_text_first_tuple_content_list() -> None:
     # A tuple serializes onto the wire as a JSON array exactly like a list, so
     # a direct caller of this walker (unlike `request_body`, which checks a

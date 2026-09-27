@@ -7144,16 +7144,6 @@ def test_an_absent_pod_still_answers_through_the_get_404_path_with_no_lifecycle_
     assert observed.provider_state is None
 
 
-# --- U2: the timer's acknowledgement becomes a record --------------------
-#
-# Every durable report this module writes after a `TimerContext` exists must
-# carry `schema: "pod-report.v1"` and an identity block naming this exact
-# lease/pod/deadline, plus an `acknowledged_at` stamped once from the injected
-# clock at `TimerContext` construction.  These drills walk each of the five
-# write sites in `pod_timer.py` and the one write that precedes any lease at
-# all (the factory-failure report), plus the shared refusal in `models.py`.
-
-
 def _expected_identity(lease: PodLease) -> dict[str, object]:
     return {
         "lease_id": lease.lease_id,
@@ -7165,7 +7155,7 @@ def _expected_identity(lease: PodLease) -> dict[str, object]:
 def test_the_first_durable_write_is_the_acknowledgement_before_the_monitoring_loop(
     tmp_path: Path,
 ) -> None:
-    """`pod_timer.py`'s first write (today ~123-125) is the acknowledgement:
+    """The timer's first write is the acknowledgement:
     it proves a provider-backed close capability exists on this pod, written
     after the `TimerContext` wraps the timer and before any monitoring."""
 
