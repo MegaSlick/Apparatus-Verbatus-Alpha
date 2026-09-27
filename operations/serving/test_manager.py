@@ -4129,6 +4129,72 @@ def test_vision_smoke_call_accepts_the_exact_model_answer_and_records_identity(
     assert launcher.processes[0].terminate_calls == 1
 
 
+def test_vision_smoke_call_ignores_whitespace_inside_the_page_witness(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    spaced_witness = f"{PAGE_WITNESS[:8]} \t{PAGE_WITNESS[8:20]}\n{PAGE_WITNESS[20:]}"
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": f"PAGE-WITNESS: {spaced_witness}"},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert result.shape_valid is True
+    assert result.format_valid is True
+    assert result.receipt["page_witness_matches"] is True
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        f"PAGE-WITNESS: {PAGE_WITNESS[:-1]}A",
+        PAGE_WITNESS,
+    ],
+    ids=("wrong-character", "missing-marker"),
+)
+def test_vision_smoke_call_still_requires_exact_code_and_marker(
+    tmp_path: Path,
+    answer: str,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": answer},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert result.shape_valid is True
+    assert result.format_valid is False
+    assert result.receipt["page_witness_matches"] is False
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
 def test_perlector_direct_response_mode_does_not_relax_the_exact_output_rule(
     tmp_path: Path,
 ) -> None:

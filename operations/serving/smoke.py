@@ -357,10 +357,15 @@ class VisionSmokeCall:
         # answer never reaches this line — it arrives at the runner as
         # `smoke-read-failed`, earlier and louder.
         nonempty = bool(answer.outputs) and all(output.strip() for output in answer.outputs)
-        # The prompt asks for exactly one line.  Stripping here would silently
-        # accept surrounding spaces or extra blank lines and report them as
-        # format-valid, a broader claim than the output rule actually measured.
-        format_valid = answer.outputs == (_WITNESS_PREFIX + self.page_witness,)
+        # Keep the marker and token boundaries exact.  Some vision readers add
+        # layout whitespace inside a long token, so remove only that whitespace
+        # before comparing every remaining character in order.
+        format_valid = False
+        if shape_valid and answer.outputs[0].startswith(_WITNESS_PREFIX):
+            code = answer.outputs[0][len(_WITNESS_PREFIX) :]
+            if code and not code[0].isspace() and not code[-1].isspace():
+                compact_code = code.translate(str.maketrans("", "", " \t\r\n"))
+                format_valid = compact_code == self.page_witness
         samples = self.utilization()
         if not isinstance(samples, tuple) or not all(
             isinstance(sample, UtilizationSample) for sample in samples
