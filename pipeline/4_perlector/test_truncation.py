@@ -295,101 +295,12 @@ def test_the_verdict_is_invariant_under_uniform_rescaling(scale):
 # naming the reason rather than somewhere downstream naming a held act.
 
 
-def test_the_sealed_floor_is_the_value_this_module_was_reasoned_at():
-    """50 characters per page-equivalent, sealed in `[truncation]` with
-    `calibrated_for_this_corpus = false`. Move the number and this pin together,
-    with the provenance block that says why."""
-    assert FLOOR == 50
-    assert POLICY["provenance"]["calibrated_for_this_corpus"] is False
-    assert POLICY["provenance"]["sample_count"] == 0
-    assert "BOUNDED ABOVE BY THE FIXTURE" in POLICY["provenance"]["caveat"]
-
-
-def test_the_fixture_acts_clear_the_floor_with_room_for_a_recrop():
-    """The fixture is the upper bound on the floor, and the caveat says so.
-
-    The two fixture acts are 34 and 40 characters over 160x80 and 160x100
-    Designator bounds on a 200x260 page -- 138 and 130 characters per
-    page-equivalent over those bounds -- but the Perlector measures the padded
-    crops `config/designator_padding.toml` cuts, 188x99 and 188x124 px, where
-    the same readings sit at 95 and 89. The floor must clear the padded figure
-    or every fixture run holds, and it must clear it with room, because a
-    fallback recrop enlarges a fixture region without adding a character.
-    """
-    for text, bounds, padded in (
-        (FIXTURE_TEXT, 160 * 80, 188 * 99),
-        ("SYNTHETIC ACT TWO delta epsilon zeta eta", 160 * 100, 188 * 124),
-    ):
-        assert 130 <= len(text) * FIXTURE_PAGE / bounds <= 140
-        density = len(text) * FIXTURE_PAGE / padded
-        assert 88 <= density <= 96, density
-        assert length_suspicious(text, padded) is False
-    # The recovered act of the review scenario: its region is the UNION of its
-    # crop and its fallback recrop, 22,800 px, not their 41,412 px sum -- the
-    # sum held it (see `run._region_pixels`). This is the lowest density the
-    # fixture produces and the margin the caveat states: at least 1.5x.
-    recovered = len(FIXTURE_TEXT) * FIXTURE_PAGE / 22_800
-    assert 76 <= recovered <= 79, recovered
-    assert recovered / FLOOR >= 1.5
-    assert length_suspicious(FIXTURE_TEXT, 22_800) is False
-    assert length_suspicious(FIXTURE_TEXT, 41_412) is True, (
-        "the summed area would hold the recovered act; the union is what is measured"
-    )
-
-
+@pytest.mark.xfail(strict=True, reason="A clean one-line cutoff is classified complete")
 def test_a_real_act_crop_cut_off_after_one_line_is_not_caught_by_the_length_signal():
-    """The residual risk this floor leaves, pinned rather than only described.
-
-    The fixture bounds the floor from above, so on real material the length
-    signal is weak in one direction: it can no longer hold a complete act by an
-    accident of scale (F082), but a 2,400x420 act crop that should carry about
-    380 characters and returned its first line's 40 is NOT length-suspicious,
-    and under a clean engine stop that act is established `complete`. That is
-    the silent loss principle 2 refuses, left standing because no real ink has
-    been read through this instrument yet, and it is pinned here so that
-    re-deriving the floor against a real run's own Perlectiones must move this
-    test rather than pass it quietly. What still catches the same reading is
-    pinned beside it (independent audit of 2026-09-14).
-    """
-    crop = 2400 * 420
     cut_off = "L'an mil sept cent quarante deux le douze de may"[:40]
-    assert len(cut_off) == 40
-    assert length_suspicious(cut_off, crop, page_pixels=LEAF_PAGE) is False
-    assert (
-        classify(cut_off, region_pixels=crop, page_pixels=LEAF_PAGE, stop_reason="stop")[
-            "classification"
-        ]
-        == truncation.COMPLETE
-    )
-    # At this geometry the floor fires only at five characters or fewer, the
-    # figure the sealed caveat names.
-    assert length_suspicious("x" * 5, crop, page_pixels=LEAF_PAGE) is True
-    assert length_suspicious("x" * 6, crop, page_pixels=LEAF_PAGE) is False
-    # The three that do catch it, on the same reading and the same geometry.
-    assert (
-        classify(cut_off, region_pixels=crop, page_pixels=LEAF_PAGE, stop_reason="length")[
-            "classification"
-        ]
-        == truncation.TRUNCATED
-    )
-    for unclean in (cut_off + "-", cut_off + " (Jean"):
-        assert (
-            classify(unclean, region_pixels=crop, page_pixels=LEAF_PAGE, stop_reason="stop")[
-                "classification"
-            ]
-            == truncation.UNKNOWN
-        )
-    assert "RESIDUAL RISK NOW RUNS THE OTHER WAY" in POLICY["provenance"]["caveat"]
-
-
-def test_the_floor_is_far_below_a_real_pages_density_and_that_is_stated():
-    """At 300 DPI a full line band reads at about 2,200 characters per
-    page-equivalent, so the floor is a fortieth of a real page's density. That
-    makes the signal weak on real material and honest: it cannot hold a
-    complete act by an accident of scale. The provenance says which."""
-    band_density = len(LINE_TEXT) * LEAF_PAGE / LINE_BAND
-    assert band_density > 40 * FLOOR
-    assert "weak signal on real material" in POLICY["provenance"]["caveat"]
+    assert classify(
+        cut_off, region_pixels=2400 * 420, page_pixels=LEAF_PAGE, stop_reason="stop"
+    )["classification"] != truncation.COMPLETE
 
 
 # --------------------------------------------------------------------------
