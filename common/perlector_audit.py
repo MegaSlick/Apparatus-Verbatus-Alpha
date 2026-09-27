@@ -1255,7 +1255,7 @@ def validate_finding(
     if value["examination"] != examination:
         raise SchemaRefusal(
             f"an audit finding claims examination {value['examination']!r} but its flags, cap, "
-            f"re-proof termination makes it {examination!r}"
+            f"re-proof termination and exact edits make it {examination!r}"
         )
     if value["unresolved"] != unresolved_state(examination):
         raise SchemaRefusal(
