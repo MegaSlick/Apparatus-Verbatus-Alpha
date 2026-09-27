@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from io import BytesIO
+from zipfile import ZIP_STORED, ZipFile
 
 import pytest
 from PIL import Image
 
-from common.contracts.canonical import digest_bytes, self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.identities import attempt_id
 from operations.corpus import canary
 from operations.corpus.local_admission import admit_local_set
@@ -15,6 +18,43 @@ from operations.corpus.reference import build_reference_page
 from operations.spike_perlector.models import OutputStatus
 
 from .test_local_admission import _two_page_set
+
+
+def _bundle(members=None):
+    contents = {"EXPORT_MANIFEST.json": b"{}", "sources.json": b"{}", **(members or {})}
+    output = BytesIO()
+    with ZipFile(output, "w", compression=ZIP_STORED) as archive:
+        for name, data in contents.items():
+            archive.writestr(name, data)
+    return output.getvalue()
+
+
+@pytest.mark.parametrize(
+    "member, contents",
+    [
+        ("sources.json", canonical_bytes({"act_outcomes": [{"act_id": "act"}]})),
+        ("sources.json", canonical_bytes({"regions": [{"source_page_ordinal": 2}]})),
+        ("text/_source_root/readings.txt", b"## act (act)\nact-id: act\n"),
+        ("review-items.jsonl", canonical_bytes({"act_id": "act"}) + b"\n"),
+    ],
+)
+def test_bundle_inspection_finds_canary_identity_without_reference_text(member, contents):
+    assert canary._canary_in_bundle(_bundle({member: contents}), {"act"}, {2})
+    assert not canary._canary_in_bundle(_bundle(), {"act"}, {2})
+
+
+def test_bundle_inspection_reads_database_identity_in_memory():
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(
+            "CREATE TABLE acts (act_id TEXT, source_regions_json TEXT); "
+            "CREATE TABLE act_search (act_id TEXT)"
+        )
+        connection.execute("INSERT INTO acts VALUES (?, ?)", ("act", "[]"))
+        data = connection.serialize()
+    finally:
+        connection.close()
+    assert canary._canary_in_bundle(_bundle({"acts.sqlite": data}), {"act"}, {2})
 
 
 def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatch, tmp_path):
@@ -57,6 +97,29 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
     class Tree:
         run_id = "synthetic-canary"
 
+        def __init__(self):
+            self.bundle_data = _bundle()
+            self.export_payload = {
+                "canary": {"ordinals": [2], "acts": [{"act_id": "act", "page_ordinals": [2]}]},
+                "pages": [{"ordinal": 1}],
+                "delivered": [],
+                "non_delivered": [],
+            }
+            self.seal_acts = [
+                {
+                    "act_id": "act",
+                    "act_key": "act",
+                    "page_id": "page-2",
+                    "page_ordinal": 2,
+                    "has_continuation": False,
+                    "outcome": "marked-out",
+                    "evidence": [],
+                }
+            ]
+
+        def read_bytes(self, _path):
+            return self.bundle_data
+
         def read_run(self):
             return {
                 "sealed_config_digests": {"canary-ledger": "c" * 64},
@@ -81,6 +144,10 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
             return {"artifacts": [{"kind": "stage-seal"}]}
 
         def read_artifact(self, stage, kind, artifact_id):
+            if kind == "proposal-seal":
+                payload = {"expected_acts": self.seal_acts, "count": len(self.seal_acts)}
+                payload["self_hash"] = self_hash(payload)
+                return {"payload": payload}
             if kind == "perlectio":
                 return {
                     "subject_id": "act",
@@ -91,10 +158,11 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
                 }
             return {
                 "payload": {
-                    "canary": {"ordinals": [2], "acts": [{"act_id": "act", "page_ordinals": [2]}]},
-                    "pages": [{"ordinal": 1}],
-                    "delivered": [],
-                    "non_delivered": [],
+                    **self.export_payload,
+                    "bundle": {
+                        "reference": {"relative_path": "bundle.zip"},
+                        "sha256": digest_bytes(self.bundle_data),
+                    },
                 }
             }
 
@@ -104,6 +172,54 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
     assert all(healthy["stages"].values())
     assert reference_text not in str(healthy)
     assert healthy["self_hash"] == self_hash(healthy)
+
+    tree.seal_acts.append(
+        {
+            "act_id": "crop-less",
+            "act_key": "crop-less",
+            "page_id": "page-2",
+            "page_ordinal": 2,
+            "has_continuation": False,
+            "outcome": "held",
+            "evidence": [],
+        }
+    )
+    tree.export_payload["non_delivered"] = [{"act_id": "crop-less"}]
+    missing = canary.check_run(tree, tmp_path)
+    assert {row["rule"] for row in missing["dead"]} >= {
+        "canary-missing-from-block",
+        "canary-in-real-export",
+    }
+    tree.seal_acts.pop()
+    tree.export_payload["non_delivered"] = []
+
+    tree.seal_acts.append(
+        {
+            "act_id": "real-act",
+            "act_key": "real-act",
+            "page_id": "page-1",
+            "page_ordinal": 1,
+            "has_continuation": False,
+            "outcome": "held",
+            "evidence": [],
+        }
+    )
+    tree.export_payload["canary"]["acts"].append({"act_id": "real-act", "page_ordinals": [1]})
+    wrong_block = canary.check_run(tree, tmp_path)
+    assert {row["rule"] for row in wrong_block["dead"]} >= {"canary-missing-from-block"}
+    tree.export_payload["canary"]["acts"].pop()
+    tree.seal_acts.pop()
+
+    block = tree.export_payload.pop("canary")
+    absent_block = canary.check_run(tree, tmp_path)
+    assert {row["rule"] for row in absent_block["dead"]} >= {"canary-missing-from-block"}
+    tree.export_payload["canary"] = block
+
+    tree.bundle_data = _bundle({"acts.jsonl": canonical_bytes({"act_id": "act"}) + b"\n"})
+    escaped = canary.check_run(tree, tmp_path)
+    assert {row["rule"] for row in escaped["dead"]} >= {"canary-in-bundle"}
+    tree.bundle_data = _bundle()
+    assert canary.check_run(tree, tmp_path)["dead"] == []
 
     bad_chair.add("attestator_2")
     dead = canary.check_run(tree, tmp_path)
@@ -149,7 +265,7 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
     tree.read_artifact = leaked
     leak = canary.check_run(tree, tmp_path)
     assert not leak["stages"][canary.ARMARIUM]
-    assert {row["rule"] for row in leak["dead"]} >= {"canary-reached-real-export"}
+    assert {row["rule"] for row in leak["dead"]} >= {"canary-in-real-export"}
 
     tree.read_artifact = original_artifact
     tree.build_manifest = lambda stage: (

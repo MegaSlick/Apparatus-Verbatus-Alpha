@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import shutil
+import sqlite3
 from collections import Counter
 from pathlib import Path
 from typing import Any
+from zipfile import ZipFile
 
 from PIL import Image
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 from common.contracts.errors import FatalAccounting
+from common.contracts.identities import PROPOSAL_SEAL_ID
 from common.contracts.stages import (
     ARMARIUM,
     ATTESTATORES,
@@ -21,6 +25,7 @@ from common.contracts.stages import (
     EXEMPLAR,
     PERLECTOR,
 )
+from common.exemplar_boundary import verify_exemplar_crop_lineage
 from common.runtree.store import RunTree
 from common.stage import canary_ordinals, latest_attempt
 from operations.spike_perlector.models import OutputStatus
@@ -61,6 +66,95 @@ def _references(root: Path) -> dict[str, dict[str, Any]]:
     if len(by_sha) != len(pages):
         raise ValueError("the private canary reference repeats a page digest")
     return by_sha
+
+
+def _sealed_act_pages(tree: RunTree, run: dict[str, Any]) -> dict[str, set[int]]:
+    """The proposal seal counts even acts for which no crop was made."""
+    seal = tree.read_artifact(DESIGNATOR, "proposal-seal", PROPOSAL_SEAL_ID)["payload"]
+    acts = seal["expected_acts"]
+    if not verify_self_hash(seal) or seal["count"] != len(acts):
+        raise ValueError("the Designator act census is not sealed or reconciled")
+    pages = {act["act_id"]: {act["page_ordinal"]} for act in acts}
+    if len(pages) != len(acts):
+        raise ValueError("the Designator act census repeats an identity")
+    for entry in tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "region":
+            continue
+        region = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        verified = verify_exemplar_crop_lineage(tree, run, region)
+        pages[region["subject_id"]].add(verified["source_page_ordinal"])
+    return pages
+
+
+def _contains_canary_identity(value: Any, act_ids: set[str], ordinals: set[int]) -> bool:
+    """Inspect identity fields in text-free metadata, never literal fields."""
+    if isinstance(value, list):
+        return any(_contains_canary_identity(item, act_ids, ordinals) for item in value)
+    if not isinstance(value, dict):
+        return False
+    for key, item in value.items():
+        if (key == "act_id" or key.endswith("_act_id")) and item in act_ids:
+            return True
+        if (key == "ordinal" or ("page" in key and key.endswith("_ordinal"))) and item in ordinals:
+            return True
+        if (key == "ordinals" or ("page" in key and key.endswith("_ordinals"))) and any(
+            ordinal in ordinals for ordinal in item
+        ):
+            return True
+        if key == "act_pages" and any(
+            ordinal in ordinals for pages in item.values() for ordinal in pages
+        ):
+            return True
+        if key not in {"canonical_clean_text", "derived_search_text", "text"} and (
+            isinstance(item, (dict, list)) and _contains_canary_identity(item, act_ids, ordinals)
+        ):
+            return True
+    return False
+
+
+def _canary_in_bundle(data: bytes, act_ids: set[str], ordinals: set[int]) -> bool:
+    """Read only identifiers from the ZIP's real projections, without extraction."""
+    with ZipFile(io.BytesIO(data)) as archive:
+        names = set(archive.namelist())
+        for name in ("EXPORT_MANIFEST.json", "sources.json"):
+            if _contains_canary_identity(json.loads(archive.read(name)), act_ids, ordinals):
+                return True
+        for name in {"acts.jsonl", "review-items.jsonl", "reconstructions.jsonl"} & names:
+            with archive.open(name) as member:
+                if any(
+                    _contains_canary_identity(json.loads(line), act_ids, ordinals)
+                    for line in member
+                ):
+                    return True
+        for name in names:
+            if name.endswith("/readings.txt"):
+                with archive.open(name) as member:
+                    if any(
+                        line.removeprefix(b"act-id: ").strip().decode("utf-8") in act_ids
+                        for line in member
+                        if line.startswith(b"act-id: ")
+                    ):
+                        return True
+        if "acts.sqlite" in names:
+            connection = sqlite3.connect(":memory:")
+            try:
+                connection.deserialize(archive.read("acts.sqlite"))
+                for table in ("acts", "act_search"):
+                    if any(
+                        row[0] in act_ids
+                        for row in connection.execute(f"SELECT act_id FROM {table}")
+                    ):
+                        return True
+                if any(
+                    _contains_canary_identity(json.loads(row[0]), act_ids, ordinals)
+                    for row in connection.execute(
+                        "SELECT source_regions_json FROM acts WHERE source_regions_json IS NOT NULL"
+                    )
+                ):
+                    return True
+            finally:
+                connection.close()
+    return False
 
 
 def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
@@ -217,20 +311,36 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 export = exports[0]["payload"]
             if export is None:
                 raise ValueError("ambiguous canary export")
-            block = export["canary"]
-            canary_ids = {row["act_id"] for row in block["acts"]}
-            matched_ids = {act_id for act_id, _, _ in matched}
-            if (
-                set(block["ordinals"]) != ordinals
-                or not matched_ids <= canary_ids
-                or any(not set(row["page_ordinals"]) <= ordinals for row in block["acts"])
-            ):
-                fail(ARMARIUM, "canary-block-missing-act-or-page")
+            act_pages = _sealed_act_pages(tree, run)
+            sealed_canaries = {act_id for act_id, pages in act_pages.items() if pages & ordinals}
+            if any(not act_pages[act_id] <= ordinals for act_id in sealed_canaries):
+                fail(ARMARIUM, "canary-in-real-export")
+            block = export.get("canary")
+            if not isinstance(block, dict) or not isinstance(block.get("acts"), list):
+                fail(ARMARIUM, "canary-missing-from-block")
+            else:
+                block_rows = {row["act_id"]: row for row in block["acts"]}
+                if (
+                    set(block["ordinals"]) != ordinals
+                    or set(block_rows) != sealed_canaries
+                    or len(block_rows) != len(block["acts"])
+                    or any(
+                        set(row["page_ordinals"]) != act_pages[act_id]
+                        for act_id, row in block_rows.items()
+                    )
+                ):
+                    fail(ARMARIUM, "canary-missing-from-block")
             if any(row["ordinal"] in ordinals for row in export["pages"]) or any(
-                row["act_id"] in canary_ids | matched_ids
+                row["act_id"] in sealed_canaries
                 for row in export["delivered"] + export["non_delivered"]
             ):
-                fail(ARMARIUM, "canary-reached-real-export")
+                fail(ARMARIUM, "canary-in-real-export")
+            bundle = export["bundle"]
+            data = tree.read_bytes(bundle["reference"]["relative_path"])
+            if digest_bytes(data) != bundle["sha256"] or _canary_in_bundle(
+                data, sealed_canaries, ordinals
+            ):
+                fail(ARMARIUM, "canary-in-bundle")
         except Exception as error:
             fail(ARMARIUM, f"check-raised:{type(error).__name__}")
 
