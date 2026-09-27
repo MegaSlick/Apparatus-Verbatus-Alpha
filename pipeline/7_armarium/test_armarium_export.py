@@ -30,6 +30,7 @@ from armarium_export import (
     _terminal_ledger,
     _validate_ink_map_pages,
     _verify_acts_schema,
+    _verify_continuation_joins,
     _verify_retained_references_bounded,
     _zip_bytes,
     act_key_sort_key,
@@ -5134,13 +5135,15 @@ _HEAD_TEXT, _TAIL_TEXT = "Cǣsar d’Amo-", "urs fils"
 _FORMATS_WITHOUT_TEXT = ArmariumFormats(("review-items", "salvage-tier"), False)
 
 
-def _later_page(base: ArmariumProjection, ordinal: int) -> tuple[dict, dict]:
+def _later_page(
+    base: ArmariumProjection, ordinal: int, folder: str = "register"
+) -> tuple[dict, dict]:
     page = _source_bytes(f"1_exemplar/blobs/sha256/page-{ordinal}")
     crop = _source_bytes(f"2_designator/blobs/sha256/crop-{ordinal}")
     row = {
         **base.pages[0],
         "ordinal": ordinal,
-        "declared_path": f"register/folio-{ordinal}.png",
+        "declared_path": f"{folder}/folio-{ordinal}.png",
         "declared_sha256": digest_bytes(page),
         "page_id": f"pg-{ordinal}",
         "image_path": f"1_exemplar/blobs/sha256/page-{ordinal}",
@@ -5177,13 +5180,14 @@ def _joined(
     chained=False,
     head_uncertainty=None,
     candidate_ref=_CANDIDATE_REF,
+    tail_folder="register",
 ) -> ArmariumProjection:
     """`one` ends page 1 and `three` opens page 2; `four` is a second act on page 1.
 
     `chained` adds `five` on page 3, joined to `three` as well.
     """
     base = _otherwise_complete()
-    page_two, region_two = _later_page(base, 2)
+    page_two, region_two = _later_page(base, 2, tail_folder)
     page_three, region_three = _later_page(base, 3)
     delivered = base.acts[0]
     head = {**delivered, CANONICAL_TEXT_FIELD: _HEAD_TEXT}
@@ -5515,11 +5519,40 @@ def test_a_candidate_reference_with_an_extra_key_is_refused():
         )
 
 
-def test_a_float_page_ordinal_in_a_package_is_refused(tmp_path):
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    [
+        (lambda s: s["continuation_joins"][0].update(head_page_ordinal=1.0), "adjacent pages"),
+        (lambda s: s["aggregate_basis"]["act_pages"].update(one=["1"]), "not lists of page"),
+    ],
+)
+def test_a_join_over_non_integer_pages_is_refused_by_the_verifier(tmp_path, change, refusal):
+    """Floats cannot be written into a package, so the verifier is handed one directly."""
+    sources = json.loads(_joined_members()["sources.json"])
+    change(sources)
+    with pytest.raises(SchemaRefusal, match=refusal):
+        _verify_continuation_joins(tmp_path, ArmariumFormats(("review-items",), False), sources)
+
+
+def test_a_reconstructed_section_repeated_in_one_folder_is_refused(tmp_path):
     members = _joined_members()
-    members["sources.json"] = members["sources.json"].replace(
-        b'"head_page_ordinal":1,', b'"head_page_ordinal":1.0,'
-    )
-    _refresh_manifest_member(members, "sources.json")
-    with pytest.raises(SchemaRefusal, match="adjacent pages|aggregate does not match"):
+    (name,) = [name for name in members if name.startswith("text/")]
+    text = members[name].decode("utf-8")
+    block = text[text.index("## RECONSTRUCTED ") :]
+    members[name] = (text + "\n" + block).encode("utf-8")
+    _refresh_manifest_member(members, name)
+    with pytest.raises(SchemaRefusal, match="appears twice"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "forged")
+
+
+def test_a_join_across_two_folders_writes_its_section_in_the_head_folder(tmp_path):
+    bundle = build_armarium_bundle(
+        _joined(tail_folder="other"), _formats(embed_pixels=False), _source_bytes
+    )
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+    head_text = members[TEXT_REGISTER].decode("utf-8")
+    tail_text = members["text/_source_folder/other/readings.txt"].decode("utf-8")
+    assert "## RECONSTRUCTED join-1-2-0" in head_text
+    assert "RECONSTRUCTED" not in tail_text
+    assert "possible-continuation-from: one (page 1) [join-1-2-0]" in tail_text

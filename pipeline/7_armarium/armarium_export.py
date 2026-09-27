@@ -383,7 +383,7 @@ def continuation_join_row(
     }
 
 
-def _doubt(layer: Any) -> dict[str, int]:
+def _doubt(layer: Any) -> dict[str, int | str | None]:
     """How much doubt a literal carries, so a join never reads cleaner than its halves."""
     layer = layer if isinstance(layer, dict) else {}
     assessment = layer.get("assessment")
