@@ -29,7 +29,7 @@ from common.request_capacity import (
     row_image_geometry,
     sendable_max_tokens,
 )
-from operations.serving.config import ServingProfile, load_serving_recipes
+from operations.serving.config import ServingProfile, UnsupportedProfile, load_serving_recipes
 
 _ATTESTATORES_DIR = Path(__file__).resolve().parents[2] / "pipeline" / "3_attestatores"
 if str(_ATTESTATORES_DIR) not in sys.path:
@@ -209,7 +209,7 @@ def test_chandra_80gb_admits_its_native_bound_after_the_observed_page_three_prom
     assert sendable_max_tokens(row.chair, old_capacity) == {}
 
 
-def test_the_two_view_page_fallback_act_fits_every_tiers_context():
+def test_the_two_view_page_fallback_act_fits_the_supported_tiers_context():
     """The one measured Perlector shape that used to overrun a shipped row."""
 
     needs = {}
@@ -225,13 +225,19 @@ def test_the_two_view_page_fallback_act_fits_every_tiers_context():
         )
         needs[row.tier] = (record["need"], record["fits"])
     assert needs == {
-        # 4x1,715 + 1,173 + 1,318
-        "generic-24gb": (9351, True),
-        # 4x3,102 + 1,173 + 1,318
-        "generic-48gb": (14899, True),
         # 4x5,100 + 1,173 + 1,318, against 32,768
         "generic-80gb-plus": (22891, True),
     }
+
+
+def test_smaller_perlector_tiers_name_the_measured_refusal():
+    rows = [
+        row
+        for row in load_serving_recipes(REAL_RECIPES).profiles
+        if isinstance(row, UnsupportedProfile) and row.chair == "perlector"
+    ]
+    assert {row.tier for row in rows} == {"generic-24gb", "generic-48gb"}
+    assert all("51.7 GiB" in row.reason for row in rows)
 
 
 @pytest.mark.parametrize("row", _shipped_rows(), ids=lambda row: f"{row.chair}@{row.tier}")
@@ -304,8 +310,6 @@ def test_measured_witness_rows_have_a_600s_startup_budget() -> None:
         for profile in _shipped_rows()
         if profile.chair == "perlector"
     ] == [
-        ("generic-24gb", 300),
-        ("generic-48gb", 300),
         ("generic-80gb-plus", 600),
     ]
 
