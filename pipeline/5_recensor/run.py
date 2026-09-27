@@ -2089,6 +2089,49 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
     return findings
 
 
+def _validate_aggregate_components(
+    ordinal: int,
+    promoted: list,
+    aggregate: list,
+    width: int,
+    height: int,
+    policy: dict,
+) -> None:
+    identities = set()
+    for label, components in (("promoted", promoted), ("aggregate", aggregate)):
+        for index, component in enumerate(components):
+            bounds = component.get("bounds") if isinstance(component, dict) else None
+            pixels = component.get("pixel_count") if isinstance(component, dict) else None
+            if (
+                not _page_rect(bounds)
+                or bounds["x"] + bounds["w"] > width
+                or bounds["y"] + bounds["h"] > height
+                or not is_plain_int(pixels)
+                or pixels < 0
+                or pixels > bounds["w"] * bounds["h"]
+            ):
+                raise FatalAccounting(
+                    f"aggregate Designator conservation page {ordinal} {label} component "
+                    f"{index} is malformed"
+                )
+            identity = tuple(bounds[name] for name in _BOX_SIDES)
+            if identity in identities:
+                raise FatalAccounting(
+                    f"aggregate Designator conservation page {ordinal} repeats component "
+                    f"identity {identity} across its partition"
+                )
+            identities.add(identity)
+            significant = (
+                pixels >= policy["residual_aggregate_max_pixel_count"]
+                or bounds["w"] * bounds["h"] >= policy["residual_aggregate_max_area_px"]
+            )
+            if (label == "promoted") != significant:
+                raise FatalAccounting(
+                    f"aggregate Designator conservation page {ordinal} puts {label} component "
+                    f"{index} on the wrong side of the sealed presentation threshold"
+                )
+
+
 def _aggregate_page_conservation(
     context,
     ordinal: int,
@@ -2141,39 +2184,7 @@ def _aggregate_page_conservation(
             f"aggregate Designator conservation page {ordinal} does not reconcile its combined "
             "component counts"
         )
-    identities = set()
-    for label, components in (("promoted", promoted), ("aggregate", aggregate)):
-        for index, component in enumerate(components):
-            bounds = component.get("bounds") if isinstance(component, dict) else None
-            pixels = component.get("pixel_count") if isinstance(component, dict) else None
-            if (
-                not _page_rect(bounds)
-                or bounds["x"] + bounds["w"] > width
-                or bounds["y"] + bounds["h"] > height
-                or not is_plain_int(pixels)
-                or pixels < 0
-                or pixels > bounds["w"] * bounds["h"]
-            ):
-                raise FatalAccounting(
-                    f"aggregate Designator conservation page {ordinal} {label} component "
-                    f"{index} is malformed"
-                )
-            identity = tuple(bounds[name] for name in _BOX_SIDES)
-            if identity in identities:
-                raise FatalAccounting(
-                    f"aggregate Designator conservation page {ordinal} repeats component "
-                    f"identity {identity} across its partition"
-                )
-            identities.add(identity)
-            significant = (
-                pixels >= policy["residual_aggregate_max_pixel_count"]
-                or bounds["w"] * bounds["h"] >= policy["residual_aggregate_max_area_px"]
-            )
-            if (label == "promoted") != significant:
-                raise FatalAccounting(
-                    f"aggregate Designator conservation page {ordinal} puts {label} component "
-                    f"{index} on the wrong side of the sealed presentation threshold"
-                )
+    _validate_aggregate_components(ordinal, promoted, aggregate, width, height, policy)
     _, _, residual = _require_reconciled_pixels(ordinal, pixel_counts)
     if sum(component["pixel_count"] for component in [*promoted, *aggregate]) != residual:
         raise FatalAccounting(
@@ -3414,15 +3425,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(DESCRIPTION).parse_args()
     context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
-    # The policy parsed when the run's binding was checked, never re-read: a rewrite in
-    # between would publish an allowance the run never sealed.
+    # Re-reading policy could publish an allowance the run never sealed.
     budget = context.recovery_policy
     context.require_sealed_config("recovery", budget["config_sha256"])
     scenario = declared_scenario(context)
     floor = context.witness_floor
 
-    # Before any publication, so a malformed later act never leaves an earlier act's
-    # review behind.
+    # Refuse a malformed later act before publishing any earlier review.
     preflight_witness_denominator(context, floor)
     preflight_recovery_history(context, budget)
     preflight_review_evidence(context, budget)
@@ -3475,8 +3484,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
         state = recovery_state(context, act_id, budget)
         if state["outstanding_request_ids"]:
-            # The matching review already records this hold; a retry must not accept
-            # the act before the Designator cuts the requested crop.
+            # A retry must not accept an act before its requested crop is cut.
             held += 1
             continue
 
@@ -3552,8 +3560,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         continuation_link = recensor_continuation_link(state["regions"], act_id)
         continuation_shortfall = reconcile_continuation(act, continuation_link, act_id)
 
-        # Against the page image itself, never a stage's claim. A flagged page holds
-        # every act on it, because nobody knows which act the uncovered ink belongs to.
+        # Uncovered page ink holds every touching act: its owner is unknown.
         page_coverage = page_coverage_for(state["regions"], page_findings)
         flagged_pages = page_coverage["flagged_pages"]
         # Recorded, never routed: see `testimony_content_for_continuation_pages`.
@@ -3564,8 +3571,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         used_total = len(state["requests"])
         used_fallback = len(state["requests_by_kind"][FALLBACK_RECROP])
         allowed_fallback = recovery_kind_budget(budget, FALLBACK_RECROP)
-        # A witness box is only a pointer: recovery needs measured ink outside the live
-        # crop union, or a misreported box could spend budget or hold an act on no ink.
+        # A witness box spends no budget without measured ink outside live crops.
         outside_ink_requests = unclaimed_ink_observations(
             ink_maps,
             content_coverage.get("unclaimed_observations", []),
@@ -3591,10 +3597,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             and used_total < budget["allowed"]
             and used_total < budget["absolute_cap"]
         ):
-            # The Recensor asks; the Designator cuts. Only `fallback-recrop` is
-            # requested: `page-level-reread` stays a budgeted kind, but nothing
-            # downstream can honour it yet, and a request that can only be refused turns
-            # a hold into a failure.
+            # Page-level reread has no downstream handler; requesting it would turn a hold into failure.
             request_origin = recovery_request_origin(
                 declared=declared_recovery(scenario, act_key),
                 outside_ink_requests=outside_ink_requests,
@@ -3616,9 +3619,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                         "Designator cannot independently verify"
                     )
             if request_origin == COVERAGE_OBSERVATION_ORIGIN:
-                # A second spelling of the gate that cannot fire on the production path:
-                # every conjunct is proved above. It catches an edit that loosens the
-                # live gate alone, not one that loosens both.
+                # Defence against loosening the live gate without loosening this one.
                 dossier = latest_payload.get("dossier")
                 gate = capture_specific_recovery(
                     logical_act_id=(
@@ -3644,9 +3645,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                         "but Unit 19C's own capture-specific gate says it should not be "
                         f"admitted: {gate['reason']}"
                     )
-            # Screened inline, not in a helper: `test_quality_firewall.py` finds this
-            # write by its literal `kind="recovery-request"` and reads the conditions
-            # around it.
+            # The quality firewall reads this literal publication and its enclosing gate.
             recovery_payload = {
                 "act_key": act_key,
                 "attempt_ordinal": request_ordinal,
@@ -3701,8 +3700,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 ),
                 payload=recovery_payload,
             )
-            # Spent where the request is published, so an act refused by budget or
-            # continuation does not consume the page's grant.
+            # Only publication spends the page grant.
             if request_origin == COVERAGE_OBSERVATION_ORIGIN:
                 funded_pages.add(act["page_ordinal"])
             request_ref = context.input_ref(request.relative_path)
@@ -3741,8 +3739,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             held += 1
             continue
 
-        # One ordered list feeds both the blank gate and the hold route: `confirmed-blank`
-        # is terminal, so a cause the route holds on must also close the gate.
+        # A terminal blank must be blocked by every cause that would hold a reading.
         hold_causes = [
             cause
             for cause in (
@@ -3823,8 +3820,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             },
         )
 
-    # The receipt can refuse, so it is written before the seal; its denominator needs a
-    # current stored manifest, written first.
+    # The receipt needs the current manifest and may refuse before the seal.
     context.finish()
     write_partition_receipt(context, budget)
     context.seal_boundary()
