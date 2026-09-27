@@ -645,7 +645,7 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         args.store_root, volume_mount_path, "--store-root", report_path=report_path
     )
     models_config = _require_contained(
-        args.models_config,
+        _repository_config_path(args.models_config, repository),
         repository,
         "--models-config",
         base_label="the checked-out repository",
@@ -690,7 +690,9 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
             report_path=report_path,
         )
     serving_recipes_config = _require_contained(
-        args.serving_recipes_config or (repository / "config" / "serving_recipes.toml"),
+        _repository_config_path(
+            args.serving_recipes_config or Path("config/serving_recipes.toml"), repository
+        ),
         repository,
         "--serving-recipes-config",
         base_label="the checked-out repository",
@@ -701,7 +703,9 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
     # journaled CONFIGURATION step parses and pairs their content immediately
     # after checkout, before uv, model materialization, cache work, or serving.
     witness_context_config = _require_contained(
-        args.witness_context_config or (repository / "config" / "witness_context.toml"),
+        _repository_config_path(
+            args.witness_context_config or Path("config/witness_context.toml"), repository
+        ),
         repository,
         "--witness-context-config",
         base_label="the checked-out repository",
@@ -761,6 +765,12 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         transfer_prefix=args.transfer_prefix or "pod-transfer",
         transfer_target_factory=args.transfer_target_factory,
     )
+
+
+def _repository_config_path(path: Path, repository: Path) -> Path:
+    """Interpret a config selection relative to its checked-out repository."""
+
+    return path if path.is_absolute() else repository / path
 
 
 def _positive_interval(value: float, *, report_path: Path | None = None) -> float:

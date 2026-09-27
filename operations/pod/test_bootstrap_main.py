@@ -948,6 +948,27 @@ def test_the_real_roster_is_accepted_when_its_catalogue_and_context_are_named(
     assert plan.witness_context_config == witness_context.resolve()
 
 
+def test_relative_configuration_paths_are_resolved_inside_the_repository(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+    argv = _argv(
+        ws,
+        extra=(
+            "--serving-recipes-config",
+            "config/serving_recipes.toml",
+            "--witness-context-config",
+            "config/witness_context.toml",
+        ),
+    )
+    argv[argv.index("--models-config") + 1] = "config/models.toml"
+
+    plan = resolve_plan(build_parser().parse_args(argv), _environ(clock))
+
+    assert plan.models_config == ws.models_config.resolve()
+    assert plan.serving_recipes_config == (ws.repository / "config/serving_recipes.toml").resolve()
+    assert plan.witness_context_config == (ws.repository / "config/witness_context.toml").resolve()
+
+
 def test_the_real_roster_default_context_is_refused_after_the_pinned_checkout(
     tmp_path: Path,
 ) -> None:
