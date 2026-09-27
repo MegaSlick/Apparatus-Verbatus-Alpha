@@ -45,6 +45,23 @@ transcribes anything and never adjudicates anything; every human-custody act sta
   booleans and named failures in a self-hashed verdict, and never places that
   text in the run tree or export. Fetch-run saves the verdict under the private
   canary root and sends one decision ping when a stage fails.
+
+Build a canary submission from an external RecordGold local set containing
+`pages/`, `gold.jsonl`, `page_manifest.jsonl`, and `fetch_receipt.json`:
+
+```sh
+.venv/bin/python -m operations.corpus.canary build \
+  --source-dir /path/outside/this/repository \
+  --page-sha <selected-page-sha256>
+```
+
+Repeat `--page-sha` for each selected page. The command verifies reference,
+digest, and geometry before writing `private/canary/pages/`,
+`private/canary/reference-pages.json`, and a Door-ready
+`private/canary/submission-manifest.json`. Pass the `pages/` directory as the
+Boot B canary folder and the manifest as its canary manifest.
+`--split` defaults to `train`; a checked directory with `reference-pages.json`
+and digest-named images under `pages/` is also accepted for local synthetic tests.
 - `local_admission.py` — the existing local sets (`recordgold_evaluation_val_v1`,
   `recordgold_production_train_v1`: `pages/`, `page_manifest.jsonl`, `gold.jsonl`,
   `fetch_receipt.json`) admitted as reference truth, every record admitted or refused
