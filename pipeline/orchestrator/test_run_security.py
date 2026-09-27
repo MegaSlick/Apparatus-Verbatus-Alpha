@@ -53,6 +53,8 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         # that omits them is not the surface it claims to mirror.
         submission_folder=None,
         submission_manifest=None,
+        canary_folder=None,
+        canary_manifest=None,
         data_gate_policy=None,
         triage_decision_manifest=None,
         triage_clusters=None,

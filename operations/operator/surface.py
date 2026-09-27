@@ -894,6 +894,7 @@ class OperatorSurface:
         run_prefix: str = FETCH_RUN_PREFIX,
         evidence_prefixes: Sequence[str] = (FETCH_EVIDENCE_PREFIX,),
         evidence_keys: Sequence[str] = (),
+        canary_root: str | Path | None = None,
     ) -> Path:
         """Bring one run tree back from the volume, every object digest-checked.
 
@@ -970,6 +971,55 @@ class OperatorSurface:
             tuple(evidence_keys),
             destination_root / EVIDENCE_DIRECTORY,
         )
+        from common.stage import canary_ordinals
+
+        fetched_tree = RunTree(destination_root, checked_id)
+        private_root = Path(canary_root or self.workspace / "private" / "canary")
+        check_error = None
+        try:
+            marked = bool(canary_ordinals(fetched_tree.read_run()))
+            marked = marked or canary_root is not None or private_root.exists()
+        except Exception as error:
+            check_error = error
+            marked = True
+        canary_verdict = None
+        verdict_path = None
+        if marked:
+            from operations.corpus.cache import write_new_file
+            from operations.corpus.canary import check_run, raised_verdict
+
+            if check_error is not None:
+                canary_verdict = raised_verdict(checked_id, check_error)
+            else:
+                try:
+                    canary_verdict = check_run(fetched_tree, private_root)
+                except Exception as error:
+                    canary_verdict = raised_verdict(checked_id, error)
+            verdict_path = private_root / "verdicts" / f"{checked_id}.json"
+            new_verdict = False
+            try:
+                verdict_path.parent.mkdir(parents=True, exist_ok=True)
+                verdict_bytes = canonical_bytes(canary_verdict)
+                if verdict_path.exists():
+                    if verdict_path.read_bytes() != verdict_bytes:
+                        raise OperatorError(
+                            ErrorCode.CANARY_VERDICT_CONFLICT,
+                            detail="an existing canary verdict differs from this run",
+                        )
+                elif not write_new_file(verdict_path, verdict_bytes):
+                    raise OSError("canary verdict could not be sealed")
+                else:
+                    new_verdict = True
+            except (OSError, ValueError) as error:
+                raise OperatorError(
+                    ErrorCode.CANARY_VERDICT_SAVE_FAILED, detail=str(error)
+                ) from error
+            if new_verdict and canary_verdict["dead"]:
+                self._notify(
+                    "milestone",
+                    f"CANARY ALARM run {checked_id}: "
+                    + "; ".join(row["rule"] for row in canary_verdict["dead"]),
+                )
         partial = bool(outcome.unmanifested_stages)
         # Serving logs arrived but were checked against nothing.
         verified_objects = outcome.fetched + outcome.reused - len(outcome.unverified_serving_logs)
@@ -1004,7 +1054,15 @@ class OperatorSurface:
             "fetch-run",
             {
                 "summary": summary,
-                "state": "verified-partial" if partial else "verified",
+                "state": "verified-partial"
+                if partial
+                else ("canary-alarm" if canary_verdict and canary_verdict["dead"] else "verified"),
+                **(
+                    {"canary_alarm": True}
+                    if partial and canary_verdict and canary_verdict["dead"]
+                    else {}
+                ),
+                **({"canary_verdict": str(verdict_path)} if verdict_path else {}),
                 "run_id": checked_id,
                 "prefix": prefix,
                 "into": str(destination_root),
@@ -1068,6 +1126,14 @@ class OperatorSurface:
                 else " against the run tree's own digests."
             )
         )
+        if canary_verdict and canary_verdict["dead"]:
+            raise OperatorError(
+                ErrorCode.CANARY_ALARM,
+                detail=(
+                    f"{len({row['stage'] for row in canary_verdict['dead']})} stage(s) failed. "
+                    f"Saved verdict: {verdict_path}. Saved receipt: {receipt}"
+                ),
+            )
         if outcome.unverified_serving_logs:
             self.present(
                 f"{len(outcome.unverified_serving_logs)} serving log(s) came home as side "

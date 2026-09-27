@@ -1544,6 +1544,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "submission folder"
         ),
     )
+    parser.add_argument("--canary-folder", help="private canary page folder")
+    parser.add_argument("--canary-manifest", help="self-hashed private canary filename ledger")
     parser.add_argument(
         "--data-gate-policy",
         default=str(gate.DEFAULT_POLICY_PATH),
@@ -1579,6 +1581,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "a submission filename ledger is meaningful only with a real submission folder; "
             "the walking skeleton's declared synthetic pages are not gated input"
         )
+    if args.canary_folder is not None or args.canary_manifest is not None:
+        raise ContractError("a canary ledger requires a real submission folder")
     if (
         args.triage_decision_manifest is not None
         or args.triage_clusters is not None
@@ -1731,6 +1735,38 @@ def real_submission(args, registry) -> int:
     _refuse_inside_submission(run_root, submission_folder, "run root")
     _refuse_inside_submission(manifest_path, submission_folder, "submission filename ledger")
     ledger = submission_ledger.load_manifest(manifest_path)
+    canary_ledger = None
+    canary_folder = None
+    canary_paths: set[str] = set()
+    if (getattr(args, "canary_folder", None) is None) != (
+        getattr(args, "canary_manifest", None) is None
+    ):
+        raise ContractError("--canary-folder and --canary-manifest must be supplied together")
+    if getattr(args, "canary_folder", None) is not None:
+        canary_folder = gate.require_approved_storage_location(
+            Path(args.canary_folder), roots, "canary folder"
+        )
+        canary_manifest_path = gate.require_approved_storage_location(
+            Path(args.canary_manifest), roots, "canary filename ledger"
+        )
+        if (
+            canary_folder == submission_folder
+            or canary_folder in submission_folder.parents
+            or submission_folder in canary_folder.parents
+        ):
+            raise ContractError("canary and real submission folders must be disjoint")
+        _refuse_inside_submission(canary_manifest_path, canary_folder, "canary filename ledger")
+        canary_ledger = submission_ledger.load_manifest(canary_manifest_path)
+        real_paths = {row["relative_path"] for row in ledger["files"]}
+        real_digests = {row["sha256"] for row in ledger["files"]}
+        canary_paths = {row["relative_path"] for row in canary_ledger["files"]}
+        if canary_paths & real_paths or any(
+            row["sha256"] in real_digests for row in canary_ledger["files"]
+        ):
+            raise ContractError("canary ledger overlaps the real submission by path or digest")
+        found_canaries = inventory.read_submission(canary_folder, max_bytes=0)
+        if {source.relative_path for source in found_canaries} != canary_paths:
+            raise ContractError("canary folder does not match its sealed filename ledger")
     if args.triage_clusters is not None and args.triage_decision_manifest is None:
         raise ContractError("triage cluster records require a triage decision manifest")
     if args.triage_producer_recipe is not None and args.triage_decision_manifest is None:
@@ -1766,6 +1802,10 @@ def real_submission(args, registry) -> int:
     # descriptor, so digest and render see one file even if its name is replaced.
     # The ledger digests catch an in-place rewrite, which `fstat` alone cannot.
     ledger_digests = {row["relative_path"]: row["sha256"] for row in ledger["files"]}
+    if canary_ledger is not None:
+        ledger_digests.update(
+            {row["relative_path"]: row["sha256"] for row in canary_ledger["files"]}
+        )
     found = inventory.read_submission(submission_folder, max_bytes=0)
     found_paths = {source.relative_path for source in found}
     declared_paths = {row["relative_path"] for row in ledger["files"]}
@@ -1779,7 +1819,7 @@ def real_submission(args, registry) -> int:
     def read_bytes(relative_path: str) -> bytes:
         try:
             with inventory.open_submission_source(
-                submission_folder, relative_path
+                canary_folder if relative_path in canary_paths else submission_folder, relative_path
             ) as opened_source:
                 # Bounded even if the untrusted ledger understates a file that
                 # grew; `process_sources` refuses the size mismatch.
@@ -1791,7 +1831,9 @@ def real_submission(args, registry) -> int:
             raise OSError(str(error)) from error
 
     def open_source(relative_path: str):
-        return inventory.open_submission_source(submission_folder, relative_path)
+        return inventory.open_submission_source(
+            canary_folder if relative_path in canary_paths else submission_folder, relative_path
+        )
 
     bindings = _real_bindings(
         registry.config,
@@ -1826,6 +1868,7 @@ def real_submission(args, registry) -> int:
         decoding_config_path=args.decoding_config,
         draft_fed=args.draft_fed,
         mechanics_qualification=getattr(args, "mechanics_qualification", False),
+        canary_ledger=canary_ledger,
     )
     # The modes seal must be proved before triage rows can shape master-frame geometry.
     if triage_rows is not None:
@@ -1846,6 +1889,25 @@ def real_submission(args, registry) -> int:
         triage_rows=triage_rows,
         triage_clusters=triage_clusters,
     )
+    if canary_ledger is not None:
+        canary_sources = expand_sources(
+            [
+                {
+                    "relative_path": source["relative_path"],
+                    "sha256": source["sha256"],
+                    "bytes": source["bytes"],
+                    "ledger_sha256": canary_ledger["self_hash"],
+                }
+                for source in canary_ledger["files"]
+            ],
+            read_bytes,
+            format_policy,
+            open_source=open_source,
+        )
+        real_count = len(sources)
+        sources.extend(
+            source._replace(ordinal=source.ordinal + real_count) for source in canary_sources
+        )
     require_corpus_frame_shard(len(sources), bindings["sealed_config_digests"])
     tree = _create_run(
         args,
@@ -1960,6 +2022,7 @@ def _real_bindings(
     mechanics_qualification: bool = False,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
+    canary_ledger: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
@@ -2015,6 +2078,7 @@ def _real_bindings(
                     for source in ledger["files"]
                 ],
                 "submission_ledger_sha256": ledger["self_hash"],
+                **({"canary_ledger_sha256": canary_ledger["self_hash"]} if canary_ledger else {}),
                 "format_policy": format_policy,
                 "pdf_render_config_sha256": pdf_render_config_sha256,
                 # Provenance, not a gate: which policy did the storage-root check.
@@ -2091,6 +2155,7 @@ def _real_bindings(
                 draft_fed=draft_fed,
                 mechanics_qualification=mechanics_qualification,
             ),
+            **({"canary-ledger": canary_ledger["self_hash"]} if canary_ledger else {}),
         },
     }
 

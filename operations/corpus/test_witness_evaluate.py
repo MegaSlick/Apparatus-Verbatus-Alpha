@@ -23,12 +23,12 @@ from operations.corpus.test_evaluate import (
 )
 from operations.corpus.witness_evaluate import (
     CHAIRS,
-    _attachment_index,
-    _sealed_page_bindings,
+    attachment_index,
     evaluate_page,
     evaluate_run,
     main,
     page_health_counts,
+    sealed_page_bindings,
     witness_reading,
     write_report,
 )
@@ -142,7 +142,7 @@ def test_page_health_joins_valid_transformed_presentations_to_exact_exemplar(
     sealed_run: RunTree,
 ):
     read_only = ReadOnlyRunTree(sealed_run)
-    sealed_pages = _sealed_page_bindings(read_only)
+    sealed_pages = sealed_page_bindings(read_only)
     page_sha256_by_ordinal = load_exemplar_page_shas(read_only)
     records = [
         read_only.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
@@ -171,7 +171,7 @@ def test_page_health_refuses_self_consistent_page_relabelled_to_another_ordinal(
     sealed_run: RunTree,
 ):
     read_only = ReadOnlyRunTree(sealed_run)
-    sealed_pages = _sealed_page_bindings(read_only)
+    sealed_pages = sealed_page_bindings(read_only)
     _artifact_id, forged = _relabel_page_two_pixels_as_page_one(_page_records(read_only))
 
     with pytest.raises(CorpusRefusal, match="ordinal disagrees with the sealed page"):
@@ -203,7 +203,7 @@ def test_attachment_index_refuses_self_consistent_page_relabelled_to_another_ord
             return getattr(read_only, name)
 
     with pytest.raises(CorpusRefusal, match="ordinal disagrees with the sealed page"):
-        _attachment_index(ForgedReadTree())  # type: ignore[arg-type]
+        attachment_index(ForgedReadTree())  # type: ignore[arg-type]
 
 
 @pytest.fixture(scope="module")
@@ -268,7 +268,7 @@ def test_two_page_act_selects_primary_source_attachment_not_transformed_image_di
     reference = _fixture_reference_for_page_one(sealed_run)
     read_only = ReadOnlyRunTree(sealed_run)
     source_sha = load_exemplar_page_shas(read_only)[1]
-    attachments = _attachment_index(read_only)
+    attachments = attachment_index(read_only)
     proposals = load_pipeline_proposal_acts(read_only)
     spanning = next(
         (act_id, by_chair)
@@ -360,7 +360,7 @@ def test_missing_unavailable_and_truncated_readings_all_remain_in_totals(
         for proposal in load_pipeline_proposal_acts(read_only)
         if proposal["page_sha256"] == reference["page"]["sha256"]
     ]
-    attachments = json.loads(json.dumps(_attachment_index(read_only)))
+    attachments = json.loads(json.dumps(attachment_index(read_only)))
     for by_chair in attachments.values():
         by_chair.pop("attestator_2", None)
         for item in by_chair.get("attestator_1", []):
@@ -411,7 +411,7 @@ def test_reference_text_cannot_change_the_geometry_assignment(sealed_run: RunTre
         for proposal in load_pipeline_proposal_acts(read_only)
         if proposal["page_sha256"] == first["page"]["sha256"]
     ]
-    attachments = _attachment_index(read_only)
+    attachments = attachment_index(read_only)
     original = evaluate_page(
         reference_page=first,
         source_page_ordinal=1,
@@ -450,7 +450,7 @@ def test_witness_report_retains_only_geometry_facts_from_placeholder_comparison(
         reference_page=reference,
         source_page_ordinal=1,
         proposals=proposals,
-        attachments=_attachment_index(read_only),
+        attachments=attachment_index(read_only),
         chairs=CHAIRS,
     )
 
@@ -471,7 +471,7 @@ def test_duplicate_attachment_for_the_matched_source_page_is_refused(sealed_run:
     reference = _fixture_reference_for_page_one(sealed_run)
     read_only = ReadOnlyRunTree(sealed_run)
     proposals = load_pipeline_proposal_acts(read_only)
-    attachments = _attachment_index(read_only)
+    attachments = attachment_index(read_only)
     act_id = proposals[0]["act_id"]
     duplicate = dict(attachments)
     duplicate[act_id] = dict(attachments[act_id])

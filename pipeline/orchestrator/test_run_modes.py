@@ -7,6 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from common.contracts.errors import ContractError
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
 from conftest import load_stage
@@ -58,6 +61,27 @@ def snapshot(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def test_canary_ingress_requires_a_real_submission_and_a_pair():
+    orchestrator = load_stage("orchestrator")
+    args = argparse.Namespace(
+        submission_folder=None,
+        submission_manifest=None,
+        data_gate_policy=None,
+        canary_folder="/private/birds",
+        canary_manifest="/private/birds.json",
+        triage_decision_manifest=None,
+        triage_clusters=None,
+        triage_producer_recipe=None,
+        corpus_register=None,
+    )
+    with pytest.raises(ContractError, match="canary input requires a real submission"):
+        orchestrator.require_coherent_ingress_options(args)
+    args.submission_folder = "/private/real"
+    args.canary_manifest = None
+    with pytest.raises(ContractError, match="supplied together"):
+        orchestrator.require_coherent_ingress_options(args)
 
 
 def test_all_and_manual_stages_write_the_identical_happy_run_tree(tmp_path):

@@ -111,6 +111,8 @@ def render_boot_b_request(
     gpu_type: str | None = None,
     hard_deadline: str | None = None,
     now: datetime | None = None,
+    canary_folder: str | None = None,
+    canary_manifest: str | None = None,
 ) -> BootBRequest:
     """Render the real-run request, or a refusal when the policy cannot back one."""
 
@@ -152,6 +154,8 @@ def render_boot_b_request(
         repository_commit=repository_commit,
         run_id=run_id,
         hard_deadline=hard_deadline,
+        canary_folder=canary_folder,
+        canary_manifest=canary_manifest,
     )
     # Rendered and then proven, in that order, on every call: what is printed
     # below is a shape the launcher's own validation has just accepted.
@@ -184,6 +188,8 @@ def pod_request(
     hard_deadline: str | None = None,
     volume_mount_path: str = BOOT_B_VOLUME_MOUNT_PATH,
     repository: str = BOOT_B_REPOSITORY_PATH,
+    canary_folder: str | None = None,
+    canary_manifest: str | None = None,
 ) -> dict[str, object]:
     """The `cli.py create --request` JSON for the real run, placeholders where the project lead decides.
 
@@ -211,6 +217,10 @@ def pod_request(
         "--submission-manifest",
         f"{volume_mount_path}/submission-manifest.json",
     ]
+    if (canary_folder is None) != (canary_manifest is None):
+        raise ValueError("canary folder and manifest must be named together")
+    if canary_folder is not None:
+        run_half += ["--canary-folder", canary_folder, "--canary-manifest", canary_manifest]
     bootstrap_half = [
         "--volume-mount-path",
         volume_mount_path,
@@ -493,6 +503,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--volume-id")
     parser.add_argument("--repository-commit")
     parser.add_argument("--run-id")
+    parser.add_argument("--canary-folder")
+    parser.add_argument("--canary-manifest")
     parser.add_argument(
         "--gpu-type",
         help="reviewed gpu_type_id to run on; omit for the cheapest reviewed card",
@@ -512,6 +524,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_id=args.run_id,
             gpu_type=args.gpu_type,
             hard_deadline=args.hard_deadline,
+            canary_folder=args.canary_folder,
+            canary_manifest=args.canary_manifest,
         )
     except (ValueError, SpendRefusal) as error:
         print(f"# Boot B run -- REFUSED\n\n{error}\n", end="")

@@ -116,6 +116,49 @@ def test_the_committed_policy_renders_a_boot_b_request() -> None:
         assert phrase in rendered.text, phrase
 
 
+def test_boot_b_forwards_canary_inputs_only_as_a_pair() -> None:
+    args = dict(
+        image=IMAGE,
+        volume_id="volume-abc",
+        repository_commit=COMMIT,
+        run_id="boot-b-0001",
+        hard_deadline=_deadline(),
+    )
+    card = cheapest_card(load_placement_table(PLACEMENT))
+    nested = _nested_argv(pod_request(card, **args))
+    assert "--canary-folder" not in nested
+    with pytest.raises(ValueError, match="together"):
+        pod_request(card, **args, canary_folder="/volume/canary")
+    nested = _nested_argv(
+        pod_request(
+            card, **args, canary_folder="/volume/canary", canary_manifest="/volume/canary.json"
+        )
+    )
+    assert nested[nested.index("--canary-folder") + 1] == "/volume/canary"
+    assert nested[nested.index("--canary-manifest") + 1] == "/volume/canary.json"
+
+
+def test_rendered_boot_b_request_carries_a_parsed_canary_pair() -> None:
+    rendered = render_boot_b_request(
+        configured(),
+        load_placement_table(PLACEMENT),
+        image=IMAGE,
+        volume_id="volume-abc",
+        repository_commit=COMMIT,
+        run_id="boot-b-0001",
+        hard_deadline=_deadline(),
+        canary_folder="/volume/canary/pages",
+        canary_manifest="/volume/canary/submission-manifest.json",
+    )
+    request = json.loads(rendered.text.split("```json\n", 1)[1].split("\n```", 1)[0])
+    parsed = validated_pod_request(request)
+    nested = _sealed_nested_argv(parsed.docker_start_cmd)
+    assert nested[nested.index("--canary-folder") + 1] == "/volume/canary/pages"
+    assert (
+        nested[nested.index("--canary-manifest") + 1] == "/volume/canary/submission-manifest.json"
+    )
+
+
 def test_an_unconfigured_policy_refuses_rather_than_rendering_blanks() -> None:
     rendered = render_boot_b_request(
         SpendPolicy(state="unconfigured"),  # type: ignore[arg-type]

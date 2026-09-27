@@ -134,6 +134,10 @@ STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v1"
 
 
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
+    if (getattr(args, "canary_folder", None) is None) != (
+        getattr(args, "canary_manifest", None) is None
+    ):
+        raise ContractError("--canary-folder and --canary-manifest must be supplied together")
     if args.submission_folder is not None:
         if (
             getattr(args, "triage_clusters", None) is not None
@@ -149,6 +153,8 @@ def require_coherent_ingress_options(args: argparse.Namespace) -> None:
             "the walking skeleton's declared synthetic pages are not gated input "
             "(--submission-manifest was supplied without --submission-folder)"
         )
+    if getattr(args, "canary_folder", None) is not None:
+        raise ContractError("canary input requires a real submission folder")
     if args.data_gate_policy is not None:
         raise ContractError(
             "--data-gate-policy is meaningful only with --submission-folder; the synthetic "
@@ -168,6 +174,8 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
     for attribute in (
         "submission_folder",
         "submission_manifest",
+        "canary_folder",
+        "canary_manifest",
         *_TRIAGE_PATHS,
         "cache_root",
     ):
@@ -204,6 +212,8 @@ def _require_absolute_caller_paths(args: argparse.Namespace) -> None:
         "run_root",
         "submission_folder",
         "submission_manifest",
+        "canary_folder",
+        "canary_manifest",
         "data_gate_policy",
         *_TRIAGE_PATHS,
         "cache_root",
@@ -261,6 +271,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
                 ("--repository-commit", commit),
                 ("--submission-folder", args.submission_folder),
                 ("--submission-manifest", args.submission_manifest),
+                ("--canary-folder", getattr(args, "canary_folder", None)),
+                ("--canary-manifest", getattr(args, "canary_manifest", None)),
                 ("--data-gate-policy", args.data_gate_policy),
                 ("--triage-decision-manifest", getattr(args, "triage_decision_manifest", None)),
                 ("--triage-clusters", getattr(args, "triage_clusters", None)),
@@ -471,6 +483,8 @@ def main() -> int:
     parser.add_argument("--fixture", required=True)
     parser.add_argument("--submission-folder")
     parser.add_argument("--submission-manifest")
+    parser.add_argument("--canary-folder")
+    parser.add_argument("--canary-manifest")
     parser.add_argument("--triage-decision-manifest", default=None)
     parser.add_argument("--triage-clusters", default=None)
     parser.add_argument("--triage-producer-recipe", default=None)

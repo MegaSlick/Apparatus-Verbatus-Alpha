@@ -4092,7 +4092,12 @@ def submission_identity(run: Mapping[str, Any]) -> str | None:
     rows = run.get("source_manifest")
     if not isinstance(rows, list) or not rows:
         raise ContractError("run.json has no submitted source manifest to name a submission by")
-    hashes = {row.get("ledger_sha256") if isinstance(row, Mapping) else None for row in rows}
+    canaries = canary_ordinals(run)
+    hashes = {
+        row.get("ledger_sha256") if isinstance(row, Mapping) else None
+        for row in rows
+        if not isinstance(row, Mapping) or row.get("ordinal") not in canaries
+    }
     if len(hashes) != 1:
         raise ContractError(
             f"run.json source rows name {len(hashes)} filename ledgers, not one; a real "
@@ -4105,6 +4110,27 @@ def submission_identity(run: Mapping[str, Any]) -> str | None:
             "identity is that ledger's self-hash and nothing may stand in for it"
         )
     return identity
+
+
+def canary_ordinals(run: Mapping[str, Any]) -> set[int]:
+    """Canary membership comes only from the ledger digest sealed by the Door."""
+    digests = run.get("sealed_config_digests", {})
+    mark = digests.get("canary-ledger") if isinstance(digests, Mapping) else None
+    if mark is None:
+        return set()
+    if not is_sha256(mark):
+        raise ContractError("run.json has a malformed sealed canary-ledger digest")
+    rows = run.get("source_manifest")
+    if not isinstance(rows, list):
+        raise ContractError("run.json has no source rows for its sealed canary ledger")
+    ordinals = {
+        row.get("ordinal")
+        for row in rows
+        if isinstance(row, Mapping) and row.get("ledger_sha256") == mark
+    }
+    if not ordinals or any(not is_plain_int(ordinal) or ordinal < 1 for ordinal in ordinals):
+        raise ContractError("run.json sealed a canary ledger with no valid page ordinals")
+    return ordinals
 
 
 def exemplar_page_ids(context) -> dict[int, str]:

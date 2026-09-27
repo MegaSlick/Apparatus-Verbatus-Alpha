@@ -215,6 +215,8 @@ class RunPlan:
     fixture: str
     interval_seconds: float
     dry_run: bool
+    canary_folder: Path | None = None
+    canary_manifest: Path | None = None
     triage_decision_manifest: Path | None = None
     triage_clusters: Path | None = None
     triage_producer_recipe: Path | None = None
@@ -359,6 +361,8 @@ class RunPlan:
             (self.triage_clusters, "--triage-clusters"),
             (self.triage_producer_recipe, "--triage-producer-recipe"),
             (self.corpus_register, "--corpus-register"),
+            (self.canary_folder, "--canary-folder"),
+            (self.canary_manifest, "--canary-manifest"),
         ):
             if value is not None:
                 command += [flag, str(value)]
@@ -371,6 +375,14 @@ class RunPlan:
             "run_root": str(self.run_root),
             "submission_folder": str(self.submission_folder),
             "submission_manifest": str(self.submission_manifest),
+            **(
+                {
+                    "canary_folder": str(self.canary_folder),
+                    "canary_manifest": str(self.canary_manifest),
+                }
+                if self.canary_folder and self.canary_manifest
+                else {}
+            ),
             "data_gate_policy": str(self.data_gate_policy),
             "models_config": str(self.models_config),
             "serving_recipes_config": str(self.serving_recipes_config),
@@ -414,6 +426,8 @@ def build_parser() -> bootstrap_main.RefusingParser:
     parser.add_argument("--run-root", type=Path)
     parser.add_argument("--submission-folder", type=Path, required=True)
     parser.add_argument("--submission-manifest", type=Path, required=True)
+    parser.add_argument("--canary-folder", type=Path)
+    parser.add_argument("--canary-manifest", type=Path)
     parser.add_argument("--triage-decision-manifest", type=Path)
     parser.add_argument("--triage-clusters", type=Path)
     parser.add_argument("--triage-producer-recipe", type=Path)
@@ -506,6 +520,24 @@ def resolve_run_plan(
             f"--submission-manifest {submission_manifest} is not a file on the volume",
             report_path=report_path,
         )
+    if (args.canary_folder is None) != (args.canary_manifest is None):
+        raise RunRefusal(
+            "--canary-folder and --canary-manifest must be supplied together",
+            report_path=report_path,
+        )
+    canary_folder = None
+    canary_manifest = None
+    if args.canary_folder is not None:
+        canary_folder = _require_contained(
+            args.canary_folder, volume, "--canary-folder", report_path=report_path
+        )
+        canary_manifest = _require_contained(
+            args.canary_manifest, volume, "--canary-manifest", report_path=report_path
+        )
+        if not canary_folder.is_dir() or not canary_manifest.is_file():
+            raise RunRefusal(
+                "canary folder or ledger is missing on the volume", report_path=report_path
+            )
     triage_paths: dict[str, Path | None] = {}
     for value, flag in (
         (args.triage_decision_manifest, "--triage-decision-manifest"),
@@ -551,6 +583,8 @@ def resolve_run_plan(
         run_root=run_root,
         submission_folder=submission_folder,
         submission_manifest=submission_manifest,
+        canary_folder=canary_folder,
+        canary_manifest=canary_manifest,
         data_gate_policy=data_gate_policy,
         fixture=args.fixture,
         interval_seconds=interval,

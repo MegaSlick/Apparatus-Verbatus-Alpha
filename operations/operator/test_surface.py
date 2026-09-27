@@ -5707,6 +5707,167 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     repeated = surface.receipts.read(again)["payload"]
     assert repeated["fetched"] == 0
     assert repeated["reused"] == payload["fetched"]
+    assert "canary_verdict" not in repeated
+    assert not (tmp_path / "private-canary").exists()
+
+
+def test_fetch_run_seals_one_private_alarm_and_sends_one_decision_ping(tmp_path, monkeypatch):
+    from common import stage
+    from operations.corpus import canary
+
+    volume, reader = _volume_run(tmp_path)
+    surface = _surface(tmp_path)
+    pings = []
+    surface.notifier = lambda event, message: (
+        pings.append((event, message)) or notify_bridge.NotifyOutcome(False, True, "sent")
+    )
+    monkeypatch.setattr(stage, "canary_ordinals", lambda _run: {1})
+    verdict = {
+        "schema": "canary-verdict.v1",
+        "run_id": "brought-home",
+        "stages": {"attestator_2": False},
+        "dead": [
+            {
+                "stage": "attestator_2",
+                "rule": "DAI failed on a page it was trained on",
+            }
+        ],
+    }
+    monkeypatch.setattr(canary, "check_run", lambda _tree, _root: verdict)
+    into = tmp_path / "local-runs"
+    private = tmp_path / "private-canary"
+    for _ in range(2):
+        with pytest.raises(OperatorError) as error:
+            surface.fetch_run(run_id="brought-home", into=into, reader=reader, canary_root=private)
+        assert error.value.code == ErrorCode.CANARY_ALARM
+    assert len(pings) == 1
+    assert pings[0][0] == "milestone"
+    assert (private / "verdicts" / "brought-home.json").read_bytes() == canonical_bytes(verdict)
+    monkeypatch.setattr(canary, "check_run", lambda _tree, _root: {**verdict, "dead": []})
+    with pytest.raises(OperatorError) as conflict:
+        surface.fetch_run(run_id="brought-home", into=into, reader=reader, canary_root=private)
+    assert conflict.value.code == ErrorCode.CANARY_VERDICT_CONFLICT
+    assert "conflicts" in str(conflict.value)
+    assert len(pings) == 1
+
+
+def test_fetch_run_with_a_healthy_canary_is_silent(tmp_path, monkeypatch):
+    from common import stage
+    from operations.corpus import canary
+
+    _volume, reader = _volume_run(tmp_path)
+    surface = _surface(tmp_path)
+    pings = []
+    surface.notifier = lambda event, message: (
+        pings.append((event, message)) or notify_bridge.NotifyOutcome(False, True, "sent")
+    )
+    monkeypatch.setattr(stage, "canary_ordinals", lambda _run: {1})
+    monkeypatch.setattr(
+        canary,
+        "check_run",
+        lambda _tree, _root: {
+            "schema": "canary-verdict.v1",
+            "run_id": "brought-home",
+            "stages": {"door": True},
+            "dead": [],
+        },
+    )
+    private = tmp_path / "private-canary"
+    receipt = surface.fetch_run(
+        run_id="brought-home", into=tmp_path / "local-runs", reader=reader, canary_root=private
+    )
+    assert surface.receipts.read(receipt)["payload"]["state"] == "verified"
+    assert (private / "verdicts" / "brought-home.json").exists()
+    assert pings == []
+
+
+def test_configured_canary_root_without_a_sealed_ledger_alarms_once(tmp_path):
+    _volume, reader = _volume_run(tmp_path)
+    surface = _surface(tmp_path)
+    pings = []
+    surface.notifier = lambda event, message: (
+        pings.append((event, message)) or notify_bridge.NotifyOutcome(False, True, "sent")
+    )
+    private = tmp_path / "private-canary"
+    for _ in range(2):
+        with pytest.raises(OperatorError) as error:
+            surface.fetch_run(
+                run_id="brought-home",
+                into=tmp_path / "local-runs",
+                reader=reader,
+                canary_root=private,
+            )
+        assert error.value.code == ErrorCode.CANARY_ALARM
+    verdict = json.loads((private / "verdicts" / "brought-home.json").read_text())
+    assert any(row["rule"] == "no-sealed-canary-ledger" for row in verdict["dead"])
+    assert len(pings) == 1
+
+
+def test_partial_fetch_keeps_its_partial_state_when_a_canary_dies(tmp_path):
+    volume, reader = _volume_run(tmp_path)
+    (volume / "runs" / "brought-home" / "2_designator" / "manifest.json").unlink()
+    surface = _surface(tmp_path)
+    surface.notifier = lambda _event, _message: notify_bridge.NotifyOutcome(False, True, "sent")
+    with pytest.raises(OperatorError) as error:
+        surface.fetch_run(
+            run_id="brought-home",
+            into=tmp_path / "local-runs",
+            reader=reader,
+            canary_root=tmp_path / "private-canary",
+        )
+    assert error.value.code == ErrorCode.CANARY_ALARM
+    receipts = list(surface.receipts.receipts.glob("*.json"))
+    payloads = [surface.receipts.read(path)["payload"] for path in receipts]
+    partial = next(row for row in payloads if row.get("state") == "verified-partial")
+    assert partial["canary_alarm"] is True
+    assert partial["unmanifested_stages"] == ["designator"]
+
+
+def test_fetch_run_seals_and_pings_when_the_canary_check_raises(tmp_path, monkeypatch):
+    from common import stage
+    from operations.corpus import canary
+
+    _volume, reader = _volume_run(tmp_path)
+    surface = _surface(tmp_path)
+    pings = []
+    surface.notifier = lambda event, message: (
+        pings.append((event, message)) or notify_bridge.NotifyOutcome(False, True, "sent")
+    )
+    monkeypatch.setattr(
+        stage, "canary_ordinals", lambda _run: (_ for _ in ()).throw(KeyError("bad"))
+    )
+    monkeypatch.setattr(
+        canary, "canary_ordinals", lambda _run: (_ for _ in ()).throw(KeyError("bad"))
+    )
+    private = tmp_path / "private-canary"
+    with pytest.raises(OperatorError) as error:
+        surface.fetch_run(
+            run_id="brought-home",
+            into=tmp_path / "local-runs",
+            reader=reader,
+            canary_root=private,
+        )
+    assert error.value.code == ErrorCode.CANARY_ALARM
+    verdict = json.loads((private / "verdicts" / "brought-home.json").read_text())
+    assert {row["rule"] for row in verdict["dead"]} == {"check-raised:KeyError"}
+    assert len(pings) == 1
+
+
+def test_verdict_save_failure_says_the_verdict_was_not_saved(tmp_path, monkeypatch):
+    from operations.corpus import cache
+
+    _volume, reader = _volume_run(tmp_path)
+    surface = _surface(tmp_path)
+    monkeypatch.setattr(cache, "write_new_file", lambda *_args: False)
+    with pytest.raises(OperatorError) as error:
+        surface.fetch_run(
+            run_id="brought-home",
+            into=tmp_path / "local-runs",
+            reader=reader,
+            canary_root=tmp_path / "private-canary",
+        )
+    assert error.value.code == ErrorCode.CANARY_VERDICT_SAVE_FAILED
+    assert "verdict could not be saved" in str(error.value)
 
 
 # The three stages that serve a chair, and the module each one's
