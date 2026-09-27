@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import stat
-import unicodedata
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
 
@@ -13,6 +12,7 @@ from common.contracts.canonical import canonical_bytes, digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.corpus_register import refuse_capture_preference
 from common.durability import PublishedUnsettled, atomic_replace
+from operations.triage.paths import PathCheckFailure, canonical_distinct_paths
 
 VERDICT_SCHEMA: Final = "triage-structural-verdict.v1"
 EXPECTED_SCHEMA: Final = "triage-structural-expected.v2"
@@ -399,73 +399,50 @@ def reconcile_files(
     _atomic_write(expected, canonical_bytes(expected_value))
 
 
-def _case_insensitive_key(path: Path) -> str:
-    return unicodedata.normalize("NFC", os.fspath(path)).casefold()
-
-
 def _canonical_distinct_paths(
     sources: Sequence[Path], expected: Path, disagreements: Path
 ) -> tuple[list[Path], Path, Path]:
-    """Resolve parents once and refuse aliases before immutable sources are read."""
     labelled = [(f"source verdict {index}", path) for index, path in enumerate(sources)] + [
         ("expected output", expected),
         ("disagreements output", disagreements),
     ]
-    canonical: list[tuple[str, Path]] = []
-    spellings: dict[str, str] = {}
-    identities: dict[tuple[int, int], str] = {}
-    for role, path in labelled:
-        try:
-            target = path.parent.resolve(strict=False) / path.name
-        except (OSError, RuntimeError) as error:
-            raise ReconciliationRefusal(
+    try:
+        canonical = canonical_distinct_paths(labelled)
+    except PathCheckFailure as error:
+        if error.reason == "resolve":
+            message = (
                 "structural reconciliation path could not be resolved; nothing was written. "
                 "Repair the named path and retry."
-            ) from error
-        key = _case_insensitive_key(target)
-        prior = spellings.get(key)
-        if prior is not None:
-            raise ReconciliationRefusal(
-                f"structural reconciliation paths for {prior} and {role} resolve to one file "
+            )
+        elif error.reason == "spelling":
+            message = (
+                f"structural reconciliation paths for {error.prior} and {error.role} resolve to one file "
                 "or collide on a case-insensitive filesystem; "
                 "nothing was written. Give each input and output its own path."
             )
-        spellings[key] = role
-        try:
-            status = os.lstat(target)
-        except FileNotFoundError:
-            pass
-        except OSError as error:
-            raise ReconciliationRefusal(
+        elif error.reason == "inspect":
+            message = (
                 "structural reconciliation path identity could not be verified; nothing was "
                 "written. Restore readable paths and retry."
-            ) from error
+            )
+        elif error.reason == "symlink":
+            message = (
+                f"structural reconciliation path for {error.role} is a symbolic link; nothing "
+                "was written. Supply a direct path."
+            )
+        elif error.reason == "type":
+            message = (
+                f"structural reconciliation path for {error.role} is not a regular file; "
+                "nothing was written. Supply a direct file path."
+            )
         else:
-            if stat.S_ISLNK(status.st_mode):
-                raise ReconciliationRefusal(
-                    f"structural reconciliation path for {role} is a symbolic link; nothing "
-                    "was written. Supply a direct path."
-                )
-            if not stat.S_ISREG(status.st_mode):
-                raise ReconciliationRefusal(
-                    f"structural reconciliation path for {role} is not a regular file; "
-                    "nothing was written. Supply a direct file path."
-                )
-            identity = (status.st_dev, status.st_ino)
-            prior = identities.get(identity)
-            if prior is not None:
-                raise ReconciliationRefusal(
-                    f"structural reconciliation paths for {prior} and {role} name one file; "
-                    "nothing was written. Give each input and output its own path."
-                )
-            identities[identity] = role
-        canonical.append((role, target))
-    source_count = len(sources)
-    return (
-        [path for _role, path in canonical[:source_count]],
-        canonical[source_count][1],
-        canonical[source_count + 1][1],
-    )
+            message = (
+                f"structural reconciliation paths for {error.prior} and {error.role} name one file; "
+                "nothing was written. Give each input and output its own path."
+            )
+        raise ReconciliationRefusal(message) from error
+    count = len(sources)
+    return canonical[:count], canonical[count], canonical[count + 1]
 
 
 def _read_verdict_bytes(path: Path) -> bytes:
