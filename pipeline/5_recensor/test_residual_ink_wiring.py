@@ -457,10 +457,6 @@ def test_a_second_recensor_pass_that_clears_a_flag_does_not_collide_with_the_fir
     }, "a third identical pass must not mint a new review artifact"
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
-
-
 def test_an_unmeasurable_page_qualifies_an_otherwise_accepted_reason_through_main(
     tmp_path, monkeypatch
 ):

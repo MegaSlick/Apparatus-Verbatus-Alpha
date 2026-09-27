@@ -11,8 +11,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from common.contracts.stages import RECENSOR
 from common.runtree.store import RunTree
 from conftest import programs_through
@@ -140,7 +138,3 @@ def test_a_page_level_allowance_never_becomes_a_fallback_recrop(tmp_path):
         == "a1"
     )
     assert "page-level reread is not a substitute" in review["payload"]["reason"]
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))

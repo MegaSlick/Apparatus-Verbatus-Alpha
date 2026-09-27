@@ -808,7 +808,3 @@ def test_an_unlocated_act_line_never_corroborates_a_terminal_blank():
     assert (
         RECENSOR_RUN.blank_corroboration(coverage, outcomes, basisless, _proved(outcomes)) is None
     )
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))

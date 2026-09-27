@@ -23,8 +23,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import artifact_id
@@ -378,10 +376,6 @@ def test_a_breach_inside_a_recovery_round_stops_before_the_archetypus(monkeypatc
     assert orchestrator.STAGE_PROGRAMS["archetypus"] not in invoked
     assert orchestrator.STAGE_PROGRAMS["armarium"] not in invoked
     assert orchestrator.STAGE_PROGRAMS["recensor"] in invoked
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
 
 
 # --- The policy is sealed, and its point of use requires it ---------------------

@@ -337,7 +337,3 @@ def test_the_designator_refuses_to_answer_a_non_recrop_recovery_kind(tmp_path, m
     with pytest.raises(ContractError, match="only answers") as caught:
         designator.recovery_pass(context, act_id, "fake_request")
     assert FALLBACK_RECROP in str(caught.value)
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))

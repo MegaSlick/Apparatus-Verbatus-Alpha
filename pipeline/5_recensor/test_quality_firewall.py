@@ -419,7 +419,3 @@ def test_a_failed_class_reading_is_reviewed_and_never_re_requested(tmp_path):
         for entry in tree.build_manifest(RECENSOR)["artifacts"]
         if entry["kind"] == "recovery-request"
     ] == []
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))

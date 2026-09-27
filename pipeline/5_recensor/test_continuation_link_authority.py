@@ -273,7 +273,3 @@ def test_a_designator_held_act_with_no_region_at_all_carries_empty_facts(tmp_pat
             "flagged_pages": [],
             "unmeasurable_pages": [],
         }
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
