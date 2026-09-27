@@ -209,8 +209,7 @@ def audit_state(
     """
     if reading["outcome"] == "not-run":
         return None
-    # Only the closed operational-failure shape skips the chain; a `failed` outcome with
-    # an ordinary reading payload is still audited.
+    # An ordinary failed reading is still audited; only operational failure skips the chain.
     if reading["outcome"] == "failed" and "failure" in reading["payload"]:
         validate_failed_perlectio(context, reading, act_id, expected_act_key=expected_act_key)
         return None
@@ -316,8 +315,7 @@ def _merge_page_attachment_fact(previous: dict, current: dict) -> dict:
 
 SURVEY_ABSENT = "act-visibility-survey-absent"
 REGISTRATION_ABSENT = "cross-capture-registration-absent"
-# A view that rendered two pages cannot be surveyed on one grid: its rectangle exists on
-# no page. Recorded as an absence, not measured.
+# A view spanning pages has no single grid; record absence, not measurement.
 SURVEY_SPANS_TWO_PAGES = "act-visibility-survey-spans-two-pages"
 # An absent instrument is recorded but does not become a measured shortfall.
 INSTRUMENT_ABSENT_CODES = frozenset({SURVEY_ABSENT, REGISTRATION_ABSENT, SURVEY_SPANS_TWO_PAGES})
@@ -406,9 +404,7 @@ def _view_visibility(
     """``(visibility_state, visible_cells, occluded_cells, finding_codes)`` for one view."""
     if not surveyed:
         return "unresolved", [], [], [SURVEY_ABSENT]
-    # One bounding box over two pages would mix two coordinate spaces, so occlusion on
-    # page two would land in page one's cells. Until each page is classified on its own
-    # grid such a view is unmeasured; continuation acts make this the common case.
+    # Page-spanning bounds mix coordinate grids; leave visibility unmeasured.
     if page_count > 1:
         return "unresolved", [], [], [SURVEY_SPANS_TWO_PAGES]
     x0 = min(bounds["x"] for bounds in bounds_list)
@@ -497,8 +493,7 @@ def act_cross_capture_coverage(
             physical_page,
             {"expected_cells": expected, "captures": [], "required": []},
         )
-        # A component denominator cannot silently inherit whichever member's
-        # expected surface arrived first.
+        # All component members must agree on the expected surface.
         if component["expected_cells"] != expected:
             raise FatalAccounting(
                 f"logical act {logical_act_id!r} component {physical_page!r} is surveyed over "
@@ -510,8 +505,7 @@ def act_cross_capture_coverage(
     for entry in components.values():
         if len(entry["captures"]) < 2:
             continue
-        # Opaque alignment references do not map capture-local grids into one
-        # coordinate frame, so their masks cannot support a union.
+        # Opaque alignment references cannot support a union of capture-local grids.
         for row in entry["captures"]:
             row["visibility_state"] = "unresolved"
             row["visible_cells"] = []
@@ -665,14 +659,10 @@ def act_attachment_facts(
                     "across its pages; one act attempt cannot have two health records; "
                     "restore the attempt's single recorded health"
                 )
-            # One row per contributing page, one act attempt: whole rows merge, never
-            # OR-ed booleans, so no combination appears that no single page supplied.
+            # Merge whole page rows; OR-ing flags would invent an unseen combination.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
-            # Only rows of one attempt merge (the health check above holds that), so
-            # filling a missing basis from a sibling page borrows nothing.
-            # `act-line-not-located` is sticky, or `blank_corroboration` would treat a
-            # failed alignment as checked geometry.
+            # Rows share one attempt; a failed alignment must stay failed across pages.
             bases_seen = (previous["anchor_basis"], fact["anchor_basis"])
             if "act-line-not-located" in bases_seen:
                 merged["anchor_basis"] = "act-line-not-located"
@@ -736,8 +726,7 @@ def _verify_page_witness_entry(
     native_capture = page_payload.get("native_capture")
     if native_capture is not None:
         _verify_native_capture(context, act_id, chair, page_testimonium, native_capture)
-    # Native page and compatibility act outcomes are independent; legacy
-    # page joins instead derive their outcome from the act attempts.
+    # Native page outcomes are independent; legacy joins derive from act attempts.
     attachment_outcome = (
         page_testimonium["outcome"] if native_capture is not None else outcomes.get(chair)
     )
@@ -784,9 +773,7 @@ def _verify_page_witness_entry(
             f"act {act_id} page witness {chair!r} names a basis for an unattached record"
         )
     _require_alignment_shape(act_id, chair, alignment)
-    # `attached` proves some evidence placed this reading in the act, not that
-    # there is retained text to compare; the floor also needs an aligned record
-    # and a string page payload.
+    # Attachment alone cannot meet the floor without aligned, comparable text.
     if entry["comparable"] != (
         entry["attached"]
         and alignment["status"] == "aligned"
@@ -992,8 +979,7 @@ def blank_corroboration(
     completed = sorted(
         chair for chair, outcome in outcomes.items() if outcome in WITNESS_READING_OUTCOMES
     )
-    # Named per chair and per missing fact: which half is absent points to the producer
-    # branch.
+    # Name the absent fact per chair to identify the producer branch.
     unproved = []
     for chair in completed:
         evidence = read_evidence.get(chair, {})
@@ -1010,9 +996,7 @@ def blank_corroboration(
             f"{'; '.join(unproved)}. A blank may not be corroborated by a read that nothing "
             "records having happened"
         )
-    # After the validation: a writer-impossible record must be fatal on every path,
-    # including recovery regions and runs missing a chair, where these quiet returns
-    # would otherwise skip it.
+    # Validate before quiet returns so writer-impossible records stay fatal.
     if witness_uncovered or coverage["unresolved_chairs"]:
         return None
     if (
@@ -1063,8 +1047,7 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"chair(s) {unaccounted}; an absent fact would silently read as unattached, and "
             "an extra one would attach a chair that never testified for this act"
         )
-    # A reread appends an attempt without a new attachment, so a mismatch means a
-    # superseded attempt. Page witnesses are exempt: their alignment is their own fact.
+    # Rereads reuse attachments; page witnesses instead carry their own alignment.
     superseded = sorted(
         chair
         for chair, outcome in outcomes.items()
@@ -1090,9 +1073,7 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             "be counted from a superseded attempt"
         )
     coverage = witness_coverage(outcomes, floor, attachments=attachments)
-    # The cross-capture primitive must agree with the established floor while
-    # every readable logical act has one component. Truncation is folded into
-    # comparability because it is not a separate fact in that primitive.
+    # Cross-capture floor folds truncation into comparability for one-component acts.
     cross_capture_floor = same_chair_witness_floor(
         [
             {
@@ -1350,8 +1331,7 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
             )
         ordinal = transform.get("source_page_ordinal")
         bounds = transform.get("bounds")
-        # All four numbers: `residual_ink` indexes each, and a bare dict would fail by
-        # traceback.
+        # `residual_ink` indexes all four numbers; reject a missing one by name.
         if (
             not is_plain_int(ordinal)
             or not isinstance(bounds, dict)
@@ -1411,8 +1391,7 @@ def sealed_page_images(context) -> dict[int, dict]:
             )
         pages[ordinal] = record
 
-    # Second pass, so the structural denominator above is settled before any
-    # pixel is touched.
+    # Settle the structural denominator before reading pixels.
     sources = _source_rows(context.run)
     for ordinal, record in pages.items():
         source = sources.get(ordinal)
@@ -1477,8 +1456,7 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
         return {}
     background_config = load_background_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", background_config["config_sha256"])
-    # The Designator's own page-spanning bound, so this audit sets aside the component
-    # that stage accounts for.
+    # Set aside the page-spanning component already accounted for by Designator.
     coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     pages = sealed_page_images(context) if sealed_pages is None else sealed_pages
@@ -3421,6 +3399,59 @@ def _route_reading_outcome(
     return outcome, reason, blank_evidence
 
 
+def _verify_ink_recovery_request(
+    observation: dict,
+    latest_payload: dict,
+    act_id: str,
+    page_ordinal: int,
+    capture_digests: dict[int, str],
+    funded_pages: set[int],
+    budget_counters: tuple[int, int, int],
+    budget: dict,
+) -> None:
+    required = (
+        "testimonium_ref",
+        "testimonium_id",
+        "observation_ordinal",
+        "ink_map_ref",
+    )
+    if any(name not in observation for name in required) or not isinstance(
+        observation.get("ink_map_ref"), dict
+    ):
+        raise FatalAccounting(
+            "an ink-confirmed recovery observation has no retained Ink Map and "
+            "Testimonium references; refusing before publishing a request the "
+            "Designator cannot independently verify"
+        )
+    used_fallback, allowed_fallback, used_total = budget_counters
+    # Defence against loosening the live gate without loosening this one.
+    dossier = latest_payload.get("dossier")
+    gate = capture_specific_recovery(
+        logical_act_id=(
+            dossier["logical_act_id"]
+            if isinstance(dossier, dict) and "logical_act_id" in dossier
+            else act_id
+        ),
+        # The sealed page's verified pixel digest, which the partition and
+        # autopsia use; the source-manifest row is not a capture identity.
+        source_sha256=capture_digest_for(capture_digests, page_ordinal, act_id),
+        page_ordinal=page_ordinal,
+        ink_confirmed=True,
+        page_observation_grant_available=page_ordinal not in funded_pages,
+        act_budget_available=(
+            used_fallback < allowed_fallback
+            and used_total < budget["allowed"]
+            and used_total < budget["absolute_cap"]
+        ),
+    )
+    if not gate["admitted"]:
+        raise FatalAccounting(
+            f"act {act_id}'s ink-confirmed recovery request is being published, "
+            "but Unit 19C's own capture-specific gate says it should not be "
+            f"admitted: {gate['reason']}"
+        )
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(DESCRIPTION).parse_args()
@@ -3603,48 +3634,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 outside_ink_requests=outside_ink_requests,
             )
             if request_origin == COVERAGE_OBSERVATION_ORIGIN:
-                observation = outside_ink_requests[0]
-                required = (
-                    "testimonium_ref",
-                    "testimonium_id",
-                    "observation_ordinal",
-                    "ink_map_ref",
+                _verify_ink_recovery_request(
+                    outside_ink_requests[0],
+                    latest_payload,
+                    act_id,
+                    act["page_ordinal"],
+                    capture_digests,
+                    funded_pages,
+                    (used_fallback, allowed_fallback, used_total),
+                    budget,
                 )
-                if any(name not in observation for name in required) or not isinstance(
-                    observation.get("ink_map_ref"), dict
-                ):
-                    raise FatalAccounting(
-                        "an ink-confirmed recovery observation has no retained Ink Map and "
-                        "Testimonium references; refusing before publishing a request the "
-                        "Designator cannot independently verify"
-                    )
-            if request_origin == COVERAGE_OBSERVATION_ORIGIN:
-                # Defence against loosening the live gate without loosening this one.
-                dossier = latest_payload.get("dossier")
-                gate = capture_specific_recovery(
-                    logical_act_id=(
-                        dossier["logical_act_id"]
-                        if isinstance(dossier, dict) and "logical_act_id" in dossier
-                        else act_id
-                    ),
-                    # The sealed page's verified pixel digest, which the partition and
-                    # autopsia use; the source-manifest row is not a capture identity.
-                    source_sha256=capture_digest_for(capture_digests, act["page_ordinal"], act_id),
-                    page_ordinal=act["page_ordinal"],
-                    ink_confirmed=True,
-                    page_observation_grant_available=act["page_ordinal"] not in funded_pages,
-                    act_budget_available=(
-                        used_fallback < allowed_fallback
-                        and used_total < budget["allowed"]
-                        and used_total < budget["absolute_cap"]
-                    ),
-                )
-                if not gate["admitted"]:
-                    raise FatalAccounting(
-                        f"act {act_id}'s ink-confirmed recovery request is being published, "
-                        "but Unit 19C's own capture-specific gate says it should not be "
-                        f"admitted: {gate['reason']}"
-                    )
             # The quality firewall reads this literal publication and its enclosing gate.
             recovery_payload = {
                 "act_key": act_key,
