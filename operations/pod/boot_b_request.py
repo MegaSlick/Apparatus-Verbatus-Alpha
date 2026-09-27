@@ -184,6 +184,8 @@ def pod_request(
     hard_deadline: str | None = None,
     volume_mount_path: str = BOOT_B_VOLUME_MOUNT_PATH,
     repository: str = BOOT_B_REPOSITORY_PATH,
+    canary_folder: str | None = None,
+    canary_manifest: str | None = None,
 ) -> dict[str, object]:
     """The `cli.py create --request` JSON for the real run, placeholders where the project lead decides.
 
@@ -211,6 +213,10 @@ def pod_request(
         "--submission-manifest",
         f"{volume_mount_path}/submission-manifest.json",
     ]
+    if (canary_folder is None) != (canary_manifest is None):
+        raise ValueError("canary folder and manifest must be named together")
+    if canary_folder is not None:
+        run_half += ["--canary-folder", canary_folder, "--canary-manifest", canary_manifest]
     bootstrap_half = [
         "--volume-mount-path",
         volume_mount_path,

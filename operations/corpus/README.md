@@ -40,6 +40,11 @@ transcribes anything and never adjudicates anything; every human-custody act sta
   `operations/submit/submit.py`.
 - `reference.py`, `compare.py` (Unit 4) — the reference-record family and the
   offline IoU comparator.
+- `canary.py` — a private, pass/fail check over a fetched run whose Door sealed a
+  canary ledger. It reads private reference text locally, reports only stage
+  booleans and named failures in a self-hashed verdict, and never places that
+  text in the run tree or export. Fetch-run saves the verdict under the private
+  canary root and sends one decision ping when a stage fails.
 - `local_admission.py` — the existing local sets (`recordgold_evaluation_val_v1`,
   `recordgold_production_train_v1`: `pages/`, `page_manifest.jsonl`, `gold.jsonl`,
   `fetch_receipt.json`) admitted as reference truth, every record admitted or refused

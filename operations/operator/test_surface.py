@@ -5702,11 +5702,80 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     assert reader.fetched[0] == "runs/brought-home/run.json"
     assert reader.fetched[1].endswith("/manifest.json")
 
-    again = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+    again = surface.fetch_run(
+        run_id="brought-home", into=into, reader=reader, canary_root=tmp_path / "private-canary"
+    )
 
     repeated = surface.receipts.read(again)["payload"]
     assert repeated["fetched"] == 0
     assert repeated["reused"] == payload["fetched"]
+    assert "canary_verdict" not in repeated
+    assert not (tmp_path / "private-canary").exists()
+
+
+def test_fetch_run_seals_one_private_alarm_and_sends_one_decision_ping(tmp_path, monkeypatch):
+    from common import stage
+    from operations.corpus import canary
+
+    volume, reader = _volume_run(tmp_path)
+    surface = _surface(tmp_path)
+    pings = []
+    surface.notifier = lambda event, message: (
+        pings.append((event, message)) or notify_bridge.NotifyOutcome(False, True, "sent")
+    )
+    monkeypatch.setattr(stage, "canary_ordinals", lambda _run: {1})
+    verdict = {
+        "schema": "canary-verdict.v1",
+        "run_id": "brought-home",
+        "stages": {"attestator_2": False},
+        "dead": [
+            {
+                "stage": "attestator_2",
+                "rule": "DAI failed on a page it was trained on",
+                "value": "failed",
+            }
+        ],
+    }
+    monkeypatch.setattr(canary, "check_run", lambda _tree, _root: verdict)
+    into = tmp_path / "local-runs"
+    private = tmp_path / "private-canary"
+    for _ in range(2):
+        with pytest.raises(OperatorError) as error:
+            surface.fetch_run(run_id="brought-home", into=into, reader=reader, canary_root=private)
+        assert error.value.code == ErrorCode.CANARY_ALARM
+    assert len(pings) == 1
+    assert pings[0][0] == "milestone"
+    assert (private / "verdicts" / "brought-home.json").read_bytes() == canonical_bytes(verdict)
+
+
+def test_fetch_run_with_a_healthy_canary_is_silent(tmp_path, monkeypatch):
+    from common import stage
+    from operations.corpus import canary
+
+    _volume, reader = _volume_run(tmp_path)
+    surface = _surface(tmp_path)
+    pings = []
+    surface.notifier = lambda event, message: (
+        pings.append((event, message)) or notify_bridge.NotifyOutcome(False, True, "sent")
+    )
+    monkeypatch.setattr(stage, "canary_ordinals", lambda _run: {1})
+    monkeypatch.setattr(
+        canary,
+        "check_run",
+        lambda _tree, _root: {
+            "schema": "canary-verdict.v1",
+            "run_id": "brought-home",
+            "stages": {"door": True},
+            "dead": [],
+        },
+    )
+    private = tmp_path / "private-canary"
+    receipt = surface.fetch_run(
+        run_id="brought-home", into=tmp_path / "local-runs", reader=reader, canary_root=private
+    )
+    assert surface.receipts.read(receipt)["payload"]["state"] == "verified"
+    assert (private / "verdicts" / "brought-home.json").exists()
+    assert pings == []
 
 
 # The three stages that serve a chair, and the module each one's

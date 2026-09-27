@@ -64,6 +64,7 @@ class ErrorCode(StrEnum):
     ADVANCE_REFUSED = "advance-refused"
     BACKUP_FAILED = "backup-failed"
     FETCH_RUN_FAILED = "fetch-run-failed"
+    CANARY_ALARM = "canary-alarm"
     INGEST_REFUSED = "ingest-refused"
     INGEST_PREVIEW_UNRESOLVED = "ingest-preview-unresolved"
     INGEST_UNRESOLVED = "ingest-unresolved"
@@ -353,6 +354,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The run tree was not brought back from the network volume as one verified whole.",
         "Nothing this attempt fetched was kept; files verified by an earlier fetch stay where they landed, an existing local file that differed was not touched, and no pod was started or billed.",
         "Keep the saved detail, repair the named object, digest, or local-copy conflict, then run `verbatus fetch-run` again; it safely reuses files an earlier fetch already verified.",
+    ),
+    ErrorCode.CANARY_ALARM: ErrorCopy(
+        "A golden canary died in the fetched run.",
+        "The run tree was fetched, but at least one stage failed its private canary check.",
+        "Read the saved canary verdict and inspect the named stage before using this run's export.",
     ),
     ErrorCode.INGEST_REFUSED: ErrorCopy(
         "The submission could not be prepared for the Door.",

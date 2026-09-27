@@ -581,6 +581,9 @@ def build_parser() -> PlainParser:
     )
     fetch_run.add_argument("--run-id", required=True, help="the run pod_run wrote on the volume")
     fetch_run.add_argument(
+        "--canary-root", type=Path, help="private canary references and verdicts"
+    )
+    fetch_run.add_argument(
         "--into",
         type=Path,
         required=True,
@@ -866,6 +869,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "into": args.into,
                 "volume": volume,
                 "evidence_keys": evidence_keys,
+                "canary_root": args.canary_root,
             }
             # Passed only when named or derived, so the surface's own default
             # (the whole preflight/ tree) applies when neither is.

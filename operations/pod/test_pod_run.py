@@ -295,6 +295,10 @@ def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
     clusters = triage / "clusters.json"
     recipe = triage / "recipe.json"
     register = triage / "register.json"
+    birds = ws.volume / "birds"
+    birds.mkdir()
+    bird_ledger = ws.volume / "bird-ledger.json"
+    bird_ledger.write_text("{}", encoding="utf-8")
     for path in (decision, clusters, recipe, register):
         path.write_text("{}", encoding="utf-8")
     runner = RecordedRunner()
@@ -313,6 +317,10 @@ def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
                     str(recipe),
                     "--corpus-register",
                     str(register),
+                    "--canary-folder",
+                    str(birds),
+                    "--canary-manifest",
+                    str(bird_ledger),
                 ),
             ),
             environ=_environ(clock, lifetime=1.0),
@@ -331,6 +339,8 @@ def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
         ("--triage-producer-recipe", recipe),
         # Without the register a confirmed re-shoot is refused at the Door.
         ("--corpus-register", register),
+        ("--canary-folder", birds),
+        ("--canary-manifest", bird_ledger),
     ):
         assert command[command.index(flag) + 1] == str(path)
 

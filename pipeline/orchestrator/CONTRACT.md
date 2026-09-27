@@ -6,6 +6,10 @@ a run can be re-entered from any process on any machine. This file says what its
 vocabulary means, because a word that appears in a `--flag` and nowhere in a document is
 a word two branches can define differently.
 
+On real ingress, `--canary-folder` and `--canary-manifest` are an inseparable
+pair forwarded to the Door. Fixture ingress refuses the pair. The pod runner
+forwards the same two paths from its volume-bound run plan.
+
 ## The one sequence
 
 ```
