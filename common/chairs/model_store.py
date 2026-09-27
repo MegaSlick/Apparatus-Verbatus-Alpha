@@ -878,8 +878,7 @@ def write_download_record(record: Mapping[str, Any], store_root: str | Path) -> 
             return digest
         previous_digest = digest_bytes(previous_bytes)
         previous = _current_record(root, previous_bytes)
-        if previous is not None:
-            _validate_record_transition(previous, record)
+        _validate_record_transition(previous, record)
         _publish_once(
             _under(root, f"records/{previous_digest}.json"),
             previous_bytes,
@@ -1240,13 +1239,17 @@ def _move_active_record(destination: Path, archive: Path) -> None:
         ) from error
 
 
-def _current_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:
-    """Return a current previous record, or None for an ad-hoc input."""
+def _current_record(root: Path, raw_bytes: bytes) -> dict[str, Any]:
+    """Validate an active record before a writer can replace its bytes."""
 
     try:
         raw = json.loads(raw_bytes)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise DigestMismatchRefusal(
+            "model-store",
+            "active download_record.json is not a valid record; move or remove "
+            "the old download_record.json, then re-run",
+        ) from error
     if isinstance(raw, Mapping) and raw.get("schema") == STORE_SCHEMA:
         # This also proves canonical bytes and the immutable archived version. A
         # damaged current record is not silently treated as legacy and replaced.
@@ -1254,9 +1257,15 @@ def _current_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:
     if isinstance(raw, Mapping) and raw.get("schema") == V1_STORE_SCHEMA:
         raise DigestMismatchRefusal(
             "model-store",
-            f"sealed under {V1_STORE_SCHEMA}, which this build no longer reads; re-run",
+            f"sealed under {V1_STORE_SCHEMA}, which this build no longer reads; move or "
+            "remove the old download_record.json, then re-run",
         )
-    return None
+    schema = raw.get("schema") if isinstance(raw, Mapping) else None
+    raise DigestMismatchRefusal(
+        "model-store",
+        f"active download_record.json has unsupported schema {schema!r}; move or remove "
+        "the old download_record.json, then re-run",
+    )
 
 
 def _validate_record_transition(
@@ -1291,7 +1300,8 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
         if raw.get("schema") == V1_STORE_SCHEMA:
             raise DigestMismatchRefusal(
                 "model-store",
-                f"sealed under {V1_STORE_SCHEMA}, which this build no longer reads; re-run",
+                f"sealed under {V1_STORE_SCHEMA}, which this build no longer reads; move or "
+                "remove the old download_record.json, then re-run",
             )
         raise DigestMismatchRefusal(
             "model-store",

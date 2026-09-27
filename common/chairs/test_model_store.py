@@ -385,7 +385,7 @@ def test_verified_snapshot_root_cannot_hide_behind_an_internal_symlink(tmp_path)
         verify_store(tmp_path)
 
 
-def test_writer_archives_the_legacy_host_record_before_migration(tmp_path):
+def test_writer_refuses_an_unsupported_active_record_without_archiving_it(tmp_path):
     record = _store(tmp_path)
     (tmp_path / "download_record.json").unlink()
     shutil.rmtree(tmp_path / "records")
@@ -399,11 +399,28 @@ def test_writer_archives_the_legacy_host_record_before_migration(tmp_path):
     )
     (tmp_path / "download_record.json").write_bytes(legacy)
 
-    write_download_record(record, tmp_path)
+    with pytest.raises(DigestMismatchRefusal, match="unsupported schema None"):
+        write_download_record(record, tmp_path)
+    assert (tmp_path / "download_record.json").read_bytes() == legacy
+    assert not (tmp_path / "records").exists()
 
-    legacy_digest = hashlib.sha256(legacy).hexdigest()
-    assert (tmp_path / "records" / f"{legacy_digest}.json").read_bytes() == legacy
-    assert load_download_record(tmp_path) == record
+
+def test_v1_active_record_refuses_writers_before_publication(tmp_path):
+    record = _store(tmp_path)
+    old = canonical_bytes({**record, "schema": "verbatus-model-store.v1"})
+    active = tmp_path / "download_record.json"
+    active.write_bytes(old)
+    archives = set((tmp_path / "records").iterdir())
+
+    with pytest.raises(DigestMismatchRefusal, match="move or remove the old download_record.json"):
+        write_download_record(record, tmp_path)
+    assert active.read_bytes() == old
+    assert set((tmp_path / "records").iterdir()) == archives
+
+    with pytest.raises(DigestMismatchRefusal, match="move or remove the old download_record.json"):
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+    assert active.read_bytes() == old
+    assert set((tmp_path / "records").iterdir()) == archives
 
 
 # --- S3: symlink escape is refused in both directions ---------------------------
@@ -1705,7 +1722,7 @@ def test_a_v1_record_is_refused_by_name_before_its_shape(tmp_path):
 
     with pytest.raises(
         DigestMismatchRefusal,
-        match="sealed under verbatus-model-store.v1, which this build no longer reads; re-run",
+        match="sealed under verbatus-model-store.v1, which this build no longer reads; move or remove",
     ):
         derived_inventory(record)
 
