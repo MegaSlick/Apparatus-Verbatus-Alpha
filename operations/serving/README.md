@@ -273,14 +273,16 @@ pixel figures: a row this package refuses to launch should not carry unbenchmark
 ## The golden-page vision smoke callable
 
 `VisionSmokeCall` asks the chair for a **page witness**, an unguessable string printed on
-the golden page and absent from the prompt, and requires exactly `PAGE-WITNESS: <witness>`.
+the golden page and absent from the prompt, and requires the exact
+`PAGE-WITNESS: <witness>` marker and code, allowing whitespace inside the code.
 The lifecycle already proves the request carried the fixture bytes; this proves something
 read them. An answer built from the prompt alone yields the literal
 `PAGE-WITNESS: <the page witness string>`, is format-invalid, and fails preflight. The
 receipt records identity and revision, the `served_model_id` the response body itself named
 (`parse_openai_answer` refuses any other alias), the response digest, and `sha256(witness)`
 — never the witness, prompt or answer. The witness token is retained separately under the
-preflight evidence root so the qualifier can recompute both digests.
+preflight evidence root. The qualifier checks the retained raw response against its
+response digest, the output digest, and the same witness rule as the smoke callable.
 
 **The fixture author owns the witness's entropy, lifetime and rotation**; the pod draws it
 from a CSPRNG over the URL-safe token alphabet. The callable refuses only what cannot work

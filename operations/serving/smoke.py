@@ -1,10 +1,11 @@
-"""The production golden-page vision smoke callable.
+"""The production golden-page vision smoke callable and page renderer.
 
 The lifecycle proves that a request carried the exact fixture bytes; the
-page-only witness proves that the chair read those bytes.  The fixture author
-must draw a fresh witness from a CSPRNG over the URL-safe ASCII token alphabet
-whenever the page is rendered.  Generation quality cannot be inferred from the
-supplied value, so a weak or reused witness can make the smoke falsely green.
+page-only witness proves that the chair read those bytes. The fixture author
+must draw a fresh witness from a CSPRNG over ASCII letters and digits that
+avoid common look-alikes whenever the page is rendered. Generation quality
+cannot be inferred from the supplied value, so a weak or reused witness can
+make the smoke falsely green.
 
 One handle supports one smoke call at a time.  The handle stores its latest
 fixture request and :class:`~.preflight.ServingSmokeReader` corroborates that
@@ -45,17 +46,13 @@ from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSamp
 from .errors import ServingConfigurationError, ServingError
 from .http import HttpResponse
 from .manager import AdapterCalibration, ServiceHandle, _active_chat_image_bytes
+from .witness import PAGE_WITNESS_ALPHABET, PAGE_WITNESS_LENGTH, is_page_witness
 
 _WITNESS_PREFIX = "PAGE-WITNESS: "
-_MINIMUM_WITNESS_LENGTH = 32
-_MAXIMUM_WITNESS_LENGTH = 128
 _MAXIMUM_UTILIZATION_SAMPLES = 1_024
 _MAXIMUM_PNG_BYTES = 64 * 1024 * 1024
 _FIXTURE_MIME_TYPE = "image/png"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-# 32 bytes of CSPRNG output, URL-safe: 43 characters, all inside the witness
-# alphabet `VisionSmokeCall` accepts and comfortably inside its length bound.
-_WITNESS_ENTROPY_BYTES = 32
 # The rendered page: large type on a wide page under the smallest tier's
 # longest-edge cap (config/pod_placement.toml), so `_verify_png` never refuses
 # it. The witness line's width varies with which characters the CSPRNG drew,
@@ -68,6 +65,17 @@ _GOLDEN_PAGE_FONT_SIZE = 40
 _GOLDEN_PAGE_FONT_FLOOR = 24
 _GOLDEN_PAGE_FONT_STEP = 2
 _NVIDIA_SMI_TIMEOUT_SECONDS = 30.0
+
+
+def answer_is_page_witness(answer: str, witness: str) -> bool:
+    """Match the exact marker and code, allowing only internal layout whitespace."""
+
+    if not answer.startswith(_WITNESS_PREFIX):
+        return False
+    code = answer[len(_WITNESS_PREFIX) :]
+    if not code or code[0].isspace() or code[-1].isspace():
+        return False
+    return code.translate(str.maketrans("", "", " \t\r\n")) == witness
 
 
 class SmokeExchangeRetainedError(ServingError):
@@ -95,7 +103,12 @@ def fresh_page_witness() -> str:
     preflight by ``bootstrap_main`` immediately before the page is rendered.
     """
 
-    return secrets.token_urlsafe(_WITNESS_ENTROPY_BYTES)
+    witness: list[str] = []
+    while len(witness) < PAGE_WITNESS_LENGTH:
+        character = secrets.choice(PAGE_WITNESS_ALPHABET)
+        if not witness or character != witness[-1]:
+            witness.append(character)
+    return "".join(witness)
 
 
 def render_golden_page(path: Path, witness: str) -> bytes:
@@ -239,30 +252,10 @@ class VisionSmokeCall:
     ) = None
 
     def __post_init__(self) -> None:
-        if (
-            not isinstance(self.page_witness, str)
-            or len(self.page_witness) < _MINIMUM_WITNESS_LENGTH
-            or len(self.page_witness) > _MAXIMUM_WITNESS_LENGTH
-            or not self.page_witness.strip()
-        ):
+        if not is_page_witness(self.page_witness):
             raise ServingConfigurationError(
-                "golden-page witness must be a non-blank string between "
-                f"{_MINIMUM_WITNESS_LENGTH} and {_MAXIMUM_WITNESS_LENGTH} characters"
-            )
-        # Whitespace makes a token's visible boundary ambiguous and can violate
-        # the one-line output contract; reject it before chair inference so a
-        # fixture defect cannot be reported as `smoke-output-invalid`.
-        if any(character.isspace() for character in self.page_witness):
-            raise ServingConfigurationError(
-                "golden-page witness must contain no whitespace: it is a visible token "
-                "returned on one exact output line"
-            )
-        if not self.page_witness.isascii() or not all(
-            character.isalnum() or character in "-_" for character in self.page_witness
-        ):
-            raise ServingConfigurationError(
-                "golden-page witness must use only visible URL-safe ASCII letters, digits, "
-                "hyphen, or underscore"
+                "golden-page witness must be 43 characters from the generator alphabet "
+                "with no adjacent repeats"
             )
         # A subclass can override `prompt`; keep the page-only claim enforced at
         # construction even though the base prompt is constant.
@@ -350,10 +343,9 @@ class VisionSmokeCall:
         # answer never reaches this line — it arrives at the runner as
         # `smoke-read-failed`, earlier and louder.
         nonempty = bool(answer.outputs) and all(output.strip() for output in answer.outputs)
-        # The prompt asks for exactly one line.  Stripping here would silently
-        # accept surrounding spaces or extra blank lines and report them as
-        # format-valid, a broader claim than the output rule actually measured.
-        format_valid = answer.outputs == (_WITNESS_PREFIX + self.page_witness,)
+        # Keep the marker and token boundaries exact. Some readers split a
+        # long token across lines, so only internal ASCII layout whitespace is ignored.
+        format_valid = shape_valid and answer_is_page_witness(answer.outputs[0], self.page_witness)
         samples = self.utilization()
         if not isinstance(samples, tuple) or not all(
             isinstance(sample, UtilizationSample) for sample in samples

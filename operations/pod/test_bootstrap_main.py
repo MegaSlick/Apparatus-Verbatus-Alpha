@@ -1409,7 +1409,7 @@ def test_a_refusal_that_precedes_report_path_validation_writes_nothing(
 
 ROOT = Path(__file__).resolve().parents[2]
 PROVEN_TIER = "generic-48gb"
-WITNESS = "h6GMQDVxeNmr7RYvT82PqWkJz3BLaF9C"
+WITNESS = "ABCEFGHJKMNPRSTUVWXYZabcdefghijkmnpqrstuvwx"
 
 
 def _checked_out_configuration_plan(
