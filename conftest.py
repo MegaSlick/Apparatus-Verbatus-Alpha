@@ -394,6 +394,21 @@ def rewitness_boundary():
 
 
 @pytest.fixture
+def empty_triage_manifest(tmp_path: Path) -> Path:
+    """An empty but valid Door decision manifest for malformed-input cases."""
+    from door import triage_manifest
+
+    path = tmp_path / "manifest.json"
+    path.write_text(
+        json.dumps(
+            {"schema": triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
 def absent_third_chair_config(tmp_path: Path) -> Path:
     """Copy the live model config and mark its third witness explicitly absent."""
     config_root = tmp_path / "chair-config"
