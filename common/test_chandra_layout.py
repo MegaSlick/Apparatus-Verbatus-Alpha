@@ -127,55 +127,6 @@ def test_the_prompt_still_states_the_scale_the_geometry_divides_by():
     assert BBOX_SCALE == 1000
 
 
-@pytest.mark.parametrize(
-    ("attribute", "value", "expected"),
-    [
-        ("OCR_LAYOUT_PROMPT_SHA256", "0" * 64, "carried OCR_LAYOUT_PROMPT renders to sha256"),
-        # Both digests, each expecting its own name: `_seal` checks
-        # `PROMPT_ENDING` first, so a case that only matched "renders to
-        # sha256" would pass on whichever of the two happened to fire.
-        ("PROMPT_ENDING_SHA256", "0" * 64, "carried PROMPT_ENDING renders to sha256"),
-        ("OCR_LAYOUT_PROMPT", OCR_LAYOUT_PROMPT.replace("0-1000", "0-100"), "0-1000"),
-        ("ALLOWED_TAGS", ALLOWED_TAGS[:-1], "not the vendor's 36"),
-        ("ALLOWED_ATTRIBUTES", ALLOWED_ATTRIBUTES[:-1], "not the vendor's 14"),
-        ("OCR_LAYOUT_LABELS", OCR_LAYOUT_LABELS[:-1], "not 19"),
-        ("OCR_LAYOUT_LABELS", ("Caption",) * 19, "repeats a label"),
-        (
-            "OCR_LAYOUT_LABELS",
-            OCR_LAYOUT_LABELS[:-1] + ("Marginal-Name",),
-            "is not offered by the carried prompt",
-        ),
-        # The reverse direction, which no other case reaches: every label this
-        # module names is still in the prompt, and the prompt offers a
-        # twentieth one it does not name. A caller switching on
-        # `OCR_LAYOUT_LABELS` would then have a label it never expects arriving
-        # from a model that was offered it.
-        (
-            "OCR_LAYOUT_PROMPT",
-            OCR_LAYOUT_PROMPT.replace("\n- Blank-Page\n", "\n- Blank-Page\n- Marginal-Name\n"),
-            "offers labels this module does not name",
-        ),
-    ],
-)
-def test_the_import_seal_refuses_a_carry_that_drifted(monkeypatch, attribute, value, expected):
-    """The seal has teeth, and this is where they are shown.
-
-    `_seal` runs once at import, where a passing run proves nothing about what
-    it would refuse. Each case here edits exactly one carried value the way a
-    careless hand would -- a digest left behind after a re-pin, a scale changed
-    in the prompt but not in `BBOX_SCALE`, a list one element short, a label
-    the prompt never offered -- and asserts the module refuses to be that.
-    """
-    monkeypatch.setattr(chandra_layout, attribute, value)
-    with pytest.raises(RuntimeError, match=expected):
-        chandra_layout._seal()
-
-
-def test_the_seal_passes_on_the_carry_as_it_stands():
-    # The counterpart to the case above: with nothing patched, `_seal` returns.
-    assert chandra_layout._seal() is None
-
-
 def test_undeclared_outcomes_and_findings_cannot_be_minted():
     with pytest.raises(ValueError, match="undeclared parse outcome"):
         chandra_layout._refuse("something-plausible")

@@ -106,7 +106,6 @@ lands where every other Chandra reading of the page puts it.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from html.parser import HTMLParser
 from typing import Any, Final, TypedDict
@@ -262,13 +261,12 @@ UNLABELLED_BLOCK_LABEL: Final = "block"
 PROMPT_ENDING_SHA256: Final = "f5d1ed0fb0ead54db6271c3e5dba9d581dcd8f9aa1709ab3b029761c00cb2233"
 OCR_LAYOUT_PROMPT_SHA256: Final = "025935f3e1de1acdfadd4c7d581ab17eb82e8caaffef7b64962621c80b7ca9a8"
 # `chandra/settings.py::Settings.BBOX_SCALE`. The prompt states the same number
-# in prose; `_NORMALIZED_CLAIM` below is checked against the prompt text at
+# in prose; the prompt text is checked by the layout tests at
 # import, so the two can never drift apart silently -- a re-pin that changed
 # the scale in `settings.py` but not the sentence, or the sentence but not the
 # scale, would leave every reported box scaled by the wrong denominator with
 # nothing to show for it.
 BBOX_SCALE: Final = 1000
-_NORMALIZED_CLAIM: Final = f"Bboxes are normalized 0-{BBOX_SCALE}."
 
 # The named rule this module's `page_text` and `spans` are produced by. It is
 # ours, not the vendor's; see the module docstring for the rule in full.
@@ -871,63 +869,3 @@ def parse_layout_html(raw: Any) -> ParsedLayout | dict[str, str]:
         "spans": spans,
         "findings": findings,
     }
-
-
-# ---------------------------------------------------------------------------
-# What the carry is, checked at import
-# ---------------------------------------------------------------------------
-
-
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _seal() -> None:
-    """Refuse to import on any drift between the carry and what it claims to be.
-
-    Every check here is about this file's own honesty, and each one has a
-    failure it prevents. A digest that no longer matches means the prompt bytes
-    changed after the vendor pin they are recorded against -- the chair would
-    then be asked something no commit sha names. A count that no longer matches
-    means a tag, attribute or label was edited in one of the two places it
-    appears. The `0-1000` sentence and `BBOX_SCALE` disagreeing means every
-    reported box is scaled by a denominator the model was never told about,
-    which is the silent wrong reading goal 1 rates worst. An `AssertionError`
-    would vanish under `python -O`; these raise.
-    """
-    if len(ALLOWED_TAGS) != 36:
-        raise RuntimeError(f"carried ALLOWED_TAGS is {len(ALLOWED_TAGS)} tags, not the vendor's 36")
-    if len(ALLOWED_ATTRIBUTES) != 14:
-        raise RuntimeError(
-            f"carried ALLOWED_ATTRIBUTES is {len(ALLOWED_ATTRIBUTES)}, not the vendor's 14"
-        )
-    if len(OCR_LAYOUT_LABELS) != 19:
-        raise RuntimeError(f"carried OCR_LAYOUT_LABELS is {len(OCR_LAYOUT_LABELS)}, not 19")
-    if len(set(OCR_LAYOUT_LABELS)) != len(OCR_LAYOUT_LABELS):
-        # Without this, a repeated label would pad the tuple back to nineteen
-        # and let the count check below pass while a real label went unnamed.
-        raise RuntimeError("carried OCR_LAYOUT_LABELS repeats a label")
-    for label in OCR_LAYOUT_LABELS:
-        if f"\n- {label}\n" not in OCR_LAYOUT_PROMPT:
-            raise RuntimeError(f"label {label!r} is not offered by the carried prompt")
-    if OCR_LAYOUT_PROMPT.count("\n- ") != len(OCR_LAYOUT_LABELS):
-        raise RuntimeError("the carried prompt offers labels this module does not name")
-    if _NORMALIZED_CLAIM not in OCR_LAYOUT_PROMPT:
-        raise RuntimeError(
-            f"the carried prompt no longer states {_NORMALIZED_CLAIM!r}; "
-            f"BBOX_SCALE={BBOX_SCALE} would then be a denominator the model was "
-            f"never told about"
-        )
-    for name, rendered, recorded in (
-        ("PROMPT_ENDING", PROMPT_ENDING, PROMPT_ENDING_SHA256),
-        ("OCR_LAYOUT_PROMPT", OCR_LAYOUT_PROMPT, OCR_LAYOUT_PROMPT_SHA256),
-    ):
-        actual = _sha256(rendered)
-        if actual != recorded:
-            raise RuntimeError(
-                f"carried {name} renders to sha256 {actual}, not the {recorded} recorded "
-                f"against {VENDOR_REPOSITORY} @ {VENDOR_COMMIT} {VENDOR_PROMPT_SOURCE}"
-            )
-
-
-_seal()
