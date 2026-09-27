@@ -1,26 +1,14 @@
-"""Designator: marks out the acts and cuts the crops. It establishes no text.
+"""Designator marks acts and cuts crops; it establishes no text.
 
-Only this stage cuts crops; the Recensor may request a recrop, so every crop has
-one author. It also emits the **proposal seal**, the immutable list of every act
-this run expects, so an act lost between later stages leaves a visible hole.
+Only this stage cuts, including Recensor-requested recrops, so each crop has one
+author. The proposal seal accounts for every act; holds name their cause and
+exit held, so an act lost later leaves a visible hole. Regions are append-only:
+witnesses read proposal regions, never later recovery regions. Act identity
+survives recrops; region identity binds the changing transform.
 
-Each seal entry is `proposed` or `held`; a held act gets a `hold` artifact naming
-why (page unsealed, continuation unsealed, or structure pass failed), so it is
-still accounted for. A run that held anything exits `EXIT_HELD`.
-
-Regions are append-only per act. Each carries an `origin`: **proposal** regions
-(the first crop and any continuation) are what witnesses read; **recovery**
-regions are later recrops, so ink only a recovery uncovered was never shown to a
-witness. Act identity binds the original proposal and survives recrops; region
-identity binds the transform and changes with it.
-
-Sibling modules do the marking-out: `structure.py` finds ink regions,
-`grouping.py` assembles them into acts by geometry alone (principle 1),
-`geometry.py` pads a rectangle into the capture rectangle, and `conservation.py`
-reconciles each page's ink against what was claimed. Their thresholds come from
-`grouping_config.py`, resolved against each page's own size in `_analyze_page`
-only, because a page-fraction threshold cannot be fixed pixels across a fixture
-and a full scan.
+`structure` finds ink, `grouping` assembles by geometry alone, `geometry` pads
+crops, and `conservation` reconciles claimed ink. `_analyze_page` resolves sealed
+thresholds per page because page fractions cannot be fixed pixels across scans.
 
     python pipeline/2_designator/run.py --run-root <dir> --run-id <id>
     python pipeline/2_designator/run.py ... --operation recover --act <act_id>
@@ -987,24 +975,13 @@ def publish_structure_status(
     answers: dict[int, tuple[str | None, dict[str, str]]] | None = None,
     provenance_by_page: dict[int, dict] | None = None,
 ) -> dict:
-    """One visible per-page outcome for the structure pass: scanned or held.
+    """Publish scanned/held status for every sealed page and return its reference.
 
-    Published for every sealed page, so a successful scan is a record, not an
-    absence a reader must infer from crops (principle 2). `state` says "scanned",
-    not "marked out": a scanned page may carry no act.
-
-    It records how the page was read (`background_source`, `structure_evidence`)
-    and the geometry actually executed (`page_width`, `page_height`,
-    `resolved_thresholds`), since pixel thresholds depend on each page's size and
-    re-deriving them later can silently drift (principle 6). All are null on a
-    page held before analysis. `max_residual_components` is omitted because this
-    producer does not use it.
-
-    Live path only: `answers` makes `structure_evidence` the chair's answer and
-    adds `structure_answer_ref`; `provenance_by_page` names the serving session
-    that answered each page of a resumed pass.
-
-    Returns each page's status reference, which a page-fallback act must cite.
+    An explicit scan record prevents absence being mistaken for success; scanned
+    does not mean an act was found. Record per-page thresholds so later replay
+    cannot silently drift; pre-analysis holds carry null measurement fields.
+    Live answers retain each page's answering session across resumes. Fallback
+    acts cite these references. Unused max_residual_components is omitted.
     """
     published: dict[int, dict[str, str]] = {}
     for ordinal in sorted(pages):
@@ -1091,15 +1068,10 @@ def _fallback_grid(width: int, height: int, thresholds) -> list[dict]:
 def _analyze_page(
     cache: dict, context, ordinal: int, page_record: dict, grouping_policy: dict
 ) -> dict:
-    """Structure-pass and grouping results for one sealed page, computed once.
+    """Cache pixels with resolved sealed thresholds for every later consumer.
 
-    A page whose background cannot be inferred is still cut into the fallback
-    grid, since every page must be read, but its ink is not measured:
-    `background` stays None rather than a guessed stand-in.
-
-    Every geometric threshold is resolved here from the sealed policy and this
-    page's own size, and cached with the pixels so every later consumer runs
-    under the same numbers.
+    If background is unknowable, fallback crops still reach readers while ink
+    stays unmeasured; a guessed threshold would invent evidence.
     """
     if ordinal not in cache:
         try:
@@ -1157,7 +1129,6 @@ def _analyze_page(
             "rows": rows,
             "background": background,
             "background_source": evidence["source"],
-            # None where the interior-mode branch did not run.
             "dark_distribution": evidence["dark_distribution"],
             # None when the background could not be inferred.
             "ink_margin": ink_margin,
@@ -1386,15 +1357,10 @@ def _contains(outer: dict, inner: dict) -> bool:
 
 
 def _secondary_rescue_candidates(claimed: list[dict], candidates: list[dict]) -> list[dict]:
-    """Every secondary-scan candidate that genuinely adds coverage, none that refine one.
+    """Exclude candidates fully inside one claim; keep partial overlaps.
 
-    A candidate inside one claim adds nothing; one merely touching a claim does.
-    Each is returned with the number of claimed acts it touches, since one
-    spanning two acts is the shape a reviewer must see (a merged boundary).
-
-    That count is recorded, never acted on: padded claims can abut, so a single
-    pen mark can touch two acts, and the secondary proposer adds recall, never
-    verdicts.
+    Count touching acts: a spanning mark may show a merged boundary, but padded
+    claims can abut, so the count is review evidence, never a verdict.
     """
     rescues = []
     for candidate in candidates:
@@ -2138,6 +2104,93 @@ def _initial_pass_has_holds(
     return any((held, bool(failures), secondary_held, unmeasured))
 
 
+def _cut_and_group_declared_act(
+    context,
+    act: dict,
+    act_id: str,
+    continuation: dict | None,
+    pages: dict[int, dict],
+    failures: dict[int, str],
+    page_cache: dict[int, dict],
+    padding: dict,
+    provenance: dict,
+    grouping_policy: dict,
+) -> tuple[list[dict], bool, tuple | None]:
+    """Cut the available regions, then group only a complete act."""
+    page_ordinal = act["page_ordinal"]
+    evidence = []
+    continuation_cut = False
+    hold_cause = None
+    analysis = _analyze_page(
+        page_cache, context, page_ordinal, pages[page_ordinal], grouping_policy
+    )
+    primary = cut_region(
+        context,
+        act,
+        pages[page_ordinal],
+        act_bounds(act),
+        1,
+        page_ordinal,
+        "proposal",
+        padding=padding,
+        provenance=provenance,
+    )
+    evidence.append(context.input_ref(primary.relative_path))
+
+    # A continuation is a second region of the same act, never a new act.
+    far_ordinal = continuation["page_ordinal"] if continuation else None
+    continuation_analysis = None
+    if continuation and far_ordinal in pages and far_ordinal not in failures:
+        continuation_analysis = _analyze_page(
+            page_cache, context, far_ordinal, pages[far_ordinal], grouping_policy
+        )
+        continuation_region = cut_region(
+            context,
+            act,
+            pages[far_ordinal],
+            _bounds_of(continuation),
+            2,
+            far_ordinal,
+            "proposal",
+            padding=padding,
+            provenance=provenance,
+        )
+        evidence.append(context.input_ref(continuation_region.relative_path))
+        continuation_cut = True
+
+    if continuation and not continuation_cut:
+        # The near side stays cut as evidence, but the act is held: reading
+        # it alone would pass a truncation as complete.
+        if far_ordinal in failures:
+            hold_cause = (
+                far_ordinal,
+                f"the act continues onto page {far_ordinal}, which the structure "
+                f"pass could not mark out ({failures[far_ordinal]}), so its "
+                "continuation could not be cut",
+                "structure-pass-held-on-continuation",
+            )
+        else:
+            hold_cause = (
+                far_ordinal,
+                f"the act continues onto page {far_ordinal}, "
+                "which was not sealed, so its continuation could not be cut",
+                "exemplar-continuation-not-sealed",
+            )
+    else:
+        _publish_act_group(
+            context,
+            act,
+            act_id,
+            pages[page_ordinal],
+            analysis,
+            continuation if continuation_cut else None,
+            pages[far_ordinal] if continuation_cut else None,
+            continuation_analysis,
+        )
+
+    return evidence, continuation_cut, hold_cause
+
+
 def _account_for_declared_act(
     context,
     act: dict,
@@ -2155,7 +2208,6 @@ def _account_for_declared_act(
     continuation = continuation_for(context.fixture, act["key"])
     continuation_cut = False
     evidence = []
-    # (blocking page ordinal, reason, reason code) when the act is held.
     hold_cause = None
 
     if page_ordinal not in pages:
@@ -2176,72 +2228,18 @@ def _account_for_declared_act(
             "structure-pass-held",
         )
     else:
-        analysis = _analyze_page(
-            page_cache, context, page_ordinal, pages[page_ordinal], grouping_policy
-        )
-        primary = cut_region(
+        evidence, continuation_cut, hold_cause = _cut_and_group_declared_act(
             context,
             act,
-            pages[page_ordinal],
-            act_bounds(act),
-            1,
-            page_ordinal,
-            "proposal",
-            padding=padding,
-            provenance=provenance,
+            act_id,
+            continuation,
+            pages,
+            failures,
+            page_cache,
+            padding,
+            provenance,
+            grouping_policy,
         )
-        evidence.append(context.input_ref(primary.relative_path))
-
-        # A continuation is a second region of the same act, never a new act.
-        far_ordinal = continuation["page_ordinal"] if continuation else None
-        continuation_analysis = None
-        if continuation and far_ordinal in pages and far_ordinal not in failures:
-            continuation_analysis = _analyze_page(
-                page_cache, context, far_ordinal, pages[far_ordinal], grouping_policy
-            )
-            continuation_region = cut_region(
-                context,
-                act,
-                pages[far_ordinal],
-                _bounds_of(continuation),
-                2,
-                far_ordinal,
-                "proposal",
-                padding=padding,
-                provenance=provenance,
-            )
-            evidence.append(context.input_ref(continuation_region.relative_path))
-            continuation_cut = True
-
-        if continuation and not continuation_cut:
-            # The near side stays cut as evidence, but the act is held: reading
-            # it alone would pass a truncation as complete.
-            if far_ordinal in failures:
-                hold_cause = (
-                    far_ordinal,
-                    f"the act continues onto page {far_ordinal}, which the structure "
-                    f"pass could not mark out ({failures[far_ordinal]}), so its "
-                    "continuation could not be cut",
-                    "structure-pass-held-on-continuation",
-                )
-            else:
-                hold_cause = (
-                    far_ordinal,
-                    f"the act continues onto page {far_ordinal}, "
-                    "which was not sealed, so its continuation could not be cut",
-                    "exemplar-continuation-not-sealed",
-                )
-        else:
-            _publish_act_group(
-                context,
-                act,
-                act_id,
-                pages[page_ordinal],
-                analysis,
-                continuation if continuation_cut else None,
-                pages[far_ordinal] if continuation_cut else None,
-                continuation_analysis,
-            )
 
     if hold_cause is not None:
         blocking_ordinal, reason, reason_code = hold_cause
