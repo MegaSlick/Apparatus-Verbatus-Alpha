@@ -18,6 +18,8 @@ from contextlib import contextmanager
 
 import pytest
 
+from operations.conftest import dribbling_loopback_server
+
 from .http import EndpointUnavailable, UrllibHttpTransport
 
 
@@ -355,27 +357,6 @@ def test_a_complete_error_response_keeps_its_status_and_body(status: int) -> Non
     assert response.body == b'{"error":"not loaded"}'
 
 
-def _dribble(status: bytes, *, headers_slowly: bool):
-    """A responder that stays inside the socket timeout and never finishes."""
-
-    stop = threading.Event()
-
-    def respond(connection: socket.socket) -> None:
-        if headers_slowly:
-            connection.sendall(b"HTTP/1.1 " + status + b"\r\n")
-            while not stop.wait(0.05):
-                connection.sendall(b"X-Pad: pad\r\n")
-        else:
-            connection.sendall(
-                b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\n"
-                b"Content-Length: 4096\r\n\r\n"
-            )
-            while not stop.wait(0.05):
-                connection.sendall(b"x")
-
-    return respond, stop
-
-
 @pytest.mark.parametrize("status", [b"200 OK", b"503 Service Unavailable"])
 @pytest.mark.parametrize("headers_slowly", [False, True], ids=["slow-body", "slow-headers"])
 def test_the_declared_timeout_bounds_the_whole_call_not_one_receive(
@@ -391,17 +372,13 @@ def test_the_declared_timeout_bounds_the_whole_call_not_one_receive(
     alike, on a card that bills by the hour.
     """
 
-    respond, stop = _dribble(status, headers_slowly=headers_slowly)
-    with _raw_server(respond) as base:
+    with dribbling_loopback_server(status, headers_slowly=headers_slowly) as base:
         started = time.monotonic()
-        try:
-            with pytest.raises(EndpointUnavailable) as caught:
-                UrllibHttpTransport().request(
-                    "GET", f"{base}/v1/models", body=None, timeout_seconds=0.4
-                )
-            elapsed = time.monotonic() - started
-        finally:
-            stop.set()
+        with pytest.raises(EndpointUnavailable) as caught:
+            UrllibHttpTransport().request(
+                "GET", f"{base}/v1/models", body=None, timeout_seconds=0.4
+            )
+        elapsed = time.monotonic() - started
 
     assert elapsed < 3.0, f"the call ran {elapsed:.2f}s against a 0.4s budget"
     # An overrun proves nothing about whether a listener owns the port, so it

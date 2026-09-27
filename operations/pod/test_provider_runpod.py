@@ -18,6 +18,8 @@ from decimal import Decimal
 
 import pytest
 
+from operations.conftest import dribbling_loopback_server
+
 from . import notify_hooks
 from .conftest import timer_start_command
 from .models import (
@@ -1742,44 +1744,6 @@ def _no_ambient_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def _dribbling_server(*, headers_slowly: bool):
-    """One loopback responder that stays inside the socket timeout forever."""
-
-    import socket as socket_module
-
-    listener = socket_module.socket()
-    listener.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    stop = threading.Event()
-
-    def serve() -> None:
-        try:
-            connection, _ = listener.accept()
-        except OSError:  # pragma: no cover - closed before a request arrived
-            return
-        with connection:
-            try:
-                connection.recv(65536)
-                if headers_slowly:
-                    connection.sendall(b"HTTP/1.1 200 OK\r\n")
-                    while not stop.wait(0.05):
-                        connection.sendall(b"X-Pad: pad\r\n")
-                else:
-                    connection.sendall(
-                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                        b"Content-Length: 4096\r\n\r\n"
-                    )
-                    while not stop.wait(0.05):
-                        connection.sendall(b"x")
-            except OSError:  # the client's deadline broke the socket
-                pass
-
-    thread = threading.Thread(target=serve, daemon=True)
-    thread.start()
-    return listener, thread, stop
-
-
 @pytest.mark.parametrize("headers_slowly", [False, True], ids=["slow-body", "slow-headers"])
 def test_the_configured_timeout_bounds_the_whole_provider_call(
     headers_slowly: bool, monkeypatch: pytest.MonkeyPatch
@@ -1794,22 +1758,16 @@ def test_the_configured_timeout_bounds_the_whole_provider_call(
     """
 
     _no_ambient_proxy(monkeypatch)
-    listener, thread, stop = _dribbling_server(headers_slowly=headers_slowly)
-    try:
+    with dribbling_loopback_server(b"200 OK", headers_slowly=headers_slowly) as base:
         transport = UrllibRunPodTransport(
             "test-capability-value",
             timeout_seconds=0.4,
-            root=f"http://127.0.0.1:{listener.getsockname()[1]}",
+            root=base,
         )
         started = time.monotonic()
         with pytest.raises(ProviderFailure, match="did not complete within its 0.4s deadline"):
             transport.request("GET", "/pods")
         elapsed = time.monotonic() - started
-    finally:
-        stop.set()
-        listener.close()
-        thread.join(timeout=5.0)
-
     assert elapsed < 3.0, f"the call ran {elapsed:.2f}s against a 0.4s budget"
 
 
