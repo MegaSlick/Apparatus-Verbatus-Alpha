@@ -235,6 +235,13 @@ correct immediate close.
   declaration. The placement table is always the checkout's own `config/pod_placement.toml`,
   the one the stages seal; `CONFIGURATION` refuses any other resolved path, a symlink out
   included.
+- **CUDA compatibility.** Before the uv install, `CUDA_COMPAT` records `nvidia-smi`'s
+  driver and GPU names. Drivers below 580 on professional RTX or data-center cards get
+  `cuda-compat-13-0` from the image's NVIDIA apt repository; the step uses
+  `580.178.04-1ubuntu1` when apt offers it. The bootstrap puts
+  `/usr/local/cuda-13.0/compat` first in `LD_LIBRARY_PATH` for preflight and `pod_run`'s
+  orchestrator, whose serving children inherit it. A GeForce card with an older driver
+  is refused before the serving stack download. The receipt records the action.
 - **Refusals come before any action**: a journal or report path outside the mounted volume;
   a lockfile that is not the checkout's `uv.lock`; a volume that fails a real write-and-read
   probe (it never creates the mount point it requires); a missing hard deadline; a
@@ -715,9 +722,9 @@ Record the pod id, timestamps, provider responses, and whether each item is **ve
 - [ ] Run the real preflight (GPU, driver, capability, VRAM, disk, chair cache, smoke read).
   The smoke preflight may launch the still-unproven rows for qualification; afterwards run
   `python -m operations.serving.qualify` on its report and evidence, review the candidates,
-  and stamp only the measured tier's rows proven. **Record `nvidia-smi`'s driver and CUDA version
-  before `uv sync --group pod`**: `torch 2.13.0` needs CUDA 13, so an older driver should
-  be refused before the download. Record whether the sync completed and how long it took,
+  and stamp only the measured tier's rows proven. Record the `CUDA_COMPAT` receipt and
+  `nvidia-smi`'s CUDA version before `uv sync --group pod`. Record whether the sync
+  completed and how long it took,
   whether each chair loaded under `vllm 0.27.1`, and per chair whether the witness was read
   back. **Record free container disk before and after the sync and the final `.venv` size**;
   they replace `models.DEFAULT_CONTAINER_DISK_GB`, `bootstrap.UV_CACHE_REQUIRED_BYTES` and

@@ -94,6 +94,11 @@ class FakeActions:
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         return self._step(BootstrapStep.UV_ENVIRONMENT, {"lockfile": str(lockfile)})
 
+    def configure_cuda_compat(self) -> dict[str, object]:
+        return self._step(
+            BootstrapStep.CUDA_COMPAT, {"driver": "fixture", "gpus": [], "compat_path": None}
+        )
+
     def resume_transfer(self) -> dict[str, object]:
         return self._step(BootstrapStep.TRANSFER, {"state": "nothing-to-transfer"})
 
@@ -1517,7 +1522,7 @@ def test_an_unchanged_resume_revalidates_configuration_without_rerunning_paid_st
     )
 
     assert not isinstance(resumed, int) and resumed.green
-    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION, BootstrapStep.CUDA_COMPAT]
 
 
 def test_a_completed_receipt_missing_one_binding_fails_closed(

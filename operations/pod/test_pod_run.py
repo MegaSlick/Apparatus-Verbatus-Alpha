@@ -217,10 +217,25 @@ def _report(ws: Workspace, name: str = "pod-run-report.json") -> dict:
 # --- the green run: bootstrap, orchestrate over the volume, hold --------------
 
 
-def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_path: Path) -> None:
+def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
     actions = PreflightedActions()
+    monkeypatch.setattr(
+        actions,
+        "configure_cuda_compat",
+        lambda: actions._step(
+            BootstrapStep.CUDA_COMPAT,
+            {
+                "driver": "570.195.03",
+                "gpus": ["NVIDIA RTX A6000"],
+                "compat_path": "/usr/local/cuda-13.0/compat",
+                "action": "installed",
+            },
+        ),
+    )
     runner = RecordedRunner(returncode=0)
     real_recipes = ws.repository / "config" / "serving_recipes_real.toml"
     real_roster = ws.repository / "config" / "models-real.toml"
@@ -286,6 +301,7 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
     ]
     # The scrubbed environment is what the orchestrator sees: no transfer key.
     assert "RUNPOD_S3_ACCESS_KEY" not in env
+    assert env["LD_LIBRARY_PATH"].split(":")[0] == "/usr/local/cuda-13.0/compat"
     report = _report(ws)
     assert report["schema"] == RUN_REPORT_SCHEMA
     assert report["state"] == "complete"

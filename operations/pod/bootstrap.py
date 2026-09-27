@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Mapping, MutableMapping, Protocol
 
 from common.chairs.errors import ChairRefusal
 from common.chairs.model_store import MaterializationFetcher, materialize_real_roster
@@ -21,12 +21,8 @@ from common.chairs.model_store import MaterializationFetcher, materialize_real_r
 from .durable import atomic_write, canonical_json
 from .models import require_utc, utc_now
 
-BOOTSTRAP_SCHEMA = "pod-bootstrap.v3"
-"""Bumped when ``CONFIGURATION`` was inserted after ``REPOSITORY`` and before
-``UV_ENVIRONMENT``. A v2 journal may already call the paid environment/model
-steps complete without ever validating the checked-out roster/declaration
-pair. It cannot be resumed under the stronger order and is refused by schema.
-"""
+BOOTSTRAP_SCHEMA = "pod-bootstrap.v4"
+"""v4 inserts CUDA compatibility before the costly environment and serving steps."""
 CONFIGURATION_RECEIPT_SCHEMA = "pod-bootstrap-configuration.v2"
 _RAW_BYTE_RECEIPT_SCHEMA = "pod-bootstrap-configuration.v1"
 """The checked-out selections re-read before any completed bootstrap is reused.
@@ -40,7 +36,16 @@ _CONFIGURATION_BINDINGS = {
     "serving_recipes_config",
     "placement_config",
 }
-BOOTSTRAP_EXECUTABLES = {"git": "/usr/bin/git", "uv": "/usr/local/bin/uv"}
+BOOTSTRAP_EXECUTABLES = {
+    "git": "/usr/bin/git",
+    "uv": "/usr/local/bin/uv",
+    "nvidia-smi": "/usr/bin/nvidia-smi",
+    "apt-cache": "/usr/bin/apt-cache",
+    "apt-get": "/usr/bin/apt-get",
+}
+CUDA_COMPAT_PATH = "/usr/local/cuda-13.0/compat"
+CUDA_COMPAT_PACKAGE = "cuda-compat-13-0"
+CUDA_COMPAT_VERSION = "580.178.04-1ubuntu1"
 BOOTSTRAP_ENVIRONMENT = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "LANG": "C.UTF-8",
@@ -395,6 +400,7 @@ class BootstrapStep(StrEnum):
 
     REPOSITORY = "repository"
     CONFIGURATION = "configuration"
+    CUDA_COMPAT = "cuda-compat"
     UV_ENVIRONMENT = "uv-environment"
     TRANSFER = "transfer"
     MODEL_STORE = "model-store"
@@ -464,6 +470,9 @@ class BootstrapActions(Protocol):
 
     def validate_configuration(self) -> dict[str, object]:
         """Validate the checked-out roster and declaration before paid setup."""
+
+    def configure_cuda_compat(self) -> dict[str, object]:
+        """Detect the card and driver, then enable forward compatibility if needed."""
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         """Build the environment from the existing lockfile without resolution drift."""
@@ -626,7 +635,13 @@ class BootstrapJournal:
 class Bootstrapper:
     """Revalidate configuration, then run only unfinished effectful steps."""
 
-    def __init__(self, journal: BootstrapJournal, actions: BootstrapActions) -> None:
+    def __init__(
+        self,
+        journal: BootstrapJournal,
+        actions: BootstrapActions,
+        *,
+        environment: MutableMapping[str, str] | None = None,
+    ) -> None:
         # Static typing is not a repository gate, so structural fixtures must
         # prove every Protocol effect at construction too.
         missing = sorted(
@@ -643,6 +658,7 @@ class Bootstrapper:
             )
         self.journal = journal
         self.actions = actions
+        self.environment = os.environ if environment is None else environment
 
     def run(self) -> BootstrapReport:
         record = self.journal.load_or_create()
@@ -653,6 +669,31 @@ class Bootstrapper:
                 # Keep the original completed receipt intact. It is the evidence
                 # of what the paid steps ran under, not a slot for the new
                 # selection to overwrite during a failed resume.
+                self.journal.mark_failure(record, failure)
+                return _report_from_record(record)
+        if BootstrapStep.CUDA_COMPAT.value in completed:
+            try:
+                current = self.actions.configure_cuda_compat()
+                recorded = record["receipts"][BootstrapStep.CUDA_COMPAT.value]
+                if any(
+                    current.get(key) != recorded.get(key)
+                    for key in ("driver", "gpus", "compat_path")
+                ):
+                    raise BootstrapStepFailure(
+                        BootstrapStep.CUDA_COMPAT,
+                        "GPU or driver differs from the completed CUDA compatibility receipt",
+                        "Start a new bootstrap journal for this host.",
+                    )
+                _apply_cuda_compat(current, self.environment)
+            except BootstrapStepFailure as failure:
+                self.journal.mark_failure(record, failure)
+                return _report_from_record(record)
+            except Exception as error:
+                failure = BootstrapStepFailure(
+                    BootstrapStep.CUDA_COMPAT,
+                    f"completed CUDA compatibility could not be rechecked: {error}",
+                    "Inspect the pod GPU and compatibility package, then resume this journal.",
+                )
                 self.journal.mark_failure(record, failure)
                 return _report_from_record(record)
         if record["status"] == "green":
@@ -685,6 +726,8 @@ class Bootstrapper:
             # A process killed between _execute and this line keeps the step absent;
             # retrying calls only that action, whose contract is idempotent.
             self.journal.mark_complete(record, step, receipt)
+            if step is BootstrapStep.CUDA_COMPAT:
+                _apply_cuda_compat(receipt, self.environment)
         self.journal.mark_green(record)
         return _report_from_record(record)
 
@@ -765,6 +808,8 @@ class Bootstrapper:
                     "Correct the configuration validation action before any paid step runs.",
                 )
             return receipt
+        if step is BootstrapStep.CUDA_COMPAT:
+            return self.actions.configure_cuda_compat()
         if step is BootstrapStep.UV_ENVIRONMENT:
             return self.actions.sync_uv_environment(self.journal.plan.lockfile)
         if step is BootstrapStep.TRANSFER:
@@ -851,11 +896,13 @@ class SubprocessBootstrapActions:
         self.materialize = materialize_model_store
         self.cache = cache
         self.preflight = preflight
-        if set(executables) != {"git", "uv"} or any(
+        if set(executables) != set(BOOTSTRAP_EXECUTABLES) or any(
             not isinstance(value, str) or not Path(value).is_absolute()
             for value in executables.values()
         ):
-            raise ValueError("bootstrap executables must give absolute git and uv paths")
+            raise ValueError(
+                "bootstrap executables must give absolute paths for every bootstrap command"
+            )
         if any(
             not isinstance(key, str)
             or not key
@@ -908,6 +955,68 @@ class SubprocessBootstrapActions:
 
     def validate_configuration(self) -> dict[str, object]:
         return self.configuration()
+
+    def configure_cuda_compat(self) -> dict[str, object]:
+        result = self._command(
+            ["nvidia-smi", "--query-gpu=driver_version,name", "--format=csv,noheader"],
+            BootstrapStep.CUDA_COMPAT,
+        )
+        cards = [
+            [field.strip() for field in line.split(",", 1)]
+            for line in result.stdout.strip().splitlines()
+        ]
+        if not cards or any(len(card) != 2 or not card[0] or not card[1] for card in cards):
+            raise BootstrapStepFailure(
+                BootstrapStep.CUDA_COMPAT,
+                "nvidia-smi did not report a driver and GPU name",
+                "Check the pod GPU and NVIDIA driver before booting again.",
+            )
+        drivers = {card[0] for card in cards}
+        if len(drivers) != 1 or not all(driver.split(".", 1)[0].isdigit() for driver in drivers):
+            raise BootstrapStepFailure(
+                BootstrapStep.CUDA_COMPAT,
+                "nvidia-smi reported inconsistent or invalid driver versions",
+                "Check the pod driver before booting again.",
+            )
+        driver = drivers.pop()
+        gpus = [card[1] for card in cards]
+        receipt: dict[str, object] = {
+            "driver": driver,
+            "gpus": gpus,
+            "compat_path": None,
+            "action": "not-needed",
+            "package": None,
+        }
+        if int(driver.split(".", 1)[0]) >= 580:
+            return receipt
+        if any("GeForce" in name for name in gpus):
+            raise BootstrapStepFailure(
+                BootstrapStep.CUDA_COMPAT,
+                f"driver {driver} is below 580 and GeForce GPU {gpus} cannot use CUDA forward compatibility",
+                "Use a driver at least 580 or a supported professional RTX/data-center card.",
+            )
+        if not Path(CUDA_COMPAT_PATH).is_dir():
+            available = self._command(
+                ["apt-cache", "policy", CUDA_COMPAT_PACKAGE], BootstrapStep.CUDA_COMPAT
+            ).stdout
+            version = (
+                f"{CUDA_COMPAT_PACKAGE}={CUDA_COMPAT_VERSION}"
+                if CUDA_COMPAT_VERSION in available
+                else CUDA_COMPAT_PACKAGE
+            )
+            self._command(["apt-get", "install", "-y", version], BootstrapStep.CUDA_COMPAT)
+            receipt["action"] = "installed"
+            receipt["package"] = version
+        else:
+            receipt["action"] = "already-present"
+        if not Path(CUDA_COMPAT_PATH).is_dir():
+            raise BootstrapStepFailure(
+                BootstrapStep.CUDA_COMPAT,
+                f"{CUDA_COMPAT_PACKAGE} did not provide {CUDA_COMPAT_PATH}",
+                "Repair the CUDA compatibility package and resume this journal.",
+            )
+        receipt["compat_path"] = CUDA_COMPAT_PATH
+        return receipt
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         expected_lockfile = (self.repository / "uv.lock").resolve()
@@ -1069,6 +1178,15 @@ class SubprocessBootstrapActions:
             capture_output=True,
             check=False,
         )
+
+
+def _apply_cuda_compat(receipt: dict[str, object], environment: MutableMapping[str, str]) -> None:
+    if receipt.get("compat_path") != CUDA_COMPAT_PATH:
+        return
+    paths = [path for path in environment.get("LD_LIBRARY_PATH", "").split(":") if path]
+    environment["LD_LIBRARY_PATH"] = ":".join(
+        [CUDA_COMPAT_PATH, *(path for path in paths if path != CUDA_COMPAT_PATH)]
+    )
 
 
 def _report_from_record(record: dict[str, object]) -> BootstrapReport:

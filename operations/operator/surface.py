@@ -384,6 +384,9 @@ class FixtureBootstrapActions:
             "mode": "fixture-only; no environment was changed",
         }
 
+    def configure_cuda_compat(self) -> dict[str, object]:
+        return {"driver": "fixture", "gpus": [], "compat_path": None, "action": "fixture-only"}
+
     def resume_transfer(self) -> dict[str, object]:
         if self.transfer_receipt is None:
             return {"state": "no-upload-recorded", "mode": "fixture-only"}

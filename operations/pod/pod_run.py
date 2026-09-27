@@ -1158,7 +1158,9 @@ def main(
     }
     _write_run_report(plan, {**base, "state": "bootstrapping", "exit_code": None})
 
-    report = bootstrap_main.run_bootstrap(bootstrap_plan, now=now, actions_factory=actions_factory)
+    report = bootstrap_main.run_bootstrap(
+        bootstrap_plan, now=now, actions_factory=actions_factory, environment=environment
+    )
     if isinstance(report, int):
         _write_run_report(
             plan,

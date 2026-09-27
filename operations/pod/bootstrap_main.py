@@ -1581,6 +1581,7 @@ def run_bootstrap(
     *,
     now: Callable[[], datetime],
     actions_factory: Callable[[Plan], BootstrapActions],
+    environment: MutableMapping[str, str] | None = None,
 ) -> BootstrapReport | int:
     """Run the journaled steps and return the report, or the exit code of a refusal.
 
@@ -1600,7 +1601,7 @@ def run_bootstrap(
         print(f"bootstrap_main could not build its actions: {error}", file=sys.stderr)
         _write_refusal_report(plan.report_path, f"could not build actions: {error}", now=now)
         return EXIT_REFUSED
-    report = Bootstrapper(journal, actions).run()
+    report = Bootstrapper(journal, actions, environment=environment).run()
     result_record = {
         "schema": BOOTSTRAP_RESULT_SCHEMA,
         "state": "bootstrap-green" if report.green else "bootstrap-red",
@@ -1650,7 +1651,7 @@ def main(
         )
         return 0
 
-    report = run_bootstrap(plan, now=now, actions_factory=actions_factory)
+    report = run_bootstrap(plan, now=now, actions_factory=actions_factory, environment=environment)
     if isinstance(report, int):
         return report
     if not report.green:

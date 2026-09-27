@@ -4998,6 +4998,13 @@ class FakeBootstrapActions:
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         return self._step(BootstrapStep.UV_ENVIRONMENT) | {"lockfile": str(lockfile)}
 
+    def configure_cuda_compat(self) -> dict[str, object]:
+        return self._step(BootstrapStep.CUDA_COMPAT) | {
+            "driver": "fixture",
+            "gpus": [],
+            "compat_path": None,
+        }
+
     def resume_transfer(self) -> dict[str, object]:
         return self._step(BootstrapStep.TRANSFER)
 
@@ -5213,6 +5220,65 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
 
     with pytest.raises(BootstrapStepFailure, match="not repository uv.lock"):
         actions.sync_uv_environment(other)
+
+
+@pytest.mark.parametrize(
+    ("driver", "gpu", "expected"),
+    [
+        ("580.178.04", "NVIDIA RTX A6000", "not-needed"),
+        ("570.195.03", "NVIDIA RTX A6000", "installed"),
+        ("570.195.03", "NVIDIA GeForce RTX 4090", "refused"),
+    ],
+)
+def test_cuda_compat_decision_uses_reported_driver_and_card(
+    tmp_path: Path, monkeypatch, driver: str, gpu: str, expected: str
+) -> None:
+    from .bootstrap import CUDA_COMPAT_PATH
+
+    installed = False
+    commands: list[list[str]] = []
+    original_is_dir = Path.is_dir
+
+    def is_dir(path: Path) -> bool:
+        return installed if str(path) == CUDA_COMPAT_PATH else original_is_dir(path)
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        nonlocal installed
+        commands.append(argv)
+        if argv[0] == "/usr/bin/nvidia-smi":
+            output = f"{driver}, {gpu}\n"
+        elif argv[0] == "/usr/bin/apt-cache":
+            output = "580.178.04-1ubuntu1"
+        else:
+            installed = True
+            output = ""
+        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=runner,
+    )
+    if expected == "refused":
+        with pytest.raises(BootstrapStepFailure, match="GeForce"):
+            actions.configure_cuda_compat()
+    else:
+        receipt = actions.configure_cuda_compat()
+        assert receipt["action"] == expected
+        assert receipt["driver"] == driver
+        assert receipt["gpus"] == [gpu]
+    assert [command[0] for command in commands] == (
+        ["/usr/bin/nvidia-smi", "/usr/bin/apt-cache", "/usr/bin/apt-get"]
+        if expected == "installed"
+        else ["/usr/bin/nvidia-smi"]
+    )
+    if expected == "installed":
+        assert commands[-1][-1] == "cuda-compat-13-0=580.178.04-1ubuntu1"
 
 
 def test_sync_uv_environment_never_pairs_locked_with_frozen(tmp_path: Path) -> None:
