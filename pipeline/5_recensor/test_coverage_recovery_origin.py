@@ -546,7 +546,3 @@ def test_a_fourth_request_of_either_origin_is_refused_above_the_cap(tmp_path):
 
     with pytest.raises(FatalAccounting, match="above its sealed total budget"):
         recensor.recovery_state(_MiniContext(tree), "act_1", BUDGET)
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))

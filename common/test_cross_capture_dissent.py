@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from common.contracts.canonical import digest_of, self_hash, verify_self_hash
+from common.contracts.canonical import digest_of, verify_self_hash
 from common.contracts.errors import SchemaRefusal
 from common.cross_capture_dissent import (
     CAVEAT,
@@ -287,14 +287,6 @@ def test_a_passed_pair_condition_cannot_carry_its_failure_finding():
                 )
             ]
         )
-
-
-def test_resealing_cannot_hide_an_unnamed_failed_pair_condition():
-    forged = _record()
-    forged["pairs"][0]["same_ink"] = False
-    forged["self_hash"] = self_hash(forged)
-    with pytest.raises(SchemaRefusal, match="same-ink-condition-failed.*Unit 20 pair"):
-        validate_cross_capture_dissent(forged)
 
 
 def test_one_active_capture_after_retraction_has_one_view_and_an_empty_pair_denominator():

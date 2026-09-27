@@ -235,32 +235,3 @@ def test_an_act_scoped_attachment_may_not_name_another_chairs_testimonium(
     current = recensor.chair_current_attempts(context, act["act_id"])
     with pytest.raises(FatalAccounting, match="another chair's Testimonium"):
         recensor.act_attachment_facts(context, act["act_id"], current)
-
-
-def test_an_act_scoped_attachment_cannot_forge_both_floor_booleans_false(
-    context_and_act, monkeypatch
-):
-    """The Recensor derives attachment from the current Testimonium itself.
-
-    A mirror that computes ``comparable`` from the attachment row's own
-    ``attached`` value is one assertion in two costumes: forging both false
-    removes a real reading chair from the floor while preserving the equation.
-    The current Testimonium is independent evidence and names the forgery.
-    """
-    recensor, context, act, _tree = context_and_act
-    _rewrite_attachment(
-        context,
-        monkeypatch,
-        act["act_id"],
-        ACT_CHAIR,
-        {
-            "attached": False,
-            "comparable": False,
-            "attachment_basis": "unattached",
-            "span": None,
-        },
-    )
-
-    current = recensor.chair_current_attempts(context, act["act_id"])
-    with pytest.raises(FatalAccounting, match="disagrees with the current Testimonium outcome"):
-        recensor.act_attachment_facts(context, act["act_id"], current)

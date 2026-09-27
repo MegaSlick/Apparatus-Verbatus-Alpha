@@ -584,7 +584,3 @@ def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
     assert remeasured["total_ink_pixels"] == initial["total_ink_pixels"] == 13
     assert remeasured["outside_ink_pixels"] == initial["outside_ink_pixels"] == 13
     assert remeasured["flagged"] == initial["flagged"]
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))

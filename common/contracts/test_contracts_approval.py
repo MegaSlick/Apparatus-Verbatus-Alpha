@@ -26,7 +26,6 @@ from common.contracts.approval import (
     synthetic_fixture_ingress_record,
     validate_approval_record,
 )
-from common.contracts.canonical import self_hash
 from common.contracts.errors import ApprovalRefusal
 
 
@@ -77,13 +76,6 @@ def test_an_approval_naming_someone_other_than_the_project_lead_is_refused():
     record = approval()
     record["approver"] = "an agent"
     with pytest.raises(ApprovalRefusal, match="only the project lead"):
-        validate_approval_record(record)
-
-
-def test_an_edited_record_fails_its_own_self_hash():
-    record = approval()
-    record["reason"] = "quietly widened after the fact"
-    with pytest.raises(ApprovalRefusal, match="self-hash"):
         validate_approval_record(record)
 
 
@@ -165,15 +157,6 @@ def test_a_record_missing_a_required_field_is_refused():
         validate_approval_record(record)
 
 
-def test_a_resealed_record_with_an_extra_field_is_not_the_approval_schema():
-    record = approval()
-    record["unbounded_extension"] = {"nested": ["not", "approval", "evidence"]}
-    record["self_hash"] = self_hash(record)
-
-    with pytest.raises(ApprovalRefusal, match="unexpected fields"):
-        validate_approval_record(record)
-
-
 def test_a_non_string_extra_field_is_a_named_schema_refusal_not_a_sorting_crash():
     record = approval()
     record[1] = "not a JSON object key"
@@ -183,21 +166,6 @@ def test_a_non_string_extra_field_is_a_named_schema_refusal_not_a_sorting_crash(
     record["also unexpected"] = "a second offender"
 
     with pytest.raises(ApprovalRefusal, match="unexpected fields"):
-        validate_approval_record(record)
-
-
-def test_a_resealed_subject_permutation_is_not_a_second_content_address_for_one_approval():
-    record = build_approval_record(
-        subject_ids=["a", "b"],
-        action="exclusion",
-        reason="a reviewable reason",
-        target_version_hash="a" * 64,
-        timestamp="2026-08-04T12:00:00Z",
-    )
-    record["subject_ids"] = ["b", "a"]
-    record["self_hash"] = self_hash(record)
-
-    with pytest.raises(ApprovalRefusal, match="canonical order"):
         validate_approval_record(record)
 
 

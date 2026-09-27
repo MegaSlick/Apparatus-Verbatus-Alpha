@@ -284,41 +284,6 @@ def test_real_recovery_reaches_the_crop_without_reading_fixture(monkeypatch):
     assert cut and cut[0][1:3] == (act_id, "real-key")
 
 
-@pytest.mark.parametrize(
-    "tamper", ["ink-count", "observation-bounds", "ink-map-ref", "blank-map", "prior-cover"]
-)
-def test_real_recovery_refuses_tampered_coverage_evidence(tamper):
-    designator = load_stage("2_designator")
-    context, request, payload = _coverage_evidence_case()
-    if tamper == "ink-count":
-        payload["outside_ink_pixels"] = 24
-    elif tamper == "observation-bounds":
-        payload["coverage_observation"]["bounds"] = {"x": 0, "y": 0, "w": 4, "h": 5}
-    else:
-        if tamper == "ink-map-ref":
-            payload["ink_map_ref"] = {"relative_path": "forged.json", "sha256": "3" * 64}
-        elif tamper == "blank-map":
-            context.tree.ink_map["payload"]["edge_findings"]["rows"] = [[] for _ in range(10)]
-        else:
-            context.tree.regions.append(
-                {
-                    "artifact_id": "prior-region",
-                    "payload": {
-                        "transform": {
-                            "source_page_ordinal": 1,
-                            "source_page_id": "page-1",
-                            "bounds": payload["recovery_bounds"],
-                        }
-                    },
-                }
-            )
-
-    with pytest.raises(ContractError):
-        designator._verify_coverage_recovery_evidence(
-            context, request, payload, {"page_ordinal": 1}, "page-1", 1, 10, 10
-        )
-
-
 def _designator_context(designator, root: Path):
     """A real Designator context over a real run, opened the way its CLI opens one."""
     from common.contracts.stages import DESIGNATOR

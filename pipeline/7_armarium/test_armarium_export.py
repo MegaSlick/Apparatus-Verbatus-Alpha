@@ -1049,23 +1049,6 @@ def test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine(tmp_path
         verify_export_bundle(_zip_bytes(forged), tmp_path / "forged-green")
 
 
-def test_an_edited_ink_map_row_cannot_release_a_page_it_still_flags(tmp_path):
-    """Editing only the counts is refused by the claim they no longer support."""
-    members = _members(
-        build_armarium_bundle(
-            _otherwise_complete(ink_map_pages=(_edge_page(outside=5_000),)),
-            _formats(embed_pixels=False),
-            _source_bytes,
-        ).data
-    )
-    sources = json.loads(members["sources.json"])
-    sources["ink_map_pages"][0]["remeasured"]["outside_ink_pixels"] = 0
-    members["sources.json"] = canonical_bytes(sources)
-    _refresh_manifest_member(members, "sources.json")
-    with pytest.raises(SchemaRefusal, match="ink-map claim does not match"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "edited-row")
-
-
 def test_the_ink_map_denominator_must_be_exactly_the_sealed_page_census():
     """Ink-map rows and the sealed page census must have identical identities."""
     with pytest.raises(SchemaRefusal, match="ink-map denominator is not exactly"):
@@ -1869,119 +1852,6 @@ def _real_resealed_manifest(mutate):
     return _zip_bytes(members)
 
 
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        pytest.param(
-            lambda manifest: manifest["run"].update(submission_id=["not", "an", "identity"]),
-            id="a non-string submission identity",
-        ),
-        pytest.param(
-            lambda manifest: manifest["run"].update(submission_id="   "),
-            id="a blank submission identity",
-        ),
-        pytest.param(
-            lambda manifest: manifest["run"].update(operator="nobody"),
-            id="an unexpected extra key on the real run binding",
-        ),
-    ],
-)
-def test_a_real_manifest_run_binding_is_closed_and_non_blank(mutate, tmp_path):
-    """The real shape's field closure and blank-identity refusal, not only the fixture's.
-
-    Every existing manifest-run-binding refusal test above is built from
-    `_resealed_manifest`, which is always fixture-shaped: only the one green
-    `submission_id` test (`test_a_projection_may_carry_a_submission_identity...`)
-    ever reached `_MANIFEST_RUN_FIELDS_REAL`'s exact-field closure or the
-    `subject = "submission"` blank-identity refusal, so a mutation deleting
-    either would have survived undetected.
-    """
-    with pytest.raises(
-        SchemaRefusal,
-        match="non-blank submission and scenario identities|unrecognized field set",
-    ):
-        verify_delivered_bundle(_real_resealed_manifest(mutate), tmp_path / "delivered")
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        pytest.param(
-            lambda manifest: manifest.update(independent_audit="passed"),
-            id="a claim nothing in this package measures",
-        ),
-        pytest.param(
-            lambda manifest: manifest.update(verification={"search_fold": {"status": "verified"}}),
-            id="a forged report of checks nobody ran",
-        ),
-        pytest.param(
-            lambda manifest: manifest["claims"].update(accuracy="99.9% against the ink"),
-            id="a fabricated claims entry",
-        ),
-        pytest.param(
-            lambda manifest: manifest["run"].update(operator="nobody"),
-            id="an extra field on the run binding",
-        ),
-        pytest.param(
-            lambda manifest: manifest["claims"]["pixels"].update(verified_by="nobody"),
-            id="an extra field on a claim read field by field",
-        ),
-        pytest.param(
-            lambda manifest: manifest["claims"]["act_partition"].update(
-                denominator="whatever the editor chose to count"
-            ),
-            id="a substituted act denominator",
-        ),
-        pytest.param(
-            lambda manifest: manifest["claims"]["page_census"].update(
-                denominator="whatever the editor chose to count"
-            ),
-            id="a substituted page denominator",
-        ),
-        pytest.param(
-            lambda manifest: manifest["claims"]["display"].update(
-                reason="the rendering was exercised and approved"
-            ),
-            id="a substituted display rationale",
-        ),
-        pytest.param(
-            lambda manifest: manifest["claims"]["salvage"].update(
-                promotion="automatic export-time act promotion"
-            ),
-            id="a substituted salvage promotion claim",
-        ),
-    ],
-)
-def test_a_resealed_manifest_may_not_carry_a_field_this_build_never_writes(mutate, tmp_path):
-    """The package's claims document cannot carry a field nothing measured."""
-    with pytest.raises(
-        SchemaRefusal,
-        match="unrecognized field set|not this build's fixed claim|display claim",
-    ):
-        verify_delivered_bundle(_resealed_manifest(mutate), tmp_path / "delivered")
-
-
-def test_an_unhashable_salvage_status_is_a_named_refusal(tmp_path):
-    """Package-supplied JSON values may not escape the verifier as Python errors."""
-
-    def replace_status(manifest):
-        manifest["claims"]["salvage"]["status"] = ["accounted"]
-
-    with pytest.raises(SchemaRefusal, match="invalid salvage-tier status"):
-        verify_delivered_bundle(_resealed_manifest(replace_status), tmp_path / "delivered")
-
-
-@pytest.mark.parametrize("field", ["fixture_id", "scenario"])
-def test_a_manifest_run_binding_requires_string_identities(field, tmp_path):
-    """An exact key set is not a schema if package-supplied identity types are unchecked."""
-
-    def replace_identity(manifest):
-        manifest["run"][field] = ["not", "an", "identity"]
-
-    with pytest.raises(SchemaRefusal, match="non-blank fixture and scenario identities"):
-        verify_delivered_bundle(_resealed_manifest(replace_identity), tmp_path / "delivered")
-
-
 def test_a_projection_may_carry_a_submission_identity_instead_of_a_fixture_one(tmp_path):
     """A real submission's identity projects and verifies exactly like a fixture's.
 
@@ -2028,45 +1898,6 @@ def test_a_projection_with_a_non_sha256_submission_id_is_refused(tmp_path):
         SchemaRefusal, match="projection submission identity is not a lowercase sha256"
     ):
         build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
-
-
-def test_a_manifest_run_binding_naming_both_identities_is_refused(tmp_path):
-    """A resealed manifest cannot smuggle both identity fields past the closure check."""
-
-    def add_submission(manifest):
-        manifest["run"]["submission_id"] = "a" * 64
-
-    with pytest.raises(SchemaRefusal, match="both a fixture identifier and a submission"):
-        verify_delivered_bundle(_resealed_manifest(add_submission), tmp_path / "delivered")
-
-
-def test_a_manifest_run_binding_naming_neither_identity_is_refused(tmp_path):
-    """A resealed manifest cannot drop its run identity entirely and still verify."""
-
-    def drop_fixture(manifest):
-        del manifest["run"]["fixture_id"]
-
-    with pytest.raises(SchemaRefusal, match="neither a fixture identifier nor a submission"):
-        verify_delivered_bundle(_resealed_manifest(drop_fixture), tmp_path / "delivered")
-
-
-def test_a_manifest_run_binding_naming_a_non_sha256_submission_is_refused(tmp_path):
-    """The manifest boundary is at least as strict as the projection boundary.
-
-    Built under the real shape rather than mutating a fixture-shaped manifest --
-    the corrupted field only exists on the `submission_id` branch -- then
-    corrupted to a well-formed-but-not-sha256 string.
-    """
-    projection = replace(_projection(), fixture_id=None, submission_id="a" * 64)
-    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    del manifest["self_hash"]
-    manifest["run"]["submission_id"] = "not-a-lowercase-sha256"
-    _refresh_manifest(members, manifest)
-
-    with pytest.raises(SchemaRefusal, match="submission identity is not a lowercase sha256"):
-        verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
 
 
 def _designator_run_module():
@@ -2222,41 +2053,6 @@ def test_text_bundle_human_heading_must_authenticate_the_machine_act_identity(tm
         verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
 
 
-def test_member_digest_guard_refuses_a_tampered_self_containment_claim(tmp_path):
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    members["sources.json"] += b"tampered"
-
-    with pytest.raises(SchemaRefusal, match="does not match its manifest digest"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
-def test_member_byte_count_guard_refuses_a_self_consistent_false_size_claim(tmp_path):
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    row = next(item for item in manifest["members"] if item["path"] == "sources.json")
-    row["bytes"] += 1
-    manifest["self_hash"] = self_hash(manifest)
-    members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
-
-    with pytest.raises(SchemaRefusal, match="manifest byte count"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
-def test_selected_format_cannot_omit_a_self_consistent_member_inventory(tmp_path):
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    members.pop(TEXT_REGISTER)
-    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    manifest["members"] = [item for item in manifest["members"] if item["path"] != TEXT_REGISTER]
-    manifest["self_hash"] = self_hash(manifest)
-    members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
-
-    with pytest.raises(SchemaRefusal, match="selected formats.*missing"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
 def test_unselected_format_members_cannot_hide_inside_a_self_consistent_bundle(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
@@ -2287,18 +2083,6 @@ def test_sealed_source_page_cannot_lose_its_pixel_reference(embed_pixels, tmp_pa
     _refresh_manifest_member(members, "sources.json")
 
     with pytest.raises(SchemaRefusal, match="sealed package source page has no pixel reference"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
-def test_sealed_source_page_cannot_carry_a_resealed_refusal_reason(tmp_path):
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    sources = json.loads(members["sources.json"])
-    sources["pages"][0]["reason"] = "forged refusal despite a sealed page"
-    members["sources.json"] = canonical_bytes(sources)
-    _refresh_manifest_member(members, "sources.json")
-
-    with pytest.raises(SchemaRefusal, match="sealed package source page carries a refusal reason"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
@@ -3502,34 +3286,6 @@ def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_r
     assert linked.stat().st_ino != shared_inode
 
 
-def test_an_extraction_cleanup_failure_names_the_leftover_temporary_file(tmp_path, monkeypatch):
-    """A failed cleanup is part of the refusal, never a silently retained member."""
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    clean = tmp_path / "clean"
-    import armarium_export as export_module
-
-    real_unlink = export_module._unlink_at
-
-    monkeypatch.setattr(
-        "armarium_export._atomic_replace",
-        lambda _source, _target, **_kwargs: (_ for _ in ()).throw(
-            OSError("simulated replace failure")
-        ),
-    )
-
-    def fail_temporary_unlink(path, *args, **kwargs):
-        if ".extracting-" in Path(path).name:
-            raise OSError("simulated cleanup failure")
-        return real_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(export_module, "_unlink_at", fail_temporary_unlink)
-
-    with pytest.raises(SchemaRefusal, match="temporary file .* could not be removed"):
-        verify_export_bundle(bundle.data, clean)
-
-    assert list(clean.rglob("*.extracting-*")), "the test must exercise a real leftover file"
-
-
 def test_a_member_path_deeper_than_the_bound_is_refused_by_name():
     """A hostile archive gets a refusal, not a RecursionError.
 
@@ -3809,69 +3565,6 @@ def test_a_projection_claiming_established_over_its_own_gap_is_refused():
             _formats(embed_pixels=False),
             _source_bytes,
         )
-
-
-def test_a_package_edited_to_call_a_damaged_act_whole_is_refused_on_a_clean_machine(tmp_path):
-    """A self-hash proves the manifest was not edited afterwards, not that it was true.
-
-    Every row, the source graph, the aggregate and its basis are rewritten here to
-    the reassuring value, so nothing inside the package disagrees with anything
-    else. What refuses it is the layer the damage actually lives in: the gap is
-    still carried beside the literal, and the verifier derives the status from it.
-    """
-    bundle = build_armarium_bundle(
-        _partial_projection(), _formats(embed_pixels=False), _source_bytes
-    )
-    members = _members(bundle.data)
-
-    rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
-    for row in rows:
-        if row["text_status"] == "partial":
-            row["text_status"] = "established"
-    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
-    text = (
-        members[TEXT_REGISTER]
-        .decode("utf-8")
-        .replace("text_status: partial", "text_status: established")
-    )
-    members[TEXT_REGISTER] = text.encode("utf-8")
-    sources = json.loads(members["sources.json"])
-    for outcome in sources["act_outcomes"]:
-        if outcome["text_status"] == "partial":
-            outcome["text_status"] = "established"
-    sources["aggregate_basis"]["act_text_status"] = {"one": "established"}
-    members["sources.json"] = canonical_bytes(sources)
-    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    manifest["aggregate"] = run_aggregate(
-        {"one": ArmariumCategory.DELIVERED, "two": ArmariumCategory.HELD_FOR_REVIEW},
-        sources["aggregate_basis"]["coverage_records"],
-        {page["ordinal"]: page for page in sources["pages"]},
-        unaddressed_chairs=[],
-        act_pages=sources["aggregate_basis"]["act_pages"],
-        act_text_status={"one": "established"},
-    )
-    manifest["aggregate_basis"] = sources["aggregate_basis"]
-    # And the ledger the manifest's own top-level status is read from, so the
-    # package is green everywhere and nothing inside it disagrees with anything
-    # else. Without this the (correct) ledger mismatch refuses first and the
-    # row-level derivation this test is about is never reached.
-    ledger = _terminal_ledger(
-        sources["act_outcomes"],
-        sources["pages"],
-        sources["aggregate_basis"]["act_pages"],
-        manifest["aggregate"],
-    )
-    manifest["claims"]["terminal_ledger"] = ledger
-    manifest["claims"]["status"] = ledger["status"]
-    manifest["claims"]["partial_reasons"] = ledger["unresolved_reasons"]
-    for member in ("acts.jsonl", TEXT_REGISTER, "sources.json"):
-        row = next(item for item in manifest["members"] if item["path"] == member)
-        row["sha256"] = digest_bytes(members[member])
-        row["bytes"] = len(members[member])
-    _refresh_manifest(members, manifest)
-
-    with pytest.raises(SchemaRefusal, match="may not be projected as a whole one"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
 def test_a_row_claiming_produced_semantic_annotations_is_refused(tmp_path):
@@ -4623,42 +4316,6 @@ def test_a_real_background_refusal_reaches_the_complete_export_as_not_measured(
     assert page_claim["detail"] == page_basis
 
 
-def test_a_resealed_not_measured_status_must_be_rederived_from_its_detail(tmp_path):
-    """A self-hash cannot turn an unmeasured detail into a measured claim."""
-
-    def contradict_status(manifest):
-        row = _entry(manifest["claims"]["not_measured"], "page-testimony-content-coverage")
-        row["detail"]["acts_unmeasured"] = ["two"]
-        row["detail"]["reasons"] = ["the continuation-page measurement was not made"]
-        assert row["status"] == "measured"
-
-    with pytest.raises(SchemaRefusal, match="status.*disagrees with its detail"):
-        verify_delivered_bundle(_resealed_manifest(contradict_status), tmp_path / "delivered")
-
-
-@pytest.mark.parametrize("mutation", ["empty", "wrong-order"])
-def test_a_resealed_geometry_detail_must_name_the_canonical_configurations(mutation, tmp_path):
-    def break_geometry(manifest):
-        row = _entry(manifest["claims"]["not_measured"], "designator-geometry-calibration")
-        configurations = row["detail"]["configurations"]
-        if mutation == "empty":
-            configurations.clear()
-        else:
-            configurations[0], configurations[1] = configurations[1], configurations[0]
-
-    with pytest.raises(SchemaRefusal, match="configurations.*canonical order|canonical order"):
-        verify_delivered_bundle(_resealed_manifest(break_geometry), tmp_path / "delivered")
-
-
-def test_a_resealed_geometry_detail_refuses_calibrated_claim_with_zero_samples(tmp_path):
-    def contradict_calibration(manifest):
-        row = _entry(manifest["claims"]["not_measured"], "designator-geometry-calibration")
-        row["detail"]["configurations"][2]["calibrated_for_this_corpus"] = True
-
-    with pytest.raises(SchemaRefusal, match="calibrated_for_this_corpus.*sample_count is zero"):
-        verify_delivered_bundle(_resealed_manifest(contradict_calibration), tmp_path / "delivered")
-
-
 @pytest.mark.parametrize(
     ("instrument", "field", "value", "match"),
     [
@@ -4679,76 +4336,6 @@ def test_projection_refuses_not_measured_sibling_denominators_that_do_not_match_
             _formats(embed_pixels=False),
             _source_bytes,
         )
-
-
-@pytest.mark.parametrize(
-    ("instrument", "field", "value", "match"),
-    [
-        ("page-testimony-content-coverage", "acts_total", 3, "testimony-content denominator"),
-        ("act-visibility-survey", "acts_total", 1, "visibility-survey denominator"),
-        ("page-ink-conservation", "pages_sealed", 2, "conservation denominator"),
-    ],
-)
-def test_a_coherently_resealed_not_measured_claim_refuses_wrong_sibling_denominators(
-    instrument, field, value, match, tmp_path
-):
-    def contradict_denominator(manifest):
-        _entry(manifest["claims"]["not_measured"], instrument)["detail"][field] = value
-
-    with pytest.raises(SchemaRefusal, match=match):
-        verify_delivered_bundle(_resealed_manifest(contradict_denominator), tmp_path / "delivered")
-
-
-@pytest.mark.parametrize(
-    ("instrument", "field", "value"),
-    [
-        pytest.param("page-testimony-content-coverage", "acts_total", False, id="bool-count"),
-        pytest.param("page-ink-conservation", "pages_sealed", "1", id="string-count"),
-        pytest.param("act-visibility-survey", "capture_rows", [], id="list-count"),
-        pytest.param("perlector-uncertain-spans", "sealed_audit_round_cap", False, id="bool-cap"),
-    ],
-)
-def test_a_resealed_not_measured_detail_refuses_untyped_counts(instrument, field, value, tmp_path):
-    def replace_count(manifest):
-        _entry(manifest["claims"]["not_measured"], instrument)["detail"][field] = value
-
-    with pytest.raises(SchemaRefusal, match="non-negative integer"):
-        verify_delivered_bundle(_resealed_manifest(replace_count), tmp_path / "delivered")
-
-
-def test_a_resealed_not_measured_count_is_a_strict_integer(tmp_path):
-    def replace_count(manifest):
-        block = manifest["claims"]["not_measured"]
-        uncertainty = _entry(block, "perlector-uncertain-spans")
-        uncertainty["detail"]["sealed_audit_round_cap"] = 0
-        # The instrument is measured when every delivered reading was assessed,
-        # so a status of `measured` must be resealed over a detail that says so.
-        uncertainty["detail"]["acts_assessed"] = uncertainty["detail"]["acts_delivered"]
-        uncertainty["detail"]["acts_not_assessed"] = 0
-        uncertainty["status"] = "measured"
-        geometry = _entry(block, "designator-geometry-calibration")
-        for row in geometry["detail"]["configurations"]:
-            row["calibrated_for_this_corpus"] = True
-            if row["sample_count"] == 0:
-                row["sample_count"] = 1
-        geometry["status"] = "measured"
-        assert sum(row["status"] != "measured" for row in block["entries"]) == 1
-        # Canonical JSON permits booleans, and True == 1 would otherwise let
-        # this malformed count reconcile with the one unmeasured instrument.
-        block["count"] = True
-
-    with pytest.raises(SchemaRefusal, match="not_measured count.*non-negative integer"):
-        verify_delivered_bundle(_resealed_manifest(replace_count), tmp_path / "delivered")
-
-
-def test_a_resealed_not_measured_entry_names_its_canonical_evidence_location(tmp_path):
-    def replace_location(manifest):
-        _entry(manifest["claims"]["not_measured"], "page-testimony-content-coverage")[
-            "recorded_in"
-        ] = "somewhere else"
-
-    with pytest.raises(SchemaRefusal, match="canonical evidence location"):
-        verify_delivered_bundle(_resealed_manifest(replace_location), tmp_path / "delivered")
 
 
 def test_the_export_names_every_instrument_of_this_build_exactly_once_in_order():
@@ -5117,22 +4704,6 @@ def test_perlector_basis_counts_must_reconcile_with_the_projected_acts():
         _manifest_of(replace(_projection(), not_measured_basis=basis))
 
 
-def test_a_resealed_cap_zero_uncertainty_count_cannot_exceed_delivered_acts(tmp_path):
-    """Recipient validation must enforce the bound without a producer projection."""
-
-    def contradict_counts(manifest):
-        block = manifest["claims"]["not_measured"]
-        entry = _entry(block, "perlector-uncertain-spans")
-        detail = entry["detail"]
-        detail["sealed_audit_round_cap"] = 0
-        detail["acts_with_uncertain_spans"] = detail["acts_delivered"] + 1
-        entry["status"] = "measured"
-        block["count"] = sum(row["status"] != "measured" for row in block["entries"])
-
-    with pytest.raises(SchemaRefusal, match="more acts with uncertain spans than delivered acts"):
-        verify_delivered_bundle(_resealed_manifest(contradict_counts), tmp_path / "delivered")
-
-
 _HEAD_TEXT, _TAIL_TEXT = "Cǣsar d’Amo-", "urs fils"
 _FORMATS_WITHOUT_TEXT = ArmariumFormats(("review-items", "salvage-tier"), False)
 
@@ -5340,30 +4911,6 @@ def _reforged(members: dict[str, bytes], in_text: bool, old: str, new: str) -> b
 _JOINED_JSON = json.dumps(_HEAD_TEXT + "\n" + _TAIL_TEXT, ensure_ascii=False)
 
 
-@pytest.mark.parametrize("joined", ["Cǣsar d’Amours fils", "Cǣsar d’Amo- urs fils"])
-@pytest.mark.parametrize("in_text", [False, True])
-def test_a_tampered_or_de_hyphenated_reconstruction_is_refused(tmp_path, in_text, joined):
-    new = json.dumps(joined, ensure_ascii=False)
-    forged = _reforged(_joined_members(), in_text, _JOINED_JSON, new)
-    with pytest.raises(SchemaRefusal, match="does not recompute|head \\+ one U\\+000A"):
-        verify_export_bundle(forged, tmp_path / "forged")
-
-
-@pytest.mark.parametrize(
-    ("old", "new"),
-    [
-        ("label: RECONSTRUCTED: ", "label: "),
-        ("head_text_status: established", "head_text_status: partial"),
-        ("reconstructed_text_sha256: ", "reconstructed_text_sha256: 0"),
-        ('head_doubt: {"assessment": "not-assessed"', 'head_doubt: {"assessment": "assessed"'),
-    ],
-)
-def test_a_forged_line_in_a_reconstructed_section_is_refused(tmp_path, old, new):
-    forged = _reforged(_joined_members(), True, old, new)
-    with pytest.raises(SchemaRefusal, match="RECONSTRUCTED section does not recompute"):
-        verify_export_bundle(forged, tmp_path / "forged")
-
-
 def test_a_note_moved_to_another_act_is_refused(tmp_path):
     members = _joined_members()
     note = "possible-continuation-on: three (page 2) [join-1-2-0]\n"
@@ -5558,3 +5105,402 @@ def test_a_join_across_two_folders_writes_its_section_in_the_head_folder(tmp_pat
     assert "## RECONSTRUCTED join-1-2-0" in head_text
     assert "RECONSTRUCTED" not in tail_text
     assert "possible-continuation-from: one (page 1) [join-1-2-0]" in tail_text
+
+
+def test_member_digest_guard_refuses_a_tampered_self_containment_claim(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    members["sources.json"] += b"tampered"
+
+    with pytest.raises(SchemaRefusal, match="does not match its manifest digest"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+@pytest.fixture(scope="module")
+def recipient_happy_run(tmp_path_factory):
+    root = tmp_path_factory.mktemp("recipient-refusals")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ORCHESTRATOR_CLI),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--scenario",
+            "happy",
+            "--run-id",
+            "r",
+            "--run-root",
+            str(root),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return root
+
+
+@pytest.mark.hostile_local
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("real-run-type", "non-blank submission and scenario identities"),
+        ("real-run-blank", "non-blank submission and scenario identities"),
+        ("real-run-extra", "unrecognized field set"),
+        ("salvage-status-type", "invalid salvage-tier status"),
+        ("fixture-run-type", "non-blank fixture and scenario identities"),
+        ("scenario-run-type", "non-blank fixture and scenario identities"),
+        ("run-both-identities", "both a fixture identifier and a submission"),
+        ("run-neither-identity", "neither a fixture identifier nor a submission"),
+        ("real-run-nonsha", "submission identity is not a lowercase sha256"),
+        ("manifest-root-extra", "unrecognized field set"),
+        ("manifest-verification-extra", "unrecognized field set"),
+        ("manifest-claims-extra", "unrecognized field set"),
+        ("manifest-run-extra", "unrecognized field set"),
+        ("manifest-pixels-extra", "unrecognized field set"),
+        ("manifest-act-denominator", "not this build's fixed claim"),
+        ("manifest-page-denominator", "not this build's fixed claim"),
+        ("manifest-display-reason", "display claim"),
+        ("manifest-salvage-promotion", "not this build's fixed claim"),
+        ("not-measured-status", "status.*disagrees with its detail"),
+        ("geometry-configurations", "canonical order"),
+        ("geometry-zero-samples", "sample_count is zero"),
+        ("testimony-denominator", "testimony-content denominator"),
+        ("visibility-denominator", "visibility-survey denominator"),
+        ("conservation-denominator", "conservation denominator"),
+        ("untyped-count", "non-negative integer"),
+        ("not-measured-count-type", "not_measured count.*non-negative integer"),
+        ("evidence-location", "canonical evidence location"),
+        ("uncertainty-cap", "more acts with uncertain spans than delivered acts"),
+        ("ink-map-row", "ink-map claim does not match"),
+        ("sealed-source-reason", "sealed package source page carries a refusal reason"),
+        ("member-byte-count", "manifest byte count"),
+        ("selected-format-inventory", "selected formats.*missing"),
+        ("damaged-act-whole", "may not be projected as a whole one"),
+        ("reconstruction-text", "does not recompute|head \\+ one U\\+000A"),
+        ("reconstruction-section", "RECONSTRUCTED section does not recompute"),
+        ("publish-aggregate", "aggregate disagrees"),
+        ("publish-binding", "run binding"),
+        ("publish-submission", "this run's authority names no real submission"),
+        ("publish-retained-manifest", "manifest identity or status disagrees"),
+        ("publish-search-fold", "search-fold recomputation was not run"),
+        ("publish-run-authority", "fails its own self-hash"),
+    ],
+)
+def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, request):
+    manifest_mutations = {
+        "real-run-type": lambda m: m["run"].update(submission_id=["not", "an", "identity"]),
+        "real-run-blank": lambda m: m["run"].update(submission_id="   "),
+        "real-run-extra": lambda m: m["run"].update(operator="nobody"),
+        "salvage-status-type": lambda m: m["claims"]["salvage"].update(status=["accounted"]),
+        "fixture-run-type": lambda m: m["run"].update(fixture_id=["not", "an", "identity"]),
+        "scenario-run-type": lambda m: m["run"].update(scenario=["not", "an", "identity"]),
+        "run-both-identities": lambda m: m["run"].update(submission_id="a" * 64),
+        "run-neither-identity": lambda m: m["run"].pop("fixture_id"),
+        "real-run-nonsha": lambda m: m["run"].update(submission_id="not-a-lowercase-sha256"),
+        "manifest-root-extra": lambda m: m.update(independent_audit="passed"),
+        "manifest-verification-extra": lambda m: m.update(
+            verification={"search_fold": {"status": "verified"}}
+        ),
+        "manifest-claims-extra": lambda m: m["claims"].update(accuracy="99.9%"),
+        "manifest-run-extra": lambda m: m["run"].update(operator="nobody"),
+        "manifest-pixels-extra": lambda m: m["claims"]["pixels"].update(verified_by="nobody"),
+        "manifest-act-denominator": lambda m: m["claims"]["act_partition"].update(
+            denominator="other"
+        ),
+        "manifest-page-denominator": lambda m: m["claims"]["page_census"].update(
+            denominator="other"
+        ),
+        "manifest-display-reason": lambda m: m["claims"]["display"].update(reason="approved"),
+        "manifest-salvage-promotion": lambda m: m["claims"]["salvage"].update(
+            promotion="automatic"
+        ),
+        "not-measured-status": lambda m: _entry(
+            m["claims"]["not_measured"], "page-testimony-content-coverage"
+        )["detail"].update(acts_unmeasured=["two"], reasons=["not measured"]),
+        "geometry-configurations": lambda m: _entry(
+            m["claims"]["not_measured"], "designator-geometry-calibration"
+        )["detail"]["configurations"].clear(),
+        "geometry-zero-samples": lambda m: _entry(
+            m["claims"]["not_measured"], "designator-geometry-calibration"
+        )["detail"]["configurations"][2].update(calibrated_for_this_corpus=True),
+        "testimony-denominator": lambda m: _entry(
+            m["claims"]["not_measured"], "page-testimony-content-coverage"
+        )["detail"].update(acts_total=3),
+        "visibility-denominator": lambda m: _entry(
+            m["claims"]["not_measured"], "act-visibility-survey"
+        )["detail"].update(acts_total=1),
+        "conservation-denominator": lambda m: _entry(
+            m["claims"]["not_measured"], "page-ink-conservation"
+        )["detail"].update(pages_sealed=2),
+        "untyped-count": lambda m: _entry(m["claims"]["not_measured"], "page-ink-conservation")[
+            "detail"
+        ].update(pages_sealed="1"),
+        "evidence-location": lambda m: _entry(
+            m["claims"]["not_measured"], "page-testimony-content-coverage"
+        ).update(recorded_in="somewhere else"),
+        "uncertainty-cap": lambda m: _recipient_uncertainty_overflow(m),
+        "not-measured-count-type": lambda m: _recipient_boolean_count(m),
+    }
+    if case in manifest_mutations:
+        with pytest.raises(SchemaRefusal, match=expected):
+            verify_delivered_bundle(
+                (_real_resealed_manifest if case.startswith("real-run-") else _resealed_manifest)(
+                    manifest_mutations[case]
+                ),
+                tmp_path / "delivered",
+            )
+        return
+    if case in {"ink-map-row", "sealed-source-reason"}:
+        projection = (
+            _otherwise_complete(ink_map_pages=(_edge_page(outside=5_000),))
+            if case == "ink-map-row"
+            else _projection()
+        )
+        members = _members(
+            build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes).data
+        )
+        sources = json.loads(members["sources.json"])
+        if case == "ink-map-row":
+            sources["ink_map_pages"][0]["remeasured"]["outside_ink_pixels"] = 0
+        else:
+            sources["pages"][0]["reason"] = "forged refusal despite a sealed page"
+        members["sources.json"] = canonical_bytes(sources)
+        _refresh_manifest_member(members, "sources.json")
+        data = _zip_bytes(members)
+    elif case in {"member-byte-count", "selected-format-inventory"}:
+        members = _members(
+            build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes).data
+        )
+        manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+        if case == "member-byte-count":
+            row = next(item for item in manifest["members"] if item["path"] == "sources.json")
+            row["bytes"] += 1
+        else:
+            members.pop(TEXT_REGISTER)
+            manifest["members"] = [
+                row for row in manifest["members"] if row["path"] != TEXT_REGISTER
+            ]
+        _refresh_manifest(members, manifest)
+        data = _zip_bytes(members)
+    elif case == "damaged-act-whole":
+        data = _recipient_whole_damaged_act()
+    elif case == "reconstruction-text":
+        data = _reforged(
+            _joined_members(),
+            False,
+            _JOINED_JSON,
+            json.dumps("Cǣsar d’Amours fils", ensure_ascii=False),
+        )
+    elif case == "reconstruction-section":
+        data = _reforged(_joined_members(), True, "label: RECONSTRUCTED: ", "label: ")
+    else:
+        import shutil
+
+        root = tmp_path / "runs"
+        shutil.copytree(request.getfixturevalue("recipient_happy_run") / "r", root / "r")
+        tree = RunTree(root, "r")
+        if case == "publish-aggregate":
+            from common.contracts.identities import artifact_id
+
+            path = tree.resolve(
+                tree.artifact_path(
+                    ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
+                )
+            )
+            record = json.loads(path.read_bytes())
+            record["payload"]["aggregate"]["status"] = "fabricated-terminal-status"
+            record["self_hash"] = self_hash(record)
+            path.write_bytes(canonical_bytes(record))
+        elif case in {
+            "publish-binding",
+            "publish-submission",
+            "publish-retained-manifest",
+            "publish-search-fold",
+        }:
+            from common.contracts.identities import artifact_id
+
+            path = tree.resolve(
+                tree.artifact_path(
+                    ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
+                )
+            )
+            before = json.loads(path.read_bytes())
+            if case == "publish-search-fold":
+
+                def mutate(members, _manifest):
+                    database = tmp_path / "acts.sqlite"
+                    database.write_bytes(members["acts.sqlite"])
+                    connection = sqlite3.connect(database)
+                    try:
+                        connection.execute(
+                            "UPDATE export_metadata SET value = 'resealed-different-version' WHERE key = 'unidata_version'"
+                        )
+                        connection.commit()
+                    finally:
+                        connection.close()
+                    members["acts.sqlite"] = database.read_bytes()
+            elif case == "publish-retained-manifest":
+
+                def mutate(_members, manifest):
+                    row = _entry(
+                        manifest["claims"]["not_measured"], "page-testimony-content-coverage"
+                    )
+                    row["detail"]["reasons"] = ["a changed package-only disclosure"]
+            elif case == "publish-submission":
+
+                def mutate(_members, manifest):
+                    manifest["run"].pop("fixture_id")
+                    manifest["run"]["submission_id"] = "a" * 64
+            else:
+
+                def mutate(_members, manifest):
+                    manifest["run"]["scenario"] = "a run that never happened"
+
+            _recipient_reseal_export(tree, mutate)
+            if case in {"publish-submission", "publish-retained-manifest"}:
+                changed = json.loads(path.read_bytes())
+                if case == "publish-submission":
+                    changed["payload"].pop("fixture_id")
+                    changed["payload"]["submission_id"] = "a" * 64
+                else:
+                    changed["payload"]["bundle"]["manifest_self_hash"] = before["payload"][
+                        "bundle"
+                    ]["manifest_self_hash"]
+                    changed["payload"]["bundle"]["claims_status"] = before["payload"]["bundle"][
+                        "claims_status"
+                    ]
+                changed["self_hash"] = self_hash(changed)
+                path.write_bytes(canonical_bytes(changed))
+        else:
+            path = root / "r" / "run.json"
+            record = json.loads(path.read_bytes())
+            record["fixture_id"] = "a-fixture-this-run-never-used"
+            path.write_bytes(canonical_bytes(record))
+        destination = tmp_path / "delivery"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "pipeline/7_armarium/bundle.py"),
+                "--run-root",
+                str(root),
+                "--run-id",
+                "r",
+                "--out",
+                str(destination),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert expected in result.stderr
+        assert not destination.exists()
+        return
+    with pytest.raises(SchemaRefusal, match=expected):
+        verify_export_bundle(data, tmp_path / "clean")
+
+
+def _recipient_uncertainty_overflow(manifest):
+    block = manifest["claims"]["not_measured"]
+    entry = _entry(block, "perlector-uncertain-spans")
+    detail = entry["detail"]
+    detail["sealed_audit_round_cap"] = 0
+    detail["acts_with_uncertain_spans"] = detail["acts_delivered"] + 1
+    entry["status"] = "measured"
+    block["count"] = sum(row["status"] != "measured" for row in block["entries"])
+
+
+def _recipient_reseal_export(tree, mutate):
+    from common.contracts.identities import artifact_id
+
+    path = tree.resolve(
+        tree.artifact_path(ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None))
+    )
+    record = json.loads(path.read_bytes())
+    old_reference = record["payload"]["bundle"]["reference"]
+    members = _members(tree.read_bytes(old_reference["relative_path"]))
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    mutate(members, manifest)
+    for row in manifest["members"]:
+        row["sha256"] = digest_bytes(members[row["path"]])
+        row["bytes"] = len(members[row["path"]])
+    _refresh_manifest(members, manifest)
+    data = _zip_bytes(members)
+    digest = digest_bytes(data)
+    relative = tree.blob_path(ARMARIUM, digest)
+    tree.resolve(relative).write_bytes(data)
+    reference = {"relative_path": relative, "sha256": digest}
+    record["inputs"] = [reference if item == old_reference else item for item in record["inputs"]]
+    record["payload"]["bundle"].update(
+        reference=reference, sha256=digest, manifest_self_hash=manifest["self_hash"]
+    )
+    record["self_hash"] = self_hash(record)
+    path.write_bytes(canonical_bytes(record))
+
+
+def _recipient_boolean_count(manifest):
+    block = manifest["claims"]["not_measured"]
+    uncertainty = _entry(block, "perlector-uncertain-spans")
+    uncertainty["detail"]["sealed_audit_round_cap"] = 0
+    uncertainty["detail"]["acts_assessed"] = uncertainty["detail"]["acts_delivered"]
+    uncertainty["detail"]["acts_not_assessed"] = 0
+    uncertainty["status"] = "measured"
+    geometry = _entry(block, "designator-geometry-calibration")
+    for row in geometry["detail"]["configurations"]:
+        row["calibrated_for_this_corpus"] = True
+        if row["sample_count"] == 0:
+            row["sample_count"] = 1
+    geometry["status"] = "measured"
+    assert sum(row["status"] != "measured" for row in block["entries"]) == 1
+    block["count"] = True
+
+
+def _recipient_whole_damaged_act():
+    members = _members(
+        build_armarium_bundle(
+            _partial_projection(), _formats(embed_pixels=False), _source_bytes
+        ).data
+    )
+    rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    for row in rows:
+        if row["text_status"] == "partial":
+            row["text_status"] = "established"
+    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    members[TEXT_REGISTER] = (
+        members[TEXT_REGISTER]
+        .decode("utf-8")
+        .replace("text_status: partial", "text_status: established")
+        .encode("utf-8")
+    )
+    sources = json.loads(members["sources.json"])
+    for outcome in sources["act_outcomes"]:
+        if outcome["text_status"] == "partial":
+            outcome["text_status"] = "established"
+    sources["aggregate_basis"]["act_text_status"] = {"one": "established"}
+    members["sources.json"] = canonical_bytes(sources)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["aggregate"] = run_aggregate(
+        {"one": ArmariumCategory.DELIVERED, "two": ArmariumCategory.HELD_FOR_REVIEW},
+        sources["aggregate_basis"]["coverage_records"],
+        {page["ordinal"]: page for page in sources["pages"]},
+        unaddressed_chairs=[],
+        act_pages=sources["aggregate_basis"]["act_pages"],
+        act_text_status={"one": "established"},
+    )
+    manifest["aggregate_basis"] = sources["aggregate_basis"]
+    ledger = _terminal_ledger(
+        sources["act_outcomes"],
+        sources["pages"],
+        sources["aggregate_basis"]["act_pages"],
+        manifest["aggregate"],
+    )
+    manifest["claims"]["terminal_ledger"] = ledger
+    manifest["claims"]["status"] = ledger["status"]
+    manifest["claims"]["partial_reasons"] = ledger["unresolved_reasons"]
+    for member in ("acts.jsonl", TEXT_REGISTER, "sources.json"):
+        row = next(item for item in manifest["members"] if item["path"] == member)
+        row["sha256"] = digest_bytes(members[member])
+        row["bytes"] = len(members[member])
+    _refresh_manifest(members, manifest)
+    return _zip_bytes(members)

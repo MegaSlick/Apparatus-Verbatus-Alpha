@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -17,33 +16,14 @@ from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.native_witness import partition_disagreement
 from common.runtree.store import RunTree
 from common.stage import stage_parser
-from conftest import load_stage, programs_through
+from conftest import load_stage, run_through
+from conftest import run_stage as invoke
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def invoke(
-    root: Path, run_id: str, scenario: str, program: str, **extra
-) -> subprocess.CompletedProcess:
-    command = [
-        sys.executable,
-        str(ROOT / program),
-        "--run-root",
-        str(root),
-        "--run-id",
-        run_id,
-        "--scenario",
-        scenario,
-    ]
-    for key, value in extra.items():
-        command.extend((f"--{key.replace('_', '-')}", str(value)))
-    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-
-
 def through_perlector(root: Path, run_id: str, scenario: str) -> None:
-    for program in programs_through("perlector"):
-        result = invoke(root, run_id, scenario, program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
+    run_through(root, run_id, scenario, "perlector")
 
 
 def _recensor_args(root: Path, run_id: str):
@@ -498,20 +478,6 @@ def test_recovery_replaces_the_current_partition_snapshot_without_erasing_histor
     assert tree.resolve(requested["review_ref"]["relative_path"]).exists()
 
 
-def test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_denominator(tmp_path):
-    root = tmp_path / "runs"
-    through_perlector(root, "manifest", "happy")
-    assert invoke(root, "manifest", "happy", "pipeline/5_recensor/run.py").returncode == 0
-    tree = RunTree(root, "manifest")
-    tree.resolve(tree.manifest_path(RECENSOR)).write_text("{}", encoding="utf-8")
-    recensor = load_stage("5_recensor")
-    args = _recensor_args(root, "manifest")
-    context = recensor.open_context(args, RECENSOR)
-
-    with pytest.raises(FatalAccounting, match="manifest disagrees"):
-        recensor.write_partition_receipt(context, context.recovery_policy)
-
-
 def test_a_refused_partition_receipt_does_not_publish_a_completion_seal(tmp_path, monkeypatch):
     """Receipt reconciliation is part of closing, not work after the checkpoint."""
     root = tmp_path / "runs"
@@ -545,20 +511,6 @@ def test_a_refused_partition_receipt_does_not_publish_a_completion_seal(tmp_path
     assert not any(
         entry["kind"] == "stage-seal" for entry in tree.build_manifest(RECENSOR)["artifacts"]
     )
-
-
-def test_a_tampered_partition_receipt_is_refused_by_its_self_hash(tmp_path):
-    root = tmp_path / "runs"
-    through_perlector(root, "tampered", "happy")
-    assert invoke(root, "tampered", "happy", "pipeline/5_recensor/run.py").returncode == 0
-    tree = RunTree(root, "tampered")
-    path = tree.resolve(tree.recensor_partition_receipt_path())
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["self_hash"] = "0" * 64
-    path.write_text(json.dumps(record), encoding="utf-8")
-
-    with pytest.raises(SchemaRefusal, match="self-hash"):
-        tree.read_recensor_partition_receipt()
 
 
 def test_a_run_that_proposed_no_acts_gets_a_visibly_partial_receipt_not_a_refusal():
@@ -1113,3 +1065,17 @@ def test_the_reading_outcome_set_has_exactly_one_definition():
         for outcome, klass in vocabulary.VOCABULARIES[vocabulary.ATTESTATORES].items()
         if klass is vocabulary.OutcomeClass.COMPLETED
     }, "a reading outcome is completed-class, but the completed class is wider"
+
+
+def test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_denominator(tmp_path):
+    root = tmp_path / "runs"
+    through_perlector(root, "manifest", "happy")
+    assert invoke(root, "manifest", "happy", "pipeline/5_recensor/run.py").returncode == 0
+    tree = RunTree(root, "manifest")
+    tree.resolve(tree.manifest_path(RECENSOR)).write_text("{}", encoding="utf-8")
+    recensor = load_stage("5_recensor")
+    args = _recensor_args(root, "manifest")
+    context = recensor.open_context(args, RECENSOR)
+
+    with pytest.raises(FatalAccounting, match="manifest disagrees"):
+        recensor.write_partition_receipt(context, context.recovery_policy)

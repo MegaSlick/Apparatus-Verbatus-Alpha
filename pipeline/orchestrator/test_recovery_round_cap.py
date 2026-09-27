@@ -327,7 +327,3 @@ def test_real_measured_recrop_is_dispatchable_but_legacy_real_request_is_refused
         "fallback-recrop", real_route=True, request_payload={"origin": "coverage-observation"}
     )
     assert "legacy fixture-only" in legacy
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))

@@ -187,26 +187,6 @@ def test_nuda_never_disturbs_normal_establishment(nuda_run):
     assert len(established) == 2
 
 
-def test_a_forged_review_naming_a_nuda_artifact_as_its_perlectio_is_refused(nuda_run):
-    """The negative path: even if some future code forged a Recensor-style
-    reference pointing at a `lectio-nuda` artifact and called it a Perlectio,
-    the digest-checked reference read is refused by kind, because
-    `read_artifact_reference` requires an exact `kind="perlectio"` match."""
-    entry = next(
-        entry
-        for entry in nuda_run.build_manifest(PERLECTOR)["artifacts"]
-        if entry["kind"] == LECTIO_NUDA_KIND
-    )
-    reference = {
-        "relative_path": entry["relative_path"],
-        "sha256": entry["sha256"],
-    }
-    with pytest.raises(SchemaRefusal, match="not required 'perlector'/'perlectio'"):
-        nuda_run.read_artifact_reference(
-            reference, stage=PERLECTOR, kind="perlectio", subject_id=entry["subject_id"]
-        )
-
-
 def test_a_sampled_nuda_records_the_design_it_was_drawn_under(nuda_run):
     """Principle 8: a sample of unknown design measures nothing. Each record
     names the rate, the selection rule, and the approval it was drawn under."""

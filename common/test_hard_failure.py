@@ -773,7 +773,3 @@ def test_a_crash_and_resume_does_not_spend_the_cap_twice_for_one_act(tmp_path):
     )
     breached = tally_hard_failures(tree, policy)
     assert breached["count"] == 3 and breached["breached"] is True
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))

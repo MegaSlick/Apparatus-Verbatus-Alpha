@@ -12,6 +12,7 @@ import pytest
 from common.contracts.errors import ContractError
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
+from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,15 +53,6 @@ def drive(root: Path, run_id: str, scenario: str, *selection: str) -> subprocess
         capture_output=True,
         text=True,
     )
-
-
-def snapshot(root: Path) -> dict[str, bytes]:
-    """Require literal tree identity; semantic normalization would hide mode leaks."""
-    return {
-        str(path.relative_to(root)): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 def test_canary_ingress_requires_a_real_submission_and_a_pair():

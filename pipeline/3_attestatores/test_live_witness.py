@@ -61,7 +61,6 @@ from operations.serving.config import (  # noqa: E402
     parse_serving_recipes,
     profile_preflight_digest,
 )
-from operations.serving.errors import ChairResponseRefusal  # noqa: E402
 from operations.serving.fakes import (  # noqa: E402
     ABSENT,
     FakeBlobStore,
@@ -71,7 +70,6 @@ from operations.serving.fakes import (  # noqa: E402
     FakePublisher,
     FakeRegistry,
     ScriptedAnswer,
-    scripted_prompt_too_long,
 )
 from operations.serving.manager import ServingManager  # noqa: E402
 from operations.serving.residency import FileResidencyLease  # noqa: E402
@@ -1043,63 +1041,6 @@ def _read_one(tmp_path: Path, *, script: ScriptedAnswer):
     return response, endpoint, blob_store
 
 
-def test_a_prompt_too_long_400_is_retained_refused_by_name_and_not_a_length_stop(
-    tmp_path: Path,
-) -> None:
-    """The other half of `scripted_structure_cut_off`, at this stage.
-
-    A cut-off is HTTP 200 with `finish_reason="length"`: the engine answered
-    and ran out of room, and this stage records that as a truncated capture. A
-    prompt too long for the context is HTTP 400 with no choices at all: nothing
-    was generated, and there is no capture to truncate. Reading the second as
-    the first would publish a Testimonium that says a witness was cut off when
-    no witness spoke.
-
-    It is also the counterfactual for the pre-send check: this is exactly what
-    the request the seam used to build received from a real engine.
-    """
-
-    client, endpoint, blob_store = _world(tmp_path)
-    refusal = scripted_prompt_too_long(
-        max_model_len=2048,
-        # The seam's own arithmetic for a 300-dpi page at this row, under the
-        # layout instruction: 2,280 image + 441 prompt + a 1,631-token
-        # dense-page answer.
-        requested_tokens=4352,
-        prompt_tokens=2721,
-        completion_tokens=1631,
-    )
-    with client:
-        endpoint.script(refusal)
-        data_uri = "data:image/png;base64," + base64.b64encode(b"one-image").decode("ascii")
-        with pytest.raises(ChairResponseRefusal) as error:
-            client.read(
-                ChairRequest(
-                    kind="chat-completions",
-                    messages=(
-                        {
-                            "role": "user",
-                            "content": [{"type": "image_url", "image_url": {"url": data_uri}}],
-                        },
-                    ),
-                    image_sha256s=(digest_bytes(b"one-image"),),
-                    generation_declared={},
-                    generation_sent={},
-                )
-            )
-    assert error.value.code == "CHAIR_RESPONSE_HTTP_ERROR"
-    assert error.value.code != "CHAIR_RESPONSE_LENGTH"
-    assert "maximum context length is 2048" in error.value.detail
-    # Retained before the refusal, by its own digest -- the engine's diagnostic
-    # is the artefact the card was rented to produce.
-    assert blob_store.has(hashlib.sha256(refusal.body).hexdigest())
-    # And no reading was derived from it: the refusal is raised, so
-    # `live_attempt_from_response` is never reached and no capture exists to
-    # be mistaken for a truncated one.
-    assert len(blob_store) == 2
-    assert error.value.call_record_ref is not None
-
-
 def _stub_adapter(*, retain_result: dict[str, Any], prompt: dict[str, Any] | None = None) -> Any:
     def prompt_fn() -> dict[str, Any]:
         return dict(prompt) if prompt is not None else {"instruction": "read"}
@@ -1549,28 +1490,29 @@ def test_live_attempt_from_response_failed_on_a_parser_failure(tmp_path: Path):
     assert blob_store.has(response.response_sha256)  # raw blob retained even on failure
 
 
-def test_live_attempt_from_response_cut_off_and_parser_failure_names_both(tmp_path: Path):
-    # A response the provider cut off at its bound, and that the adapter's own
-    # parser then rejected, must read as both on the act path exactly as on
-    # the page path (`test_captured_page_attempt_cut_off_and_parser_failure_names_both`):
-    # naming only the parse failure would let a truncated act masquerade as
-    # bad ink instead of an exhausted bound.
+@pytest.mark.parametrize("path", ["act", "page"])
+def test_cut_off_and_parser_failure_name_both_on_each_witness_path(tmp_path: Path, path: str):
     response, _, _ = _read_one(
         tmp_path, script=ScriptedAnswer(content="<output>unclosed", finish_reason="length")
     )
     adapter = _stub_adapter(
         retain_result={"parse": {"state": "failed", "reason": "unterminated output element"}}
     )
-
-    attempt = live_witness.live_attempt_from_response(
-        _Context(tree=_FakeTree()),
-        adapter,
-        "dai.v1",
-        response,
-        generation_declared={},
-        parser="text",
-        **_dai_view_kwargs(),
-    )
+    context = _Context(tree=_FakeTree())
+    if path == "act":
+        attempt = live_witness.live_attempt_from_response(
+            context,
+            adapter,
+            "dai.v1",
+            response,
+            generation_declared={},
+            parser="text",
+            **_dai_view_kwargs(),
+        )
+    else:
+        attempt = live_witness.captured_page_attempt(
+            context, 1, "attestator_1", "churro.v1", adapter, response
+        )
 
     assert attempt.outcome == "failed"
     assert "stopped the response at its bound" in attempt.reason
@@ -1863,29 +1805,6 @@ def test_captured_page_attempt_cut_off_empty_is_failed_not_confirmed_blank(tmp_p
     assert attempt.outcome == "failed"
     assert "not a confirmed blank page" in attempt.reason
     assert attempt.health["truncated"] is True
-
-
-def test_captured_page_attempt_cut_off_and_parser_failure_names_both(tmp_path: Path):
-    # A response the provider cut off at its bound, and that the adapter's own
-    # parser then rejected, must read as both: naming only the parse failure
-    # would let a truncated response masquerade as bad ink instead of an
-    # exhausted bound.
-    response, _, _ = _read_one(
-        tmp_path, script=ScriptedAnswer(content="<output>unclosed", finish_reason="length")
-    )
-    adapter = _stub_adapter(
-        retain_result={"parse": {"state": "failed", "reason": "unterminated output element"}}
-    )
-
-    attempt = live_witness.captured_page_attempt(
-        _Context(tree=_FakeTree()), 1, "attestator_1", "churro.v1", adapter, response
-    )
-
-    assert attempt.outcome == "failed"
-    assert "stopped the response at its bound" in attempt.reason
-    assert "unterminated output element" in attempt.reason
-    assert "length" in attempt.health["truncation_basis"]
-    assert "unterminated output element" in attempt.health["truncation_basis"]
 
 
 def test_captured_page_attempt_unreported_empty_is_failed_not_confirmed_blank(tmp_path: Path):

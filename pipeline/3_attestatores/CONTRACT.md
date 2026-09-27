@@ -98,7 +98,7 @@ provider actually reported has no reason to survive on one path's summary and
 vanish from the other's; Recensor coverage reading a provider-truncated act as
 plain "failed" with no truncation flag was the silent loss principle 2 rules out.
 Regression coverage lives beside the page-path original:
-`test_live_attempt_from_response_cut_off_and_parser_failure_names_both` and
+`test_cut_off_and_parser_failure_name_both_on_each_witness_path` and
 `test_live_attempt_from_response_parser_failure_without_cut_off_keeps_verbatim_reason`
 in `test_live_witness.py`.
 

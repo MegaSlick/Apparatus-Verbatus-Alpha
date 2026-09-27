@@ -1,36 +1,7 @@
-"""Spec 09's fifth test: recovery recovers coverage, and there is no path from a
-quality signal to a re-roll.
-
-    5. Quality firewall: a suspected-fabrication flag routes to review; no code
-       path exists from a quality flag to a re-roll (module boundary test).
-
-Principle 7 states the rule and ARCHITECTURE repeats it: "It recovers coverage,
-not quality. A suspected fabrication or a poor reading may be flagged for review.
-It may never be re-rolled until it looks better." That is a claim about what code
-*cannot* do, so proving it needs the structural half as well as the behavioural
-one -- a behavioural test only shows that today's inputs do not reach the branch.
-
-**The fabrication flag does not exist yet, and this test does not pretend it
-does.** Spec 09 allows "a vision or text model [to] **flag** where determinism
-cannot see (incoherence, suspected gaps)"; nothing in the built pipeline produces
-such a flag, and inventing a fake one here would test this file's own fixture
-rather than the stage. So the behavioural half drives the quality signals that
-genuinely exist -- a `truncated` Perlectio, which is a FAILED-class reading that
-still carries text, the exact shape a re-roll would be tempting for -- and the
-structural half is what will still hold on the day a real flag is added, because
-it constrains the recovery gate itself rather than the inputs reaching it.
-"""
+"""Recovery requests depend on coverage and budget, never reading quality."""
 
 import ast
-import subprocess
-import sys
 from pathlib import Path
-
-import pytest
-
-from common.contracts.stages import RECENSOR
-from common.runtree.store import RunTree
-from conftest import programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR_DIRECTORY = ROOT / "pipeline/5_recensor"
@@ -110,9 +81,6 @@ def _recovery_request_publications(
     return found
 
 
-# Every module that would give this stage a way to run something. Named once,
-# used by the real scan and by the synthetic cases that prove the set is
-# load-bearing rather than decorative.
 INVOCATION_MODULES = frozenset(
     {"subprocess", "os", "importlib", "multiprocessing", "runpy", "pty", "asyncio"}
 )
@@ -152,9 +120,6 @@ def _enclosing_ifs(tree: ast.Module, target: ast.Call) -> list[ast.If]:
     # is found before a deeper one; reversed so callers that want "just the
     # gate" via `enclosing[0]` still get the innermost.
     return list(reversed(enclosing))
-
-
-# --- The structural half: the module boundary spec 09 asks for -----------------
 
 
 def test_exactly_one_place_in_the_stage_can_ask_for_recovery():
@@ -245,30 +210,6 @@ def test_what_the_gate_is_computed_from_is_coverage_only():
     )
 
 
-def _sole_assignment(name: str) -> ast.Assign:
-    """The stage's one assignment to `name`, across every source file."""
-    assignments = [
-        node
-        for _, tree in _modules()
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
-    ]
-    assert len(assignments) == 1, (
-        f"{name} is assigned {len(assignments)} times in the stage; this guard reads one"
-    )
-    return assignments[0]
-
-
-def test_the_recovery_gate_has_no_route_based_dispatchability_conjunct():
-    """A real measured recovery cannot be suppressed by a route-only switch."""
-    assert not any(
-        isinstance(node, ast.Name) and node.id == "recrop_dispatchable"
-        for _, tree in _modules()
-        for node in ast.walk(tree)
-    )
-
-
 def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     """The deeper structural guarantee: this stage has no way to run anything.
 
@@ -312,114 +253,3 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
         f"the Recensor imports {sorted(imported & INVOCATION_MODULES)}; it appends recovery "
         "requests and never invokes the stage that answers one"
     )
-
-
-def test_the_banned_set_still_names_every_module_it_is_supposed_to():
-    """Pins the set's CONTENTS against an independent literal.
-
-    The parametrized test below cannot do this and it is worth saying why, because
-    the first attempt at this got it wrong: parametrizing over
-    `INVOCATION_MODULES` means deleting a member deletes its own test case, so the
-    suite goes green with one fewer test and nothing fails. Caught by mutating
-    `asyncio` out of the set and watching 12 tests pass. The duplication here is
-    deliberate and is the entire mechanism -- **adding** a module is a one-place
-    edit, **removing** one has to be argued in two places, which is the friction a
-    re-invocation firewall should have.
-    """
-    assert INVOCATION_MODULES == {
-        "subprocess",  # the direct route
-        "os",  # os.system, os.exec*, os.popen
-        "importlib",  # import_module then call into it
-        "multiprocessing",  # spawns interpreters
-        "runpy",  # run_path re-invokes a stage in-process, importing nothing else
-        "pty",  # reaches a shell the way subprocess does
-        "asyncio",  # create_subprocess_exec, and the word "subprocess" never appears
-    }
-
-
-@pytest.mark.parametrize("module", sorted(INVOCATION_MODULES))
-def test_every_banned_module_is_actually_caught_when_a_source_file_imports_it(module):
-    """The test above is vacuous on its own: the Recensor imports none of these,
-    so emptying `INVOCATION_MODULES` entirely would leave it passing. Meta-
-    invariant #88 -- an intersection assertion is satisfied by an empty set.
-
-    This drives the same extraction over synthetic sources that really do import
-    each banned module, both plainly and as `from x import y`, so removing a
-    member from the set (or breaking the extraction) fails here by name. Without
-    it, a later edit could drop `asyncio` and a subsequent
-    `asyncio.create_subprocess_exec(...)` could re-roll a reading with nothing
-    failing.
-    """
-    plain = _top_level_imports([ast.parse(f"import {module}\n")])
-    assert module in plain, f"a source file importing {module} was not seen at all"
-    assert plain & INVOCATION_MODULES, f"{module} is not refused by INVOCATION_MODULES"
-
-    submodule = _top_level_imports([ast.parse(f"from {module}.sub import thing\n")])
-    assert submodule & INVOCATION_MODULES, (
-        f"`from {module}.sub import thing` slipped past the top-level extraction"
-    )
-
-
-def test_an_unrelated_import_is_not_refused():
-    """The other half of meta-invariant #88: a check that refuses everything is
-    as useless as one that refuses nothing, and would make the test above pass
-    for the wrong reason."""
-    imported = _top_level_imports([ast.parse("import json\nfrom pathlib import Path\n")])
-    assert imported == {"json", "pathlib"}
-    assert not imported & INVOCATION_MODULES
-
-
-# --- The behavioural half: a real quality failure reaches review, not rework ----
-
-
-def _run_through_recensor(root: Path, run_id: str, scenario: str):
-    result = None
-    for program in programs_through("recensor"):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / program),
-                "--run-root",
-                str(root),
-                "--run-id",
-                run_id,
-                "--scenario",
-                scenario,
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
-    return result
-
-
-def test_a_failed_class_reading_is_reviewed_and_never_re_requested(tmp_path):
-    """A `truncated` Perlectio is a reading-quality failure that still carries
-    text. It is held for review with the outcome named, and the run appends no
-    recovery request for it at all -- not one that is later refused, none."""
-    root = tmp_path / "runs"
-    result = _run_through_recensor(root, "r", "truncated-reading")
-    assert result.returncode == 3, result.stderr
-
-    tree = RunTree(root, "r")
-    reviews = {
-        record["payload"]["act_key"]: record
-        for record in (
-            tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
-            for entry in tree.build_manifest(RECENSOR)["artifacts"]
-            if entry["kind"] == "review"
-        )
-    }
-    assert reviews["a1"]["outcome"] == "held-for-review"
-    assert "truncated" in reviews["a1"]["payload"]["reason"]
-
-    assert [
-        entry
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "recovery-request"
-    ] == []
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))

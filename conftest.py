@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import textwrap
 import tomllib
@@ -21,6 +22,14 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.stage import _stage_seal_payload, latest_attempt
 
 ROOT = Path(__file__).resolve().parent
+
+
+def pytest_collection_modifyitems(items):
+    if os.environ.get("CI"):
+        return
+    for item in items:
+        if item.get_closest_marker("hostile_local"):
+            item.add_marker(pytest.mark.skip(reason="hostile_local runs in CI only"))
 
 
 def load_stage(stage: str, module: str = "run", *, isolate_path: bool = False) -> ModuleType:
@@ -90,6 +99,102 @@ def programs_through(last: str) -> tuple[str, ...]:
     """The stage programs from the Door through `last`, in flow order."""
     names = list(stage_programs())
     return tuple(stage_programs()[name] for name in names[: names.index(last) + 1])
+
+
+def run_stage(
+    root: Path, run_id: str, scenario: str, program: str, **options: object
+) -> subprocess.CompletedProcess[str]:
+    """Invoke a fixture stage with the ordinary run arguments."""
+    command = [
+        sys.executable,
+        str(ROOT / program),
+        "--run-root",
+        str(root),
+        "--run-id",
+        run_id,
+        "--scenario",
+        scenario,
+    ]
+    for name, value in options.items():
+        command.extend((f"--{name.replace('_', '-')}", str(value)))
+    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+
+
+def run_orchestrator(
+    root: Path, run_id: str, scenario: str, **options: object
+) -> subprocess.CompletedProcess[str]:
+    """Invoke the fixture orchestrator with the ordinary run arguments."""
+    command = [
+        sys.executable,
+        str(ROOT / "pipeline/orchestrator/run.py"),
+        "--fixture",
+        "synthetic-two-page-v0",
+        "--scenario",
+        scenario,
+        "--run-id",
+        run_id,
+        "--run-root",
+        str(root),
+    ]
+    for name, value in options.items():
+        command.extend((f"--{name.replace('_', '-')}", str(value)))
+    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+
+
+def run_through(root: Path, run_id: str, scenario: str, last: str) -> None:
+    """Run fixture stages through ``last``, asserting each stage completed."""
+    for program in programs_through(last):
+        result = run_stage(root, run_id, scenario, program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+
+def stage_artifacts(tree, stage: str, kind: str, subject: str | None = None) -> list[dict]:
+    """Read artifacts of one kind, optionally scoped to a subject."""
+    return [
+        tree.read_artifact(stage, kind, entry["artifact_id"])
+        for entry in tree.build_manifest(stage)["artifacts"]
+        if entry["kind"] == kind and (subject is None or entry["subject_id"] == subject)
+    ]
+
+
+def file_bytes_snapshot(root: Path) -> dict[str, bytes]:
+    """Read the bytes of every regular file under a test run root."""
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def file_digest_snapshot(root: Path) -> dict[str, str]:
+    """Hash every regular file under a test run root."""
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def file_identities(root: Path) -> dict[str, tuple[int, int]]:
+    """Device and inode for each file, to distinguish reuse from equal rewrites."""
+    return {
+        str(path.relative_to(root)): (path.stat().st_dev, path.stat().st_ino)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+DERIVED_INVENTORY_SUFFIXES = (
+    "/manifest.json",
+    "/manifest-door.json",
+    "/index.json",
+    "run-health/recensor-partition-receipt.json",
+)
+
+
+def is_immutable_evidence(path: str) -> bool:
+    """Exclude inventories and current receipts that a resume may republish."""
+    return not path.endswith(DERIVED_INVENTORY_SUFFIXES)
 
 
 def tree_snapshot(root: Path) -> dict[str, str]:
@@ -294,6 +399,21 @@ def rebind_stage_seal():
 def rewitness_boundary():
     """The seal rebind above, extended to the stage's retained input references."""
     return rewitness_stage_boundary
+
+
+@pytest.fixture
+def empty_triage_manifest(tmp_path: Path) -> Path:
+    """An empty but valid Door decision manifest for malformed-input cases."""
+    from door import triage_manifest
+
+    path = tmp_path / "manifest.json"
+    path.write_text(
+        json.dumps(
+            {"schema": triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 @pytest.fixture

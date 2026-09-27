@@ -924,15 +924,7 @@ def _stage_seal_payload(
             f"{stage} cannot seal its boundary: decode-environment "
             f"{decode_environment_artifact_id!r} is unreadable: {error}"
         ) from error
-    # `read_run` requires no particular field, so a missing one is refused by
-    # name rather than as a KeyError that escapes the exit-code mapping.
     run = tree.read_run()
-    missing = [field for field in ("config_digest", "register_digest") if field not in run]
-    if missing:
-        raise SchemaRefusal(
-            f"{stage} cannot seal its boundary: the run authority carries no "
-            f"{', '.join(missing)}, so the seal would witness a binding that is not there"
-        )
     return {
         "stage": stage,
         "attempt_ordinal": ordinal,

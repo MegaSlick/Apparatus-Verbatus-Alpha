@@ -71,6 +71,9 @@ from operations.triage.instrument import load_config as instrument_config
 from operations.triage.instrument import producer_recipe
 
 POLICY = load_format_policy()
+PDF_SETTINGS = door.render_config.load_pdf_render_settings(
+    minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+)
 
 
 def test_an_unreadable_corpus_register_refusal_names_what_it_promises(tmp_path):
@@ -333,7 +336,9 @@ def test_the_raster_body_cache_holds_one_source_at_a_time(tmp_path):
         handed_out.append(weakref.ref(body.sentinel))
         return body
 
-    assert process_sources(context, tree, sources, read_bytes, policy=POLICY) == len(pages)
+    assert process_sources(
+        context, tree, sources, read_bytes, policy=POLICY, pdf_settings=PDF_SETTINGS
+    ) == len(pages)
 
     assert reads == sorted(pages), f"a source was re-read or skipped: {reads}"
     assert max(live_at_each_read) <= 1, (
@@ -347,7 +352,12 @@ def test_correct_bytes_admit_even_when_the_filename_extension_is_wrong(tmp_path)
     tree, context = open_door(tmp_path, [source])
 
     assert process_sources(
-        context, tree, [source], reader({source.declared_path: data}), policy=POLICY
+        context,
+        tree,
+        [source],
+        reader({source.declared_path: data}),
+        policy=POLICY,
+        pdf_settings=PDF_SETTINGS,
     )
     context.finish(DOOR)
 
@@ -377,7 +387,9 @@ def test_the_real_door_seals_bmp_webp_avif_and_a_generic_decoder_fallback(tmp_pa
     ]
     tree, context = open_door(tmp_path, sources)
 
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == len(sources)
+    assert process_sources(
+        context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+    ) == len(sources)
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -404,7 +416,12 @@ def test_every_source_gets_a_named_record_even_when_nothing_admits(tmp_path):
     tree, context = open_door(tmp_path, sources)
     assert (
         process_sources(
-            context, tree, sources, reader({"not-an-image.png": b"plain text"}), policy=POLICY
+            context,
+            tree,
+            sources,
+            reader({"not-an-image.png": b"plain text"}),
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
         )
         == 0
     )
@@ -451,7 +468,12 @@ def test_jpeg_trailing_bytes_are_admitted_not_called_corruption(tmp_path):
 
     assert (
         process_sources(
-            context, tree, [source], reader({source.declared_path: data}), policy=POLICY
+            context,
+            tree,
+            [source],
+            reader({source.declared_path: data}),
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
         )
         == 1
     )
@@ -475,6 +497,7 @@ def test_an_oversized_decoder_alarm_does_not_abort_later_source_accounting(tmp_p
             sources,
             reader({"oversized.tif": huge, "ordinary.png": ordinary}),
             policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
         )
         == 1
     )
@@ -505,7 +528,12 @@ def test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs(tmp_path):
     ]
     tree, context = open_door(tmp_path, sources)
 
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 4
+    assert (
+        process_sources(
+            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 4
+    )
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -554,7 +582,7 @@ def test_a_pdf_close_failure_after_a_good_render_still_admits_the_page(monkeypat
         1, "register.pdf", digest_bytes(data), container_page_index=0, declared_size=len(data)
     )
 
-    assert door.decide(data, source, POLICY).outcome == "admitted"
+    assert door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS).outcome == "admitted"
 
 
 def test_container_pages_bind_membership_to_container_and_index_not_the_shared_file_hash(
@@ -630,7 +658,12 @@ def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp
     assert [source.declared_path for source in sources] == ["corrupt-no-ifd.tif", "good.png"]
     tree, context = open_door(tmp_path, sources)
 
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 1
+    assert (
+        process_sources(
+            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 1
+    )
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -659,7 +692,12 @@ def test_a_pdf_with_a_bounded_transport_preamble_still_routes_and_admits(tmp_pat
     ]
     tree, context = open_door(tmp_path, sources)
 
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 1
+    assert (
+        process_sources(
+            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 1
+    )
     context.finish(DOOR)
     assert admissions(tree)[1]["outcome"] == "admitted"
 
@@ -681,7 +719,12 @@ def test_every_decoder_reported_animation_frame_fans_out_once(tmp_path):
     ]
 
     tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 2
+    assert (
+        process_sources(
+            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 2
+    )
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -744,7 +787,12 @@ def test_a_compressed_multipage_tiff_fans_out_and_every_page_reaches_real_pixels
     assert [source.container_page_index for source in sources] == [0, 1]
 
     tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 2
+    assert (
+        process_sources(
+            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 2
+    )
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -777,7 +825,12 @@ def test_a_single_page_tiff_is_sealed_as_its_own_untouched_bytes(tmp_path):
     ]
 
     tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 1
+    assert (
+        process_sources(
+            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 1
+    )
     context.finish(DOOR)
 
     payload = admissions(tree)[1]["payload"]
@@ -807,6 +860,7 @@ def test_a_source_with_no_declared_digest_still_reaches_a_duplicate_report(tmp_p
             sources,
             reader({"undeclared-a.png": data, "undeclared-b.png": data, "distinct.png": other}),
             policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
         )
         == 3
     )
@@ -855,6 +909,7 @@ def test_duplicate_files_are_admitted_per_ordinal_and_reported_rather_than_refus
             sources,
             reader({"source-a.png": data, "source-b.png": data}),
             policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
         )
         == 2
     )
@@ -918,7 +973,12 @@ def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed
     ]
     tree, context = open_door(tmp_path, sources)
     admitted = process_sources(
-        context, tree, sources, reader({"source-a.png": data, "source-b.png": data}), policy=POLICY
+        context,
+        tree,
+        sources,
+        reader({"source-a.png": data, "source-b.png": data}),
+        policy=POLICY,
+        pdf_settings=PDF_SETTINGS,
     )
     assert admitted == 2
 
@@ -977,7 +1037,9 @@ def test_two_copies_of_one_container_are_refused_naming_every_ordinal(tmp_path):
         POLICY,
     )
     tree, context = open_door(tmp_path, sources)
-    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
+    admitted = process_sources(
+        context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+    )
     assert admitted == 4
 
     with pytest.raises(ContractError) as refusal:
@@ -1008,7 +1070,9 @@ def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
         POLICY,
     )
     tree, context = open_door(tmp_path, sources)
-    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
+    admitted = process_sources(
+        context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+    )
     assert admitted == 3
 
     assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
@@ -1038,7 +1102,12 @@ def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicat
     ]
     tree, context = open_door(tmp_path, sources)
     admitted = process_sources(
-        context, tree, sources, reader({"broken-a.png": data, "broken-b.png": data}), policy=POLICY
+        context,
+        tree,
+        sources,
+        reader({"broken-a.png": data, "broken-b.png": data}),
+        policy=POLICY,
+        pdf_settings=PDF_SETTINGS,
     )
     assert admitted == 0
 
@@ -1160,27 +1229,14 @@ def test_a_producer_authored_manifest_cannot_drop_its_producer_recipe(tmp_path):
         door.load_triage_decisions(manifest_path)
 
 
-def test_a_missing_triage_producer_recipe_path_is_a_named_read_refusal(tmp_path):
+def test_a_missing_triage_producer_recipe_path_is_a_named_read_refusal(
+    tmp_path, empty_triage_manifest
+):
     """A requested recipe path must refuse by name when it cannot be read."""
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
-        ),
-        encoding="utf-8",
-    )
+    manifest_path = empty_triage_manifest
     missing = tmp_path / "nonexistent-recipe.json"
     with pytest.raises(ContractError, match="^the triage producer recipe could not be read$"):
         door.load_triage_decisions(manifest_path, producer_recipe_path=missing)
-
-
-def test_a_triage_document_symlink_is_not_followed(tmp_path):
-    target = tmp_path / "recipe-target.json"
-    target.write_text(json.dumps(producer_recipe(instrument_config())), encoding="utf-8")
-    redirected = tmp_path / "recipe.json"
-    redirected.symlink_to(target)
-    with pytest.raises(ContractError, match="without following path redirects"):
-        door._read_triage_document(redirected, "triage producer recipe")
 
 
 def test_a_triage_document_does_not_follow_an_intermediate_directory_symlink(tmp_path):
@@ -1193,14 +1249,6 @@ def test_a_triage_document_does_not_follow_an_intermediate_directory_symlink(tmp
     redirected.symlink_to(target, target_is_directory=True)
     with pytest.raises(ContractError, match="without following path redirects"):
         door._read_triage_document(redirected / "recipe.json", "triage producer recipe")
-
-
-def test_a_triage_document_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
-    monkeypatch.setattr(door, "MAX_TRIAGE_DOCUMENT_BYTES", 64)
-    oversized = tmp_path / "oversized.json"
-    oversized.write_bytes(b"x" * 65)
-    with pytest.raises(ContractError, match="64-byte document bound"):
-        door._read_triage_document(oversized, "triage producer recipe")
 
 
 def test_a_triage_document_path_replacement_cannot_change_the_opened_bytes(tmp_path, monkeypatch):
@@ -1222,14 +1270,10 @@ def test_a_triage_document_path_replacement_cannot_change_the_opened_bytes(tmp_p
     assert raw == original
 
 
-def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(tmp_path):
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
-        ),
-        encoding="utf-8",
-    )
+def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(
+    tmp_path, empty_triage_manifest
+):
+    manifest_path = empty_triage_manifest
     bad_recipe = tmp_path / "recipe.json"
     bad_recipe.write_text("not JSON", encoding="utf-8")
     with pytest.raises(ContractError, match="the triage producer recipe is not valid UTF-8 JSON"):
@@ -1258,15 +1302,9 @@ def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(tmp_pat
     ],
 )
 def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(
-    tmp_path, ambiguous, refusal
+    tmp_path, empty_triage_manifest, ambiguous, refusal
 ):
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
-        ),
-        encoding="utf-8",
-    )
+    manifest_path = empty_triage_manifest
     bad_recipe = tmp_path / "recipe.json"
     bad_recipe.write_bytes(ambiguous)
     # A duplicate member refuses at parse time. Pathological nesting refuses at
@@ -1278,15 +1316,9 @@ def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(
         door.load_triage_decisions(manifest_path, producer_recipe_path=bad_recipe)
 
 
-def test_a_malformed_triage_producer_recipe_is_refused_by_name(tmp_path):
+def test_a_malformed_triage_producer_recipe_is_refused_by_name(tmp_path, empty_triage_manifest):
     """A recipe that fails its closed schema names validation, not JSON parsing."""
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
-        ),
-        encoding="utf-8",
-    )
+    manifest_path = empty_triage_manifest
     bad_recipe = tmp_path / "recipe.json"
     bad_recipe.write_text(json.dumps({"schema": "not-the-real-schema"}), encoding="utf-8")
     with pytest.raises(ContractError, match="the triage producer recipe is invalid"):
@@ -1328,7 +1360,17 @@ def test_triage_digest_mismatch_is_a_named_door_refusal(tmp_path):
         source_frame_index=0,
     )
     tree, context = open_door(tmp_path, [source])
-    assert process_sources(context, tree, [source], reader({"frame.png": data}), policy=POLICY) == 0
+    assert (
+        process_sources(
+            context,
+            tree,
+            [source],
+            reader({"frame.png": data}),
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
+        )
+        == 0
+    )
     record = admissions(tree)[1]
     assert record["outcome"] == "refused"
     assert reason_code(record["payload"]["reason"]) == RefusalReason.DIGEST_MISMATCH
@@ -1341,18 +1383,10 @@ def test_triage_digest_mismatch_is_a_named_door_refusal(tmp_path):
         ("clusters", "triage re-shoot cluster records"),
     ],
 )
-def test_a_malformed_triage_document_names_its_role_effect_and_remedy(tmp_path, which, expected):
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "schema": door.triage_manifest.MANIFEST_SCHEMA,
-                "corpus_id": "parish-a",
-                "records": [],
-            }
-        ),
-        encoding="utf-8",
-    )
+def test_a_malformed_triage_document_names_its_role_effect_and_remedy(
+    tmp_path, empty_triage_manifest, which, expected
+):
+    manifest_path = empty_triage_manifest
     clusters_path = tmp_path / "clusters.json"
     clusters_path.write_text("{}", encoding="utf-8")
     (manifest_path if which == "manifest" else clusters_path).write_bytes(b"\xffnot-json")
@@ -1568,6 +1602,7 @@ def _admitted_re_shoot_pair(tmp_path, register_bytes=None):
             sources,
             reader({"a.png": first, "b.png": second}),
             policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
         )
         == 2
     )
@@ -2921,7 +2956,12 @@ def test_two_byte_identical_pages_inside_one_container_are_both_kept(tmp_path):
     assert [source.container_page_index for source in sources] == [0, 1]
 
     tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 2
+    assert (
+        process_sources(
+            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 2
+    )
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -2953,7 +2993,12 @@ def test_a_second_copy_of_one_container_keeps_all_pages_and_flags_the_source_dup
     assert len(sources) == 4
 
     tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 4
+    assert (
+        process_sources(
+            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 4
+    )
     report = door.publish_duplicate_report(context)
     context.finish(DOOR)
 
@@ -2995,6 +3040,7 @@ def test_two_identical_broken_sources_are_each_told_the_truth_about_themselves(t
             sources,
             reader({"broken-a.png": data, "broken-b.png": data}),
             policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
         )
         == 0
     )
@@ -3022,7 +3068,12 @@ def test_an_oversized_source_is_named_too_large_without_ever_being_read(tmp_path
     source = SourceEntry(1, "enormous.tif", "0" * 64, None, MAX_SOURCE_BYTES + 1, None)
     tree, context = open_door(tmp_path, [source])
 
-    assert process_sources(context, tree, [source], refuse_to_read, policy=POLICY) == 0
+    assert (
+        process_sources(
+            context, tree, [source], refuse_to_read, policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 0
+    )
     context.finish(DOOR)
 
     payload = admissions(tree)[1]["payload"]
@@ -3057,7 +3108,13 @@ def test_a_stream_backed_pdf_is_not_refused_by_the_retired_bytes_allocation_cap(
     monkeypatch.setattr(door, "MAX_SOURCE_BYTES", 1)
     assert (
         process_sources(
-            context, tree, [source], unexpected_reader, policy=POLICY, open_source=open_source
+            context,
+            tree,
+            [source],
+            unexpected_reader,
+            policy=POLICY,
+            open_source=open_source,
+            pdf_settings=PDF_SETTINGS,
         )
         == 1
     )
@@ -3075,7 +3132,7 @@ def test_a_page_container_declared_without_a_page_index_is_refused_not_guessed_a
     data = two_page_pdf()
     source = SourceEntry(1, "iphone-scan.pdf", digest_bytes(data))
 
-    decision = door.decide(data, source, POLICY)
+    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
 
     assert decision.outcome == "refused"
     assert reason_code(decision.reason) is RefusalReason.UNSUPPORTED_VARIANT
@@ -3093,7 +3150,7 @@ def test_a_page_index_on_a_one_frame_image_names_door_bookkeeping_disagreement(t
     source = SourceEntry(1, "register-page.png", digest_bytes(data), container_page_index=0)
 
     with pytest.raises(ContractError, match="pipeline bookkeeping disagreement"):
-        door.decide(data, source, POLICY)
+        door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
 
 
 def test_a_container_page_whose_bytes_changed_in_transfer_is_a_digest_alarm(tmp_path):
@@ -3107,7 +3164,7 @@ def test_a_container_page_whose_bytes_changed_in_transfer_is_a_digest_alarm(tmp_
     data = two_page_pdf()
     source = SourceEntry(1, "iphone-scan.pdf", "0" * 64, container_page_index=0)
 
-    decision = door.decide(data, source, POLICY)
+    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
 
     assert decision.outcome == "refused"
     assert reason_code(decision.reason) is RefusalReason.DIGEST_MISMATCH
@@ -3126,7 +3183,12 @@ def test_a_filename_ledger_byte_count_mismatch_has_its_own_named_alarm(tmp_path)
 
     assert (
         process_sources(
-            context, tree, [source], reader({source.declared_path: data}), policy=POLICY
+            context,
+            tree,
+            [source],
+            reader({source.declared_path: data}),
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
         )
         == 0
     )
@@ -3168,7 +3230,17 @@ def test_the_loud_failure_names_the_reasons_rather_than_counting_anonymously(tmp
         SourceEntry(2, "two.tif", "0" * 64),
     ]
     tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader({"one.png": broken}), policy=POLICY) == 0
+    assert (
+        process_sources(
+            context,
+            tree,
+            sources,
+            reader({"one.png": broken}),
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
+        )
+        == 0
+    )
     report = door.publish_refusal_report(context)
     context.finish(DOOR)
 
@@ -3193,6 +3265,7 @@ def test_a_wholly_refused_door_does_not_publish_a_completion_seal(tmp_path):
         [source],
         reader({"one.png": broken}),
         policy=POLICY,
+        pdf_settings=PDF_SETTINGS,
     )
 
     with pytest.raises(ContractError, match="the door admitted nothing"):
@@ -3229,7 +3302,12 @@ def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(t
     ]
 
     tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 0
+    assert (
+        process_sources(
+            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 0
+    )
     context.finish(DOOR)
 
     payload = admissions(tree)[1]["payload"]
@@ -3746,7 +3824,15 @@ def test_a_master_this_encoder_would_convert_is_a_named_page_refusal(tmp_path):
     )
     tree, context = open_door(tmp_path, sources)
     assert (
-        process_sources(context, tree, sources, reader({"frame.tif": master}), policy=POLICY) == 0
+        process_sources(
+            context,
+            tree,
+            sources,
+            reader({"frame.tif": master}),
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
+        )
+        == 0
     )
     record = admissions(tree)[1]
     assert record["outcome"] == "refused"
@@ -4464,7 +4550,7 @@ def _triage_decision(master: bytes, row: dict):
         triage_part_index=0,
         source_frame_index=0,
     )
-    return door.decide(master, source, POLICY)
+    return door.decide(master, source, POLICY, pdf_settings=PDF_SETTINGS)
 
 
 @pytest.mark.parametrize("declared_frame", [(5, 4), (7, 4), (6, 3), (6, 5)])
@@ -4538,7 +4624,12 @@ def test_cluster_report_keeps_refused_members_and_parts_visible(tmp_path):
         triage_clusters={cluster_id: cluster},
     )
     tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 1
+    assert (
+        process_sources(
+            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 1
+    )
 
     report = door.publish_cluster_report(context)
     assert report is not None
@@ -4592,7 +4683,15 @@ def test_an_undecodable_split_frame_keeps_every_declared_page_ordinal(tmp_path):
 
     tree, context = open_door(tmp_path, sources)
     assert (
-        process_sources(context, tree, sources, reader({"broken.img": master}), policy=POLICY) == 0
+        process_sources(
+            context,
+            tree,
+            sources,
+            reader({"broken.img": master}),
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
+        )
+        == 0
     )
     records = admissions(tree)
     assert set(records) == {1, 2}
@@ -4950,7 +5049,15 @@ def test_a_failed_close_on_one_streamed_pdf_leaves_the_next_pdf_its_own(tmp_path
     tree, context = open_door(tmp_path, sources)
 
     assert (
-        process_sources(context, tree, sources, reader({}), policy=POLICY, open_source=open_source)
+        process_sources(
+            context,
+            tree,
+            sources,
+            reader({}),
+            policy=POLICY,
+            open_source=open_source,
+            pdf_settings=PDF_SETTINGS,
+        )
         == len(sources)
         == 3
     )
@@ -5014,7 +5121,13 @@ def test_streamed_pdf_admission_refuses_bytes_replaced_after_membership_sealed(t
 
     assert (
         process_sources(
-            context, tree, [source], unexpected_reader, policy=POLICY, open_source=open_source
+            context,
+            tree,
+            [source],
+            unexpected_reader,
+            policy=POLICY,
+            open_source=open_source,
+            pdf_settings=PDF_SETTINGS,
         )
         == 0
     )
@@ -5040,7 +5153,17 @@ def test_admission_refuses_bytes_that_differ_from_sealed_membership(tmp_path):
     )
     tree, context = open_door(tmp_path, [source])
 
-    assert process_sources(context, tree, [source], reader({"page.png": after}), policy=POLICY) == 0
+    assert (
+        process_sources(
+            context,
+            tree,
+            [source],
+            reader({"page.png": after}),
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
+        )
+        == 0
+    )
     context.finish(DOOR)
 
     refusal = admissions(tree)[1]

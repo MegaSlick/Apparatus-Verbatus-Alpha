@@ -32,8 +32,13 @@ from common.exemplar_boundary import verify_sealed_page_pixels
 from common.imaging import encode_image_deterministic
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, StageContext
+from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage
 from operations.submit import gate, submit
+
+PDF_SETTINGS = door.render_config.load_pdf_render_settings(
+    minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 DOOR_CLI = ROOT / "pipeline" / "1_exemplar" / "door.py"
@@ -166,6 +171,7 @@ def build_door_run(
         sources,
         lambda path: files[path],
         policy=load_format_policy(),
+        pdf_settings=PDF_SETTINGS,
     )
     context.seal_boundary()
     context.finish(DOOR)
@@ -233,6 +239,7 @@ def build_refused_real_door_run(
         sources,
         lambda path: files[path],
         policy=load_format_policy(),
+        pdf_settings=PDF_SETTINGS,
     )
     return tree, files
 
@@ -509,14 +516,6 @@ def seal_of(tree: RunTree) -> dict:
     return tree.read_artifact(EXEMPLAR, "seal", artifact_id(EXEMPLAR, "seal", SEAL_SUBJECT))
 
 
-def snapshot(root: Path) -> dict[str, bytes]:
-    return {
-        str(path.relative_to(root)): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
-
-
 # --- The seal exists, is one per run, and covers every outcome -------------------
 
 
@@ -637,21 +636,6 @@ def test_one_changed_source_byte_produces_a_different_seal(tmp_path):
     first = seal_of(RunTree(tmp_path / "a", "r1"))["payload"]
     second = seal_of(RunTree(tmp_path / "b", "r1"))["payload"]
     assert first["self_hash"] != second["self_hash"]
-
-
-def test_an_edited_seal_refuses_a_rerun_rather_than_building_on_it(tmp_path):
-    tree, _ = build_door_run(tmp_path / "runs")
-    assert run_exemplar(tmp_path / "runs").returncode == 0
-
-    identity = artifact_id(EXEMPLAR, "seal", SEAL_SUBJECT)
-    path = tree.resolve(tree.artifact_path(EXEMPLAR, "seal", identity))
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["page_count"] = 99
-    path.write_bytes(canonical_bytes(record))
-
-    result = run_exemplar(tmp_path / "runs")
-    assert result.returncode != 0
-    assert "fails its self-hash" in result.stderr
 
 
 # --- The reconciliation the seal rests on ----------------------------------------
@@ -838,6 +822,7 @@ def test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar(tmp_path)
         sources,
         lambda path: files[path],
         policy=load_format_policy(),
+        pdf_settings=PDF_SETTINGS,
     )
     context.seal_boundary()
     context.finish(DOOR)

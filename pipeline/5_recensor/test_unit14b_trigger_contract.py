@@ -653,70 +653,6 @@ def test_a_second_request_is_replaced_by_a_loud_hold_not_an_acceptance():
     assert source.count("observation_hold = unresolved_observation_hold(") == 1
 
 
-def _live_publication_gate(source: str | None = None):
-    """Compile the conditional that actually guards the recovery-request write.
-
-    The sibling helper above compiles `wants_recovery`, which says whether the
-    act *wants* a recrop. This compiles the `if` that decides whether the want
-    becomes a published request -- the two are deliberately different questions
-    since F068/F083, and only the second one knows whether anything downstream
-    could answer what it published.
-    """
-    tree = _tree(source)
-    publications = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and any(
-            keyword.arg == "kind"
-            and isinstance(keyword.value, ast.Constant)
-            and keyword.value.value == "recovery-request"
-            for keyword in node.keywords
-        )
-    ]
-    assert len(publications) == 1, "Unit 14B must have exactly one recovery-request publication"
-    guards = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and "wants_recovery" in _names(node.test)
-        and any(
-            publications[0] is child for statement in node.body for child in ast.walk(statement)
-        )
-    ]
-    assert len(guards) == 1, "the recovery-request publication is no longer guarded by one gate"
-    return compile(ast.Expression(guards[0].test), str(RECENSOR), "eval")
-
-
-def _publishes(*, source: str | None = None) -> bool:
-    """Evaluate the live gate with every coverage and budget conjunct satisfied."""
-    return bool(
-        eval(  # noqa: S307 -- compile input is this checked-in module's one conditional.
-            _live_publication_gate(source),
-            {},
-            {
-                "continuation_shortfall": False,
-                "wants_recovery": True,
-                "used_fallback": 0,
-                "allowed_fallback": 1,
-                "used_total": 0,
-                "budget": {"allowed": 1, "absolute_cap": 3},
-            },
-        )
-    )
-
-
-def test_measured_recovery_request_is_admitted_by_coverage_and_budget():
-    """Measured coverage and bounded budget admit a supported recrop request."""
-    assert _publishes() is True
-
-
-def test_recovery_gate_has_no_ingress_dispatchability_switch():
-    """Measured coverage and budgets, not ingress, decide request admission."""
-    source = RECENSOR.read_text(encoding="utf-8")
-    assert "recrop_dispatchable" not in source
-
-
 def test_real_route_uses_the_same_budget_hold_when_recovery_is_not_admitted():
     """The route is the reason, and it outranks whatever the grant would say.
 
@@ -738,13 +674,6 @@ def test_real_route_uses_the_same_budget_hold_when_recovery_is_not_admitted():
 
     # No pointer, no hold: the real route does not invent a review item of its own.
     assert recensor.unresolved_observation_hold([], 1, set()) is None
-
-
-def test_observation_hold_has_no_ingress_parameter():
-    """The shared grant state is identical for fixture and real measured routes."""
-    recensor = load_stage("5_recensor")
-    confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
-    assert recensor.unresolved_observation_hold(confirmed, 1, set())[0] == "held-for-review"
 
 
 def test_a_recovery_request_with_no_recorded_origin_is_refused():

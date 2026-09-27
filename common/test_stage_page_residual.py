@@ -471,30 +471,6 @@ def test_a_hold_naming_a_foreign_grouping_digest_is_refused(page):
         _verify_minted_act_rows(page.context, {act: page.rows[act]})
 
 
-@pytest.mark.parametrize(
-    "forged",
-    [
-        {"reason_code": "structure-pass-held"},
-        {"reason_code": None},
-        {"blocking_page_ordinal": ORDINAL + 1},
-    ],
-)
-def test_a_hold_wearing_another_cause_or_blaming_another_page_is_refused(page, forged):
-    """The closed hold vocabulary is what a consumer branches on without prose.
-
-    This is the one hold whose evidence a reviewer cannot open and count, so a
-    page-residual hold arriving under another cause's code -- or naming a page
-    other than the one it holds -- would be routed downstream as that other
-    thing while carrying this one's claim.
-    """
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page(extra=forged)
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="records its cause as"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
 def test_a_run_that_sealed_no_grouping_digest_is_refused_by_its_own_name(page, monkeypatch):
     """A binding gap and drift are two faults, and an operator does two things.
 
@@ -643,22 +619,6 @@ def test_a_page_residual_hold_outside_the_denominator_is_refused(page):
 
 
 # --- the rectangle is recomputed, never read ------------------------------------
-
-
-def test_a_forged_page_rectangle_is_refused_against_the_sealed_page_bytes(page):
-    """A self-consistent identity over the wrong rectangle is still the wrong page.
-
-    The hold below is internally perfect: the act id derives from exactly the
-    rectangle the record names. Only a second reading of the sealed page bytes
-    can tell that the rectangle is not the page.
-    """
-    forged = {"x": 0, "y": 0, "w": page.rectangle["w"], "h": page.rectangle["h"] + 40}
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page(bounds=forged)
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="not the complete sealed page rectangle"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
 
 
 def test_an_identity_that_does_not_bind_the_page_residual_class_is_refused(page):

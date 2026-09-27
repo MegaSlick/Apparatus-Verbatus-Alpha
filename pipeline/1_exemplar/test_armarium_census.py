@@ -73,6 +73,10 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
     from admission import load_format_policy
     from synthetic_sources import two_page_pdf
 
+    PDF_SETTINGS = door.render_config.load_pdf_render_settings(
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    )
+
     data = two_page_pdf()
     files = {"iPhone/FS-88.pdf": data}
     policy = load_format_policy()
@@ -132,7 +136,14 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
         registry=registry,
     )
     assert (
-        door.process_sources(door_context, tree, sources, lambda path: files[path], policy=policy)
+        door.process_sources(
+            door_context,
+            tree,
+            sources,
+            lambda path: files[path],
+            policy=policy,
+            pdf_settings=PDF_SETTINGS,
+        )
         == 2
     )
     door_context.seal_boundary()
