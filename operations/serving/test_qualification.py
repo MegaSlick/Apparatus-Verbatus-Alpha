@@ -18,7 +18,7 @@ from .qualify import QualificationRefusal, _verified_artifact_bytes, qualificati
 from .qualify import main as qualification_main
 
 HASH = "a" * 64
-PAGE_WITNESS = "ABCEFGHJKMNPRSTUVWXYZabcdefghijkmnpqrstuvwx"
+PAGE_WITNESS = "ABEFGHJMNRTYabdefghijmnqrty23456789ABEFGHJM"
 
 
 def _write_artifact(root: Path, kind: str, value: dict[str, object]) -> dict[str, str]:
@@ -433,7 +433,7 @@ def test_qualification_refuses_an_output_digest_that_does_not_match_the_witness(
 
 
 def test_qualification_accepts_internal_witness_whitespace_with_raw_digest(tmp_path: Path) -> None:
-    answer = f"PAGE-WITNESS: {PAGE_WITNESS[:8]} \t{PAGE_WITNESS[8:20]}\n{PAGE_WITNESS[20:]}"
+    answer = f"PAGE-WITNESS: C{PAGE_WITNESS[1:8]} \t{PAGE_WITNESS[8:20]}\n{PAGE_WITNESS[20:]}"
     paths, _ = _qualification_fixture(tmp_path, answer=answer)
 
     record = _qualify(paths)
@@ -447,7 +447,7 @@ def test_qualification_accepts_internal_witness_whitespace_with_raw_digest(tmp_p
 @pytest.mark.parametrize(
     "answer",
     [
-        f"PAGE-WITNESS: {PAGE_WITNESS[:-1]}X",
+        f"PAGE-WITNESS: {PAGE_WITNESS[:-3]}CCC",
         f"PAGE-WITNESS: {PAGE_WITNESS} ",
         f"PAGE-WITNESS: {PAGE_WITNESS}\u200b",
     ],
@@ -455,7 +455,7 @@ def test_qualification_accepts_internal_witness_whitespace_with_raw_digest(tmp_p
 def test_qualification_refuses_other_answer_changes(tmp_path: Path, answer: str) -> None:
     paths, _ = _qualification_fixture(tmp_path, answer=answer)
 
-    with pytest.raises(QualificationRefusal, match="retained page witness exactly"):
+    with pytest.raises(QualificationRefusal, match="near transcription"):
         _qualify(paths)
 
 

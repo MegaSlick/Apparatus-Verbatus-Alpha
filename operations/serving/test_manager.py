@@ -767,7 +767,7 @@ def fixture_image_payload(fixture: Path) -> Mapping[str, object]:
     ).request_payload()
 
 
-PAGE_WITNESS = "ABCEFGHJKMNPRSTUVWXYZabcdefghijkmnpqrstuvwx"
+PAGE_WITNESS = "ABEFGHJMNRTYabdefghijmnqrty23456789ABEFGHJM"
 
 
 def write_golden_page(fixture: Path) -> bytes:
@@ -3802,7 +3802,7 @@ def test_vision_smoke_call_ignores_whitespace_inside_the_page_witness(
 @pytest.mark.parametrize(
     "answer",
     [
-        f"PAGE-WITNESS: {PAGE_WITNESS[:-1]}A",
+        f"PAGE-WITNESS: {PAGE_WITNESS[:-3]}CCC",
         PAGE_WITNESS,
     ],
     ids=("wrong-character", "missing-marker"),

@@ -1344,7 +1344,7 @@ def test_a_refusal_that_precedes_report_path_validation_writes_nothing(
 
 ROOT = Path(__file__).resolve().parents[2]
 PROVEN_TIER = "generic-48gb"
-WITNESS = "ABCEFGHJKMNPRSTUVWXYZabcdefghijkmnpqrstuvwx"
+WITNESS = "ABEFGHJMNRTYabdefghijmnqrty23456789ABEFGHJM"
 ALTERNATE_WITNESS = WITNESS[::-1]
 
 

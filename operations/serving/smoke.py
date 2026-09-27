@@ -46,7 +46,12 @@ from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSamp
 from .errors import ServingConfigurationError, ServingError
 from .http import HttpResponse
 from .manager import AdapterCalibration, ServiceHandle, _active_chat_image_bytes
-from .witness import PAGE_WITNESS_ALPHABET, PAGE_WITNESS_LENGTH, is_page_witness
+from .witness import (
+    PAGE_WITNESS_ALPHABET,
+    PAGE_WITNESS_LENGTH,
+    PAGE_WITNESS_MAX_EDIT_DISTANCE,
+    is_page_witness,
+)
 
 _WITNESS_PREFIX = "PAGE-WITNESS: "
 _MAXIMUM_UTILIZATION_SAMPLES = 1_024
@@ -68,14 +73,33 @@ _NVIDIA_SMI_TIMEOUT_SECONDS = 30.0
 
 
 def answer_is_page_witness(answer: str, witness: str) -> bool:
-    """Match the exact marker and code, allowing only internal layout whitespace."""
+    """Require the marker and a near transcription, allowing internal layout whitespace."""
 
     if not answer.startswith(_WITNESS_PREFIX):
         return False
     code = answer[len(_WITNESS_PREFIX) :]
     if not code or code[0].isspace() or code[-1].isspace():
         return False
-    return code.translate(str.maketrans("", "", " \t\r\n")) == witness
+    normalized = code.translate(str.maketrans("", "", " \t\r\n"))
+    if not normalized or not normalized.isascii() or not normalized.isalnum():
+        return False
+    if abs(len(normalized) - len(witness)) > PAGE_WITNESS_MAX_EDIT_DISTANCE:
+        return False
+    previous = list(range(len(witness) + 1))
+    for row, character in enumerate(normalized, start=1):
+        current = [row]
+        for column, expected in enumerate(witness, start=1):
+            current.append(
+                min(
+                    previous[column] + 1,
+                    current[column - 1] + 1,
+                    previous[column - 1] + (character != expected),
+                )
+            )
+        if min(current) > PAGE_WITNESS_MAX_EDIT_DISTANCE:
+            return False
+        previous = current
+    return previous[-1] <= PAGE_WITNESS_MAX_EDIT_DISTANCE
 
 
 class SmokeExchangeRetainedError(ServingError):

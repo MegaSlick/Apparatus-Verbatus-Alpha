@@ -305,7 +305,7 @@ def _verify_smoke(
     answer = message.get("content") if isinstance(message, dict) else None
     if not isinstance(answer, str) or not answer_is_page_witness(answer, witness):
         raise QualificationRefusal(
-            f"chair {identity.role!r} output was not the retained page witness exactly"
+            f"chair {identity.role!r} output was not a near transcription of the retained page witness"
         )
     if smoke["smoke_fixture_output_sha256"] != digest_bytes(canonical_bytes([answer])):
         raise QualificationRefusal(
