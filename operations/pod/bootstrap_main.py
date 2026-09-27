@@ -162,6 +162,7 @@ from .preflight import (
     load_placement_table,
 )
 from .provider_runpod import REQUESTED_GPU_COUNT
+from .run_exits import EXIT_BOOTSTRAP_RED, EXIT_REFUSED
 from .transfer import ChecksummedTransfer, TransferReport
 
 HARD_DEADLINE_ENV = "VERBATUS_HARD_DEADLINE"
@@ -1513,10 +1514,6 @@ def _write_refusal_report(
     except OSError as error:
         return str(error)
     return None
-
-
-EXIT_REFUSED = 2
-EXIT_BOOTSTRAP_RED = 3
 
 
 def prepare(
