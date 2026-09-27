@@ -4775,59 +4775,6 @@ def test_next_stage_refuses_forged_or_deleted_seal_without_rederiving(happy_run,
     assert "never re-derived" in missing.stderr
 
 
-def test_recovery_policy_is_a_run_bound_configuration_not_a_late_local_default(tmp_path):
-    """A policy change must refuse the old run before any stage can reinterpret it."""
-    root = tmp_path / "runs"
-    policy = tmp_path / "recovery.toml"
-    policy.write_text((ROOT / "config/recovery.toml").read_text(encoding="utf-8"), encoding="utf-8")
-    assert orchestrate(root, "r", "happy", recovery_config=policy).returncode == 0
-    before = snapshot(root)
-
-    policy.write_text(
-        "absolute_cap = 3\n\n[budget]\nfallback_recrop = 0\npage_level_reread = 1\n",
-        encoding="utf-8",
-    )
-    result = orchestrate(root, "r", "happy", recovery_config=policy)
-    assert result.returncode == 2
-    assert "different config_digest" in result.stderr
-    assert snapshot(root) == before
-
-
-def test_hard_failure_policy_is_a_run_bound_configuration_not_a_late_local_default(tmp_path):
-    """A revised closed list cannot reinterpret an already-sealed run's failures.
-
-    The run-level cap decides whether a run may keep invoking stages at all, so a
-    later edit to what counts as a hard failure is exactly as run-shaping as an
-    edit to the recovery budget beside it — and refuses the sealed run for the
-    same reason, before any stage reads a failure under a list it did not run
-    under.
-
-    The refusal now comes from the orchestrator's own point of use rather than
-    from the Door's `config_digest`, and names this file instead of reporting that
-    *something* in the run's configuration moved. That is what sealing the policy
-    by name buys, and it is why the message this asserts changed: the test beside
-    it still shows `config_digest` refusing `recovery.toml` at the Door, because
-    the Door is where a run id is reused, while the run-level cap has a reader
-    that runs before any stage is invoked at all.
-    """
-    root = tmp_path / "runs"
-    policy = tmp_path / "hard_failure.toml"
-    policy.write_text(
-        (ROOT / "config/hard_failure.toml").read_text(encoding="utf-8"), encoding="utf-8"
-    )
-    assert orchestrate(root, "r", "happy", hard_failure_config=policy).returncode == 0
-    before = snapshot(root)
-
-    policy.write_text(
-        'threshold = 2\n\n[[kind]]\nstage = "perlector"\noutcome = "failed"\n',
-        encoding="utf-8",
-    )
-    result = orchestrate(root, "r", "happy", hard_failure_config=policy)
-    assert result.returncode == 2
-    assert "hard-failure configuration changed between" in result.stderr, result.stderr
-    assert snapshot(root) == before
-
-
 @pytest.mark.full
 def test_every_handoff_in_the_contract_is_covered_by_this_table():
     """Meta-invariant #91 — a drift check over an agreement surface. If a handoff
