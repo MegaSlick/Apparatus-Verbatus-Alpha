@@ -2292,6 +2292,15 @@ def _sealed_designator_policies(context) -> tuple[dict, dict]:
     return padding, grouping_policy
 
 
+def _initial_pages_and_policies(context) -> tuple[dict, dict, dict, dict]:
+    records = page_records(context)
+    pages = sealed_pages(records)
+    if not pages:
+        raise ContractError("the Designator found no sealed page to mark out")
+    padding, grouping_policy = _sealed_designator_policies(context)
+    return records, pages, padding, grouping_policy
+
+
 def _publish_proposal_seal(context, expected: list[dict], inputs: list, provenance: dict) -> None:
     """Emitted once, never rewritten: downstream stages reconcile against it."""
     payload = {"expected_acts": expected, "count": len(expected), "provenance": provenance}
@@ -2307,12 +2316,7 @@ def _publish_proposal_seal(context, expected: list[dict], inputs: list, provenan
 
 def initial_pass(context) -> bool:
     """Mark out every act on every sealed page. True when anything was held."""
-    records = page_records(context)
-    pages = sealed_pages(records)
-    if not pages:
-        raise ContractError("the Designator found no sealed page to mark out")
-
-    padding, grouping_policy = _sealed_designator_policies(context)
+    records, pages, padding, grouping_policy = _initial_pages_and_policies(context)
     provenance = structure_provenance(context)
     secondary = _publish_secondary_provenance(context, secondary_provenance(context))
     # Decided once, before any crop is cut.
@@ -2814,12 +2818,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     Retained answers are published as they arrive, preserving paid work across
     interruptions and each page's answering session for resume.
     """
-    records = page_records(context)
-    pages = sealed_pages(records)
-    if not pages:
-        raise ContractError("the Designator found no sealed page to mark out")
-
-    padding, grouping_policy = _sealed_designator_policies(context)
+    records, pages, padding, grouping_policy = _initial_pages_and_policies(context)
     # The sealed decoding posture is checked before any chair starts.
     decoding_policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
