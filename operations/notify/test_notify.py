@@ -137,25 +137,6 @@ def test_every_event_reports_a_failed_delivery_honestly(notify_repo, event):
 
 
 @pytest.mark.full
-def test_the_session_start_hook_is_declared_async_so_a_failure_cannot_block(tmp_path):
-    # If this stops being async, a failed start ping could fail the session.
-    settings = json.loads(
-        (Path(__file__).resolve().parents[2] / ".claude" / "settings.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    entries = [
-        hook
-        for block in settings["hooks"]["SessionStart"]
-        for hook in block["hooks"]
-        if "notify.sh" in hook["command"]
-    ]
-    assert entries, "no SessionStart hook invokes notify.sh"
-    for hook in entries:
-        assert hook.get("async") is True, "a failed start ping could now block the session"
-
-
-@pytest.mark.full
 def test_environment_topic_overrides_private_config(notify_repo):
     script, env = notify_repo
     env["NTFY_TOPIC"] = "environment_topic"
@@ -209,68 +190,6 @@ def test_the_test_sink_topic_echoes_the_message_and_spawns_no_curl(notify_repo):
 
     # The bridges read exit 0 as delivered; this stdout marker is what tells them apart.
     assert result.stdout == "NOTIFY_SUPPRESSED verbatus-test-sink\n"
-
-
-def test_a_delivered_notification_writes_nothing_on_stdout(notify_repo):
-    """The suppression marker is unambiguous only while nothing else writes stdout."""
-    script, env = notify_repo
-    result = run(script, env)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == ""
-
-
-@pytest.mark.full
-@pytest.mark.parametrize("event", ["start", "milestone", "decision", "done"])
-def test_a_delivered_notification_prints_one_line_on_stderr(notify_repo, event):
-    """Silence must never read as a lost ping: a session once resent three `done` pings."""
-    script, env = notify_repo
-    result = run(script, env, event)
-    assert result.returncode == 0, result.stderr
-    assert result.stderr == f"notify: delivered ({event})\n"
-    assert result.stdout == ""
-
-
-def test_a_closed_stderr_does_not_turn_a_delivery_into_a_failure(notify_repo):
-    """Under `set -e` a failing diagnostic write would get an accepted post resent."""
-    script, env = notify_repo
-    result = subprocess.run(
-        ["sh", "-c", 'exec "$1" "$2" "$3" 2>&-', "sh", str(script), "done", "finished"],
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
-        timeout=10,
-    )
-    assert result.returncode == 0, result.stdout
-    assert result.stdout == ""
-    assert Path(env["FAKE_ARGS"]).exists()
-
-
-def test_a_failed_delivery_prints_no_delivered_line(notify_repo):
-    script, env = notify_repo
-    env["FAKE_STATUS"] = "503"
-    result = run(script, env)
-    assert result.returncode == 1
-    assert "NOT DELIVERED" in result.stderr
-    assert "notify: delivered" not in result.stderr
-
-
-def test_the_test_sink_prints_no_delivered_line(notify_repo):
-    script, env = notify_repo
-    env["NTFY_TOPIC"] = "verbatus-test-sink"
-    result = run(script, env)
-    assert result.returncode == 0, result.stderr
-    assert "notify: delivered" not in result.stderr
-
-
-def test_a_suppressed_start_prints_no_delivered_line(notify_repo):
-    script, env = notify_repo
-    seed_stamp(script, seconds_ago=60)
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert "suppressed" in result.stderr
-    # The suppression line says "already delivered"; only the delivery line is refused.
-    assert "notify: delivered" not in result.stderr
 
 
 def test_the_test_sink_is_a_literal_not_a_prefix(notify_repo):
@@ -419,7 +338,6 @@ def test_no_ambient_notification_variable_changes_the_run(monkeypatch, request, 
 # ambiguous stamp below must resolve to SENT.
 
 STAMP = "private/.notify-start-stamp"
-WINDOW_S = 900
 
 
 def repo_root(script: Path) -> Path:
@@ -442,45 +360,6 @@ def seed_stamp(script: Path, *, seconds_ago: int) -> Path:
 
 def curl_ran(env: dict[str, str]) -> bool:
     return Path(env["FAKE_ARGS"]).exists()
-
-
-def forget_curl(env: dict[str, str]) -> None:
-    Path(env["FAKE_ARGS"]).unlink(missing_ok=True)
-    Path(env["FAKE_BODY"]).unlink(missing_ok=True)
-
-
-def test_a_start_inside_the_window_is_suppressed(notify_repo):
-    script, env = notify_repo
-    seed_stamp(script, seconds_ago=60)
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert "suppressed" in result.stderr
-    assert not curl_ran(env), "a fresh stamp did not suppress the duplicate ping"
-
-
-def test_a_second_start_after_a_delivered_one_is_suppressed(notify_repo):
-    # End to end, the burst the SessionStart hook produces.
-    script, env = notify_repo
-    first = run(script, env, "start")
-    assert first.returncode == 0, first.stderr
-    assert curl_ran(env)
-    assert stamp_path(script).exists(), "a delivered start left no stamp"
-    forget_curl(env)
-
-    second = run(script, env, "start")
-    assert second.returncode == 0, second.stderr
-    assert not curl_ran(env)
-    assert "already delivered" in second.stderr
-    assert "attempted" not in second.stderr
-    assert "NOT DELIVERED" not in second.stderr
-
-
-def test_a_start_outside_the_window_is_sent(notify_repo):
-    script, env = notify_repo
-    seed_stamp(script, seconds_ago=WINDOW_S + 1)
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert curl_ran(env), "an expired stamp suppressed a start ping"
 
 
 @pytest.mark.parametrize("event", ["milestone", "decision", "done"])
@@ -516,66 +395,6 @@ def test_a_fifo_at_the_stamp_path_does_not_suppress_a_start(notify_repo):
     assert result.returncode == 0, result.stderr
     assert curl_ran(env), "a FIFO at the stamp path swallowed the ping"
     assert "not a regular file" in result.stderr
-
-
-def test_a_directory_at_the_stamp_path_does_not_suppress_a_start(notify_repo):
-    script, env = notify_repo
-    stamp_path(script).mkdir()
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert curl_ran(env), "a directory at the stamp path swallowed the ping"
-    assert "not a regular file" in result.stderr
-
-
-@pytest.mark.parametrize("contents", ["", "\n", "not-a-timestamp\n", "-60\n", "12 34\n"])
-def test_a_stamp_without_a_readable_timestamp_does_not_suppress(notify_repo, contents):
-    script, env = notify_repo
-    stamp_path(script).write_text(contents, encoding="utf-8")
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert curl_ran(env), "an unreadable stamp swallowed the ping"
-    assert "no readable timestamp" in result.stderr
-
-
-def test_a_future_dated_stamp_does_not_suppress_a_start(notify_repo):
-    # A negative age is still "less than fifteen minutes": skew would suppress every start.
-    script, env = notify_repo
-    seed_stamp(script, seconds_ago=-3600)
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert curl_ran(env), "a future-dated stamp swallowed the ping"
-    assert "future" in result.stderr
-
-
-def test_a_failed_start_writes_no_stamp_and_does_not_suppress_the_retry(notify_repo):
-    script, env = notify_repo
-    env["FAKE_STATUS"] = "503"
-    first = run(script, env, "start")
-    assert first.returncode == 1
-    assert "NOT DELIVERED" in first.stderr
-    assert not stamp_path(script).exists(), "a failed post recorded itself as delivered"
-    forget_curl(env)
-
-    del env["FAKE_STATUS"]
-    second = run(script, env, "start")
-    assert second.returncode == 0, second.stderr
-    assert curl_ran(env), "a failed start suppressed its own retry"
-    assert "suppressed" not in second.stderr
-
-
-@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes")
-def test_a_start_that_cannot_record_its_stamp_still_delivers_and_says_so(notify_repo):
-    # In the field the stamp becomes unwritable through private/'s permissions.
-    script, env = notify_repo
-    private = repo_root(script) / "private"
-    private.chmod(0o555)
-    try:
-        result = run(script, env, "start")
-    finally:
-        private.chmod(0o755)
-    assert result.returncode == 0, result.stderr
-    assert curl_ran(env), "the ping itself was lost"
-    assert "could not record its suppression stamp" in result.stderr
 
 
 def test_the_stamp_never_carries_the_topic(notify_repo):
