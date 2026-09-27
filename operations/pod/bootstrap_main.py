@@ -98,7 +98,7 @@ import secrets
 import stat
 import sys
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
@@ -196,7 +196,6 @@ _PLAN_ONLY_FLAGS = (
     "submission_manifest",
     "transfer_source_root",
     "transfer_prefix",
-    "model_store_capacity_json",
     "transfer_target_factory",
 )
 """Arguments that name a bootstrap step's inputs.  ``--hold-only`` refuses if
@@ -247,7 +246,6 @@ class Plan:
     submission_manifest: Path | None = None
     transfer_source_root: Path | None = None
     transfer_prefix: str = "pod-transfer"
-    model_store_capacity: dict[str, object] = field(default_factory=dict)
     transfer_target_factory: str | None = None
 
     @property
@@ -286,7 +284,6 @@ class Plan:
             if self.transfer_source_root
             else None,
             "transfer_prefix": self.transfer_prefix,
-            "model_store_capacity": self.model_store_capacity,
             "transfer_target_factory": self.transfer_target_factory,
         }
 
@@ -560,7 +557,6 @@ def build_parser() -> RefusingParser:
         type=Path,
     )
     parser.add_argument("--transfer-prefix", default=None)
-    parser.add_argument("--model-store-capacity-json", default=None)
     parser.add_argument(
         "--transfer-target-factory",
     )
@@ -653,17 +649,6 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
     if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
         raise PlanRefusal(
             "--repository-commit must be a full lowercase Git SHA-1", report_path=report_path
-        )
-
-    try:
-        capacity = json.loads(args.model_store_capacity_json or "{}")
-    except json.JSONDecodeError as error:
-        raise PlanRefusal(
-            f"--model-store-capacity-json is not valid JSON: {error}", report_path=report_path
-        ) from error
-    if not isinstance(capacity, dict):
-        raise PlanRefusal(
-            "--model-store-capacity-json must decode to a JSON object", report_path=report_path
         )
 
     store_root = _require_contained(
@@ -778,7 +763,6 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         submission_manifest=submission_manifest,
         transfer_source_root=transfer_source_root,
         transfer_prefix=args.transfer_prefix or "pod-transfer",
-        model_store_capacity=capacity,
         transfer_target_factory=args.transfer_target_factory,
     )
 
@@ -1057,7 +1041,6 @@ def _build_model_store(plan: Plan) -> ModelStoreBootstrapAction:
     return ModelStoreBootstrapAction(
         plan.store_root,  # type: ignore[arg-type]
         HuggingFaceMaterializationFetcher.from_huggingface_hub(),
-        capacity=plan.model_store_capacity,
     )
 
 

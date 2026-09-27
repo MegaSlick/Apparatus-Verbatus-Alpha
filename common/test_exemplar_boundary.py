@@ -711,6 +711,6 @@ def test_sealed_page_bytes_refuses_bytes_that_no_longer_match_the_seal():
         }
     }
     swapped = SimpleNamespace(read_bytes=lambda _path: b"different page bytes")
-    with pytest.raises(SchemaRefusal, match="no longer matches its sealed digest"):
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         sealed_page_bytes(swapped, page)
     assert sealed_page_bytes(SimpleNamespace(read_bytes=lambda _path: original), page) == original

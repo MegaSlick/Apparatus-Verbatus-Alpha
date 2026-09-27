@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from armarium_export import ARMARIUM_ARCHIVE_NAME, verify_delivered_bundle  # noqa: E402
 
 from common.contracts.canonical import digest_bytes  # noqa: E402
+from common.contracts.envelope import read_verified  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.stages import ARMARIUM  # noqa: E402
@@ -86,17 +87,9 @@ def sealed_bundle(tree: RunTree) -> tuple[bytes, dict]:
             "the sealed product bundle reference does not occupy the Armarium's "
             "content-addressed blob path; publication refuses a package substituted by path"
         )
-    try:
-        data = tree.read_bytes(relative_path)
-    except OSError as error:
-        raise ContractError(
-            f"the sealed product bundle at {relative_path} could not be read"
-        ) from error
-    if digest_bytes(data) != declared or reference.get("sha256") != declared:
-        raise ContractError(
-            "the sealed product bundle no longer matches the digest its export "
-            "artifact recorded; nothing may be published over changed bytes"
-        )
+    if reference.get("sha256") != declared:
+        raise ContractError("the sealed product bundle reference disagrees with its export")
+    data = read_verified(tree.read_bytes, reference, "the sealed product bundle", ContractError)
     return data, record["payload"]
 
 

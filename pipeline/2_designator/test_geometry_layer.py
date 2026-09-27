@@ -330,7 +330,7 @@ def test_chandra_custody_refuses_a_forged_blob_reference():
             page_ordinal=PAGE_ORDINAL,
         )
     tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered"
-    with pytest.raises(SchemaRefusal, match="response blob differs from its sealed reference"):
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         read_retained_chandra_response(
             tree,
             stored["response_ref"],

@@ -16,7 +16,7 @@ from common import churro_document
 from common.chairs.models import is_hf_revision
 from common.chandra_native_retry import validate_trace as validate_chandra_native_trace
 from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256
-from common.contracts.envelope import digest_ref
+from common.contracts.envelope import digest_ref, read_verified
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import STOP_REASON_UNREPORTED
 from common.contracts.stages import ATTESTATORES, writing_directory
@@ -787,18 +787,7 @@ def validate_retained_response_refs(
             raise SchemaRefusal("a page Testimonium names one retained response twice")
         if read_bytes is not None:
             for reference in refs:
-                try:
-                    retained = read_bytes(reference["relative_path"])
-                except OSError as error:
-                    raise SchemaRefusal(
-                        f"page Testimonium retained response {reference['relative_path']} could "
-                        f"not be read: {error}"
-                    ) from error
-                if digest_bytes(retained) != reference["sha256"]:
-                    raise SchemaRefusal(
-                        f"page Testimonium retained response {reference['relative_path']} "
-                        "differs from its digest"
-                    )
+                read_verified(read_bytes, reference, "page Testimonium retained response")
     metadata = payload.get("adapter_metadata")
     if metadata is not None:
         if (
@@ -1299,17 +1288,8 @@ def churro_capture_system_prompt(capture: dict[str, Any]) -> str | None:
 
 
 def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
-    """Verify one capture's derived record against its authoritative raw blob."""
+    """Verify one capture's derived record against raw bytes already digest-checked."""
     capture = validate_native_capture(value)
-    if not isinstance(raw, bytes):
-        raise SchemaRefusal("a page Testimonium raw response is not bytes")
-    actual_digest = digest_bytes(raw)
-    if actual_digest != capture["raw_response_ref"]["sha256"]:
-        raise SchemaRefusal(
-            "a page Testimonium raw response has digest "
-            f"{actual_digest}, not its native capture digest "
-            f"{capture['raw_response_ref']['sha256']}"
-        )
     if capture["adapter"] != "churro.v1":
         return capture
     derived = derive_churro_capture(
@@ -1330,12 +1310,7 @@ def verify_native_capture_blob(tree: Any, value: Any) -> dict[str, Any]:
     """Read, digest-check, and derive from the same raw bytes without a check/use gap."""
     capture = validate_native_capture(value)
     reference = capture["raw_response_ref"]
-    try:
-        raw = tree.read_bytes(reference["relative_path"])
-    except OSError as error:
-        raise SchemaRefusal(
-            f"a page Testimonium raw response could not be read: {error}"
-        ) from error
+    raw = read_verified(tree.read_bytes, reference, "a page Testimonium raw response")
     return verify_native_capture_bytes(capture, raw)
 
 

@@ -48,7 +48,6 @@ from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import (  # noqa: E402
-    digest_bytes,
     digest_of,
     is_plain_int,
     self_hash,
@@ -65,6 +64,7 @@ from common.contracts.stages import (  # noqa: E402
 )
 from common.decoding import load_decoding_policy, structure_recovery_policy  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
+    sealed_page_bytes,
     verify_exemplar_corpus_seal,
     verify_sealed_page_pixels,
 )
@@ -573,15 +573,7 @@ def _read_checked_page_bytes(context, page_record: dict) -> bytes:
     The upfront boundary check runs once; re-checking at each use catches pixels
     changed on disk mid-run before they enter sealed Designator evidence.
     """
-    image_path = page_record["payload"]["image_path"]
-    expected = page_record["payload"]["source_sha256"]
-    data = context.tree.read_bytes(image_path)
-    if digest_bytes(data) != expected:
-        raise ContractError(
-            f"the sealed page pixel blob at {image_path} no longer matches its recorded "
-            "digest; a sealed page's pixels may not change after they are sealed"
-        )
-    return data
+    return sealed_page_bytes(context.tree, page_record, refusal=ContractError)
 
 
 def page_pixels(

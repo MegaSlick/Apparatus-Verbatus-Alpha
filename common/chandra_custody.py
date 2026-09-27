@@ -26,8 +26,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from common.contracts.canonical import canonical_bytes, digest_bytes
-from common.contracts.envelope import digest_ref
+from common.contracts.canonical import canonical_bytes
+from common.contracts.envelope import digest_ref, read_verified
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import DESIGNATOR, writing_directory
 from common.runtree.store import BLOBS_DIR
@@ -120,9 +120,7 @@ def read_retained_chandra_response(
     custody = custody_reference(
         custody_ref, RESPONSE_BLOB_PREFIX, "Chandra custody binding reference"
     )
-    binding_bytes = _read_custody_bytes(tree, custody["relative_path"], "custody binding")
-    if digest_bytes(binding_bytes) != custody["sha256"]:
-        raise SchemaRefusal("Chandra custody binding blob differs from its sealed reference")
+    binding_bytes = read_verified(tree.read_bytes, custody, "Chandra custody binding")
     try:
         recorded = json.loads(binding_bytes.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError) as error:
@@ -152,22 +150,7 @@ def read_retained_chandra_response(
     # This proves the receipt is authentic; the binding checked above proves
     # the pairing.
     _validated_designator_receipt(tree, receipt)
-    data = _read_custody_bytes(tree, response["relative_path"], "response blob")
-    if digest_bytes(data) != response["sha256"]:
-        raise SchemaRefusal("Chandra response blob differs from its sealed reference")
-    return data
-
-
-def _read_custody_bytes(tree: Any, relative_path: str, what: str) -> bytes:
-    """Read one sealed blob, refusing a reference whose file is no longer there.
-
-    A well-formed reference to a removed blob is a custody failure, not a
-    crash: refusing provenance includes provenance that is no longer there.
-    """
-    try:
-        return tree.read_bytes(relative_path)
-    except OSError as error:
-        raise SchemaRefusal(f"Chandra {what} {relative_path} could not be read: {error}") from error
+    return read_verified(tree.read_bytes, response, "Chandra response blob")
 
 
 def _is_custody_binding(data: bytes) -> bool:

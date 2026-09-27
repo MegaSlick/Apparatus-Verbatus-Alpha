@@ -42,6 +42,7 @@ from common.contracts.canonical import (
     is_sha256,
     walk_dicts,
 )
+from common.contracts.envelope import read_verified
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import (
     act_id as local_act_id,
@@ -313,17 +314,9 @@ def read_snapshot(tree: Any, run: dict[str, Any]) -> bytes:
     digest = run.get("register_digest")
     if not is_sha256(digest):
         raise IncompatibleReuse("run.json carries no valid register_digest")
-    relative_path = tree.blob_path("door", digest)
-    try:
-        data = tree.read_bytes(relative_path)
-    except OSError as error:
-        raise IncompatibleReuse(
-            "the corpus-register snapshot sealed by run.json is missing or unreadable"
-        ) from error
-    if digest_bytes(data) != digest:
-        raise IncompatibleReuse(
-            "the corpus-register snapshot bytes do not match run.json's register_digest"
-        )
+    what = "the corpus-register snapshot sealed by run.json's register_digest"
+    ref = {"relative_path": tree.blob_path("door", digest), "sha256": digest}
+    data = read_verified(tree.read_bytes, ref, what, IncompatibleReuse)
     validate_register_bytes(data)
     return data
 
