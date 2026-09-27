@@ -4157,15 +4157,6 @@ def exemplar_page_ids(context) -> dict[int, str]:
 def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:
     """Apply the sealed run-level cap when no orchestrator guards stage entry."""
     run = tree.read_run()
-    sealed_digests = run.get(SEALED_CONFIG_DIGESTS_FIELD)
-    # Hand-built test trees may lack the policy; a real run never may.
-    if not isinstance(sealed_digests, Mapping) or "hard-failure" not in sealed_digests:
-        if is_real_ingress(run):
-            raise ContractError(
-                f"{stage} refuses to start: this real run authority seals no hard-failure "
-                "configuration digest, so its run-level cap cannot be proven"
-            )
-        return
     policy = load_hard_failure_policy(hard_failure_config_path)
     require_sealed_config(run_sealed_config_digests(run), "hard-failure", policy["config_sha256"])
     # Inputs are not verified here, so lineage damage is reported by the

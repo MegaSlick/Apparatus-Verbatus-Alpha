@@ -509,7 +509,7 @@ def test_a_real_run_missing_the_named_hard_failure_digest_refuses_direct_entry(t
         ingress={"mode": "real"},
     )
 
-    with pytest.raises(ContractError, match="seals no hard-failure configuration digest"):
+    with pytest.raises(ContractError, match="records no sealed configuration digests"):
         refuse_halted_run(tree, PERLECTOR, ROOT / "config" / "hard_failure.toml")
 
 
