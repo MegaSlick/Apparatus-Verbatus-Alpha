@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import tomllib
+from argparse import Namespace
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from operations.operator import cli as operator_cli
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.records import SCHEMA as RECEIPT_SCHEMA
 from operations.operator.volume_s3 import VolumeSpec
+from pipeline.orchestrator import run as orchestrator
 
 from . import launch as launch_module
 from . import pod_run
@@ -123,7 +125,13 @@ class RecordedRunner:
             )
             journal.write_text(
                 "".join(
-                    json.dumps({"schema": "stage-timing-journal.v2", "run_id": self.journal_run_id})
+                    json.dumps(
+                        {
+                            "schema": "stage-timing-journal.v2",
+                            "run_id": self.journal_run_id,
+                            "run_root": argv[argv.index("--run-root") + 1],
+                        }
+                    )
                     + "\n"
                     for _ in range(self.journal_entries)
                 ),
@@ -777,6 +785,33 @@ def test_refuses_a_run_report_path_outside_the_volume(
     assert not outside.exists()
 
 
+def test_a_symlinked_transcript_cannot_truncate_the_bootstrap_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _prepared(tmp_path)
+    evidence = b"bootstrap evidence\n"
+    ws.report_path.write_bytes(evidence)
+    (ws.volume / "pod-run-report-transcript.log").symlink_to(ws.report_path)
+
+    exit_code, _ = _refused(ws, _run_argv(ws))
+
+    assert exit_code == EXIT_REFUSED
+    assert "collides" in capsys.readouterr().err
+    assert ws.report_path.read_bytes() == evidence
+
+
+def test_the_transcript_writer_refuses_a_symlink(tmp_path: Path) -> None:
+    evidence = tmp_path / "bootstrap.json"
+    evidence.write_bytes(b"bootstrap evidence\n")
+    transcript = tmp_path / "run-transcript.log"
+    transcript.symlink_to(evidence)
+
+    with pytest.raises(OSError):
+        pod_run.BoundedTranscript(transcript, head_bytes=8, tail_bytes=8)
+
+    assert evidence.read_bytes() == b"bootstrap evidence\n"
+
+
 def test_refuses_a_run_report_path_missing_the_launch_token(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1233,9 +1268,7 @@ def test_the_operator_evidence_prefix_names_the_same_directory_as_preflight() ->
 
 
 def test_the_sibling_suffixes_launch_derives_are_the_ones_pod_run_actually_writes() -> None:
-    """`launch.py` spells these rather than importing pod_run, which would pull the
-    whole serving stack in for four strings. This is the reconciliation that keeps
-    the copy from drifting."""
+    """Run side-file names come from the one shared path derivation."""
 
     report = Path("/workspace/pod-run-report-abc.json")
     plan = object.__new__(pod_run.RunPlan)
@@ -1247,7 +1280,10 @@ def test_the_sibling_suffixes_launch_derives_are_the_ones_pod_run_actually_write
         plan.transcript_path.name.removeprefix(report.stem),
     }
 
-    assert written == set(launch_module.RUN_REPORT_SIBLINGS)
+    nested = json.dumps(["python", "-m", pod_run.__name__, "--report-path", str(report)])
+    command = ("--report-path", "/workspace/timer.json", "--bootstrap-command-json", nested)
+    siblings = dict(launch_module.bound_report_paths(command))[str(report)]
+    assert written == set(siblings)
     assert set(launch_module.HOLD_REPORT_SIBLINGS) <= written
     assert launch_module.TIMER_REPORT_SIBLINGS == (
         terminating_path(Path("/v/pod-runtime-report.json")).name.removeprefix(
@@ -1255,6 +1291,17 @@ def test_the_sibling_suffixes_launch_derives_are_the_ones_pod_run_actually_write
         ),
     )
     assert launch_module._POD_RUN_MODULE == pod_run.__name__
+
+
+def test_launch_uses_the_run_reports_actual_extension_for_fetch_keys() -> None:
+    report = "/workspace/run-receipt.data"
+    nested = json.dumps(["python", "-m", pod_run.__name__, "--report-path", report])
+    command = ("--report-path", "/workspace/timer.json", "--bootstrap-command-json", nested)
+
+    keys = launch_module.launch_evidence_keys(command, volume_mount_path="/workspace")
+
+    assert "run-receipt-timings.data" in keys
+    assert "run-receipt-transcript.log" in keys
 
 
 def test_every_launch_bound_record_is_derived_from_the_sealed_start_command() -> None:
@@ -1909,7 +1956,8 @@ def test_a_complete_run_whose_named_records_all_came_home_reports_nothing_missin
         "path": str(ws.volume / "pod-run-report-timings.json"),
         "present": True,
         "entries": 2,
-        "run_id_matches": True,
+        "unreadable_lines": 0,
+        "foreign_lines": 0,
     }
 
 
@@ -1994,9 +2042,116 @@ def test_a_torn_timing_line_is_skipped(tmp_path: Path, later_entry: bool) -> Non
     plan = object.__new__(pod_run.RunPlan)
     object.__setattr__(plan, "report_path", ws.volume / "pod-run-report.json")
     object.__setattr__(plan, "run_id", "first-real-run")
+    object.__setattr__(plan, "run_root", ws.volume / "runs")
     audit, missing = pod_run._records_at_close(plan)
     assert missing == []
-    assert audit["timing_journal"]["entries"] == 2 + later_entry
+    assert audit["timing_journal"]["entries"] == 2
+    assert audit["timing_journal"]["unreadable_lines"] == 1 + later_entry
+
+
+def test_real_timing_writer_and_reader_audit_mixed_and_damaged_lines(tmp_path: Path) -> None:
+    report = tmp_path / "run-report.json"
+    journal = pod_run.run_report_paths(report)[3]
+    run_root = tmp_path / "runs"
+    args = Namespace(
+        stage_timing_journal=journal,
+        run_id="our-run",
+        run_root=run_root,
+        repository_commit="a" * 40,
+    )
+
+    def write() -> None:
+        orchestrator._record_stage_timing(
+            args,
+            program="door",
+            extra={},
+            started_at="start",
+            finished_at="finish",
+            duration_ms=1,
+            exit_code=0,
+        )
+
+    write()
+    with journal.open("ab") as handle:
+        handle.write(b'{"schema":\n42\n')
+    args.run_id = "other-run"
+    write()
+    args.run_id = "our-run"
+    args.run_root = tmp_path / "other-runs"
+    write()
+    args.run_root = run_root
+    with journal.open("ab") as handle:
+        handle.write(b'{"schema":"stage-timing-journal.v2"')
+    write()  # Repairs the torn tail before appending the next complete line.
+
+    plan = object.__new__(pod_run.RunPlan)
+    object.__setattr__(plan, "report_path", report)
+    object.__setattr__(plan, "run_id", "our-run")
+    object.__setattr__(plan, "run_root", run_root)
+    audit, missing = pod_run._records_at_close(plan)
+
+    assert missing == ["transcript", "liveness"]
+    timing = audit["timing_journal"]
+    assert timing["entries"] == 2
+    assert timing["foreign_lines"] == 2
+    assert timing["unreadable_lines"] == 3
+
+
+@pytest.mark.parametrize(
+    "first", ('{"schema":"run.v1"}\n', '{"schema":"bootstrap-report.v1"}\n', "42\n")
+)
+def test_timing_writer_refuses_an_existing_foreign_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], first: str
+) -> None:
+    journal = tmp_path / "timings.json"
+    journal.write_text(first, encoding="utf-8")
+    args = Namespace(
+        stage_timing_journal=journal,
+        run_id="r",
+        run_root=tmp_path / "runs",
+        repository_commit="a" * 40,
+    )
+
+    orchestrator._record_stage_timing(
+        args,
+        program="door",
+        extra={},
+        started_at="start",
+        finished_at="finish",
+        duration_ms=1,
+        exit_code=0,
+    )
+
+    assert journal.read_text(encoding="utf-8") == first
+    assert "could not be journaled" in capsys.readouterr().err
+
+
+def test_timing_writer_does_not_follow_a_symlink(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    evidence = tmp_path / "bootstrap.json"
+    evidence.write_bytes(b"bootstrap evidence\n")
+    journal = tmp_path / "timings.json"
+    journal.symlink_to(evidence)
+    args = Namespace(
+        stage_timing_journal=journal,
+        run_id="r",
+        run_root=tmp_path / "runs",
+        repository_commit="a" * 40,
+    )
+
+    orchestrator._record_stage_timing(
+        args,
+        program="door",
+        extra={},
+        started_at="start",
+        finished_at="finish",
+        duration_ms=1,
+        exit_code=0,
+    )
+
+    assert evidence.read_bytes() == b"bootstrap evidence\n"
+    assert "could not be journaled" in capsys.readouterr().err
 
 
 def test_a_transcript_write_that_fails_part_way_is_reported_and_the_pipe_still_drains(
