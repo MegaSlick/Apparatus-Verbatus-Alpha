@@ -236,7 +236,6 @@ def materialize_real_roster(
     record = _initial_materialization_record()
     active = root / "download_record.json"
     if active.exists():
-        _migrate_v1_record(root)
         record = load_download_record(root)
         # Joined before indexing, so a missing artifact is a named refusal.
         derived_inventory(record)
@@ -1242,7 +1241,7 @@ def _move_active_record(destination: Path, archive: Path) -> None:
 
 
 def _current_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:
-    """Return the previous record in current shape, or None for the ad-hoc legacy input."""
+    """Return a current previous record, or None for an ad-hoc input."""
 
     try:
         raw = json.loads(raw_bytes)
@@ -1253,58 +1252,11 @@ def _current_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:
         # damaged current record is not silently treated as legacy and replaced.
         return load_download_record(root)
     if isinstance(raw, Mapping) and raw.get("schema") == V1_STORE_SCHEMA:
-        return _v1_as_current(root)
-    return None
-
-
-def _v1_as_current(root: Path) -> dict[str, Any]:
-    """Custody-check the active v1 record exactly as v1 did, then drop its capacity plan."""
-
-    return _without_capacity(_load_custodied(root, _validate_v1_record))
-
-
-def _without_capacity(v1: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in v1.items() if key != "capacity"} | {"schema": STORE_SCHEMA}
-
-
-def _validate_v1_record(raw: Mapping[str, Any]) -> None:
-    capacity = raw.get("capacity")
-    byte_fields = ("snapshot_bytes", "promotion_headroom_bytes", "available_bytes")
-    if (
-        raw.get("schema") != V1_STORE_SCHEMA
-        or set(raw) != RECORD_FIELDS | {"capacity"}
-        or not isinstance(capacity, Mapping)
-        or set(capacity) != {*byte_fields, "cleanup_owner"}
-        or not all(type(capacity[key]) is int and capacity[key] >= 0 for key in byte_fields)
-        or not isinstance(capacity["cleanup_owner"], str)
-        or not capacity["cleanup_owner"].strip()
-        or capacity["promotion_headroom_bytes"] < capacity["snapshot_bytes"]
-        or capacity["available_bytes"]
-        < capacity["snapshot_bytes"] + capacity["promotion_headroom_bytes"]
-    ):
         raise DigestMismatchRefusal(
             "model-store",
-            "a v1 download record must carry a well-formed capacity plan to be migrated",
+            f"sealed under {V1_STORE_SCHEMA}, which this build no longer reads; re-run",
         )
-    _validate_record(_without_capacity(raw))
-
-
-def _migrate_v1_record(root: Path) -> None:
-    """Rewrite a v1 active record as v2 once; its v1 bytes stay archived under records/."""
-
-    try:
-        raw = json.loads(
-            _read_limited_bytes(
-                root / "download_record.json",
-                MAX_DOWNLOAD_RECORD_BYTES,
-                "model-store",
-                "download_record.json",
-            )
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return  # load_download_record names the failure.
-    if isinstance(raw, Mapping) and raw.get("schema") == V1_STORE_SCHEMA:
-        write_download_record(_v1_as_current(root), root)
+    return None
 
 
 def _validate_record_transition(
@@ -1336,14 +1288,14 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
     if not isinstance(raw, Mapping):
         raise DigestMismatchRefusal("model-store", "download record is not a table")
     if raw.get("schema") != STORE_SCHEMA:
+        if raw.get("schema") == V1_STORE_SCHEMA:
+            raise DigestMismatchRefusal(
+                "model-store",
+                f"sealed under {V1_STORE_SCHEMA}, which this build no longer reads; re-run",
+            )
         raise DigestMismatchRefusal(
             "model-store",
-            f"download record schema must be {STORE_SCHEMA!r}, not {raw.get('schema')!r}"
-            + (
-                "; run materialize_real_roster once, which migrates a v1 record"
-                if raw.get("schema") == V1_STORE_SCHEMA
-                else ""
-            ),
+            f"download record schema must be {STORE_SCHEMA!r}, not {raw.get('schema')!r}",
         )
     if set(raw) != RECORD_FIELDS:
         missing = sorted(RECORD_FIELDS - set(raw), key=str)
