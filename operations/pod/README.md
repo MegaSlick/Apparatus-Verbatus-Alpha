@@ -287,11 +287,16 @@ submission outside every listed root is refused. Almost no machine has both root
 run report records which resolved and which did not (`approved_storage_roots`,
 `skipped_storage_roots`).
 
-**There is no `--placement-tier` flag.** No stage reads a tier; `pod_run` records the one
-the green `PREFLIGHT` receipt measured and refuses a receipt with none.
+`pod_run` forwards the `--placement-tier` measured by green `PREFLIGHT` to the
+orchestrator and records it in the report. `--stage` runs one boundary, `--from` and
+`--to` run an inclusive range, and no selection runs the full sequence. `--models small`
+selects Door through Attestatores on a cheap card; `--models big` resumes Perlector
+through Armarium on a big card. The two model toggles use the same range validation.
 
-**It holds only for a finished run.** After `complete` or `held` it holds to the hard
-deadline (paid idle time), because the pod timer treats an early exit as non-green. After
+**It holds only for a finished full run.** A selection ending before Armarium records
+`selection-complete` and returns at once so the pod timer closes the card. After
+`complete` or `held` it holds to the hard deadline (paid idle time), because the pod timer
+treats an early exit as non-green. After
 `halted`, `failed` or a failed start it returns at once and lets the timer close the pod:
 holding a card for a run that will produce nothing more is paying for nothing. Everything
 stays on the volume. `held_to_hard_deadline` in the report says which way it went.

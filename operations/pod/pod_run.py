@@ -42,11 +42,15 @@ bootstrap report, not the run report.
 **The bootstrap-and-hold contract is unchanged for a run that finished.**
 ``pod_timer.run_with_bootstrap`` treats any child exit before the hard deadline
 -- exit 0 included -- as ``completed-early`` and closes the pod with a non-green
-timer report, so after a ``complete`` or ``held`` run this process holds to the
+timer report, so after a full ``complete`` or ``held`` run this process holds to the
 shared hard deadline exactly as ``bootstrap_main`` does, re-journaling a
 liveness line beside the run report.  That hold is paid idle time between a
 finished run and the deadline; closing early on a complete run would be a
 ``pod_timer`` contract change and is not made here.
+
+A selected range ending before Armarium records ``selection-complete`` and
+returns at once. The pod timer closes the card; the run tree remains on the
+volume for the next selection.
 
 **Nothing the run printed dies with the pod.**  The orchestrator's stdout and
 stderr -- and, through inheritance, every stage's -- are teed into a bounded,
@@ -68,12 +72,9 @@ with no pod running.  The run report records which way it went in
 ``held_to_hard_deadline``, so the choice is in the durable record and not
 only here (principle 2).
 
-**No placement-tier flag.**  The consult that asked for this entrypoint named
-``--placement-tier``; neither the orchestrator nor any stage parser accepts one
-as the code stands, and no stage reads a tier.  The tier the sealed launch
-measured is the one thing this process can honestly carry: it is read from the
-green bootstrap's ``PREFLIGHT`` receipt and recorded in the run report, and a
-green bootstrap whose receipt carries no tier is refused by name.
+**The measured placement tier is forwarded.**  The green bootstrap's
+``PREFLIGHT`` receipt supplies the tier recorded here and passed to the
+orchestrator; a receipt without one is refused by name.
 
 **The data gate is checked before the bootstrap spends anything.**  The
 orchestrator's Door refuses a submission folder outside the policy's approved
@@ -109,6 +110,7 @@ from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
+from pipeline.orchestrator.run import SEQUENCE_NAMES
 
 from . import boot_a_request, bootstrap_main
 from .bootstrap import BootstrapActions, BootstrapReport
@@ -153,6 +155,7 @@ EXIT_HALTED = 4
 EXIT_BOOTSTRAP_RED = 5
 EXIT_FAILED = 6
 EXIT_DRY_RUN = 7
+EXIT_SELECTION_COMPLETE = 8
 
 _STATE_FOR_EXIT = {
     EXIT_COMPLETE: "complete",
@@ -162,6 +165,7 @@ _STATE_FOR_EXIT = {
     EXIT_BOOTSTRAP_RED: "bootstrap-red",
     EXIT_FAILED: "failed",
     EXIT_DRY_RUN: "dry-run",
+    EXIT_SELECTION_COMPLETE: "selection-complete",
 }
 
 _ORCHESTRATOR_EXITS = {
@@ -211,6 +215,10 @@ class RunPlan:
     fixture: str
     interval_seconds: float
     dry_run: bool
+    stage: str | None = None
+    from_stage: str | None = None
+    to_stage: str | None = None
+    models: str | None = None
     canary_folder: Path | None = None
     canary_manifest: Path | None = None
     triage_decision_manifest: Path | None = None
@@ -348,6 +356,10 @@ class RunPlan:
         ]
         cache_root = _named(self.bootstrap.cache_root, "--cache-root")
         command += ["--cache-root", str(cache_root)]
+        if self.stage is not None:
+            command += ["--stage", self.stage]
+        if self.from_stage is not None and self.to_stage is not None:
+            command += ["--from", self.from_stage, "--to", self.to_stage]
         for value, flag in (
             (self.triage_decision_manifest, "--triage-decision-manifest"),
             (self.triage_clusters, "--triage-clusters"),
@@ -382,6 +394,7 @@ class RunPlan:
             "fixture": self.fixture,
             "interval_seconds": self.interval_seconds,
             "dry_run": self.dry_run,
+            "selection": self.selection_record(),
             "triage_decision_manifest": str(self.triage_decision_manifest)
             if self.triage_decision_manifest
             else None,
@@ -392,6 +405,34 @@ class RunPlan:
             "corpus_register": str(self.corpus_register) if self.corpus_register else None,
             "bootstrap": self.bootstrap.to_record(),
         }
+
+    def selected_stages(self) -> tuple[str, ...]:
+        if self.stage is not None:
+            return (self.stage,)
+        if self.from_stage is not None and self.to_stage is not None:
+            return SEQUENCE_NAMES[
+                SEQUENCE_NAMES.index(self.from_stage) : SEQUENCE_NAMES.index(self.to_stage) + 1
+            ]
+        return SEQUENCE_NAMES
+
+    def selection_record(self) -> dict[str, object]:
+        return {
+            "stage": self.stage,
+            "from": self.from_stage,
+            "to": self.to_stage,
+            "models": self.models,
+            "stages": list(self.selected_stages()),
+        }
+
+    @property
+    def ends_before_armarium(self) -> bool:
+        return self.selected_stages()[-1] != "armarium"
+
+    @property
+    def needs_chair(self) -> bool:
+        return bool(
+            set(self.selected_stages()) & {"designator", "attestatores", "perlector", "recovery"}
+        )
 
 
 def _named(value: Path | None, flag: str) -> Path:
@@ -440,6 +481,11 @@ def build_parser() -> bootstrap_main.RefusingParser:
     )
     parser.add_argument("--interval-seconds", type=float, default=15.0)
     parser.add_argument("--dry-run", action="store_true")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--stage", choices=SEQUENCE_NAMES)
+    selection.add_argument("--from", dest="from_stage", choices=SEQUENCE_NAMES)
+    selection.add_argument("--models", choices=("small", "big"))
+    parser.add_argument("--to", dest="to_stage", choices=SEQUENCE_NAMES)
     return parser
 
 
@@ -574,6 +620,20 @@ def resolve_run_plan(
     if not isinstance(args.fixture, str) or not args.fixture.strip():
         raise RunRefusal("--fixture must be a non-blank fixture name", report_path=report_path)
     interval = bootstrap_main._positive_interval(args.interval_seconds, report_path=report_path)
+    if args.to_stage is not None and args.from_stage is None:
+        raise RunRefusal("--to requires --from", report_path=report_path)
+    if args.from_stage is not None and args.to_stage is None:
+        raise RunRefusal("--from requires --to", report_path=report_path)
+    if args.from_stage is not None and SEQUENCE_NAMES.index(args.from_stage) > SEQUENCE_NAMES.index(
+        args.to_stage
+    ):
+        raise RunRefusal("--from comes after --to", report_path=report_path)
+    stage = args.stage
+    from_stage, to_stage = args.from_stage, args.to_stage
+    if args.models == "small":
+        from_stage, to_stage = "door", "attestatores"
+    elif args.models == "big":
+        from_stage, to_stage = "perlector", "armarium"
     return RunPlan(
         bootstrap=bootstrap,
         report_path=report_path,
@@ -587,6 +647,10 @@ def resolve_run_plan(
         fixture=args.fixture,
         interval_seconds=interval,
         dry_run=args.dry_run or bootstrap.dry_run,
+        stage=stage,
+        from_stage=from_stage,
+        to_stage=to_stage,
+        models=args.models,
         triage_decision_manifest=triage_paths["--triage-decision-manifest"],
         triage_clusters=triage_paths["--triage-clusters"],
         triage_producer_recipe=triage_paths["--triage-producer-recipe"],
@@ -1109,6 +1173,11 @@ def main(
         return EXIT_BOOTSTRAP_RED
     try:
         placement_tier, serving_config_inputs = _placement_tier(report)
+        receipt = report.receipts.get("preflight")
+        if plan.needs_chair and (
+            not isinstance(receipt, dict) or not receipt.get("smoke_receipts")
+        ):
+            raise RunRefusal("selection needs a chair but PREFLIGHT carries no green smoke receipt")
     except RunRefusal as refusal:
         refusal.report_path = plan.report_path
         _write_run_report(
@@ -1160,6 +1229,8 @@ def main(
         failure_detail = f"the orchestrator could not start: {error}"
         transcript_failure = None
     exit_code = _ORCHESTRATOR_EXITS.get(orchestrator_exit, EXIT_FAILED)
+    if exit_code == EXIT_COMPLETE and plan.ends_before_armarium:
+        exit_code = EXIT_SELECTION_COMPLETE
     if exit_code == EXIT_FAILED and failure_detail is None:
         # `EXIT_FATAL` is a *named* orchestrator exit (`common/stage.py`:
         # structural or fatal), it simply has no run state of its own here. It

@@ -79,7 +79,12 @@ class PreflightedActions(FakeActions):
     def run_preflight(self) -> dict[str, object]:
         return self._step(
             BootstrapStep.PREFLIGHT,
-            {"color": "green", "placement_tier": TIER, "serving_config_inputs": SERVING_INPUTS},
+            {
+                "color": "green",
+                "placement_tier": TIER,
+                "serving_config_inputs": SERVING_INPUTS,
+                "smoke_receipts": [{"chair": "designator", "valid": True}],
+            },
         )
 
 
@@ -288,6 +293,33 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
     hold = _report(ws, "pod-run-report-hold.json")
     assert hold["state"] == "holding-after-complete"
     assert hold["tick"] == 4
+
+
+def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws, extra=("--models", "small")),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    assert code == pod_run.EXIT_SELECTION_COMPLETE
+    assert clock.seconds == 0
+    command = runner.calls[0][0]
+    assert command[command.index("--from") : command.index("--from") + 4] == [
+        "--from",
+        "door",
+        "--to",
+        "attestatores",
+    ]
+    report = _report(ws)
+    assert report["state"] == "selection-complete"
+    assert report["held_to_hard_deadline"] is False
+    assert report["plan"]["selection"]["models"] == "small"
 
 
 def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
