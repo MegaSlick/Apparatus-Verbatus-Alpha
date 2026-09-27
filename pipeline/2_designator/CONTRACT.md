@@ -905,7 +905,8 @@ told from "drew one nobody could read") with `data_bbox_truncated` saying
 whether that digest covers the whole value:
 
 ```text
-schema = "designator-structure-answer.v1"
+schema = "designator-structure-answer.v3"
+attempt_ordinal, attempt_seed, attempt_policy, attempts, presentation_ref
 page_id, page_ordinal, page_w, page_h
 prompt_version, prompt_sha256, answer_schema = "chandra-layout-html.v1"
 text_view = "chandra-layout-text.v1"
@@ -929,6 +930,9 @@ quantization, page_text_rule
 decoding = {policy = "structure", temperature, decoding_config_sha256}
 provenance (the served chair, its real receipt, and `engine_call`)
 ```
+
+Structure answers sealed as `designator-structure-answer.v1` or `.v2` are
+refused by name; a new run produces the current request-image evidence.
 
 The raw response is retained twice under one digest: by the client before it
 is parsed, and under `common/chandra_custody.py`'s one-receipt binding
