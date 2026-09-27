@@ -510,7 +510,7 @@ class RunTree:
                 # refuse, so publish it, as `_publish_bytes` does at the same seam.
                 pass
         target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(target, data)
+        self._atomic_write(relative, data)
         return PublishResult(relative, reused=False)
 
     def read_recensor_partition_receipt(self) -> dict[str, Any]:
@@ -596,6 +596,7 @@ class RunTree:
         return read_verified(self.read_bytes, ref, label, refusal)
 
     def _publish_bytes(self, relative: str, data: bytes) -> PublishResult:
+        self._require_inventory_path(relative)
         target = self.resolve(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -619,6 +620,17 @@ class RunTree:
                 "existing file was not touched"
             ) from None
         return PublishResult(relative, reused=False)
+
+    def _atomic_write(self, relative: str, data: bytes) -> None:
+        self._require_inventory_path(relative)
+        _atomic_write(self.resolve(relative), data)
+
+    def _require_inventory_path(self, relative: str) -> None:
+        if not any(
+            relative.startswith(prefix) if prefix.endswith("/") else relative == prefix
+            for prefix in self.inventory_scope()
+        ):
+            raise SchemaRefusal(f"{relative!r} is outside this run tree's inventory scope")
 
     # --- Reading ----------------------------------------------------------------
 
@@ -1250,7 +1262,7 @@ class RunTree:
         relative = self.manifest_path(stage)
         target = self.resolve(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(target, canonical_bytes(manifest))
+        self._atomic_write(relative, canonical_bytes(manifest))
         return PublishResult(relative, reused=False)
 
     def write_index(self, stage: str, index: dict[str, Any]) -> PublishResult:
@@ -1284,7 +1296,7 @@ class RunTree:
         relative = self.index_path(stage)
         target = self.resolve(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(target, data)
+        self._atomic_write(relative, data)
         return PublishResult(relative, reused=False)
 
     def read_index(self, stage: str) -> dict[str, Any]:

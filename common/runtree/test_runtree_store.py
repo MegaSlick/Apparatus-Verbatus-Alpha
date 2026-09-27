@@ -16,7 +16,6 @@ import hashlib
 import inspect
 import json
 import os
-import re
 import stat
 import sys
 from pathlib import Path
@@ -44,7 +43,7 @@ from common.runtree.store import (
     RunTree,
     _default_corpus_frame_membership,
 )
-from conftest import code_text, tree_snapshot
+from conftest import tree_snapshot
 
 PAGE_BYTES = b"synthetic page one"
 SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTES), "ordinal": 1}]
@@ -2038,51 +2037,12 @@ def test_a_commit_that_is_not_a_full_lowercase_revision_is_refused(tmp_path, val
         make_run(tmp_path, repository_commit=value)
 
 
-def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
-    """The static half of harvest #13, read from source rather than from a fixture.
-
-    The runtime test above proves the eight writers we know about stay in scope.
-    It cannot prove that a *ninth* writer added later was exercised at all — an
-    un-called writer leaves no trace to check. So this reads every immutable
-    publication in `RunTree` and requires it to route through one of the path
-    constructors `inventory_scope()` is derived from. A new writer that invents a
-    path fails here even though no test calls it.
-    """
-    source = code_text(runtree_store.RunTree)
-    constructors = set(re.findall(r"self\._publish_bytes\(\s*self\.(\w+)\(", source))
-    indirect = set(
-        re.findall(r"(\w+)\s*=\s*self\.(?:artifact_path|manifest_path|index_path)\(", source)
-    )
-    passed_through = set(re.findall(r"self\._publish_bytes\(\s*(\w+)\s*,", source))
-
-    assert constructors <= {"blob_path", "receipt_path"}, (
-        f"a store writer publishes through unknown path constructor(s) {sorted(constructors)}; "
-        "inventory_scope() is derived from artifact_path/blob_path/manifest_path/index_path/"
-        "receipt_path and cannot name another"
-    )
-    receipt_writer = code_text(runtree_store.RunTree.write_recensor_partition_receipt)
-    assert (
-        "recensor_partition_receipt_path" in receipt_writer and "_atomic_write" in receipt_writer
-    ), (
-        "the mutable Recensor partition receipt must use its named run-health path and atomic "
-        "publication; a replace-in-place writer is invisible to the _publish_bytes scan above, "
-        "so this is the only thing that keeps it from becoming a hidden unscoped write"
-    )
-    index_writer = code_text(runtree_store.RunTree.write_index)
-    assert "index_path" in index_writer and "_atomic_write" in index_writer, (
-        "the rewritable derived index must use its named path constructor and atomic "
-        "publication; write_index is the third replace-in-place writer the _publish_bytes "
-        "scan above cannot see, so this is what keeps it from becoming a hidden unscoped write"
-    )
-    assert passed_through <= indirect, (
-        "a store writer publishes bytes at a path that did not come from "
-        "artifact_path(), manifest_path() or index_path(); harvest #13 requires every managed "
-        f"path to be one the inventory scope can name (found {sorted(passed_through - indirect)})"
-    )
-    assert constructors and passed_through, (
-        "no publication sites were found at all — this test would pass vacuously, "
-        "which is the false green meta-invariant #88 refuses"
-    )
+@pytest.mark.parametrize("writer", ["_publish_bytes", "_atomic_write"])
+def test_store_writers_refuse_paths_outside_inventory(tmp_path, writer):
+    tree = make_run(tmp_path)
+    with pytest.raises(SchemaRefusal, match="outside this run tree's inventory scope"):
+        getattr(tree, writer)("unmanaged/artifact.json", b"payload")
+    assert not tree.resolve("unmanaged/artifact.json").exists()
 
 
 def test_a_rebuildable_index_may_be_replaced(tmp_path):
