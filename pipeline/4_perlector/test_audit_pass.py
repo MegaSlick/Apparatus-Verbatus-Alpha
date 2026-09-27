@@ -402,9 +402,11 @@ class _CapturingReader:
         )
 
 
-def _perlector_with_capturing_reader(root: Path, scenario: str, monkeypatch):
+def _perlector_with_capturing_reader(root: Path, scenario: str, monkeypatch, prepare=None):
     """Run the real Perlector stage in this process, holding every reader call."""
     perlector = load_stage("4_perlector")
+    if prepare is not None:
+        prepare(perlector)
     declared = perlector.FixtureReader
     calls: list[dict] = []
     monkeypatch.setattr(
@@ -429,6 +431,35 @@ def _perlector_with_capturing_reader(root: Path, scenario: str, monkeypatch):
         ],
     )
     return perlector, perlector.main(), calls
+
+
+def test_the_published_perlectio_binds_exactly_the_audited_input_composition(tmp_path, monkeypatch):
+    """`test_live_perlector.py` proves `_audited_reading_inputs`' dedup scope by
+    calling it; this pins that the audit publisher actually uses it."""
+    root = tmp_path / "runs"
+    _chain_through_attestatores(root, "audit-change")
+    composed: list[list[dict[str, str]]] = []
+
+    def record_composition(perlector):
+        composition = perlector._audited_reading_inputs
+
+        def recorded(*args):
+            composed.append(composition(*args))
+            return composed[-1]
+
+        monkeypatch.setattr(perlector, "_audited_reading_inputs", recorded)
+
+    _, code, _ = _perlector_with_capturing_reader(
+        root, "audit-change", monkeypatch, prepare=record_composition
+    )
+    assert code == 0
+
+    def as_set(inputs):
+        return json.dumps(sorted(inputs, key=lambda ref: ref["relative_path"]))
+
+    published = [record["inputs"] for record in _records(RunTree(root, "r"), "perlectio")]
+    assert len(published) == 2
+    assert sorted(map(as_set, published)) == sorted(map(as_set, composed))
 
 
 def test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals(tmp_path, monkeypatch):
@@ -2835,9 +2866,7 @@ def test_an_emptied_reproof_is_re_measured_beside_the_text_it_publishes():
     raised `SchemaRefusal` on a correct record and the pass stopped before the
     later acts were processed.
 
-    Read from source for the reason `test_live_perlector.py::
-    _reading_inputs_composition` reads its own property from source: reaching
-    this branch behaviourally needs a declared fixture scenario whose Pass-C
+    Read from source because reaching this branch behaviourally needs a declared fixture scenario whose Pass-C
     re-proof returns whitespace, and the whole shared skeleton would have to
     grow one to assert a two-line ordering inside one branch. The binding this
     protects is asserted behaviourally beside it, over the validator that
