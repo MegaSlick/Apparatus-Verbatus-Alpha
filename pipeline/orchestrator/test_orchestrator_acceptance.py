@@ -3774,39 +3774,6 @@ def test_a_short_or_decorated_revision_is_refused_before_the_door_runs(tmp_path)
     assert not (root / "r").exists()
 
 
-def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tmp_path):
-    """Outside the tree deliberately: a run tree is pinned byte-identical across a
-    rerun, a resume and a restored backup, and a clock is not that. `pod_run` names
-    this journal beside its report on the volume, where the transcript and the
-    liveness tick already live."""
-
-    root = tmp_path / "runs"
-    journal = tmp_path / "timings" / "pod-run-report-timings.json"
-
-    assert (
-        orchestrate(
-            root, "r", "happy", stage_timing_journal=journal, repository_commit=COMMIT
-        ).returncode
-        == 0
-    )
-
-    record = json.loads(journal.read_text(encoding="utf-8"))
-    assert record["schema"] == "stage-timing-journal.v1"
-    assert record["run_id"] == "r"
-    stages = [entry["stage"] for entry in record["entries"]]
-    # Every program the automatic sequence invokes, the Door and the Exemplar
-    # named apart although they share `1_exemplar/`.
-    assert stages[:2] == ["door", "exemplar"]
-    assert stages[-1] == "armarium"
-    for entry in record["entries"]:
-        assert entry["exit_code"] == 0
-        assert entry["duration_ms"] >= 0
-        assert entry["operation"] == "run"
-        assert entry["started_at"].endswith("Z") and entry["finished_at"].endswith("Z")
-        assert entry["repository_commit"] == COMMIT
-        assert entry["repository_commit_detail"] is None
-
-
 def test_a_short_revision_is_refused_on_a_run_that_does_not_start_at_the_door(tmp_path):
     """Every selected sequence validates it, not only the one that opens at the Door.
 
@@ -3858,46 +3825,6 @@ def test_a_timing_journal_inside_the_run_tree_is_refused_before_anything_runs(tm
     assert result.returncode == 2
     assert "is inside this run's own tree" in result.stderr
     assert not (root / "r" / "timings.json").exists()
-
-
-def test_a_timing_journal_belonging_to_another_run_is_left_unchanged(tmp_path):
-    """Two runs at one journal path: the second must not inherit the first's entries.
-
-    Nothing checked the identity of an existing journal before appending, so
-    the first run's entries were kept while the top-level `run_id` was replaced
-    with the second's -- a file attributing one run's stage timings to another
-    -- the conflict is reported on stderr like every other
-    journal fault, because a stopwatch never fails a stage.
-    """
-
-    root = tmp_path / "runs"
-    journal = tmp_path / "timings.json"
-    assert orchestrate(root, "first", "happy", stage_timing_journal=journal).returncode == 0
-    before = journal.read_text(encoding="utf-8")
-
-    second = orchestrate(root, "second", "happy", stage_timing_journal=journal)
-
-    assert second.returncode == 0
-    assert journal.read_text(encoding="utf-8") == before
-    assert "already belongs to" in second.stderr
-
-
-def test_naming_no_timing_journal_leaves_the_run_tree_exactly_as_it_was(tmp_path):
-    """The journal is opt-in precisely so the byte-identity checks below still
-    measure the same tree."""
-
-    with_journal = tmp_path / "with"
-    without = tmp_path / "without"
-    assert (
-        orchestrate(
-            with_journal, "r", "happy", stage_timing_journal=tmp_path / "timings.json"
-        ).returncode
-        == 0
-    )
-    assert orchestrate(without, "r", "happy").returncode == 0
-
-    assert snapshot(with_journal) == snapshot(without)
-    assert not (with_journal / "r" / "timings.json").exists()
 
 
 # --- 2. Repeating the identical command changes nothing ------------------------

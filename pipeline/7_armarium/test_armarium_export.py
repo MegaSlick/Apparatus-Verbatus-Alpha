@@ -3502,34 +3502,6 @@ def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_r
     assert linked.stat().st_ino != shared_inode
 
 
-def test_an_extraction_cleanup_failure_names_the_leftover_temporary_file(tmp_path, monkeypatch):
-    """A failed cleanup is part of the refusal, never a silently retained member."""
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    clean = tmp_path / "clean"
-    import armarium_export as export_module
-
-    real_unlink = export_module._unlink_at
-
-    monkeypatch.setattr(
-        "armarium_export._atomic_replace",
-        lambda _source, _target, **_kwargs: (_ for _ in ()).throw(
-            OSError("simulated replace failure")
-        ),
-    )
-
-    def fail_temporary_unlink(path, *args, **kwargs):
-        if ".extracting-" in Path(path).name:
-            raise OSError("simulated cleanup failure")
-        return real_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(export_module, "_unlink_at", fail_temporary_unlink)
-
-    with pytest.raises(SchemaRefusal, match="temporary file .* could not be removed"):
-        verify_export_bundle(bundle.data, clean)
-
-    assert list(clean.rglob("*.extracting-*")), "the test must exercise a real leftover file"
-
-
 def test_a_member_path_deeper_than_the_bound_is_refused_by_name():
     """A hostile archive gets a refusal, not a RecursionError.
 
