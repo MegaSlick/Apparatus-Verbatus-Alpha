@@ -96,6 +96,12 @@ only from measurement (principle 8).
 Source images in, established readings out: import to export. Measuring the pipeline
 is in scope; training models, search and correction of the output happen elsewhere.
 
+The goals and principles 1–10 and 13 govern what the pipeline does to pages, acts,
+exports and spend, not how the code is built. Code is held to principle 11: built the
+simplest way that works, with a check only where it protects an act, the evidence, an
+output or money. Housekeeping (a leftover temporary file, a stale cache) is made
+harmless and easy to clear, not watched and reported.
+
 ## Decisions
 
 The project lead decides what counts as proven, when a test is small and good enough to

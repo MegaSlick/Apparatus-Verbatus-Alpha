@@ -91,7 +91,7 @@ def request(gpu_type: str) -> PodCreateRequest:
             "--timer-factory",
             "untracked.timer:factory",
             "--bootstrap-command-json",
-            json.dumps(["python", "-m", "operations.pod.bootstrap_main", "--hold"]),
+            json.dumps(["python", "-m", "operations.pod.bootstrap_main", "--hold-only"]),
             "--report-path",
             "/workspace/private/pod-report.json",
         ),
