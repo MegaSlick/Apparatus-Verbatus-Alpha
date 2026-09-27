@@ -46,6 +46,12 @@ class CacheRevisionRefusal(ChairRefusal):
     code = "cache-revision"
 
 
+class DiskSpaceRefusal(ChairRefusal):
+    """The container cache has too little free space for a pinned snapshot."""
+
+    code = "disk-space"
+
+
 class AdapterFetchRefusal(ChairRefusal):
     """An adapter could not be fetched; its base is never substituted."""
 
@@ -81,6 +87,7 @@ ALL_REFUSAL_TYPES = (
     UnresolvedChairRefusal,
     DigestMismatchRefusal,
     CacheRevisionRefusal,
+    DiskSpaceRefusal,
     AdapterFetchRefusal,
     ServingRecipeRefusal,
     LocalPathRefusal,

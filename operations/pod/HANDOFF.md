@@ -62,12 +62,12 @@ mid-arming; an unstartable supervisor command is caught at preflight; and
 `_read_bounded`'s accumulation is bounded to its declared `limit` even against an
 over-serving body.
 
-**U5 — `bootstrap_main.py`, bootstrap-and-hold (closes 04-3; partly closes 04-8).** On green this
+**U5 — `bootstrap_main.py`, bootstrap-and-hold (closes 04-3; 04-8 was superseded).** On green this
 process holds rather than exits, because `pod_timer.run_with_bootstrap` treats any
 child exit before the hard deadline as `completed-early` and closes the pod.
 `ChairCacheBootstrapAction` is constructed here for the first time in the tracked
-tree. `PREFLIGHT` stays honestly red — no production `ChairCacheVerifier` or
-`SmokeReader` exists anywhere in this repository; Spec 05 owns that. Its tests
+tree. `PREFLIGHT` now uses a production registry verifier and serving smoke reader;
+cache mismatches retain their original named cause without a re-fetch. Its tests
 drive hold survival, red-step immediate exit, every named refusal, env scrubbing, and
 both no-action modes — **all against a fakes-only `actions_factory`**, per the test
 file's own module docstring ("no git, uv, Hugging Face, or GPU probe is ever invoked

@@ -28,7 +28,7 @@ from .boot_b_request import (
 )
 from .cli import _request
 from .launch import _bind_report_path_to_launch
-from .models import DEFAULT_CONTAINER_DISK_GB, PodCreateRequest, run_report_paths, terminating_path
+from .models import BIG_CARD_CONTAINER_DISK_GB, PodCreateRequest, run_report_paths, terminating_path
 from .preflight import load_placement_table
 from .spend import SpendPolicy, load_spend_policy
 
@@ -189,12 +189,6 @@ def test_the_rendered_request_carries_no_transfer_half() -> None:
     assert f"{BOOT_B_VOLUME_MOUNT_PATH}/submission-manifest.json" in run_half
 
 
-def test_the_rendered_request_states_a_container_disk() -> None:
-    """The bootstrap fills this disk twice over; nothing may leave it to a default."""
-
-    assert filled_request()["container_disk_gb"] == 60
-
-
 # --- the shape the money path has to accept --------------------------------
 
 
@@ -229,8 +223,8 @@ def test_the_rendered_json_is_accepted_by_the_create_surface(tmp_path: Path) -> 
     # it currently holds: the first boot replaces that number with a
     # measurement, and a request still printing the old one would be found by
     # a free-space refusal on a rented card.
-    assert loaded.container_disk_gb == DEFAULT_CONTAINER_DISK_GB
-    assert request["container_disk_gb"] == DEFAULT_CONTAINER_DISK_GB
+    assert loaded.container_disk_gb == BIG_CARD_CONTAINER_DISK_GB
+    assert request["container_disk_gb"] == BIG_CARD_CONTAINER_DISK_GB
     assert BOOT_B_REPOSITORY_PATH in _sealed_nested_argv(loaded.docker_start_cmd)[-1]
 
 

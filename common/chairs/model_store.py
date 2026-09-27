@@ -158,71 +158,6 @@ class MaterializationFetcher(Protocol):
         """Write the exact repository revision below ``destination``, or raise."""
 
 
-class VerifiedStoreFetcher:
-    """Copy cache files from a verified, role-bound model-store source plan.
-
-    ``ChairRegistry`` stays the cache authority. This fetcher has no network
-    client and cannot fill a cache from a source the plan did not prove first.
-    """
-
-    def __init__(self, entries: Mapping[str, Mapping[str, Any]]) -> None:
-        self._entries = {role: dict(entry) for role, entry in entries.items()}
-
-    def fetch(self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]) -> None:
-        entry = self._entries.get(identity.role)
-        if entry is None:
-            raise DigestMismatchRefusal(
-                identity.role, "no verified model-store source was planned for this chair"
-            )
-        if entry.get("identity") != identity.cache_descriptor():
-            raise DigestMismatchRefusal(
-                identity.role,
-                "verified model-store source differs from the configured identity",
-            )
-        snapshot = entry.get("snapshot")
-        if not isinstance(snapshot, str):
-            raise DigestMismatchRefusal(
-                identity.role, "model-store source plan has no snapshot path"
-            )
-        source_root = Path(snapshot)
-        try:
-            source_root = source_root.resolve(strict=True)
-        except OSError as error:
-            raise DigestMismatchRefusal(
-                identity.role, f"verified model-store snapshot cannot resolve: {error}"
-            ) from error
-        if source_root.is_symlink() or not source_root.is_dir():
-            raise DigestMismatchRefusal(
-                identity.role,
-                "verified model-store snapshot is not a regular directory",
-            )
-        for relative in paths:
-            source = source_root / relative
-            try:
-                resolved = source.resolve(strict=True)
-            except OSError as error:
-                raise DigestMismatchRefusal(
-                    identity.role, f"model-store source file {relative!r} is unavailable: {error}"
-                ) from error
-            if (
-                not resolved.is_relative_to(source_root)
-                or source.is_symlink()
-                or not source.is_file()
-            ):
-                raise DigestMismatchRefusal(
-                    identity.role,
-                    f"model-store source file {relative!r} is not a regular in-snapshot file",
-                )
-            target = destination / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                shutil.copyfile(source, target)
-            except OSError as error:
-                raise DigestMismatchRefusal(
-                    identity.role, f"cannot copy model-store source file {relative!r}: {error}"
-                ) from error
-
-
 class StoreRoleFetcher:
     """Plan one configured role from the durable record and its pinned manifest."""
 
@@ -257,9 +192,32 @@ class StoreRoleFetcher:
         return {"snapshot": str(snapshot), "identity": identity.cache_descriptor()}
 
     def fetch(self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]) -> None:
-        VerifiedStoreFetcher({identity.role: self.plan(identity)}).fetch(
-            identity, destination, paths
-        )
+        source_root = Path(self.plan(identity)["snapshot"])
+        for relative in paths:
+            source = source_root / relative
+            try:
+                resolved = source.resolve(strict=True)
+            except OSError as error:
+                raise DigestMismatchRefusal(
+                    identity.role, f"model-store source file {relative!r} is unavailable: {error}"
+                ) from error
+            if (
+                not resolved.is_relative_to(source_root)
+                or source.is_symlink()
+                or not source.is_file()
+            ):
+                raise DigestMismatchRefusal(
+                    identity.role,
+                    f"model-store source file {relative!r} is not a regular in-snapshot file",
+                )
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copyfile(source, target)
+            except OSError as error:
+                raise DigestMismatchRefusal(
+                    identity.role, f"cannot copy model-store source file {relative!r}: {error}"
+                ) from error
 
 
 def materialize_real_roster(
