@@ -130,11 +130,13 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, change:
 
 
 @pytest.mark.parametrize("program", CONSUMING_STAGES)
-def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(tmp_path, program: str):
+@pytest.mark.parametrize("change", ["comment", "seed"])
+def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(
+    tmp_path, program: str, change: str
+):
     """Refused, and refused *by name*: the message says `decoding` moved.
 
-    The changed variance seed is valid on its own, so the refusal is for
-    substituting a different sealed policy.
+    Both changes leave a valid policy. A comment proves the seal binds bytes.
 
     Naming the policy matters as much as refusing it. "different config_digest,
     sealed_config_digests" is true whichever of the ten sealed files moved, and
@@ -143,7 +145,11 @@ def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(tmp_pat
     run_root, _tree = _through_designator(tmp_path)
     substitute = tmp_path / "decoding.toml"
     source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
-    body = source.replace("seed = 20260820", "seed = 20260821", 1)
+    body = (
+        "# Same policy, different comment bytes\n" + source
+        if change == "comment"
+        else source.replace("seed = 20260820", "seed = 20260821", 1)
+    )
     substitute.write_text(body, encoding="utf-8")
     assert load_decoding_policy(substitute)[1] != load_decoding_policy()[1]
 

@@ -7,6 +7,7 @@ import pytest
 from common.chandra_native_retry import recipe_record
 from common.contracts.errors import ContractError
 from common.decoding import (
+    DEFAULT_DECODING_CONFIG_PATH,
     load_decoding_policy,
     structure_recovery_policy,
 )
@@ -52,6 +53,33 @@ def test_a_nonzero_reading_temperature_is_refused():
 
     with pytest.raises(ContractError, match="reading_of_record must declare temperature 0"):
         structure_recovery_policy(policy)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            "[reading_of_record]\ntemperature = 0",
+            "[reading_of_record]\ntemperature = false",
+            "temperature 0",
+        ),
+        ("passes = 2", "passes = 1", "at least 2"),
+        ("[structure]", "[missing_structure]", "wrong closed schema"),
+        ("temperature = 1", "temperature = -1", "structure must declare"),
+        ("temperature = 1", "temperature = true", "structure must declare"),
+        ("[structure]\n", "[structure]\nextra = 1\n", "structure must declare"),
+        ("temperature = 1", "temperature = nan", "NaN or infinity"),
+        ("temperature = 1", "temperature = inf", "NaN or infinity"),
+    ],
+)
+def test_shipped_v3_policy_refuses_invalid_postures(tmp_path, old, new, message):
+    source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
+    assert old in source
+    source = source.replace(old, new, 1)
+    path = tmp_path / "decoding.toml"
+    path.write_text(source, encoding="utf-8")
+    with pytest.raises(ContractError, match=message):
+        load_decoding_policy(path)
 
 
 @pytest.mark.parametrize(
