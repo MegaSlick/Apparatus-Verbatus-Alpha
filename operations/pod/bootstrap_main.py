@@ -9,8 +9,8 @@ hold loop here.  A red bootstrap step exits non-zero at once, which is the
 correct immediate close for pod_timer to act on.
 
 Composition is deliberately **tracked**: every pinned input this process needs
-is an explicit flag, never an inferred default, so a request file that built
-this command names exactly what ran.  ``ChairCacheBootstrapAction`` is
+is an explicit flag, except the placement table, which is always the checkout's
+own ``config/pod_placement.toml`` because that is the table the stages seal.  ``ChairCacheBootstrapAction`` is
 constructed here in the tracked tree, wired with ``refetch_same_pin=None``
 (see the comment beside that call below), so the at-most-one same-pin
 re-fetch itself still does not ship.
@@ -72,10 +72,12 @@ startup refusal: holding with no bound cannot be tested and cannot be trusted.
 
 **A refusal leaves a durable reason, not just a stderr line nobody can read
 after the container is gone.**  Once ``--report-path`` has passed containment,
-every later refusal best-effort writes its reason there before exiting
-(principle 2 -- nothing is lost silently).  Two refusals necessarily precede
-a usable report path and stay stderr-only residue: the credential-argv scan
-(before argv is even parsed) and ``--report-path`` itself failing containment.
+every later refusal, an unparseable argv included, best-effort writes its
+reason there before exiting (principle 2 -- nothing is lost silently).  These
+stay stderr-only: the credential-argv scan (before argv is parsed), a missing
+or relative ``--volume-mount-path`` or missing ``--report-path``, and a
+``--report-path`` that fails containment or lacks this launch's token (it may
+name another launch's report, which must not be overwritten).
 
 **A gated chair repository needs its Hugging Face token kept.**  The
 environment scrub pops anything credential-shaped, including ``HF_TOKEN`` and
@@ -91,6 +93,7 @@ import argparse
 import json
 import math
 import os
+import re
 import secrets
 import stat
 import sys
@@ -98,7 +101,7 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Callable, Mapping, MutableMapping, Sequence
+from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 
 from common.chairs.config import parse_models_config
 from common.chairs.model_store import (
@@ -121,6 +124,7 @@ from common.credentials import (
     looks_like_credential_field,
 )
 from common.sealed_config import parse_sealed_toml
+from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH
 from common.witness_context import validate_witness_context_configuration
 from operations.serving.assembly import ProfileProbe, assemble_serving_smoke_reader
 from operations.serving.config import (
@@ -184,7 +188,6 @@ _PLAN_ONLY_FLAGS = (
     "journal",
     "store_root",
     "models_config",
-    "placement_config",
     "cache_root",
     "fixture",
     "page_witness_file",
@@ -210,7 +213,7 @@ class PlanRefusal(ValueError):
     """A named, pre-execution refusal; nothing has been fetched, cloned, or held.
 
     ``report_path`` is set only when the refusal is raised after ``--report-path``
-    itself has passed containment, so ``main`` can best-effort leave the reason
+    itself has passed containment and the launch-token check, so ``main`` can best-effort leave the reason
     durable on the volume even though ``resolve_plan`` never got to return a
     ``Plan``.
     """
@@ -236,7 +239,6 @@ class Plan:
     journal: Path | None = None
     store_root: Path | None = None
     models_config: Path | None = None
-    placement_config: Path | None = None
     cache_root: Path | None = None
     fixture: Path | None = None
     page_witness_file: Path | None = None
@@ -268,7 +270,6 @@ class Plan:
             "journal": str(self.journal) if self.journal else None,
             "store_root": str(self.store_root) if self.store_root else None,
             "models_config": str(self.models_config) if self.models_config else None,
-            "placement_config": str(self.placement_config) if self.placement_config else None,
             "cache_root": str(self.cache_root) if self.cache_root else None,
             "fixture": str(self.fixture) if self.fixture else None,
             "page_witness_file": str(self.page_witness_file) if self.page_witness_file else None,
@@ -477,11 +478,40 @@ class PreflightSeams:
     residency_lock: Path = POD_RESIDENCY_LOCK_PATH
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Verbatus pod-side bootstrap-and-hold service",
-        allow_abbrev=False,
-    )
+_FLAG_NAME = re.compile(r"--[a-z0-9-]+")
+
+
+class RefusingParser(argparse.ArgumentParser):
+    """Argv errors become PlanRefusals naming flags, never values; there is no ``-h`` exit."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(allow_abbrev=False, add_help=False, **kwargs)  # type: ignore[arg-type]
+
+    def error(self, message: str) -> NoReturn:
+        named = message.split(":", 1)[0] if message.startswith("argument ") else message
+        raise PlanRefusal("argv: missing or malformed " + ", ".join(_FLAG_NAME.findall(named)))
+
+    def parse_args(self, args=None, namespace=None):  # type: ignore[no-untyped-def,override]
+        return self.parse_flags(sys.argv[1:] if args is None else args, None)
+
+    def parse_flags(self, argv: Sequence[str], report_path: Path | None) -> argparse.Namespace:
+        try:
+            args, unknown = self.parse_known_args(argv)
+        except PlanRefusal as refusal:
+            refusal.report_path = report_path
+            raise
+        if unknown:
+            names = {token.split("=", 1)[0] for token in unknown}
+            shown = sorted(name if _FLAG_NAME.fullmatch(name) else "(value)" for name in names)
+            raise PlanRefusal(
+                "argv: unrecognized argument(s) " + ", ".join(dict.fromkeys(shown)),
+                report_path=report_path,
+            )
+        return args
+
+
+def build_parser() -> RefusingParser:
+    parser = RefusingParser()
     parser.add_argument("--volume-mount-path", required=True)
     parser.add_argument("--report-path", type=Path, required=True)
     parser.add_argument("--interval-seconds", type=float, default=15.0)
@@ -489,15 +519,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-env",
         action="append",
         default=[],
-        metavar="NAME",
-        help="exact environment variable name to keep despite the credential-shaped scrub",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--hold-only",
         action="store_true",
-        help="named drill mode: no bootstrap steps, journal a hold-only record, hold to the "
-        "deadline; refuses if any plan argument is supplied",
     )
     parser.add_argument("--repository", type=Path)
     parser.add_argument("--repository-commit")
@@ -505,63 +531,38 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--journal", type=Path)
     parser.add_argument("--store-root", type=Path)
     parser.add_argument("--models-config", type=Path)
-    parser.add_argument("--placement-config", type=Path)
     parser.add_argument(
         "--cache-root",
         type=Path,
-        help="defaults to <volume-mount-path>/chair-cache",
     )
     parser.add_argument(
         "--fixture",
         type=Path,
-        help="an operator-rendered golden page carrying the witness named by "
-        "--page-witness-file; omit both and the pod renders its own page with a fresh "
-        "CSPRNG witness under <volume-mount-path>/preflight/",
     )
     parser.add_argument(
         "--page-witness-file",
         type=Path,
-        help="a file on the volume whose single line is the witness rendered on --fixture; "
-        "required with --fixture and refused without it",
     )
     parser.add_argument(
         "--serving-recipes-config",
         type=Path,
-        help="the serving-profile catalogue preflight smokes against; defaults to "
-        "<repository>/config/serving_recipes.toml, the fixture-only catalogue, and may be "
-        "defaulted only when --models-config is the shipped fixture roster "
-        "config/models.toml -- any other roster must name its catalogue explicitly "
-        "(config/serving_recipes_real.toml for the real roster) or the plan is refused",
     )
     parser.add_argument(
         "--witness-context-config",
         type=Path,
-        help="the Perlector-owned factual witness-context declaration the run seals; defaults "
-        "to <repository>/config/witness_context.toml, which describes every chair as a "
-        "synthetic fixture; after the pinned checkout, CONFIGURATION matches that parsed "
-        "profile to the selected chair identities. Name config/witness_context-real.toml "
-        "explicitly with config/models-real.toml; custom rosters require an operator-authored "
-        "declaration",
     )
     parser.add_argument(
         "--submission-manifest",
         type=Path,
-        help="the sealed submission ledger TRANSFER sends to --transfer-target-factory; "
-        "no default, because a pod that is consuming a submission already on the volume "
-        "has nothing to send. Naming one without a target, or a target without one, is "
-        "refused at plan time",
     )
     parser.add_argument(
         "--transfer-source-root",
         type=Path,
-        help="defaults to --volume-mount-path",
     )
     parser.add_argument("--transfer-prefix", default=None)
     parser.add_argument("--model-store-capacity-json", default=None)
     parser.add_argument(
         "--transfer-target-factory",
-        help="untracked module:callable returning a TransferTarget; omit when no submission "
-        "manifest is expected on this volume",
     )
     return parser
 
@@ -573,6 +574,16 @@ def _factory(reference: str) -> Callable[[], object]:
     import importlib
 
     return getattr(importlib.import_module(module_name), name)
+
+
+def _launch_report_path(args: argparse.Namespace, launch_token: str | None) -> Path:
+    if not PurePosixPath(args.volume_mount_path).is_absolute():
+        raise PlanRefusal("--volume-mount-path must be an absolute path")
+    report_path = _require_contained(
+        args.report_path, Path(args.volume_mount_path), "--report-path"
+    )
+    _require_launch_token_named(report_path, launch_token, "--report-path", report_path=None)
+    return report_path
 
 
 def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None = None) -> Plan:
@@ -588,11 +599,8 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
     """
 
     volume_mount_path = Path(args.volume_mount_path)
-    if not PurePosixPath(args.volume_mount_path).is_absolute():
-        raise PlanRefusal("--volume-mount-path must be an absolute path")
-    report_path = _require_contained(args.report_path, volume_mount_path, "--report-path")
     launch_token = (environment or {}).get("VERBATUS_LAUNCH_TOKEN") or None
-    _require_launch_token_named(report_path, launch_token, "--report-path", report_path=report_path)
+    report_path = _launch_report_path(args, launch_token)
 
     plan_supplied = [
         name for name in _PLAN_ONLY_FLAGS if getattr(args, name, None) not in (None, [])
@@ -621,7 +629,6 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
             ("--journal", args.journal),
             ("--store-root", args.store_root),
             ("--models-config", args.models_config),
-            ("--placement-config", args.placement_config),
         )
         if value is None
     ]
@@ -666,13 +673,6 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         args.models_config,
         repository,
         "--models-config",
-        base_label="the checked-out repository",
-        report_path=report_path,
-    )
-    placement_config = _require_contained(
-        args.placement_config,
-        repository,
-        "--placement-config",
         base_label="the checked-out repository",
         report_path=report_path,
     )
@@ -770,7 +770,6 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         journal=journal,
         store_root=store_root,
         models_config=models_config,
-        placement_config=placement_config,
         cache_root=cache_root,
         fixture=fixture,
         page_witness_file=page_witness_file,
@@ -845,7 +844,7 @@ def _require_contained(
 
 
 def _require_launch_token_named(
-    path: Path, launch_token: str | None, flag: str, *, report_path: Path
+    path: Path, launch_token: str | None, flag: str, *, report_path: Path | None
 ) -> None:
     """Mirror ``models._required_timer_arguments``'s guard, on the bootstrap side.
 
@@ -896,12 +895,11 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
     for token in argv:
         if token.startswith("--") and "=" in token:
             flag, _, value = token.partition("=")
+            previous = ""
         elif token.startswith("--"):
-            previous = token
-            continue
+            flag, value, previous = "", token, token
         else:
-            flag, value = previous, token
-        previous = ""
+            flag, value, previous = previous, token, ""
         if flag == "--keep-env":
             continue
         shape = _credential_shape(value) if value else None
@@ -912,7 +910,7 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
             # retained volume -- so echoing a value that was refused *because it
             # looks like a credential* would put the suspected secret in three
             # more places. The flag and the shape are what an operator needs.
-            where = f"the value after {flag}" if flag else "a bare argv value"
+            where = f"the value after {flag}" if flag else "an argv token"
             raise PlanRefusal(
                 f"{where} looks like a credential and was refused "
                 f"({shape}); the value is not repeated here, because this "
@@ -1194,12 +1192,11 @@ def _build_preflight(
 
     def _run() -> dict[str, object]:
         models_config = plan.models_config
-        placement_config = plan.placement_config
         recipes_config = plan.serving_recipes_config
-        if models_config is None or placement_config is None or recipes_config is None:
+        if models_config is None or recipes_config is None:
             raise PlanRefusal(
-                "bootstrap plan reached PREFLIGHT without its models, placement, or serving "
-                "recipes configuration; resolve_plan fills all three for every full plan"
+                "bootstrap plan reached PREFLIGHT without its models or serving recipes "
+                "configuration; resolve_plan fills both for every full plan"
             )
         registry = ChairRegistry.from_toml(models_config, cache_root=plan.cache_root)
         if seams is None:
@@ -1216,13 +1213,15 @@ def _build_preflight(
         # reads is a named refusal rather than a table the run never sealed.
         recipes = load_serving_recipes(recipes_config)
         try:
-            placement_bytes = placement_config.read_bytes()
-            placement = load_placement_table(placement_config, source_bytes=placement_bytes)
+            placement_bytes = DEFAULT_POD_PLACEMENT_CONFIG_PATH.read_bytes()
+            placement = load_placement_table(
+                DEFAULT_POD_PLACEMENT_CONFIG_PATH, source_bytes=placement_bytes
+            )
             _, placement_sha256 = parse_sealed_toml(placement_bytes, "placement table")
         except (OSError, PlacementRefusal, ContractError) as error:
             raise BootstrapStepFailure(
                 BootstrapStep.PREFLIGHT,
-                f"placement table {placement_config} could not be read: {error}",
+                f"placement table {DEFAULT_POD_PLACEMENT_CONFIG_PATH} could not be read: {error}",
                 "Restore the reviewed placement table at the pinned commit, then resume.",
             ) from error
         if recipes.source_sha256 is None:  # load_serving_recipes always digests; stated
@@ -1253,7 +1252,7 @@ def _build_preflight(
             gpu_profile=profile,
             log_root=preflight_root / "serving-logs",
             recipes_path=recipes_config,
-            placement_path=placement_config,
+            placement_path=DEFAULT_POD_PLACEMENT_CONFIG_PATH,
             launcher=chosen.launcher,
             http=chosen.http,
             package_inspector=chosen.package_inspector,
@@ -1330,13 +1329,12 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
             plan.repository is None
             or plan.models_config is None
             or plan.serving_recipes_config is None
-            or plan.placement_config is None
             or plan.witness_context_config is None
         ):
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
                 "bootstrap plan reached CONFIGURATION without its repository, roster, serving "
-                "catalogue, placement table, or declaration",
+                "catalogue, or declaration",
                 "Supply the complete bootstrap plan and start a new schema-v3 journal.",
             )
         try:
@@ -1358,11 +1356,21 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 "the real trio together, or an operator-authored declaration for a custom roster; "
                 "then resume this journal before any environment or model work.",
             ) from error
+        placement = DEFAULT_POD_PLACEMENT_CONFIG_PATH.resolve()
+        pinned = plan.repository.resolve() / "config" / "pod_placement.toml"
+        if placement != pinned:
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"placement table {placement} is not the checked-out repository's {pinned}; "
+                "preflight and the stages would not read the pinned commit's table",
+                "Start bootstrap_main from the checked-out repository's own environment, "
+                "then resume this journal.",
+            )
         try:
             serving_source = _read_configuration_source(
                 plan.serving_recipes_config, "serving catalogue"
             )
-            placement_source = _read_configuration_source(plan.placement_config, "placement table")
+            placement_source = _read_configuration_source(placement, "placement table")
         except ContractError as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
@@ -1385,12 +1393,12 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 "this journal before any environment or model work.",
             ) from error
         try:
-            load_placement_table(plan.placement_config, source_bytes=placement_source)
+            load_placement_table(placement, source_bytes=placement_source)
             _, placement_sha256 = parse_sealed_toml(placement_source, "placement table")
         except (PlacementRefusal, ContractError) as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
-                f"selected placement table {plan.placement_config} could not be parsed: {error}",
+                f"placement table {placement} could not be parsed: {error}",
                 "Repair or restore the named placement table at the pinned commit, then resume "
                 "this journal before any environment or model work.",
             ) from error
@@ -1407,7 +1415,7 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                     "sha256": serving_sha256,
                 },
                 "placement_config": {
-                    "path": str(plan.placement_config),
+                    "path": str(placement),
                     "sha256": placement_sha256,
                 },
             },
@@ -1555,7 +1563,13 @@ def prepare(
 
     argv = list(raw_argv)
     refuse_credential_looking_argv(argv)
-    args = build_parser().parse_args(argv)
+    head = RefusingParser()
+    head.add_argument("--volume-mount-path", required=True)
+    head.add_argument("--report-path", type=Path, required=True)
+    report_path = _launch_report_path(
+        head.parse_known_args(argv)[0], environment.get("VERBATUS_LAUNCH_TOKEN") or None
+    )
+    args = build_parser().parse_flags(argv, report_path)
     plan = resolve_plan(args, environment)
     try:
         write_probe(plan.volume_mount_path)
@@ -1564,8 +1578,6 @@ def prepare(
         environment.update(scrubbed)
         return plan, _hard_deadline(environment)
     except PlanRefusal as refusal:
-        # The plan exists, so its report path is where the reason belongs --
-        # the same durable reason `main` has always left for these refusals.
         if refusal.report_path is None:
             refusal.report_path = plan.report_path
         raise
@@ -1594,7 +1606,7 @@ def run_bootstrap(
 
     A red step is a returned red report -- the caller decides its exit -- and
     an action factory that cannot be built is ``EXIT_REFUSED`` with the reason
-    left on the volume, exactly as ``main`` has always done.
+    left on the volume.
     """
 
     journal = BootstrapJournal(

@@ -11,7 +11,7 @@ from common.chairs.models import ChairIdentity
 from common.contracts.errors import ContractError
 from common.contracts.stages import stage_directory
 from common.sealed_config import parse_sealed_toml
-from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH
+from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH, DEFAULT_SERVING_RECIPES_CONFIG_PATH
 from operations.pod.preflight import (
     ChairCacheVerifier,
     GpuProfile,
@@ -38,10 +38,6 @@ from .preflight import CalibrationFor, ServingSmokeReader, SmokeCall, prepare_lo
 from .process import ProcessLauncher, SubprocessLauncher
 from .residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease, ResidencyLease
 
-DEFAULT_SERVING_RECIPES_PATH = (
-    Path(__file__).resolve().parents[2] / "config" / "serving_recipes.toml"
-)
-
 
 class ProfileProbe(Protocol):
     """The measured-GPU seam used only when pod preflight actually runs."""
@@ -60,7 +56,7 @@ def assemble_serving_smoke_reader(
     gpu_profile: GpuProfile,
     log_root: str | Path,
     calibration_for: CalibrationFor | None = None,
-    recipes_path: str | Path = DEFAULT_SERVING_RECIPES_PATH,
+    recipes_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     placement_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     launcher: ProcessLauncher | None = None,
     http: HttpTransport | None = None,
@@ -121,7 +117,7 @@ def assemble_serving_preflight_callback(
     log_root: str | Path,
     residency_lease: ResidencyLease,
     calibration_for: CalibrationFor | None = None,
-    recipes_path: str | Path = DEFAULT_SERVING_RECIPES_PATH,
+    recipes_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     placement_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     launcher: ProcessLauncher | None = None,
     http: HttpTransport | None = None,
