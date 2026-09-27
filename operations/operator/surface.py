@@ -996,6 +996,7 @@ class OperatorSurface:
                 except Exception as error:
                     canary_verdict = raised_verdict(checked_id, error)
             verdict_path = private_root / "verdicts" / f"{checked_id}.json"
+            new_verdict = False
             try:
                 verdict_path.parent.mkdir(parents=True, exist_ok=True)
                 verdict_bytes = canonical_bytes(canary_verdict)
@@ -1004,16 +1005,18 @@ class OperatorSurface:
                         raise ValueError("an existing canary verdict differs from this run")
                 elif not write_new_file(verdict_path, verdict_bytes):
                     raise OSError("canary verdict could not be sealed")
-                elif canary_verdict["dead"]:
-                    self._notify(
-                        "milestone",
-                        f"CANARY ALARM run {checked_id}: "
-                        + "; ".join(row["rule"] for row in canary_verdict["dead"]),
-                    )
+                else:
+                    new_verdict = True
             except (OSError, ValueError) as error:
                 raise OperatorError(
                     ErrorCode.CANARY_VERDICT_SAVE_FAILED, detail=str(error)
                 ) from error
+            if new_verdict and canary_verdict["dead"]:
+                self._notify(
+                    "milestone",
+                    f"CANARY ALARM run {checked_id}: "
+                    + "; ".join(row["rule"] for row in canary_verdict["dead"]),
+                )
         partial = bool(outcome.unmanifested_stages)
         # Serving logs arrived but were checked against nothing.
         verified_objects = outcome.fetched + outcome.reused - len(outcome.unverified_serving_logs)
