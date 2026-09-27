@@ -302,8 +302,8 @@ Consequences worth stating plainly:
   annotation layer, whose per-row `not-produced` claim used to be written over it
   under the bare name `annotations`.
   Nothing upstream populates this layer yet, so `[]` remains the ordinary value;
-- `evidence_ref`, `text_hash` and `index.json` are still not read at export. They
-  remain fields this stage carries for their own sake; and
+- `evidence_ref` and `index.json` are still not read at export. On the clustered
+  logical projection path, Armarium checks `text_hash` against the text; and
 - the projection-identity test (`pipeline/orchestrator/test_projection_identity.py`)
   guards the packaged bundle's own `formats.formats` selection (currently five:
   text-bundle, acts-database, jsonl, review-items, salvage-tier), not the Armarium's

@@ -350,14 +350,12 @@ no attempt binding. The independent coverage proof: every ink pixel at the
 stage's most sensitive declared threshold, `structure.SECONDARY_MARGIN`, reconciled
 against the *final* (padded)
 proposal crops actually cut on it — never against what grouping *claims* to have
-found. The cut rectangles are what is passed as `claimed_bounds`
-(`pipeline/2_designator/run.py:1535`), and the counts and residual components are
-published from that scan (`:1546-1572`). Ink that no crop covers is not merely counted:
-on a successful pass every residual component becomes its own held act
-(`_publish_residual_holds`, `pipeline/2_designator/run.py:1279-1332`), so a mark
-structural grouping never proposed is visible rather than absent. If two components
-share a bounding box and therefore cannot receive distinct act identities, the stage
-refuses before minting either instead of collapsing their evidence (`:1302-1313`).
+found. The cut rectangles are passed as `claimed_bounds`, and the counts and
+residual components are published from that scan. Ink that no crop covers is not merely counted: components
+meeting either sealed presentation floor each become a held act; smaller components
+remain on the conservation record and share one `page-residual` hold. If two
+components share a bounding box and therefore cannot receive distinct act identities,
+the stage refuses before minting either instead of collapsing their evidence.
 
 The accounting cannot detect ink fainter than `background - SECONDARY_MARGIN` or a mark
 with no contrast against its background; neither enters the denominator. A page whose
@@ -369,25 +367,25 @@ page_ordinal, background_source, background_value | null
 page_width, page_height, reconciliation_thresholds | null
 ink_measurable, reason | null
 total_ink_pixel_count | null, claimed_pixel_count | null, residual_pixel_count | null
-residual_component_count, residual_ink_fraction_bp | null, max_residual_components
-residual_enumeration = "complete" | "withheld-page-held"
-residual_components = [{bounds, pixel_count, review_priority}]   # key OMITTED when withheld
+residual_component_count, residual_ink_fraction_bp | null
+residual_enumeration = "complete" | "aggregate-page-held"
+residual_promoted_component_count, residual_aggregated_component_count
+residual_aggregate_max_pixel_count, residual_aggregate_max_area_px
+residual_components = [{bounds, pixel_count, review_priority}]  # promoted partition
+aggregated_residual_components = [{bounds, pixel_count, review_priority}]  # only when nonempty
 ```
 
-`claimed_pixel_count + residual_pixel_count == total_ink_pixel_count` always,
-by construction, whenever `ink_measurable` is true — on a withheld page too.
-
-`residual_enumeration` is a closed pair and is on every record. It is what lets
-a consumer tell a page with no unclaimed ink from a page whose unclaimed ink was
-counted and not listed; when it is `withheld-page-held` the `residual_components`
-key is **omitted rather than emptied**, because an empty list is the first of
-those two claims and the key's absence is what makes every existing consumer
-fail loudly instead of reading absence as none. `residual_component_count`
-equals `len(residual_components)` on an enumerated page and is the count the
-reconciliation took on a withheld one. `residual_ink_fraction_bp` is
+`claimed_pixel_count + residual_pixel_count == total_ink_pixel_count` whenever
+`ink_measurable` is true. The producer always lists the promoted components in
+`residual_components`; when there is an aggregate, it also lists every smaller
+component in `aggregated_residual_components`. `residual_component_count` is the
+sum of the two partition counts. `residual_enumeration` is `aggregate-page-held`
+exactly when the aggregate is nonempty. `residual_ink_fraction_bp` is
 `residual_pixel_count` over `total_ink_pixel_count` in basis points, recorded and
-gating nothing. `max_residual_components` is the sealed bound the page was judged
-against, published whether or not it was crossed.
+gating nothing. The two `residual_aggregate_max_*` fields are the sealed
+presentation floors, not limits on the ink measurement. The legacy
+`withheld-page-held` shape remains a verifier compatibility path, not a producer
+output.
 
 `page_width`, `page_height` and `reconciliation_thresholds` are what this scan
 actually executed on and under. The thresholds are exactly the two
@@ -426,18 +424,18 @@ it publishes rescue crops over paper. **Every residual region is accounted regar
 first and never decides whether one is recorded at all — deleting the priority
 threshold would only reorder the list, never shorten it.
 
-**Every residual is also now minted as its own held act**
+**Every promoted residual is minted as its own held act**
 (`pipeline/2_designator/run.py::hold_residual_act` via `_publish_residual_holds`,
-verified by `common/stage.py::_verify_every_conservation_residual_is_accounted`),
-closing the gap this section used to name as unimplemented. `expected_acts` no longer requires the seal's denominator to
+verified by `common/stage.py::_verify_every_conservation_residual_is_accounted`);
+the retained aggregate has one page hold. This closes the gap this section
+used to name as unimplemented. `expected_acts` no longer requires the seal's
+denominator to
 equal the fixture's declared acts exactly — every fixture act is still a floor
-that must appear, but the seal may also carry additional rows a residual
-minted, each `held` from the moment it exists (never `proposed`: nothing
-witnessed or read ink no structural pass claimed), each independently
-recomputable from its own hold record's `residual_bounds` through
-`act_id(page_id, "residual", bounds)` rather than trusted because the seal
-names it. This
-additive denominator path is not evidence that prior artifact digests remain
+that must appear, but the seal may also carry additional held residual rows:
+one per promoted component, with identity recomputed from its `residual_bounds`,
+and one page hold for any aggregate. Nothing witnessed or read ink no
+structural pass claimed. This additive denominator path is not evidence that
+prior artifact digests remain
 unchanged: `run_config_bindings` now seals
 `designator_padding_config_sha256` into every run's `config_digest`, and later
 fixture additions also enter that digest. The HAPPY and REVIEW pins were
@@ -461,30 +459,27 @@ structure pass's `"proposal"`-class identities can never collide with it,
 present fixture or real one.
 
 **The `page-residual` hold is the fourth act class and the second hold shape.**
-When a page's reconciliation counts more residual components than the sealed
-`max_residual_components` allows, no per-component act is minted for that page
-at all; one act is, bound to `act_id(page_id, "page-residual", page_rectangle)`
-and held. Its hold record carries `act_key`, `page_id`, `page_ordinal`,
-`page_bounds`, `residual_component_count`, `max_residual_components`,
+When any residual component falls below both sealed presentation floors, one
+page hold accounts for that aggregate, alongside separate holds for promoted
+components. It is bound to `act_id(page_id, "page-residual", page_rectangle)`.
+Its hold record carries `act_key`, `page_id`, `page_ordinal`, `page_bounds`,
+`residual_component_count`, `aggregated_component_count`,
 `grouping_config_sha256`, `blocking_page_ordinal`, `reason_code` and `reason`,
-and names exactly one input: that page's own `conservation` record, which is
-the independent premise saying the count exceeded the bound.
+and names exactly one input: that page's own `conservation` record, which
+retains every aggregate component's bounds and pixel count.
 `common/stage.py::_verify_page_residual_act_row` recomputes every one of those
 rather than reading it — the rectangle from the sealed page bytes, the identity
-from the reserved class, the bound against the run's own sealed
+from the reserved class, and the partition against the run's own sealed
 `designator-grouping` digest — and
 `_verify_every_conservation_residual_is_accounted` checks the other direction, so
-a withheld record with no such row is a refusal rather than a silent loss.
-`reason_code = "residual-components-over-page-bound"` names the reconciliation
-and never the paper: nothing in this artifact says a page is speckled, foxed or
-bad, only that this many components were counted against this bound.
+an aggregate record with no such row is a refusal rather than a silent loss.
+`reason_code = "residual-components-below-presentation-threshold"` names the
+review grouping, not a claim about the paper.
 
 The Recensor consumes the same decision in `geometry_coverage_inputs`, with its
-own refusals and its own finding shape: `residual_act_count` is 0 on a withheld
-page, and the count, the bound, the enumeration and the one page-residual act
-are named beside it so that zero cannot read as a loss. The check it genuinely
-loses there is the per-component pixel sum, because the list it summed is the
-thing deliberately not carried.
+own refusals and its own finding shape. It verifies both retained partitions,
+their held-act identities, and the combined component pixel sum against
+`residual_pixel_count`.
 
 ## `kind="secondary-provenance"`, `kind="secondary-proposal"`, and `kind="rescue-crop"`
 
@@ -531,19 +526,17 @@ one row of a fixture page, so a single ordinary pen mark in the blank band
 between two entries can produce a candidate touching both; refusing on that
 would raise before the proposal seal is even written.)
 
-**Bounded per page, like the residual enumeration beside it.** Each published
-candidate costs a cropped PNG blob and two records, so a page speckled enough to
-trip `max_residual_components` would rebuild the unopenable run here — on the
-one path that bound does not cover. Past `max_secondary_proposals` the page's
+**Bounded per page, like the residual review items beside it.** Each published
+candidate costs a cropped PNG blob and two records. Past `max_secondary_proposals`,
+the page's
 secondary pass is a single held `secondary-proposal` instead: the page
 rectangle, `secondary_candidate_count`, the bound it was judged against, the
 run's own sealed grouping digest, and no crop cut at all. Nothing is filtered
 out of the scan itself (principle 8) — `structure.secondary_scan` still
 returns everything it finds — and the candidates stay recomputable from the
 sealed page bytes. `secondary_enumeration` is `complete` or `withheld-page-held`
-on every one of these records, exactly the closed pair `residual_enumeration`
-is, so "this page had no unclaimed candidate" and "this page's candidates were
-counted and not cut" cannot be read as each other.
+on every one of these records, so "this page had no unclaimed candidate" and
+"this page's candidates were counted and not cut" cannot be read as each other.
 
 Each proposal directly references a `rescue-crop`: the exact unpadded source
 pixels inside the secondary box, with its origin, null padding, transform,
@@ -646,8 +639,9 @@ session reading a finished run back can now say, per page, what the structure
 pass actually ran at instead of re-deriving it from the seal and the pixels —
 and a re-derivation is what stops matching the run the day the resolution rule
 changes. The whole of `GroupingThresholds` is published rather than a chosen
-subset, `max_residual_components` included: it is part of what the page ran
-under, and a subset boundary would be a second judgment about which of one
+subset, including the legacy-only `max_residual_components`: it remains recorded
+for compatibility but does not govern new residual presentation. A subset boundary
+would be a second judgment about which of one
 dataclass's fields matter. These fields are a recording and decide nothing; they
 are `null` on a page held before analysis for the same reason the two above are.
 
@@ -1096,7 +1090,8 @@ something false about it.
 
 A structure-pass hold does not suppress that page's ink. The page sealed, so
 its ink exists; no crop claims any of it, so all of it reconciles as
-conservation residual and each residual component becomes its own held act:
+conservation residual, with promoted components held separately and the
+below-floor partition held as one page review item:
 that is the difference between "there was nothing to read" and "we could not
 read it", carried through structurally rather than by convention.
 
@@ -1116,11 +1111,12 @@ evidence.
 
 ## Real ingress: what the real structural pass must publish
 
-On a real submission this stage refuses: it proves its Ink Map boundary,
-reconciles the Exemplar filename ledger, and then says that real structural
-proposal/model work is outside System 03 rather than fabricating proposals or
-holds. Everything below is the contract the pass that replaces that refusal has
-to meet, because it is what consumers already recompute rather than believe.
+On a real submission with a live structure chair, this stage proves its Ink Map
+boundary, reconciles the Exemplar filename ledger, asks the chair for proposals,
+and publishes the same conservation denominator as the fixture route. A real
+submission bound to the fixture chair is refused by name without fabricated
+proposals or holds. Consumers recompute the following fields rather than believe
+them.
 
 **Publish `raw_bounds` equal to the rectangle the act identity was minted
 from.** On the fixture route the proposal seal is checked against an
@@ -1143,20 +1139,14 @@ a denied one with such a region are equally refused. A row's class is decided by
 which evidence record exists for it, never by trying identities until one
 verifies; two minted-class records on one row refuse as ambiguous.
 
-**Publish the conservation denominator too, per sealed page.** This is the
-first thing a real run cannot get past today, and it is measured rather than
-predicted: `pipeline/test_real_ingress_contexts_e2e.py` carries a real
-submission through the Door, the Exemplar, the Ink Map, a full served
-Attestatores roster and a served Perlector, and the Recensor then stops the run
-with *"Designator conservation pages 1, 2 carry non-held expected acts but have
-no conservation records"*. `geometry_coverage_inputs` requires one
+**Publish the conservation denominator too, per sealed page.** The live pass
+measures and publishes it. `geometry_coverage_inputs` requires one
 `kind="conservation"` record for every sealed page carrying a non-held expected
 act, and independently reconciles its residual components against the held
 residual acts in the seal. Those are measurements of the real page — total ink,
 claimed ink, the unclaimed remainder and its components — so nothing but this
 stage's own pass can supply them, and no test may compose them on its behalf
-(principle 8). Until the real pass exists, that refusal is the honest end of
-a real run, and the e2e pins it there.
+(principle 8).
 
 ## Exit code
 
@@ -1211,23 +1201,11 @@ page-pixel re-check above, and closed the same way.
 ## Recovery boundary
 
 `--operation recover --act <id> --recovery-request <id>` is the only recovery
-entry point, and it is real-ingress-blind by construction: a recrop's geometry
-comes from the fixture's own declared rectangle (`context.fixture["act"]`),
-which a real submission does not carry. `main` refuses `--operation recover`
-against a real submission by name, before touching `--act` or
-`--recovery-request`, rather than let the generic fixture-accessor refusal
-(`common/stage.py`) stand in for it. Bounded recovery from a real submission
-is not built; when it is, this stage will need a source for a recrop's
-geometry that a real page can supply.
-
-**Nothing publishes a request this refusal would meet any more.** Since findings
-F068/F083, `pipeline/5_recensor/run.py` gates its fallback-recrop publication on
-the ingress route (`recrop_dispatchable`) and holds the act for review instead,
-and `pipeline/orchestrator/run.py` screens the same route before it dispatches
-anything. So this refusal is a backstop over a run tree written before that gate
-landed, and it says so: a request nothing can answer used to end the run fatally
-with no export at all, which is the failure the Recensor-side gate exists to
-prevent, not one this stage could fix by answering.
+entry point. Fixture recrops use the fixture's declared rectangle. On real
+ingress, the exact Recensor request supplies measured `recovery_bounds` and a
+coverage observation; the Designator validates the bounds against the sealed
+page and verifies the observation's ink evidence before cutting. A real request
+without that evidence is refused rather than given fixture geometry.
 
 The request must be the exact current, digest-checked Recensor
 request for that act, its next ordinal, its Perlectio evidence, and the
@@ -1335,15 +1313,17 @@ asked for the claimed regions on each page separately (pages × regions) and
 (`_claimed_regions_by_page`, `_designator_holds_by_subject`). Neither changed
 what is computed.
 
-**The residual denominator is unbounded in the accounting and bounded on the
-page.** Every residual component still enters the reconciliation regardless of
-size — "every residual region is accounted regardless of size" is spec 06's own
+**The residual denominator is unbounded in the accounting; small review items
+are aggregated per page.** Every residual component still enters the
+reconciliation regardless of size — "every residual region is accounted regardless
+of size" is spec 06's own
 sentence and a size floor in the accounting is principle 8's named defect, so
 `conservation.reconcile` returns all of them and no ink leaves the measurement.
-What is bounded is how many of them become *separate review items*. A page whose
-reconciliation counts more components than the sealed
-`max_residual_components` allows becomes one `page-residual` held act instead of
-that many, and its record says so in `residual_enumeration`.
+What is bounded is how many of them become *separate review items*. Components
+meeting either sealed `residual_aggregate_max_pixel_count` or
+`residual_aggregate_max_area_px` get individual holds. Components below both
+floors retain their geometry and pixel counts on the conservation record and
+share one `page-residual` hold. `residual_enumeration` names that partition.
 
 The number this closes is measured on this build: a synthetic A4 page at 300 dpi
 with 3% scattered ink reconciles to ~60,000 residual components (this tree now
@@ -1352,12 +1332,10 @@ hold artifact and seal row. `operations/operator/review.py` refuses a run past
 `MAX_REVIEW_ITEMS` by name, so one such page made every *other* page's findings
 unreadable on the only surface a person uses.
 
-**The bound is per page and the console's ceiling is per run — a named
-remainder, not a thing this bound does.** What it buys is that no single page
-can make a run unopenable on its own. Thirty pages each sitting just inside
-`max_residual_components` still carry a run past the console's 50,000 items and
-still meet that refusal, by name, at the console. Nothing in the pipeline counts
-the run-wide total while a run is produced, and the Designator deliberately does
+**The presentation floors apply per component and the console's ceiling is per
+run.** Promoted components can still carry a run past the console's 50,000-item
+limit. Nothing in the pipeline counts the run-wide total while a run is produced,
+and the Designator deliberately does
 not: the queue an operator opens is assembled in the Armarium's export from
 every stage's review items, so a total counted in this stage would be a fraction
 of the run's presented as the whole of it, which principle 8 forbids more
@@ -1377,26 +1355,14 @@ for the reason `residual_enumeration` is one on every conservation record.
 `pipeline/2_designator/test_page_residual_bound.py` carries that case, marked
 `full` because the pure-Python structure pass takes ~100 seconds at that size.
 
-**The honest cost, stated as a cost.** On a withheld page the per-component
-rectangles are not in any artifact. They stay recomputable from the sealed page
-bytes under the sealed conservation policy — the same reasoning the pipeline
-already uses for the exact image a model was shown — and both the count and the
-bound are on the hold and on the record. But a reviewer cannot open that page's
-evidence and read off where the unclaimed ink was. The alternative is a payload
-of the order of megabytes per page that nobody reads and that makes the run
-unopenable for a different reason.
+**The retained cost is explicit.** Every residual rectangle and pixel count,
+including the aggregate partition, stays in the conservation artifact. The
+page hold reduces review items, not retained measurement detail.
 
-**The retirement condition, written down now.** The bound counts review items,
-and the number of review items is a property of how well the structure pass
-performed as much as of the page. Today's pass is one modal-background ink scan
-at a 20-level margin, so a run in which *every* page carries a `page-residual`
-hold is the legible first-run signal that the structure pass does not work on
-this corpus — a true finding delivered on run one. The real structural
-Designator has since landed (`live_initial_pass` asks a served structure chair
-for every sealed page), so the condition is now live rather than prospective: if
-real pages under the live pass still trip the bound, the bound is measuring the
-wrong thing and must be revisited rather than raised. The first real run's
-`page-residual` count is the measurement that settles it.
+The number of review items still depends on how well the structure pass covers
+the page. `live_initial_pass` asks a served structure chair for every sealed
+page on the live route; its `page-residual` count is a measured outcome, not a
+reason to discard aggregate evidence.
 
 There is no ordinal arithmetic left to bound: residual identities are
 class-namespaced (`act_id(page_id, "residual", bounds)`), so disjointness from
@@ -1568,10 +1534,11 @@ within the sealed bound, the paper value is the modal pixel at or above the
 page's own mean; that value still faces the `PRIMARY_MARGIN` guard and the final
 ink-fraction guard. The thresholds are sealed in
 `config/designator_grouping.toml`'s
-`[grouping.background]`, which is the one block in that file with a
-`calibrated_for_this_corpus = true` provenance and a `sample_count` above zero —
-its own block, because the rest of the file is unmeasured defaults and one
-provenance could not describe both truthfully.
+`[grouping.background]`. Its provenance has
+`calibrated_for_this_corpus = true` and a positive `sample_count`; the
+`[grouping.continuation]` and `[grouping.page_area_bp]` blocks also carry
+measured provenance, while other thresholds retain their own unmeasured
+provenance.
 
 **The fourth shape is the one the seven-page calibration could not see, and it is
 the quiet one.** On 6 of 127 real pages the modal pixel is 255 — a blown

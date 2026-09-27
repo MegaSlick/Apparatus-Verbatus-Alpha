@@ -404,15 +404,12 @@ attach's `no-page-anchor`, the blank-confirmation path the fixture already
 exercises). `declared_chandra_anchor_chair` names the anchor chair on both
 routes.
 
-**What the live alignment does not do.** Alignment supplies a span inside a
-witness's own text; attachment is the page geometry that chair reported against
-the sealed proposal, and a chair with no reported geometry is not attached.
-Deriving one chair's geometry from another's anchor lines would be one chair's
-geometry attributed to another (the "never chair against chair" rule of the
-adapter contract below), so it is never done. A page witness whose body carries
-no layout therefore aligns and stays `attached: false`, `comparable: false`,
-with its `aligned` alignment retained beside it and no span -- the record says
-both facts.
+**What live alignment does.** Alignment supplies a span inside a witness's own
+text. Reported geometry overlapping the proposal attaches a chair on its own
+evidence. A page witness without reported geometry can instead attach by
+`anchor-line` when its alignment locates an act span; the basis is recorded rather
+than attributed as that chair's geometry. An unlocated alignment remains
+`attached: false` and `comparable: false`.
 
 **Unit 12 tried to close that for Churro by asking; U10 retired the question.**
 Unit 12 asked the served chair for a `box_1000` per block, in a modified carry
@@ -1113,15 +1110,12 @@ that leaks through `parse` has violated its adapter contract, and the current
 generic unsupported-native-type failure is accurate. The adapters instead keep
 the float in the raw blob and make the declared conversion in `observe`.
 
-### Temporary textual bridge
+### Perlector testimony input
 
-The prohibited-to-edit Perlector still consumes `payload.reported` as a string.
-Until its owner migrates that reader, a recordable *textual* native payload also
-carries `reported` as a deprecated compatibility projection. It is never derived
-from `witness_reported`, never used by Attestatores health, and no structured
-native payload is coerced into it. A structured Testimonium therefore lands
-verbatim here but the current Perlector visibly refuses it; that integration work
-belongs to the Perlector/serving-contract owners.
+The Perlector reads the retained derived `payload.payload`, not a second
+`payload.reported` projection. It uses act-scoped text or a located page-witness
+span as testimony; structured nontext payloads remain retained and are represented
+as incomparable rather than coerced into text.
 
 ## Outcomes and provenance
 
