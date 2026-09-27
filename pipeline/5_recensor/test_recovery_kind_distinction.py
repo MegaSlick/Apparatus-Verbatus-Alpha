@@ -9,8 +9,6 @@ supposed to mean. `recovery_kind` on the request/review payload, and the
 per-kind budget in `recovery_state`, are that fix.
 """
 
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -21,7 +19,7 @@ from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import DESIGNATOR, RECENSOR
 from common.recovery import FALLBACK_RECROP, PAGE_LEVEL_REREAD
 from common.runtree.store import RunTree
-from conftest import load_stage, programs_through
+from conftest import load_stage, programs_through, run_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -41,21 +39,7 @@ BUDGET = {
 
 
 def _invoke(root: Path, run_id: str, scenario: str, program: str) -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / program),
-            "--run-root",
-            str(root),
-            "--run-id",
-            run_id,
-            "--scenario",
-            scenario,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
+    result = run_stage(root, run_id, scenario, program)
     assert result.returncode in (0, 3), f"{program}: {result.stderr}"
 
 

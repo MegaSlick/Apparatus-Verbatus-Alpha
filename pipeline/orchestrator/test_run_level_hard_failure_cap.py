@@ -31,6 +31,7 @@ from common.runtree.store import RunTree
 from common.stage import _stage_seal_payload, latest_attempt
 from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage, programs_through
+from conftest import run_orchestrator as orchestrate
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -62,26 +63,6 @@ def run_through_perlector(run_root: Path, run_id: str, scenario: str) -> None:
     for program in STAGES_THROUGH_PERLECTOR:
         result = call_stage(run_root, run_id, scenario, program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
-
-
-def orchestrate(run_root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ORCHESTRATOR),
-            "--fixture",
-            FIXTURE,
-            "--scenario",
-            scenario,
-            "--run-id",
-            run_id,
-            "--run-root",
-            str(run_root),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
 
 
 def forge_perlector_failure(tree: RunTree, fake_subject: str) -> None:

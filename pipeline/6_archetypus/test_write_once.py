@@ -15,53 +15,20 @@ untouched.
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
+from conftest import run_orchestrator as orchestrate
+from conftest import run_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            scenario,
-            "--run-id",
-            run_id,
-            "--run-root",
-            str(root),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-
 def invoke_archetypus(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/6_archetypus/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            run_id,
-            "--scenario",
-            scenario,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
+    return run_stage(root, run_id, scenario, "pipeline/6_archetypus/run.py")
 
 
 def test_a_second_differing_write_for_the_same_act_is_refused_and_the_original_survives(tmp_path):

@@ -28,6 +28,7 @@ from common.contracts.outcomes import witness_coverage
 from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.runtree.store import RunTree
 from conftest import load_stage, programs_through
+from conftest import run_stage as _invoke
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,24 +43,6 @@ _CONFIRMED_BLANK_REASON = (
 _UNAVAILABLE_INK_SUFFIX = (
     "; page ink could not be measured or reconciled for this act's recorded page evidence"
 )
-
-
-def _invoke(root: Path, run_id: str, scenario: str, program: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / program),
-            "--run-root",
-            str(root),
-            "--run-id",
-            run_id,
-            "--scenario",
-            scenario,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
 
 
 # One runner for both stop points: the stage list and exit-code contract live

@@ -25,7 +25,6 @@ boundary named in CONTRACT.md.
 """
 
 import copy
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,7 +48,7 @@ from common.residual_ink import (
 )
 from common.runtree.store import RunTree
 from common.sealed_config import read_sealed_toml
-from conftest import load_stage, programs_through
+from conftest import load_stage, programs_through, run_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -73,21 +72,7 @@ def _measure_page(image_bytes, covered):
 
 
 def _invoke(root: Path, run_id: str, scenario: str, program: str) -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / program),
-            "--run-root",
-            str(root),
-            "--run-id",
-            run_id,
-            "--scenario",
-            scenario,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
+    result = run_stage(root, run_id, scenario, program)
     assert result.returncode == 0, f"{program}: {result.stderr}"
 
 

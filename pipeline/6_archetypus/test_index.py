@@ -16,7 +16,6 @@ list would agree with itself about an act the writer had skipped.
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -32,7 +31,8 @@ from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
 from common.stage import load_fixture
-from conftest import load_stage
+from conftest import load_stage, run_stage
+from conftest import run_orchestrator as orchestrate
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -65,44 +65,6 @@ class _Context:
         return self.input_ref(self.tree.artifact_path(stage, kind, identity))
 
 
-def orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            scenario,
-            "--run-id",
-            run_id,
-            "--run-root",
-            str(root),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-
-def invoke_archetypus(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/6_archetypus/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            run_id,
-            "--scenario",
-            scenario,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-
 def _index(tree: RunTree) -> dict:
     return json.loads(tree.resolve(tree.index_path(ARCHETYPUS)).read_text(encoding="utf-8"))
 
@@ -119,6 +81,10 @@ def established_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("established") / "runs"
     assert orchestrate(root, "r", "happy").returncode == 0
     return _Context(RunTree(root, "r"))
+
+
+def invoke_archetypus(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+    return run_stage(root, run_id, scenario, "pipeline/6_archetypus/run.py")
 
 
 def test_index_reconciles_1_to_1_with_both_established_acts_in_the_happy_scenario(established_run):

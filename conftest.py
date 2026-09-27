@@ -112,6 +112,27 @@ def run_stage(
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
+def run_orchestrator(
+    root: Path, run_id: str, scenario: str, **options: object
+) -> subprocess.CompletedProcess[str]:
+    """Invoke the fixture orchestrator with the ordinary run arguments."""
+    command = [
+        sys.executable,
+        str(ROOT / "pipeline/orchestrator/run.py"),
+        "--fixture",
+        "synthetic-two-page-v0",
+        "--scenario",
+        scenario,
+        "--run-id",
+        run_id,
+        "--run-root",
+        str(root),
+    ]
+    for name, value in options.items():
+        command.extend((f"--{name.replace('_', '-')}", str(value)))
+    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+
+
 def run_through(root: Path, run_id: str, scenario: str, last: str) -> None:
     """Run fixture stages through ``last``, asserting each stage completed."""
     for program in programs_through(last):
