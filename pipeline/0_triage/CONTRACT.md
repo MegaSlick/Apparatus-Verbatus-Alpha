@@ -90,20 +90,11 @@ images are never submitted. The cheap structural guard is the row's own `frame`,
 compared against the decoded submitted image's dimensions, which catches a row bound
 to a derivative rather than to its master.
 
-Two things now stand where nothing did. `common.imaging.render_triage_derivative`
-refuses a region that is not contained in the master it actually decoded, and
-`verify_triage_derivative` refuses a sealed derivative whose row declares a frame of
-a different size than the decoded master. Between them a row claiming a frame
-*larger* than its master is refused, at render time and again at the Exemplar
-boundary.
-
-What remains is the other direction, at the door. A row declaring a frame *smaller*
-than the submitted master still passes the door: its parts partition the small
-declared frame and every one of them lies inside the larger master, so containment
-has nothing to object to. Only the Exemplar boundary's equality check catches it,
-after the page is sealed. Closing it at the door means giving the render path the
-row's `frame` — the part alone does not carry it — which is a plumbing change Unit 6
-should make deliberately rather than a guard that can be dropped into the renderer.
+The Door compares the row's `frame` with the decoded submitted image before
+rendering any part. It refuses a declared frame of a different size in either
+direction. `common.imaging.render_triage_derivative` also refuses a region outside
+the decoded master, and `verify_triage_derivative` checks the declared frame again
+at the Exemplar boundary.
 
 `triage-re-shoot-cluster-v1` is a corpus-scoped leaf record keyed by its member
 **frame source digests**. It has no run id, no shard id, and no cluster digest

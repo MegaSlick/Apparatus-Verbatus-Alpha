@@ -63,6 +63,7 @@ class ErrorCode(StrEnum):
     CONSOLE_PROJECTION_UNREADABLE = "console-projection-unreadable"
     ADVANCE_REFUSED = "advance-refused"
     BACKUP_FAILED = "backup-failed"
+    CLEAR_LEFTOVERS_STOPPED = "clear-leftovers-stopped"
     FETCH_RUN_FAILED = "fetch-run-failed"
     INGEST_REFUSED = "ingest-refused"
     INGEST_PREVIEW_UNRESOLVED = "ingest-preview-unresolved"
@@ -348,6 +349,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The Mac backup did not finish with a verified snapshot.",
         "Existing content-addressed backup objects remain intact, but this run is not called backed up.",
         "Keep the saved detail, repair the named source, backup-directory, or worker-report problem, then run `verbatus backup` again; it safely reuses verified files.",
+    ),
+    ErrorCode.CLEAR_LEFTOVERS_STOPPED: ErrorCopy(
+        "Clearing leftovers stopped part-way: part of the named folder could not be read or changed.",
+        "Anything listed above as removed may already be gone, and an item being removed may remain renamed as `.<name>.clearing-<id>`, a folder partly emptied; the next run leaves it alone for an hour, then removes it. Nothing else was touched, and nothing was started or billed.",
+        "Fix the folder named in the saved detail, then run `verbatus clear-leftovers` again; it only lists unless you add --apply.",
     ),
     ErrorCode.FETCH_RUN_FAILED: ErrorCopy(
         "The run tree was not brought back from the network volume as one verified whole.",

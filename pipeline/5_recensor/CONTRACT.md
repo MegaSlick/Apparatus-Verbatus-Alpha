@@ -11,26 +11,23 @@ before it writes a review for an earlier act.
 Three denominators are deliberately separate: **attachment** is a per-chair
 geometric fact, **page** is Unit 9's sealed page-space ink map, and **coverage**
 is the proposal-seal expected-act set plus the configured-chair floor. They are
-never unioned or subtracted from one another. The Recensor reads the map; it
-does not decode a page to make a second ink measure.
+never unioned or subtracted from one another. The Recensor reads the map for
+pointer confirmation and separately decodes sealed page bytes for its own
+residual-ink coverage check.
 
 A chair box that overlaps a cut region but lies wholly inside it is a finding
 only, whatever its inward delta or spread, and however many chairs report it.
 Unit 10C's own `unclaimed_observations` (a native/derived box with zero
 overlap with any proposal on that page) is a stronger fact but still only a
-*pointer*: it becomes a bounded fallback-recrop request only when all four
+*pointer*: it becomes a bounded fallback-recrop request only when all three
 facts hold: (1) the box reaches outside every region currently cut on its page;
 (2) Unit 9's ink map has at least the sealed `minimum_ink_pixels`
 (`[coverage_audit.noise_floor]`) **in that outside part**;
 (3) the existing act pool, kind allowance, and `RULED_ABSOLUTE_CAP` of 3
-allow it; and (4) the run is on an ingress route where a recrop can actually be
-cut — `recrop_dispatchable`, which is `not real_ingress(context)`. Fact (4) is
-not a budget and not evidence: it asks whether anything downstream could answer
-what this stage is about to publish. On a real submission nothing can (the
-Designator refuses `--operation recover` by name), and the pointer becomes
-`unresolved_observation_hold`'s loud held-for-review instead, so the act ends as
-a review item and the Armarium still exports partial rather than the run ending
-fatally with no export at all.
+allow it. Continuation shortfall blocks a recrop; it is held for review because
+the page-level reread is not implemented. On real ingress, a confirmed pointer
+can fund a request carrying measured `recovery_bounds` and the ink evidence
+needed for Designator to verify and cut it.
 
 Conditions (1) and (2) are one subtraction, not two tests. Unit 10C retains an
 observation as unclaimed against the *proposal* set alone, so a pointer may sit
@@ -65,16 +62,12 @@ independent structural route and takes causal precedence when both facts are
 present, so it neither masquerades as nor consumes the page's observation
 grant.
 
-**Known limit, named rather than hidden:** the request carries no geometry. The
-Designator answers a fallback recrop with the act's own *declared* recovery
-rectangle (`pipeline/2_designator/run.py::recovery_pass`), so the pointer's
-bounds never reach it and the recrop is a bounded attempt at coverage, not a
-claim to have covered that ink. Making the ink choose the act -- a request that
-carries the pointer's bounds, and a Designator that expands to them -- is
-Designator recovery geometry, outside this unit's seam. Until then the
-observation stays retained on every act's review payload for a human to weigh,
-and the page's own residual-ink flag and the Armarium's `unclaimed-edge-ink`
-hold remain the ink-side accounts of the same pixels.
+**The measured request carries geometry.** A `coverage-observation` request
+includes `recovery_bounds`, the located `coverage_observation`, `ink_map_ref`,
+`outside_ink_pixels`, and `minimum_ink_pixels`. On real ingress, Designator
+checks that evidence against the sealed page before cutting. The fixture route
+uses the fixture's declared recovery rectangle, without that measured-evidence
+check.
 
 **Known limit, named rather than hidden:** the grant is scoped by `page_of`, which
 reads each act's *primary* `page_ordinal` -- the same field the writer records, so
@@ -254,45 +247,18 @@ on every call, so the only route by which a real submission could ever have fund
 recovery request was measured ink outside the live crop union
 (`COVERAGE_OBSERVATION_ORIGIN`, via `unclaimed_ink_observations`).
 
-**That route is now closed on a real submission, and both halves of the reason are
-kept separate.** The measurement is unchanged and still taken: `unclaimed_ink_observations`
-runs on every route, and the confirmed pointer is still carried onto the review. What
-changed is what the stage does with it. `recrop_dispatchable` (`not real_ingress(context)`)
-is a fourth conjunct on the publication gate, so **on a real submission no
-recovery request is published at all, of either origin**; the act takes
-`unresolved_observation_hold`'s real-route branch and is held for review with the
-unbuilt recrop named as the cause. `wants_recovery` is deliberately untouched by this:
-the act genuinely wants the coverage back, and saying otherwise would hide a real
-finding inside a dispatch fact. A published request nothing
-downstream can answer made the Designator exit 2, the orchestrator abort, and the
-Armarium refuse, leaving a run with no export by any sequence of stage invocations.
-
-**What that claim rests on, and the seam of it that is not yet measured.** The gate
-itself is measured: `test_unit14b_trigger_contract.py` compiles the live publication
-conditional out of `run.py` and evaluates it with every coverage and budget conjunct
-satisfied, so the route alone decides, and the real-route branch of
-`unresolved_observation_hold` is exercised directly. That a held act forces a partial
-export naming it is measured too, on the fixture route
-(`pipeline/orchestrator/test_orchestrator_acceptance.py`). **No single run measures the
-whole chain — gate, hold, partial export — on real ingress.** Doing that needs a run
-that is simultaneously a real submission and marked out by a served structure chair,
-with a scripted answer whose cuts deliberately leave ink outside them and a witness box
-pointing at it; no module in the tree drives that shape today
-(`pipeline/test_real_ingress_contexts_e2e.py` is real ingress with a hand-built
-Designator layer and stops at the conservation denominator;
-`pipeline/test_structure_chair_e2e.py` is the live structure chair on the fixture
-route). The chain above is stated here as two proven
-halves rather than as one measured run, so nobody reads it as more than it is
-(principle 8).
+**Measured ink can fund real recovery.** `unclaimed_ink_observations` runs on
+both routes. When a confirmed observation meets the coverage and budget gates,
+the real route publishes a `fallback-recrop` request with page-space bounds,
+the observation, and its Ink Map reference. A continuation shortfall cannot
+fund that recrop; it remains a held finding. The Designator independently
+verifies the request evidence before cutting.
 
 The nine `expected_acts` readers in this file are unchanged: on a real run the shared
 reader skips the fixture floor by name and recomputes every row from the Designator's
 own sealed evidence, and nothing in this stage believes a count it has not recomputed
-from sealed records. What the real route buys today is bounded and said so: no real
-Perlector seal exists, so a real run refuses at `predecessor perlector has no
-stage-seal` with its context already opened -- no "sealed no digest", no fixture
-accessor, no traceback, nothing written. `test_recensor_real_ingress.py` pins that for this
-stage, the Perlector and the Archetypus.
+from sealed records. The real route is read from the sealed run authority, without
+a fixture floor.
 
 ## Cross-capture visibility: `payload["cross_capture_coverage"]`
 
@@ -465,17 +431,14 @@ treating it as a recrop. So the Recensor requests only `fallback-recrop`, even
 where ARCHITECTURE's "full-page or continuation-aware pass" would suggest
 `page-level-reread` (a continuation shortfall) — asking for an operation
 nothing downstream can honor would trade a graceful hold for a hard crash, and
-that is a regression, not a fix. **The same rule now covers `fallback-recrop` on
-a real submission**, where the Designator's recovery pass is equally unbuilt:
-the gate's `recrop_dispatchable` conjunct withholds the request and the act is
-held, which is what the rule above always meant and had not been applied to its
-own kind. `recovery_state` also tracks each kind's own
+that is a regression, not a fix. `recovery_state` also tracks each kind's own
 sub-budget (`requests_by_kind`) rather than pooling every request into one
 shared count.
 
 When the bounded per-kind budget permits a recrop, Recensor appends a
-`recovery-requested` request. Its direct input is the exact Perlectio, and its
-payload carries the act key, ordinal, recovery kind, coverage, budget
+`recovery-requested` request. Its direct inputs include the exact Perlectio;
+measured requests also bind the Testimonium and Ink Map evidence. Its payload
+carries the act key, ordinal, recovery kind, coverage, budget
 used/allowed, the complete resolved recovery policy, and `perlectio_ref`. It
 appends a matching `recovery-requested` review whose direct inputs are that
 same Perlectio and exact request, with `recovery_request_ref` and the same

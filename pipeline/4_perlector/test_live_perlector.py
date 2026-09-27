@@ -16,7 +16,6 @@ are live and let the run bind it exactly as a real one would.
 
 from __future__ import annotations
 
-import ast
 import copy
 import json
 import shutil
@@ -1038,50 +1037,6 @@ def test_a_live_pass_refuses_a_fixture_declared_reading_failure(
     )
 
 
-def _reading_inputs_composition() -> ast.expr:
-    """The exact expression `_read_the_acts` assigns to `reading_inputs`.
-
-    A behavioural route to this property is closed: `row["inputs"]` duplicates
-    would have to be forged upstream and injected through the whole 780-line
-    pass driver, and with no legitimate duplicate anywhere in the fixtures a
-    whole-list `_distinct_inputs(row["inputs"] + reproof_inputs + [...])` is
-    order-preserving and output-identical to the scoped version -- invisible
-    to every behavioural test in this stage. So this reads the source, the
-    same precedent as `test_live_reader.py`'s pass-kind test: the property is
-    about which slice the dedup is *permitted* to cover, not what one fixed
-    set of inputs happens to produce.
-    """
-    source = Path(perlector.__file__).read_text(encoding="utf-8")
-    module = ast.parse(source)
-    read_the_acts = next(
-        (
-            node
-            for node in ast.walk(module)
-            if isinstance(node, ast.FunctionDef) and node.name == "_read_the_acts"
-        ),
-        None,
-    )
-    if read_the_acts is None:
-        raise AssertionError("run.py no longer defines _read_the_acts")
-    assign = next(
-        (
-            node
-            for node in ast.walk(read_the_acts)
-            if isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id == "reading_inputs"
-        ),
-        None,
-    )
-    if assign is None:
-        raise AssertionError(
-            "_read_the_acts no longer assigns reading_inputs; this test reads "
-            "that expression by AST"
-        )
-    return assign.value
-
-
 def _evaluate_reading_inputs(
     *,
     row_inputs: list[dict[str, str]],
@@ -1089,19 +1044,7 @@ def _evaluate_reading_inputs(
     draft_ref,
     finding_ref,
 ) -> list[dict[str, str]]:
-    expression = ast.Expression(body=_reading_inputs_composition())
-    ast.fix_missing_locations(expression)
-    code = compile(expression, filename=str(perlector.__file__), mode="eval")
-    return eval(
-        code,
-        {"_distinct_inputs": perlector._distinct_inputs},
-        {
-            "row": {"inputs": row_inputs},
-            "reproof_inputs": reproof_inputs,
-            "draft_ref": draft_ref,
-            "finding_ref": finding_ref,
-        },
-    )
+    return perlector._audited_reading_inputs(row_inputs, reproof_inputs, draft_ref, finding_ref)
 
 
 def test_a_duplicated_page_render_input_still_refuses_the_double_count():
@@ -1111,9 +1054,8 @@ def test_a_duplicated_page_render_input_still_refuses_the_double_count():
     still hit the envelope's own two-digests-for-one-path refusal rather than
     being silently absorbed by `_distinct_inputs` across the whole list.
 
-    This reads `_read_the_acts`'s own `reading_inputs` expression (see
-    `_reading_inputs_composition`) rather than a local reimplementation of it,
-    because a local copy proves nothing about what `run.py` actually does."""
+    This calls the production composition, `_audited_reading_inputs`, because a
+    local copy proves nothing about what `run.py` actually does."""
     page = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "a" * 64}
     draft_ref = {"relative_path": "4_perlector/blobs/sha256/bb", "sha256": "b" * 64}
     finding_ref = {"relative_path": "4_perlector/blobs/sha256/cc", "sha256": "c" * 64}

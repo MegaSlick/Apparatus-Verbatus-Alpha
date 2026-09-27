@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
+import errno
 import json
 import os
 import pwd
+import re
+import secrets
+import shutil
 import stat
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -440,11 +446,8 @@ def build_parser() -> PlainParser:
     parser.add_argument(
         "--state-dir",
         type=Path,
-        # No computed default: `main` resolves the durable default against
-        # the resolved workspace, and `None` is how it knows none was named.
-        # Deciding that from a scan of raw argv could not work: argparse
-        # accepts unambiguous abbreviations like `--state-di`, so a scan
-        # looking for the exact flag would miss a path the parser accepted.
+        # `None` tells `main` none was named, so it resolves the default against the
+        # workspace; scanning raw argv would miss abbreviations like `--state-di`.
         default=None,
         help="where local receipts are kept",
     )
@@ -745,6 +748,14 @@ def build_parser() -> PlainParser:
     )
     triage.add_argument("--confirmation-out", type=Path, help="producer confirmation-file target")
     triage.add_argument("--preview-sha256", help="digest of the draft shown before writing")
+    clear = verbs.add_parser(
+        "clear-leftovers",
+        help="list, or with --apply remove, what interrupted publications left under a folder",
+    )
+    clear.add_argument(
+        "--root", type=Path, required=True, help="run tree, volume mount or export folder"
+    )
+    clear.add_argument("--apply", action="store_true", help="remove them instead of listing")
     scantailor = verbs.add_parser(
         "scantailor",
         help="name the separate ScanTailor desktop handoff, then import its saved geometry",
@@ -905,6 +916,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace, surface)
         elif args.verb == "triage":
             _triage_queue(args, workspace)
+        elif args.verb == "clear-leftovers":
+            _clear_leftovers(args.root, apply=args.apply)
         elif args.verb == "scantailor":
             from .scantailor import import_in_custody, instruction
 
@@ -935,6 +948,110 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print(record_unexpected(error, arguments, state).render())
         return 2
     return 0
+
+
+# Exact names from mkstemp/mkdtemp (8 chars), surface's token_hex(16), and a clear's quarantine.
+_CLEARING = r"(?:\.clearing-[0-9a-f]{8})?"
+_TEMPORARY = re.compile(rf"\..+\.tmp-(?:[a-z0-9_]{{8}}|[0-9a-f]{{32}}){_CLEARING}")
+_STAGING = re.compile(rf"\..+\.publishing-[a-z0-9_]{{8}}{_CLEARING}")
+# Nothing holds a writer lock, so a leftover this fresh may still be in use.
+LEFTOVER_QUIET_SECONDS: Final = 3600
+
+
+def _raise(error: OSError) -> None:
+    raise error
+
+
+def _is_fresh(name: str, descriptor: int, *, own_ctime: bool) -> bool:
+    details = os.lstat(name, dir_fd=descriptor)
+    newest = max(details.st_mtime, details.st_ctime if own_ctime else 0)
+    if stat.S_ISDIR(details.st_mode):
+        for _, subdirectories, files, inner in os.fwalk(name, dir_fd=descriptor, onerror=_raise):
+            for entry in (*subdirectories, *files):
+                below = os.lstat(entry, dir_fd=inner)
+                newest = max(newest, below.st_mtime, below.st_ctime)
+    return time.time() - newest < LEFTOVER_QUIET_SECONDS
+
+
+def _move_no_clobber(source: str, target: str, descriptor: int, *, link: bool) -> bool:
+    """Move within one folder, or return False and move nothing when ``target`` is taken."""
+    try:
+        if link:
+            os.link(source, target, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+            os.unlink(source, dir_fd=descriptor)
+            return True
+        with contextlib.suppress(FileNotFoundError):
+            os.lstat(target, dir_fd=descriptor)
+            return False
+        os.rename(source, target, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        return True
+    except OSError as error:
+        if error.errno in (errno.EEXIST, errno.ENOTEMPTY, errno.ENOTDIR, errno.EISDIR):
+            return False
+        raise
+
+
+def _clear_one(name: str, descriptor: int, path: Path, *, folder: bool, apply: bool) -> bool:
+    checked = os.lstat(name, dir_fd=descriptor)
+    if not (stat.S_ISDIR if folder else stat.S_ISREG)(checked.st_mode):
+        return False
+    if _is_fresh(name, descriptor, own_ctime=True):
+        _print(f"Left alone, changed within the last hour: {path}")
+        return False
+    if apply:
+        # Moved aside so a racing publish's os.replace fails; the move sets its own ctime.
+        base = re.sub(_CLEARING + "$", "", name)
+        quarantine = f"{base}.clearing-{secrets.token_hex(4)}"
+        if not _move_no_clobber(name, quarantine, descriptor, link=False):
+            _print(f"Skipped, {quarantine} already exists: {path}")
+            return False
+        moved = os.lstat(quarantine, dir_fd=descriptor)
+        if os.path.samestat(moved, checked) and not _is_fresh(
+            quarantine, descriptor, own_ctime=False
+        ):
+            if folder:
+                shutil.rmtree(quarantine, dir_fd=descriptor)
+            else:
+                os.unlink(quarantine, dir_fd=descriptor)
+        elif _move_no_clobber(quarantine, name, descriptor, link=not folder):
+            _print(f"Skipped, changed during the check: {path}")
+            return False
+        else:
+            _print(f"Left as {quarantine} because {path} now exists")
+            return False
+    _print(f"{'Removed' if apply else 'Would remove'}: {path}")
+    return True
+
+
+def _clear_leftovers(root: Path, *, apply: bool) -> None:
+    try:
+        root_descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise OperatorError(
+            ErrorCode.INVALID_COMMAND, detail=f"{root} is not a real folder: {error.strerror}"
+        ) from error
+    found = 0
+    try:
+        walk = os.fwalk(".", dir_fd=root_descriptor, onerror=_raise)
+        for directory, subdirectories, files, descriptor in walk:
+            staging = [name for name in subdirectories if _STAGING.fullmatch(name)]
+            subdirectories[:] = [name for name in subdirectories if name not in staging]
+            candidates = [(name, True) for name in staging]
+            candidates += [(name, False) for name in files if _TEMPORARY.fullmatch(name)]
+            for name, folder in candidates:
+                path = Path(root, directory, name)
+                try:
+                    found += _clear_one(name, descriptor, path, folder=folder, apply=apply)
+                except FileNotFoundError:
+                    _print(f"Skipped, changed during the check: {path}")
+    except OSError as error:
+        raise OperatorError(ErrorCode.CLEAR_LEFTOVERS_STOPPED, detail=f"{root}: {error}") from error
+    finally:
+        os.close(root_descriptor)
+    _print(
+        f"{found} leftover(s): publication temporaries (.<name>.tmp-<id>) and export staging "
+        f"folders (.<name>.publishing-<id>){'' if apply else '; add --apply to remove them'}."
+    )
 
 
 def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
@@ -1419,7 +1536,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, fetch-run, export, close, status, spend, review, advance, or backup."
+        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, fetch-run, export, close, status, spend, review, advance, backup, or clear-leftovers."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1553,6 +1670,9 @@ def _interactive_arguments() -> list[str]:
         if output:
             arguments.extend(("--geometry-out", output))
         return arguments
+    if verb == "clear-leftovers":
+        root = _ask("Folder to check for leftovers")
+        return ["clear-leftovers", "--root", root] if root else []
     if verb == "run":
         run_id = _ask("A short name for this run", default="dry-run")
         return ["run", "--run-id", run_id]

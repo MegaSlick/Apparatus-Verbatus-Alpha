@@ -223,8 +223,8 @@ no validator re-derives it yet.
 schema test names — missing identity, missing dissent, missing regime record —
 are *absent* fields rather than wrong ones, which is the failure a per-field
 type check never sees. Agreement is one row per witness with no departure spans;
-an empty `dissent` list is valid only for Lectio nuda, which was shown no
-testimony. Omitting primed rows would make agreement indistinguishable from an
+an empty `dissent` list is required for unprimed Lectio nuda and `lectio-prior`,
+which were shown no testimony. Omitting primed rows would make agreement indistinguishable from an
 instrument that never ran.
 
 ### `dossier` — the input contract, persisted as evidence (spec 08)
@@ -1009,7 +1009,7 @@ the fixture-path claim `with_engine_call` and the mode selector rest on.
   fixed `status = "established"` literal. Archetypus re-derives it from the text,
   annotations, and uncertainty before accepting the record
   (`pipeline/6_archetypus/run.py:824-861`).
-- **Pass-C can emit an `uncertain_span`, but only under a zero cap.** Spans are minted
+- **Pass-C can emit an audit `uncertain_span` under a zero cap.** Audit spans are minted
   exactly when `examination == "cap-exhausted"` (`common/perlector_audit.py::
   examination_state`), so they appear only when the sealed policy allows no re-proof
   round, not after a permitted round is spent -- and never for a re-proof that was
@@ -1023,8 +1023,10 @@ the fixture-path claim `with_engine_call` and the mode selector rest on.
   frozen flags and `unresolved` state because it cannot become a span; Recensor routes it
   to review (`pipeline/4_perlector/test_audit_pass.py:1202`). **The committed policy
   cannot fire this path:**
-  `config/perlector_audit.toml:12` sets `round_cap = 1`, so every reading carries an empty
-  `uncertain_spans` list. Only a run sealed with `round_cap = 0` can produce one; the
+  `config/perlector_audit.toml:12` sets `round_cap = 1`, so this exhausted-cap path
+  cannot mint an audit span under the committed policy. Reader-supplied doubt spans
+  can still populate `uncertain_spans` at cap one. A run sealed with `round_cap = 0`
+  can also produce exhausted-cap audit spans; the
   focused assertions are in `test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review`
   (`pipeline/4_perlector/test_audit_pass.py:1170-1199`).
 - **`gaps` and `uncertain_spans` have downstream consumers.** Archetypus validates the
