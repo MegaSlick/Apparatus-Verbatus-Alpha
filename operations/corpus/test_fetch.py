@@ -551,6 +551,7 @@ def test_truncated_request_record_refuses_the_page(tmp_path, server):
     assert "unreadable-request-record" in entry["detail"]
 
 
+@pytest.mark.hostile_local
 def test_swapped_cache_body_wrong_length_refuses_the_page(tmp_path, server):
     """A cache body overwritten out of band (a partly copied cache root, or
     tampering) with a different-length JPEG must be refused by name, not carried
@@ -578,6 +579,7 @@ def test_swapped_cache_body_wrong_length_refuses_the_page(tmp_path, server):
         fetch_module._fetch_image_bytes(FetchSession(config), page)
 
 
+@pytest.mark.hostile_local
 def test_swapped_cache_body_same_length_refuses_the_page(tmp_path, server, monkeypatch):
     """A cache body swapped for different bytes of the same length (so the byte
     count alone would not catch it) must still be refused, on the digest.

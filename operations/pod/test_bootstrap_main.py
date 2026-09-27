@@ -615,6 +615,7 @@ def test_resolve_plan_refusal_names_are_distinct(tmp_path: Path) -> None:
 # a symlink and confirm the write is refused before it happens.
 
 
+@pytest.mark.hostile_local
 def test_report_path_through_a_symlinked_directory_component_is_refused(
     tmp_path: Path,
 ) -> None:
@@ -632,6 +633,7 @@ def test_report_path_through_a_symlinked_directory_component_is_refused(
     assert not any(container_local.iterdir())
 
 
+@pytest.mark.hostile_local
 def test_journal_through_a_symlinked_leaf_is_refused(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     container_local = tmp_path / "container-local"
@@ -647,6 +649,7 @@ def test_journal_through_a_symlinked_leaf_is_refused(tmp_path: Path) -> None:
     assert not off_volume_journal.exists()
 
 
+@pytest.mark.hostile_local
 def test_a_symlink_escape_through_main_exits_refused_with_nothing_off_the_volume(
     tmp_path: Path,
 ) -> None:
@@ -1230,6 +1233,7 @@ def test_a_report_path_without_the_launch_token_is_never_written(tmp_path: Path)
     assert ws.report_path.read_text(encoding="utf-8") == "a previous launch's report"
 
 
+@pytest.mark.hostile_local
 def test_configuration_refuses_a_placement_table_symlinked_out_of_the_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

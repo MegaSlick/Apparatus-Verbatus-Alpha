@@ -550,6 +550,7 @@ def test_the_policy_path_cannot_forge_a_line_on_the_spend_screen(tmp_path: Path)
     assert "Hard-stop balance floor: $50.00" in "\n".join(lines)
 
 
+@pytest.mark.hostile_local
 def test_a_linked_receipt_cannot_lend_its_name_to_a_verified_digest(tmp_path: Path) -> None:
     """A receipt is a file this store wrote, never a name pointing at one.
 

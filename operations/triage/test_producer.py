@@ -119,6 +119,7 @@ def test_producer_has_exact_coverage_and_a_full_frame_fallback_for_every_submiss
     )
 
 
+@pytest.mark.hostile_local
 def test_submitted_paths_refuse_traversal_and_case_variant_collisions():
     with pytest.raises(ProducerRefusal, match="canonical relative paths"):
         produce([frame("../page")], corpus_id="synthetic", mode="auto")
@@ -133,6 +134,7 @@ def test_frame_decode_refuses_pillow_decompression_bombs(monkeypatch: pytest.Mon
         produce([specimen], corpus_id="synthetic", mode="auto")
 
 
+@pytest.mark.hostile_local
 def test_confirmation_loader_does_not_follow_its_final_path(tmp_path: Path):
     frames = [frame("63"), frame("64")]
     confirmed, _recipe, _manifest, _evidence = confirmation(frames)
@@ -770,6 +772,7 @@ def test_authority_path_refuses_different_confirmation_bytes_without_overwrite(t
     assert clusters_path.read_bytes() == canonical_bytes(produced.clusters)
 
 
+@pytest.mark.hostile_local
 def test_confirmed_commit_refuses_aliased_destinations_before_any_write(tmp_path: Path):
     frames = [frame("63"), frame("64")]
     confirmed, recipe, evidence_manifest, evidence = confirmation(frames)
@@ -791,6 +794,7 @@ def test_confirmed_commit_refuses_aliased_destinations_before_any_write(tmp_path
     assert sorted(tmp_path.iterdir()) == []
 
 
+@pytest.mark.hostile_local
 def test_confirmed_commit_refuses_case_collisions_and_authority_symlinks(tmp_path: Path):
     frames = [frame("63"), frame("64")]
     confirmed, recipe, evidence_manifest, evidence = confirmation(frames)
@@ -1150,6 +1154,7 @@ def test_an_interrupted_publish_leaves_a_retry_the_refusal_can_actually_direct(t
     assert sorted(entry.name for entry in tmp_path.iterdir()) == [path.name]
 
 
+@pytest.mark.hostile_local
 def test_a_no_op_confirmation_proves_the_head_under_the_lock_not_from_its_own_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

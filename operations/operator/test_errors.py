@@ -167,6 +167,7 @@ def test_a_detail_too_long_to_keep_says_it_was_cut() -> None:
     assert "truncated" not in errors.sanitize_detail("x" * 2000)
 
 
+@pytest.mark.hostile_local
 def test_control_bytes_are_stripped_from_the_operator_facing_detail() -> None:
     """A path an operator did not choose could carry a terminal escape sequence."""
 
@@ -179,6 +180,7 @@ def test_control_bytes_are_stripped_from_the_operator_facing_detail() -> None:
     assert "FAKE: type CONFIRM to finish" in rendered
 
 
+@pytest.mark.hostile_local
 @pytest.mark.parametrize(
     "character",
     ("\u200b", "\u200e", "\u202e", "\u2066", "\u2069", "\ufeff"),

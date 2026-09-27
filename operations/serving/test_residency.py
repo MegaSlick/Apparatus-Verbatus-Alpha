@@ -92,6 +92,7 @@ def test_every_serving_caller_takes_the_one_pod_wide_lease_path() -> None:
         )
 
 
+@pytest.mark.hostile_local
 def test_a_symlink_at_the_lease_path_is_refused_rather_than_followed(tmp_path: Path) -> None:
     """The one pod-wide lease is a fixed name in a world-writable directory.
 

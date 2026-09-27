@@ -372,6 +372,7 @@ def test_a_fresh_stamp_never_suppresses_a_deliberate_event(notify_repo, event):
     assert curl_ran(env), f"{event} was suppressed by a start stamp"
 
 
+@pytest.mark.hostile_local
 def test_a_symlinked_stamp_is_not_trusted_and_is_not_written_through(notify_repo):
     # Read, a link to a busy file suppresses every start; written, any link redirects
     # the write out of private/.
@@ -387,6 +388,7 @@ def test_a_symlinked_stamp_is_not_trusted_and_is_not_written_through(notify_repo
     assert target.read_text(encoding="utf-8") == "", "the stamp write followed the symlink out"
 
 
+@pytest.mark.hostile_local
 def test_a_fifo_at_the_stamp_path_does_not_suppress_a_start(notify_repo):
     # A blocking read from a hook is a session that never starts, and nothing says why.
     script, env = notify_repo

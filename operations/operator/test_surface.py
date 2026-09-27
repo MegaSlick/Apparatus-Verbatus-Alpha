@@ -541,6 +541,7 @@ def _open_lease_path(surface: OperatorSurface, provider: OperatorFakeProvider, s
     return next(iter(sorted((surface.state_root / "leases").glob("*.json"))))
 
 
+@pytest.mark.hostile_local
 def test_a_lease_that_is_a_symlink_is_never_read_as_evidence(tmp_path: Path) -> None:
     """The console reader refuses a linked lease exactly as the paid gate does.
 
@@ -840,6 +841,7 @@ def test_receipt_reader_binds_the_kind_into_the_filename(tmp_path: Path) -> None
         surface.receipts.read(renamed)
 
 
+@pytest.mark.hostile_local
 def test_write_refuses_a_symlinked_receipts_directory(tmp_path: Path) -> None:
     """`list()` already refused this; `write()` must too, not write through it."""
 
@@ -856,6 +858,7 @@ def test_write_refuses_a_symlinked_receipts_directory(tmp_path: Path) -> None:
     assert list(outside.iterdir()) == []
 
 
+@pytest.mark.hostile_local
 def test_fixture_store_refuses_a_symlinked_root_without_chmodding_its_target(
     tmp_path: Path,
 ) -> None:
@@ -956,6 +959,7 @@ def test_a_corrupted_descriptor_is_named_unreadable_rather_than_unclassifiable(
     assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
 
 
+@pytest.mark.hostile_local
 def test_a_control_sequence_in_a_saved_record_never_reaches_the_terminal(
     tmp_path: Path,
 ) -> None:
@@ -1004,6 +1008,7 @@ def test_a_record_too_large_to_be_one_of_ours_is_refused_rather_than_read(
         surface.descriptor.load()
 
 
+@pytest.mark.hostile_local
 def test_a_fifo_at_a_recorded_path_cannot_hang_a_read_only_verb(tmp_path: Path) -> None:
     """Opening a FIFO for reading blocks until a writer appears, so the check
     has to be on the open descriptor and the open has to be non-blocking.
@@ -1072,6 +1077,7 @@ def test_two_writers_cannot_both_claim_one_fixture_object(tmp_path: Path) -> Non
         assert "different bytes" in str(refusals[0])
 
 
+@pytest.mark.hostile_local
 def test_a_fixture_object_key_that_is_a_symlink_is_never_verified(tmp_path: Path) -> None:
     root = tmp_path / "volume"
     (root / "volume").mkdir(parents=True)
@@ -1082,6 +1088,7 @@ def test_a_fixture_object_key_that_is_a_symlink_is_never_verified(tmp_path: Path
     assert LocalFixtureObjectStore(root).inspect("volume/page.bin") is None
 
 
+@pytest.mark.hostile_local
 @pytest.mark.parametrize("referent_bytes", (b"payload", b"different"))
 def test_a_symlink_planted_during_fixture_object_publication_is_refused(
     tmp_path: Path,
@@ -1117,6 +1124,7 @@ def test_a_symlink_planted_during_fixture_object_publication_is_refused(
     assert store.puts == []
 
 
+@pytest.mark.hostile_local
 def test_inspect_refuses_a_symlink_planted_as_the_object_is_opened(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1382,6 +1390,7 @@ def test_provider_preview_faults_are_named_and_a_retry_is_safe(
     assert prepared.result.preview is not None
 
 
+@pytest.mark.hostile_local
 def test_a_planted_link_at_the_paid_launch_claim_is_refused_not_followed(
     tmp_path: Path,
 ) -> None:
@@ -2101,6 +2110,7 @@ def test_load_request_refuses_an_oversized_file_before_json_deserialization(tmp_
     assert str(cli.MAX_REQUEST_BYTES) not in refusal.value.render()
 
 
+@pytest.mark.hostile_local
 def test_load_request_does_not_follow_a_symlink(tmp_path: Path) -> None:
     request = _request_json(tmp_path)
     alias = tmp_path / "request-alias.json"
@@ -2447,6 +2457,7 @@ def test_real_ingress_paths_are_made_absolute_against_the_operators_own_cwd(
     assert _argv_value(command, "--data-gate-policy") == str(elsewhere / "data-gate-policy.json")
 
 
+@pytest.mark.hostile_local
 def test_real_ingress_absolutization_preserves_a_symlink_for_the_doors_gate(
     tmp_path: Path,
 ) -> None:
@@ -2823,6 +2834,7 @@ def test_console_interrupt_at_the_interactive_prompt_never_prints_a_raw_tracebac
     assert "Traceback" not in captured
 
 
+@pytest.mark.hostile_local
 def test_cli_print_strips_control_bytes_but_keeps_its_lines_separate(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -4059,6 +4071,7 @@ def test_no_usable_scratch_directory_is_reported_in_the_operator_contract(
     assert exit_code == 1
 
 
+@pytest.mark.hostile_local
 def test_rehearsal_scratch_containment_compares_directory_identity(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     scratch = checkout / "scratch"
@@ -4127,6 +4140,7 @@ def test_dry_run_missing_launch_record_uses_the_operator_error_contract(
     assert refusal.value.code is ErrorCode.UNEXPECTED
 
 
+@pytest.mark.hostile_local
 @pytest.mark.parametrize("error_type", [OSError, FileNotFoundError])
 def test_dry_run_main_strips_control_bytes_from_an_os_error(
     error_type: type[OSError],
@@ -4328,6 +4342,7 @@ def test_status_refuses_to_present_a_malformed_manifest_digest_as_evidence(
     assert "does not bind its submission record digest" in str(refusal.value.detail)
 
 
+@pytest.mark.hostile_local
 def test_a_symlink_alias_cannot_hide_that_default_state_is_inside_the_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5754,6 +5769,7 @@ def test_a_serving_log_past_the_object_bound_refuses_by_itself(
     assert any("A serving log did not come home" in line for line in messages)
 
 
+@pytest.mark.hostile_local
 def test_a_symlink_where_a_serving_log_belongs_is_refused_and_left_alone(
     tmp_path: Path,
 ) -> None:

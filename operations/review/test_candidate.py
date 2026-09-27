@@ -246,6 +246,7 @@ def test_receipt_accepts_a_report_saved_with_windows_line_endings(tmp_path):
     assert Path(record["report"]).read_bytes() == report.read_bytes()
 
 
+@pytest.mark.hostile_local
 def test_receipt_refuses_a_symlinked_report(tmp_path):
     base, candidate = repository(tmp_path)
     report = tmp_path / "workbench" / "raw" / "review.md"
@@ -359,6 +360,7 @@ def test_partial_write_never_publishes_a_receipt_or_leaves_a_temp_file(tmp_path,
     assert not list(directory.glob(".*.tmp-*"))
 
 
+@pytest.mark.hostile_local
 def test_receipt_refuses_a_preexisting_symlink_at_its_final_name(tmp_path):
     base, candidate = repository(tmp_path)
     report = tmp_path / "workbench" / "raw" / "review.md"
