@@ -305,6 +305,23 @@ def test_a_folder_that_cannot_be_synced_refuses_the_backup(tmp_path: Path, monke
     assert not list((mac / "snapshots" / "sha256").iterdir())
 
 
+def test_an_existing_root_does_not_need_its_parent_synced_again(
+    tmp_path: Path, monkeypatch
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+    sync_run_tree(volume, run_id, mac)
+    real_fsync = os.fsync
+
+    def fsync(descriptor: int) -> None:
+        if os.path.samestat(os.fstat(descriptor), os.stat(tmp_path)):
+            raise OSError(errno.EIO, "Input/output error")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(backup_module.os, "fsync", fsync)
+    assert sync_run_tree(volume, run_id, mac).reused == 2
+
+
 def test_backup_cli_uses_a_confined_credential_free_child(tmp_path: Path, monkeypatch) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
