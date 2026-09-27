@@ -1288,17 +1288,8 @@ def churro_capture_system_prompt(capture: dict[str, Any]) -> str | None:
 
 
 def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
-    """Verify one capture's derived record against its authoritative raw blob."""
+    """Verify one capture's derived record against raw bytes already digest-checked."""
     capture = validate_native_capture(value)
-    if not isinstance(raw, bytes):
-        raise SchemaRefusal("a page Testimonium raw response is not bytes")
-    actual_digest = digest_bytes(raw)
-    if actual_digest != capture["raw_response_ref"]["sha256"]:
-        raise SchemaRefusal(
-            "a page Testimonium raw response has digest "
-            f"{actual_digest}, not its native capture digest "
-            f"{capture['raw_response_ref']['sha256']}"
-        )
     if capture["adapter"] != "churro.v1":
         return capture
     derived = derive_churro_capture(

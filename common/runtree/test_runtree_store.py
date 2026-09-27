@@ -27,7 +27,7 @@ from common.chairs.models import ChairIdentity, ServingDetails
 from common.chairs.receipts import build_receipt
 from common.contracts.approval import ApprovalRecordReference, build_approval_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.envelope import build_envelope
+from common.contracts.envelope import build_envelope, read_verified
 from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS
@@ -1880,6 +1880,23 @@ def test_read_bytes_refuses_a_file_grown_past_the_tree_read_limit(tmp_path, monk
     with pytest.raises(SchemaRefusal, match="tree read limit"):
         tree.read_bytes(relative)
     assert artifact.stat().st_size > 4  # the file itself was never truncated
+
+
+def test_a_verified_read_refusal_names_no_host_path(tmp_path, monkeypatch):
+    """The refusal text becomes a sealed reason (a not-run Testimonium, a held act)."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    present = {
+        "relative_path": tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]),
+        "sha256": "0" * 64,
+    }
+    missing = {"relative_path": tree.blob_path(DESIGNATOR, "1" * 64), "sha256": "1" * 64}
+    monkeypatch.setattr(runtree_store, "_MAX_TREE_READ_BYTES", 4)
+    for ref in (missing, present):
+        with pytest.raises(SchemaRefusal) as refused:
+            read_verified(tree.read_bytes, ref, "evidence")
+        assert str(tmp_path) not in str(refused.value)
 
 
 def test_read_run_refuses_a_run_authority_grown_past_the_record_read_limit(tmp_path, monkeypatch):

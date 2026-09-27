@@ -46,7 +46,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import self_hash, verify_self_hash  # noqa: E402
 from common.contracts.envelope import read_verified, validate_envelope  # noqa: E402
-from common.contracts.errors import ContractError  # noqa: E402
+from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, page_id  # noqa: E402
 from common.contracts.stages import DOOR, EXEMPLAR  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
@@ -606,11 +606,11 @@ def _verify_derivative_admission(
     ):
         raise ContractError("a derivative page does not carry a valid immutable parent frame")
     parent_ref = {"relative_path": parent["stored_at"], "sha256": parent["sha256"]}
-    parent_bytes = read_verified(
-        tree.read_bytes,
-        parent_ref,
-        "a derivative page's submitted master (restore it from the submitted bytes to retry)",
-    )
+    try:
+        parent_bytes = read_verified(tree.read_bytes, parent_ref, "a derivative page's master")
+    except SchemaRefusal as error:
+        remedy = "restore the content-addressed master from the submitted bytes before retrying"
+        raise SchemaRefusal(f"{error}; {remedy}") from error
     return parent_ref, parent, parent_bytes
 
 

@@ -411,7 +411,8 @@ class RunTree:
             # A symlink loop (RuntimeError, or OSError) or an unrepresentable path
             # (ValueError) is a path the tree cannot resolve, not a crash.
             raise SchemaRefusal(
-                f"{relative_path!r} could not be resolved inside the run tree: {error}"
+                f"{relative_path!r} could not be resolved inside the run tree: "
+                f"{type(error).__name__}"
             ) from error
         # Not a string prefix, which would accept the sibling `.../r1-scratch`.
         if not resolved.is_relative_to(self.root):
@@ -1482,11 +1483,13 @@ def _read_bytes_bounded(path: Path, *, max_bytes: int | None = None) -> bytes:
         size = os.fstat(handle.fileno()).st_size
         if size > max_bytes:
             raise SchemaRefusal(
-                f"{path} is {size} bytes, above the {max_bytes}-byte tree read limit"
+                f"{path.name} is {size} bytes, above the {max_bytes}-byte tree read limit"
             )
         data = handle.read(max_bytes + 1)
     if len(data) > max_bytes:
-        raise SchemaRefusal(f"{path} grew above the {max_bytes}-byte tree read limit while read")
+        raise SchemaRefusal(
+            f"{path.name} grew above the {max_bytes}-byte tree read limit while read"
+        )
     return data
 
 

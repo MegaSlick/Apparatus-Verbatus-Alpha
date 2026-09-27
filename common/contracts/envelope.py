@@ -308,9 +308,8 @@ def verify_input_bytes(ref: dict[str, str], data: bytes) -> None:
     actual = digest_bytes(data)
     if actual != ref["sha256"]:
         raise SchemaRefusal(
-            f"input {ref['relative_path']} has digest {actual}, but the artifact "
-            f"that referenced it recorded {ref['sha256']}: the bytes changed under "
-            "a sealed reference, so nothing downstream may act on them"
+            f"input {ref['relative_path']} has digest {actual}, but its reference recorded "
+            f"{ref['sha256']}: the bytes changed under a sealed reference"
         )
 
 
@@ -325,11 +324,12 @@ def read_verified(
     try:
         data = read_bytes(relative_path)
     except OSError as error:
-        raise refusal(f"{what} {relative_path} could not be read: {error}") from error
+        reason = error.strerror or type(error).__name__
+        raise refusal(f"{what} {relative_path} could not be read: {reason}") from error
     actual = digest_bytes(data)
     if actual != sha256:
         raise refusal(
-            f"{what} {relative_path} has digest {actual}, not the reference digest {sha256}: "
+            f"{what} {relative_path} has digest {actual}, but its reference recorded {sha256}: "
             "the bytes changed under a sealed reference"
         )
     return data

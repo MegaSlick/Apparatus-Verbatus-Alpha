@@ -837,7 +837,7 @@ def test_a_tampered_run_snapshot_is_refused_by_the_register_reader(tmp_path):
     snapshot_path = tree.root / tree.blob_path("door", run["register_digest"])
     snapshot_path.write_bytes(empty_register())
 
-    with pytest.raises(IncompatibleReuse, match="not the reference digest"):
+    with pytest.raises(IncompatibleReuse, match="changed under a sealed reference"):
         read_snapshot(tree, run)
 
 
