@@ -81,7 +81,6 @@ from operations.submit import gate, submit
 
 @pytest.fixture(autouse=True)
 def _proposal_tests_use_a_preverified_attempt_chain(monkeypatch):
-    """These tests isolate proposal accounting; attempt evidence is tested separately."""
     monkeypatch.setattr(stage_contract, "_verify_structure_attempt_chain", lambda *_a, **_k: None)
 
 

@@ -69,8 +69,6 @@ from common.stage import (  # noqa: E402
     RESIDUAL_ENUMERATION_COMPLETE,
     SECONDARY_PROPOSER_CHAIR,
     STRUCTURE_ANSWER_KIND,
-    STRUCTURE_ANSWER_RECORD_SCHEMA,
-    STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
     STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
     StageContext,
     _stage_records,
@@ -82,6 +80,7 @@ from common.stage import (  # noqa: E402
     fixture_serving_details,
     open_stage_context,
     page_residual_act_key,
+    refuse_retired_structure_answer,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -395,8 +394,7 @@ def _validate_structure_answer_payload(payload: object, *, terminal: bool = True
     if not isinstance(payload, dict):
         raise ContractError("a Designator structure-answer payload is not an object")
     schema = payload.get("schema")
-    if schema in {STRUCTURE_ANSWER_RECORD_SCHEMA, STRUCTURE_ANSWER_RECORD_SCHEMA_V2}:
-        raise ContractError(f"sealed under {schema}, which this build no longer reads; re-run")
+    refuse_retired_structure_answer(schema, subject="structure answer", error_type=ContractError)
     if schema == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
         record = _closed_object(payload, _STRUCTURE_ANSWER_V3_FIELDS, "v3 structure-answer payload")
         _closed_object(
@@ -419,7 +417,7 @@ def _validate_structure_answer_payload(payload: object, *, terminal: bool = True
     if (
         not is_plain_int(maximum)
         or not 1 <= maximum <= ABSOLUTE_STRUCTURE_ATTEMPT_CEILING
-        or policy["seed_schedule"] not in {"fixed-base", "base-plus-attempt-ordinal-minus-one"}
+        or policy["seed_schedule"] != "base-plus-attempt-ordinal-minus-one"
     ):
         raise ContractError("a Designator structure answer has an invalid attempt policy")
     ordinal = record["attempt_ordinal"]
@@ -2533,7 +2531,7 @@ def _published_structure_attempts(
         for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND)
         if row["subject_id"] == page_id
     ]
-    rows.sort(key=lambda row: row["payload"].get("attempt_ordinal", 0))
+    rows.sort(key=lambda row: row["payload"]["attempt_ordinal"])
     result: list[tuple[structure_pass.PageAnswer, dict[str, str]]] = []
     for ordinal, row in enumerate(rows, start=1):
         payload = row["payload"]
@@ -2555,9 +2553,7 @@ def _published_structure_attempts(
             )
         if result:
             prior_seed = result[-1][0].record["attempt_seed"]
-            expected_seed = (
-                prior_seed if attempt_policy["seed_schedule"] == "fixed-base" else prior_seed + 1
-            )
+            expected_seed = prior_seed + 1
             if payload["attempt_seed"] != expected_seed:
                 raise ContractError(
                     f"structure attempts for page {page_id} do not follow the sealed seed schedule"
@@ -2799,6 +2795,14 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     temperature = structure_pass.executable_temperature(decoding_policy)
     attempt_policy = structure_recovery_policy(decoding_policy)
     identity = structure_pass.resolved_structure_chair(context)
+    for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ANSWER_KIND):
+        payload = row.get("payload")
+        if isinstance(payload, Mapping):
+            refuse_retired_structure_answer(
+                payload.get("schema"),
+                subject=f"page {row.get('subject_id')}'s structure answer",
+                error_type=ContractError,
+            )
     secondary = _publish_secondary_provenance(context, _live_secondary_provenance(context))
 
     page_cache: dict[int, dict] = {}

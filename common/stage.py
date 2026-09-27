@@ -308,7 +308,21 @@ STRUCTURE_ANSWER_KIND: Final = "structure-answer"
 STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v1"
 STRUCTURE_ANSWER_RECORD_SCHEMA_V2: Final = "designator-structure-answer.v2"
 STRUCTURE_ANSWER_RECORD_SCHEMA_V3: Final = "designator-structure-answer.v3"
-STRUCTURE_ANSWER_RECORD_SCHEMAS: Final = frozenset({STRUCTURE_ANSWER_RECORD_SCHEMA_V3})
+RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS: Final = frozenset(
+    {STRUCTURE_ANSWER_RECORD_SCHEMA, STRUCTURE_ANSWER_RECORD_SCHEMA_V2}
+)
+RETIRED_RESIDUAL_ENUMERATION: Final = "withheld-page-held"
+
+
+def refuse_retired_structure_answer(
+    schema: object, *, subject: str, error_type: type[Exception] = FatalAccounting
+) -> None:
+    if isinstance(schema, str) and schema in RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS:
+        raise error_type(
+            f"{subject} was sealed under {schema}, which this build no longer reads; re-run"
+        )
+
+
 STRUCTURE_ATTEMPT_KIND: Final = "structure-attempt"
 STRUCTURE_ANSWER_PARSED: Final = "parsed"
 
@@ -2257,15 +2271,10 @@ def _verify_real_act_denominator(
         payload = answer.get("payload")
         if not isinstance(page_id, str) or not isinstance(payload, Mapping):
             raise FatalAccounting("a terminal structure answer does not bind a page payload")
-        if payload.get("schema") in {
-            STRUCTURE_ANSWER_RECORD_SCHEMA,
-            STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
-        }:
-            raise FatalAccounting(
-                f"page {page_id}'s terminal structure answer was sealed under "
-                f"{payload['schema']}, which this build no longer reads; re-run"
-            )
-        if payload.get("schema") not in STRUCTURE_ANSWER_RECORD_SCHEMAS:
+        refuse_retired_structure_answer(
+            payload.get("schema"), subject=f"page {page_id}'s terminal structure answer"
+        )
+        if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
             raise FatalAccounting(
                 f"page {page_id}'s terminal structure answer has unsupported schema "
                 f"{payload.get('schema')!r}"
@@ -2389,18 +2398,13 @@ def _verify_structure_attempt_chain(
 
     Whole-run callers pass a shared attempt index and decoding read.
     """
-    if payload.get("schema") in {STRUCTURE_ANSWER_RECORD_SCHEMA, STRUCTURE_ANSWER_RECORD_SCHEMA_V2}:
-        raise FatalAccounting(
-            f"page {page_id}'s terminal structure answer was sealed under {payload['schema']}, "
-            "which this build no longer reads; re-run"
-        )
     policy = payload.get("attempt_policy")
     references = payload.get("attempts")
     ordinal = payload.get("attempt_ordinal")
     if (
         not isinstance(policy, Mapping)
         or set(policy) != {"max_attempts", "seed_schedule"}
-        or policy.get("seed_schedule") not in {"fixed-base", "base-plus-attempt-ordinal-minus-one"}
+        or policy.get("seed_schedule") != "base-plus-attempt-ordinal-minus-one"
         or not is_plain_int(policy.get("max_attempts"))
         or not 1 <= policy["max_attempts"] <= 3
         or not is_plain_int(ordinal)
@@ -2448,13 +2452,10 @@ def _verify_structure_attempt_chain(
                 f"reference at ordinal {expected_ordinal}: {error}"
             ) from error
         attempt = record.get("payload")
-        if isinstance(attempt, Mapping) and attempt.get("schema") in {
-            STRUCTURE_ANSWER_RECORD_SCHEMA,
-            STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
-        }:
-            raise FatalAccounting(
-                f"page {page_id}'s structure attempt {expected_ordinal} was sealed under "
-                f"{attempt['schema']}, which this build no longer reads; re-run"
+        if isinstance(attempt, Mapping):
+            refuse_retired_structure_answer(
+                attempt.get("schema"),
+                subject=f"page {page_id}'s structure attempt {expected_ordinal}",
             )
         prior = references[: expected_ordinal - 1]
         if (
@@ -2474,11 +2475,7 @@ def _verify_structure_attempt_chain(
                 "identity, page, policy, config, and prior history"
             )
         if attempts:
-            expected_seed = (
-                attempts[-1]["attempt_seed"]
-                if policy["seed_schedule"] == "fixed-base"
-                else attempts[-1]["attempt_seed"] + 1
-            )
+            expected_seed = attempts[-1]["attempt_seed"] + 1
             if attempt["attempt_seed"] != expected_seed:
                 raise FatalAccounting(
                     f"page {page_id}'s structure attempt {expected_ordinal} violates its "
@@ -2635,11 +2632,11 @@ def verify_structure_attempt_call(
     attempt_inputs: object = None,
 ) -> None:
     """Bind one structure attempt to its retained response or transport call."""
-    if payload.get("schema") in {STRUCTURE_ANSWER_RECORD_SCHEMA, STRUCTURE_ANSWER_RECORD_SCHEMA_V2}:
-        raise ContractError(
-            f"structure attempt for page {page_id} was sealed under {payload['schema']}, "
-            "which this build no longer reads; re-run"
-        )
+    refuse_retired_structure_answer(
+        payload.get("schema"),
+        subject=f"structure attempt for page {page_id}",
+        error_type=ContractError,
+    )
     if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
         raise ContractError(f"structure attempt for page {page_id} has no supported schema")
     presented = _verify_structure_request_image(context, payload, page_id, attempt_inputs)
@@ -2854,10 +2851,13 @@ def _verify_proposal_act_row(
         subject_id=row["page_id"],
     )
     payload = _payload_of(answer)
-    if payload.get("schema") not in STRUCTURE_ANSWER_RECORD_SCHEMAS:
+    refuse_retired_structure_answer(
+        payload.get("schema"), subject=f"act {act_id}'s page's structure answer"
+    )
+    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
         raise FatalAccounting(
-            f"act {act_id}'s page names a structure answer whose schema is "
-            f"{payload.get('schema')!r}, not one of {sorted(STRUCTURE_ANSWER_RECORD_SCHEMAS)!r}"
+            f"act {act_id}'s page names a structure answer with unsupported schema "
+            f"{payload.get('schema')!r}"
         )
     if row["page_id"] not in verified_structure_attempt_pages:
         _verify_structure_attempt_chain(context, payload, row["page_id"])
@@ -3094,7 +3094,7 @@ def _verify_every_conservation_residual_is_accounted(
     for page_id, record in _designator_records_by_subject(context, "conservation").items():
         payload = _payload_of(record)
         enumeration = payload.get("residual_enumeration")
-        if enumeration == "withheld-page-held":
+        if enumeration == RETIRED_RESIDUAL_ENUMERATION:
             raise FatalAccounting(
                 f"page {page_id}'s conservation record was sealed under {enumeration}, "
                 "which this build no longer reads; re-run"
@@ -3340,7 +3340,7 @@ PAGE_RESIDUAL_AGGREGATE_REASON_CODE: Final = "residual-components-below-presenta
 
 
 def page_residual_act_key(page_ordinal: int) -> str:
-    """The label of the one act a page held for over-bound residual scatter becomes.
+    """The label of the one act holding a page's aggregate residuals.
 
     A label only; identity comes from the ``page-residual`` act class.
     """
@@ -3613,7 +3613,7 @@ def _verify_page_residual_premise(
             f"act {act_id}'s page-residual hold does not name an integer residual component count"
         )
     enumeration = payload.get("residual_enumeration")
-    if enumeration == "withheld-page-held":
+    if enumeration == RETIRED_RESIDUAL_ENUMERATION:
         raise FatalAccounting(
             f"act {act_id}'s conservation record was sealed under {enumeration}, "
             "which this build no longer reads; re-run"

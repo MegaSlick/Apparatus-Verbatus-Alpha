@@ -2125,6 +2125,10 @@ def _ask(client, width: int, height: int, monkeypatch):
         temperature=0,
         decoding_config_sha256="c" * 64,
         provenance={},
+        attempt_policy={
+            "max_attempts": 3,
+            "seed_schedule": "base-plus-attempt-ordinal-minus-one",
+        },
     )
 
 
@@ -2228,6 +2232,37 @@ def test_retired_structure_answer_schema_is_refused_by_name(schema):
         match=f"sealed under {schema}, which this build no longer reads; re-run",
     ):
         designator._validate_structure_answer_payload(record)
+
+
+@pytest.mark.parametrize(
+    "schema", ["designator-structure-answer.v1", "designator-structure-answer.v2"]
+)
+def test_retired_answer_refuses_before_secondary_provenance_publish(monkeypatch, schema):
+    context = SimpleNamespace(
+        args=SimpleNamespace(decoding_config=None),
+        tree=object(),
+        require_sealed_config=lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        designator, "_initial_pages_and_policies", lambda unused: ({}, {}, None, None)
+    )
+    monkeypatch.setattr(designator, "load_decoding_policy", lambda unused: ({}, "0" * 64))
+    monkeypatch.setattr(designator.structure_pass, "executable_temperature", lambda unused: 1)
+    monkeypatch.setattr(designator, "structure_recovery_policy", lambda unused: {})
+    monkeypatch.setattr(designator.structure_pass, "resolved_structure_chair", lambda unused: None)
+    monkeypatch.setattr(
+        designator,
+        "_stage_records",
+        lambda *_args: [{"subject_id": "page-1", "payload": {"schema": schema}}],
+    )
+    monkeypatch.setattr(
+        designator,
+        "_publish_secondary_provenance",
+        lambda *_args: pytest.fail("secondary provenance was published before refusal"),
+    )
+
+    with pytest.raises(ContractError, match=f"sealed under {schema}"):
+        designator.live_initial_pass(context, None, "small")
 
 
 # One page written to raise every finding the layout grammar has: a nested
