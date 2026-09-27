@@ -178,14 +178,7 @@ def test_a_card_the_placement_table_has_not_reviewed_is_refused() -> None:
 
 
 def test_the_rendered_request_carries_no_transfer_half() -> None:
-    """Boot B consumes a submission already on the volume.
-
-    A bootstrap ``--submission-manifest`` with no ``--transfer-target-factory``
-    would be refused after pod creation, but before the ~10 GB environment
-    sync. The run half's own ``--submission-manifest`` -- a different flag,
-    read rather than sent -- is still there, because that is the submission
-    the run reads.
-    """
+    """Boot B consumes a submission already on the volume."""
 
     nested = _nested_argv(filled_request())
     separator = nested.index("--")
@@ -206,13 +199,7 @@ def test_the_rendered_request_states_a_container_disk() -> None:
 
 
 def test_a_real_pod_run_argv_constructs_a_pod_create_request() -> None:
-    """Two nested halves, one ``--report-path`` each, and they differ.
-
-    Before the fix ``PodCreateRequest.__post_init__`` counted both halves
-    together and raised "at most one nested --report-path value" for every
-    Boot B request that could exist, before any preview, lease or provider
-    call.
-    """
+    """Two nested halves, one ``--report-path`` each, and they differ."""
 
     request = validated_pod_request(filled_request())
 

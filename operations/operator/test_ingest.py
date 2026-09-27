@@ -218,16 +218,7 @@ def test_ingest_commit_failure_shows_the_workers_own_reason_not_a_raw_json_dict(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
-    """An uncertain commit may follow writes, so its reason must remain actionable.
-
-    The refusal is named, not merely counted. Every custody failure also exits 2
-    and also renders "What happened:" and "What it means:" without JSON, so the
-    original assertions were satisfied by a console that refused to open at all
-    and never reached the unwritable folder this test sets up. That is not a
-    hypothetical: on a host whose `setpriv` predates Landlock this test passed
-    while measuring nothing, which is what `requires_host_boundary` above now
-    prevents. Asserting *which* refusal arrived keeps it honest on any host.
-    """
+    """An uncertain commit may follow writes, so its reason must remain actionable."""
     source, output, policy, _approved = _inputs(tmp_path)
     output.chmod(0o500)
     if os.access(output, os.W_OK):  # pragma: no cover - root bypasses mode bits
@@ -443,12 +434,7 @@ def test_ingest_does_not_publish_ready_when_the_register_digest_is_not_verified(
 def test_ingest_commit_refuses_when_the_submitted_folder_changed_after_the_preview(
     tmp_path: Path,
 ):
-    """Preview and commit are two independent worker launches with no shared state.
-
-    Without a digest pin, a source file changing in that window would be committed
-    silently different from what the operator was just shown and approved on screen —
-    the exact TOCTOU a shown-before-written promise has to close.
-    """
+    """Preview and commit are two independent worker launches with no shared state."""
     source, output, policy, _approved = _inputs(tmp_path)
     previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
     preview_summary = ingest_worker._summary(previewed)
@@ -482,12 +468,7 @@ def test_ingest_commit_refuses_when_the_output_directory_inode_changed_after_pre
 def test_ingest_commit_refuses_when_the_confirmation_file_changed_after_the_preview(
     tmp_path: Path,
 ):
-    """A confirmation swapped in after the shown preview must not commit silently.
-
-    Both the previewed and swapped confirmations trace to the same evidence manifest
-    (so the producer's own evidence-binding check cannot catch the swap on its own);
-    only the pinned confirmation digest distinguishes them.
-    """
+    """A confirmation swapped in after the shown preview must not commit silently."""
     source, output, policy, _approved = _inputs(tmp_path)
     first = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
     pair = first.evidence[0]["both_digests"]
@@ -746,13 +727,7 @@ def test_ingest_commit_refuses_when_the_instrument_settings_changed_after_the_pr
 def test_ingest_commit_refuses_when_the_data_handling_policy_changed_after_the_preview(
     tmp_path: Path,
 ):
-    """The gate authority shown by preview is a mutable input too.
-
-    The path itself travels unchanged in the request, but both confined children
-    read its bytes independently. Even a semantically identical rewrite is a new
-    policy document, so commit must not silently proceed under a policy other than
-    the exact one whose storage check the preview reported.
-    """
+    """The gate authority shown by preview is a mutable input too."""
     source, output, policy, _approved = _inputs(tmp_path)
     previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
     preview_summary = ingest_worker._summary(previewed)
@@ -999,14 +974,7 @@ def test_a_failed_preview_never_tells_the_operator_records_may_have_been_written
 def test_a_replayed_commit_can_only_ever_write_what_its_pin_already_described(
     tmp_path: Path,
 ):
-    """The pin is an equality test: it refuses, and it never authorises.
-
-    Replaying a commit request with an old pin is the third failure mode the pin
-    has to survive. It cannot launder a different write: another output inode is
-    refused even when every input digest still matches, and the folder that already
-    holds the first result meets the empty-folder requirement before anything is
-    written, so no record is ever replaced.
-    """
+    """The pin is an equality test: it refuses, and it never authorises."""
     source, first_output, policy, approved = _inputs(tmp_path)
     previewed = ingest_worker._prepare(_request(source, first_output, policy, operation="preview"))
     summary = ingest_worker._summary(previewed)

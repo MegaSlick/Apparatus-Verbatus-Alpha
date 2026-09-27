@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from . import cli
+from .conftest import configured_spend_toml
 from .controller_armer import ChannelControllerArmer, default_supervisor_argv
 from .fake_provider import FakeProvider
 from .launch import LaunchState, PodRuntime
@@ -128,23 +129,7 @@ def armer() -> ChannelControllerArmer:
     )
 
 
-CONFIGURED_SPEND_TOML = "\n".join(
-    [
-        'schema = "pod-spend.v3"',
-        'state = "configured"',
-        'currency = "USD"',
-        'max_hourly_usd = "1.00"',
-        'max_estimated_metered_cost_usd = "5.00"',
-        'account_balance_floor_usd = "50.00"',
-        'account_balance_alert_usd = "75.00"',
-        "hard_lifetime_seconds = 3600",
-        "laptop_heartbeat_timeout_seconds = 30",
-        "shutdown_poll_interval_seconds = 1",
-        "shutdown_deadline_seconds = 8",
-        "billing_cutoff_margin_seconds = 3600",
-        "",
-    ]
-)
+CONFIGURED_SPEND_TOML = configured_spend_toml(max_estimated_metered_cost_usd="5.00")
 """A configured test policy for the `cli.main` drills. `config/spend.toml` is
 the project lead's and stays unconfigured."""
 
@@ -179,12 +164,7 @@ def provider_for(card: str) -> FakeProvider:
 
 
 def test_an_unlisted_card_is_refused_before_any_provider_call(tmp_path: Path) -> None:
-    """The refusal names the card and every reviewed row, and nothing is asked.
-
-    "Before any provider call" is asserted literally: `FakeProvider` records
-    every verb it is asked for, including the unpriced `estimate` read, and the
-    list is empty.
-    """
+    """The refusal names the card and every reviewed row, and nothing is asked."""
 
     provider = provider_for("fake-48gb")
 
@@ -235,13 +215,7 @@ def test_the_stage_one_card_passes_the_gate_to_the_provider(tmp_path: Path) -> N
 
 
 def test_the_ceiling_is_net_of_the_volume_the_provider_quotes(tmp_path: Path) -> None:
-    """A pod that fits alone and not beside its volume is refused, by name.
-
-    $0.27 fits under $0.30; $0.27 plus a $0.05/h volume does not. The first
-    check (before any provider call) cannot know the volume rate, so this
-    refusal comes from the second one, immediately after the estimate and still
-    before anything is created.
-    """
+    """A pod that fits alone and not beside its volume is refused, by name."""
 
     provider = provider_for(A5000)
 

@@ -357,12 +357,7 @@ def test_write_shown_confirmation_refuses_a_malformed_schema(tmp_path: Path):
 
 
 def test_a_tuple_wrapped_payload_cannot_carry_a_preference_field_onto_disk(tmp_path: Path):
-    """The check must walk what the serializer writes, not what the object looks like.
-
-    `canonical_bytes` renders a tuple as a JSON array, while
-    `refuse_capture_preference` walks dicts and lists. Reparse-before-validation
-    closes that shape divergence.
-    """
+    """The check must walk what the serializer writes, not what the object looks like."""
     pinned = _pinned_draft(tmp_path)
     cluster = dict(pinned["clusters"][0])
     cluster["preferred"] = "b" * 64
@@ -640,16 +635,7 @@ def test_acceptance_refuses_one_path_for_state_and_confirmation(tmp_path: Path):
 
 
 def test_acceptance_refuses_case_variant_state_and_confirmation_paths(tmp_path: Path):
-    """APFS is case-insensitive by default; two spellings must not alias silently.
-
-    Neither `Path.resolve()` (which does not correct case) nor `samefile()`
-    (which needs both paths to already exist) can see this collision before
-    either file exists, so an operator naming the state journal `STATE.JSON`
-    and the confirmation `state.json` would otherwise journal the acceptance
-    to one directory entry and then have the confirmation's unconditional
-    `os.replace` silently clobber it -- destroying the just-written journal
-    with no refusal.
-    """
+    """APFS is case-insensitive by default; two spellings must not alias silently."""
     batch = _Batch(tmp_path)
     draft = batch.draft()
     state_path = tmp_path / "STATE.JSON"
@@ -1027,18 +1013,7 @@ def test_a_recorded_decision_makes_its_directory_entry_durable(
 
 
 def test_the_double_click_triage_route_shows_the_queue_and_records_no_decision(monkeypatch):
-    """Display-only is the design here, so it is held rather than left to drift.
-
-    Acceptance is pinned to `--preview-sha256`, the digest of the draft the
-    operator was shown. A blind prompt chain cannot honestly produce that: it
-    would ask someone to confirm a digest they never saw, which is the single
-    thing that confirmation exists to prevent. Decline is withheld alongside it
-    rather than shipping half a decision surface where a queue item can be
-    dismissed before its evidence is on screen.
-
-    If a later change does build a real interactive review surface, this test is
-    the thing it has to come and change on purpose — which is the point.
-    """
+    """Display-only is the design here, so it is held rather than left to drift."""
     from operations.operator import cli
 
     answers = iter(
@@ -1161,16 +1136,7 @@ def test_the_triage_verb_refuses_accept_and_decline_as_one_operator_act(
 def test_an_incomplete_triage_decision_writes_no_mode_record(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], flags: tuple[str, ...], refusal: str
 ):
-    """A command that refuses must not have claimed the batch's mode on its way.
-
-    The mode declaration was written before these flag sets were checked, and
-    `write_mode_declaration` refuses to rewrite a batch's declared mode once it
-    exists. So an operator whose first attempt was incomplete had the record
-    already standing, and correcting the invocation to a different `--mode` was
-    then refused by the abandoned attempt rather than accepted. The paths below
-    do not exist on purpose: the refusal has to arrive before anything is read
-    or written at all.
-    """
+    """A command that refuses must not have claimed the batch's mode on its way."""
     from operations.operator import cli
 
     mode_record = tmp_path / "mode.json"
@@ -1208,14 +1174,7 @@ def test_an_incomplete_triage_decision_writes_no_mode_record(
 def test_decision_arguments_without_a_decision_word_refuse_and_write_nothing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    """The reverse of the completeness checks, which guarded one direction only.
-
-    `--draft`, `--confirmation-out` and `--preview-sha256` are an acceptance's
-    companions. Supplied with no `--accept` or `--decline`, the command used to
-    load the queue, write the durable mode declaration, print the queue and exit
-    0: the operator was told their acceptance succeeded when nothing had been
-    journalled, and the batch's mode was claimed by that non-decision on the way.
-    """
+    """The reverse of the completeness checks, which guarded one direction only."""
     from operations.operator import cli
 
     mode_record = tmp_path / "mode.json"
@@ -1257,19 +1216,7 @@ def test_decision_arguments_without_a_decision_word_refuse_and_write_nothing(
 def test_a_decline_carrying_acceptance_arguments_records_nothing_at_all(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    """The wrong decision word with the right companions is its own refusal.
-
-    `--draft`, `--confirmation-out` and `--preview-sha256` belong to `--accept`.
-    Supplied alongside `--decline` they passed every guard, were ignored in
-    silence, and the decline was journalled with exit 0. Because a decided row is
-    never rewritten, the acceptance the operator was plainly assembling -- they
-    had produced a draft and its preview digest -- was then refused for that item
-    with "decision-already-recorded", permanently. The console had already told
-    them the command succeeded.
-
-    The real batch matters here: the refusal has to arrive before the queue is
-    even loadable, so nothing durable can be blamed on the inputs being missing.
-    """
+    """The wrong decision word with the right companions is its own refusal."""
     from operations.operator import cli
 
     batch = _Batch(tmp_path)

@@ -491,14 +491,7 @@ def test_served_by_must_be_a_real_name_or_nothing() -> None:
 
 
 def test_a_caller_built_profile_cannot_claim_a_measured_card(fixture_page: Path) -> None:
-    """The hole this guard closes, stated as the caller would have exploited it.
-
-    `PreflightRunner.run` takes the profile from its caller, and `measured` was
-    an ordinary constructor argument -- so anything that could call `run` could
-    hand it a profile declaring a card nobody read, and the receipt would have
-    published "real assembly measured on <whatever the caller typed>". The
-    profile is now refused at construction, before it can reach a runner at all.
-    """
+    """The hole this guard closes, stated as the caller would have exploited it."""
 
     with pytest.raises(ValueError, match="cannot declare itself measured"):
         GpuProfile(

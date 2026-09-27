@@ -106,17 +106,7 @@ def test_aggregate_bytes_read_are_bounded_even_when_nothing_is_retained(tmp_path
 
 
 def test_a_source_changed_while_its_digest_is_read_is_a_named_refusal(tmp_path, monkeypatch):
-    """A ledger may only bind one stable file, never a sequence of its revisions.
-
-    The real in-place rewrite still happens mid-read, so `_read_once` genuinely
-    reads a file that changed under it. What is mocked is only the *detection*
-    side (`_stable_file_metadata`, called exactly once before and once after):
-    a same-size rewrite's real effect on `mtime_ns`/`ctime_ns` is at the mercy of
-    the filesystem's clock resolution, and under enough scheduler load two writes
-    microseconds apart can land in the same tick -- making this test flake on a
-    real timer without the check itself being wrong. Forcing the two metadata
-    reads to disagree proves `_walk`'s own comparison, not the host clock.
-    """
+    """A ledger may only bind one stable file, never a sequence of its revisions."""
     folder = tmp_path / "batch"
     folder.mkdir()
     source = folder / "page.png"

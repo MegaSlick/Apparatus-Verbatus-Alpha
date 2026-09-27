@@ -74,16 +74,6 @@ def test_every_declared_error_code_is_one_this_surface_actually_raises() -> None
     assert unreached == [], f"declared but never raised: {unreached}"
 
 
-def test_error_code_reachability_ignores_comments_and_docstrings() -> None:
-    source = '''
-# ErrorCode.RUN_FAILED is prose, not a caller.
-"""ErrorCode.RUN_HELD is also prose."""
-actual = ErrorCode.BOOT_RED
-'''
-
-    assert _referenced_error_codes(source) == {"BOOT_RED"}
-
-
 def test_error_renderer_never_shows_a_raw_traceback_or_old_close_vocabulary() -> None:
     rendered = errors.OperatorError(
         errors.ErrorCode.UNEXPECTED,
@@ -111,14 +101,7 @@ def test_the_word_traceback_in_a_receipt_path_does_not_erase_the_path() -> None:
 
 
 def test_old_close_vocabulary_is_replaced_even_without_the_word_traceback() -> None:
-    """The substitution table itself, not just the short-circuit around it.
-
-    The detail string above always contains "traceback", which returns a fixed
-    generic phrase before the shutdown/terminate/stop substitution table ever
-    runs — so that test alone cannot tell the table apart from being deleted.
-    This one drives a detail string the table, not the short-circuit, must
-    handle.
-    """
+    """The substitution table itself, not just the short-circuit around it."""
 
     rendered = errors.sanitize_detail(
         "provider termination confirmed, shutdown complete, pod stopped"

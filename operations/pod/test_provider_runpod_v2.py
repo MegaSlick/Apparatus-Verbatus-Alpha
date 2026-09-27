@@ -1,11 +1,4 @@
-"""The RunPod REST v2 adapter, exercised through a fake transport only.
-
-Every payload below is built from the shapes RunPod's v2 documentation
-publishes (the pages are named in `provider_runpod.py`'s module docstring).
-No live call has been made, so these tests prove the
-adapter's *handling* of a documented shape, never that the provider answers
-that way. `test_provider_runpod.py` keeps the v1 shapes until v1 is deleted.
-"""
+"""Offline v2 adapter tests prove handling of documented shapes, not live provider responses."""
 
 from __future__ import annotations
 

@@ -93,7 +93,7 @@ def witnessed_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_has_not_run(
     witnessed_run: Path,
 ):
-    """Failing before F3's repair: this projection raised CONSOLE_TREE_UNREADABLE."""
+    """A partial run must remain readable with its available images."""
     projected = _projection(witnessed_run)
     tree = RunTree(witnessed_run, RUN_ID)
 
@@ -176,7 +176,7 @@ def test_opening_an_unfinished_run_changes_no_path_bytes_size_or_mtime(witnessed
 def test_the_failed_reproof_run_can_be_opened_and_understood_before_export(
     witnessed_run: Path, tmp_path: Path
 ):
-    """F1's held act is visible, with its reason and its images, before any export exists."""
+    """A held act remains visible before an export exists."""
     run_root = _writable_copy(witnessed_run, tmp_path / "runs")
     resumed = _orchestrate(run_root, "--from", "perlector", "--to", "recensor")
     assert resumed.returncode == 3, resumed.stderr
@@ -809,12 +809,7 @@ def test_a_run_authority_that_is_not_an_object_is_a_note_beside_the_page_count(t
 
 
 def test_a_nonexistent_run_id_is_a_wrong_command_not_damaged_evidence(tmp_path: Path):
-    """F035: a mistyped run id must not read as "preserve and investigate."
-
-    `RunTree.__init__` only validates the id's shape, so a run id naming
-    nothing reaches `projection()`'s own tree read, where it used to fall into
-    the catch-all meant for a tree that exists and failed verification.
-    """
+    """A mistyped run id must not be reported as damaged evidence."""
     run_root = tmp_path / "runs"
     run_root.mkdir()
 
@@ -829,7 +824,7 @@ def test_a_nonexistent_run_id_is_a_wrong_command_not_damaged_evidence(tmp_path: 
 def test_a_run_json_that_fails_verification_still_reads_as_damaged_not_missing(
     witnessed_run: Path, tmp_path: Path
 ):
-    """The other half of F035's split: an existing, damaged tree is unaffected."""
+    """A damaged tree must not be mistaken for a nonexistent run."""
     run_root = _writable_copy(witnessed_run, tmp_path / "runs")
     (run_root / RUN_ID / "run.json").write_bytes(b"not valid json")
 
@@ -1072,12 +1067,7 @@ def _delivered_act(uncertainty: dict, text: str = "alpha beta") -> dict:
 
 
 def test_a_published_span_is_shown_beside_the_state_that_says_who_did_not_report_it():
-    """The exhausted-cap projection mints spans on acts whose reader has no channel.
-
-    For a reader with no doubt channel that combination -- `not-assessed` beside real
-    published spans -- is the only way a span reaches this surface at all, and
-    the renderer used to print the state line and return, hiding exactly those.
-    """
+    """The exhausted-cap projection mints spans on acts whose reader has no channel."""
     lines = review_text.render(
         _delivered_act(
             {
@@ -1491,12 +1481,7 @@ def exported_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def test_a_held_acts_reading_and_doubt_survive_the_export(exported_run: Path):
-    """The screen this exists for shows a held act; the export writes it no text.
-
-    F3 closed this asymmetry for crops and witnesses by reading them from the
-    run tree; the reading and its doubt report were still on the wrong side of
-    it, so a held act showed its doubt line before the export and nothing after.
-    """
+    """The screen this exists for shows a held act; the export writes it no text."""
     projection = dataclasses.asdict(_projection(exported_run))
     assert projection["export"]["present"] is True
     held = [
@@ -1561,12 +1546,7 @@ def test_the_pre_export_reading_path_prints_every_state_the_same_way():
 def test_a_stopped_runs_own_render_carries_a_doubt_line_for_every_reading(
     witnessed_run: Path, tmp_path: Path
 ):
-    """The projection keys are pinned by a real run, not only by hand-built rows.
-
-    Before this, the keys `_reading_row` carries could have been renamed or
-    dropped and no test over a real tree would have noticed: the end-to-end
-    render assertions never looked for a doubt line.
-    """
+    """The projection keys are pinned by a real run, not only by hand-built rows."""
     run_root = _writable_copy(witnessed_run, tmp_path / "runs")
     resumed = _orchestrate(run_root, "--from", "perlector", "--to", "recensor")
     assert resumed.returncode == 3, resumed.stderr
@@ -1580,12 +1560,7 @@ def test_a_stopped_runs_own_render_carries_a_doubt_line_for_every_reading(
 
 
 def test_a_malformed_layer_beside_a_missing_assessment_is_still_refused():
-    """The absence line used to return before the layers were looked at.
-
-    A record with no assessment and a damaged span list printed one honest
-    sentence about the assessment and said nothing at all about the layer --
-    the same silence, one field over.
-    """
+    """The absence line used to return before the layers were looked at."""
     with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render(
             _delivered_act({"assessment": None, "uncertain_spans": "not a list", "gaps": []})

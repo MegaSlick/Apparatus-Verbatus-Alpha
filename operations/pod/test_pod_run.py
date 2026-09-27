@@ -877,26 +877,46 @@ def test_a_launch_bound_run_report_path_is_accepted(tmp_path: Path) -> None:
     assert _report(ws, "pod-run-report-launch-abc123.json")["state"] == "complete"
 
 
-def test_refuses_a_run_root_outside_the_volume(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("case", "keyword"),
+    (
+        ("run-root", "--run-root"),
+        ("run-id", "--run-id refused"),
+        ("submission-folder", "--submission-folder"),
+        ("submission-manifest", "--submission-manifest"),
+        ("submission-outside", "--submission-folder"),
+        ("data-policy-missing", "--data-gate-policy"),
+        ("data-policy-outside", "--data-gate-policy"),
+    ),
+)
+def test_run_plan_refusals_name_the_bad_argument(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], case: str, keyword: str
 ) -> None:
     ws = _prepared(tmp_path)
+    argv = _run_argv(ws)
+    if case == "run-root":
+        argv = _run_argv(ws, extra=("--run-root", str(tmp_path / "elsewhere")))
+    elif case == "run-id":
+        argv = _run_argv(ws, run_id="My-Run")
+    elif case == "submission-folder":
+        argv[argv.index("--submission-folder") + 1] = str(ws.volume / "submission" / "absent")
+    elif case == "submission-manifest":
+        (ws.volume / "submission" / "manifest.json").unlink()
+    elif case == "submission-outside":
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        argv[argv.index("--submission-folder") + 1] = str(elsewhere)
+    elif case == "data-policy-missing":
+        (ws.repository / "config" / "data_handling_policy.json").unlink()
+    else:
+        outside = tmp_path / "elsewhere-policy.json"
+        outside.write_text("{}", encoding="utf-8")
+        argv = _run_argv(ws, extra=("--data-gate-policy", str(outside)))
 
-    exit_code, _runner = _refused(
-        ws, _run_argv(ws, extra=("--run-root", str(tmp_path / "elsewhere")))
-    )
-
+    exit_code, runner = _refused(ws, argv)
     assert exit_code == EXIT_REFUSED
-    assert "--run-root" in capsys.readouterr().err
-
-
-def test_refuses_a_bad_run_id(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    ws = _prepared(tmp_path)
-
-    exit_code, _runner = _refused(ws, _run_argv(ws, run_id="My-Run"))
-
-    assert exit_code == EXIT_REFUSED
-    assert "--run-id refused" in capsys.readouterr().err
+    assert runner.calls == []
+    assert keyword in capsys.readouterr().err
 
 
 def test_a_refusal_report_write_failure_is_named_not_swallowed(
@@ -923,71 +943,6 @@ def test_a_refusal_report_write_failure_is_named_not_swallowed(
     assert "no space left on device" in err
 
 
-def test_refuses_a_missing_submission_folder_by_name(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _prepared(tmp_path)
-    argv = _run_argv(ws)
-    argv[argv.index("--submission-folder") + 1] = str(ws.volume / "submission" / "absent")
-
-    exit_code, _runner = _refused(ws, argv)
-
-    assert exit_code == EXIT_REFUSED
-    assert "--submission-folder" in capsys.readouterr().err
-
-
-def test_refuses_a_missing_submission_manifest_by_name(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _prepared(tmp_path)
-    (ws.volume / "submission" / "manifest.json").unlink()
-
-    exit_code, _runner = _refused(ws, _run_argv(ws))
-
-    assert exit_code == EXIT_REFUSED
-    assert "--submission-manifest" in capsys.readouterr().err
-
-
-def test_refuses_a_submission_outside_the_volume(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _prepared(tmp_path)
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    argv = _run_argv(ws)
-    argv[argv.index("--submission-folder") + 1] = str(elsewhere)
-
-    exit_code, _runner = _refused(ws, argv)
-
-    assert exit_code == EXIT_REFUSED
-    assert "--submission-folder" in capsys.readouterr().err
-
-
-def test_refuses_a_missing_data_gate_policy_by_name(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _prepared(tmp_path)
-    (ws.repository / "config" / "data_handling_policy.json").unlink()
-
-    exit_code, _runner = _refused(ws, _run_argv(ws))
-
-    assert exit_code == EXIT_REFUSED
-    assert "--data-gate-policy" in capsys.readouterr().err
-
-
-def test_refuses_a_data_gate_policy_outside_the_repository(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    ws = _prepared(tmp_path)
-    elsewhere = tmp_path / "elsewhere-policy.json"
-    elsewhere.write_text("{}", encoding="utf-8")
-
-    exit_code, _runner = _refused(ws, _run_argv(ws, extra=("--data-gate-policy", str(elsewhere))))
-
-    assert exit_code == EXIT_REFUSED
-    assert "--data-gate-policy" in capsys.readouterr().err
-
-
 def test_refuses_before_bootstrap_when_the_policy_does_not_admit_the_volume(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1012,17 +967,7 @@ def test_refuses_before_bootstrap_when_the_policy_does_not_admit_the_volume(
 def test_refuses_the_pod_mount_path_when_it_is_only_a_plain_directory(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The one path a real launch seals must actually be mounted, not merely present.
-
-    ``boot_a_request.py`` seals ``BOOT_A_VOLUME_MOUNT_PATH`` into every real
-    launch request. Neither ``bootstrap_main.write_probe`` (a writable
-    directory) nor ``gate.resolve_storage_roots`` (an existing directory)
-    proves that path is the attached network volume rather than an unmounted
-    local substitute on the pod's own ephemeral disk. This test stands a
-    plain temporary directory in for that path -- ``tmp_path`` is never
-    itself a mount point -- and expects the refusal named in
-    ``resolve_run_plan``, before the orchestrator or even the bootstrap runs.
-    """
+    """The one path a real launch seals must actually be mounted, not merely present."""
 
     ws = _prepared(tmp_path)
     monkeypatch.setattr(pod_run.boot_a_request, "BOOT_A_VOLUME_MOUNT_PATH", str(ws.volume))
@@ -1039,14 +984,7 @@ def test_refuses_the_pod_mount_path_when_it_is_only_a_plain_directory(
 def test_the_pre_bootstrap_refusal_names_a_root_this_machine_did_not_have(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Principle 2, on the path where nothing else gets to say it.
-
-    This gate runs before the bootstrap's own mount diagnostic, so on a pod
-    with the volume unmounted it is the only thing an operator reads. Naming
-    only the roots that resolved made "the policy does not admit it" look like
-    a policy that never listed the folder, when the truth is that the root
-    listing it was not there. The skipped root is named, never admitted.
-    """
+    """Principle 2, on the path where nothing else gets to say it."""
 
     ws = _prepared(tmp_path)
     absent = tmp_path / "never-mounted"
@@ -1917,16 +1855,7 @@ def test_the_real_catalogue_pins_one_serving_stack() -> None:
 
 
 def test_the_pod_dependency_group_carries_exactly_the_recipe_pins() -> None:
-    """The locked group and the catalogue's rows are the same bytes, both ways.
-
-    This was a strict expected failure while no `pod` group could be locked at all
-    (`transformers==4.57.1` wanted `huggingface-hub<1.0`). The group exists now, so
-    the reconciliation is live: `ServingManager` checks each `required_packages` pin
-    through `importlib.metadata` before it launches, and a group that drifted from
-    the catalogue would mean a pod that installs the stack and is then refused.
-    Every requirement must also carry the Linux/x86_64 marker, which is what keeps a
-    laptop `uv sync` from resolving torch.
-    """
+    """The locked group and the catalogue's rows are the same bytes, both ways."""
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     group = pyproject["dependency-groups"]["pod"]

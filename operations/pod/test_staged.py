@@ -14,9 +14,10 @@ from common.chairs import ChairIdentity, load_models_toml
 from common.contracts.stages import DESIGNATOR
 from common.runtree.store import RunTree
 
+from .conftest import SharedClock, standard_request
 from .fake_provider import FakeProvider
 from .launch import LaunchResult, LaunchState
-from .models import BILLING_CUTOFF_MARGIN_ENV, PodCreateRequest
+from .models import PodCreateRequest
 from .shutdown import CloseReport, VerifiedShutdown
 from .staged import (
     COLLECTION_BOOT_SCHEDULE,
@@ -35,42 +36,18 @@ from .staged import (
 START = datetime(2026, 8, 23, 12, tzinfo=UTC)
 
 
-class Clock:
-    def __init__(self) -> None:
-        self.seconds = 0.0
-
-    def now(self) -> datetime:
-        return START + timedelta(seconds=self.seconds)
-
-    def monotonic(self) -> float:
-        return self.seconds
-
-    def sleep(self, seconds: float) -> None:
-        self.seconds += seconds
+class Clock(SharedClock):
+    def __init__(self, seconds: float = 0.0) -> None:
+        super().__init__(START, seconds)
 
 
 def request(clock: Clock, *, name: str = "unit-17-stage") -> PodCreateRequest:
-    return PodCreateRequest(
-        name=name,
-        gpu_type="fake-48gb",
-        image="registry.example/verbatus@sha256:" + "a" * 64,
-        template="pinned-template",
-        volume_id="shared-run-volume",
-        volume_mount_path="/workspace/private",
-        docker_start_cmd=(
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "untracked.timer:factory",
-            "--bootstrap-command-json",
-            '["service"]',
-            "--report-path",
-            "/workspace/private/stage-report.json",
-        ),
+    return standard_request(
         hard_deadline=clock.now() + timedelta(minutes=5),
-        repository_commit="b" * 40,
-        metadata={BILLING_CUTOFF_MARGIN_ENV: "0"},
+        name=name,
+        report_path="/workspace/private/stage-report.json",
+        volume_id="shared-run-volume",
+        cutoff_margin=0,
     )
 
 
@@ -588,13 +565,7 @@ def test_close_report_for_another_pod_cannot_verify_the_active_boot(
 def test_a_boot_abandoned_before_its_close_has_unknown_cost_and_names_its_pod_on_the_volume(
     tmp_path: Path,
 ) -> None:
-    """The kill-between-create-and-close case is already a cost liability.
-
-    The lease store already knows the pod; what it cannot say is which
-    collection stage and which grant bought it. This record is that binding,
-    written before any work runs, so an operator recovering a run has the pod id
-    to type into a provider console and the grant to reconcile it against.
-    """
+    """The kill-between-create-and-close case is already a cost liability."""
 
     clock, _, _, subject = lifecycle(tmp_path)
     active = subject.boot(

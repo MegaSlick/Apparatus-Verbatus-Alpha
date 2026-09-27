@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-import ast
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from common.contracts import stages as stage_names
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal
 from common.contracts.stages import STAGES
 from common.runtree.store import RunTree
-from common.stage import ALWAYS_HELD_BOUNDARIES, RUN_MODES, held_advance_boundaries
-from conftest import code_text
+from common.stage import ALWAYS_HELD_BOUNDARIES, EXIT_HELD, RUN_MODES, held_advance_boundaries
 from operations.operator.errors import ErrorCode, OperatorError
 
 from . import advance, cli, review
@@ -25,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
-def _run(tmp_path: Path) -> tuple[Path, str]:
+def _run(tmp_path: Path, *, scenario: str = "happy", expected_exit: int = 0) -> tuple[Path, str]:
     root = tmp_path / "runs"
     completed = subprocess.run(
         [
@@ -34,7 +32,7 @@ def _run(tmp_path: Path) -> tuple[Path, str]:
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            scenario,
             "--run-id",
             "staged",
             "--run-root",
@@ -45,7 +43,7 @@ def _run(tmp_path: Path) -> tuple[Path, str]:
         text=True,
         check=False,
     )
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == expected_exit, completed.stderr
     return root, "staged"
 
 
@@ -78,107 +76,107 @@ def test_semi_mode_refuses_an_intermediate_boundary_that_cannot_hold() -> None:
         )
 
 
-def _mode_independent_held_stages() -> frozenset[str]:
-    """Every stage the driver returns EXIT_HELD for without consulting ``mode``.
-
-    Derive the set from `run_sequence` rather than restating the console's
-    cross-module claim in a second hand-written list.
-
-    Two distinct shapes hold without consulting ``mode``, and this function must
-    catch both or the claim it derives is not the one the driver actually keeps.
-    The Attestatores' `if name == ATTESTATORES and result == EXIT_HELD: ...
-    return EXIT_HELD` is an ordinary branch the walk below finds. Armarium's own
-    terminal hold is not: `run_sequence` ends with a bare
-    `return EXIT_COMPLETE if status == "complete" else EXIT_HELD`, reached only
-    once the loop has run every member and the earlier guard has already refused
-    every selection whose last member is not armarium -- so it is unconditional
-    on `mode` without a single `if name == ...` branch for the walk to match.
-    Before this closed (F-R21C1), that gap meant `ALWAYS_HELD_BOUNDARIES` could
-    silently drop Armarium and this very test would still report green, because
-    both the production set and its derivation shared the identical blind spot.
-    """
-
-    module = ast.parse(ORCHESTRATOR.read_text(encoding="utf-8"))
-    function = next(
-        node
-        for node in ast.walk(module)
-        if isinstance(node, ast.FunctionDef) and node.name == "run_sequence"
+def test_review_run_seals_attestatores_before_the_terminal_hold(tmp_path: Path) -> None:
+    root, run_id = _run(tmp_path, scenario="review", expected_exit=3)
+    tree = RunTree(root, run_id)
+    assert any(
+        entry["kind"] == "stage-seal" for entry in tree.build_manifest("attestatores")["artifacts"]
     )
-    held: set[str] = set()
-    for branch in ast.walk(function):
-        if not isinstance(branch, ast.If):
-            continue
-        returns_held = any(
-            isinstance(node, ast.Return)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "EXIT_HELD"
-            for statement in branch.body
-            for node in ast.walk(statement)
-        )
-        if not returns_held:
-            continue
-        if any(isinstance(node, ast.Name) and node.id == "mode" for node in ast.walk(branch.test)):
-            continue  # a stop this selection's mode chose, not one every mode takes
-        for comparison in ast.walk(branch.test):
-            if (
-                not isinstance(comparison, ast.Compare)
-                or not isinstance(comparison.left, ast.Name)
-                or comparison.left.id != "name"
-                or not isinstance(comparison.ops[0], ast.Eq)
-            ):
-                continue
-            operand = comparison.comparators[0]
-            if isinstance(operand, ast.Constant):
-                held.add(operand.value)
-            elif isinstance(operand, ast.Name):
-                held.add(getattr(stage_names, operand.id))
-    tail = function.body[-1]
-    if (
-        isinstance(tail, ast.Return)
-        and isinstance(tail.value, ast.IfExp)
-        and isinstance(tail.value.orelse, ast.Name)
-        and tail.value.orelse.id == "EXIT_HELD"
-    ):
-        # The tail is only about the Armarium because an earlier guard has
-        # already returned for every other selection; that guard is read out
-        # of the driver too, rather than named from this file's own constant.
-        guards_last_member = any(
-            isinstance(node, ast.If)
-            and isinstance(node.test, ast.Compare)
-            and isinstance(node.test.ops[0], ast.NotEq)
-            and isinstance(node.test.comparators[0], ast.Constant)
-            and node.test.comparators[0].value == stage_names.ARMARIUM
-            and isinstance(node.test.left, ast.Subscript)
-            and isinstance(node.test.left.value, ast.Name)
-            and node.test.left.value.id == "names"
-            for node in ast.walk(function)
-        )
-        assert guards_last_member, (
-            "run_sequence's terminal hold no longer sits behind a guard that returns "
-            "for any selection whose last member is not the Armarium, so the tail can "
-            "hold other stages and this derivation no longer describes the driver"
-        )
-        held.add(stage_names.ARMARIUM)
-    return frozenset(held)
 
 
-def test_the_always_held_set_is_exactly_the_drivers_own_mode_independent_stops() -> None:
-    assert _mode_independent_held_stages() == ALWAYS_HELD_BOUNDARIES
+def test_mode_independent_driver_holds_match_advance_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pipeline.orchestrator import run as driver
 
-
-def test_the_attestatores_holds_after_it_has_already_sealed_its_boundary() -> None:
-    """Attestatores must seal before its mode-independent hold can be advanced."""
-
-    # The end-of-run tally hold seals the boundary before it returns
-    # EXIT_HELD, since a hold with no seal leaves no witnessed boundary for
-    # the person-held advance to pass.
-    source = code_text(
-        (ROOT / "pipeline" / "3_attestatores" / "run.py").read_text(encoding="utf-8")
+    stopped: set[str] = set()
+    monkeypatch.setattr(driver, "checkpoint", lambda *_args: None)
+    monkeypatch.setattr(
+        driver, "_run_tree", lambda _args: type("Tree", (), {"read_run": lambda self: {}})()
     )
-    final_tally = source.rindex("Attestatores attempt tally UNKNOWN")
-    sealed_at = source.index("context.seal_boundary()", final_tally)
-    held_return = source.index("return EXIT_HELD", final_tally)
-    assert sealed_at < held_return
+    monkeypatch.setattr(driver, "_require_sealed_hard_failure_policy", lambda *_args: None)
+    monkeypatch.setattr(driver, "verify_final_seal", lambda *_args: {})
+    monkeypatch.setattr(driver, "terminal_report", lambda _export: ("partial", []))
+
+    for stage in STAGES:
+        visited: list[str] = []
+
+        def invoke(
+            program: str, _args: object, *, visited: list[str] = visited, stage: str = stage
+        ) -> int:
+            name = next(name for name, path in driver.STAGE_PROGRAMS.items() if path == program)
+            visited.append(name)
+            return EXIT_HELD if name == stage else 0
+
+        monkeypatch.setattr(driver, "invoke", invoke)
+        args = type("Args", (), {"run_root": str(tmp_path), "run_id": "probe"})()
+        names = (
+            (stage,) if stage == "armarium" else (stage, "exemplar" if stage == "door" else "door")
+        )
+        result = driver.run_sequence(args, names, "auto", {})
+        if result == EXIT_HELD and visited == [stage]:
+            stopped.add(stage)
+
+    assert stopped == ALWAYS_HELD_BOUNDARIES
+
+
+def test_attestatores_final_tally_hold_seals_and_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ORCHESTRATOR),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--scenario",
+            "happy",
+            "--run-id",
+            "staged",
+            "--run-root",
+            str(root),
+            "--from",
+            "door",
+            "--to",
+            "designator",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    path = ROOT / "pipeline" / "3_attestatores" / "run.py"
+    spec = importlib.util.spec_from_file_location("attestatores_tally_probe", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module, "attempt_tally", lambda *_args, **_kwargs: {"hold": True, "reason": "probe"}
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(path),
+            "--fixture-root",
+            "proof",
+            "--scenario",
+            "happy",
+            "--run-id",
+            "staged",
+            "--run-root",
+            str(root),
+        ],
+    )
+
+    assert module.main() == EXIT_HELD
+    tree = RunTree(root, "staged")
+    assert any(
+        row["kind"] == "stage-seal" for row in tree.build_manifest("attestatores")["artifacts"]
+    )
 
 
 def test_every_advanceable_boundary_is_a_driver_member_in_the_same_order() -> None:
@@ -483,16 +481,7 @@ def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
 def test_auto_mode_can_advance_the_armarium_boundary_that_may_hold_in_every_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Auto may advance Armarium: its terminal report can hold without consulting mode.
-
-    Pins F-R21C1 closed: `ALWAYS_HELD_BOUNDARIES` used to name only Attestatores,
-    so `verbatus advance --mode auto --stage armarium` refused every request for
-    this boundary even when a real auto run stopped there, because
-    `run_sequence`'s tail returns `EXIT_HELD` for a non-complete terminal report
-    with no reference to `mode` at all -- the identical mode-independent shape
-    as the Attestatores' hold, just spelled as a bare ternary the branch-shaped
-    AST scan below could not see.
-    """
+    """Auto may advance Armarium: its terminal report can hold without consulting mode."""
 
     run_root, run_id = _run(tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)

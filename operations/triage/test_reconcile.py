@@ -178,20 +178,7 @@ def _one_file_under_two_names(tmp_path, sources, _monkeypatch):
 def test_a_refused_reconciliation_path_wrote_nothing_it_disowned(
     tmp_path: Path, monkeypatch, build, named: str
 ):
-    """Every path guard's "nothing was written" measured against the directory.
-
-    The tests above check the named cause and the two output names. That leaves the
-    sentence itself unmeasured, and it is the half an operator acts on: the advice is
-    to repair the path and retry, which is only safe while the previous attempt left
-    no half-published pair behind. `reconcile_files` publishes the disagreements
-    document *before* the expected one deliberately, so a guard that moved below the
-    writes would leave exactly one of the two on disk -- new positive assertions with
-    no dissent record, or a dissent record for assertions nobody made.
-
-    The comparison is over content, not names: the source verdicts already exist, so
-    a guard that overwrote one would leave the name list untouched. The assertion
-    names the paths that moved, because "one file changed" does not say which.
-    """
+    """Every path guard's "nothing was written" measured against the directory."""
     sources, expected, disagreements = build(tmp_path, _local_verdicts(tmp_path), monkeypatch)
     before = _tree_snapshot(tmp_path)
 
@@ -372,12 +359,7 @@ def test_one_seat_or_one_seat_twice_is_never_unanimity():
 
 
 def test_an_open_face_dialect_is_refused_rather_than_read_as_agreement():
-    """The closed enum is what makes unanimity on this fact decidable by observation.
-
-    Before it was closed, one seat's "up" and another's "recto" were two dialects for
-    one observation, and the reconciler could only record them as disagreement. A
-    return to open vocabularies must refuse, not quietly read as either.
-    """
+    """The closed enum is what makes unanimity on this fact decidable by observation."""
     verdict = json.loads((FIXTURES / "seat-a.json").read_text(encoding="utf-8"))
     other = json.loads((FIXTURES / "seat-b.json").read_text(encoding="utf-8"))
     dialect = copy.deepcopy(verdict)
@@ -392,21 +374,7 @@ def test_an_open_face_dialect_is_refused_rather_than_read_as_agreement():
 
 
 def test_every_dated_measured_pass_is_a_whole_pair_and_a_sealed_one_verifies():
-    """A historical measurement is evidence, and evidence is never overwritten.
-
-    `test_checked_in_synthetic_verdicts_replay_exactly` pins only the synthetic
-    fixtures, so nothing watched the dated measured outputs at all. They cannot be
-    replayed here — their seat files hold real material and never enter this repository
-    — but a v2 pair seals itself: `reconciliation_sha256` is taken over both documents
-    together, so an edit to either half breaks the seal unless whoever made it re-ran
-    the reconciler, which is what a legitimate change is.
-
-    The 2026-08-22 pass is a v1 pair, written before those seals existed, and it cannot
-    be upgraded from anything in this repository: re-sealing it means re-running the
-    reconciler over private seat files on the host. So it is checked for the shape it
-    does have — both halves present, same schema generation, same seats — and the
-    unverifiable part is named here rather than left to look guarded.
-    """
+    """A historical measurement is evidence, and evidence is never overwritten."""
     measured = Path(__file__).with_name("measured")
     passes = sorted(path for path in measured.iterdir() if path.is_dir())
     assert passes, "no dated measured pass was checked at all"

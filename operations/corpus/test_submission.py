@@ -780,13 +780,7 @@ def test_validate_sidecar_refuses_extra_field():
 
 
 def test_validate_sidecar_refuses_a_non_string_element_in_splits_present_by_name():
-    """A non-string in `splits_present` must refuse by name, not leak a bare `TypeError`.
-
-    `splits_present != sorted(set(splits_present))` sorts before checking element
-    types; mixing `str` and `int` raises an unguarded `TypeError` in CPython, and
-    an unhashable element (a `dict` or a `list`) raises inside `set()` before the
-    sort even runs.
-    """
+    """A non-string in `splits_present` must refuse by name, not leak a bare `TypeError`."""
     from operations.corpus.sidecar import build_sidecar
 
     good = build_sidecar(
