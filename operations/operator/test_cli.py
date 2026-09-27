@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import os
+import secrets
+import tempfile
+import time
+from pathlib import Path
 
 import pytest
 
@@ -75,25 +79,42 @@ def _clear(tmp_path, root, *extra):
     return cli.main([*common, "clear-leftovers", "--root", str(root), *extra])
 
 
-def _age(*paths):
-    for path in paths:
-        os.utime(path, (1, 1), follow_symlinks=False)
+@pytest.fixture
+def later(monkeypatch):
+    """Two hours from now: what exists now is quiet; what is stamped `later` is fresh."""
+    moment = time.time() + 7200
+    monkeypatch.setattr(cli.time, "time", lambda: moment)
+    return moment
 
 
-def test_clear_leftovers_lists_then_removes_only_publication_leftovers(tmp_path, capsys):
+def _fresh(path, moment):
+    os.utime(path, (moment, moment), follow_symlinks=False)
+
+
+def test_clear_leftovers_lists_then_removes_only_publication_leftovers(tmp_path, capsys, later):
     root = tmp_path / "run"
     (root / "pages").mkdir(parents=True)
-    temporaries = [root / "pages" / ".IMG.tif.tmp-a1b2c3d4", root / (".run.json.tmp-" + "f" * 32)]
-    staging = root / ".delivery.publishing-x9y8z7_6"
-    (staging / "inner").mkdir(parents=True)
-    fresh = root / ".manifest.json.tmp-abcdefgh"
-    for path in (*temporaries, fresh):
-        path.write_bytes(b"partial")
+    _, made = tempfile.mkstemp(prefix=".IMG.tif.tmp-", dir=root / "pages")
+    temporaries = [Path(made), root / f".run.json.tmp-{secrets.token_hex(16)}"]
+    temporaries[1].write_bytes(b"partial")
+    staging = Path(tempfile.mkdtemp(prefix=".delivery.publishing-", dir=root))
+    (staging / "inner").mkdir()
+    fresh_file = root / ".manifest.json.tmp-abcdefgh"
+    fresh_folder = root / ".other.publishing-abcdefgh"
+    busy_folder = root / ".busy.publishing-abcdefgh"
+    fresh_file.write_bytes(b"partial")
+    fresh_folder.mkdir()
+    (busy_folder / "deep").mkdir(parents=True)
+    (busy_folder / "deep" / "part").write_bytes(b"being written")
+    for path in (fresh_file, fresh_folder, busy_folder / "deep" / "part"):
+        _fresh(path, later)
     kept_files = [
         root / "pages" / "IMG.tmp-1.tif",
         root / "pages" / ".hidden",
         root / ".tmp-",
         root / ".notes.tmp-short",
+        root / ".x.tmp-abcdefgh9",
+        root / ".x.tmp-abcdefgh.bak",
         root / "run.json",
     ]
     for path in kept_files:
@@ -106,17 +127,18 @@ def test_clear_leftovers_lists_then_removes_only_publication_leftovers(tmp_path,
     (outside / ".x.tmp-abcdefgh").write_bytes(b"not under the root")
     (root / ".linked.tmp-abcdefgh").symlink_to(outside / ".x.tmp-abcdefgh")
     (root / ".x.publishing-abcdefgh").symlink_to(outside)
-    _age(*temporaries, staging, *kept_files, *kept_folders, outside / ".x.tmp-abcdefgh")
-    _age(root / ".linked.tmp-abcdefgh", root / ".x.publishing-abcdefgh")
 
     assert _clear(tmp_path, root) == 0
     assert all(path.exists() for path in (*temporaries, staging))
     assert "3 leftover(s)" in capsys.readouterr().out
 
     assert _clear(tmp_path, root, "--apply") == 0
+    printed = capsys.readouterr().out
     assert not any(path.exists() for path in (*temporaries, staging))
-    assert "Left alone, changed within the last hour" in capsys.readouterr().out
-    assert fresh.exists()
+    assert not list(root.glob(".delivery.publishing-*"))
+    assert printed.count("Left alone, changed within the last hour") == 3
+    assert fresh_file.exists() and fresh_folder.is_dir()
+    assert (busy_folder / "deep" / "part").exists()
     assert all(path.read_bytes() == b"real" for path in kept_files)
     assert all(path.is_dir() for path in kept_folders)
     assert (outside / ".x.tmp-abcdefgh").exists()
@@ -124,21 +146,23 @@ def test_clear_leftovers_lists_then_removes_only_publication_leftovers(tmp_path,
     assert (root / ".x.publishing-abcdefgh").is_symlink()
 
 
-def test_clear_leftovers_refuses_a_symlinked_root(tmp_path):
+def test_clear_leftovers_refuses_a_symlinked_root(tmp_path, later):
     (tmp_path / "real").mkdir()
     (tmp_path / "real" / ".a.tmp-abcdefgh").write_bytes(b"x")
-    _age(tmp_path / "real" / ".a.tmp-abcdefgh")
     (tmp_path / "link").symlink_to(tmp_path / "real")
 
     assert _clear(tmp_path, tmp_path / "link", "--apply") == 2
     assert (tmp_path / "real" / ".a.tmp-abcdefgh").exists()
 
 
-def test_clear_leftovers_refuses_a_folder_it_cannot_read(tmp_path, capsys):
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-0 folder")
+def test_clear_leftovers_stops_at_a_folder_it_cannot_read(tmp_path, capsys):
     (tmp_path / "run" / "locked").mkdir(parents=True)
     (tmp_path / "run" / "locked").chmod(0)
     try:
-        assert _clear(tmp_path, tmp_path / "run") == 2
+        assert _clear(tmp_path, tmp_path / "run", "--apply") == 2
     finally:
         (tmp_path / "run" / "locked").chmod(0o700)
-    assert "0 leftover(s)" not in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "0 leftover(s)" not in printed
+    assert "may already be gone" in printed and str(tmp_path / "run") in printed

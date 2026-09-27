@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import os
 import pwd
 import re
+import secrets
 import shutil
 import stat
 import sys
@@ -949,13 +951,42 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 # The exact names mkstemp/mkdtemp (8 characters) and surface's token_hex(16) produce.
 _TEMPORARY = re.compile(r"\..+\.tmp-(?:[a-z0-9_]{8}|[0-9a-f]{32})")
-_STAGING = re.compile(r"\..+\.publishing-[a-z0-9_]{8}")
+_STAGING = re.compile(r"\..+\.publishing-[a-z0-9_]{8}(?:\.clearing-[0-9a-f]{8})?")
 # Nothing holds a writer lock, so a leftover this fresh may still be in use.
 LEFTOVER_QUIET_SECONDS: Final = 3600
 
 
 def _raise(error: OSError) -> None:
     raise error
+
+
+def _newest_change(name: str, descriptor: int) -> float:
+    newest = 0.0
+    for _, _, files, inner in os.fwalk(name, dir_fd=descriptor, onerror=_raise):
+        for details in (os.fstat(inner), *(os.lstat(f, dir_fd=inner) for f in files)):
+            newest = max(newest, details.st_mtime, details.st_ctime)
+    return newest
+
+
+def _clear_one(name: str, descriptor: int, path: Path, *, folder: bool, apply: bool) -> bool:
+    details = os.lstat(name, dir_fd=descriptor)
+    if not (stat.S_ISDIR if folder else stat.S_ISREG)(details.st_mode):
+        return False
+    changed = (
+        _newest_change(name, descriptor) if folder else max(details.st_mtime, details.st_ctime)
+    )
+    if time.time() - changed < LEFTOVER_QUIET_SECONDS:
+        _print(f"Left alone, changed within the last hour: {path}")
+        return False
+    if apply and folder:
+        # A racing publish's os.replace of the old name now fails instead of losing its files.
+        quarantine = f"{name.partition('.clearing-')[0]}.clearing-{secrets.token_hex(4)}"
+        os.rename(name, quarantine, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        shutil.rmtree(quarantine, dir_fd=descriptor)
+    elif apply:
+        os.unlink(name, dir_fd=descriptor)
+    _print(f"{'Removed' if apply else 'Would remove'}: {path}")
+    return True
 
 
 def _clear_leftovers(root: Path, *, apply: bool) -> None:
@@ -969,31 +1000,16 @@ def _clear_leftovers(root: Path, *, apply: bool) -> None:
     try:
         walk = os.fwalk(".", dir_fd=root_descriptor, onerror=_raise)
         for directory, subdirectories, files, descriptor in walk:
-            candidates = [(name, _STAGING, stat.S_ISDIR) for name in subdirectories]
-            candidates += [(name, _TEMPORARY, stat.S_ISREG) for name in files]
-            for name, pattern, is_kind in candidates:
-                if not pattern.fullmatch(name):
-                    continue
-                details = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-                if not is_kind(details.st_mode):
-                    continue
-                if is_kind is stat.S_ISDIR:
-                    subdirectories.remove(name)
+            staging = [name for name in subdirectories if _STAGING.fullmatch(name)]
+            subdirectories[:] = [name for name in subdirectories if name not in staging]
+            candidates = [(name, True) for name in staging]
+            candidates += [(name, False) for name in files if _TEMPORARY.fullmatch(name)]
+            for name, folder in candidates:
                 path = Path(root, directory, name)
-                if time.time() - details.st_mtime < LEFTOVER_QUIET_SECONDS:
-                    _print(f"Left alone, changed within the last hour: {path}")
-                    continue
-                found += 1
-                if apply and is_kind is stat.S_ISDIR:
-                    shutil.rmtree(name, dir_fd=descriptor)
-                elif apply:
-                    os.unlink(name, dir_fd=descriptor)
-                _print(f"{'Removed' if apply else 'Would remove'}: {path}")
+                with contextlib.suppress(FileNotFoundError):
+                    found += _clear_one(name, descriptor, path, folder=folder, apply=apply)
     except OSError as error:
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND,
-            detail=f"part of {root} could not be read or cleared, so the listing stopped: {error}",
-        ) from error
+        raise OperatorError(ErrorCode.CLEAR_LEFTOVERS_STOPPED, detail=f"{root}: {error}") from error
     finally:
         os.close(root_descriptor)
     _print(
