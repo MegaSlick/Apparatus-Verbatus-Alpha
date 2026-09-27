@@ -1841,8 +1841,8 @@ def test_a_damaged_v1_record_is_refused_and_never_migrated(tmp_path, damage, ref
         del capacity["cleanup_owner"]
     v1 = _as_v1_on_disk(tmp_path, capacity, archive=damage != "unarchived")
     if damage == "tampered":
-        v1["capacity"] = v1["capacity"] | {"available_bytes": 400}
-        (tmp_path / "download_record.json").write_bytes(canonical_bytes(v1))
+        archive = tmp_path / "records" / f"{digest_bytes(canonical_bytes(v1))}.json"
+        archive.write_bytes(archive.read_bytes() + b" ")
     active = (tmp_path / "download_record.json").read_bytes()
 
     with pytest.raises(DigestMismatchRefusal, match=refusal):
