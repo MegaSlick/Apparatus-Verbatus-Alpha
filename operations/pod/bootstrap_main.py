@@ -1248,6 +1248,7 @@ def _build_preflight(
             RegistryChairCacheVerifier(registry),
             reader,
             fixture,
+            serving_recipes=recipes,
         )
         report = runner.run(profile)
         record = report.to_record()

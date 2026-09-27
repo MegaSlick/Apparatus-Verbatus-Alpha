@@ -42,6 +42,7 @@ from pathlib import Path
 import pytest
 
 from common.chairs.models import ChairIdentity
+from operations.serving.config import FixtureProfile, ServingRecipes, UnsupportedProfile
 from operations.serving.preflight import _with_service_evidence
 
 from .preflight import (
@@ -305,6 +306,63 @@ def fixture_page(tmp_path: Path) -> Path:
 
 def runner(fixture: Path, *, roles: tuple[str, ...], reader: Reader) -> PreflightRunner:
     return PreflightRunner(Models(*roles), table(), Verifier(), reader, fixture)
+
+
+def test_unsupported_tier_is_placed_without_cache_or_smoke(fixture_page: Path) -> None:
+    class CountingVerifier(Verifier):
+        calls: list[str] = []
+
+        def verify(self, chair: ChairIdentity) -> dict[str, object]:
+            self.calls.append(chair.role)
+            return super().verify(chair)
+
+    class CountingReader(Reader):
+        calls: list[str] = []
+
+        def read(
+            self, chair: ChairIdentity, fixture: Path, placement: PlacementTier
+        ) -> SmokeResult:
+            self.calls.append(chair.role)
+            return super().read(chair, fixture, placement)
+
+    unsupported = UnsupportedProfile(
+        "perlector-recipe", "perlector", "generic-24gb", "51.7 GiB weights exceed this tier"
+    )
+    serving = FixtureProfile(
+        "attestator_3-recipe", "attestator_3", "generic-24gb", "offline test chair"
+    )
+    recipes = ServingRecipes((unsupported, serving))
+    verifier = CountingVerifier()
+    reader = CountingReader(served=True)
+    runner = PreflightRunner(
+        Models("perlector", "attestator_3"),
+        table(),
+        verifier,
+        reader,
+        fixture_page,
+        serving_recipes=recipes,
+    )
+    report = runner.run(measured_profile())
+
+    assert report.color == "green"
+    assert {placement.chair: placement.state for placement in report.placements} == {
+        "attestator_3": "planned",
+        "perlector": "unservable-at-tier",
+    }
+    assert verifier.calls == reader.calls == ["attestator_3"]
+    assert [receipt["chair"] for receipt in report.smoke_receipts] == ["attestator_3"]
+
+    all_unsupported = PreflightRunner(
+        Models("perlector"),
+        table(),
+        verifier,
+        reader,
+        fixture_page,
+        serving_recipes=ServingRecipes((unsupported,)),
+    ).run(measured_profile())
+    assert all_unsupported.color == "red"
+    assert {issue.code for issue in all_unsupported.issues} == {"no-chair-verified"}
+    assert verifier.calls == reader.calls == ["attestator_3"]
 
 
 def test_a_real_card_and_a_served_chair_prove_the_assembly(fixture_page: Path) -> None:

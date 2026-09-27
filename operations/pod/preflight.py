@@ -9,10 +9,13 @@ import tomllib
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from common.chairs.errors import CacheRevisionRefusal, DigestMismatchRefusal
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
+
+if TYPE_CHECKING:
+    from operations.serving.config import ServingRecipes
 
 from .models import as_decimal
 
@@ -843,14 +846,19 @@ class PreflightRunner:
         cache_verifier: ChairCacheVerifier,
         smoke_reader: SmokeReader,
         fixture: str | Path,
+        *,
+        serving_recipes: ServingRecipes | None = None,
     ) -> None:
         self.models = models
         self.placement = placement
         self.cache_verifier = cache_verifier
         self.smoke_reader = smoke_reader
         self.fixture = Path(fixture)
+        self.serving_recipes = serving_recipes
 
     def run(self, profile: GpuProfile) -> PreflightReport:
+        from operations.serving.config import UnsupportedProfile
+
         issues: list[PreflightIssue] = []
         placements: list[ChairPlacement] = []
         cache_receipts: list[dict[str, object]] = []
@@ -900,6 +908,23 @@ class PreflightRunner:
                         None,
                         None,
                         "unplanned",
+                    )
+                )
+                continue
+            if self.serving_recipes is not None and isinstance(
+                self.serving_recipes.for_identity(configured, tier.identifier), UnsupportedProfile
+            ):
+                placements.append(
+                    ChairPlacement(
+                        role,
+                        configured.serving_recipe,
+                        tier.identifier,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        "unservable-at-tier",
                     )
                 )
                 continue
