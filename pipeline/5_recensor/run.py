@@ -2682,11 +2682,9 @@ def testimony_content_findings(context) -> dict[int, dict]:
                     f"coverage: {record['artifact_id']} for page {ordinal}, chair {chair!r}; "
                     "restore the retained Attestatores record"
                 )
-            # Nothing read here; the absence stays visible through the witness floor.
             continue
         text = payload.get("payload")
         if not isinstance(text, str):
-            # Structured testimony: no comparable text, so it cannot meet the floor either.
             continue
         spans, declared_unanchored = _aligned_spans(rows_by_page_chair.get((ordinal, chair), []))
         covered_intervals = _covered_intervals(spans, len(text))
@@ -3329,6 +3327,89 @@ def _publish_hold_review(
     )
 
 
+def _route_reading_outcome(
+    context,
+    act_id: str,
+    latest: dict,
+    latest_payload: dict,
+    reading_class: OutcomeClass,
+    state: dict,
+    coverage: dict,
+    hold_causes: list,
+    candidate_refs: dict,
+    page_coverage: dict,
+    geometry_coverage: dict,
+) -> tuple[str, str, dict | None]:
+    blank_evidence = None
+    if reading_class is not OutcomeClass.COMPLETED:
+        current_attempts = chair_current_attempts(context, act_id)
+        current_outcomes = chair_outcomes(current_attempts)
+        corroborating_chairs = (
+            blank_corroboration(
+                coverage,
+                current_outcomes,
+                act_attachment_facts(context, act_id, current_attempts),
+                chair_read_evidence(current_attempts),
+                witness_uncovered=bool(state["recovery_regions"]),
+            )
+            if latest["outcome"] == "no-readable-text"
+            else None
+        )
+        blockers = [cause[1] for cause in hold_causes] + (
+            [CONTINUATION_CANDIDATE_REASON] if act_id in candidate_refs else []
+        )
+        if blockers:
+            corroborating_chairs = None
+        if corroborating_chairs is not None:
+            outcome, reason = (
+                "confirmed-blank",
+                "the Perlector's own reading found no-readable-text, and every witness "
+                f"that actually read this act ({', '.join(corroborating_chairs)}) "
+                "independently reports the same absence; sealed blank with that evidence"
+                + (
+                    "; page ink could not be measured or reconciled for this act's "
+                    "recorded page evidence"
+                    if page_coverage["unmeasurable_pages"]
+                    or geometry_coverage.get("ink_measurable") is False
+                    else ""
+                ),
+            )
+            blank_evidence = {
+                "perlector_outcome": latest["outcome"],
+                "corroborating_chairs": corroborating_chairs,
+                "pages_without_residual_ink_outside_coverage": page_coverage["checked_pages"],
+            }
+        else:
+            route_reason = (
+                f"; its corroboration is blocked because {blockers[0]}" if blockers else ""
+            )
+            outcome, reason = (
+                "held-for-review",
+                f"the latest reading is {latest['outcome']!r} ({reading_class.value}); "
+                "accepting would establish text that nobody successfully read"
+                f"{route_reason}",
+            )
+    elif not isinstance(latest_payload.get("text"), str) or not latest_payload["text"].strip():
+        outcome, reason = (
+            "held-for-review",
+            "the latest reading establishes no readable text; silence is not blank proof and "
+            "is held until the Recensor can seal one",
+        )
+    elif hold_causes:
+        outcome, reason = hold_causes[0]
+    else:
+        outcome = "accepted"
+        if page_coverage["unmeasurable_pages"] or geometry_coverage.get("ink_measurable") is False:
+            reason = (
+                "the reading is accepted; page ink could not be measured or reconciled for "
+                "this act's recorded page evidence"
+            )
+        else:
+            reason = "coverage and geometry reconcile"
+
+    return outcome, reason, blank_evidence
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(DESCRIPTION).parse_args()
@@ -3347,7 +3428,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     preflight_review_evidence(context, budget)
 
     cut_regions = regions_by_source_page(context)
-    # Pixels no crop came from are never read.
     sealed_pages = sealed_page_images(context) if cut_regions else {}
     capture_digests = capture_digest_by_page(sealed_pages)
     page_findings = page_coverage_findings(context, sealed_pages)
@@ -3400,11 +3480,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             held += 1
             continue
 
-        # Non-empty: `preflight_review_evidence` refused an act with no reading.
         readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
 
-        # Every review names the exact Perlectio it assessed, as input and payload, so
-        # the Archetypus can prove it establishes that reading.
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         latest_payload = _payload(latest, f"reading of {act_id}")
         cross_capture_hold = cross_capture_hold_of(latest, act_id)
@@ -3435,14 +3512,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         audit_facts = audit_state(context, latest, act_id, expected_act_key=act["act_key"]) or {}
         audit_unresolved = audit_facts.get("unresolved")
         audit_examination = audit_facts.get("examination")
-        # `None` means the Perlectio carries no assessment object.
         assessment = latest_payload.get("uncertainty_assessment")
         assessment_record = (
             {"state": assessment.get("state"), "problem": assessment.get("problem")}
             if isinstance(assessment, dict)
             else None
         )
-        # The survey must come from the exact Perlectio this review assesses.
         cross_coverage = act_cross_capture_coverage(
             context,
             act_id,
@@ -3505,12 +3580,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         observation_hold = unresolved_observation_hold(
             outside_ink_requests, act["page_ordinal"], funded_pages
         )
-        # The request's own position among this act's requests, not the review's
-        # ordinal, which follows content.
         request_ordinal = used_total + 1
 
-        # Enforced at the request boundary: the kind allowance, the pooled total and the
-        # absolute cap must each permit it, because a policy file can be edited.
         if (
             not continuation_shortfall
             # Cross-capture geometry neither funds nor vetoes recovery; only a measured
@@ -3559,7 +3630,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # autopsia use; the source-manifest row is not a capture identity.
                     source_sha256=capture_digest_for(capture_digests, act["page_ordinal"], act_id),
                     page_ordinal=act["page_ordinal"],
-                    # Reachable only from a measured ink observation.
                     ink_confirmed=True,
                     page_observation_grant_available=act["page_ordinal"] not in funded_pages,
                     act_budget_available=(
@@ -3597,8 +3667,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "testimony_content_coverage_continuation": continuation_content_coverage,
                 "perlectio_ref": reading_ref,
                 "recovery_policy": budget,
-                # Declared fixture recovery keeps its fixture geometry; a measured
-                # observation supplies its confirmed page-space rectangle.
                 **(
                     {
                         "recovery_bounds": outside_ink_requests[0]["bounds"],
@@ -3646,8 +3714,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 inputs=[reading_ref, request_ref, *candidate_refs.get(act_id, [])],
                 payload={
                     "act_key": act_key,
-                    # The request this review answers, distinct from the review's own
-                    # content-derived ordinal; `recovery_state` cross-checks it.
                     "recovery_request_ordinal": request_ordinal,
                     "recovery_kind": FALLBACK_RECROP,
                     "coverage": coverage,
@@ -3703,88 +3769,20 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             if cause
         ]
 
-        # The Archetypus copies the latest reading's text, so text nobody successfully
-        # read is held visibly (principle 2).
-        blank_evidence = None
-        if reading_class is not OutcomeClass.COMPLETED:
-            # `no-readable-text` is the Perlector's own positive finding of absence, so
-            # it alone may seal blank if the witnesses corroborate it; other
-            # non-completed outcomes fall through to the hold. One collapse feeds both
-            # maps, so the gate and the outcomes agree on the current attempt.
-            current_attempts = chair_current_attempts(context, act_id)
-            current_outcomes = chair_outcomes(current_attempts)
-            corroborating_chairs = (
-                blank_corroboration(
-                    coverage,
-                    current_outcomes,
-                    act_attachment_facts(context, act_id, current_attempts),
-                    chair_read_evidence(current_attempts),
-                    witness_uncovered=bool(state["recovery_regions"]),
-                )
-                if latest["outcome"] == "no-readable-text"
-                else None
-            )
-            # A named act may be half of one act, so it never seals blank on its own.
-            blockers = [cause[1] for cause in hold_causes] + (
-                [CONTINUATION_CANDIDATE_REASON] if act_id in candidate_refs else []
-            )
-            # Validated before the hold gate, so a writer-impossible record stays fatal.
-            if blockers:
-                corroborating_chairs = None
-            if corroborating_chairs is not None:
-                outcome, reason = (
-                    "confirmed-blank",
-                    "the Perlector's own reading found no-readable-text, and every witness "
-                    f"that actually read this act ({', '.join(corroborating_chairs)}) "
-                    "independently reports the same absence; sealed blank with that evidence"
-                    + (
-                        "; page ink could not be measured or reconciled for this act's "
-                        "recorded page evidence"
-                        if page_coverage["unmeasurable_pages"]
-                        or geometry_coverage.get("ink_measurable") is False
-                        else ""
-                    ),
-                )
-                # The blank's evidence as data, not only prose. The page field is named
-                # for exactly what was measured: no residual ink outside coverage, never
-                # inside the act's own crop (principle 8).
-                blank_evidence = {
-                    "perlector_outcome": latest["outcome"],
-                    "corroborating_chairs": corroborating_chairs,
-                    "pages_without_residual_ink_outside_coverage": page_coverage["checked_pages"],
-                }
-            else:
-                route_reason = (
-                    f"; its corroboration is blocked because {blockers[0]}" if blockers else ""
-                )
-                outcome, reason = (
-                    "held-for-review",
-                    f"the latest reading is {latest['outcome']!r} ({reading_class.value}); "
-                    "accepting would establish text that nobody successfully read"
-                    f"{route_reason}",
-                )
-        elif not isinstance(latest_payload.get("text"), str) or not latest_payload["text"].strip():
-            outcome, reason = (
-                "held-for-review",
-                "the latest reading establishes no readable text; silence is not blank proof and "
-                "is held until the Recensor can seal one",
-            )
-        elif hold_causes:
-            outcome, reason = hold_causes[0]
-        else:
-            outcome = "accepted"
-            if (
-                page_coverage["unmeasurable_pages"]
-                or geometry_coverage.get("ink_measurable") is False
-            ):
-                reason = (
-                    "the reading is accepted; page ink could not be measured or reconciled for "
-                    "this act's recorded page evidence"
-                )
-            else:
-                reason = "coverage and geometry reconcile"
+        outcome, reason, blank_evidence = _route_reading_outcome(
+            context,
+            act_id,
+            latest,
+            latest_payload,
+            reading_class,
+            state,
+            coverage,
+            hold_causes,
+            candidate_refs,
+            page_coverage,
+            geometry_coverage,
+        )
 
-        # From the outcome's class, so a review shape added later also reaches the exit code.
         if classify(RECENSOR, outcome) is not OutcomeClass.COMPLETED:
             held += 1
 
