@@ -1311,7 +1311,7 @@ def _publish_continuation_candidates(
     side with no proposed act over its group is published empty, never
     dropped: that ink is also unclaimed, and conservation holds it.
     """
-    canaries = canary_ordinals(context.run) if hasattr(context, "run") else set()
+    canaries = canary_ordinals(context.run)
     for ordinal_a in sorted(acts_by_page):
         ordinal_b = ordinal_a + 1
         if ordinal_b not in acts_by_page or ordinal_a in canaries or ordinal_b in canaries:

@@ -745,6 +745,7 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
         not in {(p["ordinal"], p["sha256"]) for p in source},
         "manual pick page is outside the sealed corpus frame",
     )
+    _refuse(page["ordinal"] in _canaries_in_run(run_path), "manual pick names a canary page")
     _refuse(
         not isinstance(pick["set"], str) or pick["set"] not in SETS,
         "manual pick set is not recognized. The picker's stated partition would otherwise "
@@ -1229,6 +1230,7 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     if run_path is not None:
         run_frame, source = load_run_frame(run_path)
         _refuse(frame != run_frame, "sample frame diverges from the R0 run authority")
+        _refuse(page["ordinal"] in _canaries_in_run(run_path), "sample names a canary page")
         _refuse(
             (page["ordinal"], page["sha256"]) not in {(p["ordinal"], p["sha256"]) for p in source},
             "sample page is outside the R0 run authority",

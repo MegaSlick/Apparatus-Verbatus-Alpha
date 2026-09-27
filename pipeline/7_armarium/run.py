@@ -1059,7 +1059,7 @@ def not_measured_basis(
     census: dict[int, dict],
     reviews: dict[str, dict],
     projected_acts: list[dict],
-    canary_pages: set[int] | None = None,
+    canary_pages: set[int],
 ) -> dict:
     """The run's own answer to "what did this run not measure?".
 
@@ -1138,7 +1138,6 @@ def not_measured_basis(
                     rows_with_named_absence += 1
                     absence_codes.update(codes)
 
-    canary_pages = canary_pages or set()
     sealed_pages = sorted(
         ordinal
         for ordinal, page in census.items()
@@ -1886,13 +1885,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
     for act in expected:
         act_key = act["act_key"]
-        act_ordinals = set(marked_out_pages[act["act_id"]])
+        # The seal names the act's own page even when conservation held it
+        # before a crop could be made. Regions add any continuation pages.
+        act_ordinals = {act["page_ordinal"], *marked_out_pages[act["act_id"]]}
+        if act_ordinals & canaries and not act_ordinals <= canaries:
+            raise FatalAccounting(
+                "an act touches both canary and real pages; export cannot drop a real page"
+            )
+        category, review, established = categorize(context, act["act_id"], manifest_cache)
         if act_ordinals & canaries:
-            if not act_ordinals <= canaries:
-                raise FatalAccounting(
-                    "an act touches both canary and real pages; export cannot drop a real page"
-                )
-            category, review, established = categorize(context, act["act_id"], manifest_cache)
             canary_entry = {
                 "act_id": act["act_id"],
                 "act_key": act_key,
@@ -1907,7 +1908,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
             canary_acts.append(canary_entry)
             continue
-        category, review, established = categorize(context, act["act_id"], manifest_cache)
 
         # The seal's own word is binding: an act the Designator held terminates
         # as held, and an export that categorized it any other way would have

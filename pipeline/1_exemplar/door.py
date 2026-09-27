@@ -1737,6 +1737,7 @@ def real_submission(args, registry) -> int:
     ledger = submission_ledger.load_manifest(manifest_path)
     canary_ledger = None
     canary_folder = None
+    canary_paths: set[str] = set()
     if (getattr(args, "canary_folder", None) is None) != (
         getattr(args, "canary_manifest", None) is None
     ):
@@ -1758,15 +1759,13 @@ def real_submission(args, registry) -> int:
         canary_ledger = submission_ledger.load_manifest(canary_manifest_path)
         real_paths = {row["relative_path"] for row in ledger["files"]}
         real_digests = {row["sha256"] for row in ledger["files"]}
-        if any(
-            row["relative_path"] in real_paths or row["sha256"] in real_digests
-            for row in canary_ledger["files"]
+        canary_paths = {row["relative_path"] for row in canary_ledger["files"]}
+        if canary_paths & real_paths or any(
+            row["sha256"] in real_digests for row in canary_ledger["files"]
         ):
             raise ContractError("canary ledger overlaps the real submission by path or digest")
         found_canaries = inventory.read_submission(canary_folder, max_bytes=0)
-        if {source.relative_path for source in found_canaries} != {
-            row["relative_path"] for row in canary_ledger["files"]
-        }:
+        if {source.relative_path for source in found_canaries} != canary_paths:
             raise ContractError("canary folder does not match its sealed filename ledger")
     if args.triage_clusters is not None and args.triage_decision_manifest is None:
         raise ContractError("triage cluster records require a triage decision manifest")
@@ -1803,9 +1802,7 @@ def real_submission(args, registry) -> int:
     # descriptor, so digest and render see one file even if its name is replaced.
     # The ledger digests catch an in-place rewrite, which `fstat` alone cannot.
     ledger_digests = {row["relative_path"]: row["sha256"] for row in ledger["files"]}
-    canary_paths = set()
     if canary_ledger is not None:
-        canary_paths = {row["relative_path"] for row in canary_ledger["files"]}
         ledger_digests.update(
             {row["relative_path"]: row["sha256"] for row in canary_ledger["files"]}
         )

@@ -4417,6 +4417,7 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
         {1: {"outcome": "sealed"}},
         {},
         [],
+        set(),
     )
     page_conservation_basis = derived_basis["page-ink-conservation"]
     assert page_conservation_basis == {
@@ -4579,6 +4580,7 @@ def test_a_real_background_refusal_reaches_the_complete_export_as_not_measured(
         {1: {"outcome": "sealed"}},
         {},
         [],
+        set(),
     )
     page_basis = derived_basis["page-ink-conservation"]
     assert page_basis == {

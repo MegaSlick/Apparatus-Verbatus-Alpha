@@ -1968,6 +1968,45 @@ def test_real_door_seals_a_disjoint_canary_ledger_after_real_sources(tmp_path, m
     assert run["sealed_config_digests"]["canary-ledger"] == bird_ledger["self_hash"]
 
 
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("unpaired", "must be supplied together"),
+        ("same-folder", "must be disjoint"),
+        ("overlap", "overlaps the real submission"),
+        ("folder-mismatch", "does not match its sealed filename ledger"),
+    ],
+)
+def test_real_door_refuses_invalid_canary_ingress(tmp_path, monkeypatch, case, message):
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"real.png": png(4, 3)}
+    )
+    birds = approved / "birds"
+    birds.mkdir()
+    (birds / "bird.png").write_bytes(png(3, 2) if case != "overlap" else png(4, 3))
+    bird_ledger_path = approved / "birds-ledger.json"
+    submit.submit(birds, bird_ledger_path, policy_path=policy_path)
+    if case == "folder-mismatch":
+        (birds / "extra.png").write_bytes(png(2, 2))
+    extra = (
+        ("--canary-folder", str(birds))
+        if case == "unpaired"
+        else ("--canary-folder", str(source), "--canary-manifest", str(bird_ledger_path))
+        if case == "same-folder"
+        else ("--canary-folder", str(birds), "--canary-manifest", str(bird_ledger_path))
+    )
+    with pytest.raises(ContractError, match=message):
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id=f"canary-{case}",
+            extra=extra,
+        )
+
+
 def test_operator_upload_layout_is_admitted_by_the_real_door(tmp_path, monkeypatch):
     """The default volume layout is the exact folder/ledger pair Boot B opens."""
 

@@ -377,6 +377,33 @@ def test_sealed_canaries_have_a_named_zero_quota_and_cannot_be_relabelled(tmp_pa
         sample_stratified(path, rows, plan)
 
 
+def test_manual_ingest_and_sample_validation_refuse_a_sealed_canary(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    authority = json.loads(path.read_text())
+    authority["sealed_config_digests"] = {"canary-ledger": "c" * 64}
+    authority["source_manifest"][-1]["ledger_sha256"] = "c" * 64
+    authority["self_hash"] = self_hash(authority)
+    path.write_text(json.dumps(authority), encoding="utf-8")
+    page = {**pages[-1], "stratum": "canary"}
+    pick = {
+        "schema": MANUAL_PICK_SCHEMA,
+        "selection_basis": "synthetic pick",
+        "page": page,
+        "set": "calibration",
+    }
+    with pytest.raises(SchemaRefusal, match="manual pick names a canary page"):
+        ingest_manual_pick(path, pick)
+    sample = build_sample(
+        frame,
+        page,
+        selection_basis="synthetic pick",
+        method="manual",
+        claimed_set="calibration",
+    )
+    with pytest.raises(SchemaRefusal, match="sample names a canary page"):
+        validate_sample(sample, path)
+
+
 def test_stratified_samples_carry_no_claimed_set(tmp_path):
     path, frame, pages = run_file(tmp_path)
     rows = catalog(pages)

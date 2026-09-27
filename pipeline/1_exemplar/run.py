@@ -365,9 +365,9 @@ def _verify_source_ledger(run: dict[str, Any], sources: dict[int, dict[str, Any]
                 "run.json repeats one filename with incompatible digest or byte-count entries; "
                 "its filename ledger cannot be reconstructed"
             )
-    if len(ledger_hashes) != (2 if canary_hash is not None else 1) or (
-        canary_hash is not None and canary_hash not in ledger_hashes
-    ):
+    if canary_hash is None and len(ledger_hashes) != 1:
+        raise ContractError("run.json source rows name more than one filename ledger")
+    if canary_hash is not None and (len(ledger_hashes) != 2 or canary_hash not in ledger_hashes):
         raise ContractError("run.json source rows do not name the expected real and canary ledgers")
     for ledger_hash, files_by_path in files_by_ledger.items():
         ledger = {
@@ -375,6 +375,11 @@ def _verify_source_ledger(run: dict[str, Any], sources: dict[int, dict[str, Any]
             "files": sorted(files_by_path.values(), key=lambda item: item["relative_path"]),
         }
         if self_hash(ledger) != ledger_hash:
+            if canary_hash is None:
+                raise ContractError(
+                    "run.json source rows do not reproduce the self-hashed filename ledger that "
+                    "admitted this real submission"
+                )
             raise ContractError("run.json source rows do not reproduce a sealed filename ledger")
     if canary_hash is not None:
         real_hash = next(hash_value for hash_value in ledger_hashes if hash_value != canary_hash)
