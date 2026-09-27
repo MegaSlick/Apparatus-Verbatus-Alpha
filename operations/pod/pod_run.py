@@ -76,6 +76,10 @@ only here (principle 2).
 ``PREFLIGHT`` receipt supplies the tier recorded here and passed to the
 orchestrator; a receipt without one is refused by name.
 
+``--mechanics-qualification`` is an explicit run choice, recorded in the
+report and forwarded to the orchestrator so unproven real rows can execute
+without changing their preflight state.
+
 **The data gate is checked before the bootstrap spends anything.**  The
 orchestrator's Door refuses a submission folder outside the policy's approved
 storage roots.  ``config/data_handling_policy.json`` now names the pod volume
@@ -220,6 +224,7 @@ class RunPlan:
     fixture: str
     interval_seconds: float
     dry_run: bool
+    mechanics_qualification: bool = False
     stage: str | None = None
     from_stage: str | None = None
     to_stage: str | None = None
@@ -363,6 +368,8 @@ class RunPlan:
         command += ["--cache-root", str(cache_root)]
         store_root = _named(self.bootstrap.store_root, "--store-root")
         command += ["--store-root", str(store_root)]
+        if self.mechanics_qualification:
+            command.append("--mechanics-qualification")
         if self.stage is not None:
             command += ["--stage", self.stage]
         if self.from_stage is not None and self.to_stage is not None:
@@ -401,6 +408,7 @@ class RunPlan:
             "fixture": self.fixture,
             "interval_seconds": self.interval_seconds,
             "dry_run": self.dry_run,
+            "mechanics_qualification": self.mechanics_qualification,
             "selection": self.selection_record(),
             "triage_decision_manifest": str(self.triage_decision_manifest)
             if self.triage_decision_manifest
@@ -502,6 +510,11 @@ def build_parser() -> bootstrap_main.RefusingParser:
     )
     parser.add_argument("--interval-seconds", type=float, default=15.0)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--mechanics-qualification",
+        action="store_true",
+        help="run real mechanics with unproven profiles; does not mark them proven",
+    )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--stage", choices=SEQUENCE_NAMES)
     selection.add_argument("--from", dest="from_stage", choices=SEQUENCE_NAMES)
@@ -668,6 +681,7 @@ def resolve_run_plan(
         fixture=args.fixture,
         interval_seconds=interval,
         dry_run=args.dry_run or bootstrap.dry_run,
+        mechanics_qualification=args.mechanics_qualification,
         stage=stage,
         from_stage=from_stage,
         to_stage=to_stage,
