@@ -324,15 +324,22 @@ def test_the_measured_failures_this_change_answers_are_still_failures_at_the_old
         assert record["fits"] is False, (chair, tier)
 
 
-def test_only_rows_sized_from_retained_logs_depart_from_the_300s_placeholder() -> None:
-    exceptions = [
+def test_measured_witness_rows_have_a_600s_startup_budget() -> None:
+    measured = [
         (profile.chair, profile.tier, profile.startup_timeout_seconds)
         for profile in _shipped_rows()
-        if profile.startup_timeout_seconds != 300
+        if profile.chair in {"designator_structure", "attestator_1", "attestator_2", "attestator_3"}
     ]
-    assert exceptions == [
-        ("designator_structure", "generic-80gb-plus", 600),
-        ("perlector", "generic-80gb-plus", 600),
+    assert len(measured) == 12
+    assert all(timeout == 600 for _, _, timeout in measured)
+    assert [
+        (profile.tier, profile.startup_timeout_seconds)
+        for profile in _shipped_rows()
+        if profile.chair == "perlector"
+    ] == [
+        ("generic-24gb", 300),
+        ("generic-48gb", 300),
+        ("generic-80gb-plus", 600),
     ]
 
 

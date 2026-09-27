@@ -40,7 +40,9 @@ def _write_bytes_artifact(root: Path, kind: str, data: bytes) -> dict[str, str]:
     return {"relative_path": relative, "sha256": digest}
 
 
-def _qualification_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict[str, object]]:
+def _qualification_fixture(
+    tmp_path: Path, *, answer: str | None = None
+) -> tuple[dict[str, Path], dict[str, object]]:
     ws, _ = _serving_workspace(tmp_path, preflight_state="unproven")
     evidence_root = ws.volume / "preflight" / "qualification"
     recipes_config = ws.repository / "config" / "serving_recipes.toml"
@@ -56,7 +58,9 @@ def _qualification_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict[str, o
     witness_bytes = PAGE_WITNESS.encode("ascii")
     witness_ref = _write_bytes_artifact(evidence_root, "page-witnesses", witness_bytes)
     witness_sha256 = digest_bytes(witness_bytes)
-    expected_output_sha256 = digest_bytes(canonical_bytes([f"PAGE-WITNESS: {PAGE_WITNESS}"]))
+    if answer is None:
+        answer = f"PAGE-WITNESS: {PAGE_WITNESS}"
+    expected_output_sha256 = digest_bytes(canonical_bytes([answer]))
     smoke_receipts = []
     cache_receipts = []
     placements = []
@@ -68,6 +72,10 @@ def _qualification_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict[str, o
             for row in profile_rows
             if row["chair"] == role and row["tier"] == PROVEN_TIER
         )
+        response_bytes = canonical_bytes(
+            {"model": served_model_id, "choices": [{"message": {"content": answer}}]}
+        )
+        response_ref = _write_bytes_artifact(evidence_root, "smoke-responses", response_bytes)
         cache_receipts.append(
             {
                 "chair": role,
@@ -130,9 +138,10 @@ def _qualification_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict[str, o
                 "served_engine": "vllm 0.test",
                 "utilization": [{"gpu_percent": "50", "cpu_percent": "10"}],
                 "supplied_fixture_sha256": HASH,
-                "smoke_fixture_response_sha256": "b" * 64,
+                "smoke_fixture_response_sha256": digest_bytes(response_bytes),
                 "smoke_fixture_output_sha256": expected_output_sha256,
-                "fixture_response_sha256": "b" * 64,
+                "fixture_response_sha256": digest_bytes(response_bytes),
+                "smoke_response_reference": response_ref,
                 "resolved_identity": identity.to_record(),
                 "resolved_revision": identity.receipt_revision,
                 "resolved_revision_kind": identity.receipt_revision_kind,
@@ -368,6 +377,33 @@ def test_qualification_refuses_an_output_digest_that_does_not_match_the_witness(
     smoke = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"][0]  # type: ignore[index]
     smoke["smoke_fixture_output_sha256"] = "e" * 64  # type: ignore[index]
     paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match="output digest disagrees"):
+        _qualify(paths)
+
+
+def test_qualification_accepts_internal_witness_whitespace_with_raw_digest(tmp_path: Path) -> None:
+    answer = f"PAGE-WITNESS: {PAGE_WITNESS[:8]} \t{PAGE_WITNESS[8:20]}\n{PAGE_WITNESS[20:]}"
+    paths, _ = _qualification_fixture(tmp_path, answer=answer)
+
+    record = _qualify(paths)
+
+    assert all(
+        item["smoke_fixture_output_sha256"] == digest_bytes(canonical_bytes([answer]))
+        for item in record["candidates"]
+    )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        f"PAGE-WITNESS: {PAGE_WITNESS[:-1]}X",
+        f"PAGE-WITNESS: {PAGE_WITNESS} ",
+        f"PAGE-WITNESS: {PAGE_WITNESS}\u200b",
+    ],
+)
+def test_qualification_refuses_other_answer_changes(tmp_path: Path, answer: str) -> None:
+    paths, _ = _qualification_fixture(tmp_path, answer=answer)
 
     with pytest.raises(QualificationRefusal, match="retained page witness exactly"):
         _qualify(paths)

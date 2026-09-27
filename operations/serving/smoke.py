@@ -72,6 +72,17 @@ _GOLDEN_PAGE_FONT_STEP = 2
 _NVIDIA_SMI_TIMEOUT_SECONDS = 30.0
 
 
+def answer_contains_page_witness(answer: str, witness: str) -> bool:
+    """Match the exact marker and code, allowing only internal layout whitespace."""
+
+    if not answer.startswith(_WITNESS_PREFIX):
+        return False
+    code = answer[len(_WITNESS_PREFIX) :]
+    if not code or code[0].isspace() or code[-1].isspace():
+        return False
+    return code.translate(str.maketrans("", "", " \t\r\n")) == witness
+
+
 class SmokeExchangeRetainedError(ServingError):
     """A smoke parser refusal whose exact request and response are retained."""
 
@@ -360,12 +371,9 @@ class VisionSmokeCall:
         # Keep the marker and token boundaries exact.  Some vision readers add
         # layout whitespace inside a long token, so remove only that whitespace
         # before comparing every remaining character in order.
-        format_valid = False
-        if shape_valid and answer.outputs[0].startswith(_WITNESS_PREFIX):
-            code = answer.outputs[0][len(_WITNESS_PREFIX) :]
-            if code and not code[0].isspace() and not code[-1].isspace():
-                compact_code = code.translate(str.maketrans("", "", " \t\r\n"))
-                format_valid = compact_code == self.page_witness
+        format_valid = shape_valid and answer_contains_page_witness(
+            answer.outputs[0], self.page_witness
+        )
         samples = self.utilization()
         if not isinstance(samples, tuple) or not all(
             isinstance(sample, UtilizationSample) for sample in samples

@@ -22,6 +22,7 @@ from .config import (
     profile_preflight_digest,
 )
 from .errors import ServingConfigurationError
+from .smoke import answer_contains_page_witness
 
 DESCRIPTION = """Verify a real-silicon preflight and render profile proof candidates.
 
@@ -286,10 +287,32 @@ def _verify_smoke(
         raise QualificationRefusal(
             f"chair {identity.role!r} witness digest disagrees with its artifact"
         )
-    expected_output_sha256 = digest_bytes(canonical_bytes([f"PAGE-WITNESS: {witness}"]))
-    if smoke["smoke_fixture_output_sha256"] != expected_output_sha256:
+    response_ref = _object(smoke.get("smoke_response_reference"), "smoke response reference")
+    response_bytes = _verified_artifact_bytes(evidence_root, response_ref, "smoke response")
+    if digest_bytes(response_bytes) != smoke["smoke_fixture_response_sha256"]:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} response digest disagrees with its artifact"
+        )
+    response = _json_object(response_bytes, "smoke response")
+    choices = response.get("choices")
+    if (
+        response.get("model") != served_model_id
+        or not isinstance(choices, list)
+        or len(choices) != 1
+    ):
+        raise QualificationRefusal(
+            f"chair {identity.role!r} smoke response has a different model or output shape"
+        )
+    choice = choices[0]
+    message = choice.get("message") if isinstance(choice, dict) else None
+    answer = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(answer, str) or not answer_contains_page_witness(answer, witness):
         raise QualificationRefusal(
             f"chair {identity.role!r} output did not contain the retained page witness exactly"
+        )
+    if smoke["smoke_fixture_output_sha256"] != digest_bytes(canonical_bytes([answer])):
+        raise QualificationRefusal(
+            f"chair {identity.role!r} output digest disagrees with its artifact"
         )
     page_read = {
         "resolved_identity": identity.to_record(),
