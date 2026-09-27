@@ -405,7 +405,7 @@ class BootstrapStep(StrEnum):
     UV_ENVIRONMENT = "uv-environment"
     TRANSFER = "transfer"
     MODEL_STORE = "model-store"
-    CHAIR_CACHE = "chair-cache"
+    CHAIR_CACHE = "chair-cache"  # Stable journal key; the receipt records source planning.
     PREFLIGHT = "preflight"
 
 
@@ -485,7 +485,7 @@ class BootstrapActions(Protocol):
         """Fetch real pinned snapshots and publish their measured store evidence."""
 
     def verify_chair_cache(self) -> dict[str, object]:
-        """Verify every configured chair pin, with at most one same-pin re-fetch each."""
+        """Plan each configured chair's pinned source without filling its cache."""
 
     def run_preflight(self) -> dict[str, object]:
         """Return one green preflight receipt or raise with its named red reason."""
@@ -1168,8 +1168,8 @@ class SubprocessBootstrapActions:
             raise BootstrapStepFailure(
                 BootstrapStep.MODEL_STORE,
                 "model-store materialization did not verify every real-roster repository",
-                "Resume the same pinned materialization; do not advance to chair-cache "
-                "verification while a real-roster artifact is absent or unverified.",
+                "Resume the same pinned materialization; do not advance to chair-source "
+                "planning while a real-roster artifact is absent or unverified.",
             )
         return result
 
@@ -1225,6 +1225,10 @@ class SubprocessBootstrapActions:
             if argv[0].endswith(("/nvidia-smi", "/dpkg-query"))
             else 300
             if argv[0].endswith(("/apt-cache", "/apt-get"))
+            else 600
+            if argv[0] == self.executables["git"]
+            else 3600
+            if argv[0] == self.executables["uv"]
             else None
         )
         return subprocess.run(

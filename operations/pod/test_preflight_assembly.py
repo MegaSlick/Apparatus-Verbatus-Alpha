@@ -372,13 +372,28 @@ def test_unsupported_tier_is_placed_without_cache_or_smoke(fixture_page: Path) -
     )
     report = runner.run(measured_profile())
 
-    assert report.color == "green"
+    assert report.color == "red"
+    assert [(issue.code, issue.chair) for issue in report.issues] == [
+        ("chair-unservable-at-tier", "perlector")
+    ]
     assert {placement.chair: placement.state for placement in report.placements} == {
         "attestator_3": "planned",
         "perlector": "unservable-at-tier",
     }
     assert verifier.calls == reader.calls == ["attestator_3"]
     assert [receipt["chair"] for receipt in report.smoke_receipts] == ["attestator_3"]
+
+    selected = PreflightRunner(
+        Models("perlector", "attestator_3"),
+        table(),
+        verifier,
+        reader,
+        fixture_page,
+        serving_recipes=recipes,
+        selected_roles=frozenset({"attestator_3"}),
+    ).run(measured_profile())
+    assert selected.color == "green"
+    assert [placement.chair for placement in selected.placements] == ["attestator_3"]
 
     all_unsupported = PreflightRunner(
         Models("perlector"),
@@ -389,8 +404,11 @@ def test_unsupported_tier_is_placed_without_cache_or_smoke(fixture_page: Path) -
         serving_recipes=ServingRecipes((unsupported,)),
     ).run(measured_profile())
     assert all_unsupported.color == "red"
-    assert {issue.code for issue in all_unsupported.issues} == {"no-chair-verified"}
-    assert verifier.calls == reader.calls == ["attestator_3"]
+    assert {issue.code for issue in all_unsupported.issues} == {
+        "chair-unservable-at-tier",
+        "no-chair-verified",
+    }
+    assert verifier.calls == reader.calls == ["attestator_3", "attestator_3"]
 
 
 def test_a_real_card_and_a_served_chair_prove_the_assembly(fixture_page: Path) -> None:

@@ -1050,7 +1050,9 @@ def _build_cache(plan: Plan) -> dict[str, object]:
     for role, identity in sorted(registry.config.chairs.items()):
         if isinstance(identity, ChairIdentity) and identity.source == "huggingface":
             source = fetcher.plan(identity)
-            chairs.append({"chair": role, "state": "planned", "snapshot": source["snapshot"]})
+            chairs.append(
+                {"chair": role, "state": "source-planned", "snapshot": source["snapshot"]}
+            )
         else:
             chairs.append({"chair": role, "state": "not-cached"})
     return {"chairs": chairs, "cache_root": str(plan.cache_root)}
@@ -1274,7 +1276,7 @@ def _build_preflight(
 
 
 class _LazyChairCache:
-    """Defer ``_build_cache`` until the CHAIR_CACHE step actually verifies.
+    """Defer ``_build_cache`` until CHAIR_CACHE plans pinned sources.
 
     ``build_actions`` runs before ``Bootstrapper.run`` -- before REPOSITORY has
     checked out ``--repository-commit`` and before UV_ENVIRONMENT has synced
