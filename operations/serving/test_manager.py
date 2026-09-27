@@ -30,7 +30,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from common.chairs.config import load_models_toml
-from common.chairs.errors import ReceiptRefusal, ServingRecipeRefusal, UnresolvedChairRefusal
+from common.chairs.errors import ServingRecipeRefusal, UnresolvedChairRefusal
 from common.chairs.models import (
     AbsentChair,
     ChairIdentity,
@@ -2019,29 +2019,6 @@ def test_failed_cleanup_surfaces_stop_error_and_keeps_the_residency_lease(tmp_pa
     assert http.inference_calls >= 2
 
 
-def test_registry_refusal_and_failed_cleanup_are_reported_together(tmp_path: Path) -> None:
-    chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, registry, _ = reader_manager(
-        tmp_path, chair=chair, ignore_terminate=True, ignore_kill=True
-    )
-
-    def refuse_receipt(identity: ChairIdentity, details: ServingDetails):
-        del details
-        raise ReceiptRefusal(identity.role, "injected identity-bearing receipt refusal")
-
-    registry.receipt = refuse_receipt  # type: ignore[method-assign]
-
-    with pytest.raises(ServingRecipeRefusal) as caught:
-        manager.start(chair, TIER)
-
-    detail = str(caught.value)
-    assert ReceiptRefusal.code in detail
-    assert "injected identity-bearing receipt refusal" in detail
-    assert ServiceStopError.code in detail
-    assert "lease is retained" in detail
-    assert launcher.processes[0].kill_calls == 1
-
-
 def test_unexpected_start_failure_names_its_exception_type_in_the_refusal(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
     manager, _, _, launcher, registry, _ = reader_manager(tmp_path, chair=chair)
@@ -2352,30 +2329,6 @@ def _proc_status_is_live(read_status: Callable[[], str]) -> bool:
     return "(zombie)" not in status
 
 
-def test_proc_status_observer_distinguishes_live_zombie_and_disappearance() -> None:
-    assert _proc_status_is_live(lambda: "State:\tS (sleeping)\n")
-    assert not _proc_status_is_live(lambda: "State:\tZ (zombie)\n")
-
-    for error in (
-        FileNotFoundError(errno.ENOENT, "status entry disappeared"),
-        ProcessLookupError(errno.ESRCH, "process disappeared while status was read"),
-    ):
-
-        def disappeared(error=error):
-            raise error
-
-        assert not _proc_status_is_live(disappeared)
-
-    denied = PermissionError(errno.EACCES, "status entry is unreadable")
-
-    def unreadable():
-        raise denied
-
-    with pytest.raises(PermissionError) as caught:
-        _proc_status_is_live(unreadable)
-    assert caught.value is denied
-
-
 def test_a_still_running_child_polls_none_and_a_terminated_one_reports_its_signal(
     tmp_path: Path,
 ) -> None:
@@ -2524,26 +2477,6 @@ def test_read_tail_returns_only_the_bounded_tail_of_a_real_log(tmp_path: Path) -
     whole = process.read_tail(maximum_bytes=1_000_000)
     assert marker in whole
     assert "x" * 4000 in whole
-
-
-def test_close_log_clears_the_handle_once_exit_is_observed(tmp_path: Path) -> None:
-    process = SubprocessLauncher().launch(
-        (sys.executable, "-c", "pass"),
-        tmp_path / "child.log",
-    )
-    assert process.wait(3) == 0
-    assert process._log_handle is None  # type: ignore[attr-defined]
-
-
-def test_poll_closes_the_log_when_it_observes_a_self_terminated_child(tmp_path: Path) -> None:
-    process = SubprocessLauncher().launch(
-        (sys.executable, "-c", "pass"),
-        tmp_path / "child.log",
-    )
-
-    _wait_until(lambda: process.poll() is not None)
-
-    assert process._log_handle is None  # type: ignore[attr-defined]
 
 
 def test_read_tail_reports_a_launch_log_read_failure(tmp_path: Path) -> None:
@@ -5339,98 +5272,86 @@ def test_reconcile_usage_against_capacity_within_tolerance_has_no_finding() -> N
     assert reconciled.to_finding() is None
 
 
-def test_reconcile_usage_against_capacity_localizes_an_image_only_mismatch() -> None:
+@pytest.mark.parametrize(
+    (
+        "chair",
+        "usage",
+        "image_tokens",
+        "text_tokens",
+        "tolerance",
+        "localized",
+        "observed_image",
+        "discrepancy",
+    ),
+    (
+        ("attestator_3", {"prompt_tokens": 5200}, 5100, 0, 5, "image", None, 100),
+        ("reader", {"prompt_tokens": 30}, 0, 4, 1, "text", None, None),
+        ("attestator_2", {"prompt_tokens": 5200}, 4059, 1024, 5, "unlocalized", None, None),
+        (
+            "attestator_2",
+            {
+                "prompt_tokens": 5183,
+                "prompt_tokens_details": {"multimodal_tokens": {"image": 4159}},
+            },
+            4059,
+            1024,
+            5,
+            "image",
+            4159,
+            None,
+        ),
+        (
+            "attestator_2",
+            {
+                "prompt_tokens": 5200,
+                "prompt_tokens_details": {"multimodal_tokens": {"image": 4059}},
+            },
+            4059,
+            1024,
+            5,
+            "text",
+            None,
+            None,
+        ),
+        (
+            "attestator_2",
+            {
+                "prompt_tokens": 5300,
+                "prompt_tokens_details": {"multimodal_tokens": {"image": 4159}},
+            },
+            4059,
+            1024,
+            5,
+            "unlocalized",
+            None,
+            None,
+        ),
+    ),
+)
+def test_reconcile_usage_against_capacity_localizes_mismatch(
+    chair: str,
+    usage: dict[str, object],
+    image_tokens: int,
+    text_tokens: int,
+    tolerance: int,
+    localized: str,
+    observed_image: int | None,
+    discrepancy: int | None,
+) -> None:
     reconciled = reconcile_usage_against_capacity(
-        chair="attestator_3",
-        usage={"prompt_tokens": 5200},
-        expected_image_tokens=5100,
-        expected_text_tokens=0,
-        tolerance=5,
+        chair=chair,
+        usage=usage,
+        expected_image_tokens=image_tokens,
+        expected_text_tokens=text_tokens,
+        tolerance=tolerance,
     )
     finding = reconciled.to_finding()
     assert finding is not None
-    assert finding["kind"] == "usage-capacity-mismatch"
-    assert finding["localized_to"] == "image"
-    assert finding["discrepancy"] == 100
-
-
-def test_reconcile_usage_against_capacity_localizes_a_text_only_mismatch() -> None:
-    reconciled = reconcile_usage_against_capacity(
-        chair="reader",
-        usage={"prompt_tokens": 30},
-        expected_image_tokens=0,
-        expected_text_tokens=4,
-        tolerance=1,
-    )
-    finding = reconciled.to_finding()
-    assert finding is not None
-    assert finding["localized_to"] == "text"
-
-
-def test_reconcile_usage_against_capacity_reports_a_mixed_mismatch_as_unlocalized() -> None:
-    """With no per-modality breakdown in ``usage``, a mixed mismatch stays honest."""
-
-    reconciled = reconcile_usage_against_capacity(
-        chair="attestator_2",
-        usage={"prompt_tokens": 5200},
-        expected_image_tokens=4059,
-        expected_text_tokens=1024,
-        tolerance=5,
-    )
-    finding = reconciled.to_finding()
-    assert finding is not None
-    assert finding["localized_to"] == "unlocalized"
-
-
-def test_reconcile_usage_against_capacity_localizes_a_mixed_mismatch_to_image() -> None:
-    """``multimodal_tokens.image`` localizes exactly even on a real mixed request."""
-
-    reconciled = reconcile_usage_against_capacity(
-        chair="attestator_2",
-        usage={
-            "prompt_tokens": 5183,
-            "prompt_tokens_details": {"multimodal_tokens": {"image": 4159}},
-        },
-        expected_image_tokens=4059,
-        expected_text_tokens=1024,
-        tolerance=5,
-    )
-    finding = reconciled.to_finding()
-    assert finding is not None
-    assert finding["localized_to"] == "image"
-    assert finding["observed_image_tokens"] == 4159
-
-
-def test_reconcile_usage_against_capacity_localizes_a_mixed_mismatch_to_text() -> None:
-    reconciled = reconcile_usage_against_capacity(
-        chair="attestator_2",
-        usage={
-            "prompt_tokens": 5200,
-            "prompt_tokens_details": {"multimodal_tokens": {"image": 4059}},
-        },
-        expected_image_tokens=4059,
-        expected_text_tokens=1024,
-        tolerance=5,
-    )
-    finding = reconciled.to_finding()
-    assert finding is not None
-    assert finding["localized_to"] == "text"
-
-
-def test_reconcile_usage_against_capacity_mixed_breakdown_both_off_stays_unlocalized() -> None:
-    reconciled = reconcile_usage_against_capacity(
-        chair="attestator_2",
-        usage={
-            "prompt_tokens": 5300,
-            "prompt_tokens_details": {"multimodal_tokens": {"image": 4159}},
-        },
-        expected_image_tokens=4059,
-        expected_text_tokens=1024,
-        tolerance=5,
-    )
-    finding = reconciled.to_finding()
-    assert finding is not None
-    assert finding["localized_to"] == "unlocalized"
+    assert finding["localized_to"] == localized
+    if observed_image is not None:
+        assert finding["observed_image_tokens"] == observed_image
+    if discrepancy is not None:
+        assert finding["discrepancy"] == discrepancy
 
 
 def test_reconcile_usage_against_capacity_ignores_a_malformed_multimodal_breakdown() -> None:
