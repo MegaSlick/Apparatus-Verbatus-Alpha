@@ -584,6 +584,7 @@ def test_backup_refuses_a_destination_that_holds_the_run_tree(tmp_path: Path) ->
         sync_run_tree(volume, run_id, volume)
 
 
+@pytest.mark.hostile_local
 def test_backup_layout_symlink_cannot_redirect_writes_into_the_source(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     source = volume / run_id
@@ -600,6 +601,7 @@ def test_backup_layout_symlink_cannot_redirect_writes_into_the_source(tmp_path: 
     assert not (mac / "snapshots").exists()
 
 
+@pytest.mark.hostile_local
 def test_backup_refuses_when_the_selected_destination_itself_is_a_symlink(
     tmp_path: Path,
 ) -> None:
@@ -643,6 +645,7 @@ def test_backup_leaf_swap_cannot_redirect_a_read_outside_the_run_tree(
     assert not list((tmp_path / "mac" / "snapshots" / "sha256").glob("*.json"))
 
 
+@pytest.mark.hostile_local
 def test_backup_refuses_paths_that_collapse_on_default_apfs(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     source = volume / run_id
@@ -705,6 +708,7 @@ def test_backup_preserves_a_run_tree_contract_refusal_as_a_named_backup_refusal(
     assert not list((mac / "snapshots" / "sha256").glob("*.json"))
 
 
+@pytest.mark.hostile_local
 def test_backup_child_refuses_a_replaced_layout_directory_identity(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
@@ -853,6 +857,7 @@ def test_backup_excludes_but_records_run_tree_publication_temporaries(tmp_path: 
     assert report.copied == 2
 
 
+@pytest.mark.hostile_local
 def test_the_overlap_check_reads_filesystem_identity_and_not_the_spelling(tmp_path: Path) -> None:
     """Two names for one directory are the same directory, whatever they read as.
 
@@ -873,6 +878,7 @@ def test_the_overlap_check_reads_filesystem_identity_and_not_the_spelling(tmp_pa
     assert not backup_module._contains(tmp_path / "elsewhere", real / "runs" / "r")
 
 
+@pytest.mark.hostile_local
 def test_backup_names_a_backup_directory_that_refuses_hard_links(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -901,6 +907,7 @@ def test_backup_names_a_backup_directory_that_refuses_hard_links(
     assert not list((mac / "objects" / "sha256").glob("[0-9a-f]*"))
 
 
+@pytest.mark.hostile_local
 def test_backup_refuses_a_snapshot_name_taken_by_a_symlink(tmp_path: Path) -> None:
     """A published snapshot is an immutable index; a link is not one.
 

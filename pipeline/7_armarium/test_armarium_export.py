@@ -3388,6 +3388,7 @@ def test_a_member_named_as_both_file_and_directory_is_refused_before_extraction(
     assert not [path for path in clean.rglob("*") if path.is_file()]
 
 
+@pytest.mark.hostile_local
 @pytest.mark.parametrize(
     ("alias", "message"),
     [
@@ -3438,6 +3439,7 @@ def test_a_compressed_member_is_refused_before_a_byte_is_decompressed(tmp_path):
     assert not [path for path in clean.rglob("*") if path.is_file()]
 
 
+@pytest.mark.hostile_local
 def test_a_directory_swapped_to_a_symlink_after_preflight_cannot_redirect_extraction(
     tmp_path, monkeypatch
 ):
@@ -3463,6 +3465,7 @@ def test_a_directory_swapped_to_a_symlink_after_preflight_cannot_redirect_extrac
     assert not list(outside.rglob("*")), "no package byte may cross the clean-root boundary"
 
 
+@pytest.mark.hostile_local
 def test_a_preexisting_file_symlink_is_refused_before_archive_extraction(tmp_path):
     """A linked ambient entry is refused even when it occupies an expected path.
 
@@ -3484,6 +3487,7 @@ def test_a_preexisting_file_symlink_is_refused_before_archive_extraction(tmp_pat
     assert outside.read_bytes() == b"bytes outside the extraction root"
 
 
+@pytest.mark.hostile_local
 def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_root(tmp_path):
     """A hard link reports as a regular file, so link rejection alone is not containment."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)

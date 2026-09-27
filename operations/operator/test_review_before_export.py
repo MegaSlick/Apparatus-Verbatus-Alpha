@@ -875,6 +875,7 @@ def test_a_half_written_artifact_is_refused_rather_than_shown_as_a_complete_stag
     assert "4_perlector" in (refused.value.detail or "")
 
 
+@pytest.mark.hostile_local
 def test_the_plain_rendering_keeps_hostile_text_inert():
     hostile = {
         "run_id": "r",

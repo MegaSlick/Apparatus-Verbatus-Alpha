@@ -2413,6 +2413,7 @@ def test_concurrent_paid_actions_reserve_each_others_maximum_liability(tmp_path:
     assert "reserved" in refused.detail
 
 
+@pytest.mark.hostile_local
 def test_spend_gate_serializes_aliases_of_the_same_lease_root(tmp_path: Path) -> None:
     """A symlink spelling must not give one liability root a second lock."""
 

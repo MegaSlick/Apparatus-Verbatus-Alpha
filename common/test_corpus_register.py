@@ -598,6 +598,7 @@ def test_append_records_creates_and_extends_one_valid_register(tmp_path):
     assert members_of(path.read_bytes(), PAGE) == ["a" * 64]
 
 
+@pytest.mark.hostile_local
 def test_append_records_refuses_a_symlinked_lock_path(tmp_path):
     """A predictable lock name is safe only if opening it never follows a symlink.
 
@@ -632,6 +633,7 @@ def test_a_stale_writer_cannot_overwrite_a_concurrent_append(tmp_path):
     assert register_digest(before) == current
 
 
+@pytest.mark.hostile_local
 def test_a_path_swap_after_predecessor_read_is_refused_by_device_and_inode(tmp_path, monkeypatch):
     path = tmp_path / "register.json"
     path.write_bytes(empty_register())
@@ -670,6 +672,7 @@ def test_a_failed_atomic_publish_leaves_the_complete_predecessor(tmp_path, monke
     assert list(tmp_path.glob(".register.json.tmp-*")) == []
 
 
+@pytest.mark.hostile_local
 def test_a_register_symlink_is_never_read_or_replaced(tmp_path):
     target = tmp_path / "outside.json"
     target.write_bytes(empty_register())
@@ -683,6 +686,7 @@ def test_a_register_symlink_is_never_read_or_replaced(tmp_path):
     assert target.read_bytes() == empty_register()
 
 
+@pytest.mark.hostile_local
 def test_a_symlinked_register_lock_cannot_disable_writer_serialization(tmp_path):
     path = tmp_path / "register.json"
     path.write_bytes(empty_register())
@@ -747,6 +751,7 @@ def test_pathologically_nested_json_is_refused_for_its_depth_not_its_encoding():
     assert "not UTF-8 JSON" not in str(caught.value)
 
 
+@pytest.mark.hostile_local
 def test_a_lock_symlink_refuses_before_a_register_is_created_at_all(tmp_path):
     """The register-symlink half of this case is covered above, with a stronger match.
 
@@ -764,6 +769,7 @@ def test_a_lock_symlink_refuses_before_a_register_is_created_at_all(tmp_path):
     assert not register.exists()
 
 
+@pytest.mark.hostile_local
 def test_register_hardlink_is_refused_as_an_aliased_mutable_head(tmp_path):
     target = tmp_path / "outside.json"
     target.write_bytes(empty_register())
@@ -874,6 +880,7 @@ def test_a_run_created_without_a_register_refuses_one_introduced_later(tmp_path)
         verify_snapshot_is_current(run, str(register_path))
 
 
+@pytest.mark.hostile_local
 def test_a_stage_never_follows_a_live_register_symlink(tmp_path):
     target = tmp_path / "outside.json"
     target.write_bytes(empty_register())

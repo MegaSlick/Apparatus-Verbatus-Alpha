@@ -345,6 +345,7 @@ def test_a_recorded_artifact_cannot_be_renamed_out_of_the_next_record_version(tm
     assert not (tmp_path / "records" / f"{rejected_digest}.json").exists()
 
 
+@pytest.mark.hostile_local
 def test_active_record_swap_does_not_rewrite_its_immutable_version(tmp_path):
     record = _store(tmp_path)
     original_bytes = canonical_bytes(record)
@@ -362,6 +363,7 @@ def test_active_record_swap_does_not_rewrite_its_immutable_version(tmp_path):
         load_download_record(tmp_path)
 
 
+@pytest.mark.hostile_local
 def test_active_record_symlink_is_not_accepted_as_in_store_custody(tmp_path):
     _store(tmp_path)
     active = tmp_path / "download_record.json"
@@ -374,6 +376,7 @@ def test_active_record_symlink_is_not_accepted_as_in_store_custody(tmp_path):
         load_download_record(tmp_path)
 
 
+@pytest.mark.hostile_local
 def test_active_record_fifo_is_refused_before_any_blocking_read(tmp_path):
     os.mkfifo(tmp_path / "download_record.json")
 
@@ -381,6 +384,7 @@ def test_active_record_fifo_is_refused_before_any_blocking_read(tmp_path):
         load_download_record(tmp_path)
 
 
+@pytest.mark.hostile_local
 def test_immutable_record_version_cannot_hide_behind_an_internal_symlink(tmp_path):
     record = _store(tmp_path)
     digest = digest_bytes(canonical_bytes(record))
@@ -393,6 +397,7 @@ def test_immutable_record_version_cannot_hide_behind_an_internal_symlink(tmp_pat
         load_download_record(tmp_path)
 
 
+@pytest.mark.hostile_local
 def test_verified_snapshot_root_cannot_hide_behind_an_internal_symlink(tmp_path):
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -429,6 +434,7 @@ def test_writer_archives_the_legacy_host_record_before_migration(tmp_path):
 # --- S3: symlink escape is refused in both directions ---------------------------
 
 
+@pytest.mark.hostile_local
 def test_promote_verified_snapshot_refuses_a_staging_symlink_that_escapes_the_store(tmp_path):
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -458,6 +464,7 @@ def test_promote_verified_snapshot_accepts_a_legitimate_nested_staging_path(tmp_
     assert digest == digest_bytes(published)
 
 
+@pytest.mark.hostile_local
 def test_materializer_refuses_a_staging_root_symlink_before_fetching_outside_store(tmp_path):
     store = tmp_path / "store"
     store.mkdir()
@@ -510,6 +517,7 @@ def test_materializer_names_a_cleanup_failure_without_losing_the_fetch_failure(
         materialize_real_roster(tmp_path, _FailsAfterWriting())
 
 
+@pytest.mark.hostile_local
 def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_path, monkeypatch):
     outside_index = tmp_path / "outside-index.json"
     outside_index.write_text(
@@ -540,6 +548,7 @@ def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_pat
         materialize_real_roster(tmp_path, _SymlinkedShardIndex())
 
 
+@pytest.mark.hostile_local
 def test_materializer_refuses_a_hard_link_to_bytes_owned_outside_staging(tmp_path):
     outside = tmp_path / "outside-operator-file"
     outside.write_bytes(b"not repository evidence")
@@ -590,6 +599,7 @@ def test_download_record_read_is_bounded_before_json_deserialization(tmp_path, m
         load_download_record(tmp_path)
 
 
+@pytest.mark.hostile_local
 def test_verify_store_refuses_a_manifest_fifo_before_any_blocking_read(tmp_path):
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")

@@ -23,6 +23,15 @@ from common.stage import _stage_seal_payload, latest_attempt
 ROOT = Path(__file__).resolve().parent
 
 
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    if "CI" in os.environ:
+        return
+    skip_local = pytest.mark.skip(reason="hostile_local runs in CI only")
+    for item in items:
+        if item.get_closest_marker("hostile_local"):
+            item.add_marker(skip_local)
+
+
 def load_stage(stage: str, module: str = "run", *, isolate_path: bool = False) -> ModuleType:
     """A fresh copy of `pipeline/<stage>/<module>.py`, left out of `sys.modules`.
 

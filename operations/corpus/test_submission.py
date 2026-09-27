@@ -544,6 +544,7 @@ def test_clean_folder_passes_the_images_only_guard(scratch):
     refuse_non_image_files(Path(report["shards"][0]["folder"]))  # does not raise
 
 
+@pytest.mark.hostile_local
 def test_symlinked_directory_inside_submission_folder_refused(scratch):
     rows = [_row("rec-1", "val", VAL_PAGE_URL)]
     page_path, digest = _cache_file(scratch, "page.jpg", b"page-bytes")

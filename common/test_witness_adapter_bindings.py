@@ -297,6 +297,7 @@ def test_a_non_witness_chair_may_not_declare_a_witness_boundary(rows):
     assert "Remove both fields or move them" in message
 
 
+@pytest.mark.hostile_local
 def test_case_variant_chair_roles_are_refused_before_they_alias_a_cache_directory():
     raw = {
         "witness_floor": 0,

@@ -2496,6 +2496,7 @@ def test_a_path_traversal_image_reference_in_the_run_tree_is_refused_not_read(tm
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
 
 
+@pytest.mark.hostile_local
 @requires_host_boundary
 def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_text(
     tmp_path, monkeypatch, capsys

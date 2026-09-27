@@ -523,6 +523,7 @@ def test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs(tmp_path):
         assert validate_png(tree.read_bytes(payload["stored_at"])).format == "png"
 
 
+@pytest.mark.hostile_local
 def test_source_expansion_refuses_paths_that_alias_on_default_apfs():
     """A cross-host ledger must not acquire different ordinal-to-file meaning.
 
@@ -1174,6 +1175,7 @@ def test_a_missing_triage_producer_recipe_path_is_a_named_read_refusal(tmp_path)
         door.load_triage_decisions(manifest_path, producer_recipe_path=missing)
 
 
+@pytest.mark.hostile_local
 def test_a_triage_document_symlink_is_not_followed(tmp_path):
     target = tmp_path / "recipe-target.json"
     target.write_text(json.dumps(producer_recipe(instrument_config())), encoding="utf-8")
@@ -1183,6 +1185,7 @@ def test_a_triage_document_symlink_is_not_followed(tmp_path):
         door._read_triage_document(redirected, "triage producer recipe")
 
 
+@pytest.mark.hostile_local
 def test_a_triage_document_does_not_follow_an_intermediate_directory_symlink(tmp_path):
     target = tmp_path / "target"
     target.mkdir()
@@ -1375,6 +1378,7 @@ def test_a_triage_document_is_bounded_before_json_decoding(tmp_path, monkeypatch
         door.load_triage_decisions(decision_path)
 
 
+@pytest.mark.hostile_local
 def test_a_triage_document_symlink_is_not_followed_at_the_read_boundary(tmp_path):
     outside = tmp_path / "outside.json"
     outside.write_text(
@@ -2430,6 +2434,7 @@ def test_real_pdf_rewritten_during_render_is_refused_before_blob_publication(tmp
     assert "stored_at" not in record["payload"]
 
 
+@pytest.mark.hostile_local
 def test_real_raster_redirected_after_inventory_is_refused_and_recorded(tmp_path, monkeypatch):
     """The bounded raster reader must keep the same no-follow boundary as PDF."""
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
@@ -2465,6 +2470,7 @@ def test_real_raster_redirected_after_inventory_is_refused_and_recorded(tmp_path
     assert record["inputs"] == []
 
 
+@pytest.mark.hostile_local
 def test_a_symlink_planted_after_the_walk_refuses_only_its_own_source(tmp_path, monkeypatch):
     """Per-file, never per-folder: the redirected source is the only casualty.
 
@@ -2564,6 +2570,7 @@ def test_a_forged_nul_byte_manifest_row_refuses_only_itself(tmp_path, monkeypatc
     assert good_record["outcome"] == "admitted"
 
 
+@pytest.mark.hostile_local
 def test_a_symlinked_pdf_is_never_handed_to_pdfium_to_count_or_render(tmp_path, monkeypatch):
     """The PDF path is the sharper half of the same gap: PDFium parses whatever it
     opens, in `expand_sources`'s page count *before* any digest is even computed.

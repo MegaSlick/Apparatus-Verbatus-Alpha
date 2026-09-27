@@ -68,6 +68,7 @@ def test_a_traversing_file_name_is_refused(tmp_path: Path) -> None:
         scantailor_worker.parse(hostile, tmp_path / "hostile.ScanTailor")
 
 
+@pytest.mark.hostile_local
 def test_a_symlink_that_escapes_the_project_directory_is_refused(tmp_path: Path) -> None:
     """Every component looks like a safe relative path; only `.resolve()` reveals the escape."""
     outside = tmp_path / "outside"
@@ -330,6 +331,7 @@ def _case_variant_project(tmp_path: Path) -> bytes:
     )
 
 
+@pytest.mark.hostile_local
 def test_case_variant_paths_for_one_physical_page_refuse_on_default_apfs_darwin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -346,6 +348,7 @@ def test_case_variant_paths_for_one_physical_page_refuse_on_default_apfs_darwin(
         scantailor_worker.parse(hostile, tmp_path / "case-variant.ScanTailor")
 
 
+@pytest.mark.hostile_local
 def test_case_variant_paths_are_distinct_pages_off_darwin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -409,6 +412,7 @@ def test_a_missing_output_folder_refuses_before_the_operator_is_shown_a_pinned_p
     assert "output folder does not exist" in response["reason"]
 
 
+@pytest.mark.hostile_local
 def test_a_symlinked_output_folder_refuses_rather_than_writing_through_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
@@ -438,6 +442,7 @@ def test_a_symlinked_output_folder_refuses_rather_than_writing_through_it(
     assert not any((tmp_path / "real").iterdir())
 
 
+@pytest.mark.hostile_local
 def test_an_existing_document_that_is_not_a_regular_file_refuses_rather_than_blocking(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
@@ -617,6 +622,7 @@ def test_a_vanished_output_folder_is_not_recreated_by_the_commit(
     assert not output.exists()
 
 
+@pytest.mark.hostile_local
 def test_an_output_folder_swapped_after_its_check_is_not_the_one_written_to(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:

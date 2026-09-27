@@ -118,6 +118,7 @@ def test_an_absolute_or_traversing_path_is_refused_when_the_config_is_read(tmp_p
         )
 
 
+@pytest.mark.hostile_local
 def test_a_symlink_escape_is_refused_against_the_real_filesystem(tmp_path):
     """The string-shape check cannot see this one: `escape-link` traverses
     nothing and is not absolute. Only resolving it against the real filesystem
@@ -139,6 +140,7 @@ def test_a_symlink_escape_is_refused_against_the_real_filesystem(tmp_path):
         registry.ensure(registry.resolve("perlector"))
 
 
+@pytest.mark.hostile_local
 def test_a_symlinked_subdirectory_inside_the_snapshot_is_refused(tmp_path):
     """The escape one level down: the snapshot root is legitimate, and a
     directory inside it points at bytes the model root does not hold."""
@@ -157,6 +159,7 @@ def test_a_symlinked_subdirectory_inside_the_snapshot_is_refused(tmp_path):
         registry.ensure(registry.resolve("perlector"))
 
 
+@pytest.mark.hostile_local
 def test_a_manifest_path_that_escapes_its_own_root_is_refused(tmp_path):
     """`manifest` is resolved under the config file's directory for the same
     reason `path` is resolved under the model root."""

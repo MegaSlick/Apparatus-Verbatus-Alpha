@@ -3345,6 +3345,7 @@ def test_prepare_log_root_is_owner_only_regardless_of_umask_or_prior_mode(
     )
 
 
+@pytest.mark.hostile_local
 def test_prepare_log_root_refuses_a_symlink_rather_than_re_moding_its_target(
     tmp_path: Path,
 ) -> None:

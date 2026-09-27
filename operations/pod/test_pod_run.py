@@ -796,6 +796,7 @@ def test_refuses_a_run_report_path_outside_the_volume(
     assert not outside.exists()
 
 
+@pytest.mark.hostile_local
 def test_a_symlinked_transcript_cannot_truncate_the_bootstrap_report(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -811,6 +812,7 @@ def test_a_symlinked_transcript_cannot_truncate_the_bootstrap_report(
     assert ws.report_path.read_bytes() == evidence
 
 
+@pytest.mark.hostile_local
 def test_the_transcript_writer_refuses_a_symlink(tmp_path: Path) -> None:
     evidence = tmp_path / "bootstrap.json"
     evidence.write_bytes(b"bootstrap evidence\n")
@@ -1768,6 +1770,7 @@ def test_a_hold_only_launch_receipt_is_refused_when_a_run_id_is_requested(
     )
 
 
+@pytest.mark.hostile_local
 def test_a_launch_receipt_read_through_a_link_is_refused(tmp_path: Path) -> None:
     """A record this verb did not write is not read whole on trust."""
 
@@ -2092,6 +2095,7 @@ def test_timing_writer_refuses_an_existing_foreign_file(
     assert "could not be journaled" in capsys.readouterr().err
 
 
+@pytest.mark.hostile_local
 def test_timing_writer_does_not_follow_a_symlink(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

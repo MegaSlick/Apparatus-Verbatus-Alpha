@@ -84,6 +84,7 @@ def test_reconciliation_outputs_cannot_overwrite_a_verdict_or_each_other(tmp_pat
     assert not shared.exists()
 
 
+@pytest.mark.hostile_local
 def test_reconciliation_paths_refuse_case_collisions_and_source_symlinks(tmp_path: Path):
     sources = []
     for fixture in sorted(FIXTURES.glob("seat-*.json")):

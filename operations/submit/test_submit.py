@@ -392,6 +392,7 @@ def test_resubmitting_identical_content_to_one_path_is_still_a_true_no_op(submis
     assert submission["manifest_out"].exists()
 
 
+@pytest.mark.hostile_local
 def test_an_identical_referent_behind_a_planted_symlink_is_not_reused(tmp_path):
     """An EEXIST comparison must identify the directory entry without following it."""
     target = tmp_path / "sealed.json"
@@ -412,6 +413,7 @@ def test_an_identical_referent_behind_a_planted_symlink_is_not_reused(tmp_path):
     assert referent.read_bytes() == data
 
 
+@pytest.mark.hostile_local
 def test_a_planted_link_to_different_bytes_is_never_written_through(tmp_path):
     """The identical-referent case cannot see a write-through; this one can.
 
@@ -564,6 +566,7 @@ def test_the_manifest_temp_name_is_unpredictable_and_never_reused(submission):
     assert leftovers == [], f"the run's own temporary was not removed: {leftovers}"
 
 
+@pytest.mark.hostile_local
 def test_the_manifest_is_not_written_through_a_symlink_planted_at_its_temp_path(
     monkeypatch, submission
 ):

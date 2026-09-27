@@ -262,6 +262,7 @@ def test_ingest_commit_failure_shows_the_workers_own_reason_not_a_raw_json_dict(
     assert "the preview runs with no write rights at all" not in rendered
 
 
+@pytest.mark.hostile_local
 @requires_host_boundary
 def test_ingest_does_not_resolve_a_source_symlink_past_the_data_gate(
     tmp_path: Path,
@@ -431,6 +432,7 @@ def test_ingest_does_not_publish_ready_when_the_register_digest_is_not_verified(
     assert not (output / "ingest-ready.json").exists()
 
 
+@pytest.mark.hostile_local
 def test_ingest_commit_refuses_when_the_submitted_folder_changed_after_the_preview(
     tmp_path: Path,
 ):
@@ -447,6 +449,7 @@ def test_ingest_commit_refuses_when_the_submitted_folder_changed_after_the_previ
     assert not list(output.iterdir())
 
 
+@pytest.mark.hostile_local
 def test_ingest_commit_refuses_when_the_output_directory_inode_changed_after_preview(
     tmp_path: Path,
 ):
@@ -659,6 +662,7 @@ def test_ingest_refuses_an_output_folder_inside_the_submitted_folder(
 
 
 @requires_host_boundary
+@pytest.mark.hostile_local
 def test_a_case_variant_spelling_cannot_place_the_output_inside_the_submission(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
