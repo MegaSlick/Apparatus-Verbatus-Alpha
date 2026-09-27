@@ -5622,6 +5622,8 @@ def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
             "UV_CACHE_DIR": "/tmp/verbatus-uv-cache",
         }
         for _, environment in observed
@@ -5885,29 +5887,33 @@ def test_the_image_contract_refuses_a_checkout_with_no_origin(tmp_path: Path) ->
         )
 
 
-def test_the_image_contract_refuses_an_https_origin_no_homeless_client_can_authenticate(
+def test_the_image_contract_accepts_anonymous_https_without_external_credentials(
     tmp_path: Path,
 ) -> None:
-    """The bootstrap environment supplies no HOME, so no global helper is visible."""
+    """The pinned fetch will prove reachability with no HOME or prompt."""
 
     repository = _image(tmp_path, origin=_HTTPS_ORIGIN)
 
-    with pytest.raises(ImageContractRefusal, match="no HOME"):
-        verify_image_contract(
-            repository,
-            interpreter=_interpreter(repository),
-            executables=_tools(tmp_path),
-            environment={"PATH": "/usr/bin"},
-        )
-
-    # A route the repository's own config carries is visible without HOME.
-    with_helper = _image(tmp_path / "helper", origin=_HTTPS_ORIGIN, credential_helper=True)
-    verify_image_contract(
-        with_helper,
-        interpreter=_interpreter(with_helper),
+    verified = verify_image_contract(
+        repository,
+        interpreter=_interpreter(repository),
         executables=_tools(tmp_path),
-        environment={},
+        environment=BOOTSTRAP_ENVIRONMENT,
     )
+    assert verified["credential_route"] == "anonymous-https"
+    assert "HOME" not in BOOTSTRAP_ENVIRONMENT
+    assert BOOTSTRAP_ENVIRONMENT["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert BOOTSTRAP_ENVIRONMENT["GIT_TERMINAL_PROMPT"] == "0"
+
+    # A helper in local config can still read /etc/verbatus-credentials.
+    with_helper = _image(tmp_path / "helper", origin=_HTTPS_ORIGIN, credential_helper=True)
+    with pytest.raises(ImageContractRefusal, match="credential helper"):
+        verify_image_contract(
+            with_helper,
+            interpreter=_interpreter(with_helper),
+            executables=_tools(tmp_path),
+            environment={},
+        )
 
 
 def test_the_image_contract_refuses_a_missing_tool_at_its_absolute_path(tmp_path: Path) -> None:

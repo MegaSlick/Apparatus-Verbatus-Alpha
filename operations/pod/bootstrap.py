@@ -54,6 +54,8 @@ BOOTSTRAP_ENVIRONMENT = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
     # uv resolves its cache through UV_CACHE_DIR, then XDG_CACHE_HOME, then
     # $HOME. This environment is explicit and supplies none of those, so where
     # `uv sync --locked` cached anything was left to whatever uv could
@@ -156,9 +158,11 @@ def verify_image_contract(
       *fetches and checks out*; it has never cloned, so an image with no
       checkout in it fails at the first git call with the volume already
       attached and the card already billing.
-    * That remote reachable with **no HOME**: ``BOOTSTRAP_ENVIRONMENT`` supplies
-      none, so git reads no ``~/.gitconfig``, no global credential helper and no
-      ``~/.git-credentials``. Only the repository's own config is visible.
+    * Git can fetch without reading outside credentials: the image check
+      accepts an anonymous HTTPS origin, and the pinned fetch immediately
+      proves whether it is reachable. ``BOOTSTRAP_ENVIRONMENT`` has no HOME,
+      disables system config and terminal prompts, and the local config cannot
+      include an outside file or call a credential helper.
     * The running interpreter and its ``sys.prefix`` inside ``<repository>/.venv``,
       because that is the environment ``uv sync`` fills and the one ServingManager
       later inspects.  A standard virtual environment's ``bin/python`` is usually
@@ -202,6 +206,11 @@ def verify_image_contract(
             "fetch from, and cannot proceed on the assumption that there is one"
         ) from error
     entries = _git_config_entries(config_text)
+    if any(section in {"include", "includeif"} for section, _, _, _ in entries):
+        raise ImageContractRefusal(
+            f"the checkout at {repository} includes git configuration outside its own config; "
+            "the bootstrap cannot prove that no outside credential source is read"
+        )
     origin = _config_value(entries, "remote", "origin", "url")
     if not origin:
         raise ImageContractRefusal(
@@ -211,6 +220,11 @@ def verify_image_contract(
     verified["origin_remote"] = "present"
 
     home_is_visible = bool(environment.get("HOME"))
+    if home_is_visible:
+        raise ImageContractRefusal(
+            "the bootstrap git environment exposes HOME, which may supply credentials "
+            "outside the checked-out repository"
+        )
     scheme = origin.split("://", 1)[0].lower() if "://" in origin else ""
     # Only over http/https does userinfo carry a credential. `user@host` in an
     # SSH remote is a login name, and recording that as an embedded credential
@@ -218,37 +232,22 @@ def verify_image_contract(
     embedded_credential = (
         scheme in {"http", "https"} and "@" in origin.split("://", 1)[-1].split("/", 1)[0]
     )
-    local_credential_route = bool(
-        _config_value(entries, "credential", None, "helper")
-        or _any_subsection_value(entries, "credential", "helper")
-        or _any_subsection_value(entries, "http", "extraheader")
-    )
-    if (
-        scheme in {"http", "https"}
-        and not home_is_visible
-        and not embedded_credential
-        and not local_credential_route
-    ):
+    if _any_subsection_value(entries, "credential", "helper"):
         raise ImageContractRefusal(
-            f"the checkout at {repository} fetches origin over {scheme} and carries no "
-            "credential route of its own, while the bootstrap environment supplies no "
-            "HOME -- so git will read no ~/.gitconfig, no global credential helper and "
-            "no ~/.git-credentials, and a private fetch has nothing to authenticate "
-            "with. Put the route in the repository's own config (a credential.helper, "
-            "an http.<url>.extraheader, or credentials in the remote URL), or give the "
-            "bootstrap environment a HOME whose configuration you have checked"
+            f"the checkout at {repository} configures a credential helper, which may read "
+            "credentials outside the checkout"
         )
-    # What the receipt may honestly say. The last value is not "no credential is
-    # needed" -- an SSH remote's key, or a public remote needing nothing, are
-    # both outside what reading one config file can establish -- so it says
-    # exactly that instead of a claim this check did not make (principle 8).
+    local_credential_route = bool(_any_subsection_value(entries, "http", "extraheader"))
+    # A public HTTPS origin needs no credential route. The actual pinned fetch
+    # below proves reachability under the scrubbed environment; a private
+    # origin with no route fails there before checkout or model work.
     verified["credential_route"] = (
         "embedded-in-url"
         if embedded_credential
         else "repository-local"
         if local_credential_route
-        else "home-visible"
-        if home_is_visible
+        else "anonymous-https"
+        if scheme == "https"
         else "not-in-the-repository-config"
     )
 

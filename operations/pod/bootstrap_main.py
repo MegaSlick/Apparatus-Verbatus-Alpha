@@ -1421,9 +1421,10 @@ def build_actions(plan: Plan) -> BootstrapActions:
     """The real, tracked composition. Tests inject a fake instead of calling this.
 
     The image contract rides on REPOSITORY, the first step: what it checks --
-    git and uv at their absolute paths, a checkout with an origin remote whose
-    credentials a HOME-less git can see, and this interpreter inside
-    ``<repository>/.venv`` -- are facts about the image, and every one of them
+    git and uv at their absolute paths, a checkout with an origin remote that
+    HOME-less git can fetch anonymously or with checkout-local credentials,
+    and this interpreter inside ``<repository>/.venv`` -- are facts about the
+    image, and every one of them
     is cheaper to refuse here than to discover after the wheel download. The
     check is wired only in this tracked composition, because it is the only
     caller that has a real pod image under it.
