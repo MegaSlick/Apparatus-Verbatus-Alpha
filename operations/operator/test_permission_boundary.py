@@ -677,7 +677,9 @@ def test_a_broken_projection_pipe_never_reads_as_damaged_run_tree_evidence(tmp_p
 
     monkeypatch.setattr(cli, "run_confined", _truncated)
     monkeypatch.setattr(
-        cli, "ReadOnlyRun", lambda *_args: types.SimpleNamespace(projection=lambda: _EMPTY_VIEW)
+        cli,
+        "ReadOnlyRun",
+        lambda *_args: types.SimpleNamespace(projection=lambda **_kwargs: _EMPTY_VIEW),
     )
     monkeypatch.setattr(cli, "_bound_run_tree", lambda *_args: None)
 
@@ -2653,7 +2655,9 @@ def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_t
         advance_records=(),
     )
     monkeypatch.setattr(
-        cli, "ReadOnlyRun", lambda root, run_id: types.SimpleNamespace(projection=lambda: hostile)
+        cli,
+        "ReadOnlyRun",
+        lambda root, run_id: types.SimpleNamespace(projection=lambda **_kwargs: hostile),
     )
 
     cli._review_in_custody(tmp_path, "hostile", ROOT)
