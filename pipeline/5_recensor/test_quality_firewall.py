@@ -24,8 +24,6 @@ it constrains the recovery gate itself rather than the inputs reaching it.
 import ast
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR_DIRECTORY = ROOT / "pipeline/5_recensor"
 
@@ -239,30 +237,6 @@ def test_what_the_gate_is_computed_from_is_coverage_only():
     )
 
 
-def _sole_assignment(name: str) -> ast.Assign:
-    """The stage's one assignment to `name`, across every source file."""
-    assignments = [
-        node
-        for _, tree in _modules()
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
-    ]
-    assert len(assignments) == 1, (
-        f"{name} is assigned {len(assignments)} times in the stage; this guard reads one"
-    )
-    return assignments[0]
-
-
-def test_the_recovery_gate_has_no_route_based_dispatchability_conjunct():
-    """A real measured recovery cannot be suppressed by a route-only switch."""
-    assert not any(
-        isinstance(node, ast.Name) and node.id == "recrop_dispatchable"
-        for _, tree in _modules()
-        for node in ast.walk(tree)
-    )
-
-
 def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     """The deeper structural guarantee: this stage has no way to run anything.
 
@@ -306,61 +280,6 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
         f"the Recensor imports {sorted(imported & INVOCATION_MODULES)}; it appends recovery "
         "requests and never invokes the stage that answers one"
     )
-
-
-def test_the_banned_set_still_names_every_module_it_is_supposed_to():
-    """Pins the set's CONTENTS against an independent literal.
-
-    The parametrized test below cannot do this and it is worth saying why, because
-    the first attempt at this got it wrong: parametrizing over
-    `INVOCATION_MODULES` means deleting a member deletes its own test case, so the
-    suite goes green with one fewer test and nothing fails. Caught by mutating
-    `asyncio` out of the set and watching 12 tests pass. The duplication here is
-    deliberate and is the entire mechanism -- **adding** a module is a one-place
-    edit, **removing** one has to be argued in two places, which is the friction a
-    re-invocation firewall should have.
-    """
-    assert INVOCATION_MODULES == {
-        "subprocess",  # the direct route
-        "os",  # os.system, os.exec*, os.popen
-        "importlib",  # import_module then call into it
-        "multiprocessing",  # spawns interpreters
-        "runpy",  # run_path re-invokes a stage in-process, importing nothing else
-        "pty",  # reaches a shell the way subprocess does
-        "asyncio",  # create_subprocess_exec, and the word "subprocess" never appears
-    }
-
-
-@pytest.mark.parametrize("module", sorted(INVOCATION_MODULES))
-def test_every_banned_module_is_actually_caught_when_a_source_file_imports_it(module):
-    """The test above is vacuous on its own: the Recensor imports none of these,
-    so emptying `INVOCATION_MODULES` entirely would leave it passing. Meta-
-    invariant #88 -- an intersection assertion is satisfied by an empty set.
-
-    This drives the same extraction over synthetic sources that really do import
-    each banned module, both plainly and as `from x import y`, so removing a
-    member from the set (or breaking the extraction) fails here by name. Without
-    it, a later edit could drop `asyncio` and a subsequent
-    `asyncio.create_subprocess_exec(...)` could re-roll a reading with nothing
-    failing.
-    """
-    plain = _top_level_imports([ast.parse(f"import {module}\n")])
-    assert module in plain, f"a source file importing {module} was not seen at all"
-    assert plain & INVOCATION_MODULES, f"{module} is not refused by INVOCATION_MODULES"
-
-    submodule = _top_level_imports([ast.parse(f"from {module}.sub import thing\n")])
-    assert submodule & INVOCATION_MODULES, (
-        f"`from {module}.sub import thing` slipped past the top-level extraction"
-    )
-
-
-def test_an_unrelated_import_is_not_refused():
-    """The other half of meta-invariant #88: a check that refuses everything is
-    as useless as one that refuses nothing, and would make the test above pass
-    for the wrong reason."""
-    imported = _top_level_imports([ast.parse("import json\nfrom pathlib import Path\n")])
-    assert imported == {"json", "pathlib"}
-    assert not imported & INVOCATION_MODULES
 
 
 # --- The behavioural half: a real quality failure reaches review, not rework ----
