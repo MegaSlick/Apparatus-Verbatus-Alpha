@@ -323,7 +323,8 @@ class _PublishingContext:
         return {"relative_path": f"{kind}/{artifact_id}", "sha256": "0" * 64}
 
 
-def test_a_declared_continuation_drops_only_its_own_act_from_the_pair():
+@pytest.mark.parametrize("canary_side", [None, 1, 2])
+def test_a_declared_continuation_drops_only_its_own_act_from_the_pair(canary_side):
     """Two acts tie at the edge of one group; the fixture declares only one's
     continuation, so the other is still named."""
     thresholds = type("Thresholds", (), {"page_edge_reach_px": 7})()
@@ -356,6 +357,17 @@ def test_a_declared_continuation_drops_only_its_own_act_from_the_pair():
         2: [],
     }
     context = _PublishingContext()
+    if canary_side is not None:
+        context.run = {
+            "sealed_config_digests": {"canary-ledger": "c" * 64},
+            "source_manifest": [
+                {
+                    "ordinal": ordinal,
+                    "ledger_sha256": "c" * 64 if ordinal == canary_side else "a" * 64,
+                }
+                for ordinal in (1, 2)
+            ],
+        }
     designator._publish_continuation_candidates(
         context,
         {1: {"subject_id": "p1"}, 2: {"subject_id": "p2"}},
@@ -364,5 +376,8 @@ def test_a_declared_continuation_drops_only_its_own_act_from_the_pair():
         acts,
         {"config_sha256": "0" * 64},
     )
-    (record,) = context.published
-    assert record["payload"]["acts_a"] == [{"act_id": "free", "act_key": "a2"}]
+    if canary_side is None:
+        (record,) = context.published
+        assert record["payload"]["acts_a"] == [{"act_id": "free", "act_key": "a2"}]
+    else:
+        assert context.published == []

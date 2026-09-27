@@ -6,6 +6,10 @@ walking skeleton. It writes only ordinary `skeleton.v1` artifacts below
 attempt binding where applicable, a self-hash, and digest-checked direct inputs.
 The derived manifest is inventory, not a second authority.
 
+Continuation candidates are never made across a boundary touching a page
+marked by the Door's sealed canary ledger. A real page beside a canary page
+remains a real page; its other proposals and conservation records are retained.
+
 Spec 01 fixed the run-tree shape as `<stage>/artifacts/<kind>/<artifact-id>.json`
 for every stage; there is no per-page `crops/`, `acts/` or `conservation/`
 directory anywhere in this tree. Spec 06's contracts section names those as

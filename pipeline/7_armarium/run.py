@@ -92,6 +92,7 @@ from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     EXIT_HELD,
+    canary_ordinals,
     expected_acts,
     latest_attempt,
     open_stage_context,
@@ -1058,6 +1059,7 @@ def not_measured_basis(
     census: dict[int, dict],
     reviews: dict[str, dict],
     projected_acts: list[dict],
+    canary_pages: set[int] | None = None,
 ) -> dict:
     """The run's own answer to "what did this run not measure?".
 
@@ -1136,10 +1138,20 @@ def not_measured_basis(
                     rows_with_named_absence += 1
                     absence_codes.update(codes)
 
+    canary_pages = canary_pages or set()
     sealed_pages = sorted(
-        ordinal for ordinal, page in census.items() if page.get("outcome") == "sealed"
+        ordinal
+        for ordinal, page in census.items()
+        if page.get("outcome") == "sealed" and ordinal not in canary_pages
     )
-    unreconciled = conservation_not_reconciled(context, manifest_cache, set(sealed_pages))
+    all_sealed = {ordinal for ordinal, page in census.items() if page.get("outcome") == "sealed"}
+    unreconciled = {
+        ordinal: reason
+        for ordinal, reason in conservation_not_reconciled(
+            context, manifest_cache, all_sealed
+        ).items()
+        if ordinal not in canary_pages
+    }
     with_spans = sum(
         1
         for act in projected_acts
@@ -1844,6 +1856,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # Verify the source ledger's final boundary before publishing even a reusable
     # manifest entry. A seal damaged after Designator must stop export at once.
     census = page_census(context)
+    canaries = canary_ordinals(context.run)
+    if not canaries <= set(census):
+        raise FatalAccounting("sealed canary ordinals are absent from the Exemplar page census")
+    real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
 
     categories: dict[str, ArmariumCategory] = {}
     coverages: dict[str, dict] = {}
@@ -1866,9 +1882,31 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     review_items: list[dict] = []
     projected_acts: list[dict] = []
     expected = expected_acts(context)
+    canary_acts: list[dict] = []
 
     for act in expected:
         act_key = act["act_key"]
+        act_ordinals = set(marked_out_pages[act["act_id"]])
+        if act_ordinals & canaries:
+            if not act_ordinals <= canaries:
+                raise FatalAccounting(
+                    "an act touches both canary and real pages; export cannot drop a real page"
+                )
+            category, review, established = categorize(context, act["act_id"], manifest_cache)
+            canary_entry = {
+                "act_id": act["act_id"],
+                "act_key": act_key,
+                "category": category.value,
+                "page_ordinals": sorted(act_ordinals),
+            }
+            context.publish(
+                kind="manifest-entry",
+                subject_id=act["act_id"],
+                outcome=category.value,
+                payload=canary_entry,
+            )
+            canary_acts.append(canary_entry)
+            continue
         category, review, established = categorize(context, act["act_id"], manifest_cache)
 
         # The seal's own word is binding: an act the Designator held terminates
@@ -2034,21 +2072,22 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     unaddressed = list(unaddressed_chairs(context.registry.config))
     # The aggregate and terminal ledger must derive from the same edge holds;
     # computing the aggregate first could report complete beside a held page.
-    ink_map_pages = ink_map_page_rows(
+    all_ink_map_pages = ink_map_page_rows(
         context, census, claimed_bounds_by_page(context, manifest_cache)
     )
+    ink_map_pages = [row for row in all_ink_map_pages if row["ordinal"] not in canaries]
     joins = continuation_joins(context, reviews, projected_acts, manifest_cache, formats.formats)
     aggregate = run_aggregate(
         categories,
         coverages,
-        census,
+        real_census,
         unaddressed_chairs=unaddressed,
         act_pages=act_pages,
         act_text_status=act_text_status,
         edge_hold_pages=edge_hold_pages_from_rows(ink_map_pages),
         continuation_joins=joins,
     )
-    expected_count = len(expected)
+    expected_count = len(expected) - len(canary_acts)
     if len(categories) != expected_count:
         raise FatalAccounting(
             f"the seal expected {expected_count} acts and the export categorized "
@@ -2058,9 +2097,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     pages = [
         {
             "ordinal": ordinal,
-            **{key: value for key, value in census[ordinal].items() if key != "_pixel_dimensions"},
+            **{
+                key: value
+                for key, value in real_census[ordinal].items()
+                if key != "_pixel_dimensions"
+            },
         }
-        for ordinal in sorted(census)
+        for ordinal in sorted(real_census)
     ]
     bundle = build_armarium_bundle(
         ArmariumProjection(
@@ -2071,7 +2114,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             aggregate=aggregate,
             acts=tuple(projected_acts),
             pages=tuple(pages),
-            source_manifest=tuple(context.run["source_manifest"]),
+            source_manifest=tuple(
+                row for row in context.run["source_manifest"] if row["ordinal"] not in canaries
+            ),
             expected_acts=expected_count,
             witness_chairs=tuple(context.witness_chairs),
             witness_floor=context.witness_floor,
@@ -2085,7 +2130,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             },
             ink_map_pages=ink_map_pages,
             not_measured_basis=not_measured_basis(
-                context, manifest_cache, census, reviews, projected_acts
+                context, manifest_cache, census, reviews, projected_acts, canaries
             ),
             continuation_joins=joins,
         ),
@@ -2138,6 +2183,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # refused is named here and in the aggregate's reasons, never only
             # implied by an act count that came up short.
             "pages": pages,
+            **(
+                {
+                    "canary": {
+                        "ordinals": sorted(canaries),
+                        "acts": sorted(
+                            canary_acts, key=lambda item: act_key_sort_key(item["act_key"])
+                        ),
+                    }
+                }
+                if canaries
+                else {}
+            ),
             "witness_chairs": context.witness_chairs,
             "witness_floor": context.witness_floor,
             "bundle": {

@@ -516,6 +516,76 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     assert bundle_record["reference"]["sha256"] == expected_digest
 
 
+def test_only_sealed_canary_acts_leave_the_bundle_and_real_canary_named_paths_stay(
+    monkeypatch,
+):
+    armarium = load_stage("7_armarium")
+    context = _RecordingContext()
+    context.run = {
+        "sealed_config_digests": {"canary-ledger": "c" * 64},
+        "source_manifest": [
+            {"ordinal": 1, "relative_path": "canary/x.jpg", "ledger_sha256": "a" * 64},
+            {"ordinal": 2, "relative_path": "bird.jpg", "ledger_sha256": "c" * 64},
+        ],
+    }
+    acts = [
+        {"act_id": "real", "act_key": "a1", "outcome": "proposed"},
+        {"act_id": "bird", "act_key": "a2", "outcome": "proposed"},
+    ]
+    projections = []
+    monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
+    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(
+        armarium,
+        "page_census",
+        lambda _context: {
+            **_sealed_page_census(context),
+            2: {"outcome": "sealed", "_pixel_dimensions": context.sealed_page_dimensions},
+        },
+    )
+    monkeypatch.setattr(armarium, "pages_marked_out", lambda *_args: {"real": [1], "bird": [2]})
+    monkeypatch.setattr(armarium, "expected_acts", lambda _context: acts)
+    monkeypatch.setattr(
+        armarium,
+        "categorize",
+        lambda *_args: (ArmariumCategory.HELD_FOR_REVIEW, _accepted_review(), None),
+    )
+    monkeypatch.setattr(armarium, "ink_map_page_rows", lambda *_args: [])
+    monkeypatch.setattr(armarium, "not_measured_basis", lambda *_args: {})
+    monkeypatch.setattr(armarium, "continuation_joins", lambda *_args: [])
+    monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
+    monkeypatch.setattr(
+        armarium,
+        "run_aggregate",
+        lambda *_args, **_kwargs: {"status": "partial", "reasons": ["synthetic held act"]},
+    )
+
+    def bundle(projection, *_args):
+        projections.append(projection)
+        return SimpleNamespace(
+            data=b"synthetic bundle",
+            manifest={"self_hash": "c" * 64, "claims": {"status": "partial"}},
+        )
+
+    monkeypatch.setattr(armarium, "build_armarium_bundle", bundle)
+    assert armarium.main() == EXIT_HELD
+    (projection,) = projections
+    assert [row["act_id"] for row in projection.acts] == ["real"]
+    assert [row["ordinal"] for row in projection.pages] == [1]
+    assert [row["relative_path"] for row in projection.source_manifest] == ["canary/x.jpg"]
+    export = next(row["payload"] for row in context.published if row["kind"] == "export")
+    assert export["canary"] == {
+        "ordinals": [2],
+        "acts": [
+            {"act_id": "bird", "act_key": "a2", "category": "held-for-review", "page_ordinals": [2]}
+        ],
+    }
+    assert [row["subject_id"] for row in context.published if row["kind"] == "manifest-entry"] == [
+        "real",
+        "bird",
+    ]
+
+
 def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(monkeypatch):
     """A bundle whose own face says `partial` may not leave under an exit code of 0.
 
