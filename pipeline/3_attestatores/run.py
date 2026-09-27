@@ -2314,12 +2314,7 @@ def resolve_attempt(
     *,
     reread: bool = False,
 ) -> Attempt:
-    """What one configured chair's attempt at one act came to.
-
-    Every branch ends in one closed outcome. An undeclared response is `not-run`
-    in a whole pass but `failed` under `reread`, where the invocation itself is
-    the attempt.
-    """
+    """Derive a chair outcome; an undeclared reread is failed, not not-run."""
     if isinstance(resolved, AbsentChair):
         return dead_attempt(resolved)
 
@@ -2437,17 +2432,10 @@ def derived_chandra_anchor(
     page_acts: list[dict[str, Any]],
     regions_by_act: dict[str, tuple[list[dict], str | None]],
 ) -> dict[str, dict[str, Any]]:
-    """Each act's anchor range on one page, from the anchor chair's own served response.
+    """Locate primary-page acts in the served Chandra blocks by geometry.
 
-    The live counterpart of the fixture's `[[chandra_anchor]]` rows. An act's anchor
-    lines are the reported blocks overlapping its sealed regions, so acts are
-    matched by geometry, never by choosing a witness (principle 1). The range is
-    the hull of those blocks' spans in normalized text; a non-adjacent neighbour
-    inside the hull overstates disagreement rather than hiding it.
-
-    An act with no overlapping text gets no range. Only acts whose primary page is
-    this one are anchored. A block shared by two acts gives both the same range,
-    which `refuse_ambiguous_act_alignments` then refuses.
+    A normalized-text hull may include a neighbour, overstating disagreement.
+    Shared blocks give two acts one range; ambiguous alignment then refuses both.
     """
     offset_map = markup_text_view(page_text)["offset_map"]
     normalized_by_raw: dict[int, list[int]] = {}
@@ -2513,25 +2501,7 @@ def _adapter_presentation(context, adapter: Any, resolved: Any, source: dict[str
     return presented
 
 
-def publish_attempt(
-    context,
-    *,
-    act: dict[str, Any],
-    chair: str,
-    resolved: ChairIdentity | AbsentChair,
-    ordinal: int,
-    regions: list[dict],
-    attempt: Attempt,
-    live: bool = False,
-) -> None:
-    """Seal one immutable Testimonium. The only write path for an attempt.
-
-    ``live`` only stops fixture `[[native_observation]]` rows standing in for the
-    geometry a live response carried (principle 8).
-    """
-    # First, so a bad roster refuses before any record is built.
-    page_witness_chairs = declared_page_witness_chairs(context)
-    attempted = attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES
+def _presented_act_evidence(context, chair, resolved, regions, attempt, live, attempted):
     # One presentation covers one page; continuation crops stay bound in
     # `regions` and are named in `unpresented_regions`.
     presented = presentation_for_region(regions[0]) if attempted else {}
@@ -2578,6 +2548,31 @@ def publish_attempt(
     if presented and takes_page_size and (reported := _partition_geometry(observed)):
         # Overshoots are dropped here; the page record retains them as findings.
         observed, _ = split_page_edge_overshoots(reported, page_size=sealed_page_size)
+    return presented, observed, unpresented_regions
+
+
+def publish_attempt(
+    context,
+    *,
+    act: dict[str, Any],
+    chair: str,
+    resolved: ChairIdentity | AbsentChair,
+    ordinal: int,
+    regions: list[dict],
+    attempt: Attempt,
+    live: bool = False,
+) -> None:
+    """Seal one immutable Testimonium. The only write path for an attempt.
+
+    ``live`` only stops fixture `[[native_observation]]` rows standing in for the
+    geometry a live response carried (principle 8).
+    """
+    # First, so a bad roster refuses before any record is built.
+    page_witness_chairs = declared_page_witness_chairs(context)
+    attempted = attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES
+    presented, observed, unpresented_regions = _presented_act_evidence(
+        context, chair, resolved, regions, attempt, live, attempted
+    )
     payload = testimonium_payload(
         chair=chair,
         act_key=act["act_key"],
@@ -2624,11 +2619,9 @@ def publish_attempt(
 def _raw_span_from_normalized(
     offset_map: list[int | None], start: int, end: int
 ) -> tuple[int, int] | None:
-    """Translate a `[start, end)` span over `markup_text_view`'s normalized text
-    back into the raw text's own character indices.
+    """Translate a normalized span to raw indices for readers of `witness_span`.
 
-    Readers index `witness_span` into the raw text, so a normalized offset would
-    shift by the collapsed whitespace. `None` entries are synthesized separators.
+    Collapsed whitespace shifts offsets; `None` marks a synthesized separator.
     """
     raw_indices = [
         offset_map[index] for index in range(start, end) if offset_map[index] is not None
@@ -2695,18 +2688,10 @@ def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]], joined: int
 
 
 def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
-    """Concatenate one chair's delivered act readings into its page reading.
+    """Join delivered act text, with separators only between delivered characters.
 
-    Only a reading outcome with text joins: a `failed` attempt can still hold
-    parsed text, which must not become coverage (principle 2). Everything else,
-    including structured readings, is listed in `unjoined_act_attempts` from the
-    same partition. Separators go only between delivered characters, and the
-    outcome follows the joined text:
-
-    - `failed`: nothing joined, and at least one attempt reached the chair.
-    - `not-run`: nothing joined, and no attempt reached the chair.
-    - `genuinely-empty`: every joined act delivered an empty body.
-    - `read`: at least one delivered character.
+    A failed attempt may hold parsed text but cannot supply coverage. Structured
+    readings and other unjoined attempts remain named in the page record.
     """
     joined: list[tuple[dict[str, Any], Attempt]] = []
     unjoined: list[tuple[dict[str, Any], Attempt]] = []
@@ -2756,13 +2741,10 @@ def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
 
 
 def refuse_ambiguous_act_alignments(rows_by_act: list[list[dict[str, Any]]]) -> None:
-    """Unalign, in place, every pair of act spans one chair cannot tell apart.
+    """Unalign overlapping act claims without choosing whose text a chair meant.
 
-    Two acts claiming overlapping text from one chair's page reading are both
-    unaligned: picking one would choose over a witness's text (principle 1). A
-    zero-width span is not an overlap. A `geometric-overlap` attachment survives;
-    an `anchor-line` one loses its only evidence and becomes unattached, matching
-    `page_attachment_basis`. Separate so tests can reach a case no fixture makes.
+    Zero-width spans do not overlap. Geometry still attaches; an anchor-line
+    attachment loses its only evidence and becomes unattached.
     """
     by_page_chair: dict[tuple[int, str], list[dict[str, Any]]] = {}
     for entries in rows_by_act:
@@ -3322,11 +3304,7 @@ def publish_page_testimonia_and_attachments(
     attempts_by_pair: dict[tuple[str, str], Attempt],
     page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]] | None = None,
 ) -> None:
-    """Retain page testimony and derive one attachment record for every act.
-
-    Page witnesses' act-scoped records are a compatibility view for the Perlector;
-    each attachment links to the page Testimonium that supplied it.
-    """
+    """Retain page testimony and act attachments linked to their page evidence."""
     page_chairs = declared_page_witness_chairs(context)
     anchor_chair = declared_chandra_anchor_chair(context)
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
@@ -3866,11 +3844,9 @@ def resumed_page_captures(
     attempts_by_pair: dict[tuple[str, str], Attempt],
     sealed_pairs: frozenset[tuple[str, str]],
 ) -> dict[tuple[int, str], tuple[Attempt, dict[str, Any]]]:
-    """Every page response a resumed live pass must not ask for a second time.
+    """Recover sealed page responses without asking a live chair again.
 
-    Found in the sealed page Testimonium, or else in the act records of acts
-    whose primary page this is, which derive from the same response. Every such
-    act record is compared, and a disagreement is refused rather than resolved.
+    Page or primary-act records may supply one; disagreeing act records refuse.
     """
     sealed_records = _sealed_page_testimonia(context, ordinal)
     captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]] = {}
@@ -4098,11 +4074,9 @@ _LIVE_ENGINE_STOP_WORDS: Final = _CHURRO_STOP_REASONS | {STOP_REASON_UNREPORTED}
 
 
 def refuse_unpublishable_stop_word(transport_stop_reason: str, what: str) -> None:
-    """Refuse a live response whose engine stop word cannot be recorded honestly.
+    """Refuse an unknown engine stop word, even when the body did not parse.
 
-    Mapping an unknown word to complete or cut off would be a measurement nobody
-    made (principle 8). Checked on the stop word alone, so unparsed responses are
-    covered too. The bytes are already retained (principle 2).
+    Calling it complete or cut off would invent a measurement; bytes are retained.
     """
     if transport_stop_reason not in _LIVE_ENGINE_STOP_WORDS:
         raise ContractError(
@@ -4125,14 +4099,10 @@ def capacity_refusal_attempt(
     what: str,
     adapter: Any = None,
 ) -> Attempt:
-    """One chair's outcome for a request its sealed row could not hold.
+    """Fail only this oversized request, keeping later pages available to read.
 
-    The refusal concerns this request only, so it becomes a `failed` attempt and
-    the pass continues; one oversized page must not cost every other page. Health
-    is the no-response shape, since nothing arrived. `receipt_ref` is the chair's
-    real start, which marks the record as live for a resume. `adapter` keeps the
-    chair's declared capabilities on the record; the default is for a caller with
-    no adapter in hand.
+    No response arrived; the real receipt marks this attempt live for resume.
+    Adapter capabilities stay recorded even for a pre-send refusal.
     """
 
     reason = f"{what} was refused before it was sent: {error}"
@@ -4958,24 +4928,7 @@ def _with_chandra_trace(
     return attempt._replace(native_inference=trace)
 
 
-def _serve_chandra_native_page(
-    context,
-    *,
-    client: ChairClient,
-    chair: str,
-    resolved: ChairIdentity,
-    adapter: Any,
-    page_ordinal: int,
-    witness_attempt_ordinal: int,
-    request: Any,
-    framing: str | None,
-    page_subject_id: str,
-) -> Attempt:
-    """Run or resume the pinned vendor loop and return only its final result."""
-
-    subject_id = _chandra_native_subject(page_subject_id, chair, witness_attempt_ordinal)
-    intent_records = _sealed_chandra_intents(context, subject_id)
-    terminal_records = _sealed_chandra_attempts(context, subject_id)
+def _resumed_chandra_native_attempt(context, subject_id, intent_records, terminal_records):
     if len(terminal_records) > CHANDRA_MAX_ATTEMPTS:
         raise FatalAccounting("a Chandra native retry chain exceeds seven physical requests")
     if len(intent_records) not in {len(terminal_records), len(terminal_records) + 1}:
@@ -5005,6 +4958,109 @@ def _serve_chandra_native_page(
             )
             _raise_chandra_application_refusal(returned_attempt)
             return _with_chandra_trace(context, subject_id, terminal_records, returned_attempt)
+    return None
+
+
+class _ChandraPhysicalResult(NamedTuple):
+    attempt: Attempt
+    raw: str
+    inference_error: bool
+    transport_response_ref: Any
+    error_code: Any
+    error_detail: Any
+    application_refusal: ContractError | None
+
+
+def _read_chandra_native_result(
+    context, client, dispatch, intent_ref, page_ordinal, chair, resolved, adapter, framing
+) -> _ChandraPhysicalResult:
+    response = None
+    error: ServingError | None = None
+    try:
+        response = client.read_chandra_native(dispatch, intent_ref=intent_ref)
+    except (ChairResponseRefusal, ChairTransportFailure) as caught:
+        error = caught
+
+    application_refusal: ContractError | None = None
+    live = None
+    if error is not None:
+        attempt = _chandra_error_attempt(error, adapter)
+        raw = ""
+        inference_error = True
+        transport_response_ref = getattr(error, "raw_response_ref", None)
+        error_code = error.code
+        error_detail = getattr(error, "detail", str(error))
+    else:
+        assert response is not None
+        try:
+            live = live_witness.captured_page_attempt(
+                context,
+                page_ordinal,
+                chair,
+                resolved.witness_adapter,
+                adapter,
+                response,
+                framing=framing,
+            )
+            _refuse_unpublishable_response(
+                response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
+            )
+        except FatalAccounting:
+            raise
+        except ContractError as caught:
+            application_refusal = caught
+        attempt = (
+            _chandra_application_refusal_attempt(
+                context,
+                response,
+                adapter,
+                application_refusal,
+                attempt_from_live(live) if live is not None else None,
+            )
+            if application_refusal is not None
+            else attempt_from_live(live)
+        )
+        raw = response.content if isinstance(response.content, str) else ""
+        inference_error = response.parse_problem is not None
+        transport_response_ref = dict(response.raw_response_ref)
+        error_code = response.parse_problem
+        error_detail = (
+            "the retained response could not be parsed as one OpenAI-compatible reading"
+            if inference_error
+            else None
+        )
+    return _ChandraPhysicalResult(
+        attempt,
+        raw,
+        inference_error,
+        transport_response_ref,
+        error_code,
+        error_detail,
+        application_refusal,
+    )
+
+
+def _serve_chandra_native_page(
+    context,
+    *,
+    client: ChairClient,
+    chair: str,
+    resolved: ChairIdentity,
+    adapter: Any,
+    page_ordinal: int,
+    witness_attempt_ordinal: int,
+    request: Any,
+    framing: str | None,
+    page_subject_id: str,
+) -> Attempt:
+    """Run or resume the pinned vendor loop and return only its final result."""
+
+    subject_id = _chandra_native_subject(page_subject_id, chair, witness_attempt_ordinal)
+    intent_records = _sealed_chandra_intents(context, subject_id)
+    terminal_records = _sealed_chandra_attempts(context, subject_id)
+    resumed = _resumed_chandra_native_attempt(context, subject_id, intent_records, terminal_records)
+    if resumed is not None:
+        return resumed
 
     next_ordinal = len(terminal_records) + 1
     if terminal_records and terminal_records[-1]["payload"].get("trigger") == "inference-error":
@@ -5028,84 +5084,35 @@ def _serve_chandra_native_page(
             # crash; reissuing could duplicate it. An operator must decide.
             refuse_chandra_orphan_intent()
 
-        response = None
-        error: ServingError | None = None
-        try:
-            response = client.read_chandra_native(dispatch, intent_ref=intent_ref)
-        except (ChairResponseRefusal, ChairTransportFailure) as caught:
-            error = caught
-
-        application_refusal: ContractError | None = None
-        live = None
-        if error is not None:
-            attempt = _chandra_error_attempt(error, adapter)
-            raw = ""
-            inference_error = True
-            transport_response_ref = getattr(error, "raw_response_ref", None)
-            error_code = error.code
-            error_detail = getattr(error, "detail", str(error))
-        else:
-            assert response is not None
-            try:
-                live = live_witness.captured_page_attempt(
-                    context,
-                    page_ordinal,
-                    chair,
-                    resolved.witness_adapter,
-                    adapter,
-                    response,
-                    framing=framing,
-                )
-                _refuse_unpublishable_response(
-                    response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
-                )
-            except FatalAccounting:
-                raise
-            except ContractError as caught:
-                application_refusal = caught
-            attempt = (
-                _chandra_application_refusal_attempt(
-                    context,
-                    response,
-                    adapter,
-                    application_refusal,
-                    attempt_from_live(live) if live is not None else None,
-                )
-                if application_refusal is not None
-                else attempt_from_live(live)
-            )
-            raw = response.content if isinstance(response.content, str) else ""
-            inference_error = response.parse_problem is not None
-            transport_response_ref = dict(response.raw_response_ref)
-            error_code = response.parse_problem
-            error_detail = (
-                "the retained response could not be parsed as one OpenAI-compatible reading"
-                if inference_error
-                else None
-            )
-
-        trigger, returned_condition = _chandra_conditions(raw, inference_error, next_ordinal)
+        result = _read_chandra_native_result(
+            context, client, dispatch, intent_ref, page_ordinal, chair, resolved, adapter, framing
+        )
+        trigger, returned_condition = _chandra_conditions(
+            result.raw, result.inference_error, next_ordinal
+        )
         payload, _terminal_ref = _publish_chandra_terminal(
             context,
             subject_id=subject_id,
             native_attempt_ordinal=next_ordinal,
             intent_ref=intent_ref,
             request_sha256=dispatch.request_sha256,
-            attempt=attempt,
+            attempt=result.attempt,
             trigger=trigger,
             returned_condition=returned_condition,
-            error=inference_error,
-            error_code=error_code,
-            error_detail=error_detail,
+            error=result.inference_error,
+            error_code=result.error_code,
+            error_detail=result.error_detail,
             transport_response_ref=(
-                dict(transport_response_ref) if transport_response_ref is not None else None
+                dict(result.transport_response_ref)
+                if result.transport_response_ref is not None
+                else None
             ),
         )
         terminal_records.append({"payload": payload})
         if trigger is None:
-            if application_refusal is not None:
-                raise application_refusal
-            return _with_chandra_trace(context, subject_id, terminal_records, attempt)
+            if result.application_refusal is not None:
+                raise result.application_refusal
+            return _with_chandra_trace(context, subject_id, terminal_records, result.attempt)
         if trigger == "inference-error":
             _chandra_backoff(next_ordinal)
         next_ordinal += 1
@@ -5200,12 +5207,10 @@ def _serve_page_unit(
 
 
 def witness_bound_reading_acts(context) -> frozenset[str]:
-    """Every act whose reading was already established from this act's testimony.
+    """Find acts whose Perlectio cited testimony and closed the witness layer.
 
-    The reading ordinal follows the crop history, so testimony added after a
-    reading would collide with the immutable Perlectio (principle 4); new ink must
-    come through a recovery crop, never a re-rolled witness (principle 7). Only a
-    Perlectio citing testimony closes an act; a `not-run` one does not depend on it.
+    New testimony would collide with that immutable reading; new ink needs a
+    recovery crop, not a witness reroll. A not-run reading cites no testimony.
     """
     closed = set()
     for entry in context.tree.build_manifest(PERLECTOR)["artifacts"]:
