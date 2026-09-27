@@ -33,6 +33,8 @@ from .errors import ErrorCode, OperatorError
 
 MAX_REVIEW_ITEM_BYTES = 16 * 1024 * 1024
 REVIEW_PAGE_SIZE = 500
+# The retained queue page gets the same byte allowance as projected images.
+MAX_REVIEW_PAGE_BYTES = 256 * 1024 * 1024
 _REVIEW_ITEMS_MEMBER = "review-items.jsonl"
 
 # Every sealed page and crop is read whole, in one pass, to verify its digest,
@@ -303,6 +305,7 @@ class ReadOnlyRun:
                 pages_declared=declared_pages,
                 review_items_total=review_items_total,
                 review_page=review_page,
+                review_page_size=REVIEW_PAGE_SIZE,
                 pages_declared_note=declared_note,
             )
         except (ContractError, KeyError, OSError, TypeError, ValueError) as error:
@@ -1757,84 +1760,116 @@ def _review_items(
         with bundle_path.open("rb") as bundle_source:
             for chunk in iter(lambda: bundle_source.read(1024 * 1024), b""):
                 digest.update(chunk)
-        actual_digest = digest.hexdigest()
-        if actual_digest != expected_digest:
-            raise OperatorError(
-                ErrorCode.CONSOLE_TREE_UNREADABLE,
-                detail=(
-                    f"the Armarium export record {export_ref['relative_path']} bundle {path} "
-                    f"claims digest {expected_digest}, but its bytes have digest {actual_digest}"
-                ),
-            )
-        with zipfile.ZipFile(bundle_path) as archive:
-            members = [
-                member for member in archive.infolist() if member.filename == _REVIEW_ITEMS_MEMBER
-            ]
-            if not members:
-                return None, None
-            if len(members) != 1:
-                raise OperatorError(
-                    ErrorCode.CONSOLE_TREE_UNREADABLE,
-                    detail="the Armarium bundle contains more than one review-items.jsonl",
-                )
-            member = members[0]
-            if member.compress_type != zipfile.ZIP_STORED:
-                # Every member is written stored, never compressed: a stored
-                # member's extracted size is bounded by its own physical
-                # bytes, while a compressed one can decompress far past them.
+            actual_digest = digest.hexdigest()
+            if actual_digest != expected_digest:
                 raise OperatorError(
                     ErrorCode.CONSOLE_TREE_UNREADABLE,
                     detail=(
-                        f"the Armarium export record {export_ref['relative_path']} bundle "
-                        f"{path} member review-items.jsonl is compressed, not stored; a "
-                        "review bundle is only ever written stored"
+                        f"the Armarium export record {export_ref['relative_path']} bundle {path} "
+                        f"claims digest {expected_digest}, but its bytes have digest {actual_digest}"
                     ),
                 )
-            # Unreachable through the member filter above, since `is_dir()`
-            # needs a trailing separator this name cannot have; kept as a
-            # defensive check with its own message rather than none.
-            if member.is_dir():  # pragma: no cover - unconstructible; see the test by this name
-                raise OperatorError(
-                    ErrorCode.CONSOLE_TREE_UNREADABLE,
-                    detail=(
-                        "the Armarium bundle names a directory at review-items.jsonl, so it "
-                        "carries no review queue to read"
-                    ),
-                )
-            parsed: list[dict[str, Any]] = []
-            count = 0
-            first = (review_page - 1) * REVIEW_PAGE_SIZE
-            with archive.open(member) as source:
-                while line := source.readline(MAX_REVIEW_ITEM_BYTES + 1):
-                    count += 1
-                    if len(line) > MAX_REVIEW_ITEM_BYTES:
-                        raise OperatorError(
-                            ErrorCode.CONSOLE_TREE_UNREADABLE,
-                            detail=f"review-items.jsonl line {count} exceeds {MAX_REVIEW_ITEM_BYTES} bytes",
-                        )
-                    try:
-                        row = json.loads(line)
-                    except ValueError as error:
-                        raise OperatorError(
-                            ErrorCode.CONSOLE_TREE_UNREADABLE,
-                            detail=f"review-items.jsonl line {count} in bundle {path} is not valid JSON: {error}",
-                        ) from error
-                    if not isinstance(row, dict):
-                        raise OperatorError(
-                            ErrorCode.CONSOLE_TREE_UNREADABLE,
-                            detail=f"review-items.jsonl line {count} in bundle {path} is not an object",
-                        )
-                    if first < count <= first + REVIEW_PAGE_SIZE:
-                        parsed.append(
-                            {
-                                "row": row,
-                                "record_ref": export_ref,
-                                "bundle_path": path,
-                                "member": _REVIEW_ITEMS_MEMBER,
-                                "line": count,
-                            }
-                        )
-            return tuple(parsed), count
+            bundle_source.seek(0)
+            with zipfile.ZipFile(bundle_source) as archive:
+                members = [
+                    member
+                    for member in archive.infolist()
+                    if member.filename == _REVIEW_ITEMS_MEMBER
+                ]
+                if not members:
+                    return None, None
+                if len(members) != 1:
+                    raise OperatorError(
+                        ErrorCode.CONSOLE_TREE_UNREADABLE,
+                        detail="the Armarium bundle contains more than one review-items.jsonl",
+                    )
+                member = members[0]
+                if member.compress_type != zipfile.ZIP_STORED:
+                    # Every member is written stored, never compressed: a stored
+                    # member's extracted size is bounded by its own physical
+                    # bytes, while a compressed one can decompress far past them.
+                    raise OperatorError(
+                        ErrorCode.CONSOLE_TREE_UNREADABLE,
+                        detail=(
+                            f"the Armarium export record {export_ref['relative_path']} bundle "
+                            f"{path} member review-items.jsonl is compressed, not stored; a "
+                            "review bundle is only ever written stored"
+                        ),
+                    )
+                # Unreachable through the member filter above, since `is_dir()`
+                # needs a trailing separator this name cannot have; kept as a
+                # defensive check with its own message rather than none.
+                if member.is_dir():  # pragma: no cover - unconstructible; see the test by this name
+                    raise OperatorError(
+                        ErrorCode.CONSOLE_TREE_UNREADABLE,
+                        detail=(
+                            "the Armarium bundle names a directory at review-items.jsonl, so it "
+                            "carries no review queue to read"
+                        ),
+                    )
+                parsed: list[dict[str, Any]] = []
+                count = 0
+                first = (review_page - 1) * REVIEW_PAGE_SIZE
+                page_bytes = 0
+                with archive.open(member) as source:
+                    while line := source.readline(MAX_REVIEW_ITEM_BYTES + 3):
+                        count += 1
+                        row_bytes = line.removesuffix(b"\n").removesuffix(b"\r")
+                        if b"\r" in row_bytes:
+                            raise OperatorError(
+                                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                                detail=(
+                                    f"review-items.jsonl line {count} in bundle {path} "
+                                    "contains a bare carriage return; use newline-delimited rows"
+                                ),
+                            )
+                        if len(row_bytes) > MAX_REVIEW_ITEM_BYTES:
+                            raise OperatorError(
+                                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                                detail=f"review-items.jsonl line {count} exceeds {MAX_REVIEW_ITEM_BYTES} bytes",
+                            )
+                        try:
+                            row = json.loads(row_bytes)
+                        except ValueError as error:
+                            raise OperatorError(
+                                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                                detail=f"review-items.jsonl line {count} in bundle {path} is not valid JSON: {error}",
+                            ) from error
+                        if not isinstance(row, dict):
+                            raise OperatorError(
+                                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                                detail=f"review-items.jsonl line {count} in bundle {path} is not an object",
+                            )
+                        if first < count <= first + REVIEW_PAGE_SIZE:
+                            page_bytes += len(row_bytes)
+                            if page_bytes > MAX_REVIEW_PAGE_BYTES:
+                                raise OperatorError(
+                                    ErrorCode.CONSOLE_TREE_UNREADABLE,
+                                    detail=(
+                                        f"review-items.jsonl line {count} in bundle {path} "
+                                        f"takes review page {review_page} past "
+                                        f"{MAX_REVIEW_PAGE_BYTES} bytes"
+                                    ),
+                                )
+                            parsed.append(
+                                {
+                                    "row": row,
+                                    "record_ref": export_ref,
+                                    "bundle_path": path,
+                                    "member": _REVIEW_ITEMS_MEMBER,
+                                    "line": count,
+                                }
+                            )
+                if count and first >= count:
+                    raise OperatorError(
+                        ErrorCode.INVALID_COMMAND,
+                        detail=(
+                            f"review page {review_page} is past the end of review-items.jsonl "
+                            f"in bundle {path} ({count} items; last page "
+                            f"{(count - 1) // REVIEW_PAGE_SIZE + 1})"
+                        ),
+                    )
+                return tuple(parsed), count
     except OperatorError:
         raise
     except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as error:

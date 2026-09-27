@@ -1331,12 +1331,12 @@ share one `page-residual` hold. `residual_enumeration` names that partition.
 The number this closes is measured on this build: a synthetic A4 page at 300 dpi
 with 3% scattered ink reconciles to ~60,000 residual components (this tree now
 measures ~254,000 at a 33px pitch), each of which used to mint its own held act,
-hold artifact and seal row. The operator review surface now pages through the
+hold artifact and seal row. The operator review surface pages through the
 queue, so a dense page does not make the other pages' findings unreadable.
 
 **The presentation floors apply per component; the review page size applies to
-the assembled queue.** Promoted components can carry a run past 50,000 review
-items. The operator reads 500 at a time in stable bundle order and reports the
+the assembled queue.** Promoted components can make the run-wide queue large.
+The operator reads 500 at a time in stable bundle order and reports the
 run-wide total; every page remains addressable with `--review-page`. The
 Designator does not count a run-wide total while producing its records: the
 Armarium assembles the queue from every stage's review items, so a count made

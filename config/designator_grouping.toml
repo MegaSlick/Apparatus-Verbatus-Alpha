@@ -163,13 +163,11 @@
 #                             `fallback_overlap_bp` beside it is the part of that
 #                             grid that *is* a length and does scale
 #
-# **Both ceilings bound one page, not the run.** `operations/operator/review.py`
-# refuses a run whose exported review queue passes `MAX_REVIEW_ITEMS` (50,000)
-# by name, and nothing counts that total while a run is being produced; a run of
-# many pages each just inside these bounds still meets that refusal at the
-# console. What these two values buy is that no *single* page can make a run
-# unopenable on its own. See the provenance block and
-# `pipeline/2_designator/CONTRACT.md` for the reasoning and the remainder.
+# **Both ceilings bound one page, not the run.** The operator reads the exported
+# review queue in fixed-size pages and reports its run-wide total. A run of many
+# pages can therefore produce more review items than either per-page ceiling;
+# these two values bound the work and evidence one page can mint. See the
+# provenance block and `pipeline/2_designator/CONTRACT.md` for the reasoning.
 #
 # **Two constants deliberately do NOT live here and never will:**
 # `common/background.py`'s `PRIMARY_MARGIN` (20) and `SECONDARY_MARGIN` (2) are

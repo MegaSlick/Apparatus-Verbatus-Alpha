@@ -272,9 +272,9 @@ cannot honestly set. Three more values are bare counts rather than lengths, so
 they have no dimension to be a fraction of: `max_residual_components` and
 `max_secondary_proposals` cap how many separate review items one page's residual
 enumeration and one page's secondary rescue pass may mint — each bounding one
-page's contribution to a review queue the console refuses past 50,000 items, not
-the run's total — and `fallback_bands` is how many horizontal bands the
-predetermined fallback grid cuts a page into, a cardinality rather than a length
+page's contribution while the console pages through the run-wide queue — and
+`fallback_bands` is how many horizontal bands the predetermined fallback grid
+cuts a page into, a cardinality rather than a length
 (a taller page gets taller bands, not more of them; its `fallback_overlap_bp`
 scales instead). Two more values do not enter the file at all.
 `PRIMARY_MARGIN` and `SECONDARY_MARGIN` stay Python constants in

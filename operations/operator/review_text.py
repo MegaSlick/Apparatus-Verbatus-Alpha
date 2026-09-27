@@ -541,11 +541,9 @@ def render(projection: dict[str, Any]) -> list[str]:
         lines.append(f"Review queue: not produced ({said})")
     else:
         review_items = _rows(projection, "review_items")
-        total = projection.get("review_items_total", len(review_items))
-        if total is None:
-            total = len(review_items)
+        total = projection.get("review_items_total")
         page = projection.get("review_page", 1)
-        size = projection.get("review_page_size", max(1, len(review_items)))
+        size = projection.get("review_page_size")
         if not isinstance(total, int) or not isinstance(page, int) or not isinstance(size, int):
             raise ProjectionShapeError(
                 "review page", None, (total, page, size), expected="integer counts"
@@ -554,9 +552,13 @@ def render(projection: dict[str, Any]) -> list[str]:
             raise ProjectionShapeError(
                 "review page", None, (total, page, size), expected="valid bounds"
             )
+        if total and (page - 1) * size >= total:
+            raise ProjectionShapeError(
+                "review page", None, (total, page, size), expected="a page within the queue"
+            )
         first = (page - 1) * size + 1
         last = min(page * size, total)
-        extent = f"items {first}-{last}" if first <= last else "no items on this page"
+        extent = f"items {first}-{last}" if first <= last else "empty"
         lines.append(f"Review queue ({total}) — page {page}, {extent}")
         if last < total:
             lines.append(
