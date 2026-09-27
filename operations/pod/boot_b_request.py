@@ -49,9 +49,9 @@ from typing import Sequence
 from .boot_a_request import BOOT_A_VOLUME_MOUNT_PATH, _validate_hard_deadline, cheapest_card
 from .launch import _bind_report_path_to_launch
 from .models import (
-    BIG_CARD_CONTAINER_DISK_GB,
     PodCreateRequest,
     SpendRefusal,
+    container_disk_gb_for_tier,
     require_utc,
 )
 from .preflight import CardProfile, PlacementTable, load_placement_table
@@ -267,7 +267,7 @@ def pod_request(
         or "<fill in by hand: an RFC3339 UTC timestamp at least this run's own "
         "hard_lifetime_seconds past now -- create will not accept this file until you do>",
         "repository_commit": repository_commit or _UNSUPPLIED,
-        "container_disk_gb": BIG_CARD_CONTAINER_DISK_GB,
+        "container_disk_gb": container_disk_gb_for_tier(card.tier),
         "metadata": {"VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS": "<the sealed policy value>"},
     }
 

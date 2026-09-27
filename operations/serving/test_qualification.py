@@ -90,7 +90,6 @@ def _qualification_fixture(
             {
                 "chair": role,
                 "manifest_digest": identity.digest_manifest,
-                "repaired_once": False,
                 "root": f"/runpod-volume/models/{role}",
             }
         )

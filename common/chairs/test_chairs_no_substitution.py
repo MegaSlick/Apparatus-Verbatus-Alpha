@@ -256,23 +256,23 @@ def test_an_adapter_that_will_not_fetch_is_never_served_as_its_bare_base(adapter
     assert traced.roles("receipt") == set()
 
 
-def test_filling_an_adapter_base_keeps_its_adapter_and_cleans_abandoned_caches(
-    adapter_world, tmp_path
-):
+def test_filling_an_adapter_base_keeps_its_adapter_and_foreign_directories(adapter_world, tmp_path):
     traced, _fetcher = adapter_world
     adapter = traced.resolve("attestator_1")
     base = traced.resolve("base")
     traced.ensure(adapter)
     cache = tmp_path / "cache"
     (cache / ".base.candidate-abandoned").mkdir()
-    (cache / "no-longer-configured").mkdir()
+    foreign = cache / "no-longer-configured"
+    foreign.mkdir()
+    (foreign / "user-data").write_text("keep", encoding="utf-8")
 
     traced.ensure(base)
 
     assert (cache / "attestator_1" / CACHE_DESCRIPTOR).is_file()
     assert (cache / "base" / CACHE_DESCRIPTOR).is_file()
     assert not (cache / ".base.candidate-abandoned").exists()
-    assert not (cache / "no-longer-configured").exists()
+    assert (foreign / "user-data").read_text(encoding="utf-8") == "keep"
 
 
 def test_an_adapter_cache_is_bound_to_its_base_pin_and_refuses_when_the_base_moves(

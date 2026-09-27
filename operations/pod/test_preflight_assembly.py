@@ -522,8 +522,7 @@ def test_a_smoke_adapter_cannot_write_the_runtime_owned_served_engine_field(
 ) -> None:
     """The field the assembly claim is published under is the runtime's to write.
 
-    Same posture as `repaired_once` on a cache receipt: an adapter that could
-    pre-populate it could assert its own proof.
+    An adapter that could pre-populate it could assert its own proof.
     """
 
     class Forger(Reader):

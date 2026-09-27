@@ -130,6 +130,16 @@ from .bootstrap_main import (
 )
 from .durable import atomic_write, canonical_json
 from .models import run_report_paths, utc_now
+from .run_exits import (
+    EXIT_BOOTSTRAP_RED,
+    EXIT_COMPLETE,
+    EXIT_DRY_RUN,
+    EXIT_FAILED,
+    EXIT_HALTED,
+    EXIT_HELD,
+    EXIT_REFUSED,
+    EXIT_SELECTION_COMPLETE,
+)
 
 RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
@@ -152,15 +162,6 @@ TRANSCRIPT_TAIL_BYTES = 1 * 1024 * 1024
 # final run report from ever being written. The child
 # is dead by then, so nothing this waits for is the run's own output.
 TRANSCRIPT_READER_JOIN_SECONDS = 30.0
-EXIT_COMPLETE = 0
-EXIT_REFUSED = 2
-EXIT_HELD = 3
-EXIT_HALTED = 4
-EXIT_BOOTSTRAP_RED = 5
-EXIT_FAILED = 6
-EXIT_DRY_RUN = 7
-EXIT_SELECTION_COMPLETE = 8
-
 _STATE_FOR_EXIT = {
     EXIT_COMPLETE: "complete",
     EXIT_REFUSED: "refused",
@@ -1148,12 +1149,12 @@ def main(
             )
         plan = replace(plan, bootstrap=bootstrap_plan)
         approved_roots, skipped_roots = require_approved_submission_folder(plan)
-        if plan.models == "big":
+        if plan.selected_stages()[0] == "perlector":
             try:
                 verify_predecessor_seal(RunTree(plan.run_root, plan.run_id), "perlector")
             except ContractError as error:
                 raise RunRefusal(
-                    f"--models big requires this run's sealed attestatores stage: {error}",
+                    f"starting at perlector requires this run's sealed attestatores stage: {error}",
                     report_path=plan.report_path,
                 ) from error
     except PlanRefusal as refusal:

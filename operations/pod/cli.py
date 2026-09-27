@@ -22,7 +22,7 @@ from .arming import ControllerArmer
 from .fixture import FixtureRecorder
 from .launch import LaunchResult, LaunchState, PodRuntime, phraseless
 from .lease import LeaseStore
-from .models import DEFAULT_CONTAINER_DISK_GB, PodCreateRequest, require_utc, utc_now
+from .models import PodCreateRequest, container_disk_gb_for_tier, require_utc, utc_now
 from .notify_bridge import Notifier, shell_notifier, silent
 from .preflight import PlacementRefusal, load_placement_table
 from .provider import PodProvider
@@ -714,7 +714,7 @@ def _request(path: Path) -> PodCreateRequest:
     # names no container disk still asks for a stated size rather than falling
     # back to the provider's. A present-but-wrong value is refused by
     # `PodCreateRequest` rather than coerced here.
-    container_disk_gb = raw.get("container_disk_gb", DEFAULT_CONTAINER_DISK_GB)
+    container_disk_gb = raw.get("container_disk_gb", container_disk_gb_for_tier(None))
     if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
         raise ValueError("docker_start_cmd must be an array of strings")
     if not isinstance(metadata, dict) or not all(

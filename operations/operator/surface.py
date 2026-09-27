@@ -69,12 +69,12 @@ from operations.pod.launch import (
 )
 from operations.pod.lease import LeaseStore, PodLease
 from operations.pod.models import (
-    DEFAULT_CONTAINER_DISK_GB,
     PodCreateRequest,
     PodEstimate,
     PodRecord,
     PodRuntimeContract,
     ProviderFailure,
+    container_disk_gb_for_tier,
     require_billing_cutoff_margin_seconds,
     require_utc,
 )
@@ -3253,7 +3253,7 @@ def _request_from_record(value: dict[str, Any]) -> PodCreateRequest:
             docker_start_cmd=tuple(command),
             hard_deadline=require_utc(deadline, "recorded hard deadline"),
             repository_commit=value["repository_commit"],
-            container_disk_gb=value.get("container_disk_gb", DEFAULT_CONTAINER_DISK_GB),
+            container_disk_gb=value.get("container_disk_gb", container_disk_gb_for_tier(None)),
             template=value["template"],
             metadata=metadata,
             interruptible=interruptible,

@@ -365,13 +365,23 @@ def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path:
     ]
 
 
-def test_big_models_requires_the_attestatores_seal_before_bootstrap(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "selection",
+    [
+        ("--models", "big"),
+        ("--from", "perlector", "--to", "armarium"),
+        ("--stage", "perlector"),
+    ],
+)
+def test_starting_at_perlector_requires_the_attestatores_seal_before_bootstrap(
+    tmp_path: Path, selection: tuple[str, ...]
+) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
     actions = PreflightedActions()
     runner = RecordedRunner()
     code = main(
-        _run_argv(ws, extra=("--models", "big")),
+        _run_argv(ws, extra=selection),
         environ=_environ(clock),
         now=clock.now,
         sleeper=clock.sleep,

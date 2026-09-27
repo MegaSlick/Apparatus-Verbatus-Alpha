@@ -2998,9 +2998,6 @@ def test_pod_assembly_builds_bootstrap_preflight_callback_without_running_it(
         def verify(self, supplied_identity):  # type: ignore[no-untyped-def]
             raise AssertionError(f"preflight construction must not verify {supplied_identity.role}")
 
-        def refetch_once(self, supplied_identity):  # type: ignore[no-untyped-def]
-            raise AssertionError(f"preflight construction must not repair {supplied_identity.role}")
-
     class Probe:
         def __init__(self) -> None:
             self.calls = 0
@@ -4745,9 +4742,6 @@ def test_serving_smoke_reader_turns_an_invalid_page_result_into_existing_preflig
         def verify(self, supplied_identity):  # type: ignore[no-untyped-def]
             assert supplied_identity == chair
             return {"manifest_digest": supplied_identity.digest_manifest}
-
-        def refetch_once(self, supplied_identity):  # type: ignore[no-untyped-def]
-            raise AssertionError(f"unexpected cache repair for {supplied_identity.role}")
 
     runner = PreflightRunner(
         ModelsConfig(witness_floor=0, chairs={chair.role: chair}),
