@@ -1,8 +1,7 @@
 """The page-residual act class and its consumer-side reconciliation.
 
 Current aggregate records retain every component and use one page review item
-for the below-threshold partition. Historical withheld records intentionally
-carry only count and bound. Both shapes are checked against sealed page bytes,
+for the below-threshold partition. Their shape is checked against sealed page bytes,
 their reserved identities, and the exact conservation premise.
 
 The run trees are real to the Exemplar's own seal — the Door and the Exemplar
@@ -30,7 +29,6 @@ from common.runtree.store import RunTree
 from common.stage import (
     RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
-    RESIDUAL_ENUMERATION_WITHHELD,
     StageContext,
     _verify_every_conservation_residual_is_accounted,
     _verify_minted_act_rows,
@@ -45,8 +43,6 @@ ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 MODELS_CONFIG = ROOT / "config" / "models.toml"
 RUN_ID = "page-residual-unit"
 ORDINAL = 1
-BOUND = 2000
-MEASURED = 2500
 
 # Sentinel default for `_Page.hold_page`'s `grouping_config_sha256` parameter: it
 # means "use the digest this run actually sealed", resolved against the page's
@@ -132,18 +128,12 @@ def _page_rectangle(tree: RunTree, page: dict) -> dict:
 def _conservation_payload(
     *,
     ordinal: int = ORDINAL,
-    enumeration: str = RESIDUAL_ENUMERATION_WITHHELD,
-    count: int | None = MEASURED,
-    bound: int | None = BOUND,
+    enumeration: str = RESIDUAL_ENUMERATION_COMPLETE,
+    count: int | None = 0,
     components: list[dict] | None = None,
     aggregated_components: list[dict] | None = None,
 ) -> dict:
-    """The shape §1 of the spec gives the conservation record.
-
-    `residual_components` is passed as ``None`` to omit the key, never to empty
-    it: an empty list is the claim that this page had no unclaimed ink at all,
-    which is the opposite of what a withheld record says.
-    """
+    """Build a conservation record with explicit retained component lists."""
     payload = {
         "page_ordinal": ordinal,
         "background_source": "page-modal",
@@ -164,7 +154,6 @@ def _conservation_payload(
         "residual_pixel_count": 40,
         "residual_component_count": count,
         "residual_ink_fraction_bp": 12,
-        "max_residual_components": bound,
         "residual_enumeration": enumeration,
     }
     if components is not None:
@@ -214,8 +203,7 @@ class _Page:
         bounds: dict | None = None,
         act: str | None = None,
         act_key: str | None = None,
-        count: int | None = MEASURED,
-        bound: int | None = BOUND,
+        count: int | None = 2,
         grouping_config_sha256: str | None | object = _SEALED_GROUPING_DIGEST,
         extra: dict | None = None,
         inputs: list[dict] | None = None,
@@ -241,15 +229,14 @@ class _Page:
             "page_bounds": bounds,
             "residual_component_count": count,
             "aggregated_component_count": count,
-            "max_residual_components": bound,
             "blocking_page_ordinal": ORDINAL,
             # Spelled out rather than imported from `common.stage`: this string
             # is what a consumer branches on, and the one place it is written
             # independently of the constant both producer and verifier share.
-            "reason_code": "residual-components-over-page-bound",
+            "reason_code": "residual-components-below-presentation-threshold",
             "reason": (
-                "this page's conservation reconciled more residual components than the sealed "
-                "bound allows to be minted separately, so the page is held as one review item"
+                "this page's conservation retained below-threshold components under one "
+                "page review item"
             ),
             **(
                 {"grouping_config_sha256": grouping_config_sha256}
@@ -312,29 +299,7 @@ COMPONENT = {"x": 3, "y": 4, "w": 2, "h": 2}
 AGGREGATE_PROMOTED = {"x": 3, "y": 4, "w": 25, "h": 20}
 
 
-# --- the page a withheld record earns -------------------------------------------
-
-
-def test_a_withheld_page_held_as_one_item_verifies(page):
-    """The honest shape, so every refusal below is the forgery's doing."""
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page()
-
-    page.verify()
-
-    assert act == derive_act_id(page.page_id, "page-residual", page.rectangle)
-    assert page.rows[act]["act_key"] == "page-residual:1"
-
-
-def test_legacy_withheld_shape_needs_no_retained_aggregate_geometry(page):
-    """Historical withheld records remain readable in their original shape."""
-    payload = _conservation_payload()
-    assert "residual_components" not in payload
-    assert "aggregated_residual_components" not in payload
-    page.publish_conservation(payload)
-    page.hold_page()
-
-    page.verify()
+# --- aggregate page holds --------------------------------------------------------
 
 
 def _aggregate_payload() -> dict:
@@ -383,6 +348,81 @@ def test_aggregate_partition_and_both_held_identities_verify(page):
     page.verify()
 
 
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("both_rectangles", "names both a residual rectangle and a page"),
+        ("missing_digest", "sealed grouping"),
+        ("foreign_digest", "this run sealed at binding time"),
+        ("unsealed_digest", "sealed no designator-grouping digest at all"),
+        ("wrong_count", "never a second figure beside it"),
+        ("proposed_conservation", "rather than 'held'"),
+        ("complete_conservation", "rather than 'aggregate-page-held'"),
+        ("wrong_identity", "reserved page-residual class"),
+        ("wrong_key", "derived page-residual key"),
+        ("missing_input", "exactly one conservation artifact"),
+    ],
+)
+def test_aggregate_page_hold_refuses_unbound_claims(page, monkeypatch, change, message):
+    import common.stage as stage_module
+
+    payload = _aggregate_payload()
+    if change == "complete_conservation":
+        payload["residual_enumeration"] = RESIDUAL_ENUMERATION_COMPLETE
+    page.publish_conservation(
+        payload,
+        outcome="proposed" if change == "proposed_conservation" else "held",
+    )
+    options = {"count": 2, "extra": {"aggregated_component_count": 1}}
+    if change == "both_rectangles":
+        options["extra"]["residual_bounds"] = COMPONENT
+    elif change == "missing_digest":
+        options["grouping_config_sha256"] = None
+    elif change == "foreign_digest":
+        options["grouping_config_sha256"] = "0" * 64
+    elif change == "wrong_count":
+        options["count"] = 3
+    elif change == "wrong_identity":
+        options["act"] = derive_act_id(page.page_id, "page-fallback", page.rectangle)
+    elif change == "wrong_key":
+        options["act_key"] = fallback_page_act_key(ORDINAL)
+    elif change == "missing_input":
+        options["inputs"] = []
+    act = page.hold_page(**options)
+    if change == "unsealed_digest":
+        monkeypatch.setattr(stage_module, "run_sealed_config_digests", lambda run: {})
+    page.context.finish()
+
+    with pytest.raises(FatalAccounting, match=message):
+        _verify_minted_act_rows(page.context, {act: page.rows[act]})
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("missing_hold", "exactly one page-residual"),
+        ("two_holds", "exactly one page-residual"),
+        ("missing_promoted", "accounts for no held act"),
+        ("wrong_aggregate_count", "aggregate component count"),
+    ],
+)
+def test_aggregate_conservation_refuses_unaccounted_ink(page, change, message):
+    page.publish_conservation(_aggregate_payload())
+    if change != "missing_promoted":
+        page.hold_component(AGGREGATE_PROMOTED)
+    if change != "missing_hold":
+        page.hold_page(
+            count=2,
+            extra={"aggregated_component_count": 2 if change == "wrong_aggregate_count" else 1},
+        )
+    if change == "two_holds":
+        page.hold_page(bounds={**page.rectangle, "w": page.rectangle["w"] - 1})
+    page.context.finish()
+
+    with pytest.raises(FatalAccounting, match=message):
+        _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
+
+
 def test_aggregate_cannot_hide_a_component_at_the_promotion_floor(page):
     payload = _aggregate_payload()
     payload["aggregated_residual_components"][0]["pixel_count"] = 500
@@ -403,258 +443,18 @@ def test_aggregate_cannot_hide_a_component_at_the_promotion_floor(page):
         _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
 
 
-def test_a_withheld_record_with_no_page_residual_row_is_refused(page):
-    """The whole cost of withholding is paid by the row that replaces the list.
-
-    Without it the page's unclaimed ink has left the denominator behind a policy
-    name — principle 2's silent loss with a reason code attached to it.
-    """
-    page.publish_conservation(_conservation_payload())
+def test_a_retired_conservation_enumeration_is_refused_by_name(page):
+    page.publish_conservation(_conservation_payload(enumeration="withheld-page-held"))
     page.context.finish()
 
-    with pytest.raises(FatalAccounting, match="rather than exactly one"):
+    with pytest.raises(
+        FatalAccounting,
+        match="sealed under withheld-page-held, which this build no longer reads; re-run",
+    ):
         _verify_every_conservation_residual_is_accounted(page.context, {})
-
-
-def test_a_second_page_residual_row_for_one_page_is_refused(page):
-    """Two review items for one withheld page double-count the same unlisted ink."""
-    page.publish_conservation(_conservation_payload())
-    page.hold_page()
-    # Two holds over one rectangle collapse to one artifact id, so the second row
-    # is minted over a rectangle that differs while still naming this page. That
-    # one would refuse on its own rectangle at `_verify_minted_act_rows`; what is
-    # under test here is that the *count* of holds for this page is checked at
-    # all, rather than the first one found closing the record.
-    page.hold_page(bounds={**page.rectangle, "w": page.rectangle["w"] - 1})
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="rather than exactly one"):
-        _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
-
-
-def test_a_hold_naming_both_a_residual_and_a_page_rectangle_is_refused(page):
-    """One hold accounts for one component or for a page held in place of many.
-
-    Carrying both rectangles is not a richer record: it is two incompatible
-    claims, and a router that picked either one would be choosing which of them
-    the run means.
-    """
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page(extra={"residual_bounds": COMPONENT})
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="names both a residual rectangle and a page"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_a_hold_naming_no_grouping_digest_is_refused(page):
-    """The bound is a grouping-policy parameter; a hold owes the policy's name.
-
-    Without it, a Designator free to invent its `max_residual_components` could
-    hold any page it likes and this verifier would agree with it.
-    """
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page(grouping_config_sha256=None)
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="sealed grouping"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_a_hold_naming_a_foreign_grouping_digest_is_refused(page):
-    """A bound judged against a policy this run never sealed is not this run's bound."""
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page(grouping_config_sha256="0" * 64)
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="this run sealed at binding time"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_a_run_that_sealed_no_grouping_digest_is_refused_by_its_own_name(page, monkeypatch):
-    """A binding gap and drift are two faults, and an operator does two things.
-
-    `require_sealed_config` separates them for that reason: a run that never
-    sealed the policy has to be created again on a build that does, while a hold
-    naming a foreign digest means the policy file moved under a run that did.
-    One message printing `None` as the sealed digest sends both to the same
-    place.
-    """
-    import common.stage as stage_module
-
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page()
-    monkeypatch.setattr(stage_module, "run_sealed_config_digests", lambda run: {})
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="sealed no designator-grouping digest at all"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_a_hold_naming_a_boolean_bound_is_refused_against_its_records_integer(page):
-    """`True == 1` in Python, and a policy is an integer or it is not one.
-
-    Defence in depth, and exercised as such: the row-side verifier types the
-    hold's own bound first and refuses this hold for that, so this direction is
-    driven on its own here. It is the comparison that binds the review item's
-    policy to the reconciliation's, and a bare `!=` let a hold naming `True`
-    agree with a record naming `1` -- the case `_is_count` exists for.
-    """
-    page.publish_conservation(_conservation_payload(bound=1, count=2))
-    act = page.hold_page(bound=True, count=2)
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="does not name the integer bound"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-    with pytest.raises(FatalAccounting, match="must name one policy, as one integer"):
-        _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
-
-
-def test_a_bound_the_reconciliation_did_not_exceed_is_refused(page):
-    """The premise is the record's own count against the hold's own bound."""
-    page.publish_conservation(_conservation_payload(count=BOUND))
-    act = page.hold_page(count=BOUND)
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="which does not exceed it"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_a_hold_count_the_reconciliation_never_measured_is_refused(page):
-    """The count on the review item is the count the reconciliation took."""
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page(count=MEASURED + 1)
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="never a second figure beside it"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_a_hold_judged_against_a_bound_the_record_did_not_apply_is_refused(page):
-    """A laxer bound on the review item describes a decision the run never took."""
-    page.publish_conservation(_conservation_payload())
-    page.hold_page(bound=BOUND - 1, count=MEASURED)
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="must name one policy"):
-        _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
-
-
-def test_a_held_page_over_a_record_still_reporting_proposed_is_refused(page):
-    """The record standing behind a held page must itself say `held`.
-
-    A record whose payload matches the hold exactly, down to the bound and
-    count, still tells a reader the reconciliation *proposed* its residuals if
-    its own `outcome` disagrees — the reverse of what a page-residual hold
-    means.
-    """
-    page.publish_conservation(_conservation_payload(), outcome="proposed")
-    act = page.hold_page()
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="rather than 'held'"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_a_withheld_hold_over_an_enumerated_record_is_refused(page):
-    """A page whose components were listed owes one held act each, not one page."""
-    page.publish_conservation(
-        _conservation_payload(
-            enumeration=RESIDUAL_ENUMERATION_COMPLETE,
-            components=[{"bounds": COMPONENT, "pixel_count": 4, "review_priority": "high"}],
-        ),
-        outcome="proposed",
-    )
-    act = page.hold_page()
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="rather than 'withheld-page-held'"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_a_withheld_record_that_still_carries_a_components_key_is_refused(page):
-    """Absence is the contract, because an empty list reads as "no unclaimed ink"."""
-    page.publish_conservation(_conservation_payload(components=[]))
-    act = page.hold_page()
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="still carries a residual_components key"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_an_unknown_residual_enumeration_is_refused(page):
-    """The pair is closed, so a third spelling is a refusal and never a default."""
-    page.publish_conservation(_conservation_payload(enumeration="partial"))
-    page.context.finish()
-
-    with pytest.raises(FatalAccounting, match="outside the closed set"):
-        _verify_every_conservation_residual_is_accounted(page.context, {})
-
-
-def test_a_record_naming_no_enumeration_at_all_is_refused(page):
-    """The field is always published, so its absence is an unknown value.
-
-    Reading a missing field as "complete" would let a record that lost it pass as
-    fully enumerated with nothing listed — the exact confusion the closed pair
-    exists to prevent, arriving by omission instead of by a new spelling.
-    """
-    payload = _conservation_payload()
-    del payload["residual_enumeration"]
-    page.publish_conservation(payload)
-    page.context.finish()
-
-    with pytest.raises(FatalAccounting, match="outside the closed set"):
-        _verify_every_conservation_residual_is_accounted(page.context, {})
-
-
-def test_a_page_residual_hold_outside_the_denominator_is_refused(page):
-    """A held page the seal never counted is evidence beside the denominator."""
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page()
-    page.context.finish()
-
-    with pytest.raises(FatalAccounting, match="does not account for"):
-        _verify_every_conservation_residual_is_accounted(page.context, {})
-    assert act in page.rows
 
 
 # --- the rectangle is recomputed, never read ------------------------------------
-
-
-def test_an_identity_that_does_not_bind_the_page_residual_class_is_refused(page):
-    """The class is half the binding, and it is the half that carries disposition.
-
-    A page-fallback identity over the page rectangle is `proposed` and reaches
-    the witnesses; a page-residual identity over the same rectangle is terminal.
-    Minting one and presenting it as the other is refused on the identity itself.
-    """
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page(act=derive_act_id(page.page_id, "page-fallback", page.rectangle))
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="reserved page-residual class"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_a_hold_wearing_the_page_fallback_key_is_refused(page):
-    """The two page-wide labels are derived, so neither may wear the other's."""
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page(act_key=fallback_page_act_key(ORDINAL))
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="derived page-residual key"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_the_premise_is_followed_through_exactly_one_input(page):
-    """Not by address: the conservation record is reached through the hop that
-    checks its bytes, so a hold with no input has nothing to be checked against."""
-    page.publish_conservation(_conservation_payload())
-    act = page.hold_page(inputs=[])
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="exactly one conservation artifact"):
-        _verify_minted_act_rows(page.context, {act: page.rows[act]})
 
 
 # --- what must not have moved ----------------------------------------------------
@@ -676,7 +476,7 @@ def test_an_enumerated_page_still_accounts_for_every_component_it_lists(page):
 
 
 def test_an_enumerated_component_with_no_held_act_is_still_refused(page):
-    """The residual path's own refusal, unchanged by the withheld branch beside it."""
+    """Every retained component must reach a held act."""
     page.publish_conservation(
         _conservation_payload(
             enumeration=RESIDUAL_ENUMERATION_COMPLETE,
@@ -705,9 +505,7 @@ def test_an_enumerated_records_count_must_match_its_own_listed_components(page):
     """The count a reviewer is shown must be the list they can already count.
 
     An enumerated record whose `residual_component_count` disagrees with
-    `len(residual_components)` is the same untruth `_verify_page_residual_premise`
-    already refuses on the withheld side; here the evidence to recompute it is
-    free, so nothing may leave it unrefused.
+    `len(residual_components)` is a detectable accounting error.
     """
     payload = _conservation_payload(
         enumeration=RESIDUAL_ENUMERATION_COMPLETE,
@@ -738,15 +536,3 @@ def test_a_component_hold_still_traces_to_the_reconciliation_that_found_it(page)
     page.context.finish()
     with pytest.raises(FatalAccounting, match="does not carry at those bounds"):
         _verify_minted_act_rows(page.context, {act: page.rows[act]})
-
-
-def test_a_proposed_extra_row_still_routes_to_the_page_fallback_verifier(page):
-    """Routing by outcome first: `proposed` is the page-fallback path and nothing
-    added here may divert it. A page-residual act is never proposed."""
-    page.publish_conservation(_conservation_payload())
-    act = derive_act_id(page.page_id, "page-fallback", page.rectangle)
-    row = _row(act, fallback_page_act_key(ORDINAL), page.page_id, "proposed", [])
-
-    page.context.finish()
-    with pytest.raises(FatalAccounting, match="published no page-fallback record for it"):
-        _verify_minted_act_rows(page.context, {act: row})

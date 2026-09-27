@@ -269,10 +269,9 @@ change what "connected" means and make the labeller's cost grow with the cube of
 scale, and no measurement of its true relationship to scan resolution exists — the
 file's own caveat says so at length, and it is the one number in there this build
 cannot honestly set. Three more values are bare counts rather than lengths, so
-they have no dimension to be a fraction of: `max_residual_components` and
-`max_secondary_proposals` cap how many separate review items one page's residual
-enumeration and one page's secondary rescue pass may mint — each bounding one
-page's contribution while the console pages through the run-wide queue — and
+they have no dimension to be a fraction of: `max_residual_components` remains
+sealed but does not govern current residual presentation;
+`max_secondary_proposals` caps one page's secondary rescue pass; and
 `fallback_bands` is how many horizontal bands the predetermined fallback grid
 cuts a page into, a cardinality rather than a length
 (a taller page gets taller bands, not more of them; its `fallback_overlap_bp`

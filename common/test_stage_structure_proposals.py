@@ -48,6 +48,7 @@ from typing import Any
 
 import pytest
 
+import common.stage as stage_contract
 from common.chairs import ChairIdentity, ChairRegistry
 from common.contracts.canonical import self_hash
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
@@ -62,7 +63,7 @@ from common.stage import (
     REAL_SCENARIO,
     STRUCTURE_ANSWER_KIND,
     STRUCTURE_ANSWER_PARSED,
-    STRUCTURE_ANSWER_RECORD_SCHEMA,
+    STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
     STRUCTURE_CALL_KIND,
     STRUCTURE_CALL_SCHEMA,
     STRUCTURE_DECODING_POLICY,
@@ -76,6 +77,12 @@ from common.stage import (
     validate_serving_provenance,
 )
 from operations.submit import gate, submit
+
+
+@pytest.fixture(autouse=True)
+def _proposal_tests_use_a_preverified_attempt_chain(monkeypatch):
+    monkeypatch.setattr(stage_contract, "_verify_structure_attempt_chain", lambda *_a, **_k: None)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -336,7 +343,7 @@ class _StructureDesignator:
         rectangles: list[dict[str, int]],
         *,
         provenance: dict[str, Any] | None = None,
-        schema: str = STRUCTURE_ANSWER_RECORD_SCHEMA,
+        schema: str = STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
         parse_state: str = STRUCTURE_ANSWER_PARSED,
         parse_outcome: str | None = None,
         page_id: str | None = None,
@@ -682,6 +689,22 @@ def test_an_answer_under_the_wrong_record_schema_is_refused_by_name(real_root):
         match="terminal structure answer has unsupported schema 'structure-answer.v0'",
     ):
         expected_acts(context)
+
+
+@pytest.mark.parametrize(
+    "schema", ["designator-structure-answer.v1", "designator-structure-answer.v2"]
+)
+def test_a_retired_structure_answer_is_refused_by_its_schema(real_root, schema):
+    designator = _real_designator(real_root)
+    rectangle = designator.rectangle(1, 0)
+    designator.status(1, designator.answer(1, [rectangle], schema=schema))
+    designator.propose(1, rectangle)
+    designator.seal()
+
+    with pytest.raises(
+        FatalAccounting, match=f"sealed under {schema}, which this build no longer reads; re-run"
+    ):
+        expected_acts(_open(real_root, ATTESTATORES))
 
 
 def test_an_answer_naming_a_different_page_than_the_row_is_refused(real_root):

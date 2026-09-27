@@ -1039,7 +1039,7 @@ def ask_page(
     decoding_config_sha256: str,
     provenance: Mapping[str, Any],
     attempt_ordinal: int = 1,
-    attempt_policy: Mapping[str, Any] | None = None,
+    attempt_policy: Mapping[str, Any],
 ) -> PageAnswer:
     """Ask the chair about one sealed page and decide what the answer does to it.
 
@@ -1060,8 +1060,6 @@ def ask_page(
     """
     page_id = page_record["subject_id"]
     page_w, page_h = analysis["width"], analysis["height"]
-    if attempt_policy is None:
-        attempt_policy = {"max_attempts": 1, "seed_schedule": "fixed-base"}
     if (
         not isinstance(attempt_ordinal, int)
         or isinstance(attempt_ordinal, bool)
@@ -1069,12 +1067,9 @@ def ask_page(
     ):
         raise ContractError("structure attempt ordinal must be a positive integer")
     schedule = attempt_policy.get("seed_schedule")
-    if schedule == "fixed-base":
-        attempt_seed = client.handle.profile.seed
-    elif schedule == "base-plus-attempt-ordinal-minus-one":
-        attempt_seed = client.handle.profile.seed + attempt_ordinal - 1
-    else:
+    if schedule != "base-plus-attempt-ordinal-minus-one":
         raise ContractError(f"unsupported structure recovery seed schedule {schedule!r}")
+    attempt_seed = client.handle.profile.seed + attempt_ordinal - 1
     request_image, presented, presentation_ref = prepare_page_request_image(
         context, page_record, page_bytes, page_w, page_h
     )

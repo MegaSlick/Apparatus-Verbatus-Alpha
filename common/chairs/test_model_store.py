@@ -385,7 +385,7 @@ def test_verified_snapshot_root_cannot_hide_behind_an_internal_symlink(tmp_path)
         verify_store(tmp_path)
 
 
-def test_writer_archives_the_legacy_host_record_before_migration(tmp_path):
+def test_writer_refuses_an_unsupported_active_record_without_archiving_it(tmp_path):
     record = _store(tmp_path)
     (tmp_path / "download_record.json").unlink()
     shutil.rmtree(tmp_path / "records")
@@ -399,11 +399,28 @@ def test_writer_archives_the_legacy_host_record_before_migration(tmp_path):
     )
     (tmp_path / "download_record.json").write_bytes(legacy)
 
-    write_download_record(record, tmp_path)
+    with pytest.raises(DigestMismatchRefusal, match="unsupported schema None"):
+        write_download_record(record, tmp_path)
+    assert (tmp_path / "download_record.json").read_bytes() == legacy
+    assert not (tmp_path / "records").exists()
 
-    legacy_digest = hashlib.sha256(legacy).hexdigest()
-    assert (tmp_path / "records" / f"{legacy_digest}.json").read_bytes() == legacy
-    assert load_download_record(tmp_path) == record
+
+def test_v1_active_record_refuses_writers_before_publication(tmp_path):
+    record = _store(tmp_path)
+    old = canonical_bytes({**record, "schema": "verbatus-model-store.v1"})
+    active = tmp_path / "download_record.json"
+    active.write_bytes(old)
+    archives = set((tmp_path / "records").iterdir())
+
+    with pytest.raises(DigestMismatchRefusal, match="move or remove the old download_record.json"):
+        write_download_record(record, tmp_path)
+    assert active.read_bytes() == old
+    assert set((tmp_path / "records").iterdir()) == archives
+
+    with pytest.raises(DigestMismatchRefusal, match="move or remove the old download_record.json"):
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+    assert active.read_bytes() == old
+    assert set((tmp_path / "records").iterdir()) == archives
 
 
 # --- S3: symlink escape is refused in both directions ---------------------------
@@ -1681,100 +1698,15 @@ def test_a_roster_divergence_names_the_pin_it_expected_and_the_one_it_found(tmp_
     assert "1" * 40 in message
 
 
-_V1_CAPACITY = {
-    "snapshot_bytes": 100,
-    "promotion_headroom_bytes": 100,
-    "available_bytes": 200,
-    "cleanup_owner": "pod operator",
-}
-
-
-def _as_v1_on_disk(tmp_path, capacity=_V1_CAPACITY, archive=True):
-    """Rewrite the active record as the archived v1 shape a live volume may still hold."""
-    v1 = load_download_record(tmp_path) | {
-        "schema": "verbatus-model-store.v1",
-        "capacity": capacity,
-    }
-    v1_bytes = canonical_bytes(v1)
-    if archive:
-        (tmp_path / "records" / f"{digest_bytes(v1_bytes)}.json").write_bytes(v1_bytes)
-    (tmp_path / "download_record.json").write_bytes(v1_bytes)
-    return v1
-
-
-def test_a_v1_record_on_disk_is_migrated_once_without_refetching(tmp_path):
-    fetcher = _FakeMaterializationFetcher()
-    materialize_real_roster(tmp_path, fetcher)
-    calls = list(fetcher.calls)
-    v1 = _as_v1_on_disk(tmp_path)
-
-    receipt = materialize_real_roster(tmp_path, fetcher)
-
-    assert fetcher.calls == calls
-    assert receipt["real_roster_complete"] is True
-    v1_bytes = canonical_bytes(v1)
-    assert (tmp_path / "records" / f"{digest_bytes(v1_bytes)}.json").read_bytes() == v1_bytes
-    expected = {key: value for key, value in v1.items() if key != "capacity"}
-    assert load_download_record(tmp_path) == expected | {"schema": STORE_SCHEMA}
-
-
-@pytest.mark.parametrize(
-    ("damage", "refusal"),
-    [
-        ("unarchived", "immutable version"),
-        ("tampered", "differs from immutable version"),
-        ("malformed", "well-formed capacity plan"),
-    ],
-)
-def test_a_damaged_v1_record_is_refused_and_never_migrated(tmp_path, damage, refusal):
-    fetcher = _FakeMaterializationFetcher()
-    materialize_real_roster(tmp_path, fetcher)
-    capacity = dict(_V1_CAPACITY)
-    if damage == "malformed":
-        del capacity["cleanup_owner"]
-    v1 = _as_v1_on_disk(tmp_path, capacity, archive=damage != "unarchived")
-    if damage == "tampered":
-        archive = tmp_path / "records" / f"{digest_bytes(canonical_bytes(v1))}.json"
-        archive.write_bytes(archive.read_bytes() + b" ")
-    active = (tmp_path / "download_record.json").read_bytes()
-
-    with pytest.raises(DigestMismatchRefusal, match=refusal):
-        materialize_real_roster(tmp_path, fetcher)
-    assert (tmp_path / "download_record.json").read_bytes() == active
-
-
-def test_a_v1_store_refusal_names_the_migration_that_clears_it(tmp_path):
-    _store(tmp_path)
-    _as_v1_on_disk(tmp_path)
-
-    with pytest.raises(DigestMismatchRefusal, match="run materialize_real_roster once"):
-        verify_store(tmp_path)
-
-
-def test_a_v1_record_cannot_be_replaced_by_one_that_returns_present_to_pending(tmp_path):
-    record = _store(tmp_path)
-    _as_v1_on_disk(tmp_path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
-    required = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "churro-3B")
-    record["artifacts"][record["artifacts"].index(entry)] = {
-        "artifact": "churro-3B",
-        "state": "pending-fetch",
-        "source": required.source,
-        "repo": required.repo,
-        "revision": required.revision,
-        "reason": "rewound",
-    }
-
-    with pytest.raises(DigestMismatchRefusal, match="cannot return to pending-fetch"):
-        write_download_record(record, tmp_path)
-
-
-def test_a_v1_record_is_refused_by_its_schema_before_its_shape(tmp_path):
+def test_a_v1_record_is_refused_by_name_before_its_shape(tmp_path):
     record = _store(tmp_path)
     record["schema"] = "verbatus-model-store.v1"
     record["capacity"] = {"cleanup_owner": "host model-store operator"}
 
-    with pytest.raises(DigestMismatchRefusal, match="not 'verbatus-model-store.v1'"):
+    with pytest.raises(
+        DigestMismatchRefusal,
+        match="sealed under verbatus-model-store.v1, which this build no longer reads; move or remove",
+    ):
         derived_inventory(record)
 
 

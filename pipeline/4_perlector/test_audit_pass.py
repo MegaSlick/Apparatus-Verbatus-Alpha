@@ -14,7 +14,7 @@ import protocol
 import pytest
 import reader as reader_module
 
-from common.contracts.canonical import digest_of
+from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
 from common.perlector_audit import (
@@ -22,6 +22,7 @@ from common.perlector_audit import (
     REPROOF_PASS_KIND,
     change_record,
     neutral_prompt,
+    render_reproof_instruction,
     truncation_classification,
     validate_audit_request,
     validate_truncation_record,
@@ -692,66 +693,28 @@ def test_the_chain_refuses_a_request_digest_that_is_not_the_frozen_plans_own(tmp
         audit.validate_chain(tree, undelivered, final["subject_id"])
 
 
-def test_a_sealed_v2_chain_remains_validatable_without_reinterpreting_its_request(tmp_path):
-    """Existing v2 evidence keeps its old prompt/request digest during inspection."""
+def test_a_sealed_v2_chain_is_refused_by_name(tmp_path):
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr
     tree = RunTree(tmp_path / "runs", "r")
     final = copy.deepcopy(_records(tree, "perlectio")[0])
     draft = copy.deepcopy(
-        next(
-            record
-            for record in _records(tree, "audit-draft")
-            if record["subject_id"] == final["subject_id"]
+        tree.read_artifact_reference(
+            final["payload"]["audit"]["draft_ref"],
+            stage=PERLECTOR,
+            kind="audit-draft",
+            subject_id=final["subject_id"],
         )
     )
-    finding = copy.deepcopy(
-        next(
-            record
-            for record in _records(tree, "audit-finding")
-            if record["subject_id"] == final["subject_id"]
-        )
-    )
-
-    for record in (draft["payload"], finding["payload"]):
-        record["policy"]["schema"] = LEGACY_SCHEMA
-    finding["payload"].pop("reproof_edits")
-    finding["payload"]["reproof_change_span"] = (
-        dict(
-            zip(
-                ("start", "end"),
-                audit.text_change_span(
-                    draft["payload"]["semi_final_text"], final["payload"]["text"]
-                ),
-                strict=True,
-            )
-        )
-        if draft["payload"]["semi_final_text"] != final["payload"]["text"]
-        else None
-    )
-    audit_record = final["payload"]["audit"]
-    audit_record["reproofs"] = audit.reproof_plan(
-        draft["payload"]["flags"],
-        text_length=len(draft["payload"]["semi_final_text"]),
-        policy_schema=LEGACY_SCHEMA,
-    )
-    legacy_request = audit.audit_request(
-        act_key=draft["payload"]["act_key"],
-        attempt_ordinal=draft["payload"]["attempt_ordinal"],
-        draft_ref=audit_record["draft_ref"],
-        semi_final_text=draft["payload"]["semi_final_text"],
-        flags=draft["payload"]["flags"],
-        policy_schema=LEGACY_SCHEMA,
-    )
-    audit_record["request_digest"] = audit.audit_digest(legacy_request)
-    audit_record["finding_digest"] = audit.audit_digest(finding["payload"])
+    draft["payload"]["policy"]["schema"] = LEGACY_SCHEMA
 
     class LegacyTree:
         def read_artifact_reference(self, _reference, *, stage, kind, subject_id):
             assert stage == PERLECTOR and subject_id == final["subject_id"]
-            return draft if kind == "audit-draft" else finding
+            return draft
 
-    audit.validate_chain(LegacyTree(), final, final["subject_id"])
+    with pytest.raises(SchemaRefusal, match="sealed under perlector-audit.v2"):
+        audit.validate_chain(LegacyTree(), final, final["subject_id"])
 
 
 def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tmp_path):
@@ -1301,7 +1264,7 @@ def test_a_legacy_v2_declaration_cannot_start_a_new_exact_edit_execution(tmp_pat
         "round_cap = 1\n"
         'approval_ref = ""\n'
     )
-    with pytest.raises(ContractError, match="sealed artifacts.*remain readable"):
+    with pytest.raises(ContractError, match="sealed under perlector-audit.v2"):
         audit.load(legacy)
 
 
@@ -2283,7 +2246,7 @@ def _finding(**overrides) -> dict:
         "attempt_ordinal": 1,
         "page_ids": ["p1"],
         "round_cap": 1,
-        "policy": {"schema": "perlector-audit.v2", "sha256": "0" * 64, "approval_ref": ""},
+        "policy": {"schema": "perlector-audit.v3", "sha256": "0" * 64, "approval_ref": ""},
         "flags": [{"class": "testimony-diff", "location": {"start": 0, "end": 3}}],
         "change_record": [],
         "uncertain_spans": [],
@@ -2291,9 +2254,18 @@ def _finding(**overrides) -> dict:
         "examination": "incomplete",
         "reproof_truncation": _CUT_OFF_TRUNCATION,
         "reproof_call": None,
-        "reproof_change_span": None,
+        "reproof_edits": [
+            {
+                "class": "testimony-diff",
+                "location": {"start": 0, "end": 3},
+                "original": "abc",
+                "replacement": "abc",
+            }
+        ],
     }
     finding = {**base, **overrides}
+    if finding["reproof_truncation"] is None and "reproof_edits" not in overrides:
+        finding["reproof_edits"] = None
     finding["reproof_truncation"] = _termination_over(finding["reproof_truncation"], _FINDING_TEXT)
     return finding
 
@@ -2333,7 +2305,9 @@ def test_an_audit_finding_cannot_call_a_cut_off_reproof_complete():
     # re-proof with no termination at all.
     with pytest.raises(SchemaRefusal, match="raised no flag"):
         audit.validate_finding(
-            _finding(flags=[], examination="not-due", unresolved=False), text="abc", flag_text="abc"
+            _finding(flags=[], examination="not-due", unresolved=False, reproof_edits=[]),
+            text="abc",
+            flag_text="abc",
         )
     with pytest.raises(SchemaRefusal, match="left no round to deliver"):
         audit.validate_finding(
@@ -2364,85 +2338,10 @@ def test_an_audit_finding_cannot_call_a_cut_off_reproof_complete():
         )
 
 
-def test_a_reproof_that_escapes_its_flag_is_rejected_not_completed():
-    """A live re-proof that rewrote text no flag asked for is held, never published.
-
-    This is the failure a real card produced on 2026-09-15: the re-proof's
-    call ran to completion (`stop`, not cut off), so it is not `incomplete`,
-    but its rewrite reached outside the one flag it was sent to settle. The
-    shared validator must accept the honest `reproof-rejected` record and
-    refuse the same facts sealed as `complete`.
-    """
-    # Three characters, matching `_FINDING_TEXT`, so the helper's sealed
-    # termination measure is the one this text was measured over: the
-    # rejection is what these assertions are about, not a length mismatch.
-    flag_text = _FINDING_TEXT
-    span = {"start": 0, "end": 3}
-    flags = [{"class": "testimony-diff", "location": {"start": 2, "end": 3}}]
-    rejected = _finding(
-        examination="reproof-rejected",
-        unresolved=True,
-        reproof_truncation=_COMPLETE_TRUNCATION,
-        reproof_change_span=span,
-        flags=flags,
-    )
-    accepted = audit.validate_finding(rejected, text=flag_text, flag_text=flag_text)
-    assert accepted["examination"] == "reproof-rejected"
-    assert accepted["unresolved"] is True
-    assert accepted["change_record"] == []
-
-    # The same escaping span cannot be dressed as `complete`.
-    with pytest.raises(SchemaRefusal, match="make it 'reproof-rejected'"):
-        audit.validate_finding(
-            _finding(
-                examination="complete",
-                unresolved=False,
-                reproof_truncation=_COMPLETE_TRUNCATION,
-                reproof_change_span=span,
-                flags=flags,
-            ),
-            text=flag_text,
-            flag_text=flag_text,
-        )
-    # A rejected finding cannot publish the rewrite, cannot carry a change, and
-    # cannot claim rejection without the span that shows what escaped.
-    with pytest.raises(SchemaRefusal, match="published no change"):
-        audit.validate_finding(
-            _finding(
-                examination="reproof-rejected",
-                unresolved=True,
-                reproof_truncation=_COMPLETE_TRUNCATION,
-                reproof_change_span=span,
-                flags=flags,
-                change_record=[{"start": 0, "end": 3, "triggering_flag_class": "testimony-diff"}],
-            ),
-            text=flag_text,
-            flag_text=flag_text,
-        )
-    with pytest.raises(SchemaRefusal, match="frozen semi-final, not the rejected rewrite"):
-        audit.validate_finding(
-            _finding(
-                examination="reproof-rejected",
-                unresolved=True,
-                reproof_truncation=_COMPLETE_TRUNCATION,
-                reproof_change_span=span,
-                flags=flags,
-            ),
-            text="xyz",
-            flag_text=flag_text,
-        )
-    # A confirmed-unchanged complete re-proof still validates with no span at
-    # all: `reproof-rejected` is not the default shape of `complete`.
-    assert (
-        audit.validate_finding(
-            _finding(
-                examination="complete", unresolved=False, reproof_truncation=_COMPLETE_TRUNCATION
-            ),
-            text="abc",
-            flag_text="abc",
-        )["examination"]
-        == "complete"
-    )
+def test_a_v2_audit_finding_is_refused_by_name():
+    finding = _finding(policy={"schema": LEGACY_SCHEMA, "sha256": "0" * 64, "approval_ref": ""})
+    with pytest.raises(SchemaRefusal, match="sealed under perlector-audit.v2"):
+        audit.validate_finding(finding, text="abc", flag_text="abc")
 
 
 def test_a_v1_audit_record_is_refused_by_name_and_never_read_forward():
@@ -2662,6 +2561,22 @@ def test_the_recensor_routes_on_the_examination_and_refuses_a_contradicting_bool
 def test_a_sealed_reproof_call_must_name_the_digest_of_the_response_it_retains():
     """The two digests are one fact stated twice."""
     reference = {"relative_path": "4_perlector/blobs/sha256/" + "a" * 64, "sha256": "a" * 64}
+    request = audit.audit_request(
+        act_key="a1",
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/audit-draft/a1.json", "sha256": "a" * 64},
+        semi_final_text="abc",
+        flags=[{"class": "testimony-diff", "location": {"start": 0, "end": 3}}],
+    )
+    base_text = "Read the ink"
+    request_sha256 = "d" * 64
+    prompt = audit.audit_prompt_evidence(
+        base_prompt={"rendered_sha256": digest_bytes(base_text.encode("utf-8"))},
+        base_text=base_text,
+        request=request,
+        request_sha256=request_sha256,
+        rendered_text=base_text + "\n" + render_reproof_instruction(request),
+    )
     call = {
         "call_record_ref": {
             "relative_path": "4_perlector/blobs/sha256/" + "b" * 64,
@@ -2671,6 +2586,8 @@ def test_a_sealed_reproof_call_must_name_the_digest_of_the_response_it_retains()
         "response_sha256": "a" * 64,
         "finish_reason": "length",
         "served_model_id": "perlector-under-test",
+        "request_sha256": request_sha256,
+        "audit_prompt": prompt,
     }
     finding = _finding(reproof_call=call)
     assert audit.validate_finding(finding, text="abc", flag_text="abc")["reproof_call"] == call
@@ -2711,6 +2628,7 @@ def test_a_sealed_reproof_call_must_name_the_digest_of_the_response_it_retains()
                 unresolved=False,
                 reproof_truncation=None,
                 reproof_call=call,
+                reproof_edits=None,
             ),
             text="abc",
             flag_text="abc",

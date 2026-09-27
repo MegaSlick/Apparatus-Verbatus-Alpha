@@ -69,8 +69,6 @@ from common.stage import (  # noqa: E402
     RESIDUAL_ENUMERATION_COMPLETE,
     SECONDARY_PROPOSER_CHAIR,
     STRUCTURE_ANSWER_KIND,
-    STRUCTURE_ANSWER_RECORD_SCHEMA,
-    STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
     STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
     StageContext,
     _stage_records,
@@ -82,6 +80,7 @@ from common.stage import (  # noqa: E402
     fixture_serving_details,
     open_stage_context,
     page_residual_act_key,
+    refuse_retired_structure_answer,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -276,7 +275,7 @@ def _validate_act_group_payload(payload: object) -> None:
 # The `structure-answer` record's closed field sets. `_refuse_text_fields` only
 # catches known names; a closed set also refuses a new field nobody declared,
 # which is how a chair's reading could leak. Nested shapes are closed too.
-_STRUCTURE_ANSWER_V1_FIELDS = frozenset(
+_STRUCTURE_ANSWER_FIELDS = frozenset(
     {
         "schema",
         "page_id",
@@ -318,10 +317,9 @@ _STRUCTURE_ANSWER_V1_FIELDS = frozenset(
         "capacity",
     }
 )
-_STRUCTURE_ANSWER_V2_FIELDS = _STRUCTURE_ANSWER_V1_FIELDS | frozenset(
-    {"attempt_ordinal", "attempts", "attempt_seed", "attempt_policy"}
+_STRUCTURE_ANSWER_V3_FIELDS = _STRUCTURE_ANSWER_FIELDS | frozenset(
+    {"attempt_ordinal", "attempts", "attempt_seed", "attempt_policy", "presentation_ref"}
 )
-_STRUCTURE_ANSWER_V3_FIELDS = _STRUCTURE_ANSWER_V2_FIELDS | frozenset({"presentation_ref"})
 # Geometry, with the chair's free strings only as digest and length; `label` and
 # `text` are absent so they refuse. `label_vocabulary` is one of the vendor
 # grammar's fixed words or null, which is not a reading.
@@ -392,19 +390,12 @@ def _closed_object(value: object, fields: frozenset, what: str) -> dict:
 
 
 def _validate_structure_answer_payload(payload: object, *, terminal: bool = True) -> None:
-    """Validate one legacy terminal answer or one versioned attempt/terminal record."""
+    """Validate one current attempt or terminal answer."""
     if not isinstance(payload, dict):
         raise ContractError("a Designator structure-answer payload is not an object")
     schema = payload.get("schema")
-    if schema == STRUCTURE_ANSWER_RECORD_SCHEMA:
-        if not terminal:
-            raise ContractError("a legacy structure-answer cannot be used as an attempt record")
-        record = _closed_object(
-            payload, _STRUCTURE_ANSWER_V1_FIELDS, "legacy structure-answer payload"
-        )
-    elif schema == STRUCTURE_ANSWER_RECORD_SCHEMA_V2:
-        record = _closed_object(payload, _STRUCTURE_ANSWER_V2_FIELDS, "v2 structure-answer payload")
-    elif schema == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+    refuse_retired_structure_answer(schema, subject="structure answer", error_type=ContractError)
+    if schema == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
         record = _closed_object(payload, _STRUCTURE_ANSWER_V3_FIELDS, "v3 structure-answer payload")
         _closed_object(
             record["presentation_ref"],
@@ -417,36 +408,33 @@ def _validate_structure_answer_payload(payload: object, *, terminal: bool = True
         record["decoding"], _STRUCTURE_ANSWER_DECODING_FIELDS, "structure-answer decoding block"
     )
     _closed_object(record["vendor"], _STRUCTURE_ANSWER_VENDOR_FIELDS, "structure-answer vendor")
-    if schema in {STRUCTURE_ANSWER_RECORD_SCHEMA_V2, STRUCTURE_ANSWER_RECORD_SCHEMA_V3}:
-        policy = _closed_object(
-            record["attempt_policy"],
-            _STRUCTURE_ATTEMPT_POLICY_FIELDS,
-            "structure attempt policy",
+    policy = _closed_object(
+        record["attempt_policy"],
+        _STRUCTURE_ATTEMPT_POLICY_FIELDS,
+        "structure attempt policy",
+    )
+    maximum = policy["max_attempts"]
+    if (
+        not is_plain_int(maximum)
+        or not 1 <= maximum <= ABSOLUTE_STRUCTURE_ATTEMPT_CEILING
+        or policy["seed_schedule"] != "base-plus-attempt-ordinal-minus-one"
+    ):
+        raise ContractError("a Designator structure answer has an invalid attempt policy")
+    ordinal = record["attempt_ordinal"]
+    if not is_plain_int(ordinal) or not 1 <= ordinal <= maximum:
+        raise ContractError("a Designator structure attempt ordinal is outside the sealed range")
+    if not is_plain_int(record["attempt_seed"]) or record["attempt_seed"] < 0:
+        raise ContractError("a Designator structure attempt has no non-negative derived seed")
+    attempts = record["attempts"]
+    expected_count = ordinal if terminal else ordinal - 1
+    if not isinstance(attempts, list) or len(attempts) != expected_count:
+        raise ContractError(
+            "a Designator structure answer does not name its exact contiguous attempt history"
         )
-        maximum = policy["max_attempts"]
-        if (
-            not is_plain_int(maximum)
-            or not 1 <= maximum <= ABSOLUTE_STRUCTURE_ATTEMPT_CEILING
-            or policy["seed_schedule"] not in {"fixed-base", "base-plus-attempt-ordinal-minus-one"}
-        ):
-            raise ContractError("a Designator structure answer has an invalid attempt policy")
-        ordinal = record["attempt_ordinal"]
-        if not is_plain_int(ordinal) or not 1 <= ordinal <= maximum:
-            raise ContractError(
-                "a Designator structure attempt ordinal is outside the sealed range"
-            )
-        if not is_plain_int(record["attempt_seed"]) or record["attempt_seed"] < 0:
-            raise ContractError("a Designator structure attempt has no non-negative derived seed")
-        attempts = record["attempts"]
-        expected_count = ordinal if terminal else ordinal - 1
-        if not isinstance(attempts, list) or len(attempts) != expected_count:
-            raise ContractError(
-                "a Designator structure answer does not name its exact contiguous attempt history"
-            )
-        for reference in attempts:
-            _closed_object(
-                reference, _STRUCTURE_ATTEMPT_REFERENCE_FIELDS, "structure attempt reference"
-            )
+    for reference in attempts:
+        _closed_object(
+            reference, _STRUCTURE_ATTEMPT_REFERENCE_FIELDS, "structure attempt reference"
+        )
     acts = record["acts"]
     if not isinstance(acts, list):
         raise ContractError("a Designator structure-answer payload carries no act list")
@@ -2460,29 +2448,22 @@ def _sealed_structure_answer(
         producer_stage=DESIGNATOR,
         require_receipt=True,
     )
-    if payload["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA:
-        if dict(attempt_policy) != {"max_attempts": 1, "seed_schedule": "fixed-base"}:
-            raise ContractError(
-                f"the legacy structure answer for page {page_id} is incompatible with "
-                "this run's sealed recovery policy"
-            )
-    else:
-        history = _published_structure_attempts(context, page_record, attempt_policy)
-        references = [reference for _answer, reference in history]
-        if payload["attempt_policy"] != dict(attempt_policy) or payload["attempts"] != references:
-            raise ContractError(
-                f"the terminal structure answer for page {page_id} does not name the exact "
-                "sealed attempt policy and contiguous attempt history"
-            )
-        if not history:
-            raise ContractError(f"the terminal structure answer for page {page_id} has no attempt")
-        expected = dict(history[-1][0].record)
-        expected["attempts"] = references
-        if payload != expected:
-            raise ContractError(
-                f"the terminal structure answer for page {page_id} disagrees with its last "
-                "immutable attempt"
-            )
+    history = _published_structure_attempts(context, page_record, attempt_policy)
+    references = [reference for _answer, reference in history]
+    if payload["attempt_policy"] != dict(attempt_policy) or payload["attempts"] != references:
+        raise ContractError(
+            f"the terminal structure answer for page {page_id} does not name the exact "
+            "sealed attempt policy and contiguous attempt history"
+        )
+    if not history:
+        raise ContractError(f"the terminal structure answer for page {page_id} has no attempt")
+    expected = dict(history[-1][0].record)
+    expected["attempts"] = references
+    if payload != expected:
+        raise ContractError(
+            f"the terminal structure answer for page {page_id} disagrees with its last "
+            "immutable attempt"
+        )
     return payload, context.input_ref(relative)
 
 
@@ -2490,8 +2471,7 @@ def _publish_structure_record(
     context, page_record: dict, answer: structure_pass.PageAnswer, kind: str, **attempt
 ) -> dict[str, str]:
     inputs = [context.input_ref(page_record["payload"]["image_path"])]
-    if answer.record["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
-        inputs.append(dict(answer.record["presentation_ref"]))
+    inputs.append(dict(answer.record["presentation_ref"]))
     published = context.publish(
         kind=kind,
         subject_id=answer.page_id,
@@ -2551,7 +2531,7 @@ def _published_structure_attempts(
         for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND)
         if row["subject_id"] == page_id
     ]
-    rows.sort(key=lambda row: row["payload"].get("attempt_ordinal", 0))
+    rows.sort(key=lambda row: row["payload"]["attempt_ordinal"])
     result: list[tuple[structure_pass.PageAnswer, dict[str, str]]] = []
     for ordinal, row in enumerate(rows, start=1):
         payload = row["payload"]
@@ -2572,18 +2552,8 @@ def _published_structure_attempts(
                 f"structure attempts for page {page_id} are not a contiguous sealed history"
             )
         if result:
-            if (
-                result[-1][0].record["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
-                and payload["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V2
-            ):
-                raise ContractError(
-                    f"structure attempts for page {page_id} downgrade their native "
-                    "presentation schema"
-                )
             prior_seed = result[-1][0].record["attempt_seed"]
-            expected_seed = (
-                prior_seed if attempt_policy["seed_schedule"] == "fixed-base" else prior_seed + 1
-            )
+            expected_seed = prior_seed + 1
             if payload["attempt_seed"] != expected_seed:
                 raise ContractError(
                     f"structure attempts for page {page_id} do not follow the sealed seed schedule"
@@ -2825,6 +2795,14 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     temperature = structure_pass.executable_temperature(decoding_policy)
     attempt_policy = structure_recovery_policy(decoding_policy)
     identity = structure_pass.resolved_structure_chair(context)
+    for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ANSWER_KIND):
+        payload = row.get("payload")
+        if isinstance(payload, Mapping):
+            refuse_retired_structure_answer(
+                payload.get("schema"),
+                subject=f"page {row.get('subject_id')}'s structure answer",
+                error_type=ContractError,
+            )
     secondary = _publish_secondary_provenance(context, _live_secondary_provenance(context))
 
     page_cache: dict[int, dict] = {}
