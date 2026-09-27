@@ -772,6 +772,8 @@ def test_an_empty_queue_row_is_named_by_its_line_number():
                 "review_items": [
                     {"row": {}, "line": 4, "member": "review-items.jsonl", "bundle_path": "b.zip"}
                 ],
+                "review_items_total": 1,
+                "review_page_size": 500,
             }
         )
     )
@@ -780,9 +782,45 @@ def test_an_empty_queue_row_is_named_by_its_line_number():
     # An entry that is not this projection's wrapper is itself the row, and its
     # content still reaches the screen.
     raw = "\n".join(
-        review_text.render({"run_id": "r", "review_items": [{"reason": "the margin is torn"}]})
+        review_text.render(
+            {
+                "run_id": "r",
+                "review_items": [{"reason": "the margin is torn"}],
+                "review_items_total": 1,
+                "review_page_size": 500,
+            }
+        )
     )
     assert "the margin is torn" in raw
+
+
+@pytest.mark.parametrize("missing", ["review_items_total", "review_page_size"])
+def test_review_queue_requires_paging_metadata(missing: str):
+    projection = {
+        "run_id": "r",
+        "review_items": [{"reason": "needs review"}],
+        "review_items_total": 1,
+        "review_page_size": 500,
+    }
+    del projection[missing]
+
+    with pytest.raises(review_text.ProjectionShapeError) as excinfo:
+        review_text.render(projection)
+    assert "review page" in str(excinfo.value)
+
+
+def test_review_renderer_refuses_page_past_nonempty_queue():
+    with pytest.raises(review_text.ProjectionShapeError) as excinfo:
+        review_text.render(
+            {
+                "run_id": "r",
+                "review_items": (),
+                "review_items_total": 2,
+                "review_page": 2,
+                "review_page_size": 2,
+            }
+        )
+    assert "review page" in str(excinfo.value)
 
 
 def test_a_run_authority_that_is_not_an_object_is_a_note_beside_the_page_count(tmp_path: Path):
@@ -895,6 +933,8 @@ def test_the_plain_rendering_keeps_hostile_text_inert():
         "pages": [],
         "acts": [{"act_id": "a1", "act_key": "x\x1b[2Jwiped", "category": "baptism", "crops": []}],
         "review_items": [{"reason": "adversarial\x1b]0;pwned\x07 escape sequence"}],
+        "review_items_total": 1,
+        "review_page_size": 500,
         "advance_records": [],
     }
     text = "\n".join(review_text.render(hostile))
