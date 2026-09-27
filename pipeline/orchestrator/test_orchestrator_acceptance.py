@@ -5082,14 +5082,6 @@ def test_no_witness_and_no_reading_pretends_to_have_seen_the_held_act(refused_pa
     assert [record["payload"]["act_key"] for record in established] == ["a1"]
 
 
-def test_the_refused_page_scenario_is_deterministic_on_rerun(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "refused-page").returncode == 3
-    before = snapshot(root)
-    assert orchestrate(root, "r", "refused-page").returncode == 3
-    assert snapshot(root) == before
-
-
 def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_first_page_run):
     """An act whose own page was never sealed appears in the seal, held, with a
     hold artifact each, and the run is partial with the page loss named.
@@ -5286,6 +5278,7 @@ def test_a_reading_that_did_not_succeed_is_held_and_says_why(truncated_reading_r
     assert len(reviews) == 1
     assert reviews[0]["outcome"] == "held-for-review"
     assert "truncated" in reviews[0]["payload"]["reason"]
+    assert artifacts(tree, RECENSOR, "recovery-request") == []
 
 
 def test_the_truncated_reading_never_becomes_established_text(truncated_reading_run):

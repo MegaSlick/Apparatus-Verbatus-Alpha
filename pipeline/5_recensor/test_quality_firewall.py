@@ -22,15 +22,9 @@ it constrains the recovery gate itself rather than the inputs reaching it.
 """
 
 import ast
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
-
-from common.contracts.stages import RECENSOR
-from common.runtree.store import RunTree
-from conftest import programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR_DIRECTORY = ROOT / "pipeline/5_recensor"
@@ -370,52 +364,3 @@ def test_an_unrelated_import_is_not_refused():
 
 
 # --- The behavioural half: a real quality failure reaches review, not rework ----
-
-
-def _run_through_recensor(root: Path, run_id: str, scenario: str):
-    result = None
-    for program in programs_through("recensor"):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / program),
-                "--run-root",
-                str(root),
-                "--run-id",
-                run_id,
-                "--scenario",
-                scenario,
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
-    return result
-
-
-def test_a_failed_class_reading_is_reviewed_and_never_re_requested(tmp_path):
-    """A `truncated` Perlectio is a reading-quality failure that still carries
-    text. It is held for review with the outcome named, and the run appends no
-    recovery request for it at all -- not one that is later refused, none."""
-    root = tmp_path / "runs"
-    result = _run_through_recensor(root, "r", "truncated-reading")
-    assert result.returncode == 3, result.stderr
-
-    tree = RunTree(root, "r")
-    reviews = {
-        record["payload"]["act_key"]: record
-        for record in (
-            tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
-            for entry in tree.build_manifest(RECENSOR)["artifacts"]
-            if entry["kind"] == "review"
-        )
-    }
-    assert reviews["a1"]["outcome"] == "held-for-review"
-    assert "truncated" in reviews["a1"]["payload"]["reason"]
-
-    assert [
-        entry
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "recovery-request"
-    ] == []
