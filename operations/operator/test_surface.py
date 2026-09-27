@@ -5205,7 +5205,6 @@ def test_the_operator_readme_lists_exactly_the_verbs_the_parser_declares() -> No
 
     counted = len(declared)
     spelled = {
-        15: ("fifteen", "Thirteen"),
         16: ("sixteen", "Thirteen"),
     }
     assert counted in spelled, (

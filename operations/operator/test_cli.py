@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from operations.operator.errors import ErrorCode, OperatorError
@@ -68,45 +70,75 @@ def test_a_genuine_typo_after_the_verb_still_reads_as_a_plain_refusal():
     assert "is accepted only" not in excinfo.value.render()
 
 
+def _clear(tmp_path, root, *extra):
+    common = ["--workspace", str(tmp_path), "--state-dir", str(tmp_path / "state")]
+    return cli.main([*common, "clear-leftovers", "--root", str(root), *extra])
+
+
+def _age(*paths):
+    for path in paths:
+        os.utime(path, (1, 1), follow_symlinks=False)
+
+
 def test_clear_leftovers_lists_then_removes_only_publication_leftovers(tmp_path, capsys):
     root = tmp_path / "run"
     (root / "pages").mkdir(parents=True)
-    leftovers = [root / "pages" / ".IMG.tif.tmp-a1b2", root / ".delivery.publishing-x9"]
-    leftovers[0].write_bytes(b"partial")
-    (leftovers[1] / "inner").mkdir(parents=True)
-    kept = [
+    temporaries = [root / "pages" / ".IMG.tif.tmp-a1b2c3d4", root / (".run.json.tmp-" + "f" * 32)]
+    staging = root / ".delivery.publishing-x9y8z7_6"
+    (staging / "inner").mkdir(parents=True)
+    fresh = root / ".manifest.json.tmp-abcdefgh"
+    for path in (*temporaries, fresh):
+        path.write_bytes(b"partial")
+    kept_files = [
         root / "pages" / "IMG.tmp-1.tif",
         root / "pages" / ".hidden",
         root / ".tmp-",
-        root / ".publishing-x",
+        root / ".notes.tmp-short",
         root / "run.json",
     ]
-    for path in kept:
+    for path in kept_files:
         path.write_bytes(b"real")
+    kept_folders = [root / ".publishing-abcdefgh", root / ".photos.publishing-old"]
+    for path in kept_folders:
+        path.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / ".x.tmp-1").write_bytes(b"not under the root")
-    (root / ".linked.tmp-1").symlink_to(outside / ".x.tmp-1")
-    (root / "mount").symlink_to(outside)
-    common = ["--workspace", str(tmp_path), "--state-dir", str(tmp_path / "state")]
+    (outside / ".x.tmp-abcdefgh").write_bytes(b"not under the root")
+    (root / ".linked.tmp-abcdefgh").symlink_to(outside / ".x.tmp-abcdefgh")
+    (root / ".x.publishing-abcdefgh").symlink_to(outside)
+    _age(*temporaries, staging, *kept_files, *kept_folders, outside / ".x.tmp-abcdefgh")
+    _age(root / ".linked.tmp-abcdefgh", root / ".x.publishing-abcdefgh")
 
-    assert cli.main([*common, "clear-leftovers", "--root", str(root)]) == 0
-    assert all(path.exists() for path in leftovers)
-    assert "2 leftover(s)" in capsys.readouterr().out
+    assert _clear(tmp_path, root) == 0
+    assert all(path.exists() for path in (*temporaries, staging))
+    assert "3 leftover(s)" in capsys.readouterr().out
 
-    assert cli.main([*common, "clear-leftovers", "--root", str(root), "--apply"]) == 0
-    assert not any(path.exists() for path in leftovers)
-    assert all(path.read_bytes() == b"real" for path in kept)
-    assert (outside / ".x.tmp-1").exists() and (root / ".linked.tmp-1").is_symlink()
+    assert _clear(tmp_path, root, "--apply") == 0
+    assert not any(path.exists() for path in (*temporaries, staging))
+    assert "Left alone, changed within the last hour" in capsys.readouterr().out
+    assert fresh.exists()
+    assert all(path.read_bytes() == b"real" for path in kept_files)
+    assert all(path.is_dir() for path in kept_folders)
+    assert (outside / ".x.tmp-abcdefgh").exists()
+    assert (root / ".linked.tmp-abcdefgh").is_symlink()
+    assert (root / ".x.publishing-abcdefgh").is_symlink()
 
 
-def test_clear_leftovers_refuses_a_symlinked_root(tmp_path, capsys):
+def test_clear_leftovers_refuses_a_symlinked_root(tmp_path):
     (tmp_path / "real").mkdir()
-    (tmp_path / "real" / ".a.tmp-1").write_bytes(b"x")
+    (tmp_path / "real" / ".a.tmp-abcdefgh").write_bytes(b"x")
+    _age(tmp_path / "real" / ".a.tmp-abcdefgh")
     (tmp_path / "link").symlink_to(tmp_path / "real")
-    arguments = ["--workspace", str(tmp_path), "--state-dir", str(tmp_path / "state")]
 
-    assert (
-        cli.main([*arguments, "clear-leftovers", "--root", str(tmp_path / "link"), "--apply"]) == 2
-    )
-    assert (tmp_path / "real" / ".a.tmp-1").exists()
+    assert _clear(tmp_path, tmp_path / "link", "--apply") == 2
+    assert (tmp_path / "real" / ".a.tmp-abcdefgh").exists()
+
+
+def test_clear_leftovers_refuses_a_folder_it_cannot_read(tmp_path, capsys):
+    (tmp_path / "run" / "locked").mkdir(parents=True)
+    (tmp_path / "run" / "locked").chmod(0)
+    try:
+        assert _clear(tmp_path, tmp_path / "run") == 2
+    finally:
+        (tmp_path / "run" / "locked").chmod(0o700)
+    assert "0 leftover(s)" not in capsys.readouterr().out

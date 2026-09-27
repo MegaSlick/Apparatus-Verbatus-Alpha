@@ -7,9 +7,11 @@ import dataclasses
 import json
 import os
 import pwd
+import re
 import shutil
 import stat
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -17,7 +19,6 @@ from typing import Final, Sequence
 
 from common.checkout import missing_checkout_resources
 from common.contracts.stages import STAGES
-from common.durability import is_temporary_name
 from common.stage import RUN_MODES
 from operations.pod.launch import launch_evidence_keys, launch_evidence_prefixes, launch_run_id
 from operations.pod.models import (
@@ -442,11 +443,8 @@ def build_parser() -> PlainParser:
     parser.add_argument(
         "--state-dir",
         type=Path,
-        # No computed default: `main` resolves the durable default against
-        # the resolved workspace, and `None` is how it knows none was named.
-        # Deciding that from a scan of raw argv could not work: argparse
-        # accepts unambiguous abbreviations like `--state-di`, so a scan
-        # looking for the exact flag would miss a path the parser accepted.
+        # `None` tells `main` none was named, so it resolves the default against the
+        # workspace; scanning raw argv would miss abbreviations like `--state-di`.
         default=None,
         help="where local receipts are kept",
     )
@@ -949,35 +947,59 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _is_staging_name(name: str) -> bool:
-    target, separator, unique = name[1:].partition(".publishing-")
-    return name.startswith(".") and bool(target and separator and unique)
+# The exact names mkstemp/mkdtemp (8 characters) and surface's token_hex(16) produce.
+_TEMPORARY = re.compile(r"\..+\.tmp-(?:[a-z0-9_]{8}|[0-9a-f]{32})")
+_STAGING = re.compile(r"\..+\.publishing-[a-z0-9_]{8}")
+# Nothing holds a writer lock, so a leftover this fresh may still be in use.
+LEFTOVER_QUIET_SECONDS: Final = 3600
+
+
+def _raise(error: OSError) -> None:
+    raise error
 
 
 def _clear_leftovers(root: Path, *, apply: bool) -> None:
-    if root.is_symlink() or not root.is_dir():
+    try:
+        root_descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
         raise OperatorError(
-            ErrorCode.INVALID_COMMAND, detail=f"{root} is not a folder; name the real folder"
-        )
-    leftovers: list[Path] = []
-    for directory, subdirectories, files in os.walk(root):
-        for name in list(subdirectories):
-            path = Path(directory, name)
-            if _is_staging_name(name) and stat.S_ISDIR(os.lstat(path).st_mode):
-                subdirectories.remove(name)
-                leftovers.append(path)
-        leftovers += [
-            Path(directory, name)
-            for name in files
-            if is_temporary_name(name) and stat.S_ISREG(os.lstat(Path(directory, name)).st_mode)
-        ]
-    for path in leftovers:
-        if apply and path.is_dir():
-            shutil.rmtree(path)
-        elif apply:
-            path.unlink()
-        _print(f"{'Removed' if apply else 'Would remove'}: {path}")
-    _print(f"{len(leftovers)} leftover(s){'' if apply else '; add --apply to remove them'}.")
+            ErrorCode.INVALID_COMMAND, detail=f"{root} is not a real folder: {error.strerror}"
+        ) from error
+    found = 0
+    try:
+        walk = os.fwalk(".", dir_fd=root_descriptor, onerror=_raise)
+        for directory, subdirectories, files, descriptor in walk:
+            candidates = [(name, _STAGING, stat.S_ISDIR) for name in subdirectories]
+            candidates += [(name, _TEMPORARY, stat.S_ISREG) for name in files]
+            for name, pattern, is_kind in candidates:
+                if not pattern.fullmatch(name):
+                    continue
+                details = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if not is_kind(details.st_mode):
+                    continue
+                if is_kind is stat.S_ISDIR:
+                    subdirectories.remove(name)
+                path = Path(root, directory, name)
+                if time.time() - details.st_mtime < LEFTOVER_QUIET_SECONDS:
+                    _print(f"Left alone, changed within the last hour: {path}")
+                    continue
+                found += 1
+                if apply and is_kind is stat.S_ISDIR:
+                    shutil.rmtree(name, dir_fd=descriptor)
+                elif apply:
+                    os.unlink(name, dir_fd=descriptor)
+                _print(f"{'Removed' if apply else 'Would remove'}: {path}")
+    except OSError as error:
+        raise OperatorError(
+            ErrorCode.INVALID_COMMAND,
+            detail=f"part of {root} could not be read or cleared, so the listing stopped: {error}",
+        ) from error
+    finally:
+        os.close(root_descriptor)
+    _print(
+        f"{found} leftover(s): publication temporaries (.<name>.tmp-<id>) and export staging "
+        f"folders (.<name>.publishing-<id>){'' if apply else '; add --apply to remove them'}."
+    )
 
 
 def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
@@ -1462,7 +1484,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, fetch-run, export, close, status, spend, review, advance, or backup."
+        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, fetch-run, export, close, status, spend, review, advance, backup, or clear-leftovers."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
