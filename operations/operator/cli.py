@@ -1596,6 +1596,9 @@ def _interactive_arguments() -> list[str]:
         if output:
             arguments.extend(("--geometry-out", output))
         return arguments
+    if verb == "clear-leftovers":
+        root = _ask("Folder to check for leftovers")
+        return ["clear-leftovers", "--root", root] if root else []
     if verb == "run":
         run_id = _ask("A short name for this run", default="dry-run")
         return ["run", "--run-id", run_id]

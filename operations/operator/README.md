@@ -21,10 +21,10 @@ Two words really reach a RunPod network volume:
 - `fetch-run` brings back a pod-written run tree and the launch evidence you name; it never
   fetches the uploaded images or their manifest.
 
-## The fifteen words
+## The sixteen words
 
-Thirteen things this tool can do, in the order a normal run uses them, plus two you can run
-any time to check on things.
+Thirteen things this tool can do, in the order a normal run uses them, plus three you can run
+any time to check on or tidy things.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
@@ -42,6 +42,7 @@ any time to check on things.
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded publication temporaries in the snapshot. |
 | `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
+| `clear-leftovers` | Lists what an interrupted publication left under one folder you name (a run tree, a volume mount or an export folder): `.<name>.tmp-<id>` files and `.<name>.publishing-<id>` folders. `--apply` removes them. | No. It never follows a symbolic link and never touches any other name. |
 | `spend show` | Shows the reviewed ceilings and hard-stop floor, then saved balance observations and notification-only alert outcomes. | No — it reads the policy and immutable local receipts only; it does not contact a provider or edit the policy. |
 
 **The normal order.** `ingest` and `upload` need no rented machine, so do them first:
