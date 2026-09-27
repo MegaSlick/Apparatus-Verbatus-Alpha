@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -42,10 +43,12 @@ BOOTSTRAP_EXECUTABLES = {
     "nvidia-smi": "/usr/bin/nvidia-smi",
     "apt-cache": "/usr/bin/apt-cache",
     "apt-get": "/usr/bin/apt-get",
+    "dpkg-query": "/usr/bin/dpkg-query",
 }
 CUDA_COMPAT_PATH = "/usr/local/cuda-13.0/compat"
 CUDA_COMPAT_PACKAGE = "cuda-compat-13-0"
 CUDA_COMPAT_VERSION = "580.178.04-1ubuntu1"
+CUDA_13_MIN_DRIVER = (580, 65, 6)
 BOOTSTRAP_ENVIRONMENT = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "LANG": "C.UTF-8",
@@ -143,11 +146,9 @@ def verify_image_contract(
 ) -> dict[str, object]:
     """Refuse, by name, an image that cannot run this bootstrap.
 
-    Four assumptions rode unwritten in this module until a pre-launch review
-    read them out of the code (see ``operations/pod/README.md``, "The pod image
-    contract"):
+    The image contract requires:
 
-    * ``git`` and ``uv`` at exactly the configured absolute paths. Nothing here
+    * Bootstrap tools at exactly the configured absolute paths. Nothing here
       uses PATH lookup, and the default uv installer puts ``uv`` in
       ``~/.local/bin`` rather than ``/usr/local/bin``.
     * ``--repository`` already a checkout with an ``origin`` remote. This module
@@ -552,6 +553,11 @@ class BootstrapJournal:
         record["failure"] = None
         self._write(record)
 
+    def mark_cuda_recheck(self, record: dict[str, object], receipt: dict[str, object]) -> None:
+        original = record["receipts"][BootstrapStep.CUDA_COMPAT.value]
+        original.setdefault("rechecks", []).append({"at": _stamp(self.now()), **receipt})
+        self._write(record)
+
     def mark_failure(self, record: dict[str, object], failure: BootstrapStepFailure) -> None:
         record["status"] = "red"
         record["failure"] = {
@@ -685,6 +691,7 @@ class Bootstrapper:
                         "Start a new bootstrap journal for this host.",
                     )
                 _apply_cuda_compat(current, self.environment)
+                self.journal.mark_cuda_recheck(record, current)
             except BootstrapStepFailure as failure:
                 self.journal.mark_failure(record, failure)
                 return _report_from_record(record)
@@ -972,7 +979,9 @@ class SubprocessBootstrapActions:
                 "Check the pod GPU and NVIDIA driver before booting again.",
             )
         drivers = {card[0] for card in cards}
-        if len(drivers) != 1 or not all(driver.split(".", 1)[0].isdigit() for driver in drivers):
+        if len(drivers) != 1 or not all(
+            re.fullmatch(r"\d+\.\d+\.\d+", driver) for driver in drivers
+        ):
             raise BootstrapStepFailure(
                 BootstrapStep.CUDA_COMPAT,
                 "nvidia-smi reported inconsistent or invalid driver versions",
@@ -987,33 +996,68 @@ class SubprocessBootstrapActions:
             "action": "not-needed",
             "package": None,
         }
-        if int(driver.split(".", 1)[0]) >= 580:
+        if tuple(int(part) for part in driver.split(".")) >= CUDA_13_MIN_DRIVER:
             return receipt
         if any("GeForce" in name for name in gpus):
             raise BootstrapStepFailure(
                 BootstrapStep.CUDA_COMPAT,
-                f"driver {driver} is below 580 and GeForce GPU {gpus} cannot use CUDA forward compatibility",
-                "Use a driver at least 580 or a supported professional RTX/data-center card.",
+                f"driver {driver} is below 580.65.06 and GeForce GPU {gpus} cannot use CUDA forward compatibility",
+                "Use a driver at least 580.65.06 or a supported professional RTX/data-center card.",
             )
         if not Path(CUDA_COMPAT_PATH).is_dir():
             available = self._command(
                 ["apt-cache", "policy", CUDA_COMPAT_PACKAGE], BootstrapStep.CUDA_COMPAT
             ).stdout
-            version = (
-                f"{CUDA_COMPAT_PACKAGE}={CUDA_COMPAT_VERSION}"
-                if CUDA_COMPAT_VERSION in available
-                else CUDA_COMPAT_PACKAGE
+            candidate = re.search(r"^\s*Candidate:\s*(\S+)\s*$", available, re.MULTILINE)
+            if candidate is None or candidate.group(1) == "(none)":
+                raise BootstrapStepFailure(
+                    BootstrapStep.CUDA_COMPAT,
+                    f"apt lists empty or package absent for {CUDA_COMPAT_PACKAGE}",
+                    "Supply image apt lists with the NVIDIA CUDA repository and resume.",
+                )
+            if not re.search(
+                rf"^\s+{re.escape(CUDA_COMPAT_VERSION)}\s+\d+\s*$", available, re.MULTILINE
+            ):
+                raise BootstrapStepFailure(
+                    BootstrapStep.CUDA_COMPAT,
+                    f"apt does not offer pinned {CUDA_COMPAT_PACKAGE}={CUDA_COMPAT_VERSION}",
+                    "Supply the pinned NVIDIA CUDA package in the image apt repository and resume.",
+                )
+            self._command(
+                ["apt-get", "install", "-y", f"{CUDA_COMPAT_PACKAGE}={CUDA_COMPAT_VERSION}"],
+                BootstrapStep.CUDA_COMPAT,
             )
-            self._command(["apt-get", "install", "-y", version], BootstrapStep.CUDA_COMPAT)
             receipt["action"] = "installed"
-            receipt["package"] = version
         else:
             receipt["action"] = "already-present"
-        if not Path(CUDA_COMPAT_PATH).is_dir():
+        installed_version = self._command(
+            ["dpkg-query", "-W", "-f=${Version}", CUDA_COMPAT_PACKAGE], BootstrapStep.CUDA_COMPAT
+        ).stdout.strip()
+        receipt["package"] = CUDA_COMPAT_PACKAGE
+        receipt["installed_version"] = installed_version
+        if installed_version != CUDA_COMPAT_VERSION:
             raise BootstrapStepFailure(
                 BootstrapStep.CUDA_COMPAT,
-                f"{CUDA_COMPAT_PACKAGE} did not provide {CUDA_COMPAT_PATH}",
-                "Repair the CUDA compatibility package and resume this journal.",
+                f"installed {CUDA_COMPAT_PACKAGE} version {installed_version!r} differs from pinned {CUDA_COMPAT_VERSION}",
+                "Install the pinned CUDA compatibility package and resume this journal.",
+            )
+        library = f"{CUDA_COMPAT_PATH}/libcuda.so.1"
+        try:
+            cuda = ctypes.CDLL(library)
+            cuda.cuInit.argtypes = [ctypes.c_uint]
+            cuda.cuInit.restype = ctypes.c_int
+            result = cuda.cuInit(0)
+        except (OSError, AttributeError) as error:
+            raise BootstrapStepFailure(
+                BootstrapStep.CUDA_COMPAT,
+                f"CUDA compatibility library {library} could not initialize: {error}",
+                "Use a supported GPU and compatible driver, then resume.",
+            ) from error
+        if result != 0:
+            raise BootstrapStepFailure(
+                BootstrapStep.CUDA_COMPAT,
+                f"CUDA compatibility cuInit(0) failed with code {result} on {gpus}",
+                "Use a supported GPU and compatible driver, then resume.",
             )
         receipt["compat_path"] = CUDA_COMPAT_PATH
         return receipt
@@ -1160,6 +1204,12 @@ class SubprocessBootstrapActions:
                 f"command {argv[0]!r} could not start from {executable!r}: {error}",
                 "Repair the exact trusted bootstrap executable and resume.",
             ) from error
+        except subprocess.TimeoutExpired as error:
+            raise BootstrapStepFailure(
+                step,
+                f"command {argv[0]!r} timed out after {error.timeout} seconds",
+                "Repair the named bootstrap dependency and resume.",
+            ) from error
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
             raise BootstrapStepFailure(
@@ -1170,6 +1220,13 @@ class SubprocessBootstrapActions:
         return result
 
     def _run(self, argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        timeout = (
+            30
+            if argv[0].endswith(("/nvidia-smi", "/dpkg-query"))
+            else 300
+            if argv[0].endswith(("/apt-cache", "/apt-get"))
+            else None
+        )
         return subprocess.run(
             argv,
             cwd=cwd,
@@ -1177,6 +1234,7 @@ class SubprocessBootstrapActions:
             text=True,
             capture_output=True,
             check=False,
+            timeout=timeout,
         )
 
 

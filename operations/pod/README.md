@@ -236,12 +236,15 @@ correct immediate close.
   the one the stages seal; `CONFIGURATION` refuses any other resolved path, a symlink out
   included.
 - **CUDA compatibility.** Before the uv install, `CUDA_COMPAT` records `nvidia-smi`'s
-  driver and GPU names. Drivers below 580 on professional RTX or data-center cards get
-  `cuda-compat-13-0` from the image's NVIDIA apt repository; the step uses
-  `580.178.04-1ubuntu1` when apt offers it. The bootstrap puts
+  driver and GPU names. Drivers below 580.65.06 on professional RTX or data-center cards
+  get the pinned `cuda-compat-13-0=580.178.04-1ubuntu1` from the image's NVIDIA apt
+  repository. Missing apt lists or that pin cause a named refusal; the bootstrap does not
+  refresh lists on a billing pod. It records the installed package version and requires
+  `cuInit(0)` to succeed through the compatibility library before it puts
   `/usr/local/cuda-13.0/compat` first in `LD_LIBRARY_PATH` for preflight and `pod_run`'s
   orchestrator, whose serving children inherit it. A GeForce card with an older driver
-  is refused before the serving stack download. The receipt records the action.
+  is refused before the serving stack download. The receipt records the action, including
+  each resume recheck when a restart has removed the container-local installation.
 - **Refusals come before any action**: a journal or report path outside the mounted volume;
   a lockfile that is not the checkout's `uv.lock`; a volume that fails a real write-and-read
   probe (it never creates the mount point it requires); a missing hard deadline; a
@@ -595,7 +598,9 @@ evidence and the materialized model store on the network volume.
   token, credentials in the remote URL, or an SSH remote whose key the pod user can reach;
   an `http(s)` origin with none of these is refused.
 - **Tools at absolute paths; PATH is never searched.** `git` at `/usr/bin/git`, `uv` at
-  `/usr/local/bin/uv` (`BOOTSTRAP_EXECUTABLES`). The default uv installer writes
+  `/usr/local/bin/uv`, `nvidia-smi` at `/usr/bin/nvidia-smi`, `apt-cache` at
+  `/usr/bin/apt-cache`, `apt-get` at `/usr/bin/apt-get`, and `dpkg-query` at
+  `/usr/bin/dpkg-query` (`BOOTSTRAP_EXECUTABLES`). The default uv installer writes
   `~/.local/bin`, which does not qualify.
 - **A pre-built `<repository>/.venv` whose interpreter runs the primary process.**
   `bootstrap_main` imports PIL at module scope, so even `--hold-only` needs the environment

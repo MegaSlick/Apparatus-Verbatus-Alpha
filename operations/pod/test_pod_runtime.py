@@ -5100,6 +5100,40 @@ def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: P
     assert actions.calls.count(BootstrapStep.PREFLIGHT) == 1
 
 
+def test_cuda_resume_records_reinstallation_without_replacing_original_receipt(
+    tmp_path: Path,
+) -> None:
+    class Actions(FakeBootstrapActions):
+        action = "already-present"
+
+        def configure_cuda_compat(self) -> dict[str, object]:
+            return super().configure_cuda_compat() | {
+                "driver": "570.195.03",
+                "gpus": ["NVIDIA RTX A6000"],
+                "compat_path": bootstrap_module.CUDA_COMPAT_PATH,
+                "action": self.action,
+                "installed_version": bootstrap_module.CUDA_COMPAT_VERSION,
+            }
+
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    journal = BootstrapJournal(
+        tmp_path / "bootstrap.json", BootstrapPlan("c" * 40, lockfile), now=lambda: START
+    )
+    actions = Actions()
+    environment: dict[str, str] = {"LD_LIBRARY_PATH": "/other"}
+    first = Bootstrapper(journal, actions, environment=environment).run()
+    actions.action = "installed"
+    resumed = Bootstrapper(journal, actions, environment=environment).run()
+
+    receipt = resumed.receipts[BootstrapStep.CUDA_COMPAT.value]
+    assert first.green and resumed.green
+    assert receipt["action"] == "already-present"
+    assert receipt["rechecks"][0]["action"] == "installed"
+    assert receipt["rechecks"][0]["installed_version"] == bootstrap_module.CUDA_COMPAT_VERSION
+    assert environment["LD_LIBRARY_PATH"] == bootstrap_module.CUDA_COMPAT_PATH + ":/other"
+
+
 def test_a_repaired_configuration_resume_rechecks_before_expensive_steps(tmp_path: Path) -> None:
     lockfile = tmp_path / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
@@ -5226,6 +5260,8 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
     ("driver", "gpu", "expected"),
     [
         ("580.178.04", "NVIDIA RTX A6000", "not-needed"),
+        ("580.65.06", "NVIDIA RTX A6000", "not-needed"),
+        ("580.65.05", "NVIDIA RTX A6000", "installed"),
         ("570.195.03", "NVIDIA RTX A6000", "installed"),
         ("570.195.03", "NVIDIA GeForce RTX 4090", "refused"),
     ],
@@ -5248,6 +5284,8 @@ def test_cuda_compat_decision_uses_reported_driver_and_card(
         if argv[0] == "/usr/bin/nvidia-smi":
             output = f"{driver}, {gpu}\n"
         elif argv[0] == "/usr/bin/apt-cache":
+            output = "  Candidate: 580.178.04-1ubuntu1\n     580.178.04-1ubuntu1 500\n"
+        elif argv[0] == "/usr/bin/dpkg-query":
             output = "580.178.04-1ubuntu1"
         else:
             installed = True
@@ -5255,6 +5293,9 @@ def test_cuda_compat_decision_uses_reported_driver_and_card(
         return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
 
     monkeypatch.setattr(Path, "is_dir", is_dir)
+    cuda = unittest.mock.Mock()
+    cuda.cuInit.return_value = 0
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
     actions = SubprocessBootstrapActions(
         repository=tmp_path,
         configuration=lambda: {},
@@ -5272,13 +5313,170 @@ def test_cuda_compat_decision_uses_reported_driver_and_card(
         assert receipt["action"] == expected
         assert receipt["driver"] == driver
         assert receipt["gpus"] == [gpu]
+        if expected == "installed":
+            assert receipt["installed_version"] == "580.178.04-1ubuntu1"
+            cuda.cuInit.assert_called_once_with(0)
     assert [command[0] for command in commands] == (
-        ["/usr/bin/nvidia-smi", "/usr/bin/apt-cache", "/usr/bin/apt-get"]
+        ["/usr/bin/nvidia-smi", "/usr/bin/apt-cache", "/usr/bin/apt-get", "/usr/bin/dpkg-query"]
         if expected == "installed"
         else ["/usr/bin/nvidia-smi"]
     )
     if expected == "installed":
-        assert commands[-1][-1] == "cuda-compat-13-0=580.178.04-1ubuntu1"
+        assert commands[-2][-1] == "cuda-compat-13-0=580.178.04-1ubuntu1"
+
+
+@pytest.mark.parametrize(
+    ("gpu_output", "policy", "apt_fails", "cu_result", "expected"),
+    [
+        ("", "", False, 0, "did not report"),
+        ("garbled", "", False, 0, "did not report"),
+        ("570.195.03, NVIDIA RTX A6000", "Candidate: (none)", False, 0, "apt lists empty"),
+        (
+            "570.195.03, NVIDIA RTX A6000",
+            "Candidate: 580.180.01\n 580.180.01 500",
+            False,
+            0,
+            "does not offer pinned",
+        ),
+        (
+            "570.195.03, NVIDIA RTX A6000",
+            "Candidate: 580.178.04-1ubuntu1\n 580.178.04-1ubuntu1 500",
+            True,
+            0,
+            "apt-get",
+        ),
+        (
+            "570.195.03, NVIDIA RTX A6000",
+            "Candidate: 580.178.04-1ubuntu1\n 580.178.04-1ubuntu1 500",
+            False,
+            35,
+            r"cuInit\(0\) failed",
+        ),
+    ],
+)
+def test_cuda_compat_refuses_named_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gpu_output: str,
+    policy: str,
+    apt_fails: bool,
+    cu_result: int,
+    expected: str,
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(Path, "is_dir", lambda path: False)
+    cuda = unittest.mock.Mock()
+    cuda.cuInit.return_value = cu_result
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        commands.append(argv)
+        name = Path(argv[0]).name
+        output = {
+            "nvidia-smi": gpu_output,
+            "apt-cache": policy,
+            "dpkg-query": "580.178.04-1ubuntu1",
+        }.get(name, "")
+        return subprocess.CompletedProcess(
+            argv,
+            1 if name == "apt-get" and apt_fails else 0,
+            stdout=output,
+            stderr="install failed" if name == "apt-get" and apt_fails else "",
+        )
+
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=runner,
+    )
+    with pytest.raises(BootstrapStepFailure, match=expected):
+        actions.configure_cuda_compat()
+    assert all(
+        Path(command[0]).name != "apt-get" or command[-1].endswith("=580.178.04-1ubuntu1")
+        for command in commands
+    )
+    assert not any(command[:2] == ["/usr/bin/apt-get", "update"] for command in commands)
+
+
+def test_cuda_compat_existing_pin_is_probed_without_apt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[str] = []
+    monkeypatch.setattr(Path, "is_dir", lambda path: True)
+    cuda = unittest.mock.Mock()
+    cuda.cuInit.return_value = 0
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        commands.append(Path(argv[0]).name)
+        output = (
+            "570.195.03, NVIDIA RTX A6000"
+            if commands[-1] == "nvidia-smi"
+            else "580.178.04-1ubuntu1"
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
+
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=runner,
+    )
+    receipt = actions.configure_cuda_compat()
+    assert receipt["action"] == "already-present"
+    assert receipt["installed_version"] == "580.178.04-1ubuntu1"
+    assert commands == ["nvidia-smi", "dpkg-query"]
+    cuda.cuInit.assert_called_once_with(0)
+
+
+def test_cuda_compat_command_timeouts_are_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[str, int | None]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.append((Path(argv[0]).name, kwargs["timeout"]))
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+    )
+    for name in ("nvidia-smi", "apt-cache", "apt-get"):
+        with pytest.raises(BootstrapStepFailure, match=f"{name}.*timed out"):
+            actions._command([name], BootstrapStep.CUDA_COMPAT)
+    assert seen == [("nvidia-smi", 30), ("apt-cache", 300), ("apt-get", 300)]
+
+
+def test_new_enough_cuda_host_keeps_library_path_untouched(tmp_path: Path) -> None:
+    environment = {"LD_LIBRARY_PATH": "/original"}
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=lambda argv, cwd: subprocess.CompletedProcess(
+            argv, 0, stdout="580.65.06, NVIDIA RTX A6000", stderr=""
+        ),
+    )
+    receipt = actions.configure_cuda_compat()
+    bootstrap_module._apply_cuda_compat(receipt, environment)
+    assert receipt["action"] == "not-needed"
+    assert environment == {"LD_LIBRARY_PATH": "/original"}
 
 
 def test_sync_uv_environment_never_pairs_locked_with_frozen(tmp_path: Path) -> None:
