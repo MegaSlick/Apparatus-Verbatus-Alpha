@@ -269,14 +269,11 @@ def prepare_backup_layout(source: Path, root: Path) -> None:
 
     _validate_backup_layout(source, root)
     try:
-        root.mkdir()
-    except FileExistsError:
-        pass
+        root.mkdir(exist_ok=True)
     except OSError as error:
         raise BackupRefusal(f"backup layout path {root} could not be created: {error}") from error
-    else:
-        with _open_directory(root.parent, what=f"backup layout parent {root.parent}") as parent:
-            _sync_directory(parent, root.parent)
+    with _open_directory(root.parent, what=f"backup layout parent {root.parent}") as parent:
+        _sync_directory(parent, root.parent)
     descriptors: list[int] = []
     try:
         root_descriptor = _open_directory_descriptor(root, what=f"backup layout path {root}")

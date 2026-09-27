@@ -305,7 +305,7 @@ def test_a_folder_that_cannot_be_synced_refuses_the_backup(tmp_path: Path, monke
     assert not list((mac / "snapshots" / "sha256").iterdir())
 
 
-def test_an_existing_root_does_not_need_its_parent_synced_again(
+def test_an_existing_root_is_refused_when_its_parent_cannot_be_synced(
     tmp_path: Path, monkeypatch
 ) -> None:
     volume, run_id = _run_tree(tmp_path)
@@ -319,7 +319,8 @@ def test_an_existing_root_does_not_need_its_parent_synced_again(
         real_fsync(descriptor)
 
     monkeypatch.setattr(backup_module.os, "fsync", fsync)
-    assert sync_run_tree(volume, run_id, mac).reused == 2
+    with pytest.raises(BackupRefusal, match="could not be synced.*local disk"):
+        sync_run_tree(volume, run_id, mac)
 
 
 def test_backup_cli_uses_a_confined_credential_free_child(tmp_path: Path, monkeypatch) -> None:
