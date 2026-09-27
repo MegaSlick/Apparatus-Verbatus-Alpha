@@ -32,8 +32,12 @@ that could not start or exited outside its own vocabulary; ``EXIT_DRY_RUN``
 never 0, so a dry run launched as ``pod_timer``'s bootstrap child by mistake
 cannot be mistaken for a completed run.  Whatever the outcome, the report at
 ``--report-path`` says the same thing durably, under the launch-bound name,
-before the exit code says it -- except the dry run, which writes no report at
-all (see below).
+before the exit code says it.  The exceptions: the dry run writes no report at
+all (see below); a credential-looking argv, a missing ``--`` and a refused
+``--report-path`` itself (missing, outside the volume, without the launch
+token, or the bootstrap's own report) are refused on stderr only, so no other
+record is overwritten; and a refused bootstrap argv is recorded in the
+bootstrap report, not the run report.
 
 **The bootstrap-and-hold contract is unchanged for a run that finished.**
 ``pod_timer.run_with_bootstrap`` treats any child exit before the hard deadline
@@ -392,15 +396,22 @@ def _named(value: Path | None, flag: str) -> Path:
     return value
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Verbatus pod-side run: bootstrap, orchestrate over the volume, hold",
-        allow_abbrev=False,
-        epilog="the bootstrap_main argv follows a literal -- and is required",
-    )
+def _run_report_path(path: Path, bootstrap: Plan, launch_token: str | None) -> Path:
+    report_path = _require_contained(path, bootstrap.volume_mount_path, "--report-path")
+    _require_launch_token_named(report_path, launch_token, "--report-path", report_path=None)
+    if report_path == bootstrap.report_path:
+        raise RunRefusal(
+            "--report-path is the bootstrap's own report path; the run report and the "
+            "bootstrap report are two records and may not overwrite each other"
+        )
+    return report_path
+
+
+def build_parser() -> bootstrap_main.RefusingParser:
+    parser = bootstrap_main.RefusingParser()
     parser.add_argument("--report-path", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--run-root", type=Path, help="defaults to <volume-mount-path>/runs")
+    parser.add_argument("--run-root", type=Path)
     parser.add_argument("--submission-folder", type=Path, required=True)
     parser.add_argument("--submission-manifest", type=Path, required=True)
     parser.add_argument("--triage-decision-manifest", type=Path)
@@ -410,13 +421,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-gate-policy",
         type=Path,
-        help="defaults to <repository>/config/data_handling_policy.json",
     )
     parser.add_argument(
         "--fixture",
         default=DEFAULT_PROOF_FIXTURE,
-        help="the orchestrator requires a fixture name even for a real submission; "
-        "a real run seals neither its identity nor its scenario",
     )
     parser.add_argument("--interval-seconds", type=float, default=15.0)
     parser.add_argument("--dry-run", action="store_true")
@@ -442,8 +450,7 @@ def resolve_run_plan(
 
     # The report path first, so every later refusal has somewhere durable to go.
     volume = bootstrap.volume_mount_path
-    report_path = _require_contained(args.report_path, volume, "--report-path")
-    _require_launch_token_named(report_path, launch_token, "--report-path", report_path=report_path)
+    report_path = _run_report_path(args.report_path, bootstrap, launch_token)
     # boot_a_request.py seals BOOT_A_VOLUME_MOUNT_PATH into every real launch
     # request; a directory at exactly that path that is not actually mounted
     # is an unmounted local substitute on the pod's own ephemeral disk, not
@@ -470,12 +477,6 @@ def resolve_run_plan(
     if bootstrap.repository is None or bootstrap.models_config is None:
         raise RunRefusal(
             "pod_run needs a bootstrap plan that names its repository and roster",
-            report_path=report_path,
-        )
-    if report_path == bootstrap.report_path:
-        raise RunRefusal(
-            "--report-path is the bootstrap's own report path; the run report and the "
-            "bootstrap report are two records and may not overwrite each other",
             report_path=report_path,
         )
     try:
@@ -1012,7 +1013,12 @@ def main(
     except PlanRefusal as refusal:
         return bootstrap_main.refuse(refusal, plan=None, now=now, label="pod_run (bootstrap argv)")
     try:
-        args = build_parser().parse_args(run_argv)
+        head = bootstrap_main.RefusingParser()
+        head.add_argument("--report-path", type=Path, required=True)
+        run_report = _run_report_path(
+            head.parse_known_args(run_argv)[0].report_path, bootstrap_plan, launch_token
+        )
+        args = build_parser().parse_flags(run_argv, run_report)
         plan = resolve_run_plan(args, bootstrap_plan, launch_token)
         approved_roots, skipped_roots = require_approved_submission_folder(plan)
     except PlanRefusal as refusal:

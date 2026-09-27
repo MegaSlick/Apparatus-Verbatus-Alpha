@@ -234,8 +234,6 @@ def pod_request(
         f"{volume_mount_path}/model-store",
         "--models-config",
         f"{repository}/config/models.toml",
-        "--placement-config",
-        f"{repository}/config/pod_placement.toml",
     ]
     nested = [*run_half, "--", *bootstrap_half]
     return {

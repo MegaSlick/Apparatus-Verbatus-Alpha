@@ -232,11 +232,14 @@ correct immediate close.
   config paths and seals into its receipt. A resume with a changed selection fails there
   (restore it or start a new journal); a journal whose receipt is
   `pod-bootstrap-configuration.v1` bound raw file bytes and is refused by schema. A custom roster needs an operator-authored
-  declaration.
+  declaration. The placement table is always the checkout's own `config/pod_placement.toml`,
+  the one the stages seal; `CONFIGURATION` refuses any other resolved path, a symlink out
+  included.
 - **Refusals come before any action**: a journal or report path outside the mounted volume;
   a lockfile that is not the checkout's `uv.lock`; a volume that fails a real write-and-read
   probe (it never creates the mount point it requires); a missing hard deadline; a
-  credential-looking argv value. The environment is scrubbed by the shared credential-shaped
+  credential-looking argv token; an unknown or unparseable argument, named by flag only, never
+  by value. The environment is scrubbed by the shared credential-shaped
   predicate, except an explicit `--keep-env` allowlist.
 - **`--dry-run`** validates and prints the plan without running; it does not mean "against
   fakes", because a fake-actions flag in a production entrypoint is a green journal waiting
@@ -511,7 +514,7 @@ A key that still starts with `/` is refused by name in the receipt's `refusals`.
 |---|---|---|
 | `<volume>/bootstrap-report-<token>.json` | `bootstrap_main --report-path`, rewritten every hold tick | the `--report-path` the launch request carried, mount prefix stripped |
 | the bootstrap journal, `<volume>/…-<token>.json` | `bootstrap_main --journal` | the request's `--journal`, mount prefix stripped; it must be under the mount and carry the token |
-| `<volume>/pod-run-report-<token>.json` | `pod_run --report-path` | the nested `--report-path` the launch request carried, mount prefix stripped |
+| `<volume>/pod-run-report-<token>.json` | `pod_run --report-path`; a refused run argument is recorded here, never in the bootstrap report | the nested `--report-path` the launch request carried, mount prefix stripped |
 | `<volume>/pod-run-report-<token>-hold.json` | `pod_run`'s hold after a `complete` or `held` run (`Plan.hold_path`) | the pod-run report key with `-hold` before its suffix. The only record that the pod stayed alive to the hard deadline |
 | `<volume>/pod-runtime-report-<token>.json` | `pod_timer --report-path` | the request's outermost `--report-path`, mount prefix stripped |
 | `<volume>/pod-transfer-journal.json` | `ChecksummedTransfer` | **a fixed name at the volume root**, no token. The only durable record of which submission rows were verified against target-observed bytes |

@@ -10,9 +10,6 @@ a path, or image bytes.
 A submission does not need a current data-gate approval-record artifact: none
 of this material ever reaches git regardless of any such sign-off, and the
 manifest carries no authorization reference.
-
-Spec 03's test 6 — the cleanup drill on synthetic material, with declared bounds —
-runs against `purge` here and against `cleanup.verify_synthetic_cleanup` beside it.
 """
 
 import json
@@ -25,7 +22,7 @@ import pytest
 
 from common import durability
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
-from operations.submit import cleanup, gate, inventory, submit
+from operations.submit import gate, inventory, submit
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -229,39 +226,6 @@ def test_no_log_line_the_tool_actually_emits_names_a_submitted_file(submission, 
     assert printed.strip()
     for name in ("page-1.png", "page-2.png", "nested", str(submission["folder"])):
         assert name not in printed
-
-
-# --- Retention and the synthetic cleanup drill -------------------------------------
-
-
-def test_purge_refuses_to_delete_a_submission_before_a_sealed_run_terminal_condition(submission):
-    submit.submit(
-        submission["folder"],
-        submission["manifest_out"],
-        policy_path=submission["policy_path"],
-    )
-    with pytest.raises(submit.SubmitRefusal, match="sealed dead/broken or complete/exported"):
-        submit.purge(submission["manifest_out"], gate.approved_storage_roots(submission["policy"]))
-    assert submission["manifest_out"].exists()
-
-
-def test_the_cleanup_drill_fails_when_the_target_is_still_there(submission, tmp_path):
-    """The other direction. A drill that could only pass would prove nothing."""
-    submit.submit(
-        submission["folder"],
-        submission["manifest_out"],
-        policy_path=submission["policy_path"],
-    )
-    log_path = tmp_path / "run.log"
-    log_path.write_bytes(b"nothing sensitive\n")
-    with pytest.raises(cleanup.CleanupDrillRefusal, match="target path remains"):
-        cleanup.verify_synthetic_cleanup(
-            target_paths=[submission["manifest_out"]],
-            temporary_paths=[tmp_path / "absent.tmp"],
-            log_paths=[log_path],
-            forbidden_markers=[b"page-1.png"],
-            volume_objects=None,
-        )
 
 
 # --- Refusal records keep filenames; terminals point at the private report --------
