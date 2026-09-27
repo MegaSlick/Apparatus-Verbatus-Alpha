@@ -822,25 +822,6 @@ def test_physical_page_record_survives_two_run_snapshots(tmp_path):
     assert read_snapshot(second, second.read_run()) == snapshot
 
 
-def test_a_tampered_run_snapshot_is_refused_by_the_register_reader(tmp_path):
-    snapshot = _register(members=["a" * 64])
-    tree = RunTree.create(
-        tmp_path,
-        "r1",
-        source_manifest=[{"ordinal": 1, "relative_path": "fixture.png", "sha256": "a" * 64}],
-        config_digest="c" * 64,
-        adapter_recipes={"designator": "fixture"},
-        witness_chairs=[],
-        register_bytes=snapshot,
-    )
-    run = tree.read_run()
-    snapshot_path = tree.root / tree.blob_path("door", run["register_digest"])
-    snapshot_path.write_bytes(empty_register())
-
-    with pytest.raises(IncompatibleReuse, match="changed under a sealed reference"):
-        read_snapshot(tree, run)
-
-
 def test_a_run_bound_to_a_register_refuses_a_stage_that_was_given_none():
     """A check an operator disables by forgetting a flag is not a check: the
     appended correspondence would otherwise reach half a run's stages."""

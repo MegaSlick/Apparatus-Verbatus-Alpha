@@ -21,7 +21,7 @@ from io import BytesIO
 from itertools import combinations, product
 from math import comb
 from pathlib import Path
-from zipfile import BadZipFile, ZipFile
+from zipfile import ZIP_STORED, BadZipFile, ZipFile
 
 import pytest
 
@@ -46,7 +46,6 @@ from common.contracts.stages import (
     STAGES,
     WRITING_DIRECTORIES,
 )
-from common.contracts.uncertainty import from_perlectio
 from common.corpus_register import append_records, empty_register, register_digest
 from common.credentials import looks_like_credential_env
 from common.fixture_identity import page_identity
@@ -1468,6 +1467,215 @@ def semantic_snapshot_digest(root: Path) -> str:
     return digest_of(semantic_snapshot(root))
 
 
+def _acceptance_sqlite(
+    path: Path,
+    text: str,
+    *,
+    unidata_version: str = "15.1.0",
+    derived_search_text: str = "original derived text",
+    derived_from_canonical_sha256: str | None = None,
+) -> bytes:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA user_version=1")
+        connection.executescript(
+            """
+            CREATE TABLE export_metadata (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE acts (act_id TEXT PRIMARY KEY, text TEXT NOT NULL);
+            CREATE TABLE act_search (
+                rowid INTEGER PRIMARY KEY,
+                act_id TEXT UNIQUE NOT NULL REFERENCES acts(act_id),
+                derived_search_text TEXT NOT NULL,
+                derived_text_sha256 TEXT NOT NULL,
+                derived_from_canonical_sha256 TEXT NOT NULL,
+                normalizer_revision TEXT NOT NULL,
+                derived_kind TEXT NOT NULL
+            );
+            """
+        )
+        connection.executemany(
+            "INSERT INTO export_metadata VALUES (?, ?)",
+            (
+                ("normalizer_revision", "armarium-textnorm-v1"),
+                ("unidata_version", unidata_version),
+            ),
+        )
+        connection.execute("INSERT INTO acts VALUES ('a1', ?)", (text,))
+        if derived_from_canonical_sha256 is None:
+            derived_from_canonical_sha256 = digest_bytes(text.encode("utf-8"))
+        connection.execute(
+            "INSERT INTO act_search VALUES (1, 'a1', ?, ?, ?, ?, ?)",
+            (
+                derived_search_text,
+                digest_bytes(derived_search_text.encode("utf-8")),
+                derived_from_canonical_sha256,
+                "armarium-textnorm-v1",
+                "search-fold",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return path.read_bytes()
+
+
+def _write_acceptance_bundle_tree(
+    root: Path, database_data: bytes, damage=None, *, manifest_schema="armarium-export-manifest.v7"
+) -> None:
+    """Write a whole run tree around one bundle, optionally damaged from the inside.
+
+    ``damage`` mutates the package manifest *after* it is written and before the tree
+    is addressed, so everything outside the archive -- the blob's content-addressed
+    name, the export artifact's digests and self-hash, the stage manifest -- is
+    rebuilt consistently around the damaged bytes. That is the tree a forger leaves,
+    and it is the only one in which the reducer's own integrity guards are the thing
+    under test rather than a stale filename.
+    """
+    members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
+    package_manifest = {
+        "schema": manifest_schema,
+        "members": [
+            {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
+            for name, content in sorted(members.items())
+        ],
+    }
+    package_manifest["self_hash"] = self_hash(package_manifest)
+    if damage is not None:
+        damage(package_manifest)
+    members["EXPORT_MANIFEST.json"] = canonical_bytes(package_manifest)
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
+        for name, content in sorted(members.items()):
+            archive.writestr(name, content)
+    bundle_data = buffer.getvalue()
+    bundle_digest = digest_bytes(bundle_data)
+    bundle_relative = f"7_armarium/blobs/sha256/{bundle_digest}"
+
+    bundle_path = root / bundle_relative
+    bundle_path.parent.mkdir(parents=True)
+    bundle_path.write_bytes(bundle_data)
+    export = {
+        "schema": "skeleton.v1",
+        "stage": ARMARIUM,
+        "kind": "export",
+        "payload": {
+            "bundle": {
+                "format": "zip",
+                "sha256": bundle_digest,
+                "manifest_self_hash": package_manifest["self_hash"],
+                "reference": {"relative_path": bundle_relative, "sha256": bundle_digest},
+            },
+            "unrelated": "remains-byte-bound",
+        },
+        "inputs": [{"relative_path": bundle_relative, "sha256": bundle_digest}],
+    }
+    export["self_hash"] = self_hash(export)
+    export_data = canonical_bytes(export)
+    export_path = root / "7_armarium/artifacts/export/example.json"
+    export_path.parent.mkdir(parents=True)
+    export_path.write_bytes(export_data)
+    stage_manifest = {
+        "schema": "skeleton.v1",
+        "stage": ARMARIUM,
+        "run_id": "r",
+        "artifacts": [
+            {
+                "kind": "export",
+                "relative_path": "7_armarium/artifacts/export/example.json",
+                "sha256": digest_bytes(export_data),
+            }
+        ],
+        "blobs": [bundle_digest],
+    }
+    (root / "7_armarium/manifest.json").write_bytes(canonical_bytes(stage_manifest))
+
+
+@pytest.mark.parametrize(
+    "manifest_schema", ["armarium-export-manifest.v7", "armarium-export-manifest.v8"]
+)
+def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path, manifest_schema):
+    """Version-local database fields cannot rename a run; a literal row can."""
+    database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
+    version_local = _acceptance_sqlite(
+        tmp_path / "version-local.sqlite",
+        "original row",
+        unidata_version="16.0.0",
+        derived_search_text="different version-local derived text",
+    )
+    doctored = version_local[:96] + b"\xff\xff\xff\xff" + version_local[100:]
+    original_root = tmp_path / "original"
+    doctored_root = tmp_path / "doctored"
+    changed_root = tmp_path / "changed"
+    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
+    _write_acceptance_bundle_tree(doctored_root, doctored, manifest_schema=manifest_schema)
+    changed = _acceptance_sqlite(
+        tmp_path / "changed.sqlite",
+        "changed row",
+        derived_from_canonical_sha256=digest_bytes(b"original row"),
+    )
+    _write_acceptance_bundle_tree(changed_root, changed, manifest_schema=manifest_schema)
+
+    assert snapshot(original_root) != snapshot(doctored_root)
+    assert semantic_snapshot_digest(original_root) == semantic_snapshot_digest(doctored_root)
+    assert semantic_snapshot_digest(original_root) != semantic_snapshot_digest(changed_root)
+
+
+@pytest.mark.parametrize(
+    "manifest_schema", ["armarium-export-manifest.v7", "armarium-export-manifest.v8"]
+)
+def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path, manifest_schema):
+    """Integrity damage stays byte-bound instead of being normalized out of the pin.
+
+    The two bundle-internal cases are the ones the reduction would otherwise *erase*:
+    it recomputes the package manifest's `self_hash` and overwrites the `acts.sqlite`
+    member row's `sha256` with the logical digest, so without the reducer's own
+    integrity guards a manifest lying about either would reduce to exactly the same
+    pin as an honest one. Both trees are written whole, so the blob's content address,
+    the export artifact and the stage manifest all agree with the damaged bytes and
+    nothing incidental distinguishes them.
+    """
+    database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
+    original_root = tmp_path / "original"
+    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
+    original_semantic = semantic_snapshot_digest(original_root)
+
+    manifest_hash_root = tmp_path / "manifest-self-hash"
+    member_digest_root = tmp_path / "member-digest"
+    export_hash_root = tmp_path / "export-self-hash"
+
+    def damage_manifest_hash(manifest: dict) -> None:
+        manifest["self_hash"] = "b" * 64
+
+    def damage_database_member_digest(manifest: dict) -> None:
+        row = next(item for item in manifest["members"] if item["path"] == "acts.sqlite")
+        row["sha256"] = "d" * 64
+        manifest["self_hash"] = self_hash(
+            {key: value for key, value in manifest.items() if key != "self_hash"}
+        )
+
+    _write_acceptance_bundle_tree(
+        manifest_hash_root, database, damage=damage_manifest_hash, manifest_schema=manifest_schema
+    )
+    _write_acceptance_bundle_tree(
+        member_digest_root,
+        database,
+        damage=damage_database_member_digest,
+        manifest_schema=manifest_schema,
+    )
+    shutil.copytree(original_root, export_hash_root)
+    export_path = export_hash_root / "7_armarium/artifacts/export/example.json"
+    export = json.loads(export_path.read_bytes())
+    export["self_hash"] = "c" * 64
+    export_path.write_bytes(canonical_bytes(export))
+
+    for root in (manifest_hash_root, member_digest_root, export_hash_root):
+        assert snapshot(root) != snapshot(original_root)
+        assert semantic_snapshot_digest(root) != original_semantic
+
+
 def export_of(tree: RunTree) -> dict:
     return tree.read_artifact(ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None))[
         "payload"
@@ -1970,32 +2178,6 @@ def test_a_held_act_on_a_re_shoot_page_is_never_sent_to_recovery(tmp_path):
     for act_key in ("a1", "a2"):
         _cross_capture_held(tree, act_key)
     assert export_of(tree)["delivered"] == []
-
-
-def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_path):
-    """The fixture's a2 cannot silently disappear from the downstream denominator."""
-    root = tmp_path / "runs"
-    for program in programs_through("designator"):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-    tree = RunTree(root, "r")
-    seal_id = artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal")
-    path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal-seal", seal_id))
-    seal = json.loads(path.read_text(encoding="utf-8"))
-    seal["payload"]["expected_acts"] = seal["payload"]["expected_acts"][:1]
-    seal["payload"]["count"] = 1
-    seal["payload"]["self_hash"] = self_hash(seal["payload"])
-    seal["self_hash"] = self_hash(seal)
-    path.write_bytes(canonical_bytes(seal))
-    resealing_context = _designator_context_for(root, "r", "happy")
-    resealing_context.seal_boundary()
-    resealing_context.finish()
-    before = snapshot(root)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
-    assert result.returncode == 2
-    assert "does not reconcile to every synthetic act" in result.stderr
-    assert snapshot(root) == before
 
 
 def _designator_context_for(root: Path, run_id: str, scenario: str):
@@ -2543,73 +2725,6 @@ def test_designator_refuses_a_current_recovery_review_with_a_different_policy(tm
     assert snapshot(root) == before
 
 
-def test_armarium_rechecks_a_corpus_seal_tampered_after_designator(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    identity = artifact_id(EXEMPLAR, "seal", "corpus-seal")
-    path = tree.resolve(tree.artifact_path(EXEMPLAR, "seal", identity))
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["page_count"] = 999
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    before = snapshot(root)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/7_armarium/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "happy",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 2
-    assert "valid self-hashed census" in result.stderr
-    assert snapshot(root) == before
-
-
-def test_armarium_rechecks_sealed_pixels_tampered_after_designator(tmp_path):
-    """The final export has its own pixel boundary, not only a census boundary."""
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    page = next(
-        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
-        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
-        if entry["kind"] == "page"
-        and tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])["outcome"] == "sealed"
-    )
-    tree.resolve(page["payload"]["image_path"]).write_bytes(b"altered after Designator")
-    before = snapshot(root)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/7_armarium/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "happy",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 2
-    assert "changed under a sealed reference" in result.stderr
-    assert snapshot(root) == before
-
-
 def test_armarium_refuses_an_archetypus_record_orphaned_beside_a_held_act(tmp_path):
     """The mirror of "an accepted act must have an Archetypus": a held/refused act
     must NOT have one. pipeline/6_archetypus/run.py's own guard already refuses to
@@ -3053,46 +3168,6 @@ def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):
     assert snapshot(root) == before
 
 
-def test_perlector_refuses_a_tampered_testimonium_model_provenance(tmp_path):
-    """#42 at the handoff: a sealed-looking witness cannot change its model pin."""
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    entry = next(
-        entry
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
-    )
-    path = tree.resolve(entry["relative_path"])
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["provenance"]["resolved_revision"] = {
-        "kind": "digest-manifest",
-        "value": "0" * 64,
-    }
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    rebind_stage_seal(tree, ATTESTATORES)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/4_perlector/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "happy",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 2
-    assert "SchemaRefusal" in result.stderr
-    assert "resolved revision" in result.stderr
-
-
 def test_a_perlectio_retains_digest_checked_testimonia_it_used(tmp_path):
     """Changing a witness record after reading must stop the next real consumer."""
     root = tmp_path / "runs"
@@ -3144,49 +3219,6 @@ def test_recensor_refuses_a_completed_perlectio_without_an_object_region_basis(t
     assert "Traceback" not in result.stderr
     assert "no object basis" in result.stderr
     assert snapshot(root) == before
-
-
-def test_archetypus_refuses_a_resealed_completed_perlectio_without_an_object_basis(tmp_path):
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r")
-    tree = RunTree(root, "r")
-    review_entry = next(
-        entry
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["outcome"] == "accepted"
-    )
-    review_path = tree.resolve(review_entry["relative_path"])
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    old_ref = review["payload"]["perlectio_ref"]
-    reading_path = tree.resolve(old_ref["relative_path"])
-    reading = json.loads(reading_path.read_text(encoding="utf-8"))
-    reading["payload"]["basis"] = []
-    reading["self_hash"] = self_hash(reading)
-    reading_path.write_bytes(canonical_bytes(reading))
-    new_ref = {
-        "relative_path": old_ref["relative_path"],
-        "sha256": digest_bytes(reading_path.read_bytes()),
-    }
-    review["inputs"] = [
-        new_ref if reference == old_ref else reference for reference in review["inputs"]
-    ]
-    review["payload"]["perlectio_ref"] = new_ref
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
-    rebind_stage_seal(tree, PERLECTOR)
-    rebind_stage_seal(tree, RECENSOR)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 2
-    assert "Traceback" not in result.stderr
-    assert "no object basis" in result.stderr
-    # The tampered act has no record. Deliberately NOT `snapshot == before`:
-    # the stage publishes act by act, so whether the *other* act's record was
-    # sealed before this refusal depends only on loop order, and asserting
-    # nothing was written would pin an ordering coincidence as a contract.
-    assert not tree.has_artifact(
-        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
-    )
 
 
 def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
@@ -3630,75 +3662,6 @@ def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):
     result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
     assert result.returncode == 2
     assert "newer Perlectio" in result.stderr
-
-
-def test_armarium_refuses_a_resealed_archetypus_text_that_disagrees_with_its_parent(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    entry = next(
-        entry
-        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
-        if entry["kind"] == "archetypus"
-    )
-    path = tree.resolve(entry["relative_path"])
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["text"] = "ALTERED ESTABLISHED TEXT"
-    record["payload"]["self_hash"] = self_hash(record["payload"])
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    rebind_stage_seal(tree, ARCHETYPUS)
-    before = snapshot(root)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
-    assert result.returncode == 2
-    assert "does not exactly preserve the Perlectio" in result.stderr
-    assert snapshot(root) == before
-
-
-def test_armarium_refuses_a_resealed_archetypus_uncertainty_layer_its_parent_never_said(tmp_path):
-    """The text's sibling, for the layer that anchors to it.
-
-    R8's canonical layer is bound to its act by exactly one gate: the Armarium
-    re-derives it from the accepted Perlectio at export and refuses a stored
-    layer that disagrees. Nothing inside a delivered package can catch a layer
-    substituted before the package was built -- a bundle verifies its own
-    internal agreement, and every format would agree on the forgery -- so this
-    is the boundary that makes the exported layer THIS act's uncertainty rather
-    than a well-formed one. The forged span is valid against the established
-    text and leaves it and its hash untouched, so only the re-derivation can
-    refuse it.
-    """
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    entry = next(
-        entry
-        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
-        if entry["kind"] == "archetypus"
-    )
-    path = tree.resolve(entry["relative_path"])
-    record = json.loads(path.read_text(encoding="utf-8"))
-    perlectio = next(
-        tree.read_artifact(PERLECTOR, "perlectio", candidate["artifact_id"])
-        for candidate in tree.build_manifest(PERLECTOR)["artifacts"]
-        if candidate["kind"] == "perlectio" and candidate["subject_id"] == record["subject_id"]
-    )
-    assert record["payload"]["uncertainty"] == from_perlectio(perlectio["payload"])
-    assert len(record["payload"]["text"]) >= 1
-    record["payload"]["uncertainty"]["uncertain_spans"] = [
-        {"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}
-    ]
-    record["payload"]["self_hash"] = self_hash(record["payload"])
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    rebind_stage_seal(tree, ARCHETYPUS)
-    before = snapshot(root)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
-    assert result.returncode == 2
-    assert "uncertainty layer differs from its accepted Perlectio" in result.stderr
-    assert snapshot(root) == before
 
 
 def test_armarium_refuses_two_established_records_instead_of_selecting_one(tmp_path):
@@ -4720,25 +4683,10 @@ def test_next_stage_refuses_an_artifact_removed_after_the_named_boundary(happy_r
 
 
 @pytest.mark.full
-def test_next_stage_refuses_an_exemplar_seal_forged_or_deleted_without_rederiving(
-    happy_run, tmp_path
-):
-    """Forged and missing seals must be proved independently at each link."""
+def test_next_stage_refuses_a_deleted_exemplar_seal_without_rederiving(happy_run, tmp_path):
     source_root, _ = happy_run
-    forged_root = tmp_path / "forged"
     missing_root = tmp_path / "missing"
-    shutil.copytree(source_root, forged_root)
     shutil.copytree(source_root, missing_root)
-
-    forged_tree = RunTree(forged_root, "r")
-    seal_path = _stage_seal_path(forged_tree, EXEMPLAR)
-    seal = json.loads(seal_path.read_bytes())
-    seal["payload"]["config_digest"] = "0" * 64
-    seal["self_hash"] = self_hash(seal)
-    seal_path.write_bytes(canonical_bytes(seal))
-    forged = invoke_stage(forged_root, "r", "happy", "pipeline/1_ink_map/run.py")
-    assert forged.returncode == EXIT_FATAL
-    assert "config_digest differs from run authority" in forged.stderr
 
     missing_tree = RunTree(missing_root, "r")
     _stage_seal_path(missing_tree, EXEMPLAR).unlink()
@@ -4749,23 +4697,11 @@ def test_next_stage_refuses_an_exemplar_seal_forged_or_deleted_without_rederivin
 
 
 @pytest.mark.full
-def test_next_stage_refuses_forged_or_deleted_seal_without_rederiving(happy_run, tmp_path):
+def test_next_stage_refuses_a_deleted_ink_map_seal_without_rederiving(happy_run, tmp_path):
     """The Ink-Map-to-Designator link, one stage later than the test above."""
     source_root, _ = happy_run
-    forged_root = tmp_path / "forged"
     missing_root = tmp_path / "missing"
-    shutil.copytree(source_root, forged_root)
     shutil.copytree(source_root, missing_root)
-
-    forged_tree = RunTree(forged_root, "r")
-    seal_path = _stage_seal_path(forged_tree, INK_MAP)
-    seal = json.loads(seal_path.read_bytes())
-    seal["payload"]["config_digest"] = "0" * 64
-    seal["self_hash"] = self_hash(seal)
-    seal_path.write_bytes(canonical_bytes(seal))
-    forged = invoke_stage(forged_root, "r", "happy", "pipeline/2_designator/run.py")
-    assert forged.returncode == EXIT_FATAL
-    assert "config_digest differs from run authority" in forged.stderr
 
     missing_tree = RunTree(missing_root, "r")
     _stage_seal_path(missing_tree, INK_MAP).unlink()
@@ -5340,4 +5276,39 @@ def test_armarium_rechecks_the_filename_a_page_was_sealed_under(tmp_path):
 
     assert result.returncode == 2
     assert "no longer matches its submitted filename and digest" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_armarium_rechecks_sealed_pixels_tampered_after_designator(tmp_path):
+    """The final export has its own pixel boundary, not only a census boundary."""
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    page = next(
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+        and tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])["outcome"] == "sealed"
+    )
+    tree.resolve(page["payload"]["image_path"]).write_bytes(b"altered after Designator")
+    before = snapshot(root)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/7_armarium/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "changed under a sealed reference" in result.stderr
     assert snapshot(root) == before

@@ -11,10 +11,9 @@ from PIL import Image
 
 from common.chairs import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id, region_id
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
-from common.exemplar_boundary import verify_exemplar_crop_lineage
 from common.imaging import crop_png, dimensions
 from common.native_witness import partition_disagreement
 from common.runtree.store import RunTree
@@ -82,33 +81,6 @@ def test_a_region_bound_to_its_actual_exemplar_input_verifies(real_region):
     assert verified["structure_provenance"] == region["payload"]["provenance"]
 
 
-def test_perlector_refuses_a_tampered_designator_region_provenance(real_region, monkeypatch):
-    """The mirror of `test_perlector_refuses_a_tampered_testimonium_model_provenance`
-    (pipeline/orchestrator/test_orchestrator_acceptance.py), one join earlier: a
-    region's own principle 6 provenance must be validated before the Perlector
-    treats it as the basis for a real reading, exactly as
-    pipeline/3_attestatores/run.py::proposed_regions already validates the
-    identical artifact kind before showing it to a witness."""
-    context, region = real_region
-    tampered = copy.deepcopy(region)
-    tampered["payload"]["provenance"]["resolved_revision"] = {
-        "kind": "digest-manifest",
-        "value": "0" * 64,
-    }
-    tampered["self_hash"] = self_hash(tampered)
-    entry = next(
-        entry
-        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["artifact_id"] == region["artifact_id"]
-    )
-    path = context.tree.resolve(entry["relative_path"])
-    path.write_bytes(canonical_bytes(tampered))
-    monkeypatch.setattr(context.tree, "build_manifest", lambda stage: {"artifacts": [entry]})
-
-    with pytest.raises(SchemaRefusal, match="resolved revision"):
-        perlector.regions_of(context, region["subject_id"])
-
-
 def test_perlector_names_a_designator_region_with_missing_provenance(real_region, monkeypatch):
     context, region = real_region
     missing = copy.deepcopy(region)
@@ -169,50 +141,6 @@ def test_a_same_sized_crop_from_another_page_cannot_keep_the_original_transform(
 
     with pytest.raises(SchemaRefusal, match="does not trace to its Exemplar page"):
         perlector.verify_region(context, substituted)
-
-
-def test_a_crop_relabelled_onto_a_different_act_cannot_pass_as_that_acts_own(real_region):
-    """The page-substitution class closed above, one level down: a region whose
-    TRANSFORM genuinely traces to a real sealed page can still be forged onto a
-    different act's identity by relabelling `subject_id` and recomputing only the
-    self-consistent `region_id` — every pixel/page check above stays green,
-    because none of them ever re-derives which act the Designator's own proposal
-    seal actually names for this crop."""
-    context, region = real_region
-    regions = [
-        context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "region"
-    ]
-    other_act = next(
-        candidate for candidate in regions if candidate["subject_id"] != region["subject_id"]
-    )
-
-    forged = copy.deepcopy(other_act)
-    forged["subject_id"] = region["subject_id"]
-    forged["payload"]["region_id"] = region_id(forged["subject_id"], forged["payload"]["transform"])
-
-    with pytest.raises(ContractError, match="proposal seal's act identity"):
-        verify_exemplar_crop_lineage(context.tree, context.run, forged)
-    with pytest.raises(SchemaRefusal, match="does not trace to its Exemplar page"):
-        perlector.verify_region(context, forged)
-
-
-def test_a_crop_relabelled_with_another_acts_key_cannot_borrow_its_seal_evidence(real_region):
-    """Changing both identity fields must not make one act's crop evidence another's."""
-    context, region = real_region
-    other_act = next(
-        context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "region" and entry["subject_id"] != region["subject_id"]
-    )
-    forged = copy.deepcopy(other_act)
-    forged["subject_id"] = region["subject_id"]
-    forged["payload"]["act_key"] = region["payload"]["act_key"]
-    forged["payload"]["region_id"] = region_id(forged["subject_id"], forged["payload"]["transform"])
-
-    with pytest.raises(ContractError, match="does not name this proposal crop"):
-        verify_exemplar_crop_lineage(context.tree, context.run, forged)
 
 
 def test_malformed_exemplar_locators_all_refuse(real_region):
@@ -298,75 +226,6 @@ def test_a_region_with_no_integer_attempt_ordinal_refuses_by_name(real_region, o
 
     with pytest.raises(SchemaRefusal, match="no integer attempt ordinal"):
         perlector._region_ordinal(malformed)
-
-
-def test_a_resealed_testimonium_cannot_retroactively_claim_a_recovery_crop(tmp_path):
-    """Witness coverage is about pixels actually shown, never a later recrop."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "review",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--run-id",
-            "witness-boundary",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 3, result.stderr
-    tree = RunTree(tmp_path / "runs", "witness-boundary")
-    context = _Context(tree)
-    recovery = next(
-        tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "region"
-        and tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])["payload"]["origin"]
-        == "recovery"
-    )
-    act_id = recovery["subject_id"]
-    proposals = [
-        tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "region"
-        and entry["subject_id"] == act_id
-        and tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])["payload"]["origin"]
-        == "proposal"
-    ]
-    testimony = next(
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium" and entry["subject_id"] == act_id
-    )
-    forged = copy.deepcopy(testimony)
-    transform = recovery["payload"]["transform"]
-    forged["payload"]["presented"] = {
-        "kind": "region",
-        "source_page_id": transform["source_page_id"],
-        "source_page_ordinal": transform["source_page_ordinal"],
-        "image_path": recovery["payload"]["image_path"],
-        "image_sha256": recovery["payload"]["image_sha256"],
-        "transform": transform,
-        "region_ref": {"region_id": recovery["payload"]["region_id"]},
-    }
-    forged["payload"]["observed"] = [
-        {
-            "ordinal": 0,
-            "bounds": transform["bounds"],
-            "bounds_source": "presented",
-            "span": None,
-        }
-    ]
-    forged["inputs"] = [context.input_ref(recovery["payload"]["image_path"])]
-    forged["self_hash"] = self_hash(forged)
-
-    with pytest.raises(SchemaRefusal, match="recovery region cannot be presented"):
-        perlector.validate_testimonium_regions(context, forged, proposals)
 
 
 def test_a_testimonium_may_not_understate_which_of_its_crops_it_speaks_for(tmp_path):

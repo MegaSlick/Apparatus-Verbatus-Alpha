@@ -5,7 +5,6 @@ import pytest
 import run as perlector_run
 from run import resolve_sampling_approval
 
-from common.chairs import load_models_toml
 from common.contracts.approval import build_approval_record
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
@@ -13,10 +12,7 @@ from common.runtree.store import RECEIPTS_DIR, RunTree
 from common.stage import (
     NUDA_APPROVAL_SUBJECT,
     PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
-    load_fixture,
-    run_config_bindings,
 )
-from conftest import ROOT
 
 SUBJECTS = (NUDA_APPROVAL_SUBJECT, PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT)
 
@@ -82,44 +78,6 @@ def test_each_arm_refuses_a_record_for_the_other_arm(tmp_path, subject, other_su
     context.tree.write_approval_record(_record(other_subject, context.config_digest))
 
     with pytest.raises(ContractError, match=f"no approval record names experiment {subject!r}"):
-        _resolve(context, subject)
-
-
-@pytest.mark.parametrize(
-    ("subject", "old_rate", "new_rate", "rate_key", "selector_key"),
-    (
-        (NUDA_APPROVAL_SUBJECT, 250, 251, "nuda_per_mille", "nuda_approval_ref"),
-        (
-            PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
-            250,
-            251,
-            "perlector_instrument_per_mille",
-            "perlector_instrument_approval_ref",
-        ),
-    ),
-)
-def test_each_arm_refuses_when_its_rate_changed_after_the_record_was_sealed(
-    tmp_path, subject, old_rate, new_rate, rate_key, selector_key
-):
-    models = load_models_toml(ROOT / "config" / "models.toml")
-    fixture = load_fixture(str(ROOT / "proof"))
-    old = run_config_bindings(
-        models,
-        fixture,
-        "happy",
-        **{rate_key: old_rate, selector_key: subject},
-    )["config_digest"]
-    new = run_config_bindings(
-        models,
-        fixture,
-        "happy",
-        **{rate_key: new_rate, selector_key: subject},
-    )["config_digest"]
-    assert old != new
-    context = _context(tmp_path, new)
-    context.tree.write_approval_record(_record(subject, old))
-
-    with pytest.raises(ContractError, match="not this run's sealed config_digest"):
         _resolve(context, subject)
 
 

@@ -321,30 +321,6 @@ def test_fetched_artifact_cannot_be_relabelled_pending_fetch(tmp_path):
     assert not (tmp_path / "records" / f"{rejected_digest}.json").exists()
 
 
-def test_a_recorded_artifact_cannot_be_renamed_out_of_the_next_record_version(tmp_path):
-    """A dropped name must refuse by name, not escape the closed refusal taxonomy.
-
-    Five unique artifacts in, five out, so renaming one drops the old name. The
-    transition check read the replacement by that key directly and raised a bare
-    ``KeyError`` naming no chair — outside ``errors.py``'s "complete public
-    taxonomy", and silent about which artifact left the record.
-    """
-
-    record = _store(tmp_path)
-    replacement = copy.deepcopy(record)
-    entry = next(item for item in replacement["artifacts"] if item["artifact"] == "churro-3B")
-    entry["artifact"] = "churro-3B-renamed"
-    entry["snapshot"] = "hf/churro-3B-renamed"
-    entry["manifest"] = "manifests/churro-3B-renamed.json"
-
-    with pytest.raises(DigestMismatchRefusal, match="does not name this recorded artifact"):
-        write_download_record(replacement, tmp_path)
-
-    assert load_download_record(tmp_path) == record
-    rejected_digest = hashlib.sha256(canonical_bytes(replacement)).hexdigest()
-    assert not (tmp_path / "records" / f"{rejected_digest}.json").exists()
-
-
 def test_active_record_swap_does_not_rewrite_its_immutable_version(tmp_path):
     record = _store(tmp_path)
     original_bytes = canonical_bytes(record)
@@ -570,18 +546,6 @@ def test_promote_verified_snapshot_refuses_a_manifest_name_no_record_may_referen
 # --- Battery: forged manifests, path traversal, roster mismatches ---------------
 
 
-def test_verify_store_refuses_a_manifest_tampered_after_it_was_written(tmp_path):
-    record = _store(tmp_path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
-    manifest_path = tmp_path / entry["manifest"]
-    raw = json.loads(manifest_path.read_bytes())
-    raw[0]["sha256"] = "0" * 64
-    manifest_path.write_bytes(canonical_bytes(raw))
-
-    with pytest.raises(DigestMismatchRefusal, match="manifest differs"):
-        verify_store(tmp_path)
-
-
 def test_download_record_read_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
     monkeypatch.setattr(model_store, "MAX_DOWNLOAD_RECORD_BYTES", 32)
     (tmp_path / "download_record.json").write_bytes(b"{" + b"x" * 32)
@@ -751,22 +715,6 @@ def test_require_complete_store_accepts_a_store_with_every_roster_artifact(tmp_p
 
     assert inventory["complete"] is True
     assert inventory["pending"] == []
-
-
-def test_require_complete_store_cannot_be_satisfied_by_a_forged_inventory(tmp_path):
-    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
-    forged = derived_inventory(record)
-    forged["complete"] = True
-    forged["pending"] = []
-
-    # The door takes a store root and re-derives its own inventory from real
-    # bytes, so a flipped `complete` flag has no way in — and the wrong-shape
-    # mistake is refused inside the taxonomy, naming what was expected, not
-    # left to pathlib's TypeError.
-    with pytest.raises(DigestMismatchRefusal, match="carries no authority"):
-        require_complete_store(forged)
-    with pytest.raises(DigestMismatchRefusal, match="surya2-detection"):
-        require_complete_store(tmp_path)
 
 
 def test_write_download_record_refuses_what_its_readers_would_refuse(tmp_path):

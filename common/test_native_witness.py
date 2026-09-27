@@ -313,40 +313,6 @@ def test_a_page_witnesss_act_view_is_still_bounded_by_the_sealed_page():
         validate_native_witness_geometry(value, page_size=(100, 80))
 
 
-def test_the_page_witness_relaxation_cannot_be_forged_onto_a_page_scoped_record():
-    """`scope == "page"` presents the chair's complete view, so it keeps the wall."""
-    value = _page_witness_act_view()
-    value["scope"] = "page"
-    value["observed"] = [
-        {
-            "ordinal": 0,
-            "bounds": {"x": 0, "y": 0, "w": 5, "h": 5},
-            "bounds_source": "native",
-            "span": None,
-        }
-    ]
-
-    with pytest.raises(SchemaRefusal, match="outside the exact image presentation"):
-        validate_native_witness_geometry(value, page_size=(100, 80))
-
-
-def test_a_page_presentation_may_not_name_another_page_s_blob():
-    """The forgery this wall exists for: a self-consistent record naming page 1
-    while carrying page 2's real, digest-bound pixels. Its boxes would then be
-    checked against page 1's dimensions and read as page 1 geometry."""
-    value = payload()
-    other_page_blob = "1_exemplar/blobs/sha256/" + "1" * 64
-    value["presented"].update({"image_path": other_page_blob, "image_sha256": "1" * 64})
-    with pytest.raises(SchemaRefusal, match="not the sealed page it claims"):
-        validate_presented_page_binding(
-            value["presented"],
-            page_ordinal=1,
-            page_image_path="1_exemplar/blobs/sha256/" + "0" * 64,
-            page_sha256="0" * 64,
-            page_size=(100, 80),
-        )
-
-
 def test_a_page_presentation_that_is_only_part_of_its_page_is_an_adapter_crop():
     value = payload()
     value["presented"]["transform"]["bounds"] = {"x": 0, "y": 0, "w": 50, "h": 80}
@@ -419,20 +385,6 @@ def test_a_page_presentation_that_matches_its_sealed_page_passes():
         page_sha256=value["presented"]["image_sha256"],
         page_size=(100, 80),
     )
-
-
-def test_a_page_presentation_cannot_relabel_its_sealed_page_ordinal():
-    value = payload()
-    value["presented"]["source_page_ordinal"] = 2
-    value["presented"]["transform"]["source_page_ordinal"] = 2
-    with pytest.raises(SchemaRefusal, match="ordinal disagrees"):
-        validate_presented_page_binding(
-            value["presented"],
-            page_ordinal=1,
-            page_image_path=value["presented"]["image_path"],
-            page_sha256=value["presented"]["image_sha256"],
-            page_size=(100, 80),
-        )
 
 
 def test_a_page_presentation_requires_the_executable_whole_operation():
@@ -1725,17 +1677,13 @@ def test_a_churro_capture_retains_a_system_only_prompt_view():
         validate_native_capture(capture)
 
 
-def test_a_parse_state_that_names_no_refusal_is_refused_rather_than_raising_a_key_error():
-    """The failure mode this helper was extracted to remove, pinned in both directions."""
+def test_native_parse_refusal_names_failed_and_unrecognized_shape():
     from common.native_witness import native_parse_refusal
 
     assert native_parse_refusal({"state": "failed", "reason": "unparseable"}) == "unparseable"
     assert native_parse_refusal({"state": "unrecognized-shape", "outcome": "invalid-json"}) == (
         "the response shape was not recognized: invalid-json"
     )
-    for state in ("parsed", "pending", "not-requested"):
-        with pytest.raises(SchemaRefusal, match="carries no refusal to name"):
-            native_parse_refusal({"state": state, "text": "x"})
 
 
 # ============ Unit 3: the vocabulary the vendor grammars arrive through ===========

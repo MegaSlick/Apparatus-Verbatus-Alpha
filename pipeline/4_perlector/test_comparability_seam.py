@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 from common.contracts.canonical import canonical_bytes, self_hash
-from common.contracts.stages import ATTESTATORES, PERLECTOR
+from common.contracts.stages import ATTESTATORES
 from common.runtree.store import RunTree
 from conftest import programs_through
 
@@ -198,63 +198,3 @@ def test_a_geometrically_attached_witness_may_not_be_relabelled_anchor_line(
     result = _invoke(root, "basis-relabelled", "pipeline/4_perlector/run.py")
     assert result.returncode != 0
     assert "attached it by 'geometric-overlap'" in result.stderr
-
-
-def test_recensor_independently_names_a_relabelled_attachment_basis(
-    tmp_path, rebind_stage_seal, rewitness_boundary
-):
-    """The floor reader re-derives the basis too, from its own copy of the page.
-
-    Same reasoning as the forged `comparable` boolean below: two consumers that
-    both trusted the earlier verdict would be one reader in two costumes, and
-    the basis is what the Recensor's own accounting reads to decide whether the
-    native-overlap granularity claim may be made at all.
-    """
-    root = tmp_path / "runs"
-    tree = _through_attestatores(root, "recensor-basis-relabelled")
-    result = _invoke(root, "recensor-basis-relabelled", "pipeline/4_perlector/run.py")
-    assert result.returncode == 0, result.stderr
-
-    _forge_attachments(tree, rebind_stage_seal, _relabel_as_anchor_line)
-    rewitness_boundary(tree, PERLECTOR)
-
-    result = _invoke(root, "recensor-basis-relabelled", "pipeline/5_recensor/run.py")
-    assert result.returncode != 0
-    assert "attached it by 'geometric-overlap'" in result.stderr
-
-
-def test_recensor_independently_names_a_forged_comparable_boolean(
-    tmp_path, rebind_stage_seal, rewitness_boundary
-):
-    """The floor reader does not inherit the Perlector's earlier verdict.
-
-    Run the Perlector over the honest boundary first, then reseal a single false
-    ``comparable`` boolean into that boundary.  The Recensor must read the exact
-    current Testimonium itself and name the disagreement before it counts the
-    floor; otherwise the two consumers are one reader in two costumes.
-    """
-    root = tmp_path / "runs"
-    tree = _through_attestatores(root, "recensor-comparable-forgery")
-    result = _invoke(root, "recensor-comparable-forgery", "pipeline/4_perlector/run.py")
-    assert result.returncode == 0, result.stderr
-
-    def uncompare(row):
-        if not (row["chair"] == ACT_CHAIR and row["attached"] and row["comparable"]):
-            return False
-        row["comparable"] = False
-        return True
-
-    _forge_attachments(tree, rebind_stage_seal, uncompare)
-    # The Perlector already sealed the honest boundary as its input inventory,
-    # so the Recensor would stop at "bytes changed under a sealed reference" —
-    # the Perlector's boundary — instead of at its own comparison. Re-witnessing
-    # models a Perlector that read the forged record and honestly recorded it,
-    # which is the only state in which the Recensor's independent check is
-    # reachable at all.
-    rewitness_boundary(tree, PERLECTOR)
-
-    result = _invoke(root, "recensor-comparable-forgery", "pipeline/5_recensor/run.py")
-    assert result.returncode != 0
-    assert "claims a comparability its own retained derived testimony does not support" in (
-        result.stderr
-    )

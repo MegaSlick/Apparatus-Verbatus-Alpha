@@ -1,25 +1,4 @@
-"""Spec 09's fifth test: recovery recovers coverage, and there is no path from a
-quality signal to a re-roll.
-
-    5. Quality firewall: a suspected-fabrication flag routes to review; no code
-       path exists from a quality flag to a re-roll (module boundary test).
-
-Principle 7 states the rule and ARCHITECTURE repeats it: "It recovers coverage,
-not quality. A suspected fabrication or a poor reading may be flagged for review.
-It may never be re-rolled until it looks better." That is a claim about what code
-*cannot* do, so proving it needs the structural half as well as the behavioural
-one -- a behavioural test only shows that today's inputs do not reach the branch.
-
-**The fabrication flag does not exist yet, and this test does not pretend it
-does.** Spec 09 allows "a vision or text model [to] **flag** where determinism
-cannot see (incoherence, suspected gaps)"; nothing in the built pipeline produces
-such a flag, and inventing a fake one here would test this file's own fixture
-rather than the stage. So the behavioural half drives the quality signals that
-genuinely exist -- a `truncated` Perlectio, which is a FAILED-class reading that
-still carries text, the exact shape a re-roll would be tempting for -- and the
-structural half is what will still hold on the day a real flag is added, because
-it constrains the recovery gate itself rather than the inputs reaching it.
-"""
+"""Recovery requests depend on coverage and budget, never reading quality."""
 
 import ast
 from pathlib import Path
@@ -102,9 +81,6 @@ def _recovery_request_publications(
     return found
 
 
-# Every module that would give this stage a way to run something. Named once,
-# used by the real scan and by the synthetic cases that prove the set is
-# load-bearing rather than decorative.
 INVOCATION_MODULES = frozenset(
     {"subprocess", "os", "importlib", "multiprocessing", "runpy", "pty", "asyncio"}
 )
@@ -144,9 +120,6 @@ def _enclosing_ifs(tree: ast.Module, target: ast.Call) -> list[ast.If]:
     # is found before a deeper one; reversed so callers that want "just the
     # gate" via `enclosing[0]` still get the innermost.
     return list(reversed(enclosing))
-
-
-# --- The structural half: the module boundary spec 09 asks for -----------------
 
 
 def test_exactly_one_place_in_the_stage_can_ask_for_recovery():
@@ -280,6 +253,3 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
         f"the Recensor imports {sorted(imported & INVOCATION_MODULES)}; it appends recovery "
         "requests and never invokes the stage that answers one"
     )
-
-
-# --- The behavioural half: a real quality failure reaches review, not rework ----

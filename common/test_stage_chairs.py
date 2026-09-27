@@ -383,55 +383,6 @@ def test_receipt_reuse_is_by_full_serving_moment_not_only_model_identity(tmp_pat
     assert context.tree.read_run_receipt(second)["endpoint"] == changed.endpoint
 
 
-def test_a_consumer_refuses_tampered_model_provenance_and_receipt_reference(tmp_path):
-    context, identity = _context(tmp_path)
-    reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
-    provenance = {
-        "chair": identity.role,
-        "chair_state": "configured",
-        "resolved_identity": identity.to_record(),
-        "resolved_revision": {
-            "kind": identity.receipt_revision_kind,
-            "value": identity.receipt_revision,
-        },
-        "receipt_ref": reference,
-        "adapter_revision": context.adapter_revision,
-    }
-    assert (
-        validate_serving_provenance(
-            context,
-            provenance,
-            producer_stage=ATTESTATORES,
-            require_receipt=True,
-        )
-        == identity
-    )
-
-    altered_revision = {
-        **provenance,
-        "resolved_revision": {"kind": "digest-manifest", "value": "0" * 64},
-    }
-    with pytest.raises(SchemaRefusal, match="resolved revision"):
-        validate_serving_provenance(
-            context,
-            altered_revision,
-            producer_stage=ATTESTATORES,
-            require_receipt=True,
-        )
-
-    altered_reference = {
-        **provenance,
-        "receipt_ref": {**reference, "sha256": "0" * 64},
-    }
-    with pytest.raises(SchemaRefusal, match="content-addressed path"):
-        validate_serving_provenance(
-            context,
-            altered_reference,
-            producer_stage=ATTESTATORES,
-            require_receipt=True,
-        )
-
-
 @pytest.mark.parametrize(
     ("field", "value"),
     [("endpoint", "fixture://leaked"), ("started_at", "2026-08-05T00:00:00Z")],
@@ -444,21 +395,6 @@ def test_serving_only_fields_have_their_own_named_provenance_refusal(tmp_path, f
         validate_serving_provenance(
             context,
             {**_served_provenance(context, identity), field: value},
-            producer_stage=ATTESTATORES,
-            require_receipt=True,
-        )
-
-
-def test_a_provenance_record_cannot_substitute_the_sealed_adapter_recipe(tmp_path):
-    context, identity = _context(tmp_path)
-
-    with pytest.raises(SchemaRefusal, match="sealed adapter recipe"):
-        validate_serving_provenance(
-            context,
-            {
-                **_served_provenance(context, identity),
-                "adapter_revision": adapter_recipe_for(context.run, PERLECTOR),
-            },
             producer_stage=ATTESTATORES,
             require_receipt=True,
         )

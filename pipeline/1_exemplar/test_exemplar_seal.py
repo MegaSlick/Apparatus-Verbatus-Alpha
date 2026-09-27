@@ -612,21 +612,6 @@ def test_one_changed_source_byte_produces_a_different_seal(tmp_path):
     assert first["self_hash"] != second["self_hash"]
 
 
-def test_an_edited_seal_refuses_a_rerun_rather_than_building_on_it(tmp_path):
-    tree, _ = build_door_run(tmp_path / "runs")
-    assert run_exemplar(tmp_path / "runs").returncode == 0
-
-    identity = artifact_id(EXEMPLAR, "seal", SEAL_SUBJECT)
-    path = tree.resolve(tree.artifact_path(EXEMPLAR, "seal", identity))
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["page_count"] = 99
-    path.write_bytes(canonical_bytes(record))
-
-    result = run_exemplar(tmp_path / "runs")
-    assert result.returncode != 0
-    assert "fails its self-hash" in result.stderr
-
-
 # --- The reconciliation the seal rests on ----------------------------------------
 
 

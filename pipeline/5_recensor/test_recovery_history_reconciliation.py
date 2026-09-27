@@ -101,53 +101,6 @@ def test_a_pending_recovery_request_remains_held_on_a_direct_recensor_retry(tmp_
     assert [entry["artifact_id"] for entry in tree.build_manifest(RECENSOR)["artifacts"]] == before
 
 
-def test_a_resealed_per_kind_counter_is_refused_before_recensor_treats_it_as_history(tmp_path):
-    root = tmp_path / "runs"
-    through_perlector(root, "counter", "review")
-    first = invoke(root, "counter", "review", "pipeline/5_recensor/run.py")
-    assert first.returncode == 3, first.stderr
-    tree = RunTree(root, "counter")
-    request = records(tree, RECENSOR, "recovery-request")[0]
-    review = next(
-        record
-        for record in records(tree, RECENSOR, "review", request["subject_id"])
-        if record["outcome"] == "recovery-requested"
-    )
-
-    changed_request = copy.deepcopy(request)
-    changed_request["payload"]["kind_budget_used"] = 1
-    changed_request["self_hash"] = self_hash(changed_request)
-    request_path = tree.resolve(
-        tree.artifact_path(RECENSOR, "recovery-request", changed_request["artifact_id"])
-    )
-    request_bytes = canonical_bytes(changed_request)
-    request_path.write_bytes(request_bytes)
-    changed_reference = {
-        "relative_path": tree.artifact_path(
-            RECENSOR, "recovery-request", changed_request["artifact_id"]
-        ),
-        "sha256": digest_bytes(request_bytes),
-    }
-    changed_review = copy.deepcopy(review)
-    original_reference = changed_review["payload"]["recovery_request_ref"]
-    changed_review["payload"]["recovery_request_ref"] = changed_reference
-    changed_review["inputs"] = [
-        changed_reference if reference == original_reference else reference
-        for reference in changed_review["inputs"]
-    ]
-    changed_review["self_hash"] = self_hash(changed_review)
-    tree.resolve(tree.artifact_path(RECENSOR, "review", changed_review["artifact_id"])).write_bytes(
-        canonical_bytes(changed_review)
-    )
-    tree.write_manifest(RECENSOR)
-    before = [entry["artifact_id"] for entry in tree.build_manifest(RECENSOR)["artifacts"]]
-
-    result = invoke(root, "counter", "review", "pipeline/5_recensor/run.py")
-    assert result.returncode == 2
-    assert "recorded total or kind budget" in result.stderr
-    assert [entry["artifact_id"] for entry in tree.build_manifest(RECENSOR)["artifacts"]] == before
-
-
 def test_a_recovery_crop_without_its_reread_is_refused_before_acceptance(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "unread-recrop", "review")

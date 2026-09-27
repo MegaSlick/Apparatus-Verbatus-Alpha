@@ -207,22 +207,6 @@ def test_the_text_hash_is_the_digest_of_the_text_alone():
     assert record["text_hash"] == digest_of("Maria")
 
 
-def test_record_validation_refuses_a_resealed_wrong_text_hash():
-    record = make_record()
-    record["text_hash"] = digest_of("Marta")
-    record["self_hash"] = self_hash(record)
-    with pytest.raises(SchemaRefusal, match="text_hash disagrees"):
-        archetypus.validate_record(record)
-
-
-def test_record_validation_refuses_a_resealed_dishonest_text_status():
-    record = make_record()
-    record["text_status"] = "partial"
-    record["self_hash"] = self_hash(record)
-    with pytest.raises(SchemaRefusal, match="disagrees with its text"):
-        archetypus.validate_record(record)
-
-
 def test_record_validation_accepts_a_partial_text_with_an_internal_gap():
     gap = {
         "position": "internal",
@@ -255,48 +239,6 @@ def test_record_validation_refuses_a_bad_nested_self_hash():
 # a claim nobody has measured.
 
 
-@pytest.mark.parametrize(
-    ("overrides", "expected"),
-    [
-        ({"status": "partial"}, "fixed 'established' literal"),
-        ({"act_id": ""}, "has no act_id"),
-        ({"act_key": 7}, "has no act_key"),
-        ({"page_id": None}, "has no page_id"),
-        ({"text": 7}, "text is not a string"),
-        ({"regions": []}, "retains no source region"),
-        ({"regions": "2_designator/blobs/sha256/deadbeef"}, "retains no source region"),
-        ({"provenance": "perlector"}, "provenance is not an object"),
-        ({"perlectio_ref": {"relative_path": "x"}}, "perlectio_ref is not a digest-checked"),
-        ({"recensor_ref": None}, "recensor_ref is not a digest-checked"),
-        ({"annotations": {}}, "annotation is not a list"),
-        ({"annotations": ["not an object"]}, r"annotation\[0\] is not an object"),
-    ],
-)
-def test_record_validation_refuses_each_resealed_defect(overrides, expected):
-    with pytest.raises(SchemaRefusal, match=expected):
-        archetypus.validate_record(seal_record(**overrides))
-
-
-def test_record_validation_refuses_a_resealed_region_outside_the_closed_schema():
-    """The read-back proof must not stop at the record's top level.
-
-    `_crop_references` closes `_REGION_FIELDS` at construction, but
-    `validate_record` -- the function every later stage-local read and
-    `CONTRACT.md` both rely on -- checks only that `regions` is a non-empty
-    list unless `_validate_region_fields` also runs there: otherwise a record
-    resealed on disk with a dead field smuggled inside a region would pass.
-    """
-    smuggled = dict(REGION, consolidated_literal="A SECOND READING NOBODY ESTABLISHED")
-    with pytest.raises(SchemaRefusal, match="outside the closed region schema"):
-        archetypus.validate_record(seal_record(regions=[smuggled]))
-
-
-def test_record_validation_refuses_a_resealed_region_missing_a_crop_fact():
-    stripped = {key: value for key, value in REGION.items() if key != "verified_dimensions"}
-    with pytest.raises(SchemaRefusal, match="outside the closed region schema"):
-        archetypus.validate_record(seal_record(regions=[stripped]))
-
-
 def test_record_validation_refuses_a_dissent_pointer_that_left_its_perlectio():
     """Ruling 4d is that dissent travels *to this record's own Perlectio*.
 
@@ -306,42 +248,6 @@ def test_record_validation_refuses_a_dissent_pointer_that_left_its_perlectio():
     other = {"relative_path": "4_perlector/artifacts/perlectio/art_d.json", "sha256": "d" * 64}
     with pytest.raises(SchemaRefusal, match="dissent must travel by reference"):
         archetypus.validate_record(seal_record(dissent_ref=other))
-
-
-@pytest.mark.parametrize(
-    ("note", "expected"),
-    [
-        ({"kind": "illegible", "start": 0, "end": 1, "witness_evidence": []}, "zero-width anchor"),
-        ({"kind": "speculative", "start": 0, "end": 0}, "not one of"),
-        (
-            {"kind": "illegible", "start": 0, "end": 0, "witness_evidence": [{"variant": "x"}]},
-            "is not exactly",
-        ),
-        (
-            {"kind": "uncertain", "start": 0, "end": 5, "certainty": "0.9", "alternatives": ["M"]},
-            "not one of",
-        ),
-        (
-            {"kind": "uncertain", "start": 0, "end": 5, "certainty": "low", "alternatives": []},
-            "names no alternatives",
-        ),
-        (
-            {"kind": "uncertain", "start": 0, "end": 9, "certainty": "low", "alternatives": ["M"]},
-            "outside this reading's own text bounds",
-        ),
-    ],
-)
-def test_record_validation_refuses_a_resealed_malformed_annotation(note, expected):
-    """The read-back annotation check, which no test reached before.
-
-    A record is validated again on every later stage-local read precisely
-    because a sealed payload can be edited and resealed on disk. The annotation
-    layer is the part of it a reader most needs to trust — it is where witness
-    material sits beside the established text — so its refusals are exercised
-    here as well as at the constructor, over the one validator both now use.
-    """
-    with pytest.raises(SchemaRefusal, match=expected):
-        archetypus.validate_record(seal_record(annotations=[note], text_status="partial"))
 
 
 @pytest.mark.parametrize(

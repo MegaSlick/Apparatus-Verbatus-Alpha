@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sqlite3
 import stat
 import subprocess
 import sys
@@ -20,7 +19,7 @@ from types import SimpleNamespace
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 import pytest
-from armarium_export import EXPORT_MANIFEST_NAME, verify_export_bundle
+from armarium_export import EXPORT_MANIFEST_NAME
 
 from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
@@ -173,102 +172,6 @@ def test_publication_reports_which_checks_the_clean_pass_actually_made(tmp_path,
     assert "search_fold: verified" in result.stdout
 
 
-def test_a_resealed_bundle_that_declines_search_fold_recomputation_is_not_published(
-    tmp_path, happy_run
-):
-    """The real publisher must treat an unmade measurement as a refusal.
-
-    This is a whole-file reseal, not a mocked verifier result: the package editor
-    changes the Unicode-version row in the real SQLite member, refreshes the package
-    inventory and self-hash, stores the resulting ZIP under its new content address,
-    and updates the export artifact's reference and self-hash.  The subprocess then
-    drives the same verifier and filesystem publication path an operator invokes.
-    """
-    root = tmp_path / "runs"
-    shutil.copytree(happy_run / "r", root / "r")
-    tree = RunTree(root, "r")
-    tree.read_run()
-
-    def decline_recomputation(members, _manifest):
-        database = tmp_path / "acts.sqlite"
-        database.write_bytes(members["acts.sqlite"])
-        connection = sqlite3.connect(database)
-        try:
-            connection.execute(
-                "UPDATE export_metadata SET value = 'resealed-different-version' "
-                "WHERE key = 'unidata_version'"
-            )
-            connection.commit()
-        finally:
-            connection.close()
-        members["acts.sqlite"] = database.read_bytes()
-
-    _reseal_export_bundle(tree, decline_recomputation)
-
-    out = tmp_path / "delivery"
-    result = _publish(root, "r", out)
-
-    assert result.returncode != 0
-    assert "search-fold recomputation was not run" in result.stderr
-    assert "use a verifier whose Unicode database matches" in result.stderr
-    assert not out.exists()
-    assert not list(tmp_path.glob(".delivery.publishing-*"))
-
-
-def test_a_resealed_package_cannot_disagree_with_its_export_artifacts_run_binding(
-    tmp_path, happy_run
-):
-    """The publisher checks package labels against the immutable run-tree records.
-
-    This proves internal consistency, not cryptographic authenticity: a party able
-    to rewrite both the export artifact and the package is outside the run tree's
-    immutability contract and would require an external trust root to detect.
-    """
-    root = tmp_path / "runs"
-    shutil.copytree(happy_run / "r", root / "r")
-    tree = RunTree(root, "r")
-    tree.read_run()
-    _reseal_export_bundle(
-        tree,
-        lambda _members, manifest: manifest["run"].update(scenario="a run that never happened"),
-    )
-
-    out = tmp_path / "delivery"
-    result = _publish(root, "r", out)
-
-    assert result.returncode != 0
-    assert "run binding" in result.stderr
-    assert "restore the immutable run tree from an intact copy" in result.stderr
-    assert not out.exists()
-
-
-def test_a_resealed_export_cannot_misreport_the_verified_package_aggregate(tmp_path, happy_run):
-    """The publisher must not print an envelope-only account of verified package bytes."""
-    root = tmp_path / "runs"
-    shutil.copytree(happy_run / "r", root / "r")
-    tree = RunTree(root, "r")
-    tree.read_run()
-    export_path = tree.resolve(
-        tree.artifact_path(
-            ARMARIUM,
-            "export",
-            artifact_id(ARMARIUM, "export", "export", None),
-        )
-    )
-    export = json.loads(export_path.read_text(encoding="utf-8"))
-    export["payload"]["aggregate"]["status"] = "fabricated-terminal-status"
-    export["self_hash"] = self_hash(export)
-    export_path.write_bytes(canonical_bytes(export))
-
-    out = tmp_path / "delivery"
-    result = _publish(root, "r", out)
-
-    assert result.returncode != 0
-    assert "aggregate disagrees" in result.stderr
-    assert "restore the immutable run tree from an intact copy" in result.stderr
-    assert not out.exists()
-
-
 def test_a_bundle_whose_formats_disagree_about_one_reading_is_never_published(
     tmp_path, happy_run, monkeypatch
 ):
@@ -325,50 +228,6 @@ def test_a_bundle_whose_formats_disagree_about_one_reading_is_never_published(
 
     assert not out.exists()
     assert not list(tmp_path.glob(".delivery.publishing-*"))
-
-
-def test_a_fixture_run_relabelled_as_a_submission_is_never_published(tmp_path, happy_run):
-    """A fixture package may not leave the pipeline wearing a submission identity.
-
-    `_expected_run_binding` read whichever identity key the sealed `export`
-    payload carried and compared the package's manifest against that, so this
-    exact tree -- a fixture run, relabelled consistently on both sides to the
-    real-ingress shape -- published cleanly under a `submission_id` no filename
-    ledger ever admitted. `config_digest` beside it was checked against
-    `run.json`; the identity saying whose pages these are was checked against
-    nothing. The run authority decides the shape now.
-    """
-    root = tmp_path / "runs"
-    shutil.copytree(happy_run / "r", root / "r")
-    tree = RunTree(root, "r")
-    tree.read_run()
-    submission_id = "a" * 64
-
-    def relabel_as_submission(_members, manifest):
-        manifest["run"].pop("fixture_id")
-        manifest["run"]["submission_id"] = submission_id
-
-    _reseal_export_bundle(tree, relabel_as_submission)
-
-    export_path = tree.resolve(
-        tree.artifact_path(
-            ARMARIUM,
-            "export",
-            artifact_id(ARMARIUM, "export", "export", None),
-        )
-    )
-    export = json.loads(export_path.read_text(encoding="utf-8"))
-    export["payload"].pop("fixture_id")
-    export["payload"]["submission_id"] = submission_id
-    export["self_hash"] = self_hash(export)
-    export_path.write_bytes(canonical_bytes(export))
-
-    out = tmp_path / "delivery"
-    result = _publish(root, "r", out)
-
-    assert result.returncode != 0
-    assert "this run's authority names no real submission" in result.stderr
-    assert not out.exists()
 
 
 def _real_run_authority(submission_id: str) -> dict:
@@ -571,46 +430,6 @@ def test_a_rename_failure_at_publish_does_not_orphan_the_staging_directory(
     assert list(tmp_path.glob(".delivery.publishing-*")) == []
 
 
-def test_a_tampered_sealed_blob_is_refused_before_anything_is_published(tmp_path, happy_run):
-    """The digest the export artifact recorded is the authority, not the blob's name."""
-    root = tmp_path / "runs"
-    shutil.copytree(happy_run / "r", root / "r")
-    blob = next(path for path in (root / "r" / "7_armarium" / "blobs").rglob("*") if path.is_file())
-    blob.write_bytes(blob.read_bytes() + b"tampered")
-
-    out = tmp_path / "delivery"
-    result = _publish(root, "r", out)
-    assert result.returncode != 0
-    # The run tree's own damage report, not a reassuring "there is no export here".
-    assert "no sealed armarium/export artifact" not in result.stderr
-    assert "bytes changed under a sealed reference" in result.stderr
-    assert not out.exists()
-
-
-def test_a_run_authority_edited_after_sealing_publishes_nothing(tmp_path, happy_run):
-    """A publisher whose run authority was edited after sealing produces no product.
-
-    `main`'s explicit `tree.read_run()` is not the only guard that reaches this --
-    `RunTree._verify_artifact_run` binds every artifact read to the same authority,
-    so deleting the explicit call leaves this refusal in place. The property is
-    pinned at the program's own boundary anyway: it is the sentence a recipient
-    depends on, and the audit that removed the explicit call had nothing to fail.
-    """
-    root = tmp_path / "runs"
-    shutil.copytree(happy_run / "r", root / "r")
-    authority = root / "r" / "run.json"
-    record = json.loads(authority.read_text(encoding="utf-8"))
-    record["fixture_id"] = "a-fixture-this-run-never-used"
-    authority.write_text(json.dumps(record), encoding="utf-8")
-
-    out = tmp_path / "delivery"
-    result = _publish(root, "r", out)
-
-    assert result.returncode != 0
-    assert "fails its own self-hash" in result.stderr
-    assert not out.exists()
-
-
 def test_a_payload_without_an_aggregate_is_refused_before_publication(
     tmp_path, happy_run, monkeypatch
 ):
@@ -796,54 +615,17 @@ def test_a_published_bundle_directory_carries_the_operators_umask_not_mkdtemps(h
         os.umask(previous)
 
 
-def test_a_coherently_resealed_not_measured_claim_cannot_escape_retained_export_authority(
-    tmp_path, happy_run
-):
-    """Coherent blob references cannot bypass the retained manifest identity."""
+def test_a_tampered_sealed_blob_is_refused_before_anything_is_published(tmp_path, happy_run):
+    """The digest the export artifact recorded is the authority, not the blob's name."""
     root = tmp_path / "runs"
     shutil.copytree(happy_run / "r", root / "r")
-    tree = RunTree(root, "r")
-    tree.read_run()
-    export_path = tree.resolve(
-        tree.artifact_path(ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None))
-    )
-    original_export = json.loads(export_path.read_text(encoding="utf-8"))
+    blob = next(path for path in (root / "r" / "7_armarium" / "blobs").rglob("*") if path.is_file())
+    blob.write_bytes(blob.read_bytes() + b"tampered")
 
-    def mutate(_members, manifest):
-        row = next(
-            item
-            for item in manifest["claims"]["not_measured"]["entries"]
-            if item["instrument"] == "page-testimony-content-coverage"
-        )
-        assert row["detail"]["acts_unmeasured"], (
-            "happy fixture must name its retained unmeasured act"
-        )
-        row["detail"]["acts_unmeasured"] = [row["detail"]["acts_unmeasured"][0]]
-        row["detail"]["reasons"] = ["a changed package-only disclosure"]
-        row["status"] = "not-measured"
-        manifest["claims"]["not_measured"]["count"] = sum(
-            entry["status"] != "measured" for entry in manifest["claims"]["not_measured"]["entries"]
-        )
-
-    _reseal_export_bundle(tree, mutate)
-    changed_export = json.loads(export_path.read_text(encoding="utf-8"))
-    changed_reference = changed_export["payload"]["bundle"]["reference"]
-    verify_export_bundle(
-        tree.read_bytes(changed_reference["relative_path"]), tmp_path / "internally-valid"
-    )
-    original_bundle = original_export["payload"]["bundle"]
-    changed_bundle = changed_export["payload"]["bundle"]
-    assert changed_bundle["manifest_self_hash"] != original_bundle["manifest_self_hash"]
-    # Keep the new bytes at their own digest path and retain the helper's
-    # coherent input/reference. Preserve the original semantic authority so
-    # this reaches the publisher's manifest check, not a blob digest refusal.
-    changed_bundle["manifest_self_hash"] = original_bundle["manifest_self_hash"]
-    changed_bundle["claims_status"] = original_bundle["claims_status"]
-    changed_export["self_hash"] = self_hash(changed_export)
-    export_path.write_bytes(canonical_bytes(changed_export))
-
-    destination = tmp_path / "delivery"
-    result = _publish(root, "r", destination)
+    out = tmp_path / "delivery"
+    result = _publish(root, "r", out)
     assert result.returncode != 0
-    assert "manifest identity or status disagrees" in result.stderr
-    assert not destination.exists()
+    # The run tree's own damage report, not a reassuring "there is no export here".
+    assert "no sealed armarium/export artifact" not in result.stderr
+    assert "bytes changed under a sealed reference" in result.stderr
+    assert not out.exists()

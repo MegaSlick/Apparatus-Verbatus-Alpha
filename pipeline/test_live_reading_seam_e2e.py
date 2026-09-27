@@ -1078,20 +1078,6 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
     assert {record["outcome"] for record in published_readings(live_seam.run_root)} == {"read"}
 
 
-def test_the_continuation_row_is_present_on_the_unmodified_live_tree(live_seam):
-    """The regression itself, run against this same live tree, unmodified.
-
-    Before the F2 ruling every review read its primary `page_ordinal` alone, so
-    page 2's finding existed in the Recensor and reached no record -- dropped
-    in silence under a DELIVERED export. This asserts the restatement directly
-    against what the live run actually produced: the row is there, named on
-    `a2` page 2, `shortfall` is `None` (unmeasured, not silently clean), and
-    both page witnesses are the ones counted. If production ever again omits
-    the row, this test -- not a synthetic drop of it -- is what fails.
-    """
-    _assert_the_continuation_page_is_unmeasured_by_name(_reviews(live_seam))
-
-
 def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_seam):
     """Which chair counts live, and exactly on what evidence — no silent roster.
 

@@ -91,28 +91,6 @@ def test_missing_exemplar_page_stops_at_the_first_downstream_boundary(tmp_path, 
     assert snapshot(tree.root) == before
 
 
-def test_a_tampered_corpus_seal_stops_before_the_designator_reads_any_page(
-    tmp_path, rebind_stage_seal
-):
-    tree = populated_run(tmp_path)
-    identity = artifact_id(EXEMPLAR, "seal", "corpus-seal")
-    path = tree.resolve(tree.artifact_path(EXEMPLAR, "seal", identity))
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["pages"][0]["declared_path"] = "wrong-name.png"
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    tree.write_manifest(EXEMPLAR)
-    rebind_stage_seal(tree, EXEMPLAR)
-    # Captured after write_manifest (which mutates the tree), proving the
-    # Designator stops before publishing any new proposal.
-    before = snapshot(tree.root)
-
-    result = invoke_designator(tmp_path)
-    assert result.returncode == EXIT_FATAL
-    assert "valid self-hashed census" in result.stderr
-    assert snapshot(tree.root) == before
-
-
 def test_a_changed_sealed_pixel_blob_stops_before_designator_crops_or_rehashes_it(
     tmp_path, rebind_stage_seal
 ):

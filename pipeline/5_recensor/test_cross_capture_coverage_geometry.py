@@ -20,10 +20,6 @@ from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
-# How many recovery-request gates run.py contains. Pinned so a new origin
-# cannot appear without a seat reading it against the ink-evidence rule.
-EXPECTED_RECOVERY_GATES = 1
-
 A = "a" * 64
 B = "b" * 64
 

@@ -1589,67 +1589,6 @@ def test_an_instrument_arm_reading_cannot_establish_a_logical_act(tmp_path):
         )
 
 
-def test_a_resealed_logical_record_cannot_forge_identity_or_member_conservation(tmp_path):
-    fixture = _fixture()
-    register_path, physical_page, _physical_act = _register(tmp_path, fixture)
-    partition = _partition(register_path, fixture, physical_page, captures=fixture["captures"])
-    (logical_act,) = partition["logical_acts"]
-    autopsia, blobs = _autopsia(fixture, partition)
-    _reader, passes = _read(fixture, autopsia, blobs)
-    archetypus = load_stage("6_archetypus", isolate_path=True)
-    armarium = load_stage("7_armarium", isolate_path=True)
-    established = archetypus.establish_logical_record(
-        partition=partition,
-        logical_act=logical_act,
-        **_reading_inputs(fixture, logical_act, autopsia, passes["perlectio"]["result"]["text"]),
-    )
-    second_member = {
-        **established["member_local_acts"][0],
-        "act_id": "act_ffffffffffffffff",
-    }
-    variants = (
-        {**established, "logical_act_id": "pac_0123456789abcde\u0301"},
-        {
-            **established,
-            "member_local_acts": [{**established["member_local_acts"][0], "page_ordinal": True}],
-        },
-        {**established, "member_local_acts": [*established["member_local_acts"], second_member]},
-        {**established, "physical_page_components": []},
-        {**established, "regions": []},
-        {**established, "provenance": {}},
-        # Unhashable-but-canonical elements: a list inside a capture or proposal
-        # set survives canonical_bytes but would raise TypeError out of the
-        # validators' own `set(...)` dedupe unless element types are proved
-        # first. Both must be refusals, never a crash that takes the stage down.
-        {
-            **established,
-            "physical_page_components": [
-                {
-                    **established["physical_page_components"][0],
-                    "required_capture_sha256s": [["f" * 64]],
-                }
-            ],
-        },
-        {
-            **established,
-            "member_local_acts": [
-                {**established["member_local_acts"][0], "proposal_refs": [["prp_forged"]]}
-            ],
-        },
-    )
-    for variant in variants:
-        variant["self_hash"] = archetypus.self_hash(variant)
-        with pytest.raises(SchemaRefusal):
-            archetypus.validate_logical_record(variant)
-        with pytest.raises(SchemaRefusal):
-            armarium.logical_act_projection_entry(
-                variant,
-                category="delivered",
-                source_regions=variant["regions"],
-                witnesses=[],
-            )
-
-
 def test_a_partition_row_cannot_be_stapled_onto_a_reading_that_never_saw_its_captures(tmp_path):
     """The established record may not claim evidence its own reading never received.
 

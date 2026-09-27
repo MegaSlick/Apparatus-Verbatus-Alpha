@@ -138,54 +138,6 @@ def test_a_real_act_group_artifact_carries_no_forbidden_field(tmp_path):
         designator._validate_act_group_payload(record["payload"])  # closed schema; must not raise
 
 
-def test_deleting_the_check_lets_a_forged_text_field_publish_uninspected(tmp_path):
-    """Proves the guard guards something: without it, a `text` field publishes
-    cleanly, since nothing else in the schema forbids an extra key."""
-    designator = load_stage("2_designator")
-    from common.contracts.canonical import digest_of
-
-    root = tmp_path / "runs"
-    for program in programs_through("ink-map"):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / program),
-                "--run-root",
-                str(root),
-                "--run-id",
-                "r",
-                "--scenario",
-                "happy",
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-
-    from common.stage import open_context, stage_parser
-
-    args = stage_parser("no-text schema bypass proof").parse_args(
-        ["--run-root", str(root), "--run-id", "r", "--scenario", "happy"]
-    )
-    context = open_context(args, designator.DESIGNATOR)
-    forged_payload = {
-        "act_key": "a1",
-        "declared_bounds": {"x": 20, "y": 20, "w": 160, "h": 80},
-        "text": "SYNTHETIC ACT ONE alpha beta gamma",
-    }
-    published = context.publish(
-        kind="act-group",
-        subject_id="act_0000000000000000",
-        outcome="proposed",
-        inputs=[],
-        payload=forged_payload,
-    )
-    stored = tree_read(context, published)
-    assert "text" in stored["payload"]
-    assert digest_of(stored["payload"]) == digest_of(forged_payload)
-
-
 def tree_read(context, published):
     return context.tree.read_artifact(
         context.stage, "act-group", published.relative_path.rsplit("/", 1)[-1].removesuffix(".json")

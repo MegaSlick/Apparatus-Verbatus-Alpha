@@ -288,15 +288,12 @@ def test_the_verdict_is_invariant_under_uniform_rescaling(scale):
         assert at_scale is at_fixture, (text, scale)
 
 
-# --------------------------------------------------------------------------
-# Calibration pins, the way `common/test_designator_recensor_ink_calibration.py`
-# pins the ink thresholds: the sealed value, what it was reasoned against, and
-# the one property the fixture forces on it, so a moved number fails here
-# naming the reason rather than somewhere downstream naming a held act.
-
-
-@pytest.mark.xfail(strict=True, reason="A clean one-line cutoff is classified complete")
-def test_a_real_act_crop_cut_off_after_one_line_is_not_caught_by_the_length_signal():
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="Principle 2: a one-line cutoff at leaf geometry is silently classified complete",
+)
+def test_a_real_act_crop_cut_off_after_one_line_must_not_be_complete():
     cut_off = "L'an mil sept cent quarante deux le douze de may"[:40]
     assert (
         classify(cut_off, region_pixels=2400 * 420, page_pixels=LEAF_PAGE, stop_reason="stop")[

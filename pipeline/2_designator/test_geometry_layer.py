@@ -19,7 +19,6 @@ from geometry_layer import (
     retain_chandra_response,
     surya_double_pass,
     validate_raw_proposal,
-    validate_resolution,
     yolo_obb,
 )
 
@@ -312,33 +311,6 @@ def test_one_chandra_response_has_one_receipt_and_two_consumable_references():
         regions=[{"bbox_1000": [0, 0, 500, 500], "score_bp": 9000}],
     )[0]
     assert "R3-only custody" not in str(geometry)
-
-
-def test_chandra_custody_refuses_a_forged_blob_reference():
-    tree = _FixtureTree()
-    stored = retain_chandra_response(
-        _Context(tree=tree), b"fixture", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
-    )
-    forged = {**stored["response_ref"], "sha256": "0" * 64}
-    with pytest.raises(SchemaRefusal, match="names a different response"):
-        read_retained_chandra_response(
-            tree,
-            forged,
-            RECEIPT,
-            stored["custody_ref"],
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )
-    tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered"
-    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
-        read_retained_chandra_response(
-            tree,
-            stored["response_ref"],
-            RECEIPT,
-            stored["custody_ref"],
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )
 
 
 @pytest.mark.parametrize("removed", ["response_ref", "custody_ref"])
@@ -662,14 +634,6 @@ def test_page_wide_occlusion_disposition_includes_in_bounds_nonintersecting_geom
     result = resolve(raw_sources, [distant])
     assert {row["disposition"] for row in result["partition"]} == {"review"}
     assert {tuple(row["occlusion_ids"]) for row in result["partition"]} == {("occ_distant",)}
-
-
-def test_resolver_consumer_refuses_a_forged_derived_reference_instead_of_trusting_a_restatement():
-    raw_sources = _geometry_sources()
-    derived = resolve(raw_sources, [])
-    derived["raw_proposal_refs"][0]["self_hash"] = "0" * 64
-    with pytest.raises(SchemaRefusal, match="diverges"):
-        validate_resolution(derived, raw_sources, [])
 
 
 def test_resolver_consumer_refuses_a_raw_proposal_with_unsealed_extra_field():

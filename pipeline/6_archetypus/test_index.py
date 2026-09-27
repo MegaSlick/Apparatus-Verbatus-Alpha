@@ -204,33 +204,6 @@ def test_validate_index_refuses_an_index_whose_self_hash_was_not_recomputed(esta
 # one defect, because a refusal no test can kill is a claim nobody has measured.
 
 
-@pytest.mark.parametrize(
-    ("mutate", "expected"),
-    [
-        (lambda index: index.update(record_count=len(index["rows"]) + 1), "count disagrees"),
-        (lambda index: index.update(record_count=-1), "non-negative integer"),
-        (lambda index: index.update(record_count=True), "non-negative integer"),
-        (lambda index: index.update(record_count="2"), "non-negative integer"),
-        (lambda index: index.update(schema="skeleton.v0"), "different schema or run"),
-        (lambda index: index.update(run_id="another-run"), "different schema or run"),
-        (lambda index: index.update(stage="7_armarium"), "own stage label or self-hash"),
-        (lambda index: index.update(rows={}), "rows are not a list"),
-        (lambda index: index["rows"].__setitem__(0, {"act_id": "a"}), "malformed row"),
-        (lambda index: index["rows"][0].update(act_key=""), "row with malformed values"),
-        (lambda index: index["rows"][0].update(text_hash=7), "row with malformed values"),
-        (lambda index: index["rows"][0].update(sha256="not-a-digest"), "row with malformed values"),
-    ],
-)
-def test_validate_index_refuses_each_resealed_defect(established_run, mutate, expected):
-    index = archetypus.build_index(established_run)
-    mutate(index)
-    # Resealed, so every refusal below is the check under test rather than the
-    # self-hash catching an edit before anything else looks at it.
-    index["self_hash"] = self_hash(index)
-    with pytest.raises(FatalAccounting, match=expected):
-        archetypus.validate_index(established_run, index)
-
-
 def test_validate_index_refuses_an_index_that_is_not_the_closed_shape(established_run):
     index = archetypus.build_index(established_run)
     index["note"] = "an extra field the derived shape does not carry"

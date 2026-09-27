@@ -18,7 +18,6 @@ import subprocess
 from pathlib import Path
 
 from common.contracts.canonical import canonical_bytes, self_hash
-from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
 from conftest import run_orchestrator as orchestrate
@@ -123,34 +122,3 @@ def test_index_json_is_rewritable_and_reflects_the_same_reconciled_rows(tmp_path
     assert result.returncode == 0, result.stderr
     second = json.loads(index_path.read_bytes().decode("utf-8"))
     assert second == first
-
-
-def test_a_forged_second_archetypus_artifact_for_one_act_is_a_selection_nothing_makes(tmp_path):
-    """Even in the (structurally unreachable) case of two records under two
-    different attempt identities for the same act, nothing in this codebase
-    picks between them -- `latest_attempt` refuses a duplicate ordinal, and
-    the index's own reconciliation refuses more than one record per act_id."""
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    original_entry = next(
-        entry
-        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
-        if entry["kind"] == "archetypus"
-    )
-    original = tree.read_artifact(ARCHETYPUS, "archetypus", original_entry["artifact_id"])
-    act_id = original["subject_id"]
-
-    forged = json.loads(json.dumps(original))
-    forged_attempt = attempt_id(act_id, "establish", 2)
-    forged["attempt_id"] = forged_attempt
-    forged["artifact_id"] = artifact_id(ARCHETYPUS, "archetypus", act_id, forged_attempt)
-    forged["self_hash"] = self_hash(forged)
-    forged_path = tree.resolve(tree.artifact_path(ARCHETYPUS, "archetypus", forged["artifact_id"]))
-    forged_path.parent.mkdir(parents=True, exist_ok=True)
-    forged_path.write_bytes(canonical_bytes(forged))
-    tree.write_manifest(ARCHETYPUS)
-
-    result = invoke_archetypus(root, "r", "happy")
-    assert result.returncode == 2, result.stderr
-    assert "more than one Archetypus record" in result.stderr

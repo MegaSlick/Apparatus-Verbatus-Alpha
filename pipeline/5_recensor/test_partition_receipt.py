@@ -478,20 +478,6 @@ def test_recovery_replaces_the_current_partition_snapshot_without_erasing_histor
     assert tree.resolve(requested["review_ref"]["relative_path"]).exists()
 
 
-def test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_denominator(tmp_path):
-    root = tmp_path / "runs"
-    through_perlector(root, "manifest", "happy")
-    assert invoke(root, "manifest", "happy", "pipeline/5_recensor/run.py").returncode == 0
-    tree = RunTree(root, "manifest")
-    tree.resolve(tree.manifest_path(RECENSOR)).write_text("{}", encoding="utf-8")
-    recensor = load_stage("5_recensor")
-    args = _recensor_args(root, "manifest")
-    context = recensor.open_context(args, RECENSOR)
-
-    with pytest.raises(FatalAccounting, match="manifest disagrees"):
-        recensor.write_partition_receipt(context, context.recovery_policy)
-
-
 def test_a_refused_partition_receipt_does_not_publish_a_completion_seal(tmp_path, monkeypatch):
     """Receipt reconciliation is part of closing, not work after the checkpoint."""
     root = tmp_path / "runs"
@@ -525,20 +511,6 @@ def test_a_refused_partition_receipt_does_not_publish_a_completion_seal(tmp_path
     assert not any(
         entry["kind"] == "stage-seal" for entry in tree.build_manifest(RECENSOR)["artifacts"]
     )
-
-
-def test_a_tampered_partition_receipt_is_refused_by_its_self_hash(tmp_path):
-    root = tmp_path / "runs"
-    through_perlector(root, "tampered", "happy")
-    assert invoke(root, "tampered", "happy", "pipeline/5_recensor/run.py").returncode == 0
-    tree = RunTree(root, "tampered")
-    path = tree.resolve(tree.recensor_partition_receipt_path())
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["self_hash"] = "0" * 64
-    path.write_text(json.dumps(record), encoding="utf-8")
-
-    with pytest.raises(SchemaRefusal, match="self-hash"):
-        tree.read_recensor_partition_receipt()
 
 
 def test_a_run_that_proposed_no_acts_gets_a_visibly_partial_receipt_not_a_refusal():

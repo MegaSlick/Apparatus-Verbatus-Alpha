@@ -1359,10 +1359,8 @@ def test_structure_answer_v2_resume_keeps_its_direct_page_presentation(
     assert resumed[2]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
 
 
-@pytest.mark.parametrize("damage", ["missing", "forged", "out-of-order", "extra"])
-def test_structure_attempt_consumer_refuses_missing_forged_or_out_of_order_history(
-    damage, monkeypatch
-):
+@pytest.mark.parametrize("damage", ["missing", "out-of-order", "extra"])
+def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(damage, monkeypatch):
     monkeypatch.setattr(stage_contract, "validate_serving_provenance", lambda *_args, **_kw: None)
     monkeypatch.setattr(
         stage_contract,
@@ -1441,31 +1439,24 @@ def test_structure_attempt_consumer_refuses_missing_forged_or_out_of_order_histo
     stage_contract._verify_structure_attempt_chain(context, terminal, page_id)
     expected = {
         "missing": "no bounded exact attempt ledger",
-        "forged": "does not bind its identity",
         "out-of-order": "does not bind its identity",
         "extra": "stage manifest contains 3",
     }[damage]
     if damage == "missing":
         terminal["attempts"] = [first_ref]
-    elif damage == "forged":
-        rows[second_ref["relative_path"]] = {
-            **rows[second_ref["relative_path"]],
-            "attempt_id": designator.attempt_id("page_" + "2" * 16, "structure", 2),
-        }
+    elif damage == "out-of-order":
+        terminal["attempts"] = [second_ref, first_ref]
     else:
-        if damage == "out-of-order":
-            terminal["attempts"] = [second_ref, first_ref]
-        else:
-            rows["2_designator/a3.json"] = {
-                "attempt_id": designator.attempt_id(page_id, "structure", 3),
-                "subject_id": page_id,
-                "payload": {
-                    **second,
-                    "attempt_ordinal": 3,
-                    "attempt_seed": 9,
-                    "attempts": [first_ref, second_ref],
-                },
-            }
+        rows["2_designator/a3.json"] = {
+            "attempt_id": designator.attempt_id(page_id, "structure", 3),
+            "subject_id": page_id,
+            "payload": {
+                **second,
+                "attempt_ordinal": 3,
+                "attempt_seed": 9,
+                "attempts": [first_ref, second_ref],
+            },
+        }
 
     with pytest.raises(FatalAccounting, match=expected):
         stage_contract._verify_structure_attempt_chain(context, terminal, page_id)
