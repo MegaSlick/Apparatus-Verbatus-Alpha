@@ -268,7 +268,7 @@ def test_two_nested_report_paths_naming_one_file_are_refused() -> None:
         if item == "--report-path":
             nested[index + 1] = collision
 
-    with pytest.raises(ValueError, match="name one file"):
+    with pytest.raises(ValueError, match="collides with the run report"):
         validated_pod_request(_with_nested_argv(filled_request(), nested))
 
 

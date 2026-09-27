@@ -97,7 +97,7 @@ class RecordedRunner:
     # The records a real orchestrator run leaves beside the report: the runner
     # tees the transcript and the orchestrator journals its stage timings. A
     # fake that left neither would make every run read as one whose records
-    # never came home, which pod_run now holds for review.
+    # never came home.
     write_transcript: bool = True
     journal_run_id: str | None = "first-real-run"
     journal_entries: int = 1
@@ -122,12 +122,10 @@ class RecordedRunner:
                 transcript.name.replace("-transcript.log", "-timings.json")
             )
             journal.write_text(
-                json.dumps(
-                    {
-                        "schema": "stage-timing-journal.v1",
-                        "run_id": self.journal_run_id,
-                        "entries": [{}] * self.journal_entries,
-                    }
+                "".join(
+                    json.dumps({"schema": "stage-timing-journal.v2", "run_id": self.journal_run_id})
+                    + "\n"
+                    for _ in range(self.journal_entries)
                 ),
                 encoding="utf-8",
             )
@@ -732,9 +730,38 @@ def test_refuses_a_run_report_path_that_is_the_bootstrap_report_path(
     exit_code, _runner = _refused(ws, _run_argv(ws, report_path=ws.report_path))
 
     assert exit_code == EXIT_REFUSED
-    assert "two records" in capsys.readouterr().err
+    assert "collides" in capsys.readouterr().err
     assert ws.report_path.read_bytes() == b"the bootstrap's own record"
     assert not (ws.volume / "pod-run-report.json").exists()
+
+
+@pytest.mark.parametrize("bootstrap_record", ("report", "journal"))
+@pytest.mark.parametrize("side", ("report", "hold", "liveness", "timings", "transcript.log"))
+def test_refuses_a_bootstrap_record_colliding_with_any_run_report_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], bootstrap_record: str, side: str
+) -> None:
+    ws = _prepared(tmp_path)
+    run_report = ws.volume / "pod-run-report.json"
+    collision = (
+        run_report
+        if side == "report"
+        else run_report.with_name(
+            f"{run_report.stem}-{side}{run_report.suffix if side != 'transcript.log' else ''}"
+        )
+    )
+    if bootstrap_record == "report":
+        ws.report_path = collision
+    else:
+        ws.journal = collision
+    collision.write_bytes(b"bootstrap evidence")
+
+    exit_code, _runner = _refused(ws, _run_argv(ws, report_path=run_report))
+
+    assert exit_code == EXIT_REFUSED
+    assert "collides" in capsys.readouterr().err
+    assert collision.read_bytes() == b"bootstrap evidence"
+    if collision != run_report:
+        assert not run_report.exists()
 
 
 def test_refuses_a_run_report_path_outside_the_volume(
@@ -1886,33 +1913,30 @@ def test_a_complete_run_whose_named_records_all_came_home_reports_nothing_missin
     }
 
 
-def test_a_completed_run_whose_timing_journal_never_landed_is_held_not_complete(
+def test_a_completed_run_whose_timing_journal_never_landed_stays_complete(
     tmp_path: Path,
 ) -> None:
-    """The orchestrator journals best-effort and says so on stderr; the report that
-    names the journal must not read `complete` over its absence (nothing is lost
-    silently). The run is held for review, and holds to the deadline as a complete
-    run would, so the meter does not change."""
+    """A failed stopwatch is visible in the report but does not hold output."""
 
     ws = _prepared(tmp_path)
     report = _run_with(ws, RecordedRunner(returncode=0, ticks=1, journal_run_id=None))
 
-    assert report["state"] == "held"
-    assert report["exit_code"] == EXIT_HELD
+    assert report["state"] == "complete"
+    assert report["exit_code"] == EXIT_COMPLETE
     assert report["orchestrator_exit"] == 0
     assert report["held_to_hard_deadline"] is True
     assert report["records_missing"] == ["timing_journal"]
     assert report["records_at_close"]["timing_journal"]["present"] is False
-    assert report["detail"].startswith("the orchestrator completed, but")
+    assert "records this report names" in report["detail"]
     assert "timing_journal" in report["detail"]
     assert str(ws.volume / "pod-run-report-transcript.log") in report["detail"]
-    assert _report(ws, "pod-run-report-hold.json")["state"] == "holding-after-held"
+    assert _report(ws, "pod-run-report-hold.json")["state"] == "holding-after-complete"
 
 
 @pytest.mark.parametrize(
     ("runner", "failure_fragment"),
     [
-        (RecordedRunner(returncode=0, journal_run_id="some-other-run"), "some-other-run"),
+        (RecordedRunner(returncode=0, journal_run_id="some-other-run"), "has no entries"),
         (RecordedRunner(returncode=0, journal_entries=0), "has no entries"),
     ],
 )
@@ -1922,7 +1946,7 @@ def test_a_journal_that_is_not_this_runs_or_is_empty_counts_as_missing(
     ws = _prepared(tmp_path)
     report = _run_with(ws, runner)
 
-    assert report["state"] == "held"
+    assert report["state"] == "complete"
     assert report["records_missing"] == ["timing_journal"]
     entry = report["records_at_close"]["timing_journal"]
     assert entry["present"] is True
@@ -1959,35 +1983,20 @@ def test_a_transcript_the_runner_reports_incomplete_holds_the_run(tmp_path: Path
     assert entry["failure"] == "the transcript write failed"
 
 
-def test_an_oversized_or_pathological_journal_is_unreadable_not_an_escape(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The audit runs before the final report is written; a journal the decoder
-    cannot take must be a named failure in that report, never an exception that
-    leaves the report saying `running`."""
-
+@pytest.mark.parametrize("later_entry", (False, True))
+def test_a_torn_timing_line_is_skipped(tmp_path: Path, later_entry: bool) -> None:
     ws = _prepared(tmp_path)
-    monkeypatch.setattr(pod_run, "TIMING_JOURNAL_READ_BYTES", 64)
-    runner = RecordedRunner(returncode=0, journal_entries=50)
-    report = _run_with(ws, runner)
-    assert report["records_missing"] == ["timing_journal"]
-    assert "larger than 64 bytes" in report["records_at_close"]["timing_journal"]["failure"]
-
-    monkeypatch.setattr(pod_run, "TIMING_JOURNAL_READ_BYTES", 4 * 1024 * 1024)
+    report = _run_with(ws, RecordedRunner(returncode=0, journal_entries=2))
+    journal = Path(report["timing_journal_path"])
+    torn = b'{"run_id":"first-real-run"'
+    later = b'\n{"run_id":"first-real-run"}\n' if later_entry else b""
+    journal.write_bytes(journal.read_bytes() + torn + later)
     plan = object.__new__(pod_run.RunPlan)
-    object.__setattr__(plan, "report_path", tmp_path / "audit.json")
+    object.__setattr__(plan, "report_path", ws.volume / "pod-run-report.json")
     object.__setattr__(plan, "run_id", "first-real-run")
-    plan.transcript_path.write_bytes(b"x")
-    plan.liveness_path.write_bytes(b"{}")
-    # The nesting wraps a 4,301-digit integer, as the branch's other deep-nesting
-    # regressions do: 3.12 recurses out of the decoder and 3.14 walks the nesting
-    # and refuses the integer at its own digit limit, so the audit lands in its
-    # unreadable path on either interpreter rather than on a shape check that
-    # happens to agree.
-    plan.timing_journal_path.write_bytes(b"[" * 10_000 + b"9" * 4301 + b"]" * 10_000)
     audit, missing = pod_run._records_at_close(plan)
-    assert missing == ["timing_journal"]
-    assert audit["timing_journal"]["failure"].startswith("unreadable: ")
+    assert missing == []
+    assert audit["timing_journal"]["entries"] == 2 + later_entry
 
 
 def test_a_transcript_write_that_fails_part_way_is_reported_and_the_pipe_still_drains(

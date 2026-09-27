@@ -23,6 +23,19 @@ from common.credentials import looks_like_credential_field
 UTC = timezone.utc
 
 
+def run_report_paths(report: PurePosixPath) -> tuple[PurePosixPath, ...]:
+    """The run report and the side files derived from its name."""
+
+    return (
+        report,
+        *(
+            report.with_name(f"{report.stem}-{name}{report.suffix}")
+            for name in ("hold", "liveness", "timings")
+        ),
+        report.with_name(f"{report.stem}-transcript.log"),
+    )
+
+
 class PodRuntimeError(RuntimeError):
     """Base error for a closed, named pod-runtime refusal."""
 
@@ -566,7 +579,8 @@ def _required_timer_arguments(
     # after billing began -- the same shape as the nested report path before
     # ``launch`` learned to bind it.
     nested_halves = _nested_argv_halves(bootstrap)
-    seen_nested_paths: list[str] = []
+    report_paths: list[PurePosixPath] = []
+    bootstrap_journal: PurePosixPath | None = None
     for flag in NESTED_LAUNCH_BOUND_FLAGS:
         for half in nested_halves:
             nested_values = _nested_flag_values(half, flag)
@@ -597,17 +611,19 @@ def _required_timer_arguments(
                     "overwrite its evidence"
                 )
             if flag == "--report-path":
-                seen_nested_paths.append(nested_value)
-    # Two halves naming one file is the collision `pod_run.resolve_run_plan`
-    # refuses on the pod, after the pod exists and is billing. The launch
-    # token is folded into both names identically, so a pair that is equal
-    # here is still equal once sealed: refused before the create instead.
-    if len(seen_nested_paths) > 1 and len(set(seen_nested_paths)) != len(seen_nested_paths):
-        raise ValueError(
-            "pod bootstrap command's two nested --report-path values name one file; "
-            "the run report and the bootstrap report are two records and may not "
-            "overwrite each other"
-        )
+                report_paths.append(nested_path)
+            elif flag == "--journal":
+                bootstrap_journal = nested_path
+    if len(report_paths) == 2:
+        for name, bootstrap_path in (
+            ("bootstrap report", report_paths[1]),
+            ("bootstrap journal", bootstrap_journal),
+        ):
+            if bootstrap_path is not None and bootstrap_path in run_report_paths(report_paths[0]):
+                raise ValueError(
+                    f"pod bootstrap command's {name} path collides with the run report "
+                    "or one of its side files"
+                )
     # A bad interval would refuse inside the pod -- for a non-numeric value,
     # in argparse before the timer object even exists -- so refuse it here,
     # before any paid create, where refusals belong.  Both argv spellings the

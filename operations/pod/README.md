@@ -304,16 +304,17 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
 - `-liveness.json` — pid, tick and last seen while the orchestrator lives. `alive: true`
   stamped long before the deadline means the supervisor stopped while the child ran (an OOM
   kill or teardown).
-- `-timings.json` — one entry per stage invocation (member, operation, act, start, finish,
-  duration, exit code, commit). It is outside the run tree because the tree is pinned
+- `-timings.json` — append-only JSON lines, one entry per stage invocation (run id,
+  member, operation, act, start, finish, duration, exit code, commit). A torn final
+  line is skipped when read. It is outside the run tree because the tree is pinned
   byte-identical across reruns and restores and a clock is not. `run.json` names only the
   commit that created the run; a resume at another commit shows here. (Binding the commit
   into the run authority would refuse every resume after a fix.)
 - `-hold.json` — the hold line after a finished run.
 
-These are best-effort, so a lost stopwatch never abandons a running orchestrator. The
-report audits them at close (`records_at_close`, `records_missing`); a completed run missing
-any is reported `held` (exit 3), since the timings are what the first live run measures.
+These are best-effort, so a lost stopwatch never abandons or holds a completed run. The
+report audits them at close (`records_at_close`, `records_missing`); a missing transcript
+or liveness record still holds the run for review.
 
 ### `notify_hooks.py`: phone notifications
 

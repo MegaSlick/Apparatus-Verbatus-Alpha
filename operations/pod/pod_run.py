@@ -35,7 +35,7 @@ cannot be mistaken for a completed run.  Whatever the outcome, the report at
 before the exit code says it.  The exceptions: the dry run writes no report at
 all (see below); a credential-looking argv, a missing ``--`` and a refused
 ``--report-path`` itself (missing, outside the volume, without the launch
-token, or the bootstrap's own report) are refused on stderr only, so no other
+token, or colliding with bootstrap evidence) are refused on stderr only, so no other
 record is overwritten; and a refused bootstrap argv is recorded in the
 bootstrap report, not the run report.
 
@@ -123,7 +123,7 @@ from .bootstrap_main import (
     refuse_credential_looking_argv,
 )
 from .durable import atomic_write, canonical_json
-from .models import utc_now
+from .models import run_report_paths, utc_now
 
 RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
@@ -146,10 +146,6 @@ TRANSCRIPT_TAIL_BYTES = 1 * 1024 * 1024
 # final run report from ever being written. The child
 # is dead by then, so nothing this waits for is the run's own output.
 TRANSCRIPT_READER_JOIN_SECONDS = 30.0
-# The stage-timing journal is read back at close to audit it; a file past this
-# bound is not a journal the orchestrator wrote and is not read whole.
-TIMING_JOURNAL_READ_BYTES = 4 * 1024 * 1024
-
 EXIT_COMPLETE = 0
 EXIT_REFUSED = 2
 EXIT_HELD = 3
@@ -399,11 +395,15 @@ def _named(value: Path | None, flag: str) -> Path:
 def _run_report_path(path: Path, bootstrap: Plan, launch_token: str | None) -> Path:
     report_path = _require_contained(path, bootstrap.volume_mount_path, "--report-path")
     _require_launch_token_named(report_path, launch_token, "--report-path", report_path=None)
-    if report_path == bootstrap.report_path:
-        raise RunRefusal(
-            "--report-path is the bootstrap's own report path; the run report and the "
-            "bootstrap report are two records and may not overwrite each other"
-        )
+    for name, bootstrap_path in (
+        ("report", bootstrap.report_path),
+        ("journal", bootstrap.journal),
+    ):
+        if bootstrap_path is not None and bootstrap_path in run_report_paths(report_path):
+            raise RunRefusal(
+                f"the bootstrap {name} collides with the run report or one of its side "
+                "files; name separate records"
+            )
     return report_path
 
 
@@ -728,16 +728,9 @@ def _records_at_close(
 ) -> tuple[dict[str, dict[str, object]], list[str]]:
     """What each record the report names actually left on the volume at close.
 
-    The orchestrator's stage-timing journal, the liveness record and the
-    transcript are all written best-effort by design: a stopwatch or a tick
-    must never be the reason a running orchestrator is abandoned, so each
-    writer says so on stderr and carries on. That stderr line lives in the
-    transcript, which is bounded, and nothing else said whether the file the
-    report *names* was actually there -- a fetched report could read
-    ``complete`` over an absent journal. This audits the three at close and names each missing, unreadable
-    or foreign one in the report itself, and a run whose named records did
-    not all come home is held rather than complete, so the absence is a
-    durable fact in the state rather than a line a reader has to grep for.
+    Audit the three best-effort records beside the run tree. Their absences
+    are named in the report; the stopwatch never changes a completed run's
+    state.
 
     ``transcript_failure`` is what the runner reports about its own tee: a
     transcript whose pump failed part-way, or whose reader was still attached
@@ -760,25 +753,23 @@ def _records_at_close(
             missing.append(name)
         elif name == "timing_journal":
             try:
+                entries = 0
                 with path.open("rb") as handle:
-                    data = handle.read(TIMING_JOURNAL_READ_BYTES + 1)
-                if len(data) > TIMING_JOURNAL_READ_BYTES:
-                    raise ValueError(
-                        f"larger than {TIMING_JOURNAL_READ_BYTES} bytes, which no stage-timing "
-                        "journal the orchestrator writes is"
-                    )
-                journal = json.loads(data.decode("utf-8"))
-                entries = journal.get("entries") if isinstance(journal, dict) else None
-                owner = journal.get("run_id") if isinstance(journal, dict) else None
-                entry["entries"] = len(entries) if isinstance(entries, list) else None
-                entry["run_id_matches"] = owner == plan.run_id
-                if not entry["entries"] or not entry["run_id_matches"]:
-                    # No entries is as missing as no file: at least one stage
-                    # ran, so an empty journal is a journal every write failed.
+                    for line in handle:
+                        if not line.endswith(b"\n"):
+                            break  # A stopped writer may leave a torn final line.
+                        try:
+                            record = json.loads(line)
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            continue  # A later append can leave a torn line in the middle.
+                        if not isinstance(record, dict):
+                            raise ValueError("timing line is not an object")
+                        entries += record.get("run_id") == plan.run_id
+                entry["entries"] = entries
+                entry["run_id_matches"] = entries > 0
+                if not entries:
                     entry["failure"] = (
-                        f"the journal at {path} belongs to run {owner!r} or has no entries; "
-                        "the orchestrator refuses to merge into a foreign journal and says "
-                        "so in the transcript"
+                        f"the journal at {path} has no entries for run {plan.run_id!r}"
                     )
                     missing.append(name)
             except (OSError, ValueError, RecursionError, MemoryError) as error:
@@ -1158,14 +1149,7 @@ def main(
             f"run's: {', '.join(records_missing)}; the writer's own reason is in "
             f"{plan.transcript_path} if that survived"
         )
-        if exit_code == EXIT_COMPLETE:
-            # A run is not complete while a record its own report names is
-            # missing: the timings are what the first live run exists to
-            # measure, and a transcript or liveness record that never landed
-            # is the diagnosis a later session would go looking for. It is
-            # held for review rather than failed -- the run tree is intact and
-            # the orchestrator finished -- and `held` holds to the hard
-            # deadline exactly as `complete` does, so the meter is unchanged.
+        if exit_code == EXIT_COMPLETE and any(name != "timing_journal" for name in records_missing):
             exit_code = EXIT_HELD
             state = _STATE_FOR_EXIT[exit_code]
             holding = True

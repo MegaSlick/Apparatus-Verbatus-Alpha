@@ -4761,6 +4761,54 @@ def test_a_pod_run_shaped_nested_argv_is_accepted() -> None:
     assert accepted.docker_start_cmd == tuple(command)
 
 
+@pytest.mark.parametrize("bootstrap_record", ("report", "journal"))
+@pytest.mark.parametrize("side", ("report", "hold", "liveness", "timings", "transcript.log"))
+def test_launch_refuses_bootstrap_evidence_colliding_with_run_report_files(
+    bootstrap_record: str, side: str
+) -> None:
+    clock = Clock()
+    token = "a" * 32
+    report = f"/workspace/private/pod-run-report-{token}.json"
+    stem = report.removesuffix(".json")
+    collision = (
+        report
+        if side == "report"
+        else f"{stem}-{side}{'' if side == 'transcript.log' else '.json'}"
+    )
+    command = list(request(clock).docker_start_cmd)
+    command[command.index("--report-path") + 1] = (
+        f"/workspace/private/pod-runtime-report-{token}.json"
+    )
+    nested_index = command.index("--bootstrap-command-json") + 1
+    command[nested_index] = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.pod_run",
+            "--report-path",
+            report,
+            "--",
+            "--volume-mount-path",
+            "/workspace/private",
+            "--report-path",
+            collision
+            if bootstrap_record == "report"
+            else f"/workspace/private/bootstrap-report-{token}.json",
+            "--journal",
+            collision
+            if bootstrap_record == "journal"
+            else f"/workspace/private/bootstrap-journal-{token}.json",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="collides with the run report"):
+        replace(
+            request(clock),
+            docker_start_cmd=tuple(command),
+            metadata={"VERBATUS_LAUNCH_TOKEN": token},
+        )
+
+
 def test_two_report_paths_in_one_nested_half_are_still_refused() -> None:
     """Per half is the rule, not per argv: the duplicate refusal still bites."""
 
