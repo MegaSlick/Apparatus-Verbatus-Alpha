@@ -17,6 +17,7 @@ from .boot_a_request import (
     render_boot_a_request,
 )
 from .cli import _request
+from .conftest import configured_spend_toml
 from .models import PodCreateRequest, utc_now
 from .preflight import load_placement_table
 from .spend import SpendPolicy, load_spend_policy
@@ -304,23 +305,7 @@ def test_main_exits_zero_on_a_configured_policy(
 ) -> None:
     spend = tmp_path / "spend.toml"
     spend.write_text(
-        "\n".join(
-            (
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "2.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 5",
-                "billing_cutoff_margin_seconds = 3600",
-            )
-        )
-        + "\n",
+        configured_spend_toml(shutdown_deadline_seconds=5),
         encoding="utf-8",
     )
 

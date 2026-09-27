@@ -29,6 +29,7 @@ from common.credentials import looks_like_credential_field
 
 from . import durable, supervise
 from .arming import ControllerArming
+from .conftest import SharedClock, configured_policy, standard_request
 from .controller_armer import (
     ACKNOWLEDGEMENT_FUTURE_SKEW_SECONDS,
     ARMING_DRILL_SCHEMA,
@@ -44,7 +45,6 @@ from .fake_provider import FakeProvider
 from .launch import PodRuntime
 from .lease import LeaseOwnershipError, LeaseStore, PodLease
 from .models import (
-    BILLING_CUTOFF_MARGIN_ENV,
     POD_REPORT_SCHEMA,
     PodCreateRequest,
 )
@@ -59,15 +59,9 @@ REPORT_PATH = "/workspace/private/pod-report-launch.json"
 REPORT_OBJECT = "pod-report-launch.json"
 
 
-class Clock:
-    def __init__(self) -> None:
-        self.seconds = 0.0
-
-    def now(self) -> datetime:
-        return START + timedelta(seconds=self.seconds)
-
-    def sleep(self, seconds: float) -> None:
-        self.seconds += seconds
+class Clock(SharedClock):
+    def __init__(self, seconds: float = 0.0) -> None:
+        super().__init__(START, seconds)
 
 
 def stamp(value: datetime) -> str:
@@ -75,43 +69,15 @@ def stamp(value: datetime) -> str:
 
 
 def request(clock: Clock, *, lifetime: int = 3600) -> PodCreateRequest:
-    return PodCreateRequest(
-        name="armer-drill",
-        gpu_type="fake-48gb",
-        image="registry.example/verbatus@sha256:" + "a" * 64,
-        template="pinned-template",
-        volume_id="test-volume",
-        volume_mount_path="/workspace/private",
-        docker_start_cmd=(
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "untracked.timer:factory",
-            "--bootstrap-command-json",
-            '["service"]',
-            "--report-path",
-            REPORT_PATH,
-        ),
+    return standard_request(
         hard_deadline=clock.now() + timedelta(seconds=lifetime),
-        repository_commit="b" * 40,
-        metadata={BILLING_CUTOFF_MARGIN_ENV: "3600"},
+        name="armer-drill",
+        report_path=REPORT_PATH,
     )
 
 
 def policy() -> SpendPolicy:
-    return SpendPolicy(
-        state="configured",
-        max_hourly_usd=Decimal("1.00"),
-        max_estimated_metered_cost_usd=Decimal("2.00"),
-        account_balance_floor_usd=Decimal("50.00"),
-        account_balance_alert_usd=Decimal("75.00"),
-        hard_lifetime_seconds=3600,
-        laptop_heartbeat_timeout_seconds=30,
-        shutdown_poll_interval_seconds=1,
-        shutdown_deadline_seconds=8,
-        billing_cutoff_margin_seconds=3600,
-    )
+    return configured_policy()
 
 
 class InMemoryChannel:

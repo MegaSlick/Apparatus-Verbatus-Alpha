@@ -54,6 +54,7 @@ from typing import Callable, Iterator, Sequence
 import pytest
 
 from . import pod_timer, supervise
+from .conftest import SharedClock, configured_spend_toml, standard_request, verified_shutdown
 from .controller_armer import (
     ChannelControllerArmer,
     ObservingControllerArmer,
@@ -67,7 +68,6 @@ from .fake_provider import FakeProvider
 from .launch import LaunchResult, LaunchState, PodRuntime
 from .lease import LeaseStore
 from .models import (
-    BILLING_CUTOFF_MARGIN_ENV,
     POD_REPORT_SCHEMA,
     LeaseOwnershipError,
     PodCreateRequest,
@@ -97,45 +97,12 @@ BOOTSTRAP_ARGV = ["python", "-m", "operations.pod.bootstrap_main", "--hold-only"
 
 SUPERVISOR_PID = 90001
 
-SPEND_TOML = "\n".join(
-    [
-        'schema = "pod-spend.v3"',
-        'state = "configured"',
-        'currency = "USD"',
-        'max_hourly_usd = "1.00"',
-        'max_estimated_metered_cost_usd = "2.00"',
-        'account_balance_floor_usd = "50.00"',
-        'account_balance_alert_usd = "75.00"',
-        "hard_lifetime_seconds = 3600",
-        "laptop_heartbeat_timeout_seconds = 30",
-        "shutdown_poll_interval_seconds = 1",
-        "shutdown_deadline_seconds = 8",
-        "billing_cutoff_margin_seconds = 3600",
-        "",
-    ]
-)
+SPEND_TOML = configured_spend_toml()
 
 
-class Clock:
-    """One fake clock for the launcher, the pod timer and the supervisor alike.
-
-    They are three processes in production and would each read their own
-    clock; sharing one here is what makes an ordering claim -- the
-    acknowledgement happened before the receipt observed it -- mean something
-    rather than depend on which fixture ran first.
-    """
-
-    def __init__(self) -> None:
-        self.seconds = 0.0
-
-    def now(self) -> datetime:
-        return START + timedelta(seconds=self.seconds)
-
-    def monotonic(self) -> float:
-        return self.seconds
-
-    def sleep(self, seconds: float) -> None:
-        self.seconds += seconds
+class Clock(SharedClock):
+    def __init__(self, seconds: float = 0.0) -> None:
+        super().__init__(START, seconds)
 
 
 class BillingFake(FakeProvider):
@@ -158,39 +125,15 @@ class BillingFake(FakeProvider):
 
 
 def closer(provider: FakeProvider, clock: Clock, *, timeout: float = 8) -> VerifiedShutdown:
-    return VerifiedShutdown(
-        provider,
-        timeout_seconds=timeout,
-        poll_seconds=1,
-        billing_cutoff_margin_seconds=3600,
-        monotonic=clock.monotonic,
-        sleeper=clock.sleep,
-        now=clock.now,
-    )
+    return verified_shutdown(provider, clock, timeout=timeout)
 
 
 def request(clock: Clock, *, lifetime: int) -> PodCreateRequest:
-    return PodCreateRequest(
-        name="launch-drill",
-        gpu_type="fake-48gb",
-        image="registry.example/verbatus@sha256:" + "a" * 64,
-        template="pinned-template",
-        volume_id="test-volume",
-        volume_mount_path=MOUNT,
-        docker_start_cmd=(
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "untracked.timer:factory",
-            "--bootstrap-command-json",
-            json.dumps(BOOTSTRAP_ARGV),
-            "--report-path",
-            REPORT_PATH,
-        ),
+    return standard_request(
         hard_deadline=clock.now() + timedelta(seconds=lifetime),
-        repository_commit="b" * 40,
-        metadata={BILLING_CUTOFF_MARGIN_ENV: "3600"},
+        name="launch-drill",
+        report_path=REPORT_PATH,
+        bootstrap_command_json=json.dumps(BOOTSTRAP_ARGV),
     )
 
 

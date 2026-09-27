@@ -14,9 +14,10 @@ from common.chairs import ChairIdentity, load_models_toml
 from common.contracts.stages import DESIGNATOR
 from common.runtree.store import RunTree
 
+from .conftest import SharedClock, standard_request
 from .fake_provider import FakeProvider
 from .launch import LaunchResult, LaunchState
-from .models import BILLING_CUTOFF_MARGIN_ENV, PodCreateRequest
+from .models import PodCreateRequest
 from .shutdown import CloseReport, VerifiedShutdown
 from .staged import (
     COLLECTION_BOOT_SCHEDULE,
@@ -35,42 +36,18 @@ from .staged import (
 START = datetime(2026, 8, 23, 12, tzinfo=UTC)
 
 
-class Clock:
-    def __init__(self) -> None:
-        self.seconds = 0.0
-
-    def now(self) -> datetime:
-        return START + timedelta(seconds=self.seconds)
-
-    def monotonic(self) -> float:
-        return self.seconds
-
-    def sleep(self, seconds: float) -> None:
-        self.seconds += seconds
+class Clock(SharedClock):
+    def __init__(self, seconds: float = 0.0) -> None:
+        super().__init__(START, seconds)
 
 
 def request(clock: Clock, *, name: str = "unit-17-stage") -> PodCreateRequest:
-    return PodCreateRequest(
-        name=name,
-        gpu_type="fake-48gb",
-        image="registry.example/verbatus@sha256:" + "a" * 64,
-        template="pinned-template",
-        volume_id="shared-run-volume",
-        volume_mount_path="/workspace/private",
-        docker_start_cmd=(
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "untracked.timer:factory",
-            "--bootstrap-command-json",
-            '["service"]',
-            "--report-path",
-            "/workspace/private/stage-report.json",
-        ),
+    return standard_request(
         hard_deadline=clock.now() + timedelta(minutes=5),
-        repository_commit="b" * 40,
-        metadata={BILLING_CUTOFF_MARGIN_ENV: "0"},
+        name=name,
+        report_path="/workspace/private/stage-report.json",
+        volume_id="shared-run-volume",
+        cutoff_margin=0,
     )
 
 

@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from . import cli
+from .conftest import configured_spend_toml
 from .controller_armer import ChannelControllerArmer, default_supervisor_argv
 from .fake_provider import FakeProvider
 from .launch import LaunchState, PodRuntime
@@ -128,23 +129,7 @@ def armer() -> ChannelControllerArmer:
     )
 
 
-CONFIGURED_SPEND_TOML = "\n".join(
-    [
-        'schema = "pod-spend.v3"',
-        'state = "configured"',
-        'currency = "USD"',
-        'max_hourly_usd = "1.00"',
-        'max_estimated_metered_cost_usd = "5.00"',
-        'account_balance_floor_usd = "50.00"',
-        'account_balance_alert_usd = "75.00"',
-        "hard_lifetime_seconds = 3600",
-        "laptop_heartbeat_timeout_seconds = 30",
-        "shutdown_poll_interval_seconds = 1",
-        "shutdown_deadline_seconds = 8",
-        "billing_cutoff_margin_seconds = 3600",
-        "",
-    ]
-)
+CONFIGURED_SPEND_TOML = configured_spend_toml(max_estimated_metered_cost_usd="5.00")
 """A configured test policy for the `cli.main` drills. `config/spend.toml` is
 the project lead's and stays unconfigured."""
 

@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import unittest.mock
-from dataclasses import dataclass, fields, replace
+from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -46,7 +46,15 @@ from .bootstrap import (
     SubprocessBootstrapActions,
     verify_image_contract,
 )
-from .conftest import NO_OP_BOOTSTRAP, timer_start_command
+from .conftest import (
+    NO_OP_BOOTSTRAP,
+    SharedClock,
+    configured_policy,
+    configured_spend_toml,
+    standard_request,
+    timer_start_command,
+    verified_shutdown,
+)
 from .controllers import ControllerResult, ControllerState, LaptopSupervisor, PodDeadmanTimer
 from .fake_provider import FakeProvider
 from .launch import (
@@ -130,18 +138,9 @@ def adopt_confirmation(pod_id: str) -> str:
     return confirmation_phrase("adopt", pod_id, POD_HOURLY, VOLUME_HOURLY, TEST_CHALLENGE)
 
 
-@dataclass
-class Clock:
-    seconds: float = 0
-
-    def now(self) -> datetime:
-        return START + timedelta(seconds=self.seconds)
-
-    def monotonic(self) -> float:
-        return self.seconds
-
-    def sleep(self, seconds: float) -> None:
-        self.seconds += seconds
+class Clock(SharedClock):
+    def __init__(self, seconds: float = 0.0) -> None:
+        super().__init__(START, seconds)
 
 
 class _RealClock:
@@ -291,15 +290,11 @@ def policy(
     balance_alert: str = "75.00",
     cutoff_margin: int = 3600,
 ) -> SpendPolicy:
-    return SpendPolicy(
-        state="configured",
+    return configured_policy(
         max_hourly_usd=Decimal(hourly),
-        max_estimated_metered_cost_usd=Decimal("2.00"),
+        hard_lifetime_seconds=lifetime,
         account_balance_floor_usd=Decimal(balance_floor),
         account_balance_alert_usd=Decimal(balance_alert),
-        hard_lifetime_seconds=lifetime,
-        laptop_heartbeat_timeout_seconds=30,
-        shutdown_poll_interval_seconds=1,
         shutdown_deadline_seconds=5,
         billing_cutoff_margin_seconds=cutoff_margin,
     )
@@ -326,17 +321,12 @@ def test_nonpositive_balance_alert_refusal_names_the_alert() -> None:
 
 
 def request(clock: Clock, *, gpu: str = "fake-48gb", lifetime: int = 300) -> PodCreateRequest:
-    return PodCreateRequest(
-        name="pod-runtime-test",
-        gpu_type=gpu,
-        image="registry.example/verbatus@sha256:" + "a" * 64,
-        template="pinned-template",
-        volume_id="test-volume",
-        volume_mount_path="/workspace/private",
-        docker_start_cmd=timer_start_command("/workspace/private/pod-runtime-report.json"),
+    return standard_request(
         hard_deadline=clock.now() + timedelta(seconds=lifetime),
-        repository_commit="b" * 40,
-        metadata={BILLING_CUTOFF_MARGIN_ENV: "3600"},
+        name="pod-runtime-test",
+        report_path="/workspace/private/pod-runtime-report.json",
+        gpu_type=gpu,
+        docker_start_cmd=timer_start_command("/workspace/private/pod-runtime-report.json"),
     )
 
 
@@ -430,15 +420,7 @@ class WrongBillingEvidenceFake(FakeProvider):
 def shutdown(
     provider: FakeProvider, clock: Clock, *, timeout: float = 8, cutoff_margin: int = 3600
 ) -> VerifiedShutdown:
-    return VerifiedShutdown(
-        provider,
-        timeout_seconds=timeout,
-        poll_seconds=1,
-        billing_cutoff_margin_seconds=cutoff_margin,
-        monotonic=clock.monotonic,
-        sleeper=clock.sleep,
-        now=clock.now,
-    )
+    return verified_shutdown(provider, clock, timeout=timeout, cutoff_margin=cutoff_margin)
 
 
 class PreviewingRuntime(PodRuntime):
@@ -1576,23 +1558,7 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
     armer = FakeControllerArmer(clock, provider)
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(
-            (
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "2.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 5",
-                "billing_cutoff_margin_seconds = 3600",
-            )
-        )
-        + "\n",
+        configured_spend_toml(shutdown_deadline_seconds=5),
         encoding="utf-8",
     )
     request_path = tmp_path / "request.json"
@@ -1695,23 +1661,7 @@ def test_a_preview_refused_at_the_floor_prints_no_phrase_that_still_authorizes_i
     armer = FakeControllerArmer(clock, provider)
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(
-            (
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "2.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 5",
-                "billing_cutoff_margin_seconds = 3600",
-            )
-        )
-        + "\n",
+        configured_spend_toml(shutdown_deadline_seconds=5),
         encoding="utf-8",
     )
     request_path = tmp_path / "request.json"
@@ -7132,23 +7082,7 @@ def _drive_cli(
     provider.now = lambda: datetime.now(UTC)
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(
-            (
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "2.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 5",
-                "billing_cutoff_margin_seconds = 3600",
-            )
-        )
-        + "\n",
+        configured_spend_toml(shutdown_deadline_seconds=5),
         encoding="utf-8",
     )
     request_path = tmp_path / "request.json"

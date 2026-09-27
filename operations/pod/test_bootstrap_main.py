@@ -40,19 +40,14 @@ from .bootstrap_main import (
     resolve_plan,
     scrub_environment,
 )
+from .conftest import SharedClock
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-@dataclass
-class Clock:
-    seconds: float = 0.0
-
-    def now(self) -> datetime:
-        return START + timedelta(seconds=self.seconds)
-
-    def sleep(self, seconds: float) -> None:
-        self.seconds += seconds
+class Clock(SharedClock):
+    def __init__(self, seconds: float = 0.0) -> None:
+        super().__init__(START, seconds)
 
 
 def _stamp(value: datetime) -> str:

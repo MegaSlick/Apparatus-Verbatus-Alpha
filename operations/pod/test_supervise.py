@@ -19,9 +19,16 @@ from typing import Callable
 import pytest
 
 from . import supervise
+from .conftest import (
+    SharedClock,
+    configured_policy,
+    configured_spend_toml,
+    standard_request,
+    verified_shutdown,
+)
 from .fake_provider import FakeProvider
 from .lease import LeaseStore, PodLease
-from .models import BILLING_CUTOFF_MARGIN_ENV, PodCreateRequest, ProviderFailure
+from .models import PodCreateRequest, ProviderFailure
 from .notify_bridge import NotifyOutcome
 from .shutdown import VerifiedShutdown
 from .spend import SpendPolicy
@@ -30,42 +37,16 @@ START = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 LEASE_ID = "a" * 32
 
 
-class Clock:
-    def __init__(self) -> None:
-        self.seconds = 0.0
-
-    def now(self) -> datetime:
-        return START + timedelta(seconds=self.seconds)
-
-    def monotonic(self) -> float:
-        return self.seconds
-
-    def sleep(self, seconds: float) -> None:
-        self.seconds += seconds
+class Clock(SharedClock):
+    def __init__(self, seconds: float = 0.0) -> None:
+        super().__init__(START, seconds)
 
 
 def request(clock: Clock, *, lifetime: int = 3600) -> PodCreateRequest:
-    return PodCreateRequest(
-        name="supervise-drill",
-        gpu_type="fake-48gb",
-        image="registry.example/verbatus@sha256:" + "a" * 64,
-        template="pinned-template",
-        volume_id="test-volume",
-        volume_mount_path="/workspace/private",
-        docker_start_cmd=(
-            "python",
-            "-m",
-            "operations.pod.pod_timer",
-            "--timer-factory",
-            "untracked.timer:factory",
-            "--bootstrap-command-json",
-            '["service"]',
-            "--report-path",
-            "/workspace/private/supervise-report.json",
-        ),
+    return standard_request(
         hard_deadline=clock.now() + timedelta(seconds=lifetime),
-        repository_commit="b" * 40,
-        metadata={BILLING_CUTOFF_MARGIN_ENV: "3600"},
+        name="supervise-drill",
+        report_path="/workspace/private/supervise-report.json",
     )
 
 
@@ -74,29 +55,12 @@ def fake(clock: Clock) -> FakeProvider:
 
 
 def shutdown(provider: FakeProvider, clock: Clock, *, timeout: float = 8) -> VerifiedShutdown:
-    return VerifiedShutdown(
-        provider,
-        timeout_seconds=timeout,
-        poll_seconds=1,
-        billing_cutoff_margin_seconds=3600,
-        monotonic=clock.monotonic,
-        sleeper=clock.sleep,
-        now=clock.now,
-    )
+    return verified_shutdown(provider, clock, timeout=timeout)
 
 
 def policy(*, heartbeat_timeout: int = 30, lifetime: int = 3600) -> SpendPolicy:
-    return SpendPolicy(
-        state="configured",
-        max_hourly_usd=Decimal("1.00"),
-        max_estimated_metered_cost_usd=Decimal("2.00"),
-        account_balance_floor_usd=Decimal("50.00"),
-        account_balance_alert_usd=Decimal("75.00"),
-        hard_lifetime_seconds=lifetime,
-        laptop_heartbeat_timeout_seconds=heartbeat_timeout,
-        shutdown_poll_interval_seconds=1,
-        shutdown_deadline_seconds=8,
-        billing_cutoff_margin_seconds=3600,
+    return configured_policy(
+        hard_lifetime_seconds=lifetime, laptop_heartbeat_timeout_seconds=heartbeat_timeout
     )
 
 
@@ -609,23 +573,7 @@ def test_run_supervisor_breaks_rather_than_spins_once_a_foreign_owners_deadline_
 def test_main_smoke_reports_no_lease_as_exit_code_two(tmp_path: Path, monkeypatch) -> None:
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(
-            [
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "2.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 8",
-                "billing_cutoff_margin_seconds = 3600",
-                "",
-            ]
-        ),
+        configured_spend_toml(),
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -724,23 +672,7 @@ def test_main_writes_a_crashed_final_record_and_exits_three_on_an_unexpected_err
 ) -> None:
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(
-            [
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "2.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 8",
-                "billing_cutoff_margin_seconds = 3600",
-                "",
-            ]
-        ),
+        configured_spend_toml(),
         encoding="utf-8",
     )
 
@@ -779,23 +711,7 @@ def test_a_final_record_write_failure_on_the_crash_path_is_named_not_swallowed(
 
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(
-            [
-                'schema = "pod-spend.v3"',
-                'state = "configured"',
-                'currency = "USD"',
-                'max_hourly_usd = "1.00"',
-                'max_estimated_metered_cost_usd = "2.00"',
-                'account_balance_floor_usd = "50.00"',
-                'account_balance_alert_usd = "75.00"',
-                "hard_lifetime_seconds = 3600",
-                "laptop_heartbeat_timeout_seconds = 30",
-                "shutdown_poll_interval_seconds = 1",
-                "shutdown_deadline_seconds = 8",
-                "billing_cutoff_margin_seconds = 3600",
-                "",
-            ]
-        ),
+        configured_spend_toml(),
         encoding="utf-8",
     )
 
