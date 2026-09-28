@@ -29,10 +29,7 @@ bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. 
 held after publishing stage evidence seals it (holds remain in its census); a
 pass that never reaches its seal does not seal, whether it was held or refused
 before publishing stage evidence or closed fatally after publishing it, so the
-successor correctly refuses the missing boundary. Every difference in decoders,
-platform, machine, `decode_paths_used`, and `produced_pixels` is reported by
-field or decoder name. A valid difference is report-only and never refuses;
-Unit 17 owns any fatal policy.
+successor correctly refuses the missing boundary.
 
 Seals are compared as the SET the stored inventory names, on both sides of the
 boundary: the producer refuses to re-seal, and the successor refuses to read,
@@ -387,9 +384,9 @@ sum of the two partition counts. `residual_enumeration` is `aggregate-page-held`
 exactly when the aggregate is nonempty. `residual_ink_fraction_bp` is
 `residual_pixel_count` over `total_ink_pixel_count` in basis points, recorded and
 gating nothing. The two `residual_aggregate_max_*` fields are the sealed
-presentation floors, not limits on the ink measurement. The legacy
-`withheld-page-held` shape remains a verifier compatibility path, not a producer
-output.
+presentation floors, not limits on the ink measurement. A conservation record
+sealed with the retired `withheld-page-held` enumeration is refused by name and
+must be produced again by this build.
 
 `page_width`, `page_height` and `reconciliation_thresholds` are what this scan
 actually executed on and under. The thresholds are exactly the two
@@ -643,8 +640,9 @@ session reading a finished run back can now say, per page, what the structure
 pass actually ran at instead of re-deriving it from the seal and the pixels —
 and a re-derivation is what stops matching the run the day the resolution rule
 changes. The published `resolved_thresholds` records the grouping thresholds
-used for that page, except for the legacy-only `max_residual_components`, which
-is omitted because it does not govern new residual presentation. These fields
+used for that page, except for `max_residual_components`, which is retained in
+the sealed policy but omitted here because it does not govern current residual
+presentation. These fields
 are a recording and decide nothing; they
 are `null` on a page held before analysis for the same reason the two above are.
 
@@ -905,7 +903,8 @@ told from "drew one nobody could read") with `data_bbox_truncated` saying
 whether that digest covers the whole value:
 
 ```text
-schema = "designator-structure-answer.v1"
+schema = "designator-structure-answer.v3"
+attempt_ordinal, attempt_seed, attempt_policy, attempts, presentation_ref
 page_id, page_ordinal, page_w, page_h
 prompt_version, prompt_sha256, answer_schema = "chandra-layout-html.v1"
 text_view = "chandra-layout-text.v1"
@@ -929,6 +928,9 @@ quantization, page_text_rule
 decoding = {policy = "structure", temperature, decoding_config_sha256}
 provenance (the served chair, its real receipt, and `engine_call`)
 ```
+
+Structure answers sealed as `designator-structure-answer.v1` or `.v2` are
+refused by name; a new run produces the current request-image evidence.
 
 The raw response is retained twice under one digest: by the client before it
 is parsed, and under `common/chandra_custody.py`'s one-receipt binding

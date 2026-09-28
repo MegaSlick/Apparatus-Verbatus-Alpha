@@ -82,9 +82,8 @@ _PAGE_AREA_BP_FIELDS: Final = ("page_spanning_area_bp",)
 # than left to the generic "unknown field" refusal.
 _FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
 
-# None of these is a page-dimension fraction. `max_residual_components` is
-# read only for legacy withheld records; the current producer uses
-# residual_presentation below.
+# None of these is a page-dimension fraction. Residual presentation uses
+# the separate policy below.
 _GROUPING_COUNT_FIELDS: Final = (
     "max_residual_components",
     "max_secondary_proposals",

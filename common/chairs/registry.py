@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
 
+import huggingface_hub
+
 from common.contracts.canonical import canonical_bytes
 
 from .config import load_models_toml
@@ -72,29 +74,15 @@ class HuggingFaceClient(Protocol):
 
 
 class HuggingFaceFetcher:
-    """Adapter over an injected Hugging Face client; no import-time network dependency."""
+    """Adapter over an injected Hugging Face client."""
 
     def __init__(self, client: HuggingFaceClient):
         self.client = client
 
     @classmethod
     def from_huggingface_hub(cls) -> "HuggingFaceFetcher":
-        """Construct the production adapter from the installed official client.
-
-        Importing lazily keeps offline config/receipt tests independent of the
-        optional runtime package, while production deliberately uses the declared
-        `huggingface_hub.snapshot_download` seam.
-        """
-
-        try:
-            from importlib import import_module
-
-            client = import_module("huggingface_hub")
-        except ImportError as error:
-            raise UnresolvedChairRefusal(
-                "huggingface", "huggingface_hub is not installed for the production fetcher"
-            ) from error
-        return cls(client)  # type: ignore[arg-type]
+        """Construct the production adapter from the declared client dependency."""
+        return cls(huggingface_hub)
 
     def fetch(self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]) -> None:
         if identity.source != "huggingface" or not identity.repo or not identity.revision:
@@ -151,7 +139,6 @@ class HuggingFaceMaterializationFetcher:
             raise DigestMismatchRefusal(
                 repo, f"per-call Hugging Face cache path already exists: {client_cache}"
             )
-        failure: BaseException | None = None
         try:
             downloaded = self.client.snapshot_download(
                 repo_id=repo, revision=revision, cache_dir=client_cache
@@ -179,15 +166,11 @@ class HuggingFaceMaterializationFetcher:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 _copy_verified_file(origin, target, identity, repo, relative)
         except OSError as error:
-            failure = DigestMismatchRefusal(
+            raise DigestMismatchRefusal(
                 repo, f"cannot copy the pinned Hugging Face snapshot into staging: {error}"
-            )
-            raise failure from error
-        except BaseException as error:
-            failure = error
-            raise
+            ) from error
         finally:
-            _cleanup_huggingface_cache(client_cache, repo, failure)
+            _cleanup_huggingface_cache(client_cache)
 
 
 def _same_directory_anchor(path: Path, root: Path) -> bool:
@@ -316,27 +299,19 @@ def _copy_verified_file(
         os.close(descriptor)
 
 
-def _cleanup_huggingface_cache(
-    client_cache: Path, repo: str, failure: BaseException | None
-) -> None:
-    """Remove client state and keep both causes when acquisition also failed."""
-
+def _cleanup_huggingface_cache(client_cache: Path) -> None:
+    """Best-effort removal of the per-call cache."""
     try:
         if client_cache.is_symlink():
             client_cache.unlink(missing_ok=True)
-        elif client_cache.exists():
-            shutil.rmtree(client_cache)
-    except OSError as cleanup_error:
-        detail = f"per-call Hugging Face cache cleanup failed at {client_cache}: {cleanup_error}"
-        if failure is None:
-            raise DigestMismatchRefusal(repo, detail) from cleanup_error
-        if isinstance(failure, Exception):
-            raise DigestMismatchRefusal(repo, f"{failure}; {detail}") from failure
-        failure.add_note(detail)
+        else:
+            shutil.rmtree(client_cache, ignore_errors=True)
+    except OSError:
+        pass
 
 
 def load_model_card_metadata(path: Path) -> dict[str, object] | None:
-    """Load card metadata without making Hugging Face an import-time dependency."""
+    """Load card metadata with the declared Hugging Face dependency."""
 
     client = HuggingFaceFetcher.from_huggingface_hub().client
     return client.metadata_load(path)  # type: ignore[no-any-return]

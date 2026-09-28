@@ -72,19 +72,22 @@ def test_a_run_seals_the_exact_decoding_bytes_it_was_created_under(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("body", "what"),
+    ("change", "what"),
     [
-        pytest.param("temperature = ", "is not valid TOML", id="not-toml"),
+        pytest.param("malformed", "is not valid TOML", id="not-toml"),
         pytest.param(
-            'schema = "decoding.v1"\n\n[reading_of_record]\ntemperature = 0.7\n\n'
-            '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260820\npasses = 2\n'
-            "[structure]\ntemperature = 0\n",
+            "temperature",
             "decoding reading_of_record must declare temperature 0",
             id="nonzero-temperature",
         ),
+        pytest.param(
+            "legacy",
+            "sealed under decoding.v2, which this build no longer reads; re-run",
+            id="legacy-schema",
+        ),
     ],
 )
-def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, body: str, what: str):
+def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, change: str, what: str):
     """The refusal at run creation is measured against the run root, not read.
 
     `common.decoding` tells the operator that "No run or stage artifact was
@@ -95,6 +98,12 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, body: s
     refuses; this proves the Door refuses in the same breath, before it writes.
     """
     substitute = tmp_path / "decoding.toml"
+    source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
+    body = {
+        "malformed": "temperature = ",
+        "temperature": source.replace("temperature = 0", "temperature = 0.7", 1),
+        "legacy": source.replace('schema = "decoding.v3"', 'schema = "decoding.v2"', 1),
+    }[change]
     substitute.write_text(body, encoding="utf-8")
     run_root = tmp_path / "runs"
 
@@ -120,37 +129,11 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, body: s
     assert not os.path.lexists(run_root), tree_snapshot(run_root)
 
 
-@pytest.mark.parametrize(
-    ("body", "what"),
-    [
-        pytest.param(
-            '# a differently worded comment\nschema = "decoding.v1"\n\n'
-            "[reading_of_record]\ntemperature = 0\n\n"
-            '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260820\npasses = 2\n'
-            "[structure]\ntemperature = 0\n",
-            "comment-only",
-            id="comment-only",
-        ),
-        pytest.param(
-            'schema = "decoding.v1"\n\n[reading_of_record]\ntemperature = 0\n\n'
-            '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260821\npasses = 2\n'
-            "[structure]\ntemperature = 0\n",
-            "a moved variance seed",
-            id="moved-seed",
-        ),
-    ],
-)
 @pytest.mark.parametrize("program", CONSUMING_STAGES)
-def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(
-    tmp_path, body: str, what: str, program: str
-):
+def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(tmp_path, program: str):
     """Refused, and refused *by name*: the message says `decoding` moved.
 
-    Both variants are policies this build accepts on their own -- temperature
-    stays 0 and the experiment stays two passes -- so what is being refused is
-    the substitution, not an invalid file. The comment-only case is the sharper
-    one: the seal is over bytes, and a run may not continue under a file that
-    reads the same to a person and hashes differently.
+    A moved variance seed leaves a valid policy; the substitution is what is refused.
 
     Naming the policy matters as much as refusing it. "different config_digest,
     sealed_config_digests" is true whichever of the ten sealed files moved, and
@@ -158,8 +141,10 @@ def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(
     """
     run_root, _tree = _through_designator(tmp_path)
     substitute = tmp_path / "decoding.toml"
+    source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
+    body = source.replace("seed = 20260820", "seed = 20260821", 1)
     substitute.write_text(body, encoding="utf-8")
-    assert load_decoding_policy(substitute)[1] != load_decoding_policy()[1], what
+    assert load_decoding_policy(substitute)[1] != load_decoding_policy()[1]
 
     before = tree_snapshot(run_root)
     refused = invoke_stage(run_root, program, decoding_config=substitute)

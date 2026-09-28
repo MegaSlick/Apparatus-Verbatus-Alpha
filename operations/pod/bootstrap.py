@@ -18,6 +18,7 @@ from typing import Callable, Mapping, MutableMapping, Protocol
 
 from common.chairs.errors import ChairRefusal
 from common.chairs.model_store import MaterializationFetcher, materialize_real_roster
+from common.contracts.canonical import is_sha256
 
 from .durable import atomic_write, canonical_json
 from .models import require_utc, utc_now
@@ -849,11 +850,7 @@ def _configuration_receipt_problem(receipt: object) -> str | None:
         digest = binding.get("sha256")
         if not isinstance(path, str) or not path.strip():
             return f"{name!r} path is not a non-blank string"
-        if (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-        ):
+        if not is_sha256(digest):
             return f"{name!r} sha256 is not a lowercase digest"
     if not isinstance(receipt.get("witness_context_validation"), dict):
         return "witness_context_validation is not an object"

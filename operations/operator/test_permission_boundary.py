@@ -374,9 +374,8 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
 
 
 # Seatbelt grants file reads but denies the executable libffi trampolines that
-# `ctypes` needs. Seal verification reaches `common.stage._decode_environment`,
-# whose `pypdfium2` import reaches `ctypes`; a Linux chamber cannot exercise
-# Seatbelt itself, so these tests reproduce that dependency boundary.
+# `ctypes` needs. A Linux chamber cannot exercise Seatbelt itself, so this
+# reproduces its denied import boundary for the worker and verifier.
 _DENIED_UNDER_SEATBELT = ("ctypes", "_ctypes", "pypdfium2")
 
 _BLOCKED_IMPORT_PRELUDE = """
@@ -413,16 +412,8 @@ def _without_seatbelt_denied_imports(
     )
 
 
-def test_the_confined_worker_completes_an_advance_without_the_imports_seatbelt_denies(tmp_path):
-    """The worker's whole path must not touch `ctypes`; the checker's path does.
-
-    Both halves are asserted here because either alone is misleading. The
-    worker succeeding proves nothing if the blocker never blocks anything, and
-    the checker failing proves nothing about where verification now runs.
-    Together they say: the operation that fails under Seatbelt is real, it is
-    on the verification path, and the verification path is no longer inside
-    the confined process.
-    """
+def test_the_confined_worker_and_verifier_complete_without_seatbelt_denied_imports(tmp_path):
+    """Both advance and seal verification avoid Seatbelt-denied imports."""
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
@@ -458,8 +449,7 @@ def test_the_confined_worker_completes_an_advance_without_the_imports_seatbelt_d
         run_id,
         "armarium",
     )
-    assert checker.returncode != 0
-    assert "pypdfium2 is denied here" in checker.stderr
+    assert checker.returncode == 0, checker.stderr
 
 
 def test_the_advance_worker_refuses_an_oversized_request_before_opening_a_tree(

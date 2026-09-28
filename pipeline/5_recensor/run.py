@@ -82,7 +82,6 @@ from common.native_witness import (  # noqa: E402
 from common.perlector_audit import (  # noqa: E402
     EXAMINATION_CAP_EXHAUSTED,
     EXAMINATION_INCOMPLETE,
-    EXAMINATION_REPROOF_REJECTED,
     unresolved_state,
     validate_chain,
 )
@@ -109,8 +108,8 @@ from common.stage import (  # noqa: E402
     EXIT_HELD,
     RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
-    RESIDUAL_ENUMERATION_WITHHELD,
     RESIDUAL_ENUMERATIONS,
+    RETIRED_RESIDUAL_ENUMERATION,
     WITNESS_READING_OUTCOMES,
     expected_acts,
     is_real_ingress,
@@ -1938,10 +1937,8 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
     must equal the held residual acts in the proposal seal. An all-held page never
     reached sealing, so its absence stays absence.
 
-    A page that withheld its enumeration (more components than the sealed policy lets
-    one page list) is its own shape: no `residual_components`, exactly one page-residual
-    act and no per-component ones. Every condition is recomputed from the record and
-    the seal.
+    An aggregate page retains promoted and below-threshold components. Its promoted
+    acts and single page hold are checked against that retained partition.
     """
     acts = expected_acts(context)
     residual_keys = {act["act_key"] for act in acts if act["act_key"].startswith("residual:")}
@@ -1963,6 +1960,11 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         pixel_counts = {field: payload.get(field) for field in pixel_count_fields}
         if not is_plain_int(ordinal) or not isinstance(measurable, bool) or ordinal in findings:
             raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
+        if enumeration == RETIRED_RESIDUAL_ENUMERATION:
+            raise FatalAccounting(
+                f"Designator conservation page {ordinal} was sealed under {enumeration}, "
+                "which this build no longer reads; re-run"
+            )
         if enumeration not in RESIDUAL_ENUMERATIONS:
             raise FatalAccounting(
                 f"Designator conservation page {ordinal} records its residual enumeration as "
@@ -1970,11 +1972,6 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
                 "this stage cannot tell a page with no unclaimed ink from one whose unclaimed "
                 "ink was counted and not listed without being told which it is"
             )
-        if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
-            findings[ordinal] = _withheld_page_conservation(
-                ordinal, payload, measurable, pixel_counts, residual_keys, page_residual_keys
-            )
-            continue
         if enumeration == RESIDUAL_ENUMERATION_AGGREGATED:
             findings[ordinal] = _aggregate_page_conservation(
                 context,
@@ -2219,81 +2216,6 @@ def _aggregate_page_conservation(
         "reason": (
             f"{len(promoted)} significant residual components remain individual held acts; "
             f"{len(aggregate)} below-threshold components remain retained on one page hold"
-        ),
-    }
-
-
-def _withheld_page_conservation(
-    ordinal: int,
-    payload: dict,
-    measurable: bool,
-    pixel_counts: dict,
-    residual_keys: set,
-    page_residual_keys: list,
-) -> dict:
-    """One page held as a single review item in place of its residual components.
-
-    Reconciled against the seal, like an enumerated page. Without the list the
-    per-component pixel sum cannot be recomputed, so the checks are the ink accounting
-    and the partition: exactly one page-residual act and no per-component ones. The
-    finding keeps the key set of every other shape, so consumers read one schema; each
-    value is true of this page.
-    """
-    if not measurable:
-        raise FatalAccounting(
-            f"unmeasured Designator conservation page {ordinal} withheld its residual "
-            "enumeration; a page with no threshold to separate ink from paper enumerated "
-            "nothing because nothing was measured, not because a bound stopped it"
-        )
-    if "residual_components" in payload:
-        raise FatalAccounting(
-            f"withheld Designator conservation page {ordinal} still carries a "
-            "residual_components key; the key is omitted when the enumeration is withheld, so "
-            "that no consumer reads a present list as the complete one"
-        )
-    count = payload.get("residual_component_count")
-    bound = payload.get("max_residual_components")
-    if any(not is_plain_int(value) or value < 0 for value in (count, bound)):
-        raise FatalAccounting(
-            f"withheld Designator conservation page {ordinal} names no integer residual "
-            "component count and no integer bound it was judged against"
-        )
-    if count <= bound:
-        raise FatalAccounting(
-            f"withheld Designator conservation page {ordinal} counted {count} residual "
-            f"components against a bound of {bound}, which it does not exceed; a page within "
-            "the bound owes one held act per residual, not a withheld enumeration"
-        )
-    _require_reconciled_pixels(ordinal, pixel_counts)
-    minted = sorted(key for key in residual_keys if key.startswith(f"residual:{ordinal}:"))
-    if minted:
-        raise FatalAccounting(
-            f"withheld Designator conservation page {ordinal} withheld its residual "
-            f"enumeration and still minted {len(minted)} per-component residual acts; the "
-            "unlisted ink is accounted for by the single item that replaced those acts, never "
-            "by both at once"
-        )
-    held_as_one = page_residual_keys.count(page_residual_act_key(ordinal))
-    if held_as_one != 1:
-        raise FatalAccounting(
-            f"withheld Designator conservation page {ordinal} is accounted for by "
-            f"{held_as_one} page-residual acts in the proposal seal rather than exactly one; "
-            "unlisted ink is accounted for by the single review item that replaced it, or it "
-            "is lost silently"
-        )
-    return {
-        "ink_measurable": measurable,
-        "residual_component_count": count,
-        "residual_act_count": 0,
-        "residual_enumeration": RESIDUAL_ENUMERATION_WITHHELD,
-        "max_residual_components": bound,
-        "page_residual_act_count": held_as_one,
-        "reason": (
-            f"this page's reconciliation counted {count} residual components against the "
-            f"sealed bound of {bound}, so the Designator held the page as one page-residual "
-            "review item and did not list them; no per-component held act exists for this "
-            "page by design, and the per-component pixel sum is the one reconciliation this "
-            "stage cannot recompute against a list that was deliberately not carried"
         ),
     }
 
@@ -2891,13 +2813,6 @@ def review_route_from_findings(
                 "re-proof are both retained, and the act is held rather than delivered on a "
                 "re-examination that never finished"
             )
-        elif audit_examination == EXAMINATION_REPROOF_REJECTED:
-            reasons.append(
-                "the Perlector's audit re-proof for this act completed but rewrote text "
-                "outside every location its own flag identified; the rewrite is refused rather "
-                "than published, the establishing reading is retained, and the act is held "
-                "rather than delivered on a re-examination that overran its own scope"
-            )
         elif audit_examination in (None, EXAMINATION_CAP_EXHAUSTED):
             # `None` means the caller did not name the examination; it gets the generic
             # cap-exhausted reason.
@@ -3241,6 +3156,20 @@ def declared_recovery(scenario: dict | None, act_key: str) -> bool:
     if scenario is None:
         return False
     return act_key in scenario["recover_acts"]
+
+
+def _wants_recovery(
+    scenario: dict | None,
+    act_key: str,
+    outside_ink_requests: list,
+    page_ordinal: int,
+    funded_pages: set[int],
+    used_total: int,
+) -> bool:
+    return (
+        declared_recovery(scenario, act_key)
+        or (bool(outside_ink_requests) and page_ordinal not in funded_pages)
+    ) and used_total == 0
 
 
 def cross_capture_hold_of(reading: dict, act_id: str) -> str | None:
@@ -3621,10 +3550,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             cut_regions,
             minimum_ink_pixels=minimum_ink_pixels,
         )
-        wants_recovery = (
-            declared_recovery(scenario, act_key)
-            or (bool(outside_ink_requests) and act["page_ordinal"] not in funded_pages)
-        ) and used_total == 0
+        wants_recovery = _wants_recovery(
+            scenario, act_key, outside_ink_requests, act["page_ordinal"], funded_pages, used_total
+        )
         observation_hold = unresolved_observation_hold(
             outside_ink_requests, act["page_ordinal"], funded_pages
         )

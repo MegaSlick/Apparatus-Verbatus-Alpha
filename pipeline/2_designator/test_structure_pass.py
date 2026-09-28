@@ -34,7 +34,7 @@ from common.chandra_presentation import (
     STRUCTURE_REQUEST_IMAGE_KIND,
     STRUCTURE_REQUEST_IMAGE_SCHEMA,
 )
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import act_bindings
 from common.contracts.identities import verify as verify_identity
@@ -54,8 +54,6 @@ from common.stage import (
     EXIT_COMPLETE,
     EXIT_HELD,
     STRUCTURE_ANSWER_KIND,
-    STRUCTURE_ANSWER_RECORD_SCHEMA,
-    STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
     STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
     expected_acts,
     load_fixture,
@@ -84,7 +82,6 @@ from operations.serving.fakes import (
     structure_blank_page_body,
     structure_layout_block,
 )
-from operations.serving.http import request_body
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.residency import FileResidencyLease
 from operations.submit import gate, submit
@@ -1143,222 +1140,6 @@ def test_resume_terminalizes_a_retained_nonretryable_attempt_without_starting_a_
     assert final["attempt_ordinal"] == len(final["attempts"]) == 1
 
 
-def test_legacy_structure_answer_v1_resumes_without_attempt_fields(tmp_path, monkeypatch):
-    catalogue = _live_catalogue(tmp_path)
-    decoding = tmp_path / "legacy-decoding.toml"
-    decoding.write_text(
-        'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
-        '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260820\npasses = 2\n'
-        "[structure]\ntemperature = 1\n",
-        encoding="utf-8",
-    )
-    root = tmp_path / "legacy-runs"
-    _chain(root, catalogue, "--decoding-config", str(decoding))
-    original = designator._publish_structure_answer
-
-    def interrupt_after_legacy_source(context, page_record, answer):
-        reference = original(context, page_record, answer)
-        if answer.ordinal == 1:
-            raise RuntimeError("convert completed page to legacy fixture")
-        return reference
-
-    with monkeypatch.context() as patcher:
-        patcher.setattr(designator, "_publish_structure_answer", interrupt_after_legacy_source)
-        with pytest.raises(RuntimeError, match="legacy fixture"):
-            _run_designator(
-                root,
-                catalogue,
-                tmp_path,
-                patcher,
-                [_answer(PAGE_ONE_ACTS)],
-                decoding=decoding,
-            )
-
-    tree = RunTree(root, RUN_ID)
-    answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
-    answer_row = answers[1]
-    attempt_row = next(
-        row
-        for row in _artifacts(root, DESIGNATOR, "structure-attempt")
-        if row["subject_id"] == answer_row["subject_id"]
-    )
-    answer_path = tree.resolve(
-        tree.artifact_path(DESIGNATOR, STRUCTURE_ANSWER_KIND, answer_row["artifact_id"])
-    )
-    envelope = json.loads(answer_path.read_text(encoding="utf-8"))
-    payload = envelope["payload"]
-    payload["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA
-    for field in (
-        "attempt_ordinal",
-        "attempts",
-        "attempt_seed",
-        "attempt_policy",
-        "presentation_ref",
-    ):
-        payload.pop(field)
-    envelope["self_hash"] = self_hash(envelope)
-    answer_path.write_bytes(canonical_bytes(envelope))
-
-    tree.resolve(
-        tree.artifact_path(DESIGNATOR, "structure-attempt", attempt_row["artifact_id"])
-    ).unlink()
-
-    endpoint, exit_code = _run_designator(
-        root,
-        catalogue,
-        tmp_path,
-        monkeypatch,
-        [_answer(PAGE_TWO_ACTS)],
-        decoding=decoding,
-    )
-    assert exit_code == EXIT_COMPLETE
-    assert len(endpoint.requests) == 1
-    resumed = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
-    assert resumed[1]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA
-    assert "attempts" not in resumed[1]["payload"]
-    assert resumed[2]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
-    assert resumed[2]["payload"]["attempt_policy"] == {
-        "max_attempts": 1,
-        "seed_schedule": "fixed-base",
-    }
-
-
-def test_structure_answer_v2_resume_keeps_its_direct_page_presentation(
-    live_run, tmp_path, monkeypatch
-):
-    """A sealed v2 attempt remains readable without acquiring v3 evidence fields."""
-    root, catalogue = live_run
-    original = designator._publish_structure_answer
-
-    def interrupt_after_first_page(context, page_record, answer):
-        reference = original(context, page_record, answer)
-        if answer.ordinal == 1:
-            raise RuntimeError("convert completed page to v2 fixture")
-        return reference
-
-    with monkeypatch.context() as patcher:
-        patcher.setattr(designator, "_publish_structure_answer", interrupt_after_first_page)
-        with pytest.raises(RuntimeError, match="v2 fixture"):
-            _run_designator(
-                root,
-                catalogue,
-                tmp_path,
-                patcher,
-                [_answer(PAGE_ONE_ACTS)],
-            )
-
-    tree = RunTree(root, RUN_ID)
-    answer_row = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[1]
-    attempt_row = next(
-        row
-        for row in _artifacts(root, DESIGNATOR, "structure-attempt")
-        if row["subject_id"] == answer_row["subject_id"]
-    )
-    attempt_path = tree.resolve(
-        tree.artifact_path(DESIGNATOR, "structure-attempt", attempt_row["artifact_id"])
-    )
-    attempt_envelope = json.loads(attempt_path.read_text(encoding="utf-8"))
-    presentation_path = attempt_envelope["payload"]["presentation_ref"]["relative_path"]
-    call_record = json.loads(
-        tree.read_bytes(attempt_envelope["payload"]["call_record_ref"]["relative_path"])
-    )
-    source_ref = attempt_envelope["inputs"][0]
-    source_bytes = tree.read_bytes(source_ref["relative_path"])
-    source_width, source_height = dimensions(source_bytes)
-    current_capacity = attempt_envelope["payload"]["capacity"]
-    legacy_capacity = structure_pass.page_capacity(
-        SimpleNamespace(
-            **{
-                key: current_capacity[key]
-                for key in (
-                    "recipe",
-                    "chair",
-                    "tier",
-                    "max_model_len",
-                    "min_pixels",
-                    "max_pixels",
-                    "patch_size",
-                    "merge_size",
-                )
-            }
-        ),
-        source_width,
-        source_height,
-    )
-    legacy_request = structure_pass.page_request(
-        source_bytes,
-        source_ref["sha256"],
-        temperature=attempt_envelope["payload"]["decoding"]["temperature"],
-        capacity=legacy_capacity,
-    )
-    temperature = attempt_envelope["payload"]["decoding"]["temperature"]
-    request_sha256 = digest_bytes(
-        request_body(
-            {
-                **legacy_request.generation_sent,
-                "messages": list(legacy_request.messages),
-            },
-            model_id=call_record["served_model_id"],
-            seed=call_record["generation_sent"]["seed"],
-            deterministic=temperature == 0,
-            temperature=temperature,
-        )
-    )
-    call_record["image_sha256s"] = [source_ref["sha256"]]
-    call_record["request_sha256"] = request_sha256
-    call_record["capacity"] = legacy_capacity
-    call_digest, call_blob = tree.put_blob(DESIGNATOR, canonical_bytes(call_record))
-    legacy_call_ref = {"relative_path": call_blob.relative_path, "sha256": call_digest}
-    attempt_envelope["payload"]["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA_V2
-    attempt_envelope["payload"].pop("presentation_ref")
-    attempt_envelope["payload"]["call_record_ref"] = legacy_call_ref
-    attempt_envelope["payload"]["request_sha256"] = request_sha256
-    attempt_envelope["payload"]["capacity"] = legacy_capacity
-    attempt_envelope["inputs"] = attempt_envelope["inputs"][:1]
-    attempt_envelope["self_hash"] = self_hash(attempt_envelope)
-    attempt_bytes = canonical_bytes(attempt_envelope)
-    attempt_path.write_bytes(attempt_bytes)
-    attempt_ref = {
-        "relative_path": tree.artifact_path(
-            DESIGNATOR, "structure-attempt", attempt_row["artifact_id"]
-        ),
-        "sha256": digest_bytes(attempt_bytes),
-    }
-
-    answer_path = tree.resolve(
-        tree.artifact_path(
-            DESIGNATOR,
-            STRUCTURE_ANSWER_KIND,
-            answer_row["artifact_id"],
-        )
-    )
-    answer_envelope = json.loads(answer_path.read_text(encoding="utf-8"))
-    answer_envelope["payload"]["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA_V2
-    answer_envelope["payload"].pop("presentation_ref")
-    answer_envelope["payload"]["call_record_ref"] = legacy_call_ref
-    answer_envelope["payload"]["request_sha256"] = request_sha256
-    answer_envelope["payload"]["capacity"] = legacy_capacity
-    answer_envelope["payload"]["attempts"] = [attempt_ref]
-    answer_envelope["inputs"] = answer_envelope["inputs"][:1]
-    answer_envelope["self_hash"] = self_hash(answer_envelope)
-    answer_path.write_bytes(canonical_bytes(answer_envelope))
-    tree.resolve(presentation_path).unlink()
-
-    endpoint, exit_code = _run_designator(
-        root,
-        catalogue,
-        tmp_path,
-        monkeypatch,
-        [_answer(PAGE_TWO_ACTS)],
-    )
-    assert exit_code == EXIT_COMPLETE
-    assert len(endpoint.requests) == 1
-    resumed = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
-    assert resumed[1]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V2
-    assert "presentation_ref" not in resumed[1]["payload"]
-    assert resumed[2]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
-
-
 @pytest.mark.parametrize("damage", ["missing", "out-of-order", "extra"])
 def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(damage, monkeypatch):
     monkeypatch.setattr(stage_contract, "validate_serving_provenance", lambda *_args, **_kw: None)
@@ -1367,22 +1148,11 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
         "verify_structure_attempt_call",
         lambda *_args, **_kwargs: None,
     )
+    current_policy, _digest = load_decoding_policy()
     monkeypatch.setattr(
         stage_contract,
         "load_decoding_policy",
-        lambda _path: (
-            {
-                "schema": "decoding.v2",
-                "reading_of_record": {"temperature": 0},
-                "variance_experiment": {"label": "v", "seed": 1, "passes": 2},
-                "structure": {
-                    "temperature": 1,
-                    "recovery_seed_schedule": "base-plus-attempt-ordinal-minus-one",
-                    "recovery_max_attempts": 3,
-                },
-            },
-            "d" * 64,
-        ),
+        lambda _path: (current_policy, "d" * 64),
     )
     page_id = "page_" + "1" * 16
     policy = {
@@ -1397,7 +1167,7 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
     first_ref = {"relative_path": "2_designator/a1.json", "sha256": "1" * 64}
     second_ref = {"relative_path": "2_designator/a2.json", "sha256": "2" * 64}
     first = {
-        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
         "page_id": page_id,
         "page_ordinal": 1,
         "attempt_ordinal": 1,
@@ -1465,7 +1235,7 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
 def test_real_denominator_indexes_structure_attempts_and_decoding_once(monkeypatch):
     pages = ["page_" + "1" * 16, "page_" + "2" * 16]
     answers = [
-        {"subject_id": page_id, "payload": {"schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V2}}
+        {"subject_id": page_id, "payload": {"schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3}}
         for page_id in pages
     ]
     attempt_rows = [{"subject_id": page_id, "payload": {}} for page_id in pages]
@@ -2159,14 +1929,12 @@ def test_a_non_zero_sealed_structure_temperature_is_admitted_for_the_serving_sea
     """The serving seam owns and sends the sealed structural posture."""
     catalogue = _live_catalogue(tmp_path)
     decoding = tmp_path / "decoding.toml"
+    source = (ROOT / "config" / "decoding.toml").read_text(encoding="utf-8")
     decoding.write_text(
-        'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
-        '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260820\npasses = 2\n'
-        "[structure]\ntemperature = 0.7\n",
-        encoding="utf-8",
+        source.replace("temperature = 1\n", "temperature = 0.7\n", 1), encoding="utf-8"
     )
     policy, _digest = load_decoding_policy(decoding)
-    assert policy["structure"] == {"temperature": 0.7}
+    assert policy["structure"]["temperature"] == 0.7
     root = tmp_path / "runs"
     _chain(root, catalogue, "--decoding-config", str(decoding))
 
@@ -2267,8 +2035,16 @@ def _minimal_answer_record() -> dict[str, Any]:
     names. Built from the constant itself rather than a hand-copied list,
     which would drift from what the validator actually uses.
     """
-    record: dict[str, Any] = dict.fromkeys(designator._STRUCTURE_ANSWER_V1_FIELDS)
-    record["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA
+    record: dict[str, Any] = dict.fromkeys(designator._STRUCTURE_ANSWER_V3_FIELDS)
+    record["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA_V3
+    record["presentation_ref"] = {"relative_path": "p", "sha256": "0" * 64}
+    record["attempt_policy"] = {
+        "max_attempts": 3,
+        "seed_schedule": "base-plus-attempt-ordinal-minus-one",
+    }
+    record["attempt_ordinal"] = 1
+    record["attempt_seed"] = 7
+    record["attempts"] = [{"relative_path": "a", "sha256": "1" * 64}]
     record["acts"] = []
     record["blocks_without_proposal"] = []
     record["findings"] = []
@@ -2349,6 +2125,10 @@ def _ask(client, width: int, height: int, monkeypatch):
         temperature=0,
         decoding_config_sha256="c" * 64,
         provenance={},
+        attempt_policy={
+            "max_attempts": 3,
+            "seed_schedule": "base-plus-attempt-ordinal-minus-one",
+        },
     )
 
 
@@ -2438,6 +2218,51 @@ def test_a_field_outside_the_structure_answer_contract_refuses_by_name():
     del record["provenance"]
     with pytest.raises(ContractError, match=r"missing \['provenance'\]"):
         designator._validate_structure_answer_payload(record)
+
+
+@pytest.mark.parametrize(
+    "schema", ["designator-structure-answer.v1", "designator-structure-answer.v2"]
+)
+def test_retired_structure_answer_schema_is_refused_by_name(schema):
+    record = _minimal_answer_record()
+    record["schema"] = schema
+
+    with pytest.raises(
+        ContractError,
+        match=f"sealed under {schema}, which this build no longer reads; re-run",
+    ):
+        designator._validate_structure_answer_payload(record)
+
+
+@pytest.mark.parametrize(
+    "schema", ["designator-structure-answer.v1", "designator-structure-answer.v2"]
+)
+def test_retired_answer_refuses_before_secondary_provenance_publish(monkeypatch, schema):
+    context = SimpleNamespace(
+        args=SimpleNamespace(decoding_config=None),
+        tree=object(),
+        require_sealed_config=lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        designator, "_initial_pages_and_policies", lambda unused: ({}, {}, None, None)
+    )
+    monkeypatch.setattr(designator, "load_decoding_policy", lambda unused: ({}, "0" * 64))
+    monkeypatch.setattr(designator.structure_pass, "executable_temperature", lambda unused: 1)
+    monkeypatch.setattr(designator, "structure_recovery_policy", lambda unused: {})
+    monkeypatch.setattr(designator.structure_pass, "resolved_structure_chair", lambda unused: None)
+    monkeypatch.setattr(
+        designator,
+        "_stage_records",
+        lambda *_args: [{"subject_id": "page-1", "payload": {"schema": schema}}],
+    )
+    monkeypatch.setattr(
+        designator,
+        "_publish_secondary_provenance",
+        lambda *_args: pytest.fail("secondary provenance was published before refusal"),
+    )
+
+    with pytest.raises(ContractError, match=f"sealed under {schema}"):
+        designator.live_initial_pass(context, None, "small")
 
 
 # One page written to raise every finding the layout grammar has: a nested

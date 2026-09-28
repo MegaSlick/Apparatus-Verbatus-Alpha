@@ -94,10 +94,7 @@ bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. 
 held after publishing stage evidence seals it (holds remain in its census); a
 pass that never reaches its seal does not seal, whether it was held or refused
 before publishing stage evidence or closed fatally after publishing it, so the
-successor correctly refuses the missing boundary. Every difference in decoders,
-platform, machine, `decode_paths_used`, and `produced_pixels` is reported by
-field or decoder name. A valid difference is report-only and never refuses;
-Unit 17 owns any fatal policy.
+successor correctly refuses the missing boundary.
 
 Seals are compared as the SET the stored inventory names, on both sides of the
 boundary: the producer refuses to re-seal, and the successor refuses to read,

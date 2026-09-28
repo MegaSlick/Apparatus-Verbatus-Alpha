@@ -91,7 +91,7 @@ from common.decoding import (
     load_decoding_policy,
     structure_recovery_policy,
 )
-from common.durability import is_temporary_name
+from common.durability import is_unpublished_blob_temporary
 from common.exemplar_boundary import read_sealed_page, verify_sealed_page_pixels
 from common.hard_failure import (
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -308,13 +308,21 @@ STRUCTURE_ANSWER_KIND: Final = "structure-answer"
 STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v1"
 STRUCTURE_ANSWER_RECORD_SCHEMA_V2: Final = "designator-structure-answer.v2"
 STRUCTURE_ANSWER_RECORD_SCHEMA_V3: Final = "designator-structure-answer.v3"
-STRUCTURE_ANSWER_RECORD_SCHEMAS: Final = frozenset(
-    {
-        STRUCTURE_ANSWER_RECORD_SCHEMA,
-        STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
-        STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
-    }
+RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS: Final = frozenset(
+    {STRUCTURE_ANSWER_RECORD_SCHEMA, STRUCTURE_ANSWER_RECORD_SCHEMA_V2}
 )
+RETIRED_RESIDUAL_ENUMERATION: Final = "withheld-page-held"
+
+
+def refuse_retired_structure_answer(
+    schema: object, *, subject: str, error_type: type[Exception] = FatalAccounting
+) -> None:
+    if isinstance(schema, str) and schema in RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS:
+        raise error_type(
+            f"{subject} was sealed under {schema}, which this build no longer reads; re-run"
+        )
+
+
 STRUCTURE_ATTEMPT_KIND: Final = "structure-attempt"
 STRUCTURE_ANSWER_PARSED: Final = "parsed"
 
@@ -990,7 +998,7 @@ def _stage_blob_inventory(
                     "of a sha256; a seal witnesses no noncanonical content address"
                 )
             if not is_sha256(name):
-                if _is_unpublished_blob_temporary(name):
+                if is_unpublished_blob_temporary(name):
                     # A writer killed mid-publish leaves its temporary; skipped
                     # only once proven a plain regular file, never a link.
                     _refuse_unpublishable_temporary(directory_fd, name, stage)
@@ -1015,11 +1023,6 @@ def _stage_blob_inventory(
         ) from error
     finally:
         os.close(directory_fd)
-
-
-def _is_unpublished_blob_temporary(name: str) -> bool:
-    """True only for ``RunTree.put_blob``'s ``.<digest>.tmp-<unique>`` name."""
-    return is_temporary_name(name) and is_sha256(name[1:].partition(".tmp-")[0])
 
 
 def _refuse_unpublishable_temporary(directory_fd: int, name: str, stage: str) -> None:
@@ -1054,7 +1057,7 @@ def _publisher_link_allowance(
     for other in siblings:
         if other == name or not other.startswith(f".{name}.tmp-"):
             continue
-        if not _is_unpublished_blob_temporary(other):
+        if not is_unpublished_blob_temporary(other):
             continue
         try:
             sibling = os.stat(other, dir_fd=directory_fd, follow_symlinks=False)
@@ -1182,9 +1185,7 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: its decode-environment is missing or damaged"
         ) from error
-    previous_environment = _validate_decode_environment(
-        environment.get("payload"), f"{producer} stored"
-    )
+    _validate_decode_environment(environment.get("payload"), f"{producer} stored")
     actual_environment_sha256 = digest_bytes(environment_bytes)
     if payload.get("decode_environment_sha256") != actual_environment_sha256:
         raise SchemaRefusal(
@@ -1208,32 +1209,6 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: its named inventory no longer matches disk"
         )
-    # The producer's environment, rebuilt here: the reader's own decode work
-    # differs by construction.
-    current_environment = _validate_decode_environment(
-        _decode_environment(producer), f"{reader} current for {producer}"
-    )
-    differences = _decode_difference(previous_environment, current_environment)
-    if differences:
-        # Reported, not refused: no rule yet says when a difference is fatal.
-        print(
-            f"decode environment differs by name from {producer}: {differences}",
-            file=sys.stderr,
-        )
-
-
-def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
-    """Every decode-environment field that differs, by name."""
-    changes = []
-    previous_decoders = {row["name"]: row["version"] for row in previous["decoders"]}
-    current_decoders = {row["name"]: row["version"] for row in current["decoders"]}
-    for name in sorted(set(previous_decoders) | set(current_decoders)):
-        if previous_decoders.get(name) != current_decoders.get(name):
-            changes.append(name)
-    for field in ("platform", "machine", "decode_paths_used", "produced_pixels"):
-        if previous.get(field) != current.get(field):
-            changes.append(field)
-    return changes
 
 
 def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[str, str]:
@@ -2263,12 +2238,15 @@ def _verify_real_act_denominator(
         payload = answer.get("payload")
         if not isinstance(page_id, str) or not isinstance(payload, Mapping):
             raise FatalAccounting("a terminal structure answer does not bind a page payload")
-        if payload.get("schema") not in STRUCTURE_ANSWER_RECORD_SCHEMAS:
+        refuse_retired_structure_answer(
+            payload.get("schema"), subject=f"page {page_id}'s terminal structure answer"
+        )
+        if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
             raise FatalAccounting(
                 f"page {page_id}'s terminal structure answer has unsupported schema "
                 f"{payload.get('schema')!r}"
             )
-        if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA and attempts_by_page is None:
+        if attempts_by_page is None:
             attempts_by_page = _structure_attempts_by_page(context)
             sealed_decoding = load_decoding_policy(context.args.decoding_config)
         _verify_structure_attempt_chain(
@@ -2387,15 +2365,13 @@ def _verify_structure_attempt_chain(
 
     Whole-run callers pass a shared attempt index and decoding read.
     """
-    if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA:
-        return
     policy = payload.get("attempt_policy")
     references = payload.get("attempts")
     ordinal = payload.get("attempt_ordinal")
     if (
         not isinstance(policy, Mapping)
         or set(policy) != {"max_attempts", "seed_schedule"}
-        or policy.get("seed_schedule") not in {"fixed-base", "base-plus-attempt-ordinal-minus-one"}
+        or policy.get("seed_schedule") != "base-plus-attempt-ordinal-minus-one"
         or not is_plain_int(policy.get("max_attempts"))
         or not 1 <= policy["max_attempts"] <= 3
         or not is_plain_int(ordinal)
@@ -2443,12 +2419,16 @@ def _verify_structure_attempt_chain(
                 f"reference at ordinal {expected_ordinal}: {error}"
             ) from error
         attempt = record.get("payload")
+        if isinstance(attempt, Mapping):
+            refuse_retired_structure_answer(
+                attempt.get("schema"),
+                subject=f"page {page_id}'s structure attempt {expected_ordinal}",
+            )
         prior = references[: expected_ordinal - 1]
         if (
             record.get("attempt_id") != attempt_id(page_id, "structure", expected_ordinal)
             or not isinstance(attempt, Mapping)
-            or attempt.get("schema")
-            not in {STRUCTURE_ANSWER_RECORD_SCHEMA_V2, STRUCTURE_ANSWER_RECORD_SCHEMA_V3}
+            or attempt.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3
             or attempt.get("page_id") != page_id
             or attempt.get("page_ordinal") != payload.get("page_ordinal")
             or attempt.get("attempt_ordinal") != expected_ordinal
@@ -2462,19 +2442,7 @@ def _verify_structure_attempt_chain(
                 "identity, page, policy, config, and prior history"
             )
         if attempts:
-            if (
-                attempts[-1].get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
-                and attempt.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V2
-            ):
-                raise FatalAccounting(
-                    f"page {page_id}'s structure attempt {expected_ordinal} downgrades its "
-                    "native presentation schema"
-                )
-            expected_seed = (
-                attempts[-1]["attempt_seed"]
-                if policy["seed_schedule"] == "fixed-base"
-                else attempts[-1]["attempt_seed"] + 1
-            )
+            expected_seed = attempts[-1]["attempt_seed"] + 1
             if attempt["attempt_seed"] != expected_seed:
                 raise FatalAccounting(
                     f"page {page_id}'s structure attempt {expected_ordinal} violates its "
@@ -2631,33 +2599,15 @@ def verify_structure_attempt_call(
     attempt_inputs: object = None,
 ) -> None:
     """Bind one structure attempt to its retained response or transport call."""
-    presented = None
-    expected_image_sha256 = None
-    if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
-        presented = _verify_structure_request_image(
-            context,
-            payload,
-            page_id,
-            attempt_inputs,
-        )
-        expected_image_sha256 = presented["image_sha256"]
-    elif payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V2:
-        source_ref, _page_bytes, page_size = _structure_source_page(context, payload, page_id)
-        if attempt_inputs != [source_ref]:
-            raise ContractError(
-                f"legacy v2 structure attempt for page {page_id} does not retain its exact "
-                "sealed-page input"
-            )
-        if not _capacity_is_one_image(payload, *page_size):
-            raise ContractError(
-                f"legacy v2 structure attempt for page {page_id} capacity was not computed "
-                "over its directly presented sealed page"
-            )
-        expected_image_sha256 = source_ref["sha256"]
-    else:
-        raise ContractError(
-            f"structure attempt for page {page_id} has no supported versioned schema"
-        )
+    refuse_retired_structure_answer(
+        payload.get("schema"),
+        subject=f"structure attempt for page {page_id}",
+        error_type=ContractError,
+    )
+    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+        raise ContractError(f"structure attempt for page {page_id} has no supported schema")
+    presented = _verify_structure_request_image(context, payload, page_id, attempt_inputs)
+    expected_image_sha256 = presented["image_sha256"]
     reference = payload.get("call_record_ref")
     if reference is None:
         if (
@@ -2868,10 +2818,13 @@ def _verify_proposal_act_row(
         subject_id=row["page_id"],
     )
     payload = _payload_of(answer)
-    if payload.get("schema") not in STRUCTURE_ANSWER_RECORD_SCHEMAS:
+    refuse_retired_structure_answer(
+        payload.get("schema"), subject=f"act {act_id}'s page's structure answer"
+    )
+    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
         raise FatalAccounting(
-            f"act {act_id}'s page names a structure answer whose schema is "
-            f"{payload.get('schema')!r}, not one of {sorted(STRUCTURE_ANSWER_RECORD_SCHEMAS)!r}"
+            f"act {act_id}'s page names a structure answer with unsupported schema "
+            f"{payload.get('schema')!r}"
         )
     if row["page_id"] not in verified_structure_attempt_pages:
         _verify_structure_attempt_chain(context, payload, row["page_id"])
@@ -3099,8 +3052,8 @@ def _verify_every_conservation_residual_is_accounted(
 
     The reverse of `_verify_minted_act_rows`: a residual the seal never named
     leaves no artifact to miss, so without this it vanishes silently
-    (principle 2).  A page over the sealed residual bound may withhold its
-    list only if it is held as exactly one page-residual item.
+    (principle 2). A current record lists every component, either as an
+    individual hold or in the retained aggregate for a page hold.
     """
     if holds_by_subject is None:
         holds_by_subject = _designator_records_by_subject(context, "hold")
@@ -3108,11 +3061,11 @@ def _verify_every_conservation_residual_is_accounted(
     for page_id, record in _designator_records_by_subject(context, "conservation").items():
         payload = _payload_of(record)
         enumeration = payload.get("residual_enumeration")
-        if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
-            _verify_withheld_page_is_held_as_one_item(
-                page_id, payload, accounted_pages.get(page_id, [])
+        if enumeration == RETIRED_RESIDUAL_ENUMERATION:
+            raise FatalAccounting(
+                f"page {page_id}'s conservation record was sealed under {enumeration}, "
+                "which this build no longer reads; re-run"
             )
-            continue
         if enumeration not in (RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_AGGREGATED):
             raise FatalAccounting(
                 f"the conservation record for page {page_id} records its residual enumeration as "
@@ -3332,35 +3285,6 @@ def _page_residual_holds_by_page(
     return by_page
 
 
-def _verify_withheld_page_is_held_as_one_item(
-    page_id: str, payload: Mapping[str, Any], holds: list[Mapping[str, Any]]
-) -> None:
-    """A record that withheld its components owes exactly one page-residual row.
-
-    That row must name the same bound the record applied.
-    """
-    if len(holds) != 1:
-        raise FatalAccounting(
-            f"page {page_id}'s conservation record withheld its residual components, but the run "
-            f"carries {len(holds)} page-residual holds for that page rather than exactly one; "
-            "unlisted ink is accounted for by the single review item that replaced it, or it is "
-            "lost silently"
-        )
-    bound = payload.get("max_residual_components")
-    if not _is_count(bound):
-        raise FatalAccounting(
-            f"page {page_id}'s conservation record withheld its residual components without "
-            "naming the integer bound it was judged against"
-        )
-    held_bound = holds[0].get("max_residual_components")
-    if not _is_count(held_bound) or held_bound != bound:
-        raise FatalAccounting(
-            f"page {page_id} is held against a bound of {held_bound!r} residual components "
-            f"while its own conservation record applied {bound}; the held page and the "
-            "reconciliation that held it must name one policy, as one integer"
-        )
-
-
 def fallback_page_act_key(page_ordinal: int) -> str:
     """The human-readable label of the one act a page's fallback crops belong to.
 
@@ -3373,20 +3297,17 @@ def fallback_page_act_key(page_ordinal: int) -> str:
 # residual" and "counted but not listed" stay distinguishable.
 RESIDUAL_ENUMERATION_COMPLETE: Final = "complete"
 RESIDUAL_ENUMERATION_AGGREGATED: Final = "aggregate-page-held"
-RESIDUAL_ENUMERATION_WITHHELD: Final = "withheld-page-held"
 RESIDUAL_ENUMERATIONS: Final = (
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATION_AGGREGATED,
-    RESIDUAL_ENUMERATION_WITHHELD,
 )
 
 # Page-residual hold causes, shared by the Designator and this verifier.
-PAGE_RESIDUAL_REASON_CODE: Final = "residual-components-over-page-bound"
 PAGE_RESIDUAL_AGGREGATE_REASON_CODE: Final = "residual-components-below-presentation-threshold"
 
 
 def page_residual_act_key(page_ordinal: int) -> str:
-    """The label of the one act a page held for over-bound residual scatter becomes.
+    """The label of the one act holding a page's aggregate residuals.
 
     A label only; identity comes from the ``page-residual`` act class.
     """
@@ -3580,11 +3501,9 @@ def _verify_page_residual_act_row(
 ) -> None:
     """The held row that stands for a whole page, checked against its own evidence.
 
-    Aggregated records keep their components; legacy withheld records keep only
-    a count and bound.  Rectangle, identity, premise (the page's conservation
-    record), grouping digest (against the run's seal), component count
-    (principle 8) and cause are all recomputed; consumers route on the cause
-    code.
+    Aggregated records keep their components. Rectangle, identity, premise
+    (the page's conservation record), grouping digest (against the run's seal),
+    component count (principle 8) and cause are all recomputed.
     """
     payload = _payload_of(hold)
     if "residual_bounds" in payload:
@@ -3602,7 +3521,7 @@ def _verify_page_residual_act_row(
         )
     reason_code = payload.get("reason_code")
     if (
-        reason_code not in (PAGE_RESIDUAL_REASON_CODE, PAGE_RESIDUAL_AGGREGATE_REASON_CODE)
+        reason_code != PAGE_RESIDUAL_AGGREGATE_REASON_CODE
         or payload.get("blocking_page_ordinal") != ordinal
     ):
         raise FatalAccounting(
@@ -3661,11 +3580,16 @@ def _verify_page_residual_premise(
             f"act {act_id}'s page-residual hold does not name an integer residual component count"
         )
     enumeration = payload.get("residual_enumeration")
-    if enumeration not in (RESIDUAL_ENUMERATION_WITHHELD, RESIDUAL_ENUMERATION_AGGREGATED):
+    if enumeration == RETIRED_RESIDUAL_ENUMERATION:
         raise FatalAccounting(
-            f"act {act_id} holds page {page_id} for withheld or aggregated residual enumeration, but that "
+            f"act {act_id}'s conservation record was sealed under {enumeration}, "
+            "which this build no longer reads; re-run"
+        )
+    if enumeration != RESIDUAL_ENUMERATION_AGGREGATED:
+        raise FatalAccounting(
+            f"act {act_id} holds page {page_id} for aggregated residual enumeration, but that "
             f"page's own conservation record records its enumeration as {enumeration!r} rather "
-            f"than {RESIDUAL_ENUMERATION_WITHHELD!r} or {RESIDUAL_ENUMERATION_AGGREGATED!r}; "
+            f"than {RESIDUAL_ENUMERATION_AGGREGATED!r}; "
             "a page may not be held as one review item over a reconciliation that separately "
             "presents every component"
         )
@@ -3676,12 +3600,6 @@ def _verify_page_residual_premise(
             f"act {act_id} holds page {page_id} as one review item, but that page's own "
             f"conservation record reports its outcome as {outcome!r} rather than 'held'; a "
             "record standing behind a held page may not still say it was proposed"
-        )
-    if enumeration == RESIDUAL_ENUMERATION_WITHHELD and "residual_components" in payload:
-        raise FatalAccounting(
-            f"act {act_id} holds page {page_id} for a withheld enumeration, but that page's "
-            "conservation record still carries a residual_components key; the key is omitted "
-            "when it is withheld, so that no consumer reads a present list as the complete one"
         )
     measured = payload.get("residual_component_count")
     if not _is_count(measured):
@@ -3695,38 +3613,19 @@ def _verify_page_residual_premise(
             f"conservation record measured {measured}; the count a reviewer is shown is the "
             "count the reconciliation took, never a second figure beside it"
         )
-    if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
-        bound = hold_payload.get("max_residual_components")
-        if not _is_count(bound):
-            raise FatalAccounting(
-                f"act {act_id}'s legacy withheld page-residual hold does not name the integer "
-                "bound it was judged against"
-            )
-        if hold_payload.get("reason_code") != PAGE_RESIDUAL_REASON_CODE:
-            raise FatalAccounting(f"act {act_id}'s legacy withheld page uses the wrong reason code")
-    else:
-        if hold_payload.get("reason_code") != PAGE_RESIDUAL_AGGREGATE_REASON_CODE:
-            raise FatalAccounting(f"act {act_id}'s aggregate page uses the wrong reason code")
-        bound = None
-    if enumeration == RESIDUAL_ENUMERATION_WITHHELD and measured <= bound:
+    if hold_payload.get("reason_code") != PAGE_RESIDUAL_AGGREGATE_REASON_CODE:
+        raise FatalAccounting(f"act {act_id}'s aggregate page uses the wrong reason code")
+    aggregate = payload.get("aggregated_residual_components")
+    aggregated_count = hold_payload.get("aggregated_component_count")
+    if (
+        not isinstance(aggregate, list)
+        or not _is_count(aggregated_count)
+        or aggregated_count != len(aggregate)
+    ):
         raise FatalAccounting(
-            f"act {act_id} holds page {page_id} against a bound of {bound} residual components, "
-            f"but that page's conservation record measured {measured}, which does not exceed it; "
-            "a page whose reconciliation stays within the bound owes one held act per residual, "
-            "not one held page"
+            f"act {act_id} holds page {page_id} for aggregate residual accounting without "
+            "the retained component count"
         )
-    if enumeration == RESIDUAL_ENUMERATION_AGGREGATED:
-        aggregate = payload.get("aggregated_residual_components")
-        aggregated_count = hold_payload.get("aggregated_component_count")
-        if (
-            not isinstance(aggregate, list)
-            or not _is_count(aggregated_count)
-            or aggregated_count != len(aggregate)
-        ):
-            raise FatalAccounting(
-                f"act {act_id} holds page {page_id} for aggregate residual accounting without "
-                "the retained component count"
-            )
 
 
 def _payload_of(record: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -4185,15 +4084,6 @@ def exemplar_page_ids(context) -> dict[int, str]:
 def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:
     """Apply the sealed run-level cap when no orchestrator guards stage entry."""
     run = tree.read_run()
-    sealed_digests = run.get(SEALED_CONFIG_DIGESTS_FIELD)
-    # Hand-built test trees may lack the policy; a real run never may.
-    if not isinstance(sealed_digests, Mapping) or "hard-failure" not in sealed_digests:
-        if is_real_ingress(run):
-            raise ContractError(
-                f"{stage} refuses to start: this real run authority seals no hard-failure "
-                "configuration digest, so its run-level cap cannot be proven"
-            )
-        return
     policy = load_hard_failure_policy(hard_failure_config_path)
     require_sealed_config(run_sealed_config_digests(run), "hard-failure", policy["config_sha256"])
     # Inputs are not verified here, so lineage damage is reported by the

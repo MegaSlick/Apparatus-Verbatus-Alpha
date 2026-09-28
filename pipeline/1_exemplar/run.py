@@ -44,7 +44,7 @@ from admission import reason_code  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
-from common.contracts.canonical import self_hash, verify_self_hash  # noqa: E402
+from common.contracts.canonical import is_sha256, self_hash, verify_self_hash  # noqa: E402
 from common.contracts.envelope import read_verified, validate_envelope  # noqa: E402
 from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, page_id  # noqa: E402
@@ -314,7 +314,7 @@ def _submitted_sources(run: dict[str, Any]) -> dict[int, dict[str, Any]]:
             raise ContractError(f"run.json names submitted ordinal {ordinal} more than once")
         if not isinstance(path, str) or not path:
             raise ContractError(f"run.json source ordinal {ordinal} declares no path")
-        if not _is_sha256(digest):
+        if not is_sha256(digest):
             raise ContractError(f"run.json source ordinal {ordinal} has no lowercase sha256")
         sources[ordinal] = dict(row)
     _verify_source_ledger(run, sources)
@@ -346,7 +346,7 @@ def _verify_source_ledger(run: dict[str, Any], sources: dict[int, dict[str, Any]
     for ordinal, source in sources.items():
         ledger_hash = source.get("ledger_sha256")
         size = source.get("bytes")
-        if not _is_sha256(ledger_hash):
+        if not is_sha256(ledger_hash):
             raise ContractError(f"run.json source ordinal {ordinal} has no filename-ledger sha256")
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             raise ContractError(
@@ -473,7 +473,7 @@ def _read_checked_admission(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Read one manifest entry once, and keep the verified reference it produced."""
     relative_path, digest = entry.get("relative_path"), entry.get("sha256")
-    if not isinstance(relative_path, str) or not _is_sha256(digest):
+    if not isinstance(relative_path, str) or not is_sha256(digest):
         raise ContractError("the door's manifest holds an invalid admission reference")
     ref = {"relative_path": relative_path, "sha256": digest}
     data = read_verified(tree.read_bytes, ref, "a door admission", ContractError)
@@ -512,7 +512,7 @@ def _verify_admitted_blob(
     """
     payload = admission["payload"]
     stored_at, sealed_digest = payload.get("stored_at"), payload.get("sha256")
-    if not _is_sha256(sealed_digest):
+    if not is_sha256(sealed_digest):
         raise ContractError("an admitted source records no lowercase sha256 for its bytes")
     if stored_at != tree.blob_path(DOOR, sealed_digest):
         raise ContractError("an admission's stored_at is not the content-addressed blob path")
@@ -840,14 +840,6 @@ def _verify_existing_corpus_seal(tree: RunTree) -> None:
             "the existing Exemplar corpus seal fails its own self-hash: it was edited "
             "after it was sealed, and a rerun will not build on it"
         )
-
-
-def _is_sha256(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 if __name__ == "__main__":

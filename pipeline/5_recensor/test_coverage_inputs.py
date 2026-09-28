@@ -14,7 +14,6 @@ from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, read_sealed_tom
 from common.stage import (
     RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
-    RESIDUAL_ENUMERATION_WITHHELD,
 )
 from conftest import load_stage
 
@@ -176,17 +175,10 @@ def _conservation(
     counts=...,
     enumeration=RESIDUAL_ENUMERATION_COMPLETE,
     declared_count=...,
-    bound=2000,
-    keep_components=None,
 ):
     """One Designator conservation record as the Designator now publishes them.
 
-    `residual_enumeration`, `residual_component_count` and
-    `max_residual_components` are on every record the stage writes, so a double
-    that omitted them would be testing a shape no producer emits and would pass
-    checks the real artifact has to satisfy. A withheld record drops the
-    `residual_components` key entirely -- `keep_components` exists only so the
-    refusal against a withheld record that kept it can be built at all.
+    Current records enumerate their retained components.
     """
     residual_components = [] if components is None else components
     if counts is ...:
@@ -199,7 +191,6 @@ def _conservation(
         )
         counts = (residual, 0, residual) if measurable else (None, None, None)
     total, claimed, residual = counts
-    withheld = enumeration == RESIDUAL_ENUMERATION_WITHHELD
     payload = {
         "page_ordinal": ordinal,
         "ink_measurable": measurable,
@@ -207,17 +198,11 @@ def _conservation(
         "claimed_pixel_count": claimed,
         "residual_pixel_count": residual,
         "residual_component_count": (
-            (bound + 1 if withheld else len(residual_components))
-            if declared_count is ...
-            else declared_count
+            len(residual_components) if declared_count is ... else declared_count
         ),
-        "max_residual_components": bound,
         "residual_enumeration": enumeration,
     }
-    if not withheld or keep_components is not None:
-        payload["residual_components"] = (
-            residual_components if keep_components is None else keep_components
-        )
+    payload["residual_components"] = residual_components
     return {
         "artifact_id": artifact_id,
         "stage": RUN.DESIGNATOR,
@@ -1114,23 +1099,6 @@ def test_a_pass_that_cannot_prove_what_it_writes_is_never_cached():
     assert STAGE_MODULE._PASS_MANIFESTS == {}
 
 
-def test_review_route_holds_a_reproof_that_escaped_its_flagged_span():
-    """A completed-but-rejected audit re-proof is held, and named as neither
-    an incomplete re-proof nor an exhausted cap -- the failure a real card
-    produced on 2026-09-15 (`common.perlector_audit.EXAMINATION_REPROOF_REJECTED`).
-    """
-    outcome, reason = RUN.review_route_from_findings(
-        testimony_shortfall=False,
-        audit_unresolved=True,
-        under_witnessed=False,
-        audit_examination="reproof-rejected",
-    )
-    assert outcome == "held-for-review"
-    assert "rewrote text outside every location its own flag identified" in reason
-    assert "did not complete" not in reason
-    assert "exhausted" not in reason
-
-
 def _continuation_page_context(monkeypatch, *, reason):
     """A page whose only act is primary somewhere else, declared unalignable here.
 
@@ -1528,42 +1496,26 @@ def test_geometry_coverage_accepts_a_matching_residual_partition(monkeypatch):
     }
 
 
-def test_every_geometry_coverage_shape_carries_the_same_keys(monkeypatch):
-    """One schema, three answers -- absence is a value here, never a missing key.
-
-    An enumerated page, a page held as one review item, and a page with no
-    conservation record at all reach the same review payload field, and a
-    consumer branching on `residual_enumeration` or reading `reason` may not
-    have to know which of the three it got before it can look.
-    """
-    enumerated = _context(_conservation("conservation-1", components=[_component()]))
-    monkeypatch.setattr(
-        RUN,
-        "expected_acts",
-        lambda unused: [{"act_key": "residual:1:0", "page_ordinal": 1, "outcome": "held"}],
-    )
-    complete = RUN.geometry_coverage_inputs(enumerated)[1]
-
-    withheld_context = _context(
-        _conservation("conservation-1", enumeration=RESIDUAL_ENUMERATION_WITHHELD, bound=10)
-    )
-    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
-    withheld = RUN.geometry_coverage_inputs(withheld_context)[1]
-
-    assert set(complete) == set(withheld) == set(RUN.NO_PAGE_CONSERVATION)
-    assert complete["residual_enumeration"] != withheld["residual_enumeration"]
-    assert complete["reason"] is None and withheld["reason"] is not None
-
-
-def test_an_enumerated_record_does_not_present_the_legacy_withheld_bound(monkeypatch):
-    context = _context(_conservation("conservation-1", components=[_component()], bound=None))
+def test_an_enumerated_record_has_the_review_key_shape(monkeypatch):
+    context = _context(_conservation("conservation-1", components=[_component()]))
     monkeypatch.setattr(
         RUN,
         "expected_acts",
         lambda unused: [{"act_key": "residual:1:0", "page_ordinal": 1, "outcome": "held"}],
     )
 
-    assert RUN.geometry_coverage_inputs(context)[1]["max_residual_components"] is None
+    assert set(RUN.geometry_coverage_inputs(context)[1]) == set(RUN.NO_PAGE_CONSERVATION)
+
+
+def test_retired_conservation_enumeration_is_refused_by_name(monkeypatch):
+    context = _context(_conservation("conservation-1", enumeration="withheld-page-held"))
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(
+        FatalAccounting,
+        match="sealed under withheld-page-held, which this build no longer reads; re-run",
+    ):
+        RUN.geometry_coverage_inputs(context)
 
 
 def test_geometry_coverage_refuses_a_divergent_residual_partition(monkeypatch):
@@ -1795,145 +1747,6 @@ def test_aggregate_geometry_consumes_both_partitions_and_exact_seal_identities(m
             RUN.geometry_coverage_inputs(context)
 
 
-def test_a_withheld_page_is_a_named_finding_rather_than_a_malformed_record(monkeypatch):
-    """The branch this unit exists for: a withheld record is read, not accused.
-
-    Before it, an omitted `residual_components` key fell through to the
-    malformed-facts refusal, so the operator was told the Designator wrote a
-    broken artifact when what actually happened was that a page was held under
-    a sealed policy.
-    """
-    context = _context(
-        _conservation("conservation-1", enumeration=RESIDUAL_ENUMERATION_WITHHELD, bound=10)
-    )
-    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
-
-    findings = RUN.geometry_coverage_inputs(context)
-
-    assert findings[1]["ink_measurable"] is True
-    assert findings[1]["residual_component_count"] == 11
-    assert findings[1]["residual_act_count"] == 0
-    assert findings[1]["page_residual_act_count"] == 1
-    assert findings[1]["residual_enumeration"] == RESIDUAL_ENUMERATION_WITHHELD
-    assert findings[1]["max_residual_components"] == 10
-    assert "11 residual components against the sealed bound of 10" in findings[1]["reason"]
-    # Each act's review gets its own copy, exactly as an enumerated page's does.
-    assert RUN.geometry_coverage_for(findings, 1) == findings[1]
-    assert RUN.geometry_coverage_for(findings, 1) is not findings[1]
-
-
-def test_a_withheld_page_with_no_page_residual_act_is_a_silent_loss(monkeypatch):
-    context = _context(
-        _conservation("conservation-1", enumeration=RESIDUAL_ENUMERATION_WITHHELD, bound=10)
-    )
-    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
-
-    with pytest.raises(FatalAccounting, match="accounted for by 0 page-residual acts"):
-        RUN.geometry_coverage_inputs(context)
-
-
-def test_a_withheld_page_may_not_also_mint_its_components(monkeypatch):
-    context = _context(
-        _conservation("conservation-1", enumeration=RESIDUAL_ENUMERATION_WITHHELD, bound=10)
-    )
-    monkeypatch.setattr(
-        RUN,
-        "expected_acts",
-        lambda unused: [
-            _page_residual_act(),
-            {"act_key": "residual:1:0", "page_ordinal": 1, "outcome": "held"},
-        ],
-    )
-
-    with pytest.raises(FatalAccounting, match="still minted 1 per-component residual acts"):
-        RUN.geometry_coverage_inputs(context)
-
-
-def test_a_withheld_page_that_kept_its_component_list_refuses(monkeypatch):
-    context = _context(
-        _conservation(
-            "conservation-1",
-            enumeration=RESIDUAL_ENUMERATION_WITHHELD,
-            bound=10,
-            keep_components=[],
-        )
-    )
-    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
-
-    with pytest.raises(FatalAccounting, match="still carries a residual_components key"):
-        RUN.geometry_coverage_inputs(context)
-
-
-def test_a_withheld_page_without_a_usable_integer_bound_refuses(monkeypatch):
-    """The count-and-bound refusal is exercised, not merely present in source.
-
-    A page held with no `max_residual_components` at all -- or one that is a
-    float or a bool rather than a plain int -- must not fall through to the
-    `count <= bound` comparison and be silently accepted or misreported; a
-    mutation deleting this check left every test in this file green while a
-    withheld page with an absent bound was reported to a reviewer as held
-    against a sealed bound of 0.
-    """
-    context = _context(
-        _conservation("conservation-1", enumeration=RESIDUAL_ENUMERATION_WITHHELD, bound=10.0)
-    )
-    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
-
-    with pytest.raises(FatalAccounting, match="no integer bound it was judged against"):
-        RUN.geometry_coverage_inputs(context)
-
-
-def test_a_withheld_page_with_a_boolean_bound_refuses(monkeypatch):
-    context = _context(
-        _conservation("conservation-1", enumeration=RESIDUAL_ENUMERATION_WITHHELD, bound=True)
-    )
-    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
-
-    with pytest.raises(FatalAccounting, match="no integer bound it was judged against"):
-        RUN.geometry_coverage_inputs(context)
-
-
-def test_a_withheld_page_with_no_bound_at_all_refuses(monkeypatch):
-    record = _conservation("conservation-1", enumeration=RESIDUAL_ENUMERATION_WITHHELD, bound=10)
-    del record["payload"]["max_residual_components"]
-    context = _context(record)
-    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
-
-    with pytest.raises(FatalAccounting, match="no integer bound it was judged against"):
-        RUN.geometry_coverage_inputs(context)
-
-
-def test_a_withheld_page_within_its_own_bound_refuses(monkeypatch):
-    context = _context(
-        _conservation(
-            "conservation-1",
-            enumeration=RESIDUAL_ENUMERATION_WITHHELD,
-            bound=10,
-            declared_count=10,
-        )
-    )
-    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
-
-    with pytest.raises(FatalAccounting, match="counted 10 residual components against a bound"):
-        RUN.geometry_coverage_inputs(context)
-
-
-def test_an_unmeasured_page_may_not_withhold_an_enumeration(monkeypatch):
-    """Nothing was measured, so nothing was counted for a bound to stop."""
-    context = _context(
-        _conservation(
-            "conservation-1",
-            measurable=False,
-            enumeration=RESIDUAL_ENUMERATION_WITHHELD,
-            bound=10,
-        )
-    )
-    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
-
-    with pytest.raises(FatalAccounting, match="unmeasured.*withheld its residual enumeration"):
-        RUN.geometry_coverage_inputs(context)
-
-
 def test_an_enumerated_page_may_not_also_be_held_as_one_item(monkeypatch):
     """One disposition per page: N held acts, or the one item that replaced them."""
     context = _context(_conservation("conservation-1", components=[_component()]))
@@ -1947,46 +1760,6 @@ def test_an_enumerated_page_may_not_also_be_held_as_one_item(monkeypatch):
     )
 
     with pytest.raises(FatalAccounting, match="enumerated its residual components and is also"):
-        RUN.geometry_coverage_inputs(context)
-
-
-def test_a_withheld_pages_ink_accounting_is_still_reconciled(monkeypatch):
-    """The components are not listed; the pixels still have to add up."""
-    context = _context(
-        _conservation(
-            "conservation-1",
-            enumeration=RESIDUAL_ENUMERATION_WITHHELD,
-            bound=10,
-            counts=(100, 40, 40),
-        )
-    )
-    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
-
-    with pytest.raises(FatalAccounting, match="pixel accounting does not reconcile"):
-        RUN.geometry_coverage_inputs(context)
-
-
-def test_a_withheld_pages_malformed_pixel_counts_are_refused(monkeypatch):
-    """The withheld shape's own copy of the malformed-count check, pinned directly.
-
-    `geometry_coverage_inputs` and `_withheld_page_conservation` each held this
-    check separately until they were folded into one shared helper
-    (`_require_reconciled_pixels`); nothing in this file exercised the withheld
-    copy on its own, so a mutation that dropped it left the whole suite green.
-    This pins the withheld call site by name rather than inferring it from the
-    enumerated page's coverage above.
-    """
-    context = _context(
-        _conservation(
-            "conservation-1",
-            enumeration=RESIDUAL_ENUMERATION_WITHHELD,
-            bound=10,
-            counts=(12, True, 12),
-        )
-    )
-    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [_page_residual_act()])
-
-    with pytest.raises(FatalAccounting, match="page 1 has malformed measured pixel counts"):
         RUN.geometry_coverage_inputs(context)
 
 

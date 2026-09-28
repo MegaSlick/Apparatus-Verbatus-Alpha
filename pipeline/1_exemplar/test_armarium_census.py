@@ -110,6 +110,7 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
         adapter_recipes=bindings["adapter_recipes"],
         witness_chairs=bindings["witness_chairs"],
         ingress=synthetic_fixture_ingress_record(),
+        sealed_config_digests=bindings["sealed_config_digests"],
         # Read from the shipped config rather than restated: a sealed run binds its
         # render recipe, so a literal here goes stale the moment the default moves
         # and fails as "the render contract changes the sealed pixel recipe" — which

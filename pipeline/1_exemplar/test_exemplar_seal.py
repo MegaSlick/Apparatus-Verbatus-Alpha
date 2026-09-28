@@ -153,6 +153,7 @@ def build_door_run(
         adapter_recipes=bindings["adapter_recipes"],
         witness_chairs=bindings["witness_chairs"],
         ingress=synthetic_fixture_ingress_record(),
+        sealed_config_digests=bindings["sealed_config_digests"],
         register_bytes=register_bytes,
     )
     context = StageContext(
@@ -722,6 +723,7 @@ def test_the_exemplar_refuses_a_run_the_door_never_wrote(tmp_path):
         adapter_recipes=bindings["adapter_recipes"],
         witness_chairs=bindings["witness_chairs"],
         ingress=synthetic_fixture_ingress_record(),
+        sealed_config_digests=bindings["sealed_config_digests"],
     )
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode != 0

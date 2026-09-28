@@ -1021,7 +1021,7 @@ def test_the_exclusion_recognises_the_name_the_store_itself_publishes_through(
         return descriptor, name
 
     monkeypatch.setattr(durability.tempfile, "mkstemp", observe)
-    store._atomic_write(published, b"an interrupted publication")
+    store._replace_file(published, b"an interrupted publication")
     [temporary] = temporaries
     relative = temporary.relative_to(tmp_path / "volume" / "r").as_posix()
     scope = RunTree(tmp_path / "volume", "r").inventory_scope()

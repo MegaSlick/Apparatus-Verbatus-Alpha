@@ -104,11 +104,7 @@ def log(event: str, **fields: Any) -> None:
             raise SubmitRefusal(f"log field {field!r} must be a non-negative count")
     if "digest" in fields:
         value = fields["digest"]
-        if (
-            not isinstance(value, str)
-            or len(value) != 64
-            or any(character not in "0123456789abcdef" for character in value)
-        ):
+        if not is_sha256(value):
             raise SubmitRefusal("log field 'digest' must be a lowercase sha256")
     if "status" in fields and fields["status"] not in _LOG_STATUSES:
         raise SubmitRefusal("log field 'status' is outside the closed status vocabulary")

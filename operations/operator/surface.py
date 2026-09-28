@@ -33,7 +33,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final, Iterator, Protocol, Sequence
 
 from common.chairs.config import load_models_toml, parse_models_config
-from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, validate_run_id
 from common.contracts.stages import ARMARIUM, WRITING_DIRECTORIES
@@ -2941,11 +2941,7 @@ def _status_projection(
         # Only receipts claiming bytes moved must bind a digest; one refused
         # before transfer has none, and `status` must keep working after failures.
         if state in {"complete", "partial-transfer"}:
-            if not (
-                isinstance(recorded_sha256, str)
-                and len(recorded_sha256) == 64
-                and all(character in "0123456789abcdef" for character in recorded_sha256)
-            ):
+            if not is_sha256(recorded_sha256):
                 raise RecordError("saved upload record does not bind its submission record digest")
             lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
         lines.extend(_volume_status_lines(payload.get("volume")))

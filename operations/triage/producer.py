@@ -44,6 +44,7 @@ from operations.triage.instrument import (
     validate_candidate_evidence,
     validate_producer_recipe,
 )
+from operations.triage.paths import PathCheckFailure, canonical_distinct_paths
 
 # `pipeline/0_triage` is intentionally the single top-level `manifest` module.
 # The Door uses this same import seam; a second manifest implementation would let
@@ -1088,62 +1089,39 @@ def _atomic_write_canonical(path: Path, value: Mapping[str, Any]) -> None:
         raise ProducerRefusal(f"confirmed triage document {path} was not published") from error
 
 
-def _case_insensitive_path_key(path: Path) -> str:
-    return unicodedata.normalize("NFC", os.fspath(path)).casefold()
-
-
 def _canonical_distinct_destinations(**paths: Path) -> dict[str, Path]:
-    """Resolve parents once and refuse spelling or inode aliases before any write."""
-    canonical: dict[str, Path] = {}
-    spellings: dict[str, str] = {}
-    identities: dict[tuple[int, int], str] = {}
-    for role, path in paths.items():
-        try:
-            target = path.parent.resolve(strict=False) / path.name
-        except (OSError, RuntimeError) as error:
-            raise ProducerRefusal(
+    try:
+        canonical = canonical_distinct_paths(list(paths.items()))
+    except PathCheckFailure as error:
+        messages = {
+            "resolve": (
                 "confirmed triage destination could not be resolved; nothing was written. "
                 "Repair the named path and retry."
-            ) from error
-        key = _case_insensitive_path_key(target)
-        prior = spellings.get(key)
-        if prior is not None:
-            raise ProducerRefusal(
-                f"confirmed triage destinations for {prior} and {role} collide on a "
+            ),
+            "spelling": (
+                f"confirmed triage destinations for {error.prior} and {error.role} collide on a "
                 "case-insensitive filesystem; "
                 "nothing was written. Give every record role its own path."
-            )
-        spellings[key] = role
-        try:
-            status = os.lstat(target)
-        except FileNotFoundError:
-            pass
-        except OSError as error:
-            raise ProducerRefusal(
+            ),
+            "inspect": (
                 "confirmed triage destination identity could not be verified; nothing was "
                 "written. Restore readable destination paths and retry."
-            ) from error
-        else:
-            if stat.S_ISLNK(status.st_mode):
-                raise ProducerRefusal(
-                    f"confirmed triage destination for {role} is a symbolic link; nothing was "
-                    "written. Supply a direct path."
-                )
-            if not stat.S_ISREG(status.st_mode):
-                raise ProducerRefusal(
-                    f"confirmed triage destination for {role} is not a regular file; nothing "
-                    "was written. Supply a direct file path."
-                )
-            identity = (status.st_dev, status.st_ino)
-            prior = identities.get(identity)
-            if prior is not None:
-                raise ProducerRefusal(
-                    f"confirmed triage destinations for {prior} and {role} name one file; "
-                    "nothing was written. Give every record role its own path."
-                )
-            identities[identity] = role
-        canonical[role] = target
-    return canonical
+            ),
+            "symlink": (
+                f"confirmed triage destination for {error.role} is a symbolic link; nothing was "
+                "written. Supply a direct path."
+            ),
+            "type": (
+                f"confirmed triage destination for {error.role} is not a regular file; nothing "
+                "was written. Supply a direct file path."
+            ),
+            "inode": (
+                f"confirmed triage destinations for {error.prior} and {error.role} name one file; "
+                "nothing was written. Give every record role its own path."
+            ),
+        }
+        raise ProducerRefusal(messages[error.reason]) from error
+    return dict(zip(paths, canonical, strict=True))
 
 
 def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
