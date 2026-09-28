@@ -408,35 +408,40 @@ caller, so the claim cannot be set from outside.
 ## The pod guard: every pod deletes itself when idle or out of time
 
 `pod_guard.sh` runs on the pod and deletes that same pod when its approved time runs out
-or when its GPU has done no work for 30 minutes (utilisation under 5 % at every
-one-minute sample, and no touch of the pod's keep-alive file). It needs nothing from the
-laptop or a Claude session, so a crashed session, a closed app or a sleeping Mac cannot
-leave a pod billing. It uses RunPod's documented self-stop route: every pod has
-`runpodctl` and a pod-scoped `RUNPOD_API_KEY`. It keeps asking until the pod is gone,
-falls back to stopping it, and the network volume survives either way. The deadline is
-the guarantee; the idle delete saves money sooner.
+or when it has done no work for 30 minutes: no GPU use (under 5 % at every one-minute
+sample; a GPU that cannot report counts as busy), no container CPU use (under half a core,
+from the container's own cgroup, not the shared host's load), and no touch of the pod's
+keep-alive file. It needs nothing from the laptop or a Claude session, so a crashed
+session, a closed app or a sleeping Mac cannot leave a pod billing. It uses RunPod's
+documented self-stop route: every pod has `runpodctl` and a pod-scoped `RUNPOD_API_KEY`.
+It keeps asking until the pod is gone, falls back to stopping it, and the network volume
+survives either way. The deadline is the guarantee; the idle delete saves money sooner.
 
-Arm it at creation through the pod's start command, pinned to a commit of this public
-repository, so it runs even if SSH never comes up. The same command starts a plain
-backstop that deletes the pod one hour after the deadline whether or not the guard is
-running. `<hours>` is the approved window in whole hours and `<sha>` a commit on `main`
-that carries the guard:
+Arm it at creation through the pod's start command, so it runs even if SSH never comes
+up. `pod_start_command.sh` prints that command: it fetches the guard from this public
+repository at a pinned commit, starts a backstop that deletes the pod an hour after its
+deadline even if the guard never ran, and then hands over to the image's `/start.sh`:
 
 ```sh
-runpodctl create pod ... --args "bash -c '(curl -fsSL --max-time 120 https://raw.githubusercontent.com/MegaSlick/Apparatus-Verbatus-Alpha/<sha>/operations/pod/pod_guard.sh -o /tmp/pod_guard.sh && sh /tmp/pod_guard.sh <hours> 30) > /tmp/pod_guard.out 2>&1 & (sleep \$(( (<hours> + 1) * 3600 )); runpodctl pod delete \$RUNPOD_POD_ID || runpodctl remove pod \$RUNPOD_POD_ID) > /tmp/pod_backstop.out 2>&1 & if [ -x /start.sh ]; then exec /start.sh; fi; exec sleep infinity'"
+runpodctl create pod ... --args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"
 ```
 
-- **Work that leaves the GPU idle** (model downloads, CPU-only stages, a long quiet wait)
-  touches `/workspace/.pod_guard/keepalive-<pod id>` at least every half hour.
+`<hours>` is the approved window and `<sha>` a commit on `main` that carries the guard.
+
+- **Work that uses neither GPU nor CPU for half an hour** (a long quiet wait that is
+  still wanted) touches `/workspace/.pod_guard/keepalive-<pod id>`.
 - **More time:** write the new deadline (epoch seconds) to a temporary file and move it
-  over `/workspace/.pod_guard/deadline-<pod id>`. A pod that was stopped and is started
-  again keeps its old deadline, so write a new one when the lead approves more time.
+  over `/workspace/.pod_guard/deadline-<pod id>`; the guard and the backstop both read it.
+  A pod that was stopped and is started again keeps its old deadline, so write a new one
+  when the lead approves more time.
 - **Records:** `/workspace/.pod_guard/guard.log`; with a topic in
-  `/workspace/.pod_guard/ntfy_topic` it also pings when it deletes the pod.
-- **Not yet observed on a live pod:** how RunPod passes `--args` to the container, and that
-  the image's own start script is `/start.sh`. The first pod after this change is created
-  on the smallest card with a one-hour window, and its guard log and deletion are checked
-  before any longer run relies on it.
+  `/workspace/.pod_guard/ntfy_topic` it pings when it deletes, fails to delete, or has to
+  stop the pod instead.
+- **Not yet observed on a live pod:** how RunPod passes `--args` to the container, the
+  image's `/start.sh`, whether the pod-scoped key may delete its own pod, and the cgroup
+  and `nvidia-smi` readings inside the container. The first pod after this change is
+  created on the smallest card with a one-hour window, and its guard log and deletion are
+  checked before any longer run relies on it.
 - The guard is a backstop, not the shutdown: close pods yourself when work ends and verify
   the close against RunPod's own state and billing. `session_end_pod_check.sh`, a Claude
   Code SessionEnd hook, pings the lead if a pod is still running when a session closes.

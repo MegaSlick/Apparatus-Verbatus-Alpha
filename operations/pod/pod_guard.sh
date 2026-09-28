@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs on a RunPod pod and deletes that same pod when its approved time runs out or when
-# its GPU has sat idle, so a pod left behind by a crashed session or a closed laptop stops
-# billing on its own. The network volume survives the delete.
+# it has done no work (no GPU use, no container CPU use), so a pod left behind by a crashed
+# session or a closed laptop stops billing on its own. The network volume survives.
 #
 #   pod_guard.sh <max_hours> [idle_minutes]
 #
@@ -9,7 +9,7 @@
 # keeps its deadline, keep-alive file and log in $POD_GUARD_DIR (default
 # /workspace/.pod_guard, on the network volume). To extend the deadline, write the new
 # epoch second to a temporary file and move it over deadline-<pod id>. Touching
-# keepalive-<pod id> counts as work while the GPU is idle (downloads, CPU-only stages).
+# keepalive-<pod id> counts as work for anything that uses neither GPU nor CPU for a while.
 set -u
 
 max_hours=${1:?usage: pod_guard.sh <max_hours> [idle_minutes]}
@@ -19,6 +19,8 @@ dir=${POD_GUARD_DIR:-/workspace/.pod_guard}
 interval=${POD_GUARD_INTERVAL:-60}
 idle_limit=${POD_GUARD_IDLE_SECONDS:-$((idle_minutes * 60))}
 busy_percent=${POD_GUARD_BUSY_PERCENT:-5}
+busy_cpu_percent=${POD_GUARD_BUSY_CPU_PERCENT:-50}
+cgroup=${POD_GUARD_CGROUP:-/sys/fs/cgroup}
 log="$dir/guard.log"
 deadline_file="$dir/deadline-$pod"
 
@@ -27,9 +29,12 @@ deadline_file="$dir/deadline-$pod"
 { mkdir -p "$dir" && touch "$log"; } 2>/dev/null || exit 3
 
 if command -v timeout >/dev/null 2>&1; then limit="timeout 60"; else limit=""; fi
+# A lost volume must not cost the delete: without a writable log, output goes nowhere.
 limited() {
+  out=$log
+  [ -w "$log" ] || out=/dev/null
   # shellcheck disable=SC2086
-  $limit "$@" >>"$log" 2>&1
+  $limit "$@" >>"$out" 2>&1
 }
 say() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$log" 2>/dev/null; }
 is_epoch() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
@@ -71,20 +76,50 @@ notify() {
 shut_down() {
   say "deleting pod $pod: $1"
   attempt=0
+  stopped=""
   while :; do
     attempt=$((attempt + 1))
-    if delete_pod; then say "delete requested (attempt $attempt)"; else say "delete attempt $attempt failed"; fi
-    [ "$attempt" -eq 1 ] && notify "Pod $pod is being deleted by its guard: $1"
-    if [ "$attempt" -ge 3 ] && stop_pod; then say "stop requested (attempt $attempt)"; fi
+    if delete_pod; then
+      say "delete requested (attempt $attempt)"
+      [ "$attempt" -eq 1 ] && notify "Pod $pod: its guard requested deletion ($1)."
+    else
+      say "delete attempt $attempt failed"
+      [ "$attempt" -eq 1 ] && notify "Pod $pod: its guard could not delete it ($1) and keeps trying."
+    fi
+    if [ "$attempt" -ge 3 ] && [ -z "$stopped" ] && stop_pod; then
+      stopped=yes
+      say "stop requested (attempt $attempt)"
+      notify "Pod $pod: delete did not take, so its guard stopped it. Check RunPod."
+    fi
     sleep "$interval"
   done
 }
 
+# A GPU that cannot report its use (MIG, some virtual GPUs) counts as busy.
 gpu_busy() {
   command -v nvidia-smi >/dev/null 2>&1 || return 1
   # shellcheck disable=SC2086
   $limit nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null |
-    awk -v floor="$busy_percent" '$1 + 0 >= floor { busy = 1 } END { exit !busy }'
+    awk -v floor="$busy_percent" '$1 !~ /^[0-9]+$/ || $1 + 0 >= floor { busy = 1 } END { exit !busy }'
+}
+
+# CPU seconds this container has used, from its own cgroup: the host's load average on a
+# shared RunPod machine counts other tenants' work.
+cpu_usec() {
+  if [ -r "$cgroup/cpu.stat" ]; then
+    awk '$1 == "usage_usec" { print $2 }' "$cgroup/cpu.stat"
+  elif [ -r "$cgroup/cpuacct/cpuacct.usage" ]; then
+    awk '{ printf "%d", $1 / 1000 }' "$cgroup/cpuacct/cpuacct.usage"
+  fi
+}
+
+cpu_before=$(cpu_usec)
+cpu_busy() {
+  now=$(cpu_usec)
+  before=$cpu_before
+  cpu_before=$now
+  is_epoch "$now" && is_epoch "$before" || return 1
+  [ $((now - before)) -ge $((interval * 10000 * busy_cpu_percent)) ]
 }
 
 kept_alive() {
@@ -96,11 +131,11 @@ while :; do
   latest=$(cat "$deadline_file" 2>/dev/null)
   if is_epoch "$latest"; then deadline=$latest; fi
   if [ "$(date +%s)" -ge "$deadline" ]; then shut_down "approved time is up"; fi
-  if gpu_busy || kept_alive; then
+  if cpu_busy || gpu_busy || kept_alive; then
     idle_for=0
   else
     idle_for=$((idle_for + interval))
-    if [ "$idle_for" -ge "$idle_limit" ]; then shut_down "GPU idle for ${idle_for}s"; fi
+    if [ "$idle_for" -ge "$idle_limit" ]; then shut_down "no GPU or CPU work for ${idle_for}s"; fi
   fi
   sleep "$interval"
 done
