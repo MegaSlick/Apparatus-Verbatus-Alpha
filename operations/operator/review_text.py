@@ -184,6 +184,7 @@ def _uncertainty_lines(
     spans: Any,
     gaps: Any,
     revisions: Any,
+    lectio_kind: Any,
     text: Any,
     label: str,
     assessment_key: str,
@@ -217,7 +218,15 @@ def _uncertainty_lines(
     # malformed layer beside a missing assessment is still looked at.
     spans = _uncertainty_entries(spans, f"{label}.uncertain_spans")
     gaps = _uncertainty_entries(gaps, f"{label}.gaps")
-    revisions = _uncertainty_entries(revisions, f"{label}.self_revisions")
+    withheld = lectio_kind == "primed-draft-withheld"
+    if withheld:
+        if revisions is not None:
+            raise ProjectionShapeError(
+                f"{label}.self_revisions", None, revisions, expected="null for a withheld draft"
+            )
+        revisions = []
+    else:
+        revisions = _uncertainty_entries(revisions, f"{label}.self_revisions")
     alternatives = [
         _uncertainty_alternatives(span, f"{label}.uncertain_spans[{index}].alternatives")
         for index, span in enumerate(spans)
@@ -265,6 +274,8 @@ def _uncertainty_lines(
         lines = [f"    doubts: {named} — {_one_line(assessment.get('problem'), limit=300)}"]
         if spans or gaps:
             lines.append(f"      published beside that state, not by the reader: {counted}")
+    if withheld:
+        lines.append("      self-revisions not measured (primed-draft-withheld)")
     folded = _uncertainty_folds(spans)
     folded_source = [spans.index(span) for span, _ in folded]
     if len(folded) != len(spans):
@@ -455,6 +466,7 @@ def render(projection: dict[str, Any]) -> list[str]:
                     spans=reading.get("uncertain_spans"),
                     gaps=reading.get("gaps"),
                     revisions=reading.get("self_revision"),
+                    lectio_kind=reading.get("lectio_kind"),
                     text=reading.get("text"),
                     label="acts[].row.reading",
                     assessment_key="uncertainty_assessment",
@@ -477,6 +489,7 @@ def render(projection: dict[str, Any]) -> list[str]:
                     spans=uncertainty.get("uncertain_spans"),
                     gaps=uncertainty.get("gaps"),
                     revisions=uncertainty.get("self_revisions"),
+                    lectio_kind=uncertainty.get("lectio_kind"),
                     text=row.get("text"),
                     label="acts[].row.uncertainty",
                     assessment_key="assessment",

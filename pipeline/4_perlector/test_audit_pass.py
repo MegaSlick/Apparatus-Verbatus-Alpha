@@ -782,8 +782,8 @@ def test_fixture_produces_each_audit_kind_and_records_unchanged_reproof(tmp_path
             assert "confirmed unchanged" in prompt
 
 
-def test_fixture_exercises_a_changed_reproof_with_its_triggering_flag_class(tmp_path):
-    result = _run(tmp_path / "runs", scenario="audit-change")
+def test_changed_reproof_with_fed_draft_recomputes_self_revision(tmp_path):
+    result = _run(tmp_path / "runs", "--draft-fed", scenario="audit-change")
     assert result.returncode == 0, result.stderr
     tree = RunTree(tmp_path / "runs", "r")
     changed = next(
@@ -826,6 +826,22 @@ def test_fixture_exercises_a_changed_reproof_with_its_triggering_flag_class(tmp_
             "end": len(final["payload"]["text"]),
         }
     ]
+
+
+def test_changed_reproof_with_withheld_draft_has_no_self_revision(tmp_path):
+    result = _run(tmp_path / "runs", scenario="audit-change")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    changed = next(
+        record for record in _records(tree, "audit-finding") if record["payload"]["change_record"]
+    )
+    final = next(
+        record
+        for record in _records(tree, "perlectio")
+        if record["subject_id"] == changed["subject_id"]
+    )
+    assert final["payload"]["lectio_kind"] == "primed-draft-withheld"
+    assert final["payload"]["self_revision"] == []
 
 
 def test_perlectio_schema_refuses_a_directional_reproof_prompt(tmp_path):
@@ -1904,7 +1920,6 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
         changed = final["payload"]["text"] != frozen[act_key]
         if changed:
             changed_acts.append(act_key)
-            assert len(final["payload"]["text"]) != len(frozen[act_key])
         assert final["outcome"] == ("truncated" if changed else "read")
         assert final["payload"]["audit"]["examination"] == "incomplete"
         assert final["payload"]["audit"]["unresolved"] is True
@@ -2698,6 +2713,8 @@ def test_a_whitespace_reproof_publishes_empty_text_with_its_own_measure():
     row = {
         "payload": {
             "text": "abc",
+            "lectio_kind": "primed-draft-withheld",
+            "dossier": {"prior_draft_view": "withheld"},
             "gaps": [],
             "uncertain_spans": [],
             "truncation": perlector.truncation.classify(
@@ -2722,6 +2739,7 @@ def test_a_whitespace_reproof_publishes_empty_text_with_its_own_measure():
 
     assert row["outcome"] == "no-readable-text"
     assert row["payload"]["text"] == ""
+    assert row["payload"]["self_revision"] == []
     assert measured["measure"]["characters"] == 0
     assert row["payload"]["truncation"]["measure"]["characters"] == 3
 

@@ -11,9 +11,8 @@ from typing import Any, Final
 from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 
-_FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment"})
-# So an empty list is never read as confidence. The Perlector's annotations
-# produce under these same vocabularies.
+_FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment", "lectio_kind"})
+_AUDIT_FIELDS = _FIELDS - {"lectio_kind"}
 ASSESSMENT_STATES: Final = frozenset({"assessed", "not-assessed", "malformed"})
 _ASSESSMENT_FIELDS = frozenset({"state", "problem"})
 CONFIDENCE_LEVELS: Final = frozenset({"low", "medium", "high"})
@@ -31,6 +30,11 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
     source_revisions = payload.get("self_revision")
     if not isinstance(source_revisions, list):
         raise SchemaRefusal("Perlectio self_revision is not a list")
+    lectio_kind = payload.get("lectio_kind")
+    if lectio_kind not in ("primed-with-prior", "primed-draft-withheld"):
+        raise SchemaRefusal(f"Perlectio has unknown lectio kind {lectio_kind!r}")
+    if lectio_kind == "primed-draft-withheld" and source_revisions:
+        raise SchemaRefusal("a draft-withheld Perlectio cannot claim self-revisions")
     revisions = []
     for index, item in enumerate(source_revisions):
         if not isinstance(item, dict) or set(item) != _SOURCE_REVISION_FIELDS:
@@ -52,8 +56,9 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
     layer = {
         "uncertain_spans": payload.get("uncertain_spans"),
         "gaps": payload.get("gaps"),
-        "self_revisions": revisions,
+        "self_revisions": None if lectio_kind == "primed-draft-withheld" else revisions,
         "assessment": {"state": assessment["state"], "problem": assessment["problem"]},
+        "lectio_kind": lectio_kind,
     }
     validate(layer, payload.get("text"))
     return layer
@@ -88,19 +93,31 @@ def validate_assessment_record(assessment: Any, subject: str = "canonical uncert
 
 def validate(layer: Any, text: Any) -> dict[str, Any]:
     """Refuse uncertainty that cannot anchor exactly to the supplied text."""
+    return _validate(layer, text, _FIELDS)
+
+
+def validate_audit_projection(layer: Any, text: Any) -> dict[str, Any]:
+    """Check an audit projection before prior-draft evidence is bound."""
+    return _validate(layer, text, _AUDIT_FIELDS)
+
+
+def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
     if not isinstance(text, str):
         raise SchemaRefusal("uncertainty offsets require exactly one string text field")
-    if not isinstance(layer, dict) or set(layer) != _FIELDS:
+    if not isinstance(layer, dict) or set(layer) != fields:
         raise SchemaRefusal("uncertainty is not its closed canonical schema")
     uncertain = layer["uncertain_spans"]
     gaps = layer["gaps"]
     revisions = layer["self_revisions"]
     validate_assessment_record(layer["assessment"])
-    if (
-        not isinstance(uncertain, list)
-        or not isinstance(gaps, list)
-        or not isinstance(revisions, list)
-    ):
+    kind = layer.get("lectio_kind")
+    if "lectio_kind" in layer and kind not in ("primed-with-prior", "primed-draft-withheld"):
+        raise SchemaRefusal("canonical uncertainty names an unknown lectio kind")
+    if kind == "primed-draft-withheld" and revisions is not None:
+        raise SchemaRefusal("a draft-withheld reading's self-revisions are not measured")
+    if kind != "primed-draft-withheld" and not isinstance(revisions, list):
+        raise SchemaRefusal("canonical uncertainty self-revisions must be a list when measured")
+    if not isinstance(uncertain, list) or not isinstance(gaps, list):
         raise SchemaRefusal("canonical uncertainty members must all be lists")
     for index, span in enumerate(uncertain):
         if not isinstance(span, dict) or set(span) != {
@@ -173,7 +190,7 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
                     f"gaps[{index}] is declared {gap['position']!r} over an empty text; the "
                     "only position that means anything where nothing was read is 'whole-act'"
                 )
-    for index, revision in enumerate(revisions):
+    for index, revision in enumerate(revisions or []):
         if not isinstance(revision, dict) or set(revision) != {"reading_span", "prior_span"}:
             raise SchemaRefusal(f"self_revisions[{index}] is not the canonical revision schema")
         reading = revision["reading_span"]

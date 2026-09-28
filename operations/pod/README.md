@@ -595,11 +595,12 @@ evidence and the materialized model store on the network volume.
   `git fetch --no-tags origin <sha>` and `git checkout --detach --force <sha>` in
   `--repository`. `boot_b_request.py` renders `/opt/verbatus` on container-local disk; the
   volume holds evidence, not code.
-- **An `origin` reachable with no HOME.** `BOOTSTRAP_ENVIRONMENT` is only `PATH`, `LANG`,
-  `LC_ALL` and `UV_CACHE_DIR`, so git sees no `~/.gitconfig` or global credential helper.
-  A private fetch needs a repository-local credential helper, an `http.<url>.extraheader`
-  token, credentials in the remote URL, or an SSH remote whose key the pod user can reach;
-  an `http(s)` origin with none of these is refused.
+- **An HTTPS `origin` reachable with no HOME.** `BOOTSTRAP_ENVIRONMENT` supplies `PATH`,
+  `LANG`, `LC_ALL`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, and `UV_CACHE_DIR`.
+  Git reads no global or system config and cannot prompt. The image check refuses includes,
+  credential helpers and other external credential routes in checkout config. A private
+  origin may use URL credentials or a repository-local `http.<url>.extraheader`; the pinned
+  fetch proves whether the configured route works before checkout or model work.
 - **Tools at absolute paths; PATH is never searched.** `git` at `/usr/bin/git`, `uv` at
   `/usr/local/bin/uv`, `nvidia-smi` at `/usr/bin/nvidia-smi`, `apt-cache` at
   `/usr/bin/apt-cache`, `apt-get` at `/usr/bin/apt-get`, and `dpkg-query` at

@@ -120,8 +120,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # second recovery round.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "4e1e9b7edeff070dbe6efa9df3d3195343a92c6236bd11817fb1f86e464c9c6e"
-REVIEW_RUN_TREE_DIGEST = "a27596771b9b68a33e535089e5679e996c62d99b17e855ae329d39289f7def27"
+HAPPY_RUN_TREE_DIGEST = "def36962294fb9795e64084f84fae04c8014bb51b3feaaaa0143e90fad310ba8"
+REVIEW_RUN_TREE_DIGEST = "cb319cb9e8c4f371a0d4ee67d7704a8d75fe93e90fbb39e459d750c52672368f"
 
 
 def orchestrate(
@@ -365,7 +365,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         perlector_instrument_approval_ref="",
         perlector_protocol_config=ROOT / "config" / "perlector_protocol.toml",
         perlector_audit_config=ROOT / "config" / "perlector_audit.toml",
-        draft_fed=True,
+        draft_fed=False,
         # The corpus-register argv surface, which `invoke` reads by name on every
         # stage. A stand-in that omits it is not the surface it claims to mirror.
         corpus_register=None,

@@ -47,6 +47,17 @@ def test_legacy_decoding_schema_is_refused_by_name(tmp_path: Path, schema: str):
         load_decoding_policy(path)
 
 
+def test_non_string_decoding_schema_gets_a_named_refusal(tmp_path: Path):
+    path = tmp_path / "decoding.toml"
+    path.write_text("schema = []\n", encoding="utf-8")
+
+    with pytest.raises(
+        ContractError, match="decoding configuration has an unsupported schema"
+    ) as refusal:
+        load_decoding_policy(path)
+    assert "Restore or correct the decoding file and retry" in str(refusal.value)
+
+
 def test_a_nonzero_reading_temperature_is_refused():
     policy, _digest = load_decoding_policy()
     policy["reading_of_record"]["temperature"] = 1

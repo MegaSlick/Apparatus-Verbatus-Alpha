@@ -71,6 +71,11 @@ from common.contracts.errors import (  # noqa: E402
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.outcomes import ATTACHMENT_BASES, page_attachment_basis  # noqa: E402
+from common.contracts.prior_draft import (  # noqa: E402
+    kind_for_view,
+    self_revision_for_view,
+    validate_establishing_view,
+)
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.corpus_register import refuse_capture_preference  # noqa: E402
 from common.cross_capture_autopsia import (  # noqa: E402
@@ -2350,7 +2355,14 @@ def validate_reading_payload(
         raise SchemaRefusal("a Perlector dossier digest does not match the dossier it seals")
     dossier_module.assert_no_order_bearing_field(dossier_body)
     _validate_cross_capture_dossier(reading_dossier, inputs=inputs)
-    _validate_lectio_kind(payload.get("lectio_kind"), reading_dossier)
+    protocol_record = payload.get("protocol")
+    if protocol_record is not None and (
+        not isinstance(protocol_record, dict)
+        or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "draft_fed"}
+        or not isinstance(protocol_record["draft_fed"], bool)
+    ):
+        raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
+    _validate_lectio_kind(payload, reading_dossier)
     if "act_attachment" in reading_dossier:
         attachment = reading_dossier["act_attachment"]
         if (
@@ -2410,18 +2422,19 @@ def validate_reading_payload(
     annotations.validate_annotations(payload, outcome=outcome)
 
 
-def _validate_lectio_kind(lectio_kind: Any, reading_dossier: dict) -> None:
+def _validate_lectio_kind(payload: dict, reading_dossier: dict) -> None:
+    lectio_kind = payload.get("lectio_kind")
     prior_draft = reading_dossier.get("prior_draft")
-    if lectio_kind == "primed-with-prior":
+    if lectio_kind in ("primed-with-prior", "primed-draft-withheld"):
+        expected_view = validate_establishing_view(payload, reading_dossier, "a Perlectio")
         if (
             not isinstance(prior_draft, dict)
             or set(prior_draft) != {"reference", "text"}
             or not isinstance(prior_draft["text"], str)
-            or reading_dossier.get("prior_draft_view") not in {"fed", "withheld"}
         ):
             raise SchemaRefusal(
-                "a Perlectio claims primed-with-prior but carries no closed prior-draft "
-                "reference and view"
+                f"a Perlectio claims {lectio_kind} but carries no closed prior-draft "
+                f"reference with view {expected_view!r}"
             )
         validate_input_refs([prior_draft["reference"]])
     elif lectio_kind == "primed-without-prior":
@@ -2500,23 +2513,6 @@ def _validate_reading_prompt(
     except TypeError as error:
         raise SchemaRefusal("a Perlector prompt carries a malformed chair identity") from error
     protocol_record = payload.get("protocol")
-    if protocol_record is not None and (
-        not isinstance(protocol_record, dict)
-        or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "draft_fed"}
-        or not isinstance(protocol_record["draft_fed"], bool)
-    ):
-        raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
-    # `draft_fed` and the dossier's view state one fact twice. `self_revision` is only
-    # interpretable against a known feeding state, so they must agree even though
-    # production derives both from one flag.
-    prior_draft_view = reading_dossier.get("prior_draft_view")
-    if protocol_record is not None and prior_draft_view is not None:
-        declared_view = "fed" if protocol_record["draft_fed"] else "withheld"
-        if prior_draft_view != declared_view:
-            raise SchemaRefusal(
-                f"a Perlector reading shows its prior draft {prior_draft_view!r} while the same "
-                f"record's protocol declares draft_fed {protocol_record['draft_fed']!r}"
-            )
     if protocol_config is None and protocol_record is not None:
         raise SchemaRefusal(
             "a Perlector reading carries a prior-draft protocol record but this validation "
@@ -3427,8 +3423,10 @@ def _established_row(
         "gaps": gaps,
         "uncertainty_assessment": sealed_doubt,
         "provenance": provenance,
-        "lectio_kind": "primed-with-prior",
-        "self_revision": departures(reading, prior["text"]),
+        "lectio_kind": kind_for_view(primed_dossier["prior_draft_view"]),
+        "self_revision": self_revision_for_view(
+            primed_dossier["prior_draft_view"], reading, prior["text"], departures
+        ),
         "protocol": _protocol_record(context, attempt.protocol_config),
     }
     return {
@@ -4212,7 +4210,9 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
     payload["dissent"] = dissent_against(
         final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
     )
-    payload["self_revision"] = departures(final_text, row["prior"]["text"])
+    payload["self_revision"] = self_revision_for_view(
+        payload["dossier"]["prior_draft_view"], final_text, row["prior"]["text"], departures
+    )
     payload["truncation"] = _audited_truncation(
         pass_b=payload["truncation"],
         declared_failure=row["declared_failure"],
@@ -4255,7 +4255,9 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
         payload["dissent"] = dissent_against(
             "", dissent_testimonia(row["testimonia"], row["attachment_view"])
         )
-        payload["self_revision"] = departures("", row["prior"]["text"])
+        payload["self_revision"] = self_revision_for_view(
+            payload["dossier"]["prior_draft_view"], "", row["prior"]["text"], departures
+        )
     return reproof_truncation
 
 

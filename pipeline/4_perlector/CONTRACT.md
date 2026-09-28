@@ -197,12 +197,14 @@ text. The grammar carries no level of doubt, so every marked span is `low`. A
 `[[` or `]]` that is not a closed mark, or a mark whose reading is `?`, publishes the
 raw answer unchanged under `malformed`. Gap marks over an answer that is otherwise
 blank add nothing: the `no-readable-text` outcome's whole-act gap already says it.
-Pass B is fed Pass A's clean text, so `self_revision` offsets index the draft it was
-shown; Pass A's marks stay on its own record. Truncation is measured on the clean
-text. The re-proof answers in JSON and reports no doubts; a replacement carrying a
-mark, or a replacement over text Pass B marked, publishes `malformed`, because the
-marks cannot be re-anchored through the edit. Whether a real reader uses the marks is
-measured on the first live run.
+By default Pass B does not see Pass A's clean text; `--draft-fed` opts in. When the
+draft is fed, `self_revision` offsets index it: `reading_span` in the final text,
+`testimonium_span` in the draft. When it is withheld, `self_revision` is not measured;
+differences from an unseen draft are not revisions. Pass A's marks stay on its own
+record. Truncation is measured on the clean text. The re-proof answers in JSON and
+reports no doubts; a replacement carrying a mark, or a replacement over text Pass B
+marked, publishes `malformed`, because the marks cannot be re-anchored through the
+edit. Whether a real reader uses the marks is measured on the first live run.
 
 *The assessed tail is not bound to a reader.* Where the state is `assessed`,
 `common/perlector_audit.py::validate_chain` proves the exhausted-cap projection
@@ -543,9 +545,10 @@ ever have recorded for a real reading.
 Every readable act now emits a `kind="lectio-prior"` Pass-A draft under the
 `lectio-prior` attempt operation. It sees the images and no Testimonia; it is
 not Lectio nuda and cannot establish text. The production `kind="perlectio"`
-is explicitly `lectio_kind="primed-with-prior"`, carries equality-only
-`self_revision` spans against that draft, and is the only R5a reading kind the
-Archetypus accepts.
+is `lectio_kind="primed-with-prior"` only when the draft was fed and then carries
+equality-only `self_revision` spans against it. When the draft was withheld, it is
+`lectio_kind="primed-draft-withheld"` with an empty `self_revision`. Both production kinds
+retain the Pass-A reference and can establish text; the kind records what the reader saw.
 
 The optional `kind="primed-without-prior"` control is gated by the run-sealed
 Perlector instrument rate and typed approval record.
@@ -564,7 +567,8 @@ input and is digest-checked whenever the control artifact is read.
 
 The Pass-B dossier contains a digest-checked reference to the Pass-A draft and
 records whether its text was `fed` or `withheld`. The `--draft-fed` default is
-fed; B5a remains the project lead's routed production decision.
+withheld under the project lead's B5a ruling of 2026-09-28; feeding remains an
+explicit toggle.
 
 **Four reading kinds, three conditions.** `lectio-nuda` and `lectio-prior` are
 built from identical dossier arguments — page context, no Testimonia, no prior
@@ -789,14 +793,13 @@ Recensor and the Archetypus.
 served_model_id}`, and the envelope binds both blobs as direct inputs, re-derived from
 disk and compared to what the reader claimed. The field names *the call the published
 text came from*: on an act whose Pass-C re-proof changed the text, it moves to the
-re-proof's own call, beside `truncation` and `self_revision`, which move for the same
-reason. A re-proof reading that ran and changed nothing is still
+re-proof's own call, beside `truncation` and, when the draft was fed, `self_revision`.
+A re-proof reading that ran and changed nothing is still
 bound as an input — it is the second thing that looked at this act's pixels and it is
 what the `change_record` reports on — but it does not become the named call. The field
 widens the closed field set for the record that carries it (`with_engine_call`, the
 `_NOT_RUN_CAPACITY_FIELDS` precedent) rather than becoming optional inside one set. A
-`FixtureReader` result never sets it, so fixture payloads and their envelopes are
-byte-for-byte what they were, which is what leaves the acceptance pin where it is.
+`FixtureReader` result never sets it.
 `engine_call_inputs` refuses a malformed `engine_call` by name — the wrong key set, or
 `response_sha256` disagreeing with `raw_response_ref["sha256"]` — rather than raising a
 bare `KeyError` or publishing two digests for one response.

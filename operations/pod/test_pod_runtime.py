@@ -11,6 +11,7 @@ import inspect
 import itertools
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -5622,6 +5623,8 @@ def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
             "UV_CACHE_DIR": "/tmp/verbatus-uv-cache",
         }
         for _, environment in observed
@@ -5636,7 +5639,7 @@ _HTTPS_ORIGIN = "https://example.invalid/verbatus"
 
 
 def _image(
-    tmp_path: Path, *, origin: str | None = _SSH_ORIGIN, credential_helper: bool = False
+    tmp_path: Path, *, origin: str | None = _HTTPS_ORIGIN, credential_helper: bool = False
 ) -> Path:
     """A synthetic pod image's checkout: a config with an origin, and a .venv."""
 
@@ -5663,8 +5666,15 @@ def _tools(tmp_path: Path) -> dict[str, str]:
     for name in ("git", "uv"):
         path = tmp_path / "tools" / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("#!/bin/sh\n", encoding="utf-8")
-        path.chmod(0o755)
+        if name == "git":
+            git = shutil.which("git")
+            assert git is not None
+            if not path.exists():
+                path.symlink_to(git)
+        else:
+            if not path.exists():
+                path.write_text("#!/bin/sh\n", encoding="utf-8")
+                path.chmod(0o755)
         tools[name] = str(path)
     return tools
 
@@ -5885,29 +5895,118 @@ def test_the_image_contract_refuses_a_checkout_with_no_origin(tmp_path: Path) ->
         )
 
 
-def test_the_image_contract_refuses_an_https_origin_no_homeless_client_can_authenticate(
+def test_the_image_contract_accepts_anonymous_https_without_external_credentials(
     tmp_path: Path,
 ) -> None:
-    """The bootstrap environment supplies no HOME, so no global helper is visible."""
+    """The pinned fetch will prove reachability with no HOME or prompt."""
 
     repository = _image(tmp_path, origin=_HTTPS_ORIGIN)
 
-    with pytest.raises(ImageContractRefusal, match="no HOME"):
+    verified = verify_image_contract(
+        repository,
+        interpreter=_interpreter(repository),
+        executables=_tools(tmp_path),
+        environment=BOOTSTRAP_ENVIRONMENT,
+    )
+    assert verified["credential_route"] == "anonymous-https"
+    assert "HOME" not in BOOTSTRAP_ENVIRONMENT
+    assert BOOTSTRAP_ENVIRONMENT["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert BOOTSTRAP_ENVIRONMENT["GIT_TERMINAL_PROMPT"] == "0"
+
+    # A helper in local config can still read /etc/verbatus-credentials.
+    with_helper = _image(tmp_path / "helper", origin=_HTTPS_ORIGIN, credential_helper=True)
+    with pytest.raises(ImageContractRefusal, match="forbidden git key in credential"):
+        verify_image_contract(
+            with_helper,
+            interpreter=_interpreter(with_helper),
+            executables=_tools(tmp_path),
+            environment={},
+        )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "[include] path = /tmp/outside",
+        '[includeIf "gitdir:/tmp/"] path = /tmp/outside',
+        "[credential] helper = store",
+        "[credential] useHttpPath = true",
+        '[credential "https://example.invalid"] helper = store',
+        "[core] askPass = /tmp/helper",
+        "[core] sshCommand = /tmp/helper",
+        "[http] cookieFile = /tmp/cookies",
+        '[http "https://example.invalid"] cookieFile = /tmp/cookies',
+        "[http] sslKey = /tmp/key",
+        "[http] sslCert = /tmp/cert",
+        "[http] proxySSLKey = /tmp/key",
+        "[http] proxySSLCert = /tmp/cert",
+        '[http "https://example.invalid"] proxySSLKey = /tmp/key',
+        '[http "https://example.invalid"] proxySSLCert = /tmp/cert',
+        "[extensions] worktreeConfig = true",
+        '[url "https://elsewhere.invalid/"] insteadOf = https://example.invalid/',
+        '[url "https://elsewhere.invalid/"] pushInsteadOf = https://example.invalid/',
+    ],
+)
+def test_image_contract_refuses_external_git_config_routes(tmp_path: Path, entry: str) -> None:
+    repository = _image(tmp_path)
+    config = repository / ".git" / "config"
+    config.write_text(config.read_text() + entry + "\n", encoding="utf-8")
+
+    with pytest.raises(ImageContractRefusal, match="forbidden git key"):
         verify_image_contract(
             repository,
             interpreter=_interpreter(repository),
             executables=_tools(tmp_path),
-            environment={"PATH": "/usr/bin"},
+            environment=BOOTSTRAP_ENVIRONMENT,
         )
 
-    # A route the repository's own config carries is visible without HOME.
-    with_helper = _image(tmp_path / "helper", origin=_HTTPS_ORIGIN, credential_helper=True)
-    verify_image_contract(
-        with_helper,
-        interpreter=_interpreter(with_helper),
-        executables=_tools(tmp_path),
-        environment={},
+
+def test_git_config_parser_accepts_a_valueless_key_as_true(tmp_path: Path) -> None:
+    repository = _image(tmp_path)
+    config = repository / ".git" / "config"
+    config.write_text(config.read_text() + "[custom]\n\tmarker\n", encoding="utf-8")
+
+    entries = bootstrap_module._git_config_entries(
+        config, BOOTSTRAP_ENVIRONMENT, repository, _tools(tmp_path)["git"]
     )
+
+    assert ("custom.marker", "true") in entries
+
+
+def test_git_config_parser_uses_the_verified_git_and_its_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _image(tmp_path)
+    tools = _tools(tmp_path)
+    observed: list[tuple[str, object]] = []
+    real_run = subprocess.run
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        observed.append((argv[0], kwargs.get("timeout")))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(bootstrap_module.subprocess, "run", run)
+
+    verify_image_contract(
+        repository,
+        interpreter=_interpreter(repository),
+        executables=tools,
+        environment=BOOTSTRAP_ENVIRONMENT,
+    )
+
+    assert observed == [(tools["git"], bootstrap_module.GIT_COMMAND_TIMEOUT_SECONDS)]
+
+
+def test_image_contract_refuses_ssh_origin(tmp_path: Path) -> None:
+    repository = _image(tmp_path, origin=_SSH_ORIGIN)
+
+    with pytest.raises(ImageContractRefusal, match="non-HTTPS origin"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            executables=_tools(tmp_path),
+            environment=BOOTSTRAP_ENVIRONMENT,
+        )
 
 
 def test_the_image_contract_refuses_a_missing_tool_at_its_absolute_path(tmp_path: Path) -> None:

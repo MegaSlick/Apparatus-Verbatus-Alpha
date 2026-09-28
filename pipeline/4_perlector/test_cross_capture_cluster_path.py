@@ -609,7 +609,9 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
             "dossier": {
                 "logical_act_id": logical_act["logical_act_id"],
                 "cross_capture_autopsia": autopsia,
+                "prior_draft_view": "fed",
             },
+            "protocol": {"draft_fed": True},
             "basis": {"regions": regions},
             "provenance": {"chair": "perlector", "revision": "fixture"},
             "reader_invocation_ref": _ref(
@@ -936,7 +938,9 @@ def _reading_inputs(
             "dossier": {
                 "logical_act_id": logical_act["logical_act_id"],
                 "cross_capture_autopsia": autopsia,
+                "prior_draft_view": "fed",
             },
+            "protocol": {"draft_fed": True},
             "basis": {"regions": _joint_basis_regions(fixture, autopsia)},
             "provenance": {"chair": "perlector", "revision": "fixture"},
             "reader_invocation_ref": _ref(
@@ -1677,7 +1681,10 @@ def test_a_partition_row_cannot_be_stapled_onto_a_reading_that_never_saw_its_cap
         **inputs["accepted_perlectio"],
         "payload": {
             **inputs["accepted_perlectio"]["payload"],
-            "dossier": {"logical_act_id": logical_act["logical_act_id"]},
+            "dossier": {
+                "logical_act_id": logical_act["logical_act_id"],
+                "prior_draft_view": "fed",
+            },
         },
     }
     stripped_ref = {

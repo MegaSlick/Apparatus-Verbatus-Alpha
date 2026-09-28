@@ -3432,7 +3432,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         nuda_approval_ref="",
         perlector_instrument_per_mille=0,
         perlector_instrument_approval_ref="",
-        draft_fed=True,
+        draft_fed=False,
     )
     assert sealed.get("run-policy") == expected_policy, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "

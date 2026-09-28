@@ -53,8 +53,8 @@ after it.  A manifest present with no configured target is still a refusal,
 never a silently skipped upload.
 
 **The image this process assumes is written down.**  ``operations/pod/README.md``
-carries the pod image contract -- a checkout with an ``origin`` whose
-credentials a HOME-less git can see, a pre-built ``<repository>/.venv`` this
+carries the pod image contract -- a checkout with an HTTPS ``origin`` that
+the scrubbed git environment can fetch, a pre-built ``<repository>/.venv`` this
 process is started from, and git/uv at the pinned absolute paths -- and
 ``bootstrap.verify_image_contract``, wired into REPOSITORY by ``build_actions``,
 refuses by name when the image does not meet it.  It runs before ``git fetch``,
@@ -645,7 +645,7 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         args.store_root, volume_mount_path, "--store-root", report_path=report_path
     )
     models_config = _require_contained(
-        args.models_config,
+        _repository_config_path(args.models_config, repository),
         repository,
         "--models-config",
         base_label="the checked-out repository",
@@ -690,7 +690,9 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
             report_path=report_path,
         )
     serving_recipes_config = _require_contained(
-        args.serving_recipes_config or (repository / "config" / "serving_recipes.toml"),
+        _repository_config_path(
+            args.serving_recipes_config or Path("config/serving_recipes.toml"), repository
+        ),
         repository,
         "--serving-recipes-config",
         base_label="the checked-out repository",
@@ -701,7 +703,9 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
     # journaled CONFIGURATION step parses and pairs their content immediately
     # after checkout, before uv, model materialization, cache work, or serving.
     witness_context_config = _require_contained(
-        args.witness_context_config or (repository / "config" / "witness_context.toml"),
+        _repository_config_path(
+            args.witness_context_config or Path("config/witness_context.toml"), repository
+        ),
         repository,
         "--witness-context-config",
         base_label="the checked-out repository",
@@ -761,6 +765,12 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         transfer_prefix=args.transfer_prefix or "pod-transfer",
         transfer_target_factory=args.transfer_target_factory,
     )
+
+
+def _repository_config_path(path: Path, repository: Path) -> Path:
+    """Interpret a config selection relative to its checked-out repository."""
+
+    return path if path.is_absolute() else repository / path
 
 
 def _positive_interval(value: float, *, report_path: Path | None = None) -> float:
@@ -1313,7 +1323,9 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 "Supply the complete bootstrap plan and start a new schema-v3 journal.",
             )
         try:
-            models_source = _read_configuration_source(plan.models_config, "model roster")
+            models_source = _read_configuration_source(
+                plan.models_config, "model roster", plan.repository
+            )
             parsed_models, models_sha256 = parse_sealed_toml(
                 models_source, f"model roster {plan.models_config}"
             )
@@ -1343,9 +1355,11 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
             )
         try:
             serving_source = _read_configuration_source(
-                plan.serving_recipes_config, "serving catalogue"
+                plan.serving_recipes_config, "serving catalogue", plan.repository
             )
-            placement_source = _read_configuration_source(placement, "placement table")
+            placement_source = _read_configuration_source(
+                placement, "placement table", plan.repository
+            )
         except ContractError as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
@@ -1400,24 +1414,25 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
     return _validate
 
 
-def _read_configuration_source(path: Path, label: str) -> bytes:
+def _read_configuration_source(path: Path, label: str, repository: Path) -> bytes:
+    if not path.is_absolute() or ".." in path.parts or not path.is_relative_to(repository):
+        raise ContractError(
+            f"{label} {path} escapes the checked-out repository; select a file inside it"
+        )
     try:
-        return path.read_bytes()
+        resolved_root = repository.resolve(strict=True)
+        resolved_path = path.resolve(strict=True)
+        if not resolved_path.is_relative_to(resolved_root):
+            raise ContractError(
+                f"{label} {path} escapes the checked-out repository; select a file inside it"
+            )
+        return resolved_path.read_bytes()
     except OSError as error:
         raise ContractError(f"{label} {path} could not be read: {error}") from error
 
 
 def build_actions(plan: Plan) -> BootstrapActions:
-    """The real, tracked composition. Tests inject a fake instead of calling this.
-
-    The image contract rides on REPOSITORY, the first step: what it checks --
-    git and uv at their absolute paths, a checkout with an origin remote whose
-    credentials a HOME-less git can see, and this interpreter inside
-    ``<repository>/.venv`` -- are facts about the image, and every one of them
-    is cheaper to refuse here than to discover after the wheel download. The
-    check is wired only in this tracked composition, because it is the only
-    caller that has a real pod image under it.
-    """
+    """The real composition; check image facts at REPOSITORY before paid setup."""
 
     return SubprocessBootstrapActions(
         repository=plan.repository,  # type: ignore[arg-type]

@@ -43,10 +43,11 @@ accepted later review.
 
 `accepted_primed_perlectio` enforces spec 10's test 1:
 
-- an unprimed or differently primed reading is refused — `lectio_kind` must be exactly
-  `primed-with-prior`, so Lectio nuda, `lectio-prior`, and `primed-without-prior` are all
-  refused, as is a contradictory explicit `primed: false`
-  (`pipeline/6_archetypus/run.py:658-677`);
+- an unprimed or instrument reading is refused — production `lectio_kind` is
+  `primed-with-prior` when the draft was fed or `primed-draft-withheld` when it was
+  withheld. The latter carries no self-revisions. Both retain the same-attempt Pass-A
+  reference; Lectio nuda, `lectio-prior`, and `primed-without-prior` cannot establish,
+  nor can a contradictory explicit `primed: false`;
 - `tier`, `source_tier` or `reading_tier` of `salvage` is refused (invariant #31's
   boundary);
 - the reading must retain a non-empty Testimonium basis, and every entry's reference

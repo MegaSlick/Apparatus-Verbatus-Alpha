@@ -4,6 +4,7 @@ import copy
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import protocol
 import pytest
@@ -59,6 +60,7 @@ def sampling_approval_records(scenario, *extra) -> dict:
         nuda_approval_ref=nuda_ref,
         perlector_instrument_per_mille=control_rate,
         perlector_instrument_approval_ref=control_ref,
+        draft_fed="--draft-fed" in extra,
     )
     return {
         subject: build_approval_record(
@@ -125,6 +127,7 @@ def test_sampled_triple_has_all_three_records_and_nuda_stays_unfed(tmp_path):
         "1000",
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "--draft-fed",
     )
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
@@ -201,9 +204,9 @@ def test_control_refuses_without_the_project_leads_approval_on_fixture_path(tmp_
     assert not (root / "r").exists()
 
 
-def test_draft_fed_toggle_records_both_states_and_withholds_prompt_text(tmp_path):
+def test_default_withholds_prior_draft_from_prompt_text(tmp_path):
     root = tmp_path / "runs"
-    result = _run(root, "r", "happy", "--no-draft-fed")
+    result = _run(root, "r", "happy")
     assert result.returncode == 0, result.stderr
     final = next(
         record["payload"]
@@ -212,6 +215,8 @@ def test_draft_fed_toggle_records_both_states_and_withholds_prompt_text(tmp_path
     )
     assert final["protocol"]["draft_fed"] is False
     assert final["dossier"]["prior_draft_view"] == "withheld"
+    assert final["lectio_kind"] == "primed-draft-withheld"
+    assert final["self_revision"] == []
     prior_text = final["dossier"]["prior_draft"]["text"]
     assert prior_text
 
@@ -234,6 +239,89 @@ def test_draft_fed_toggle_records_both_states_and_withholds_prompt_text(tmp_path
         protocol_config,
     )
     assert changed_rendered == rendered
+
+
+def test_fed_draft_has_the_primed_kind_and_real_self_revision(tmp_path):
+    root = tmp_path / "runs"
+    result = _run(root, "r", "happy", "--draft-fed")
+    assert result.returncode == 0, result.stderr
+    finals = [record["payload"] for record in _records(RunTree(root, "r"), "perlectio")]
+    assert all(payload["lectio_kind"] == "primed-with-prior" for payload in finals)
+    assert all(payload["dossier"]["prior_draft_view"] == "fed" for payload in finals)
+    assert any(payload["self_revision"] for payload in finals)
+
+
+def test_withheld_draft_cannot_publish_self_revisions(tmp_path):
+    root = tmp_path / "runs"
+    result = _run(root, "r", "happy")
+    assert result.returncode == 0, result.stderr
+    payload = copy.deepcopy(_records(RunTree(root, "r"), "perlectio")[0]["payload"])
+    payload["self_revision"] = [
+        {"reading_span": {"start": 0, "end": 1}, "testimonium_span": {"start": 0, "end": 1}}
+    ]
+    protocol_config, protocol_sha256 = protocol.load(ROOT / "config" / "perlector_protocol.toml")
+    with pytest.raises(SchemaRefusal, match="against a draft withheld"):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+
+
+def test_fed_empty_text_reproof_retains_measured_self_revision(monkeypatch):
+    """The empty-text outcome still compares against the draft actually shown."""
+    prior_text = "draft words"
+    payload = {
+        "text": "draft",
+        "dossier": {"prior_draft_view": "fed"},
+        "lectio_kind": "primed-with-prior",
+        "uncertainty_assessment": {"state": "assessed", "problem": None},
+        "uncertain_spans": [],
+        "gaps": [],
+        "truncation": {},
+    }
+    row = {
+        "payload": payload,
+        "fields": frozenset(),
+        "prior": {"text": prior_text},
+        "testimonia": [],
+        "attachment_view": {},
+        "declared_failure": None,
+        "region_pixels": [],
+        "page_pixels": [],
+    }
+    monkeypatch.setattr(perlector, "_row_truncation", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        perlector,
+        "_assessed",
+        lambda *_args, **_kwargs: {
+            "state": "assessed",
+            "problem": None,
+            "uncertain_spans": [],
+            "gaps": [],
+        },
+    )
+    monkeypatch.setattr(perlector, "with_engine_call", lambda *_args: frozenset())
+    monkeypatch.setattr(perlector, "dissent_testimonia", lambda *_args: [])
+    monkeypatch.setattr(perlector, "_audited_truncation", lambda **_kwargs: {})
+    monkeypatch.setattr(perlector, "_resolve_outcome", lambda **_kwargs: "no-readable-text")
+    monkeypatch.setattr(perlector, "_testimonium_references", lambda *_args: [])
+    monkeypatch.setattr(perlector, "_whole_act_gap", lambda *_args: [])
+    monkeypatch.setattr(
+        perlector,
+        "_published_doubt",
+        lambda *_args, **_kwargs: ({"state": "assessed", "problem": None}, [], []),
+    )
+    run = SimpleNamespace(protocol_config={protocol.TRUNCATION_TABLE: {}}, context=None)
+    reproof = SimpleNamespace(reply={"stop_reason": "stop"}, text="", call_record=None)
+
+    perlector._adopt_reproof_text(run, row, reproof)
+
+    assert payload["text"] == ""
+    assert payload["self_revision"] == perlector.departures("", prior_text)
+    assert payload["self_revision"]
 
 
 def test_control_selection_has_no_run_id_input_at_all():
@@ -361,7 +449,7 @@ def published_lectio_prior_payload(tmp_path_factory):
 def published_perlectio_payload(tmp_path_factory):
     """A real production payload for prior-reference relation forgeries."""
     root = tmp_path_factory.mktemp("perlectio-prior-relation") / "runs"
-    result = _run(root, "r", "happy")
+    result = _run(root, "r", "happy", "--draft-fed")
     assert result.returncode == 0, result.stderr
     return _records(RunTree(root, "r"), "perlectio")[0]["payload"]
 
@@ -417,7 +505,7 @@ def test_validator_refuses_a_protocol_record_without_threaded_sealed_config(
         )
 
 
-def test_producer_refuses_primed_with_prior_without_a_prior_reference(
+def test_producer_refuses_primed_with_prior_without_prior_draft_data(
     published_perlectio_payload, _sealed_protocol
 ):
     payload = copy.deepcopy(published_perlectio_payload)
@@ -429,7 +517,7 @@ def test_producer_refuses_primed_with_prior_without_a_prior_reference(
     payload["dossier"]["dossier_digest"] = perlector.digest_of(dossier_body)
     protocol_config, protocol_sha256 = _sealed_protocol
 
-    with pytest.raises(SchemaRefusal, match="claims primed-with-prior"):
+    with pytest.raises(SchemaRefusal, match="without a fed prior-draft view"):
         perlector.validate_reading_payload(
             payload,
             outcome="read",
@@ -629,6 +717,8 @@ def test_a_reading_whose_view_contradicts_its_declared_draft_fed_is_refused(
     protocol_config, protocol_sha256 = _sealed_protocol
     payload = copy.deepcopy(published_perlectio_payload)
     assert payload["protocol"]["draft_fed"] is True
+    payload["lectio_kind"] = "primed-draft-withheld"
+    payload["self_revision"] = []
     payload["dossier"]["prior_draft_view"] = "withheld"
     # Reseal, so the forgery reaches this refusal rather than stopping at the
     # dossier digest a careless forger would also have fixed.
@@ -637,7 +727,7 @@ def test_a_reading_whose_view_contradicts_its_declared_draft_fed_is_refused(
     }
     payload["dossier"]["dossier_digest"] = perlector.digest_of(dossier_body)
 
-    with pytest.raises(SchemaRefusal, match="while the same record's protocol declares"):
+    with pytest.raises(SchemaRefusal, match="contrary to its prior-draft protocol"):
         perlector.validate_reading_payload(
             payload,
             outcome="read",

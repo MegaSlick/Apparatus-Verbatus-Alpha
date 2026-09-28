@@ -894,6 +894,17 @@ def test_refuses_a_models_config_outside_the_checked_out_repository(
     assert "checked-out repository" in err
 
 
+def test_plan_refuses_a_relative_models_config_that_escapes_the_repository(
+    tmp_path: Path,
+) -> None:
+    ws = _workspace(tmp_path)
+    argv = _argv(ws)
+    argv[argv.index("--models-config") + 1] = "../x"
+
+    with pytest.raises(PlanRefusal, match="--models-config"):
+        resolve_plan(build_parser().parse_args(argv), _environ(Clock()))
+
+
 def test_a_roster_other_than_the_fixture_one_must_name_its_own_catalogue(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -946,6 +957,27 @@ def test_the_real_roster_is_accepted_when_its_catalogue_and_context_are_named(
     assert plan.models_config == ws.models_config.resolve()
     assert plan.serving_recipes_config == catalogue.resolve()
     assert plan.witness_context_config == witness_context.resolve()
+
+
+def test_relative_configuration_paths_are_resolved_inside_the_repository(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+    argv = _argv(
+        ws,
+        extra=(
+            "--serving-recipes-config",
+            "config/serving_recipes.toml",
+            "--witness-context-config",
+            "config/witness_context.toml",
+        ),
+    )
+    argv[argv.index("--models-config") + 1] = "config/models.toml"
+
+    plan = resolve_plan(build_parser().parse_args(argv), _environ(clock))
+
+    assert plan.models_config == ws.models_config.resolve()
+    assert plan.serving_recipes_config == (ws.repository / "config/serving_recipes.toml").resolve()
+    assert plan.witness_context_config == (ws.repository / "config/witness_context.toml").resolve()
 
 
 def test_the_real_roster_default_context_is_refused_after_the_pinned_checkout(
@@ -1344,7 +1376,7 @@ def test_a_refusal_that_precedes_report_path_validation_writes_nothing(
 
 ROOT = Path(__file__).resolve().parents[2]
 PROVEN_TIER = "generic-48gb"
-WITNESS = "ABCEFGHJKMNPRSTUVWXYZabcdefghijkmnpqrstuvwx"
+WITNESS = "ABEFGHJMNRTYabdefghijmnqrty23456789ABEFGHJM"
 ALTERNATE_WITNESS = WITNESS[::-1]
 
 
@@ -1416,6 +1448,26 @@ def test_configuration_names_an_unreadable_selected_source_and_its_repair(
     assert "resume this journal before any environment or model work" in refusal.value.remediation
     assert isinstance(refusal.value.__cause__, ContractError)
     assert f"{label} {selected} could not be read" in str(refusal.value.__cause__)
+
+
+def test_configuration_refuses_a_selected_symlink_outside_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
+    selected = plan.serving_recipes_config
+    assert selected is not None
+    outside = tmp_path / "outside.toml"
+    outside.write_bytes(selected.read_bytes())
+    selected.unlink()
+    selected.symlink_to(outside)
+
+    with pytest.raises(BootstrapStepFailure, match="escapes the checked-out repository"):
+        bootstrap_main._build_configuration_validation(plan)()
+
+
+def test_configuration_refuses_relative_parent_path(tmp_path: Path) -> None:
+    with pytest.raises(ContractError, match="escapes the checked-out repository"):
+        bootstrap_main._read_configuration_source(Path("../x"), "model roster", tmp_path)
 
 
 @pytest.mark.parametrize(

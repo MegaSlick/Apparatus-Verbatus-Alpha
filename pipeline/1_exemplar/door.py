@@ -2017,7 +2017,7 @@ def _real_bindings(
     perlector_protocol_config_path=DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     perlector_audit_config_path=DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     decoding_config_path=DEFAULT_DECODING_CONFIG_PATH,
-    draft_fed: bool = True,
+    draft_fed: bool = False,
     mechanics_qualification: bool = False,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,

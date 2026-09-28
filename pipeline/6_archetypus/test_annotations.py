@@ -872,7 +872,16 @@ _REGION = {
 }
 
 
-def test_a_joint_reading_that_omits_witness_evidence_still_establishes(monkeypatch):
+@pytest.mark.parametrize(
+    ("lectio_kind", "view", "draft_fed"),
+    [
+        ("primed-with-prior", "fed", True),
+        ("primed-draft-withheld", "withheld", False),
+    ],
+)
+def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
+    monkeypatch, lectio_kind, view, draft_fed
+):
     """The clustered constructor must normalise before it seals, as the local one does.
 
     `validate_annotations` NORMALISES: an `illegible` note may legally arrive on
@@ -909,8 +918,9 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(monkeypat
     wire_note = {"kind": "illegible", "start": 5, "end": 5}
     payload = {
         "text": text,
-        "lectio_kind": "primed-with-prior",
-        "dossier": {"logical_act_id": "pac_0123456789abcdef"},
+        "lectio_kind": lectio_kind,
+        "dossier": {"logical_act_id": "pac_0123456789abcdef", "prior_draft_view": view},
+        "protocol": {"draft_fed": draft_fed},
         "basis": {"regions": [_REGION]},
         "provenance": {"chair": "perlector", "revision": "fixture"},
         "annotations": [wire_note],
@@ -975,3 +985,59 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(monkeypat
     # And the sealed layer is exactly what its own re-validation produces, which
     # is the equality the record schema enforces on every read back.
     assert archetypus.validate_logical_record(record) == record
+    assert record["uncertainty"]["lectio_kind"] == lectio_kind
+    assert record["uncertainty"]["self_revisions"] == ([] if draft_fed else None)
+
+    def reseal_refs():
+        perlectio_ref["sha256"] = archetypus.digest_of(perlectio)
+        review_ref["sha256"] = archetypus.digest_of(review)
+        dissent_ref["sha256"] = archetypus.digest_of(dissent)
+
+    original_kind = payload["lectio_kind"]
+    payload["lectio_kind"] = "primed-draft-withheld" if draft_fed else "primed-with-prior"
+    reseal_refs()
+    with pytest.raises(SchemaRefusal, match="without a .* prior-draft view"):
+        archetypus.establish_logical_record(
+            partition={},
+            logical_act=logical_act,
+            accepted_perlectio=perlectio,
+            accepted_review=review,
+            perlectio_ref=perlectio_ref,
+            recensor_ref=review_ref,
+            cross_capture_dissent=dissent,
+            cross_capture_dissent_ref=dissent_ref,
+        )
+    payload["lectio_kind"] = original_kind
+    payload["protocol"]["draft_fed"] = not draft_fed
+    reseal_refs()
+    with pytest.raises(SchemaRefusal, match="contrary to its prior-draft protocol"):
+        archetypus.establish_logical_record(
+            partition={},
+            logical_act=logical_act,
+            accepted_perlectio=perlectio,
+            accepted_review=review,
+            perlectio_ref=perlectio_ref,
+            recensor_ref=review_ref,
+            cross_capture_dissent=dissent,
+            cross_capture_dissent_ref=dissent_ref,
+        )
+    payload["protocol"]["draft_fed"] = draft_fed
+    if not draft_fed:
+        payload["self_revision"] = [
+            {
+                "reading_span": {"start": 0, "end": 1},
+                "testimonium_span": {"start": 0, "end": 1},
+            }
+        ]
+        reseal_refs()
+        with pytest.raises(SchemaRefusal, match="against a draft withheld"):
+            archetypus.establish_logical_record(
+                partition={},
+                logical_act=logical_act,
+                accepted_perlectio=perlectio,
+                accepted_review=review,
+                perlectio_ref=perlectio_ref,
+                recensor_ref=review_ref,
+                cross_capture_dissent=dissent,
+                cross_capture_dissent_ref=dissent_ref,
+            )

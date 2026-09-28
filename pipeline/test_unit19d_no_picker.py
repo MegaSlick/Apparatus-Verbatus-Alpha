@@ -260,6 +260,7 @@ def test_the_logical_projection_carries_no_member_act_rows_beside_its_subject():
         "uncertainty": from_perlectio(
             {
                 "text": text,
+                "lectio_kind": "primed-with-prior",
                 "uncertain_spans": [],
                 "gaps": [],
                 "uncertainty_assessment": {

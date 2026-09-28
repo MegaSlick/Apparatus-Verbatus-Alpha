@@ -15,6 +15,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping, Protocol
+from urllib.parse import urlsplit
 
 from common.chairs.errors import ChairRefusal
 from common.chairs.model_store import MaterializationFetcher, materialize_real_roster
@@ -46,6 +47,7 @@ BOOTSTRAP_EXECUTABLES = {
     "apt-get": "/usr/bin/apt-get",
     "dpkg-query": "/usr/bin/dpkg-query",
 }
+GIT_COMMAND_TIMEOUT_SECONDS = 600
 CUDA_COMPAT_PATH = "/usr/local/cuda-13.0/compat"
 CUDA_COMPAT_PACKAGE = "cuda-compat-13-0"
 CUDA_COMPAT_VERSION = "580.178.04-1ubuntu1"
@@ -54,6 +56,8 @@ BOOTSTRAP_ENVIRONMENT = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
     # uv resolves its cache through UV_CACHE_DIR, then XDG_CACHE_HOME, then
     # $HOME. This environment is explicit and supplies none of those, so where
     # `uv sync --locked` cached anything was left to whatever uv could
@@ -156,9 +160,8 @@ def verify_image_contract(
       *fetches and checks out*; it has never cloned, so an image with no
       checkout in it fails at the first git call with the volume already
       attached and the card already billing.
-    * That remote reachable with **no HOME**: ``BOOTSTRAP_ENVIRONMENT`` supplies
-      none, so git reads no ``~/.gitconfig``, no global credential helper and no
-      ``~/.git-credentials``. Only the repository's own config is visible.
+    * Git can fetch from an HTTPS origin under the scrubbed environment.
+      Local config cannot include another file or invoke external credential routes.
     * The running interpreter and its ``sys.prefix`` inside ``<repository>/.venv``,
       because that is the environment ``uv sync`` fills and the one ServingManager
       later inspects.  A standard virtual environment's ``bin/python`` is usually
@@ -190,20 +193,27 @@ def verify_image_contract(
             "pinned commit inside a checkout the image already carries -- it has never "
             "cloned one, so there is nothing here for the pinned commit to land in"
         )
-    try:
-        config_text = config_path.read_text(encoding="utf-8", errors="replace")
-    except OSError as error:
-        # Named here rather than escaping as a bare OSError the step turns into
-        # an unexplained red: a config this process cannot read is an image
-        # fact like every other one on this list.
-        raise ImageContractRefusal(
-            f"the checkout at {repository} has a configuration this process cannot read "
-            f"({error.strerror}); the bootstrap reads it to prove there is an origin to "
-            "fetch from, and cannot proceed on the assumption that there is one"
-        ) from error
-    entries = _git_config_entries(config_text)
-    origin = _config_value(entries, "remote", "origin", "url")
-    if not origin:
+    entries = _git_config_entries(config_path, environment, repository, executables["git"])
+    for key, _value in entries:
+        lowered = key.lower()
+        parts = lowered.split(".")
+        forbidden = (
+            parts[0] in {"include", "includeif", "credential"}
+            or lowered in {"core.askpass", "core.sshcommand"}
+            or (
+                parts[0] == "http"
+                and parts[-1] in {"cookiefile", "sslkey", "sslcert", "proxysslkey", "proxysslcert"}
+            )
+            or lowered == "extensions.worktreeconfig"
+            or (parts[0] == "url" and parts[-1] in {"insteadof", "pushinsteadof"})
+        )
+        if forbidden:
+            raise ImageContractRefusal(
+                f"the checkout at {repository} configures a forbidden git key in {parts[0]}; "
+                "remove the external credential or configuration route before bootstrap"
+            )
+    origins = [value for key, value in entries if key.lower() == "remote.origin.url"]
+    if not origins:
         raise ImageContractRefusal(
             f"the checkout at {repository} names no origin remote; the pinned commit is "
             "fetched from origin, and a checkout with no remote cannot be advanced to it"
@@ -211,45 +221,38 @@ def verify_image_contract(
     verified["origin_remote"] = "present"
 
     home_is_visible = bool(environment.get("HOME"))
-    scheme = origin.split("://", 1)[0].lower() if "://" in origin else ""
-    # Only over http/https does userinfo carry a credential. `user@host` in an
-    # SSH remote is a login name, and recording that as an embedded credential
-    # would put a false statement in the receipt.
-    embedded_credential = (
-        scheme in {"http", "https"} and "@" in origin.split("://", 1)[-1].split("/", 1)[0]
-    )
-    local_credential_route = bool(
-        _config_value(entries, "credential", None, "helper")
-        or _any_subsection_value(entries, "credential", "helper")
-        or _any_subsection_value(entries, "http", "extraheader")
-    )
-    if (
-        scheme in {"http", "https"}
-        and not home_is_visible
-        and not embedded_credential
-        and not local_credential_route
-    ):
+    if home_is_visible:
         raise ImageContractRefusal(
-            f"the checkout at {repository} fetches origin over {scheme} and carries no "
-            "credential route of its own, while the bootstrap environment supplies no "
-            "HOME -- so git will read no ~/.gitconfig, no global credential helper and "
-            "no ~/.git-credentials, and a private fetch has nothing to authenticate "
-            "with. Put the route in the repository's own config (a credential.helper, "
-            "an http.<url>.extraheader, or credentials in the remote URL), or give the "
-            "bootstrap environment a HOME whose configuration you have checked"
+            "the bootstrap git environment exposes HOME, which may supply credentials "
+            "outside the checked-out repository"
         )
-    # What the receipt may honestly say. The last value is not "no credential is
-    # needed" -- an SSH remote's key, or a public remote needing nothing, are
-    # both outside what reading one config file can establish -- so it says
-    # exactly that instead of a claim this check did not make (principle 8).
+    try:
+        valid_https = all(
+            urlsplit(origin).scheme.lower() == "https" and urlsplit(origin).hostname
+            for origin in origins
+        )
+    except ValueError:
+        valid_https = False
+    if not valid_https:
+        raise ImageContractRefusal(
+            f"the checkout at {repository} has a non-HTTPS origin; use an HTTPS origin "
+            "before bootstrap"
+        )
+    origin = origins[0]
+    embedded_credential = "@" in urlsplit(origin).netloc
+    local_credential_route = any(
+        key.lower().startswith("http.")
+        and key.lower().endswith(".extraheader")
+        or key.lower() == "http.extraheader"
+        for key, _value in entries
+    )
+    # The pinned fetch proves reachability under the scrubbed environment.
     verified["credential_route"] = (
         "embedded-in-url"
         if embedded_credential
         else "repository-local"
         if local_credential_route
-        else "home-visible"
-        if home_is_visible
-        else "not-in-the-repository-config"
+        else "anonymous-https"
     )
 
     expected_venv = Path(os.path.abspath(repository / REPOSITORY_VENV_DIRECTORY))
@@ -351,50 +354,40 @@ def _git_config_path(repository: Path) -> Path | None:
     return git_dir / "config"
 
 
-_SECTION = re.compile(r'^\s*\[\s*([A-Za-z0-9.\-]+)\s*(?:"(.*)")?\s*\]\s*$')
-_ENTRY = re.compile(r"^\s*([A-Za-z][A-Za-z0-9\-]*)\s*=\s*(.*?)\s*$")
+def _git_config_entries(
+    config_path: Path, environment: Mapping[str, str], repository: Path, git_executable: str
+) -> list[tuple[str, str]]:
+    """Ask Git to parse only the checkout config, preserving every key and value."""
 
-
-def _git_config_entries(text: str) -> list[tuple[str, str | None, str, str]]:
-    """``(section, subsection, key, value)`` for every plain entry in a config."""
-
-    entries: list[tuple[str, str | None, str, str]] = []
-    section: str | None = None
-    subsection: str | None = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith(("#", ";")):
+    try:
+        result = subprocess.run(
+            [git_executable, "config", "--file", str(config_path), "--no-includes", "--list", "-z"],
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+            timeout=GIT_COMMAND_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ImageContractRefusal(
+            f"the checkout at {repository} config could not be inspected by git; "
+            "repair the image's git installation or config"
+        ) from error
+    if result.returncode != 0:
+        raise ImageContractRefusal(
+            f"the checkout at {repository} has git config that git cannot parse; repair it "
+            "before bootstrap"
+        )
+    entries = []
+    for record in result.stdout.split(b"\0"):
+        if not record:
             continue
-        header = _SECTION.match(line)
-        if header is not None:
-            section = header.group(1).lower()
-            subsection = header.group(2)
-            continue
-        entry = _ENTRY.match(line)
-        if entry is not None and section is not None:
-            entries.append((section, subsection, entry.group(1).lower(), entry.group(2)))
+        key, separator, value = record.partition(b"\n")
+        if not separator:
+            value = b"true"
+        entries.append(
+            (key.decode("utf-8", errors="replace"), value.decode("utf-8", errors="replace"))
+        )
     return entries
-
-
-def _config_value(
-    entries: list[tuple[str, str | None, str, str]],
-    section: str,
-    subsection: str | None,
-    key: str,
-) -> str | None:
-    for entry_section, entry_subsection, entry_key, value in entries:
-        if entry_section == section and entry_subsection == subsection and entry_key == key:
-            return value
-    return None
-
-
-def _any_subsection_value(
-    entries: list[tuple[str, str | None, str, str]], section: str, key: str
-) -> str | None:
-    for entry_section, _subsection, entry_key, value in entries:
-        if entry_section == section and entry_key == key and value:
-            return value
-    return None
 
 
 class BootstrapStep(StrEnum):
@@ -1222,7 +1215,7 @@ class SubprocessBootstrapActions:
             if argv[0].endswith(("/nvidia-smi", "/dpkg-query"))
             else 300
             if argv[0].endswith(("/apt-cache", "/apt-get"))
-            else 600
+            else GIT_COMMAND_TIMEOUT_SECONDS
             if argv[0] == self.executables["git"]
             else 3600
             if argv[0] == self.executables["uv"]

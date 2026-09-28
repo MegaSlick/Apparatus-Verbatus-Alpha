@@ -24,7 +24,13 @@ from conftest import load_stage
 # doubt was ever asked for". `assessed` is the state these shape tests want,
 # because it is the only one under which spans and gaps may be non-empty.
 _ASSESSED = {"state": "assessed", "problem": None}
-_EMPTY = {"uncertain_spans": [], "gaps": [], "self_revisions": [], "assessment": _ASSESSED}
+_EMPTY = {
+    "uncertain_spans": [],
+    "gaps": [],
+    "self_revisions": [],
+    "assessment": _ASSESSED,
+    "lectio_kind": "primed-with-prior",
+}
 
 
 def test_source_revision_vocabulary_matches_the_perlector_producer() -> None:
@@ -36,12 +42,49 @@ def test_source_revision_vocabulary_matches_the_perlector_producer() -> None:
     assert canonical_uncertainty._SOURCE_REVISION_FIELDS == frozenset(produced[0])
 
 
+def test_withheld_draft_has_no_self_revision_measurement() -> None:
+    payload = {
+        "text": "Maria",
+        "lectio_kind": "primed-draft-withheld",
+        "self_revision": [],
+        "uncertain_spans": [],
+        "gaps": [],
+        "uncertainty_assessment": _ASSESSED,
+    }
+    layer = from_perlectio(payload)
+    assert layer["self_revisions"] is None
+    assert layer["lectio_kind"] == "primed-draft-withheld"
+    assert validate(layer, "Maria") == layer
+    with pytest.raises(SchemaRefusal, match="not measured"):
+        validate({**layer, "self_revisions": []}, "Maria")
+
+
+def test_a_canonical_layer_requires_its_lectio_kind() -> None:
+    without_kind = {key: value for key, value in _EMPTY.items() if key != "lectio_kind"}
+    with pytest.raises(SchemaRefusal, match="closed canonical schema"):
+        validate(without_kind, "Maria")
+    assert canonical_uncertainty.validate_audit_projection(without_kind, "Maria") == without_kind
+    with pytest.raises(SchemaRefusal, match="closed canonical schema"):
+        canonical_uncertainty.validate_audit_projection(_EMPTY, "Maria")
+    with pytest.raises(SchemaRefusal, match="unknown lectio kind"):
+        from_perlectio(
+            {
+                "text": "Maria",
+                "self_revision": [],
+                "uncertain_spans": [],
+                "gaps": [],
+                "uncertainty_assessment": _ASSESSED,
+            }
+        )
+
+
 def test_whitespace_only_text_accepts_a_whole_act_gap() -> None:
     layer = {
         "uncertain_spans": [],
         "gaps": [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}],
         "self_revisions": [],
         "assessment": _ASSESSED,
+        "lectio_kind": "primed-with-prior",
     }
 
     assert validate(layer, " \t\n") == layer
@@ -53,6 +96,7 @@ def test_whitespace_only_text_refuses_a_partly_read_gap_position() -> None:
         "gaps": [{"position": "trailing", "start": 3, "end": 3, "witness_evidence": []}],
         "self_revisions": [],
         "assessment": _ASSESSED,
+        "lectio_kind": "primed-with-prior",
     }
 
     with pytest.raises(SchemaRefusal, match="over an empty text"):
@@ -71,6 +115,7 @@ def test_projection_renames_the_prior_draft_span_and_keeps_its_offsets() -> None
     layer = from_perlectio(
         {
             "text": "Maria",
+            "lectio_kind": "primed-with-prior",
             "uncertain_spans": [],
             "gaps": [],
             "uncertainty_assessment": {"state": "assessed", "problem": None},
@@ -99,6 +144,7 @@ def test_a_prior_span_is_not_bounded_by_the_established_text() -> None:
     layer = from_perlectio(
         {
             "text": "Mari",
+            "lectio_kind": "primed-with-prior",
             "uncertain_spans": [],
             "gaps": [],
             "uncertainty_assessment": {"state": "assessed", "problem": None},
@@ -122,6 +168,7 @@ def test_a_prior_span_is_not_bounded_by_the_established_text() -> None:
         (
             {
                 "text": "Maria",
+                "lectio_kind": "primed-with-prior",
                 "uncertain_spans": [],
                 "gaps": [],
                 "uncertainty_assessment": {"state": "assessed", "problem": None},
@@ -153,6 +200,7 @@ def test_projection_refuses_a_payload_it_cannot_canonicalize(payload, expected) 
                 "gaps": [],
                 "self_revisions": [],
                 "assessment": _ASSESSED,
+                "lectio_kind": "primed-with-prior",
             },
             "Maria",
             "members must all be lists",
@@ -163,6 +211,7 @@ def test_projection_refuses_a_payload_it_cannot_canonicalize(payload, expected) 
                 "gaps": [{"position": "internal", "start": 1, "end": 2, "witness_evidence": []}],
                 "self_revisions": [],
                 "assessment": _ASSESSED,
+                "lectio_kind": "primed-with-prior",
             },
             "Maria",
             "not a zero-width canonical gap",
@@ -175,6 +224,7 @@ def test_projection_refuses_a_payload_it_cannot_canonicalize(payload, expected) 
                     {"reading_span": {"start": 0, "end": 0}, "prior_span": {"start": 4, "end": 1}}
                 ],
                 "assessment": _ASSESSED,
+                "lectio_kind": "primed-with-prior",
             },
             "Maria",
             "prior_span is reversed",
@@ -189,6 +239,7 @@ def test_projection_refuses_a_payload_it_cannot_canonicalize(payload, expected) 
                 "gaps": [{"position": "leading", "start": 0, "end": 0, "witness_evidence": []}],
                 "self_revisions": [],
                 "assessment": _ASSESSED,
+                "lectio_kind": "primed-with-prior",
             },
             "",
             "over an empty text",
@@ -199,6 +250,7 @@ def test_projection_refuses_a_payload_it_cannot_canonicalize(payload, expected) 
                 "gaps": [{"position": "trailing", "start": 0, "end": 0, "witness_evidence": []}],
                 "self_revisions": [],
                 "assessment": _ASSESSED,
+                "lectio_kind": "primed-with-prior",
             },
             "",
             "over an empty text",
@@ -211,6 +263,7 @@ def test_projection_refuses_a_payload_it_cannot_canonicalize(payload, expected) 
                 "gaps": [],
                 "self_revisions": [],
                 "assessment": _ASSESSED,
+                "lectio_kind": "primed-with-prior",
             },
             "Maria",
             "non-integer offsets",
@@ -223,6 +276,7 @@ def test_projection_refuses_a_payload_it_cannot_canonicalize(payload, expected) 
                 "gaps": [],
                 "self_revisions": [],
                 "assessment": _ASSESSED,
+                "lectio_kind": "primed-with-prior",
             },
             "Maria",
             r"uncertain_spans\[0\] is malformed",
@@ -250,7 +304,15 @@ def test_a_reading_sealed_without_a_doubt_report_cannot_be_projected() -> None:
     re-read under the current contract instead.
     """
     with pytest.raises(SchemaRefusal, match="carries no uncertainty_assessment"):
-        from_perlectio({"text": "Maria", "uncertain_spans": [], "gaps": [], "self_revision": []})
+        from_perlectio(
+            {
+                "text": "Maria",
+                "lectio_kind": "primed-with-prior",
+                "uncertain_spans": [],
+                "gaps": [],
+                "self_revision": [],
+            }
+        )
 
 
 def test_an_unassessed_layer_is_an_absence_and_never_an_empty_confidence() -> None:
@@ -258,6 +320,7 @@ def test_an_unassessed_layer_is_an_absence_and_never_an_empty_confidence() -> No
     layer = from_perlectio(
         {
             "text": "Maria",
+            "lectio_kind": "primed-with-prior",
             "uncertain_spans": [],
             "gaps": [],
             "uncertainty_assessment": {

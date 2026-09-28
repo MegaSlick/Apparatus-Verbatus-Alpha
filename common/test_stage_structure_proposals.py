@@ -83,6 +83,7 @@ from common.stage import (
     stage_parser,
     validate_serving_provenance,
 )
+from common.stage import _verify_structure_attempt_chain as real_verify_structure_attempt_chain
 from operations.submit import gate, submit
 
 
@@ -351,6 +352,7 @@ class _StructureDesignator:
         *,
         provenance: dict[str, Any] | None = None,
         schema: str = STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+        attempt_schema: str | None = None,
         parse_state: str = STRUCTURE_ANSWER_PARSED,
         parse_outcome: str | None = None,
         page_id: str | None = None,
@@ -411,7 +413,7 @@ class _StructureDesignator:
         _, stored = self.tree.put_blob(DESIGNATOR, json.dumps(record).encode("utf-8"))
         answer_provenance = self.provenance() if provenance is None else provenance
         attempt_payload = {
-            "schema": schema,
+            "schema": schema if attempt_schema is None else attempt_schema,
             "page_id": source_page_id if page_id is None else page_id,
             "page_ordinal": ordinal if page_ordinal is None else page_ordinal,
             "page_w": page_w,
@@ -480,7 +482,11 @@ class _StructureDesignator:
             inputs=[source_ref, presentation_ref],
             payload=attempt_payload,
         )
-        terminal = {**attempt_payload, "attempts": [self.context.input_ref(attempt.relative_path)]}
+        terminal = {
+            **attempt_payload,
+            "schema": schema,
+            "attempts": [self.context.input_ref(attempt.relative_path)],
+        }
         published = self.context.publish(
             kind=STRUCTURE_ANSWER_KIND,
             subject_id=page["subject_id"],
@@ -807,6 +813,26 @@ def test_a_retired_structure_answer_is_refused_by_its_schema(real_root, schema):
 
     with pytest.raises(
         FatalAccounting, match=f"sealed under {schema}, which this build no longer reads; re-run"
+    ):
+        expected_acts(_open(real_root, ATTESTATORES))
+
+
+@pytest.mark.parametrize(
+    "schema", ["designator-structure-answer.v1", "designator-structure-answer.v2"]
+)
+def test_a_retired_structure_attempt_is_refused_by_its_schema(real_root, monkeypatch, schema):
+    monkeypatch.setattr(
+        stage_contract, "_verify_structure_attempt_chain", real_verify_structure_attempt_chain
+    )
+    designator = _real_designator(real_root)
+    rectangle = designator.rectangle(1, 0)
+    designator.status(1, designator.answer(1, [rectangle], attempt_schema=schema))
+    designator.propose(1, rectangle)
+    designator.seal()
+
+    with pytest.raises(
+        FatalAccounting,
+        match=f"structure attempt 1 was sealed under {schema}, which this build no longer reads; re-run",
     ):
         expected_acts(_open(real_root, ATTESTATORES))
 

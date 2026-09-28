@@ -331,6 +331,27 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
     assert hold["tick"] == 4
 
 
+def test_mechanics_qualification_reaches_orchestrator_and_report(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+
+    code = main(
+        _run_argv(ws, extra=("--mechanics-qualification",)),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+
+    assert code == EXIT_COMPLETE
+    assert "--mechanics-qualification" in runner.calls[0][0]
+    report = _report(ws)
+    assert report["plan"]["mechanics_qualification"] is True
+    assert "--mechanics-qualification" in report["orchestrator_argv"]
+
+
 def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path: Path) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
