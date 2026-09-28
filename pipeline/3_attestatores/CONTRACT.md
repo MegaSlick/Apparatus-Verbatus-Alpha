@@ -285,19 +285,20 @@ The fixture route aligns page-witness text against the fixture's declared
 `[[chandra_anchor]]` rows. The live route aligns against an anchor derived from
 the Chandra chair's OWN served response for the page
 (`run.py::derived_chandra_anchor`): the anchor text is that chair's retained
-page text, and an act's anchor lines are the reported blocks whose geometry
-overlaps one of the act's sealed proposal regions on this page -- the same
-positive-area rule attachment uses, applied per block -- so alignment attaches
-text to acts by geometry and never by choosing among witnesses (principle 1).
+page text, and an act's anchor lines are the reported blocks with the largest
+positive intersection area against that act's sealed proposal regions on this
+page. Each block belongs to one act; an exact tie belongs to none, so no act
+gets text from a guessed block. This attaches text by geometry and never by
+choosing among witnesses (principle 1).
 The act's `anchor_span` is the hull, in the markup-stripped normalized view
 `align_to_anchor` measures in, of those blocks' spans translated through
-`markup_text_view`'s offset map; `line_geometry` carries every overlapping
+`markup_text_view`'s offset map; `line_geometry` carries every owned
 block in reading order. Everything after that is the machinery the fixture
 route already had, unchanged: one `align_to_anchor` per `(page, chair)`, the
 clip to the act's range, the translation back to raw offsets, the trivial
 zero-length attach for a genuinely-empty witness, `refuse_ambiguous_act_alignments`
-for two acts one chair cannot tell apart (which is also what a block
-overlapping two acts produces, named rather than resolved).
+for two acts one chair cannot tell apart (including any overlapping aligned
+spans that remain after block ownership, named rather than resolved).
 
 ### The matcher, and why the deadline is 25 seconds
 

@@ -2364,6 +2364,14 @@ def _bounds_on_page(regions: list[dict], page_ordinal: int) -> list[dict[str, An
     ]
 
 
+def _intersection_area(left: dict[str, int], right: dict[str, int]) -> int:
+    width = max(0, min(left["x"] + left["w"], right["x"] + right["w"]) - max(left["x"], right["x"]))
+    height = max(
+        0, min(left["y"] + left["h"], right["y"] + right["h"]) - max(left["y"], right["y"])
+    )
+    return width * height
+
+
 def derived_chandra_anchor(
     *,
     page_text: str,
@@ -2374,29 +2382,47 @@ def derived_chandra_anchor(
 ) -> dict[str, dict[str, Any]]:
     """Locate primary-page acts in the served Chandra blocks by geometry.
 
-    A normalized-text hull may include a neighbour, overstating disagreement.
-    Shared blocks give two acts one range; ambiguous alignment then refuses both.
-    Acts match by geometry, never by choosing a witness; the hull cannot hide disagreement.
+    A block belongs to the act with the largest positive overlap with its regions.
+    Tied blocks belong to neither act. A normalized-text hull may still include a
+    neighbour, overstating disagreement; later alignment refuses overlapping claims.
     """
     offset_map = markup_text_view(page_text)["offset_map"]
     normalized_by_raw: dict[int, list[int]] = {}
     for normalized_index, raw_index in enumerate(offset_map):
         if raw_index is not None:
             normalized_by_raw.setdefault(raw_index, []).append(normalized_index)
+    bounds_by_act = {
+        act["act_id"]: _bounds_on_page(regions_by_act[act["act_id"]][0], page_ordinal)
+        for act in page_acts
+        if act["page_ordinal"] == page_ordinal
+    }
+    blocks_by_act: dict[str, list[dict[str, Any]]] = {act_id: [] for act_id in bounds_by_act}
+    for block in observed:
+        if block.get("span") is None:
+            continue
+        scores = {
+            act_id: sum(
+                _intersection_area(block["bounds"], bounds)
+                for bounds in act_bounds
+                if reported_geometry_overlaps([block], bounds)
+            )
+            for act_id, act_bounds in bounds_by_act.items()
+        }
+        largest = max(scores.values(), default=0)
+        if largest > 0:
+            owners = [act_id for act_id, area in scores.items() if area == largest]
+            if len(owners) == 1:
+                blocks_by_act[owners[0]].append(block)
+
     anchors: dict[str, dict[str, Any]] = {}
     for act in page_acts:
         if act["page_ordinal"] != page_ordinal:
             continue
-        act_bounds = _bounds_on_page(regions_by_act[act["act_id"]][0], page_ordinal)
         starts: list[int] = []
         ends: list[int] = []
         line_geometry: list[dict[str, Any]] = []
-        for block in observed:
-            span = block.get("span")
-            if span is None or not any(
-                reported_geometry_overlaps([block], bounds) for bounds in act_bounds
-            ):
-                continue
+        for block in blocks_by_act[act["act_id"]]:
+            span = block["span"]
             line_geometry.append({"bbox": dict(block["bounds"])})
             normalized = [
                 index
