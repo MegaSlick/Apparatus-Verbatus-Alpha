@@ -228,8 +228,8 @@ instruments this project already has — `operations/spike_perlector/normalizati
 `graphemic-v1` and `scoring.py`'s bare rapidfuzz — rather than a second scorer
 invented for this corpus.
 
-Why this survives GOVERNANCE 3 / hard rule 8's no-picker rule (§ Do not build a
-picker): it runs only after the pipeline's own output is sealed and cannot
+Why this respects PRINCIPLES.md, principle 1 ("The reader reads; nothing picks"):
+it runs only after the pipeline's own output is sealed and cannot
 change; it never returns anything to the pipeline; it selects nothing about
 what the pipeline read, only which reference box a given output pairs with for
 scoring; and it drops nothing from either side of that pairing — a miss stays a

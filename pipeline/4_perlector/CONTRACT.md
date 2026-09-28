@@ -197,10 +197,12 @@ text. The grammar carries no level of doubt, so every marked span is `low`. A
 `[[` or `]]` that is not a closed mark, or a mark whose reading is `?`, publishes the
 raw answer unchanged under `malformed`. Gap marks over an answer that is otherwise
 blank add nothing: the `no-readable-text` outcome's whole-act gap already says it.
-Pass B is fed Pass A's clean text, so `self_revision` offsets index the draft it was
-shown; Pass A's marks stay on its own record. Truncation is measured on the clean
-text. The re-proof answers in JSON and reports no doubts; a replacement carrying a
-mark, or a replacement over text Pass B marked, publishes `malformed`, because the
+By default Pass B does not see Pass A's clean text; `--draft-fed` opts in. In either
+case, `self_revision` compares the final text with Pass A's clean draft:
+`reading_span` indexes the final text and `testimonium_span` the draft. Pass A's
+marks stay on its own record. Truncation is measured on the clean text. The re-proof
+answers in JSON and reports no doubts; a replacement carrying a mark, or a
+replacement over text Pass B marked, publishes `malformed`, because the
 marks cannot be re-anchored through the edit. Whether a real reader uses the marks is
 measured on the first live run.
 

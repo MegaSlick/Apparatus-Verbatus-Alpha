@@ -75,13 +75,13 @@ to the end; truncation is a failure, not an output.
 **The Perlector chair is swappable, and that is a design requirement rather than a
 convenience.** A stock base model, an unaltered vendor model, and a locally trained checkpoint
 must all be able to sit in it behind the same interface, with the resolved identity of whichever
-one ran bound into every Perlectio. A locally trained checkpoint is *called* like any other
-model, from its own model repository, and is never vendored into the pipeline it serves. Trained weights are a *candidate*, never a privileged
-inheritance: a checkpoint trained on some earlier pipeline's output may have learned to agree
-with witnesses rather than to read ink, and that is not visible by inspection. It is visible in
-the instrument this architecture already carries — **Lectio nuda against witness-primed Lectio,
-and the dissent record.** A candidate whose advantage disappears once the witnesses are taken
-away has not learned to read, whatever its transcription score says.
+one ran bound into every Perlectio. A locally trained checkpoint is *called* like any other model,
+from its own model repository, and is never vendored into the pipeline it serves. Trained weights
+are a *candidate*, never a privileged inheritance: a checkpoint trained on some earlier pipeline's
+output may have learned to agree with witnesses rather than to read ink, and that is not visible by
+inspection. It is visible in the instrument this architecture already carries — **Lectio nuda
+against witness-primed Lectio, and the dissent record.** A candidate whose advantage disappears
+once the witnesses are taken away has not learned to read, whatever its transcription score says.
 
 **Recensor** — *recensio*. The completeness and recovery stage. See below.
 
@@ -147,7 +147,6 @@ A text-only model may **flag** a problem. It may never rewrite or establish text
 
 ## Dissent
 
-
 The Perlectio records where the reading departed from every witness. This is
 **structural, not evaluative**: it makes parroting measurable without new
 instrumentation.
@@ -158,8 +157,8 @@ disagreement rewards hallucination.
 
 ## Invariants
 
-High-level and binding. Detailed schemas and interface contracts belong in a
-`DATA_CONTRACT.md` once alpha has taught us what they are.
+High-level and binding. Detailed schemas and interface contracts are in each stage's
+`CONTRACT.md`.
 
 1. Act identity survives recropping.
 2. Every candidate and recovery region traces back to the Exemplar.
