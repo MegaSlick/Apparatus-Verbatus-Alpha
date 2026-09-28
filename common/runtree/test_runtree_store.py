@@ -217,8 +217,11 @@ def test_repeating_an_identical_receipt_is_replaced_not_refused(tmp_path):
     tree = make_run(tmp_path)
     receipt = make_recensor_partition_receipt()
     tree.write_recensor_partition_receipt(receipt)
+    path = tree.resolve(tree.recensor_partition_receipt_path())
+    first_inode = path.stat().st_ino
     result = tree.write_recensor_partition_receipt(receipt)
     assert result.reused is False
+    assert path.stat().st_ino != first_inode
 
 
 # --- The run authority ---------------------------------------------------------

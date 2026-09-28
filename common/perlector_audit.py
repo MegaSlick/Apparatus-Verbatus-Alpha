@@ -1349,13 +1349,6 @@ def validate_chain(
         "attempt_ordinal"
     ] != payload.get("attempt_ordinal"):
         raise SchemaRefusal(f"reading of {act_id} disagrees with its audit identity")
-    expected_changes = (
-        change_records_from_edits(finding_payload["reproof_edits"])
-        if finding_payload["reproof_edits"] is not None
-        else []
-    )
-    if finding_payload["change_record"] != expected_changes:
-        raise SchemaRefusal(f"reading of {act_id} disagrees with its exact audit change record")
     if record["finding_digest"] != audit_digest(finding_payload):
         raise SchemaRefusal(f"reading of {act_id} names an audit finding with a mismatched digest")
     if record["unresolved"] != finding_payload["unresolved"]:

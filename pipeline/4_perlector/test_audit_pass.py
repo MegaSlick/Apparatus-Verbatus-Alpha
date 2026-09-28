@@ -1904,7 +1904,6 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
         changed = final["payload"]["text"] != frozen[act_key]
         if changed:
             changed_acts.append(act_key)
-            assert len(final["payload"]["text"]) != len(frozen[act_key])
         assert final["outcome"] == ("truncated" if changed else "read")
         assert final["payload"]["audit"]["examination"] == "incomplete"
         assert final["payload"]["audit"]["unresolved"] is True

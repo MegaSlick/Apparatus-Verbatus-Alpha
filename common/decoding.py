@@ -43,7 +43,7 @@ def _validate_decoding_policy(policy: Any) -> None:
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")
     schema = policy.get("schema")
-    if schema in {"decoding.v1", "decoding.v2"}:
+    if isinstance(schema, str) and schema in {"decoding.v1", "decoding.v2"}:
         raise ContractError(f"sealed under {schema}, which this build no longer reads; re-run")
     if schema != "decoding.v3":
         raise ContractError("decoding configuration has an unsupported schema")
