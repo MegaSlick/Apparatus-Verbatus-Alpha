@@ -1014,6 +1014,50 @@ def test_materializer_waits_for_store_lock_before_sweeping_staging(tmp_path):
     assert list(staging.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    ("stage", "message"),
+    [
+        ("mkdir", "cannot create materialization root"),
+        ("open", "cannot open materialization lock"),
+        ("flock", "cannot acquire materialization lock"),
+    ],
+)
+def test_materializer_names_store_lock_setup_failure(tmp_path, monkeypatch, stage, message):
+    root = tmp_path / "store"
+
+    def denied(*args, **kwargs):
+        raise OSError("fixture access denied")
+
+    with monkeypatch.context() as patch:
+        if stage == "mkdir":
+            patch.setattr(model_store.Path, "mkdir", denied)
+        elif stage == "open":
+            patch.setattr(model_store.Path, "open", denied)
+        else:
+            patch.setattr(model_store.fcntl, "flock", denied)
+        with pytest.raises(DigestMismatchRefusal, match=message) as caught:
+            materialize_real_roster(root, _FakeMaterializationFetcher())
+
+    assert str(root) in str(caught.value)
+    assert isinstance(caught.value.__cause__, OSError)
+
+
+def test_materializer_refuses_store_lock_after_bounded_wait(tmp_path, monkeypatch):
+    root = tmp_path / "store"
+
+    def busy(*args, **kwargs):
+        raise BlockingIOError("fixture lock held")
+
+    monkeypatch.setattr(model_store.fcntl, "flock", busy)
+    monkeypatch.setattr(model_store, "MATERIALIZATION_LOCK_TIMEOUT_SECONDS", 0)
+
+    with pytest.raises(DigestMismatchRefusal, match="timed out acquiring") as caught:
+        materialize_real_roster(root, _FakeMaterializationFetcher())
+
+    assert str(root) in str(caught.value)
+    assert isinstance(caught.value.__cause__, BlockingIOError)
+
+
 def test_materializer_clears_staging_left_after_failed_cleanup_on_next_fetch(tmp_path, monkeypatch):
     class FailingFetcher:
         def fetch(self, repo: str, revision: str, destination: Path) -> None:

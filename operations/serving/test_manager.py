@@ -4160,6 +4160,16 @@ def test_vision_smoke_call_refuses_a_prompt_that_carries_its_own_witness() -> No
         LeakedWitnessPrompt(PAGE_WITNESS)
 
 
+def test_vision_smoke_call_refuses_a_prompt_with_a_near_witness() -> None:
+    class LeakedNearWitnessPrompt(VisionSmokeCall):
+        @property
+        def prompt(self) -> str:
+            return f"Reply with PAGE-WITNESS: {self.page_witness[:-1]}"
+
+    with pytest.raises(ServingConfigurationError, match="near read occurs in the smoke prompt"):
+        LeakedNearWitnessPrompt(PAGE_WITNESS)
+
+
 def test_vision_smoke_call_refuses_a_utilization_sampler_that_is_not_callable() -> None:
     with pytest.raises(ServingConfigurationError, match="utilization sampler must be callable"):
         VisionSmokeCall(PAGE_WITNESS, utilization=())  # type: ignore[arg-type]

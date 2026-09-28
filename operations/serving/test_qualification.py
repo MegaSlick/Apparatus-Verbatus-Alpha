@@ -472,6 +472,19 @@ def test_qualification_names_a_receipt_without_recorded_edit_distance(tmp_path: 
         _qualify(paths)
 
 
+@pytest.mark.parametrize("recorded_distance", [0.0, False])
+def test_qualification_refuses_noninteger_edit_distance(
+    tmp_path: Path, recorded_distance: object
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smokes = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"]  # type: ignore[index]
+    smokes[0]["page_witness_edit_distance"] = recorded_distance
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match="page-read edit distance disagrees"):
+        _qualify(paths)
+
+
 @pytest.mark.parametrize(
     "answer",
     [
