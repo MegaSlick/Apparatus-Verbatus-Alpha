@@ -240,18 +240,64 @@ def git(*args: str) -> bytes:
     return result.stdout
 
 
-# blob_size's unbounded cache holds one integer per object. Payloads are bounded by
-# bytes, not entries: a count thrashes on tiny reused blobs, overcommits on large ones.
+class GitObjects:
+    """Git objects via one long-lived `git cat-file` per mode; `--batch-check` reads no bytes."""
+
+    def __init__(self):
+        self._processes: dict[str, subprocess.Popen] = {}
+
+    def _header(self, mode: str, oid: str) -> tuple[subprocess.Popen, str, int]:
+        process = self._processes.get(mode)
+        if process is None:
+            process = self._processes[mode] = subprocess.Popen(
+                ["git", "cat-file", mode],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        try:
+            process.stdin.write(oid.encode("ascii") + b"\n")
+            process.stdin.flush()
+        except BrokenPipeError:
+            pass
+        fields = process.stdout.readline().split()
+        if len(fields) != 3 or fields[0] != oid.encode("ascii"):
+            # No reply means Git exited, so its stderr is complete and says why.
+            reason = fields[-1] if fields else process.stderr.read()
+            detail = reason.decode("utf-8", "replace").strip() or "no reply"
+            raise ScanFailure(f"git cat-file {mode} could not read {oid[:12]}: {detail}")
+        try:
+            return process, fields[1].decode("ascii"), int(fields[2])
+        except ValueError as exc:
+            raise ScanFailure(f"Git returned a malformed header for object {oid[:12]}") from exc
+
+    def info(self, oid: str) -> tuple[str, int]:
+        _, kind, size = self._header("--batch-check", oid)
+        return kind, size
+
+    def data(self, oid: str, kind: str) -> bytes:
+        process, actual, size = self._header("--batch", oid)
+        data = process.stdout.read(size)
+        if len(data) != size or process.stdout.read(1) != b"\n":
+            raise ScanFailure(f"git cat-file --batch cut object {oid[:12]} short")
+        if actual != kind:
+            raise ScanFailure(f"object {oid[:12]} is a {actual}, not a {kind}")
+        return data
+
+    def close(self) -> None:
+        for process in self._processes.values():
+            process.communicate()
+        self._processes.clear()
+
+
+OBJECTS = GitObjects()
+
 BLOB_CACHE_MAX_BYTES = 64 * 1_048_576
 
 
 @lru_cache(maxsize=None)
 def blob_size(oid: str) -> int:
-    raw = git("cat-file", "-s", oid).strip()
-    try:
-        return int(raw)
-    except ValueError as exc:
-        raise ScanFailure(f"Git returned a non-numeric size for object {oid[:12]}") from exc
+    return OBJECTS.info(oid)[1]
 
 
 class BlobDataCache:
@@ -278,7 +324,7 @@ class BlobDataCache:
             self._entries[oid] = data
             return data
 
-        data = git("cat-file", "blob", oid)
+        data = OBJECTS.data(oid, "blob")
         size = len(data)
         if size > self.max_bytes:
             return data
@@ -674,9 +720,7 @@ def scan_history(revision: str) -> list[Issue]:
         issues.extend(scan_tree(commit_tree(commit), commit[:12]))
         # The whole commit object, so author and committer headers are caught even
         # where no hook ran.
-        issues.extend(
-            secret_issues("<commit-object>", git("cat-file", "commit", commit), commit[:12])
-        )
+        issues.extend(secret_issues("<commit-object>", OBJECTS.data(commit, "commit"), commit[:12]))
     return unique_issues(issues)
 
 
@@ -695,11 +739,7 @@ def scan_ref_object(revision: str) -> list[Issue]:
             raise ScanFailure(f"tag object chain for {revision!r} contains a cycle")
         seen.add(oid)
 
-        raw_kind = git("cat-file", "-t", oid).strip()
-        try:
-            kind = raw_kind.decode("ascii")
-        except UnicodeDecodeError as exc:
-            raise ScanFailure(f"Git returned a non-ASCII object type for {oid[:12]}") from exc
+        kind, _ = OBJECTS.info(oid)
         if kind == "commit":
             return unique_issues(issues)
         if kind != "tag":
@@ -707,7 +747,7 @@ def scan_ref_object(revision: str) -> list[Issue]:
                 f"ref object {oid[:12]} has unsupported type {kind!r}; expected tag or commit"
             )
 
-        data = git("cat-file", "tag", oid)
+        data = OBJECTS.data(oid, "tag")
         issues.extend(secret_issues("<annotated-tag>", data, oid[:12]))
         first_line = data.split(b"\n", 1)[0]
         match = re.fullmatch(rb"object ([0-9a-f]{40}|[0-9a-f]{64})", first_line)
@@ -846,6 +886,8 @@ def main(argv: list[str] | None = None) -> int:
         error = safe_output(str(exc), "error")
         print(f"BLOCKED: ingress check could not run: {error}", file=sys.stderr)
         return 2
+    finally:
+        OBJECTS.close()
 
 
 if __name__ == "__main__":
