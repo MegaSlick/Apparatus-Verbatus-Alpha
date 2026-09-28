@@ -46,6 +46,17 @@
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/operations/pod/session_end_pod_check.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
