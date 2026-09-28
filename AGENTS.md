@@ -4,15 +4,17 @@ Instructions for AI coding sessions and their agents (Claude, Codex or any other
 contributors should read [CONTRIBUTING.md](CONTRIBUTING.md); everything there applies here
 too.
 
-Read [README.md](README.md) and [PRINCIPLES.md](PRINCIPLES.md) at the start of every
-session. Read [ARCHITECTURE.md](ARCHITECTURE.md) and [GLOSSARY.md](GLOSSARY.md) before
-changing a stage, a contract or a term. Hold every line of code to PRINCIPLES.md.
+Read [README.md](README.md), [PRINCIPLES.md](PRINCIPLES.md) and
+[CONTRIBUTING.md](CONTRIBUTING.md) at the start of every session, and
+[ARCHITECTURE.md](ARCHITECTURE.md) and [GLOSSARY.md](GLOSSARY.md) before changing a
+stage, a contract or a term. The work serves the goals in PRINCIPLES.md; code is written
+the way CONTRIBUTING.md describes.
 
 ## Who decides
 
 The project lead decides:
 
-- changes to the core documents listed in CONTRIBUTING.md, step 4;
+- changes to the documents listed in CONTRIBUTING.md, step 4;
 - anything that costs money or runs on live infrastructure — **no GPU pod starts without
   the lead's permission in that session**, and shutdown is verified against the
   provider's own state and billing, never assumed. Read `operations/pod/README.md`
@@ -30,6 +32,36 @@ by being hard, and a decision is never parked in a TODO, a handoff or a pull req
 If following a rule would cost an act, hide a result or fight a goal, stop and quote the
 conflict.
 
+## Building
+
+- Judge a change by the system it leaves behind: in existing code, fix the root cause
+  rather than keep a workaround, even when the workaround is the smaller diff.
+- Build once, reuse everywhere: shared tools with small configs, standard library first.
+- Nothing depends on a comment: code, tests and digests never read or hash one, and a
+  warning comment becomes a regression test.
+- Vendor models run at a pinned revision fetched at launch, our adaptations are
+  deterministic scripts, and an upstream update is flagged for review as maintenance.
+
+## Tools
+
+- Before recommending, changing or removing a tool — a CLI, plugin, hook, service or
+  model host — read its official documentation, check the installed version and see how
+  it is wired in here. A surprising metric or a failed command is a symptom to explain,
+  not a verdict on the tool.
+- Graphify: `graphify update .` builds `graphify-out/` from code alone, and `query`,
+  `path`, `explain` and `god-nodes` read it. Never run `graphify .`, `extract`, `label`,
+  `cluster-only` or `/graphify`: they send documents to a model, and real register
+  material must not leave this machine.
+
+## How rules are written
+
+- Record what the lead meant, in plain words. Never turn a direction into a count or a
+  quota that stands in for it.
+- Working rules live here and in CLAUDE.md. PRINCIPLES.md holds goals, and code comments
+  never cite rules.
+- When a rule needs an exception, rewrite or remove the rule instead of adding the
+  exception.
+
 ## Git workflow
 
 - **Never work on `main`.** One short-lived branch per task: `work/<topic>`,
@@ -38,7 +70,8 @@ conflict.
 - **Stage only the files the task touched.** Never `git add -A`.
 - **Push and open a pull request freely for work inside the session's stated goal**, and
   tell the lead when one opens. Name work outside that goal to the lead before its first
-  push.
+  push. Group finished lanes into one pull request per train of three to six branches;
+  each lane is reviewed before it joins the train.
 - **CI on the pull request is the gate.** Locally, run the tests you touched and
   `.githooks/check-static.sh`; the full suite runs in CI (it overheats this machine).
   There is no pre-push hook; CI scans the full history on every pull request.
@@ -56,13 +89,13 @@ conflict.
 
 ## Review
 
-- CodeRabbit reviews every pull request. Before the first push, run it locally with the
-  repository's configuration (the CLI does not read `.coderabbit.yaml` on its own):
-  `coderabbit review --agent --committed --base origin/main --config .coderabbit.yaml AGENTS.md`.
+- The CodeRabbit GitHub app reviews every pull request, once per train. Run the
+  CodeRabbit CLI locally only when a review round produces major or cascading changes.
 - Add one independent reader for a change to a pipeline stage or contract, and fresh
-  readers for anything touching pods, money, credentials or git hooks.
-- Fix or decline every real finding, with a reason. A fix after review makes a new
-  candidate; reviewers read the exact commit that is pushed.
+  readers for anything touching pods, money, credentials or git hooks. A reader from a
+  different model family, such as Codex, is worth having on big changes.
+- Fix or decline every real finding, with a reason. Reviewers read the exact commit that
+  is pushed.
 
 ## Agents
 
@@ -82,8 +115,9 @@ conflict.
   reviewers for every finding, but cap how each is written up (file, line, claim).
 - The host verifies the load-bearing claims and the check results; it does not re-read
   every returned line. Agreement between agents is evidence, not authority.
-- Pick any model and effort that suits the job, and record which model actually
-  answered.
+- Pick the model that suits the job, at medium effort unless the task clearly needs
+  more, and record which model actually answered. Codex can take bulk work under the
+  host; keep at least a quarter of its weekly limit and never spend its credits.
 
 ## Notes and handoffs
 

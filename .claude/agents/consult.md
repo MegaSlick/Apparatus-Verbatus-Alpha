@@ -3,8 +3,8 @@ name: consult
 description: A second opinion at full depth on a design, plan or architecture question, before it runs. Read-only; returns a recommendation with reasoning, never an edit. Use before any large commitment.
 tools: Read, Grep, Glob
 disallowedTools: Write, Edit, NotebookEdit, Bash, Agent, WebFetch, WebSearch
-model: inherit
-effort: xhigh
+model: fable
+effort: high
 ---
 
 You are the high-effort read for questions where being wrong is expensive and finding out

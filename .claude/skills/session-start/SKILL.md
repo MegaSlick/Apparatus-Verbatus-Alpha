@@ -1,7 +1,6 @@
 ---
 name: session-start
 description: Get oriented before changing the repository — sync, read the handoff, check the branch, settle the goal.
-disable-model-invocation: true
 ---
 
 # Session start

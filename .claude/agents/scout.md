@@ -4,7 +4,6 @@ description: Cheap, fast lookup. Finds files, references, usages and structure, 
 tools: Read, Grep, Glob
 disallowedTools: Write, Edit, NotebookEdit, Bash, Agent, WebFetch, WebSearch
 model: haiku
-effort: low
 ---
 
 You find things and say where they are.

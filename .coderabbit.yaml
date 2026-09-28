@@ -51,8 +51,8 @@ reviews:
       - name: Carried code is named as carried
         mode: warning
         instructions: >-
-          PRINCIPLES.md principle 12: code adapted from elsewhere is named as adapted in
-          the commit message, and third-party code records its source and licence.
+          CONTRIBUTING.md: code adapted from elsewhere is named as adapted in the commit
+          message, and third-party code records its source and licence.
           Adapted, renamed and reformatted count as copied.
           When available evidence identifies carried code, check its source and attribution
           against the commit and report. Name that evidence; resemblance or AI authorship
@@ -61,7 +61,7 @@ reviews:
       - name: No witness picker
         mode: warning
         instructions: >-
-          PRINCIPLES.md principle 1 forbids anything that selects among
+          PRINCIPLES.md ("The idea") rules out anything that selects among
           witnesses — under any name: choosing, ranking to pick, voting, best-of,
           confidence-thresholding down to one, or discarding a witness as bad. Witnesses
           are clues, never options; the Perlector reads and never picks. No witness is
@@ -70,7 +70,7 @@ reviews:
       - name: Nothing is lost silently
         mode: warning
         instructions: >-
-          PRINCIPLES.md principle 2. Flag changes that reduce a declared
+          PRINCIPLES.md goal "Never lose an entry". Flag changes that reduce a declared
           collection without reconciling the source, retained, and published identities or
           counts; substitute an ordinary value for required missing or unverified evidence;
           swallow a write failure; or publish complete/success after a required record
@@ -127,13 +127,14 @@ reviews:
     - path: ".githooks/**"
       instructions: >-
         The git hooks and the check scripts CI runs. Flag any check that fails open: a
-        check that cannot run is a failure, not a pass (PRINCIPLES.md principle 8). The
+        check that cannot run is a failure, not a pass. The
         project lead can remove the hooks with `git config --unset core.hooksPath`
         (AI sessions are denied that command in `.claude/settings.json` on purpose).
     - path: ".claude/**"
       instructions: >-
-        Claude Code settings, read-only agent roles and session skills. Changes need the
-        project lead's approval (AGENTS.md). Flag drift: a skill or role that contradicts
+        Claude Code settings, read-only agent roles and session skills. A change to what
+        AI sessions are allowed to do needs the project lead's approval (CONTRIBUTING.md).
+        Flag drift: a skill or role that contradicts
         AGENTS.md, or names a file or section that no longer exists.
     - path: "**/*.py"
       instructions: >-

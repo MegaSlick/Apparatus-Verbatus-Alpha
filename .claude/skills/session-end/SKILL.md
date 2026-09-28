@@ -1,7 +1,6 @@
 ---
 name: session-end
 description: Close a session with verified git state, filed notes and a short handoff.
-disable-model-invocation: true
 ---
 
 # Session end

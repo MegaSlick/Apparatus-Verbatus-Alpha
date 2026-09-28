@@ -80,4 +80,4 @@ may both look at the page, but only the reader's role is to establish the text f
 ink. That difference in role is the design of the whole system.
 
 **picker** — any step that chooses among witness readings. There is none, by design
-(PRINCIPLES.md, principle 1).
+(PRINCIPLES.md, "The idea").
