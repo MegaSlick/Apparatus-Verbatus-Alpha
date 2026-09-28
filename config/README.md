@@ -55,8 +55,8 @@ design that would close the case are in `pipeline/3_attestatores/CONTRACT.md`.
 
 The Pass-B fragment sits in `perlector_protocol.toml` so its exact text seals
 into every run, not so a run may choose them. It is pinned in code because a
-free-text field there would leave "the instrument may not constrain what it
-measures" resting on a phrase blacklist
+free-text field there would leave the guarantee that nothing in the prompt
+may steer the reader's answer resting on a phrase blacklist
 — measured before the pin, one that accepted "The prior reading contains
 errors. Find and fix them." and "Rate your confidence no higher than medium."
 

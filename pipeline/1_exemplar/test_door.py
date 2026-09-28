@@ -770,7 +770,7 @@ def test_a_compressed_multipage_tiff_fans_out_and_every_page_reaches_real_pixels
     """ "TIFF 100% must work" is not satisfied by an ordinal with no pixels behind it.
 
     A page that fans out to an ordinal and then refuses is still a page nobody
-    reads, which is goal 2 failing quietly rather than loudly. So this asserts the
+    reads, lost quietly rather than loudly. So this asserts the
     whole way through: two ordinals, two admitted outcomes, two distinct sealed PNG
     blobs, and the second page's real geometry — not merely that the door noticed
     there were two directories.
@@ -1058,7 +1058,7 @@ def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
     Including two byte-identical *pages of one container*, which produce no
     duplicate report at all -- the report groups by declared path, so a scanned
     volume's blank pages never reach this refusal, and a run that started
-    refusing them would be losing pages that genuinely exist (goal 2).
+    refusing them would be losing pages that genuinely exist.
     """
     volume = blank_pages_pdf(2, width=8, height=6)
     files = {"scanned-volume.pdf": volume, "other.png": png(4, 3)}

@@ -166,7 +166,7 @@ def test_the_sweep_runs_on_every_dossier_the_build_actually_produces(evidence, m
     this module's own code -- so no forged input can trip it, and the only
     honest test of the wiring is that the build really calls it. A future edit
     that drops the call fails here rather than silently removing the one guard
-    that keeps anything from picking."""
+    that keeps a witness preference out of the dossier."""
     context, act_id, act_key, regions, testimonia = evidence
     swept = []
     monkeypatch.setattr(
@@ -214,7 +214,7 @@ def test_the_no_order_bearing_sweep_walks_a_pathological_dossier_instead_of_the_
     data -- a dossier carries every Testimonium verbatim -- and it runs on the
     production path, before the digest, on every dossier this build produces.
     Recursing over a deep one raised `RecursionError`: a crash naming nothing,
-    from the guard that keeps anything from picking.
+    from the guard that keeps a witness preference out of the dossier.
     """
     nested: object = {"leaf": 1}
     for _ in range(PATHOLOGICAL_DEPTH):

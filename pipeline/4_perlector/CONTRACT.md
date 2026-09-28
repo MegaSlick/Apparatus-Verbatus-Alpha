@@ -100,8 +100,8 @@ produce the same bytes, and be reused rather than rewritten.
 Testimony is deliberately absent from the derivation. A Testimonium is a clue that
 primes a reading, never the ink the reading is established from (ARCHITECTURE),
 so a second look by a witness does not make a second reading exist,
-and re-reading an act because a witness spoke again is the re-roll recovery
-— coverage, never quality — refuses. The consequence for the upstream stage is that an act's witness layer
+and re-reading an act because a witness spoke again is a re-roll, and
+recovery restores coverage, never quality. The consequence for the upstream stage is that an act's witness layer
 closes when this stage reads it, enforced at the Attestatores' own entry
 (`pipeline/3_attestatores/CONTRACT.md`, "The one attempt model") rather than
 discovered here as an immutability refusal on a reading identity nothing can move.
@@ -440,7 +440,7 @@ characters regardless of what `witness_evidence` says. `witness_evidence`
 attaches witness variants as linked, displayable evidence, never as text.
 Each evidence row is `{chair, testimonium_id, reference, variant}` — the
 digest-checked reference to the witness's own sealed record, not just a chair
-name a reader would then have to go looking for (goal 5).
+name a reader would then have to go looking for.
 `position` is one of `leading | internal | trailing | whole-act`, each with its
 own bound (leading starts at 0, internal is strictly inside the text, trailing
 ends at `len(text)`, whole-act requires
@@ -645,10 +645,10 @@ text and no ranking, and the prompt is
 byte-identical for every flag class. A `testimony-diff` flag's *location* is
 witness-derived, though, and now that the instrument is actually delivered the
 reader is directed to the exact spans where it disagreed with witnesses while
-the tree measures movement toward them — whether that is compatible with
-"never picks" and "the instrument may not constrain what it
-measures" is an open interpretation question routed to the project lead with
-the Tier-0 reproof change, not settled by this sentence.
+the tree measures movement toward them — whether that is compatible with no
+step picking among witnesses and with nothing in the prompt steering the
+reader's answer is an open interpretation question routed to the project lead
+with the Tier-0 reproof change, not settled by this sentence.
 
 **The re-proof plan is a delivered instrument, not a claim about one.** One
 function, `perlector_audit.reproof_plan`, turns the frozen flags into one

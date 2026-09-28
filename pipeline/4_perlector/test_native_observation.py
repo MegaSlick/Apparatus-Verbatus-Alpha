@@ -141,7 +141,8 @@ def test_ink_a_neighbouring_act_already_proposes_is_not_unaccounted_ink():
     where the fixture's marginal box overlapped act a2's crop while act a1 was
     being read. Eleven such findings per box on a twelve-act page, each one an
     invitation to spend a recovery unit on ink the Designator already marked out
-    (goal 2 is about ink nobody claimed, not ink this act did not claim)."""
+    (the missed-act check is about ink nobody claimed, not ink this act did
+    not claim)."""
     neighbour = _proposal({"x": 12, "y": 114, "w": 188, "h": 124})
     this_act = _proposal({"x": 12, "y": 15, "w": 188, "h": 99})
     box = _testimony({"x": 0, "y": 230, "w": 20, "h": 20})

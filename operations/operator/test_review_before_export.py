@@ -1442,7 +1442,7 @@ def test_a_malformed_alternatives_list_is_refused_rather_than_spelled_out():
 def test_offsets_that_cannot_anchor_show_no_ink_at_all():
     """Python slicing never complains: a negative start showed the act's END.
 
-    Ink presented as the doubted region that is not it (GOALS 5), under a line
+    Ink presented as the doubted region that is not it, under a line
     printing the offsets that would have told a careful reader something was
     wrong.
     """
@@ -1491,7 +1491,7 @@ def test_an_unrecognised_state_is_named_as_one_rather_than_echoed():
 
 def test_a_gap_names_the_chairs_that_corroborate_it_and_the_layer_its_revisions():
     """The record holds more than position and offset, and a person reviewing a
-    gap against the ink should see what it holds (goal 4). Naming the chairs an
+    gap against the ink should see what it holds, not take it on faith. Naming the chairs an
     absence rests on is not a selection among them: nothing here chooses, and no
     witness reading is shown as text."""
     lines = review_text.render(
@@ -1654,7 +1654,7 @@ def test_a_gaps_offsets_are_checked_before_it_is_printed_as_a_position():
     """A gap carries no characters of its own, so its two offsets are one position.
 
     Anything else is a damaged record, and printing it as an anchored position
-    points a person at ink the record does not name (GOALS 5).
+    points a person at ink the record does not name.
     """
     text = "\n".join(
         review_text.render(

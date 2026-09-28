@@ -523,8 +523,8 @@ def _correspondence_identity(record: dict[str, Any]) -> str:
 def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> None:
     """Refuse a nested capture-preference claim, naming the record it was in.
 
-    Public because a Testimonium must not express preference either
-    (ARCHITECTURE — a witness's reading is never itself an output).
+    Public because a Testimonium must not express a preference either: no step
+    ranks one witness or capture above another.
     """
     cycle = (
         f"{what} contains itself, so no sweep of it can terminate and a "

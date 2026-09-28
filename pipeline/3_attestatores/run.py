@@ -5261,7 +5261,7 @@ def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what
             "by a crop: new ink must route through a Recensor recovery request, which mints "
             "a region and moves the reading ordinal. New testimony after a reading is "
             "refused; new INK after a reading is a recovery request. Re-asking a witness "
-            "because it spoke again is the re-roll recovery -- coverage, never quality -- refuses"
+            "because it spoke again is a re-roll, and recovery restores coverage, never quality"
         )
 
 

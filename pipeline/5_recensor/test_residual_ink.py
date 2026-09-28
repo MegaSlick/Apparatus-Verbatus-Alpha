@@ -157,7 +157,7 @@ def test_the_fast_counts_agree_with_a_straightforward_implementation():
     """The optimized counters must be a pure speed change, never a measurement one.
 
     `residual_ink` feeds a completeness guard: if these counts drift, a page
-    with real uncovered ink can report clean, which is goal 2's worst failure
+    with real uncovered ink can report clean, the worst kind of failure,
     arriving through an optimization nobody re-measured. Driven over pseudo-
     random pages -- fixed seed, so a failure reproduces exactly -- including
     overlapping and out-of-bounds covered regions, ink at the exact contrast
@@ -316,7 +316,7 @@ def test_a_substantial_absolute_miss_is_flagged_even_where_the_fraction_gate_wou
 
     A page carrying abundant, correctly-covered ink can leave plainly-real text
     outside every cut region and still sit under the 2% fraction threshold --
-    a missed act reported as a clean page, goal 2's worst failure. The
+    a missed act reported as a clean page, the worst kind of failure. The
     absolute gate is what catches it.
     """
     # Ink stays a minority of the page (202,000 of 960,000), so the shared

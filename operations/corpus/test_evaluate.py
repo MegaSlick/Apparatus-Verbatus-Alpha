@@ -547,7 +547,7 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
 
 
 def test_a_missed_record_moves_only_the_aggregate_that_counts_it(sealed_run):
-    """GOALS 1: an act nobody found must be visible in a number, not only in a count."""
+    """A missed act must be visible in a number, not only in a count."""
     tree = sealed_run
     unread = "un acte que le pipeline n'a jamais proposé"
     missed_record = {

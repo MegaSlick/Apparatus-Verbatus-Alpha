@@ -1302,7 +1302,7 @@ def test_a_mixed_pages_uncovered_text_is_measured_beside_a_declared_continuation
     A page where one act starts and another continues through still has a real
     span union -- the starting act's -- so the text outside it was measured, and
     calling that unmeasured would hide a genuine coverage loss behind the
-    neighbouring act's declaration (goal 2). The unmeasured half is still
+    neighbouring act's declaration. The unmeasured half is still
     recorded beside the verdict rather than dropped.
     """
     context = _mixed_page_context(monkeypatch)

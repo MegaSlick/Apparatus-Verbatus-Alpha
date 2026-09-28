@@ -1409,7 +1409,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
             "without it. Deliberately NOT sealed into config_digest: it is a measured "
             "runtime fact of the card, not run configuration, so it carries no "
             "'--no-placement-tier' companion and is simply omitted from a fixture "
-            "run's argv. 'The record itself protects the past' is "
+            "run's argv. The record protects the past, which is "
             "why the receipt records the caps that actually bound the serving "
             "moment (the launch audit's profile.tier) rather than folding this into "
             "the reproducibility contract config_digest exists to protect."
@@ -2923,7 +2923,7 @@ def _verify_structural_act_row(
     Identity binds only page, class and `raw_bounds`, so `act_key`,
     `page_ordinal` and `has_continuation` are recomputed separately: later
     stages join on them.  `has_continuation` is checked both ways, since a
-    false negative silently drops a continuation crop (goal 2).  A continuation
+    false negative silently drops a continuation crop.  A continuation
     region's bounds enter no identity, so it need only carry readable
     `raw_bounds`.
     """

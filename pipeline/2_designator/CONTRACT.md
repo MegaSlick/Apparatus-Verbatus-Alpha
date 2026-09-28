@@ -785,7 +785,7 @@ Every live page record carries its `capacity` block, held or not, and the same
 record travels on the request onto the retained `chair-call-record.v1`.
 
 A cut-off answer is held even though it parsed: a truncated act list is a
-missed act (goal 2). Under the layout grammar that row states itself: an
+missed act. Under the layout grammar that row states itself: an
 unclosed block is closed and its bytes kept, with an `unclosed-block` finding,
 so a truncated body *does* read and is held on the engine's stop word alone —
 where the retired JSON contract could not tell the two facts apart, because a
@@ -796,7 +796,7 @@ cut object was also invalid JSON.
 `Blank-Page` answer and of one whose every `data-bbox` was unreadable; the
 record tells them apart (`block_count`, `blocks_without_proposal`, the
 findings) rather than the disposition. Tiling keeps the page covered by
-predetermined crops, which is what goal 2 asks for; holding it would cost
+predetermined crops, so no act on it is lost; holding it instead would cost
 every act on it until a reviewer looked. The custody row is held before the body is looked at and
 is *one page's* outcome, not the run's: the client retained the bytes and the
 call record before custody was reached, so what a refusal costs is the binding
@@ -848,8 +848,8 @@ already holds — which include, on a resume, the page's own tiles from the firs
 pass. `_publish_page_fallback` therefore excludes the page's own fallback act
 from that clip; without it the second pass subtracts the tiles from themselves,
 mints no act, and seals a denominator missing a page whose crops are on disk —
-`complete` over a lost act, which goal 2 and the rule against losing anything
-silently both forbid, and which the immutable seal would then make permanent. A `held` page cut nothing
+`complete` over a lost act, a silent loss this pipeline never allows, and
+which the immutable seal would then make permanent. A `held` page cut nothing
 and has nothing to reproduce. All three dispositions are resumed under test.
 
 What a resume does **not** check is that the build asking for the remaining
@@ -1630,8 +1630,8 @@ grey levels above are measuring.
 stays on the page, stays below the ink threshold, and is counted as ink by
 `primary_scan` and reconciled as ink by `conservation.reconcile`. Masking any
 population out would mean deciding where the page ends, and a page edge misjudged
-by thirty pixels would silently delete a marginal name — the loss goal 2 ranks
-worst. The `dark_distribution` block records two observed counts:
+by thirty pixels would silently delete a marginal name — the worst kind of
+loss. The `dark_distribution` block records two observed counts:
 `border_dark_pixel_count` in the fixed border band and `dark_pixel_count` across
 the whole page at the selected level. They are not bounds on a bezel or on a
 paper region. For the 65 historical calibration pages that inferred through this
@@ -1748,9 +1748,9 @@ level every page shares.
 **`SECONDARY_MARGIN` is not derived, by decision.** It stays 2, and so does
 `conservation.reconcile`'s margin, which defaults to it. The primary margin
 governs what this stage *proposes*; the secondary margin and the conservation
-denominator govern what it cannot *lose*, and erring sensitive there is the
-direction goal 2 requires — a mark the grouping pass missed appears as a
-residual component rather than as an absence. Deriving those too would trade a
+denominator govern what it cannot *lose*, and erring sensitive there means a
+mark the grouping pass missed still appears as a residual component rather
+than as an absence. Deriving those too would trade a
 visible over-count for a possible silent loss. Two properties follow and both are
 still pinned: the secondary scan is strictly more sensitive than the primary on
 every page, because 2 is below the floor and no page can invert them; and the

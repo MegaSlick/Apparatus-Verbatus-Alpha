@@ -15,8 +15,9 @@ identical dossier arguments and therefore carry the same `dossier_digest` and
 the same `rendered_sha256`, so `pass_kind` is the *only* thing that
 distinguishes them at this seam. A reader that read it and behaved differently
 would make the witness-dependence contrast the whole instrument exists for
-measure the pipeline's own label instead of the model — exactly what
-"the instrument may not constrain what it measures" forbids at the reader boundary.
+measure the pipeline's own label instead of the model — exactly what the
+reader boundary forbids, since nothing in the prompt may steer the reader's
+answer.
 `FixtureReader` reads it because it has no model behind it and must stand in
 for one; that is the exception the docstring on `_declared_prior_reading`
 names, not the pattern to copy.

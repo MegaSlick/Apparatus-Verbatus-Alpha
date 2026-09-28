@@ -1028,7 +1028,7 @@ def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp
 
     The page Testimonium carries integer boxes derived from native floats. Its
     response reference must travel in that same record rather than require a
-    later join through compatibility records (goal 4).
+    later join through compatibility records.
     """
     run_root = tmp_path / "runs"
     result = subprocess.run(

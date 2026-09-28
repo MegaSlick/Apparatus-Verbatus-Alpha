@@ -4,7 +4,7 @@
 Under the `named` regime that sentence is handed to the Perlector as fact about
 the witness whose testimony it is reading, so a real run sealed under it tells
 the reader that Chandra-2, DAI-RecordGold and Churro-3B are fixtures --
-failing "feed it completely and honestly" on the first real call.
+telling the reader something false about its witnesses on the first real call.
 `config/witness_context-real.toml` is the declaration the real roster is read
 under, selected on `--witness-context-config` exactly as the roster is selected
 on `--models-config`.

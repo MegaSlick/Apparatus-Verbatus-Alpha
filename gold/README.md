@@ -103,8 +103,9 @@ re-recorded out of the hours that produced it.
 nothing to reconcile: the outcome is `agreed`, no adjudicator is recorded, and
 naming one is refused.  If they differ, the adjudicator and their own reading of
 the ink are required — **the adjudicator does not choose the better
-transcription**; the transcribers are people making the corpus, not
-Attestatores, and no model output reaches these records.  What they read may
+transcription**.  This mirrors the pipeline's rule that nothing picks among
+witnesses, although here the transcribers are people and no model output
+reaches these records.  What they read may
 match one, both in part, or neither.  Both transcriptions are retained inside the
 record unaltered, and `outcome` is derived from them on every read, so a record
 cannot claim agreement over two readings that differ.
@@ -132,7 +133,7 @@ neither directory is the right home for the other's.
 Whether RecordGold stands in for, or beside, the Quebec gold corpus for the
 honestly-measured acceptance claim is a separate question, and it is the project
 lead's, not this module's (`operations/corpus/README.md`'s "The acceptance
-corpus is the project lead's call" gets this right; a 2026-09-01 direction on
+corpus is the project lead's call" gets this right; a direction on
 RecordGold reads the other way and is not yet reconciled with it).  If
 RecordGold is ruled in for that claim, the route is a named substitution
 recorded where the acceptance corpus is chosen, never a forged entry through

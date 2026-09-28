@@ -371,7 +371,7 @@ def test_a_recovery_hold_names_the_limit_that_refused_it(used_total, budget, nam
 
 def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):
     """Same Perlector finding (`no-readable-text`), but only two of three chairs
-    agree -- the third reads real text. goal 2: a single dissent is never
+    agree -- the third reads real text. A single dissent is never
     silently resolved, so the act is held for a human, never outvoted."""
     root = tmp_path / "runs"
     result = _run_through_recensor(root, "r", "blank-with-dissent")

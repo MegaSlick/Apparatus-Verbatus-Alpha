@@ -222,8 +222,8 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
             # The union of what *any* seat saw is the coverage denominator, and this
             # is the branch where it matters most: a frame only one seat reported on
             # is exactly where an act is likeliest to be lost. Recording only
-            # "missing-fact" would drop that seat's whole enumeration, and GOALS 1
-            # ranks a missed act above a poorly read one. Consensus gates what the
+            # "missing-fact" would drop that seat's whole enumeration, and a missed
+            # act is worse than a poorly read one. Consensus gates what the
             # fixture asserts; it never decides what counts as present.
             disagreements[fact_id] = {
                 "reason": "missing-fact",

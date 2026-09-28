@@ -2004,8 +2004,8 @@ def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_bl
     receipt minted and trusted-boundary health recorded — and the Recensor then
     sealed `confirmed-blank`, stating that three chairs had actually and
     independently read the page. The conclusion was true of that white page; the
-    evidence was not, and the same shape over a page with ink is goal 2's worst
-    failure arriving as a green run.
+    evidence was not, and the same shape over a page with ink is the worst
+    kind of failure, arriving as a green run.
 
     So: no response, no reading. Every chair is `not-run`, nothing claims a
     receipt or a region it was never shown, no page witness reports a reading,
@@ -5125,7 +5125,7 @@ def truncated_reading_run(tmp_path_factory):
 
 
 def test_a_reading_that_did_not_succeed_is_held_and_says_why(truncated_reading_run):
-    """Goal 1 is accuracy against the ink, and nothing here allows a loss hidden
+    """Accuracy is judged against the ink, and nothing here allows a loss hidden
     behind a successful status. Text nobody successfully read is neither, so it is
     held — visibly, with the outcome that caused it named in the reason."""
     _, tree = truncated_reading_run

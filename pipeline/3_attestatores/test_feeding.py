@@ -133,7 +133,7 @@ def test_churro_records_its_declared_bound_and_detects_repetition_after_complete
     assert record["findings"][0]["kind"] == "post-hoc-repetition"
     # A body that offers no grammar at all is the plain reading-order text the
     # paper-era harness itself expected, so it reads rather than being thrown
-    # away (goal 2); the repeated tail is still a finding beside it.
+    # away; the repeated tail is still a finding beside it.
     assert record["parse"]["state"] == "parsed"
     assert record["stop_reason"] == "partial-post-hoc-repetition-detected"
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
@@ -535,7 +535,8 @@ def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordabl
     `HistoricalDocument` and will not parse is `failed` with its bytes retained.
     A body that offers no grammar at all is not malformed -- it is the plain
     reading-order text the paper-era harness itself expected, and throwing a
-    page of ink away over an unclosed tag is the loss goal 2 refuses.
+    page of ink away over an unclosed tag is exactly the loss this pipeline
+    refuses.
     """
     attestatores = load_stage("3_attestatores")
     tree = _Tree()

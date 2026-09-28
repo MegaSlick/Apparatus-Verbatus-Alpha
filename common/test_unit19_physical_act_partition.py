@@ -1238,7 +1238,7 @@ def test_every_capture_page_reaching_one_physical_page_stays_in_the_presentation
     -- a whole opening and the split half of it are two `page_id`s over identical
     source bytes. The presentation row carries `page_ids[]` for exactly that, and
     keeping whichever row was seen first would delete a page from the record that
-    a reading has to be traceable back to (goal 4).
+    a reading has to be traceable back to.
     """
     path = _register(tmp_path)
     _mint(path, PAGE, [_local(ACT_A, PG1, SOURCE_A, "a")])

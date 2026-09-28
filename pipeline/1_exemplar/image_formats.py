@@ -207,7 +207,7 @@ _PNG_VALID_BIT_DEPTHS: Final = {
 }
 # Adam7: (x offset, y offset, x step, y step) per pass. Interlaced PNGs are
 # *accounted for* rather than refused — the per-pass stride arithmetic is exact,
-# and a refused page is a page nobody reads (goal 2).
+# and a refused page is a page nobody reads.
 _ADAM7: Final = (
     (0, 0, 8, 8),
     (4, 0, 8, 8),

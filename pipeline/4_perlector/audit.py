@@ -131,7 +131,7 @@ def _numeric_key(digits: str) -> tuple[int, str]:
     whatever the reader emitted. A degenerate run of digits from a real reader
     would have ended the Perlector mid-page with an unnamed `ValueError`
     instead of a flag -- and surviving what a model emits is this stage's job,
-    not the model's (feed it completely and measure it honestly).
+    not the model's, so nothing here may quietly drop or rewrite what came back.
 
     Length-then-lexicographic over the run with leading zeros stripped is
     exactly `int` ordering for non-negative decimals, at any length, with no

@@ -610,7 +610,7 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # Chandra's two rows (1645) are measured with apostrophes escaped as `&#x27;`
 # (1506 written literally): the parser resolves character references, so the
 # dearer spelling is a valid answer, and under-reserving for it would cut off
-# an act (goal 2).  Churro's (1905) is 67 `Line` elements at twelve words each.
+# an act.  Churro's (1905) is 67 `Line` elements at twelve words each.
 MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
         "designator_structure": 1645,
@@ -623,7 +623,7 @@ MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 
 
 # One ordinary act's answer, for the act-scoped chairs.  Reserving a page's
-# answer here would refuse calls that fit and cost acts (goal 2); a
+# answer here would refuse calls that fit and cost acts; a
 # page-fallback act is still caught by its whole-page image cost.
 MEASURED_ACT_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {

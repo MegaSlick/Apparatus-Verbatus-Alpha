@@ -172,7 +172,7 @@ def test_a_span_past_the_end_of_the_retained_text_is_refused():
     """A span is an address into text this record actually holds. Shape alone
     validated `{"start": 0, "end": 10_000}` over a seventeen-character reading:
     a consumer resolving it either crashes or silently quotes less than the
-    witness said, and neither is a retained report (goal 4)."""
+    witness said, and neither is a retained report."""
     value = payload()
     value["observed"][0]["span"] = {"start": 0, "end": len(value["payload"]) + 1}
     with pytest.raises(SchemaRefusal, match="runs past the end"):
@@ -1332,7 +1332,7 @@ def test_native_capture_accepts_a_genuine_blob_reference():
 def test_native_capture_refuses_a_raw_response_reference_that_is_not_a_real_sha256(sha256):
     """A shape check alone (any two non-empty strings) let a malformed or
     forged digest stand as this record's claim to trace back to retained
-    bytes (ARCHITECTURE invariant 2, goal 4) -- the same gap `is_sha256`
+    bytes (ARCHITECTURE invariant 2) -- the same gap `is_sha256`
     closes everywhere else this pipeline validates a blob reference.
     """
     value = _native_capture()
@@ -1855,7 +1855,7 @@ def test_the_vendors_minimum_area_is_not_a_bound_its_own_output_obeys():
     *then* rounds each side to the nearest 28-pixel block, which can land back
     under it. The fixture is the vendor's own answer for a 100x80 crop; a
     minimum-area rule here would refuse a presentation Chandra actually
-    produces, and a refusal that costs a legal act is the one failure goal 2
+    produces, and a refusal that costs a legal act is the one failure that
     ranks worst.
     """
     resize = _vendor_presentation("chandra-scale-to-fit.v1")["transform"]["resize"]
@@ -2093,7 +2093,7 @@ def test_a_sealed_page_carrying_alpha_still_has_a_legal_churro_presentation(mode
     `ensure_rgb` drops the band, this replay drops the same band, and the record
     says `rgb`. Refusing the conversion instead would leave a page the Exemplar
     legitimately admitted with no presentation Churro could ever be given --
-    a lost act, which goal 2 ranks below a poorly read one.
+    a lost act, which is worse than a poorly read one.
     """
     page = (
         Image.new("L", (100, 80), 200)

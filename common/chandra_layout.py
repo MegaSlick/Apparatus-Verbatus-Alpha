@@ -408,7 +408,7 @@ def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | Non
     component above `BBOX_SCALE` means the model is not scaling to the
     denominator the prompt gave it, and a box quietly clamped to the page edge
     would publish a plausible rectangle for a reading that had already gone
-    wrong -- the failure goal 1 rates worst.
+    wrong -- the worst kind of failure, a bad reading dressed up as a good one.
 
     Each refusal names which rule it failed, so a page of malformed boxes says
     whether the model is scaling wrongly or formatting wrongly.
