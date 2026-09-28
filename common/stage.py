@@ -1355,8 +1355,8 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     parser.add_argument(
         "--draft-fed",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="whether Pass B receives the prior draft (default: fed)",
+        default=False,
+        help="whether Pass B receives the prior draft (default: withheld)",
     )
     parser.add_argument("--formats-config", default=str(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH))
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
@@ -1562,7 +1562,7 @@ def run_config_bindings(
     perlector_instrument_approval_ref: str = "",
     perlector_protocol_config_path: str | Path = DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     perlector_audit_config_path: str | Path = DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
-    draft_fed: bool = True,
+    draft_fed: bool = False,
     mechanics_qualification: bool = False,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
