@@ -2810,7 +2810,7 @@ def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(ha
 
 
 def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happy_run):
-    """The no-picking rule and goal 4: page two retains and audits the pixels a2 contributes there."""
+    """Page two retains and audits the pixels a2 contributes there, and nothing picks."""
     _, tree = happy_run
     a2 = next(
         act

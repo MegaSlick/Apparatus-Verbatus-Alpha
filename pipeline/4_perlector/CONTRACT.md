@@ -805,8 +805,8 @@ bare `KeyError` or publishing two digests for one response.
 
 **`_distinct_inputs` narrows what this stage *expects*; it never widens what a record
 may claim.** The envelope refuses a repeated path outright, even at an identical digest
-(`validate_input_refs`) — that is the double-count guard "one text everywhere" rests
-on, and nothing here touches it: a duplicate inside a published `inputs` list still
+(`validate_input_refs`) — that is the double-count guard that keeps one reading per act
+in every export, and nothing here touches it: a duplicate inside a published `inputs` list still
 reaches that refusal unchanged. It is used at exactly two seams, both of them places
 where one content-addressed blob is honestly reachable by two names.
 

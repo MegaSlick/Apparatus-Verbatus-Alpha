@@ -9,7 +9,7 @@ a second, independent conjunct before it may spend a bounded recovery or hold
 an act: Unit 9's own ink map must confirm real ink under that pointer.
 Without it, an Attestator's own mis-reported or hallucinated box could spend
 real recovery budget, or hold a real act, on zero actual ink -- the witness
-picking a pipeline action for itself, which the no-picking rule forbids by name.
+picking a pipeline action for itself, when nothing may pick.
 
 An earlier build pass wired the coverage route straight to
 `unclaimed_observations` with no ink confirmation at all. The

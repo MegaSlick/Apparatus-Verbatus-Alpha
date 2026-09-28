@@ -126,7 +126,7 @@ def test_publication_reports_which_checks_the_clean_pass_actually_made(tmp_path,
 def test_a_bundle_whose_formats_disagree_about_one_reading_is_never_published(
     tmp_path, happy_run, monkeypatch
 ):
-    """'One text everywhere' at the gate the product leaves by, not only at the one it was built by.
+    """One reading per act at the gate the product leaves by, not only at the one it was built by.
 
     The tampered package is internally whole -- every member digest, byte count and
     self-hash agrees -- and its manifest claims `identity_verified_across` all three

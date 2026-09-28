@@ -1537,7 +1537,7 @@ def test_a_non_delivered_act_may_not_carry_an_uncertainty_layer(tmp_path):
 
 
 def test_the_delivered_gate_asks_both_questions_the_manifest_claims_were_asked(tmp_path):
-    """'One text everywhere' on the path the product actually leaves by.
+    """One reading per act on the path the product actually leaves by.
 
     The package above is internally whole and carries two different readings of one
     act, and its own manifest says `identity_verified_across` all three literal
@@ -1714,7 +1714,7 @@ def test_a_full_text_index_poisoned_with_terms_no_act_carries_is_refused(tmp_pat
     per-row phrase probe still finds what it went looking for. The recipient's
     search, meanwhile, now returns this act for words the Archetypus never
     established -- a second reading of the act inside the same package, which is
-    exactly what "one text everywhere" forbids.
+    so the export would no longer show one reading per act.
     """
     tampered = _resealed_acts_database(
         tmp_path,
@@ -3714,7 +3714,7 @@ def test_projection_identity_refuses_a_package_whose_formats_disagree_about_dama
 
     The literal is byte-identical in every format, so the text comparison passes
     by construction; the damage record is part of the same one reading and rides
-    in the same equality check ("one text everywhere" does not stop at the characters).
+    in the same equality check (one reading per act covers more than the characters).
     """
     bundle = build_armarium_bundle(
         _partial_projection(), _formats(embed_pixels=False), _source_bytes

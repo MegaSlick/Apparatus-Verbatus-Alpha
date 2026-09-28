@@ -1354,7 +1354,7 @@ def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
 
 
 def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
-    """Package integrity and "one text everywhere", in a single extraction.
+    """Package integrity and one reading per act across formats, in a single extraction.
 
     The manifest asserts ``canonical_text.identity_verified_across``, and this is
     the last gate before a recipient, so the publish path checks that claim as

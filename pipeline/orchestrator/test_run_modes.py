@@ -196,7 +196,7 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
     # (the note above the digest pins in
     # `pipeline/orchestrator/test_orchestrator_acceptance.py` states the same fact).
     # Spending an unconfirmed witness pointer here would be exactly the
-    # picker the no-picking rule forbids.
+    # picking nothing may do.
     assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2]
     # The ordinals prove a second Designator pass happened, not whose it was:
     # if the recovery moved from a1 to a2 they would still read [1, 2]. Name
