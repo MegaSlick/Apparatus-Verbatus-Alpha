@@ -132,7 +132,7 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     """Fold the launch token into every report path the launch seals.
 
     A volume outlives any one pod, so an unbound path lets a second launch's
-    evidence overwrite the first's (principle 4). This binds the outer
+    evidence overwrite the first's. This binds the outer
     ``--report-path`` and, inside ``--bootstrap-command-json``, every flag
     ``models.NESTED_LAUNCH_BOUND_FLAGS`` names; ``bootstrap_main`` refuses an
     unbound one only pod-side, after billing has begun. The ``--journal`` half
@@ -375,8 +375,8 @@ ALERT_STATE_LOCK_WAIT_SECONDS: Final = 5.0
 This lock guards notification bookkeeping and is taken *inside* the spend gate on
 the create/adopt path.  A notification-only feature may never hold a paid action
 open, so it gives up early; ``_record_spend_notifications`` then records that the
-warning was not delivered, which is the outcome principle 2 asks for and is not
-a refusal.
+warning was not delivered, which is a recorded fact rather than a silent loss, and
+is not a refusal.
 """
 
 
@@ -1439,7 +1439,7 @@ class PodRuntime:
 
         Returns the observation and, when there is none, why -- a swallowed
         provider error leaves an operator staring at "not observed" with no way
-        to tell a missing configured source from a timeout (principle 2).
+        to tell a missing configured source from a timeout.
         """
 
         if self.balance_source is None:

@@ -21,7 +21,7 @@ plan and not accepted again here: ``PREFLIGHT`` measured that roster against
 that catalogue, and a run that named different files would serve chairs no
 preflight had looked at.
 
-**Exit codes never read "complete" for a partial run (principle 2).**
+**Exit codes never read "complete" for a partial run.**
 ``EXIT_COMPLETE`` (0) is returned only when the orchestrator itself returned
 ``EXIT_COMPLETE``; ``EXIT_HELD`` (3) and ``EXIT_HALTED`` (4) mirror the
 orchestrator's own held and halted exits; ``EXIT_REFUSED`` (2) is a named
@@ -58,7 +58,7 @@ launch-token-named transcript beside the run report, and the report names it by
 path.  A liveness line beside them carries the child's pid and the moment it
 was last seen, re-journaled on the same interval the hold loop uses, so a
 supervisor killed mid-run leaves a stale tick rather than a record that still
-says ``running`` (principle 2).
+says ``running``.
 
 **A run that did not finish returns instead, and the pod closes.**  ``halted``,
 ``failed``, and "the orchestrator could not start" get no hold: holding one of
@@ -70,7 +70,7 @@ tree, both reports, the journal and the preflight evidence are on the
 *volume*, which outlives the pod, and ``verbatus fetch-run`` reads it over S3
 with no pod running.  The run report records which way it went in
 ``held_to_hard_deadline``, so the choice is in the durable record and not
-only here (principle 2).
+only here.
 
 **The measured placement tier is forwarded.**  A receipt without one is refused.
 
@@ -275,7 +275,7 @@ class RunPlan:
         it the only durable statement on the volume for the whole duration of a
         run is a `running` record with no heartbeat, and a pod_run killed by the
         OOM killer or by the container teardown leaves that record as its final
-        word -- a partial result that does not look partial (principle 2).
+        word -- a partial result that does not look partial.
         """
 
         return Path(run_report_paths(self.report_path)[2])
@@ -695,8 +695,8 @@ def require_approved_submission_folder(plan: RunPlan) -> tuple[tuple[str, ...], 
     Returns the approved roots *and* the listed roots that did not resolve on
     this machine, both for the run report.  A pod has no local ``private/`` and
     a laptop has no mounted volume, so this gate almost always enforces a
-    shorter list than the policy names; the run report says which one it was
-    (principle 2), rather than leaving the narrowing to be inferred from a
+    shorter list than the policy names; the run report says which one it was,
+    rather than leaving the narrowing to be inferred from a
     refusal that did not happen.  A refusal names the policy file and says
     whose decision the missing root is.
     """
@@ -788,7 +788,7 @@ def _write_refusal(
     refusal raised before a plan exists) -- neither is a failure worth a
     caller's attention. Any other case returns a description of why the
     durable record could not be written, so the caller can say so: a refusal
-    that never reaches the volume is silent (principle 2) unless something
+    that never reaches the volume is silent unless something
     names that it happened.
     """
 
@@ -1183,7 +1183,7 @@ def main(
         # Named on every run, not only when every root is missing: the roots
         # this machine did not have are what makes the enforced list shorter
         # than the approved policy, and a reader of this report should not have
-        # to guess which (principle 2).
+        # to guess which.
         "skipped_storage_roots": list(skipped_roots),
         "hard_deadline": _stamp(hard_deadline),
         "started_at": started_at,
@@ -1257,7 +1257,7 @@ def main(
         "orchestrator_argv": command,
         # Named in the report, not only written beside it: a fetched report is
         # what a later session reads first, and a record it cannot name is a
-        # record nobody asks the volume for (principle 2).
+        # record nobody asks the volume for.
         "transcript_path": str(plan.transcript_path),
         "liveness_path": str(plan.liveness_path),
         "hold_path": str(plan.hold_path),

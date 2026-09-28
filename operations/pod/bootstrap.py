@@ -1104,7 +1104,7 @@ class SubprocessBootstrapActions:
         the two directories the sync fills -- the wheel cache and the venv --
         and say so in one sentence naming both figures. Without this the
         failure is uv's own ENOSPC part way through a ten-gigabyte download
-        that was already paid for, which is the shape principle 2 forbids: a
+        that was already paid for, which must never happen silently: a
         cost with nothing to show and no named reason.
 
         Measured on the container-local disk deliberately. The preflight's GPU

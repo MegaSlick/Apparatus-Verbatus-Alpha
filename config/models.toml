@@ -6,7 +6,8 @@
 # artifact — and nothing else may do it. Nothing in `common/chairs/` may rank,
 # prefer, select, substitute or fall back among chairs, revisions, recipes or
 # caches: resolution is by name, and the only outcomes are the named artifact or
-# a refusal (principle 1, read as ops rather than models).
+# a refusal — nothing picks, in the sense of choosing among stored copies rather
+# than among models.
 #
 # Roles are configuration keys, not concepts — `designator_structure`,
 # `attestator_1..n`, `perlector`, `secondary_proposer`, `annotator`. A role added

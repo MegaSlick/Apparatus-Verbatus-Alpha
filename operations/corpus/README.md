@@ -228,7 +228,7 @@ instruments this project already has — `operations/spike_perlector/normalizati
 `graphemic-v1` and `scoring.py`'s bare rapidfuzz — rather than a second scorer
 invented for this corpus.
 
-Why this respects PRINCIPLES.md, principle 1 ("The reader reads; nothing picks"):
+Why this is not a picker:
 it runs only after the pipeline's own output is sealed and cannot
 change; it never returns anything to the pipeline; it selects nothing about
 what the pipeline read, only which reference box a given output pairs with for

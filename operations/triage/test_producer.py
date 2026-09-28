@@ -43,7 +43,7 @@ def _tree_snapshot(root: Path) -> dict[str, str]:
     The confirmation and destination guards tell the operator that nothing was
     written. That is a statement about this directory, and until it is compared
     against the directory it is a statement the suite takes on trust -- exactly the
-    shape principle 8 refuses, since a commit that retained the authority record
+    shape an honest measurement refuses, since a commit that retained the authority record
     and then refused would still print it.
     """
     return {

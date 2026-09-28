@@ -360,7 +360,7 @@ def test_a_refusal_that_still_created_a_billing_pod_lands_its_close_report(
     moved between preview and create all refuse *after* a machine exists and
     bills; the launcher closes it itself and hands the report back on the
     result. Discarding that report was a path to a real charge with nothing on
-    the volume naming it -- the exact shape principle 2 refuses.
+    the volume naming it -- exactly the silent loss that is always refused.
     """
 
     clock, provider, runtime, subject = lifecycle(tmp_path)
@@ -601,7 +601,7 @@ def test_a_boot_abandoned_before_its_close_has_unknown_cost_and_names_its_pod_on
 def test_the_store_refuses_to_overwrite_a_cost_record_with_different_bytes(
     tmp_path: Path,
 ) -> None:
-    """Principle 4 at the money record: identical evidence re-lands, other bytes do not."""
+    """Evidence is never overwritten at the money record: identical evidence re-lands, other bytes do not."""
 
     store = StageCostStore(tmp_path / "volume")
     failure = StageCloseFailure("parish-17", "perlector", "grant-perlector", "fake-pod-1", "why")

@@ -236,7 +236,7 @@ def _content_addressed_report_path(path: Path, report_hash: str) -> Path:
 def atomic_create(target: Path, data: bytes) -> bool:
     """Create the manifest, or reuse an identical one. Never overwrite a different.
 
-    Principle 4: evidence is never overwritten. Identical bytes are a true no-op, so a byte-identical resubmission
+    Evidence is never overwritten. Identical bytes are a true no-op, so a byte-identical resubmission
     stays idempotent. Returns True when created, False when an identical file
     was reused; public because `operations/operator/ingest_worker.py` depends
     on exactly this three-way created/reused/`ExistingRecordRefusal` contract.
@@ -252,14 +252,14 @@ def atomic_create(target: Path, data: bytes) -> bool:
             raise ExistingRecordRefusal(
                 "something already exists at that path and could not be read as a regular "
                 "file, so it cannot be shown to seal these bytes. Evidence is never "
-                "overwritten (principle 4): it was not touched. This is not a report that "
+                "overwritten: it was not touched. This is not a report that "
                 "the submission changed — a symlink, a directory, or an unreadable entry "
                 "there is a different problem, and it needs looking at rather than a new "
                 "manifest path"
             ) from None
         raise ExistingRecordRefusal(
             "a sealed submission record already exists at that path and seals different "
-            "content. Evidence is never overwritten (principle 4): the existing "
+            "content. Evidence is never overwritten: the existing "
             "record was not touched, and a changed submission needs its own path"
         ) from None
     except OSError as error:

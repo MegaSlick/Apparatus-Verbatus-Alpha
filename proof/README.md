@@ -1,7 +1,7 @@
 # proof
 
-The small, reasonable test that must pass before anything scales — principle 10,
-given a home so it cannot erode into folklore.
+The small, reasonable test that must pass before anything scales, given a home
+so it cannot erode into folklore.
 
 Sample pages here must be public-safe from the day they are committed. They survive
 into the public release; anything personal never enters this directory.

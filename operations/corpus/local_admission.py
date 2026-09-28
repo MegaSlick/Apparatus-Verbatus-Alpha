@@ -334,7 +334,7 @@ def _decode_page(body: bytes, *, width: int, height: int) -> None:
     in, and a page that no longer decodes to them, or that carries an EXIF
     display rotation, would put every box on it in the wrong frame. There is no
     switch to skip this: a ledger built with the check off would be
-    indistinguishable from one built with it on (principle 8).
+    indistinguishable from one built with it on.
     """
     from PIL import Image
 

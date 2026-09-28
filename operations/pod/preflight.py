@@ -41,7 +41,7 @@ class _RuntimeProvenance:
     smoke result could therefore publish "real assembly measured on <card>"
     with no `nvidia-smi` read and no served engine anywhere in the run. A
     fabricated *page* was already caught by `_bound_receipt`; a fabricated
-    *claim about the hardware* was not (principle 8).
+    *claim about the hardware* was not.
 
     So the two facts now travel as an instance of this class, which is:
 
@@ -963,7 +963,7 @@ class PreflightRunner:
         if not smoke_receipts and self.selected_roles != frozenset():
             # An all-absent or fully-failed roster produced placements and no
             # measurements; green here would claim a serving assembly nobody
-            # smoke-read (principle 8).
+            # smoke-read.
             issues.append(
                 PreflightIssue(
                     "no-chair-verified",
@@ -1009,7 +1009,7 @@ class PreflightRunner:
         A constant `False` here, with every result called "fixture-only",
         would be a false record of a paid measurement on a rented card: the
         receipt would disown the one measurement it was bought to make
-        (principle 8 -- claims are made only about what was actually
+        (claims are made only about what was actually
         measured, and an understatement is as untrue as an overstatement).
 
         Both halves must hold, and each is a fact the layer that produced it
@@ -1035,7 +1035,7 @@ class PreflightRunner:
         says a chair *read its witness*, not that a process was started.  The
         colour of the report is deliberately not consulted -- a red preflight
         that nonetheless served one chair on a real card proved that much, and
-        hiding it would lose a measured fact behind a status (principle 2).
+        hiding it would lose a measured fact behind a status.
         """
 
         measured = profile.measured and _is_runtime_provenance(profile.provenance)

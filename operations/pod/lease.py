@@ -452,7 +452,7 @@ class LeaseStore:
         with self._lock():
             lease = self._require_owner_unlocked(owner_token)
             if lease.phase == "closed-verified":
-                # Verified close evidence is never replaced (principle 4): a
+                # Verified close evidence is never replaced: a
                 # later, lesser observation overwriting it would turn a proven
                 # close back into a question.  The unverified phase stays
                 # writable so reconciliation can still upgrade it.

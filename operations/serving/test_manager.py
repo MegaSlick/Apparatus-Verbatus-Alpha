@@ -995,7 +995,7 @@ def test_the_argv_carries_every_typed_profile_flag_and_the_audit_digests_that_ar
     Its `profile` block is read from the same object the argv was rendered
     from, so dropping `--max-model-len` from the renderer leaves the audit still
     reporting a context cap that bound nothing — a claim about something nobody
-    measured (principle 8). The three boolean flags are parametrized because
+    measured. The three boolean flags are parametrized because
     a swapped pair reads identically in a spot check.
     """
 
@@ -1142,8 +1142,8 @@ def test_an_endpoint_answering_as_a_different_model_never_becomes_ready(tmp_path
     """The response's own `model` field is checked, not just the advertised list.
 
     `/v1/models` can advertise the exact id while a different process answers.
-    A receipt naming a model that did not produce the answer is the provenance
-    defect principle 6 exists for.
+    A receipt naming a model that did not produce the answer is exactly the
+    provenance defect that traceability exists to catch.
     """
 
     chair = identity("reader", "reader-v1")
@@ -1613,7 +1613,7 @@ def test_the_default_package_inspector_binds_the_pin_to_the_launched_interpreter
     interpreter while that default inspector stayed in place, so
     ``_assert_runtime`` passed against an environment the engine never imports
     and the launch audit recorded ``runtime_packages.observed`` for the wrong
-    Python -- a measurement of something nobody ran (principle 6, principle 8).
+    Python -- a measurement of something nobody ran.
     """
 
     chair = identity("reader", "reader-v1")
@@ -2079,7 +2079,7 @@ def test_an_unobservable_child_reaches_the_refusal_by_name_not_as_an_empty_reaso
     `_attempt_cleanup` as it stands. Wrapping it as `ServiceStopError(str(error))`
     turned a message-less exception into `VLLM_STOP_FAILED: ` and nothing else --
     and the registry raises one refusal, so whatever is not in it is not
-    anywhere (principle 2).
+    anywhere.
     """
 
     chair = identity("reader", "reader-v1")

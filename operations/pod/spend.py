@@ -51,8 +51,8 @@ Those four values are all derivable from the price sheet, so they alone proved o
 the caller knew the price -- not that anyone had been shown a preview. The phrase
 therefore also carries a challenge that only a preview issued in this process can supply.
 
-What that does and does not establish, stated plainly because principle 8 forbids
-claiming more than was measured: it binds the confirmation to a preview produced in this
+What that does and does not establish, stated plainly because claims are made only
+about what was measured: it binds the confirmation to a preview produced in this
 run, and makes the phrase unguessable and single-use. It is still not proof of the
 project lead's identity -- nothing local can supply that -- so starting the pod still
 rests on the project lead's own permission in the session, with this gate refusing
@@ -250,7 +250,7 @@ class SpendAssessment:
     """What the notification seam actually did with each alert above.
 
     ``operations/notify/README.md`` requires a failed send to be said out loud
-    rather than swallowed, and principle 2 forbids losing it behind a
+    rather than swallowed, since nothing may be lost behind a
     successful result.  A warning is notification-only, so its delivery never
     changes ``allowed`` -- but whether the phone got it is part of the record.
     """

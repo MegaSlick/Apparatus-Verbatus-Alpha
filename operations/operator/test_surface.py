@@ -2735,7 +2735,7 @@ def test_exported_work_discloses_rather_than_silently_drops_malformed_rows():
     it is also not simply dropped, which would reopen the names-versus-total
     mismatch: the caller prints `len(page_records)`/`expected_acts` as the total beside
     these names, and naming fewer than that with no explanation is the same
-    silent-partial-result principle 2 refuses."""
+    silent partial result that is always refused."""
     pages, acts = _exported_work(
         [{"ordinal": 1}, {"no_ordinal": True}, "not-a-dict"],
         {"delivered": [{"act_key": "a1"}, {"no_act_key": True}], "non_delivered": ["not-a-dict"]},
@@ -3592,7 +3592,7 @@ def test_an_empty_armarium_is_refused_rather_than_bundled_as_complete(tmp_path: 
     wrote zero members, the writer returned normally, and `export` recorded
     `"state": "complete"` for a bundle carrying `run.json` and not one
     established reading. For a parish run that is every act in it missing, with
-    a receipt vouching for the absence -- principle 2's "'complete' is refused
+    a receipt vouching for the absence -- "'complete' is refused
     unless everything reconciles", through one more door.
     """
 
@@ -4520,7 +4520,7 @@ def test_an_evidence_bundle_short_of_run_json_refuses_rather_than_saying_complet
     `_write_base_armarium_bundle` selects `run.json` and `7_armarium` and wrote
     each with `if is_file() ... elif is_dir()`. An absent `run.json` matched
     neither arm and was dropped with no record at all, while the export receipt
-    still said `"state": "complete"`. Principle 2 is exactly this case: a partial
+    still said `"state": "complete"`. This is exactly that case: a partial
     result is visibly partial, and "complete" is refused unless everything
     reconciles.
     """
@@ -5663,7 +5663,7 @@ def test_fetch_run_brings_a_served_run_tree_home_and_names_its_logs_unverified(
     from a run that had already billed a card, with the receipt naming the log.
     The log is still not evidence the tree can check: no manifest records it and
     nothing digested it, so it comes home named as unverified side evidence
-    rather than counted among what was verified (principle 2 and principle 8).
+    rather than counted among what was verified.
     """
 
     volume, reader = _volume_run(tmp_path)

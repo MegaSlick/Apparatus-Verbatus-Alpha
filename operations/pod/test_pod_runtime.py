@@ -1413,7 +1413,7 @@ def test_a_price_that_moves_at_the_paid_call_is_named_on_the_green_launch(
     hourly ceiling bounds the difference. That is the honest limit of this gate.
     A green result reporting a price the operator never confirmed, under a detail
     that lists confirmation among the gates it passed, is that limit disappearing
-    behind a successful status (principle 2).
+    behind a successful status.
     """
 
     clock = Clock()
@@ -1693,7 +1693,7 @@ def test_a_preview_refused_at_the_floor_prints_no_phrase_that_still_authorizes_i
     printed = capsys.readouterr().out
     assert exit_code == 2
     # The refusal itself is still fully reported: withholding the phrase must
-    # not cost the operator the reason (principle 2).
+    # not cost the operator the reason.
     assert "at or below the hard floor" in printed
     assert json.loads(printed)["preview"]["confirmation_phrase"] is None
     assert CONFIRMATION_PREFIX not in printed
@@ -2147,7 +2147,7 @@ def test_a_failed_debounce_write_is_recorded_beside_the_delivered_warning(
 
     Losing the stamp is advisory -- it can cause one duplicate page, never a
     blocked action -- but a receipt reading only ``sent`` leaves that duplicate
-    with no recorded cause, which is the shape principle 2 refuses.
+    with no recorded cause -- a silent loss the pipeline never allows.
     """
 
     clock = Clock()
@@ -2557,8 +2557,8 @@ def test_the_projected_floor_comparison_is_exact_to_the_cent(
 def test_an_unobservable_balance_records_why_it_could_not_be_read(
     tmp_path: Path, provider_error: BaseException, expected: str
 ) -> None:
-    """ "Not observed" alone cannot be triaged. Principle 2 is about the reason
-    as much as the result: a missing configured source, a timeout, and a response
+    """ "Not observed" alone cannot be triaged. Losing nothing silently is about
+    the reason as much as the result: a missing configured source, a timeout, and a response
     nobody could parse call for three different actions, and the refusal has to
     say which one happened rather than swallowing the provider's own words."""
 
@@ -3705,9 +3705,8 @@ def test_billing_cutoff_margin_refuses_evidence_one_second_past_the_configured_b
 
 
 def test_a_billing_cutoff_arbitrarily_far_in_the_future_is_refused_not_verified() -> None:
-    """ "Charges captured through a named cutoff" is a claim about measured time
-
-    (principle 8); a cutoff nobody has reached yet is not that.
+    """ "Charges captured through a named cutoff" is a claim about measured time;
+    a cutoff nobody has reached yet is not that.
     """
 
     clock = Clock()
@@ -6074,7 +6073,7 @@ def test_a_failed_image_contract_is_a_named_red_repository_step(tmp_path: Path) 
 
 
 def test_a_passing_image_contract_is_recorded_in_the_repository_receipt(tmp_path: Path) -> None:
-    """What was verified is evidence, and evidence is written down (principle 2)."""
+    """What was verified is evidence, and evidence is written down."""
 
     commit = "f" * 40
 
@@ -7344,7 +7343,7 @@ def test_cli_adopt_refused_at_preview_for_a_real_pod_exits_three(
 
 def test_a_fallback_receipt_counts_the_close_attempts_already_made(tmp_path: Path) -> None:
     """A report-write failure after three close attempts must not file a
-    fallback claiming one: the earlier attempts would vanish (principle 2).
+    fallback claiming one: the earlier attempts would vanish.
     An unserializable close record makes the primary write fail while the
     serializable fallback still lands."""
 
@@ -8248,8 +8247,8 @@ def test_a_raising_notify_hook_still_prints_the_record_on_a_green_create(
 ) -> None:
     """`notify_hooks` promises never to raise, but this call site must not
     trust that promise on its own: a raising hook must not take the
-    post-action record -- naming the pod and lease -- down with it
-    (principle 2), and a green create must still exit 0.
+    post-action record -- naming the pod and lease -- down with it,
+    and a green create must still exit 0.
     """
 
     clock = Clock()
@@ -8359,8 +8358,7 @@ def test_a_provider_with_no_balance_seam_is_recorded_never_refused(
 
     A provider that cannot take the hook must not turn a green launch into a
     refusal -- but the launch record has to say the phone will not ring for a
-    balance reading, or the operator is relying on something that is not there
-    (principle 2).
+    balance reading, or the operator is relying on something that is not there.
     """
 
     clock = Clock()

@@ -673,7 +673,7 @@ class ServingManager:
             # interrupt is re-raised unchanged. If not, a possibly resident child
             # matters more, so the interrupt becomes a ServiceStopError; callers
             # that catch Exception then record it instead of unwinding, and the
-            # retained lease makes later starts refuse (principle 2).
+            # retained lease makes later starts refuse.
             cleanup_error = self._attempt_cleanup(process, endpoint)
             if cleanup_error is not None:
                 raise ServiceStopError(
@@ -1147,8 +1147,7 @@ class ServingManager:
         Stop, verify the endpoint is absent, then release the lease; releasing
         first would let another start run beside a live process. On failure the
         process and endpoint are kept for :meth:`recover_failed_start`. The error
-        is returned, not raised, so it joins the start failure in one refusal
-        (principle 2).
+        is returned, not raised, so it joins the start failure in one refusal.
         """
 
         try:
@@ -1247,7 +1246,7 @@ class ServingManager:
         """Report this chair unavailable, carrying every reason it is.
 
         `also` carries a cleanup failure beside the start failure: the registry
-        raises one refusal, and a reason left out of it is lost (principle 2).
+        raises one refusal, and a reason left out of it is lost.
         """
 
         error_code = getattr(error, "code", type(error).__name__)
@@ -1339,7 +1338,7 @@ def assert_no_discoverable_local_env(*, directory: str | Path | None = None) -> 
 
     ``directory`` defaults to the cwd, which the vLLM child inherits. A value
     injected from such a file (a Hub token, a proxy, an engine flag) is invisible
-    to the sealed configuration and the launch audit (principle 6).
+    to the sealed configuration and the launch audit.
     """
 
     target = Path(directory) if directory is not None else Path.cwd()

@@ -470,7 +470,7 @@ NESTED_LAUNCH_BOUND_FLAGS = ("--report-path", "--journal")
 """Nested bootstrap flags whose value the launch binds to this launch's token.
 
 Every durable record a pod writes onto a retained volume needs a name no second
-launch can land on (principle 4), and ``bootstrap_main`` refuses both of these
+launch can land on, and ``bootstrap_main`` refuses both of these
 on the pod when the token is absent from the name. ``launch`` binds each of
 them at sealing time and this module re-validates the result on the money path,
 so the binder and the validator read one list rather than drifting apart.
@@ -529,7 +529,7 @@ def _required_timer_arguments(
 
     A volume is retained across pods by design, so an unbound report path
     would let a second launch's bootstrap/close evidence silently replace the
-    first's (principle 4).  Once the launch token is sealed into metadata,
+    first's.  Once the launch token is sealed into metadata,
     the report path must carry that same token so two launches on one volume
     cannot collide.
     """
