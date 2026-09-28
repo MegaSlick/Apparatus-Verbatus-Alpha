@@ -104,7 +104,7 @@ def sealed_pages(context):
 
 
 def measured_page_bytes(tree, ordinal: int, page: dict) -> bytes:
-    """The page pixels this stage measures, digested as the bytes it measures (principle 8).
+    """The page pixels this stage measures, digested as the bytes it measures.
 
     Read one page at a time rather than accumulated with the census, because
     this stage measures EVERY sealed page of a shard and a shard runs to 1,000
@@ -240,7 +240,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             payload={
                 "page_ordinal": ordinal,
                 "ink_measurable": True,
-                # principle 6: the record names the paper value it ran under,
+                # The record names the paper value it ran under,
                 # where that value came from, the contrast this audit applied
                 # below it, and the digest of the sealed policy that decided
                 # the inference.

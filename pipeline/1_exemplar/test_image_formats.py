@@ -4,7 +4,7 @@ Every fixture here is built in memory by `synthetic_sources.py`, never a checked
 binary: the ingress guard only allows png/jpeg/tiff media types under
 `proof/fixtures/`, this module also needs to prove corrupt and PDF/GIF/HEIC bytes,
 and nothing here is register material in the first place — the synthetic-fixture
-rule (principle 12) applies to bytes that stand for a page, and these do not.
+rule applies to bytes that stand for a page, and these do not.
 
 The structural walkers distinguish malformed bytes from documented decoder limits.
 Their errors become closed admission alarms; no test below permits a format-policy

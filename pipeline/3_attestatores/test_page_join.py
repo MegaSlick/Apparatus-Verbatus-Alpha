@@ -166,7 +166,7 @@ def test_no_testimonium_is_sealed_before_the_declaration_is_validated():
     constraint is that the accessor runs on the near side of the write.
     A recording context answers it: the refusal must arrive with the publish
     list still empty, because a Testimonium sealed carrying a silently wrong
-    `page_witness` flag is immutable (principle 4) and nothing later can take
+    `page_witness` flag is immutable and nothing later can take
     it back.
     """
     published: list = []

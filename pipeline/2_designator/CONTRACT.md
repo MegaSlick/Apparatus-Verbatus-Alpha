@@ -155,11 +155,11 @@ never raises): `shared-detection` carries a real scanned region and its counts,
 like `detected`, but says the same region covers at least half of another
 proposed act too — the merged-boundary case the fixture path *refuses* at
 `_claim_structural_group` because there the declared rectangles are ground
-truth, recorded here on both acts as *not* independent corroboration
-(principle 8). `split-detection` is its mirror: two or more scanned regions
+truth, recorded here on both acts as *not* independent corroboration.
+`split-detection` is its mirror: two or more scanned regions
 each cover at least half of one rectangle, so the chair drew one act where the
 scan found several. It carries null bounds and zero counts, because naming one
-of the two would be a choice between them (principle 1) and a union of them
+of the two would be a choice between them and a union of them
 would be a region nothing measured. `model-only` is a rectangle no scanned
 region covers half of: null bounds, zero counts, the rectangle resting on the
 chair's proposal alone — a different fact from `split-detection`, and recorded
@@ -182,7 +182,7 @@ because a consumer must not have to parse `rationale` to tell the two apart.
 Recording a computed band as `detected_bounds` was the defect this closes, and
 it had two heads. The bands span the whole page by construction, so every
 declared act on a fallback-tiled page "matched" one — which published a
-rectangle nothing measured with a zero member count beside it (principle 8),
+rectangle nothing measured with a zero member count beside it,
 and silently disabled `_match_structural_group`'s missed-act refusal on exactly
 the pages where the structure pass found nothing. The refusal is unchanged
 wherever detection actually ran, which is the property
@@ -199,8 +199,8 @@ inside a single detected group both matched it, and each act-group recorded the
 merged rectangle as its own `detected_bounds` and the merged run as its own
 `body_member_count` — a claim that detection corroborated each act separately
 when detection found the boundary between them not at all. That is refused:
-the structure pass merging two acts is a real finding about the detector, and
-principle 8 does not allow it to be reported as two independent
+the structure pass merging two acts is a real finding about the detector, not
+something that may be reported as two independent
 corroborations. A brace-linked pair is unaffected — `grouping.group_page`
 returns two distinct groups sharing one anchor, so each act claims its own.
 `continuation.geometric_corroboration` is `grouping.find_continuation_candidate`'s
@@ -415,8 +415,8 @@ inverted scan `test_structure.py` uses (80% of the page at 30, 20% at 220) that
 divider is 68, so every pixel of the *dark paper* counts as ink: four fifths of
 the page reconciles as unclaimed ink and mints a held act over the background,
 at scale. A count taken at a guessed divider is a guess reported as a
-measurement, which is exactly principle 8's "a metric that cannot be measured
-is a failure, not a pass". The page's crops are still cut and still go
+measurement — precisely the defect measuring honestly rules out: a metric
+that cannot be measured is a failure, not a pass. The page's crops are still cut and still go
 downstream (`kind="page-fallback"`); what is refused is the claim to have
 measured them. The secondary scan is skipped on such a page for the same reason
 — it is the same threshold at a more sensitive margin, so at a guessed divider
@@ -533,7 +533,7 @@ the page's
 secondary pass is a single held `secondary-proposal` instead: the page
 rectangle, `secondary_candidate_count`, the bound it was judged against, the
 run's own sealed grouping digest, and no crop cut at all. Nothing is filtered
-out of the scan itself (principle 8) — `structure.secondary_scan` still
+out of the scan itself — `structure.secondary_scan` still
 returns everything it finds — and the candidates stay recomputable from the
 sealed page bytes. `secondary_enumeration` is `complete` or `withheld-page-held`
 on every one of these records, so "this page had no unclaimed candidate" and
@@ -556,7 +556,7 @@ structure pass scanned that page or was held on it, and if held, the reason
 code. Published for every sealed page rather than only the failing ones, because
 a page nothing scanned and a page nothing *tried* to scan would otherwise
 look identical — a reader could only infer the structural outcome from whether
-crops happen to exist, which is exactly the inference principle 2 refuses.
+crops happen to exist, which is exactly the inference this stage refuses to make.
 `state` says "scanned", deliberately not "marked-out": GLOSSARY's Designator
 entry already owns that verb for the stage as a whole, and a page can be
 scanned by the structure pass while marking out no act on it at all (no
@@ -581,7 +581,7 @@ between the page's own two grey-level population modes, so it cannot be
 recovered from the sealed policy and the page's dimensions the way every
 resolved threshold can. It is recorded because it is the divider under every ink
 count this stage publishes for the page, and a divider that is inferred and then
-dropped is the silent half of principle 2. All three are null wherever
+dropped would be silent loss. All three are null wherever
 `resolved_thresholds` is, and also on a page whose background could not be
 inferred at all — no scan ran there, so there is no margin it ran at.
 
@@ -801,7 +801,7 @@ every act on it until a reviewer looked. The custody row is held before the body
 is *one page's* outcome, not the run's: the client retained the bytes and the
 call record before custody was reached, so what a refusal costs is the binding
 that proves which call they came from — and a rectangle minted without it would
-be attributed to a call nothing ties it to (principle 6). The record still
+be attributed to a call nothing ties it to. The record still
 publishes what the body said, with `custody_problem` naming the refusal and
 both custody references null.
 
@@ -821,20 +821,20 @@ bytes — every answer embeds the serving session's `receipt_ref`,
 so a second ask would build different bytes under an artifact identity the
 store has already fixed, and the run would die on `IncompatibleReuse` one page
 into the resume. This is the Perlector's `_reading_already_sealed` and the
-Attestatores' `sealed_pairs`, for this stage; principle 4 is why all three
-exist. With every page already answered, **no chair is started at all**.
+Attestatores' `sealed_pairs`, for this stage; keeping the sealed record
+untouched is why all three exist. With every page already answered, **no chair is started at all**.
 
 Each fresh answer is published **inside** the asking loop, as it arrives, not
 after the loop: an interruption at page 900 of 1000 otherwise leaves nothing on
 disk, hides 899 answers that did arrive, and repeats every model call already
-paid for (principle 2, and a rented card's hours). The resume then asks only
+paid for — lost work, and a rented card's hours. The resume then asks only
 for the pages nothing answered.
 
 Because a resumed run may take more than one serving session to answer its
 pages, **provenance is per page**: each page's status and each crop cut from it
 carry the session that answered *that* page, read off the page's own answer
 record, rather than the whole run being restamped with whichever session ran
-last (principle 6). The `proposal-seal` carries one run-level block and takes
+last. The `proposal-seal` carries one run-level block and takes
 it from the first page's answer — the only value that is the same on every
 later resume, and therefore the only one under which the seal can republish
 byte for byte. The seal is not where a reader learns which session answered a
@@ -848,8 +848,8 @@ already holds — which include, on a resume, the page's own tiles from the firs
 pass. `_publish_page_fallback` therefore excludes the page's own fallback act
 from that clip; without it the second pass subtracts the tiles from themselves,
 mints no act, and seals a denominator missing a page whose crops are on disk —
-`complete` over a lost act, which principle 2 and goal 2 both forbid, and
-which the immutable seal would then make permanent. A `held` page cut nothing
+`complete` over a lost act, which goal 2 and the rule against losing anything
+silently both forbid, and which the immutable seal would then make permanent. A `held` page cut nothing
 and has nothing to reproduce. All three dispositions are resumed under test.
 
 What a resume does **not** check is that the build asking for the remaining
@@ -948,7 +948,7 @@ and it must list the row's exact rectangle — no nearest match.
 **Provenance on the live path** is `structure_pass.live_chair_record`: the
 chair's real serving receipt (never `_configured_chair_record`'s `fixture://`
 value — a declared moment on a path that called the chair would be a fabricated
-one, principle 6) plus `engine_call`, the closed `structure-chair-call.v1`
+one) plus `engine_call`, the closed `structure-chair-call.v1`
 posture `{schema, call_kind, decoding_policy = "structure",
 decoding_config_sha256}` that `validate_serving_provenance` binds to the run's
 sealed decoding digest. The secondary proposer is resolved on this path too and
@@ -1150,8 +1150,7 @@ measures and publishes it. `geometry_coverage_inputs` requires one
 act, and independently reconciles its residual components against the held
 residual acts in the seal. Those are measurements of the real page — total ink,
 claimed ink, the unclaimed remainder and its components — so nothing but this
-stage's own pass can supply them, and no test may compose them on its behalf
-(principle 8).
+stage's own pass can supply them, and no test may compose them on its behalf.
 
 ## Exit code
 
@@ -1161,7 +1160,7 @@ measured. Anything held — an act, a page, ink no authoritative crop claimed, o
 a non-authoritative rescue — exits `EXIT_HELD` (3), and so does a page whose
 background could not be inferred. The exit code is the one signal an operator
 reads without opening the tree, and a 0 over a hold is a partial result wearing
-"complete" (principle 2). Act holds are computed from the seal's own rows;
+"complete". Act holds are computed from the seal's own rows;
 secondary holds are computed from the rescue records published in the same pass
 because that evidence deliberately does not enter the authority. A recovery
 invocation cuts one requested crop and exits 0 or fails; it publishes no holds.
@@ -1171,7 +1170,7 @@ Nothing is pulled out: no act is held, every declared act on it is still cut,
 and its predetermined crops are cut and sent downstream — everything gets read
 every time, nothing gets pulled out or held. What is withheld is the *run's*
 claim to have completed, because
-conservation — the reconciliation principle 2 means by "unless everything
+conservation — the reconciliation behind "unless everything
 reconciles" — could not run on that page. Cutting a page into predetermined
 crops because the structure pass found nothing on it does **not** by itself hold
 the run: there the reconciliation ran and honestly found no ink, which is a
@@ -1239,9 +1238,9 @@ inside a proposal's own padding would count as recovery. It is scoped to the
 page being recropped, because a continuation region shares the act's identity
 and none of its geometry.
 
-The second refusal is what principle 7 ("Recovery exists for **completeness
-and coverage**") and ARCHITECTURE's "fallback or **expanded** recrop" have
-always said. Until it existed, `proof/skeleton_fixture.toml` declared act a1's
+The second refusal is what ARCHITECTURE's Recensor section — recovery
+restores coverage, never quality — and its "fallback or **expanded** recrop"
+have always said. Until it existed, `proof/skeleton_fixture.toml` declared act a1's
 recovery rectangle as `16,16,168,88` against a padded proposal capture rect of
 `12,15,188,99` — strictly inside it. The `review` scenario, the walking
 skeleton's single proof that bounded recovery works, spent its whole
@@ -1322,7 +1321,8 @@ what is computed.
 are aggregated per page.** Every residual component still enters the
 reconciliation regardless of size — "every residual region is accounted regardless
 of size" is spec 06's own
-sentence and a size floor in the accounting is principle 8's named defect, so
+sentence and a size floor in the accounting is exactly the defect honest
+measurement rules out, so
 `conservation.reconcile` returns all of them and no ink leaves the measurement.
 What is bounded is how many of them become *separate review items*. Components
 meeting either sealed `residual_aggregate_max_pixel_count` or

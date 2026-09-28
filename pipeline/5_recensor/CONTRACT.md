@@ -219,7 +219,7 @@ the act was measured as reconciled. The consequence, stated plainly so nobody re
 route as a measurement: on a real run this stage's review routing is silent about
 cross-act reconciliation, and the only cross-act anomaly computation that reaches the
 review record is the Perlector's Pass C verdict, through `audit_unresolved`. This is a
-disclosure (principles 2 and 8), not a defect this stage repairs: a reconciliation
+disclosure, not a defect this stage repairs: a reconciliation
 measure of its own would be a new instrument, and nothing here invents one.
 
 ## Real ingress
@@ -297,8 +297,8 @@ returned `no-readable-text`, and every witness that reached a completed-class
 outcome for that act independently reports `genuinely-empty` too, with the
 configured witness floor met and no chair left unresolved.
 
-This is **unanimity about an absence, never a selection among presences**
-(principle 1): nothing here chooses a reading, and no text is established
+This is **unanimity about an absence, never a selection among presences**:
+nothing here chooses a reading, and no text is established
 either way. The Perlector already made the direct claim; the witnesses only
 corroborate or contradict it. A single chair that actually read text refuses
 corroboration outright — the act falls through to the ordinary

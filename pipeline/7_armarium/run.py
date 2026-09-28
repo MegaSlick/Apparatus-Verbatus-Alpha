@@ -349,7 +349,7 @@ def logical_act_projection_entry(
     # Consult §5.2: "every member local act and every capture/page attribution
     # retained under that one logical entry."  Without it a clustered bundle
     # exports one act row whose member captures appear nowhere in it, and the
-    # second capture's local act is simply gone -- principle 2's silent loss at
+    # second capture's local act is simply gone -- silent loss at
     # the last boundary.  Every member is carried, in canonical set order; none
     # is promoted to the row's identity, which stays derived from
     # `logical_act_id` alone.  §7.15's duplicate export -- a member act beside
@@ -507,7 +507,7 @@ def logical_cross_capture_review_entry(
         )
     # `under_witnessed` is required, not defaulted: a None here would let a
     # reader confuse "the witness floor was met" with "nobody measured the
-    # witness floor" (principle 2). The image-local path indexes the key
+    # witness floor". The image-local path indexes the key
     # directly for the same reason.
     if (
         not isinstance(witness_coverage, dict)
@@ -1014,7 +1014,7 @@ def conservation_not_reconciled(
     read but could not reconcile -- `infer_background_evidence` refused, so conservation
     never ran on it. A page whose record is missing the field entirely is
     counted here too, and for the stronger reason: absent evidence may never
-    read cleaner than recorded unmeasurability (principle 8).
+    read cleaner than recorded unmeasurability.
     """
     unreconciled: dict[int, str] = {}
     seen_ordinals: set[int] = set()
@@ -1654,8 +1654,8 @@ def verify_established_record(
     # neither route passes back through `latest_per_chair`, so a Testimonium
     # appended after the reading was established was structurally invisible at
     # the point where the export decides to say `complete` -- and the sealed
-    # export went on saying it. Principle 2 is unconditional: `complete` is
-    # refused unless everything reconciles.
+    # export went on saying it. The rule against losing anything silently is
+    # unconditional: `complete` is refused unless everything reconciles.
     require_current_witness_basis(
         act["act_id"],
         reading,
@@ -1922,8 +1922,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # testimony content coverage carries no verdict -- the Perlector
             # declares the page unanchorable, so the diff has no span union to
             # take -- and an export that delivered the act while saying nothing
-            # about that would be a partial result wearing a complete one's face
-            # (principle 2). Indexed, not `.get`: every review shape this stage
+            # about that would be a partial result wearing a complete one's face.
+            # Indexed, not `.get`: every review shape this stage
             # can read writes the field, and a review without it is a stale or
             # foreign record this stage should refuse over rather than paper.
             #
@@ -2138,7 +2138,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # toward "a human must look") while every act reconciles for `run_aggregate`.
     # Reporting the aggregate there would have exited 0 and published an `export`
     # outcome of `delivered` over a bundle whose own `claims.status` said `partial`
-    # and named the held page -- principle 2's "a partial result is visibly
+    # and named the held page -- "a partial result always looks
     # partial" broken by the run's own two measurements disagreeing. No run this
     # repository can produce reaches that case today, because the two categories it
     # needs come from Designator `excluded` and Recensor `confirmed-blank` outcomes

@@ -116,7 +116,7 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # witness box (page 1, x 0..10, y 200..240) sits over no ink in
 # `proof.synthetic_pages.page_bytes(1)`. A witness's box is only a pointer, so
 # the ink map must confirm ink under it before it may spend a recovery or hold
-# an act (principle 1); here it cannot, so a2 goes straight to a hold without a
+# an act; here it cannot, so a2 goes straight to a hold without a
 # second recovery round.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
@@ -1738,7 +1738,7 @@ def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happ
     non-whitespace characters nothing accounted for. Now the observation is kept
     and the verdict is withheld: `shortfall: None`, the reason naming the cause,
     the chairs, the page and the count, restated on the act that spans the page
-    in its review, in the manifest entry, and in the export (principle 2). The
+    in its review, in the manifest entry, and in the export. The
     happy path still establishes both acts — this is a visible partial, not a
     hold — and the Perlector gap that would make the measurement real is filed.
     """
@@ -2525,7 +2525,7 @@ def test_a_conservation_residual_the_seal_never_minted_is_refused(tmp_path):
     be caught as unaccounted evidence, because a residual that never became a
     hold leaves no artifact behind. Before this check the run reconciled
     perfectly and exited `complete` over ink the stage itself measured and no
-    crop claimed, which is exactly what principle 2 refuses.
+    crop claimed, which is exactly what this pipeline refuses to allow.
     """
     root = tmp_path / "runs"
     _run_through_designator(root)
@@ -2810,7 +2810,7 @@ def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(ha
 
 
 def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happy_run):
-    """Principle 1 and goal 4: page two retains and audits the pixels a2 contributes there."""
+    """The no-picking rule and goal 4: page two retains and audits the pixels a2 contributes there."""
     _, tree = happy_run
     a2 = next(
         act
@@ -3100,8 +3100,7 @@ def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_wit
     act while its retained testimony is structured. That case is driven over real
     records in `pipeline/5_recensor/test_comparability_floor.py`, and the
     arithmetic in `common/contracts/test_contracts_algebra.py`; claiming this
-    scenario exercises it would report an instrument that did not run
-    (principle 8).
+    scenario exercises it would report an instrument that did not run.
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "structured-witness")
@@ -3550,7 +3549,7 @@ def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path)
     reference only where the stage's own derivation has already reached
     `no_readable_text` reads past the Recensor's finding everywhere else, so the
     contradiction resolves in favour of whichever claim the derivation reaches
-    first and leaves no trace of the other (principle 2).
+    first and leaves no trace of the other.
     """
     root = tmp_path / "runs"
     run_through_recensor(root, "r")
@@ -3713,7 +3712,7 @@ def test_the_run_authority_names_the_commit_the_code_ran_at(tmp_path):
 
 
 def test_a_run_whose_caller_names_no_commit_records_none_rather_than_a_placeholder(tmp_path):
-    """Principle 8: not measured is recorded as not measured, never invented."""
+    """Not measured is recorded as not measured, never invented."""
 
     root = tmp_path / "runs"
     journal = tmp_path / "timings.json"
@@ -4074,7 +4073,7 @@ def _pixels(bounds: dict) -> set[tuple[int, int]]:
 
 
 def test_the_recovery_recrop_actually_widened_the_crop_it_was_asked_for(review_run):
-    """Principle 7: "Recovery exists for **completeness and coverage**."
+    """Recovery exists for **completeness and coverage**, never quality.
 
     This scenario is the walking skeleton's single proof that bounded recovery
     works, so what it spends the `fallback_recrop` budget on has to be a crop
@@ -4281,7 +4280,7 @@ def test_recovery_stayed_inside_its_budget(review_run):
     # page_level_reread`, 1 + 1 in config/recovery.toml, separately bounded by
     # `absolute_cap = 3`. The exact value, not merely "within the cap": `<= 3`
     # is also satisfied by a budget that silently collapsed to 0 or 1, so it
-    # could not fail for the regression it names (principle 8).
+    # could not fail for the regression it names.
     assert len(requests) == 1
     allowed = [request["payload"]["budget_allowed"] for request in requests]
     assert allowed == [2], "the configured recovery budget is one recrop plus one reread"
@@ -4315,7 +4314,7 @@ def test_the_held_act_appears_in_the_review_output_and_forces_partial(review_run
 
 
 def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
-    """Principle 1: a witness reading is never itself an output. The established text
+    """A witness's reading is never itself an output. The established text
     must not equal any witness's reported words *by accident of the fixture*
     either, so the fixture deliberately makes two chairs disagree."""
     _, tree = review_run
@@ -4395,7 +4394,7 @@ def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_v
     assert testimonium["payload"]["format_capabilities"]["can_express_uncertainty"] is True
     # The counterfactual, on this run's own retained evidence: the exemption is
     # still there and still bites. The retained Testimonium carries the verbatim
-    # report and no derived view (principle 4), and on that record
+    # report and no derived view, and on that record
     # `is_comparable` is False — so what lifted it above is the view
     # `dissent_testimonia` builds, not a relaxed rule.
     assert "comparison_reported" not in testimonium["payload"]
@@ -5126,7 +5125,7 @@ def truncated_reading_run(tmp_path_factory):
 
 
 def test_a_reading_that_did_not_succeed_is_held_and_says_why(truncated_reading_run):
-    """Goal 1 is accuracy against the ink, and principle 2 refuses a loss hidden
+    """Goal 1 is accuracy against the ink, and nothing here allows a loss hidden
     behind a successful status. Text nobody successfully read is neither, so it is
     held — visibly, with the outcome that caused it named in the reason."""
     _, tree = truncated_reading_run

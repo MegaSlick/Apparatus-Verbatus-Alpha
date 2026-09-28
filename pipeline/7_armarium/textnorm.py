@@ -6,10 +6,10 @@ given Unicode database**: Python ships a different UCD per version (15.0 on
 ladder runs today), and characters assigned between them fold differently. Never establishes, replaces, compares, or selects a reading:
 callers must retain the literal Archetypus text beside any value returned
 here and label the value as derived; nothing this function returns may
-round-trip back into ``text`` (principle 5).
+round-trip back into ``text``.
 
 ``_SUBSTITUTIONS`` and ``_APOSTROPHES`` are adapted from ``local/textnorm.py``
-in the old repository (principle 12) because each entry records a fact about
+in the old repository because each entry records a fact about
 this project's actual source material, not something re-derivable from
 Unicode:
 

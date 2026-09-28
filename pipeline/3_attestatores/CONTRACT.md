@@ -93,7 +93,7 @@ parse-failure branch, so the two cannot drift apart again. An act-scoped chair
 is evidence of the same kind as a page-scoped one; a truncation fact the
 provider actually reported has no reason to survive on one path's summary and
 vanish from the other's; Recensor coverage reading a provider-truncated act as
-plain "failed" with no truncation flag was the silent loss principle 2 rules out.
+plain "failed" with no truncation flag was exactly the kind of silent loss this pipeline refuses.
 Regression coverage lives beside the page-path original:
 `test_cut_off_and_parser_failure_name_both_on_each_witness_path` and
 `test_live_attempt_from_response_parser_failure_without_cut_off_keeps_verbatim_reason`
@@ -176,7 +176,7 @@ line and substitutes `[0, 0, 1, 1]`; a `Blank-Page` block is retained without
 text or geometry where the vendor drops it; a nested `data-bbox` is recorded
 rather than stripped; and the block count the reader returns is reconciled
 against the raw HTML's own top-level `div` count as a finding. Those findings
-travel on the capture beside the reading (principle 2), because they are the
+travel on the capture beside the reading, because they are the
 whole of what the vendor's parser would have printed to a stdout nobody
 retains. A body the reader can place in no shape at all lands in the
 `unrecognized-shape` state naming what it saw in `outcome`, with its bytes
@@ -289,7 +289,7 @@ page text, and an act's anchor lines are the reported blocks with the largest
 positive intersection area against that act's sealed proposal regions on this
 page. Each block belongs to one act; an exact tie belongs to none, so no act
 gets text from a guessed block. This attaches text by geometry and never by
-choosing among witnesses (principle 1).
+choosing among witnesses.
 The act's `anchor_span` is the hull, in the markup-stripped normalized view
 `align_to_anchor` measures in, of those blocks' spans translated through
 `markup_text_view`'s offset map; `line_geometry` carries every owned
@@ -386,7 +386,7 @@ A fired deadline is `alignment-deadline-exceeded`, deliberately not `timeout`.
 The name has to say that this module's own backstop gave up, because nothing may
 read it as a measurement of the witness. The Recensor holds the act rather than
 counting the chair, which is the right direction -- no comparison was made, so
-none may be claimed (principle 8) -- but
+none may be claimed -- but
 `common/contracts/outcomes.py::witness_coverage` still counts it in the same
 `shortfalls["unaligned"]` bucket as a measured non-overlap. Separating the two is
 a change to a published coverage record and is not made here.
@@ -592,7 +592,7 @@ comparison is a Stage 2 arm rather than a guess made here.
 `witness_adapters.framing_for` resolves it
 once per pass from the sealed roster, `run.py` hands it to both live seams, and
 the resolved name is written onto every Churro capture as `view.framing`. This
-is not a picker (principle 1): it chooses the wording of a question before the
+is not a picker: it chooses the wording of a question before the
 page is read, never among readings, and it is recorded rather than inferred.
 Both framings carry their own measured prompt cost (27 and 29), because a
 framing whose cost nobody measured would be refused at the capacity check —
@@ -726,8 +726,8 @@ real span.
 12 asked this chair for block rectangles in a modified carry of a prompt the
 model was never trained on, and those rectangles were what attached it. The
 coordinate channel is retired with the prompt that asked for it, because a
-`box_1000` per block is a channel Churro-3B's weights were never taught to fill
-(principle 8). What closed the hold is U12, admitting the Perlector's existing
+`box_1000` per block is a channel Churro-3B's weights were never taught to fill.
+What closed the hold is U12, admitting the Perlector's existing
 `anchor-line` basis for a page witness whose alignment for an act is `aligned`
 with a located span.
 
@@ -744,10 +744,10 @@ asserted through the other.
 
 **What that does and does not claim.** One scripted run over a fixture whose
 page text is exactly its two acts reaches `delivered`. Nothing follows about a
-real page (principle 8). A real register carries headers, folio
+real page. A real register carries headers, folio
 numbers and marginalia no proposal covers; Churro will transcribe them, and that
-page will hold on content coverage. That is the rule working (goal 2,
-principle 2), not a regression to repair by loosening a floor.
+page will hold on content coverage. That is the rule working (goal 2; nothing
+lost silently), not a regression to repair by loosening a floor.
 
 **The offline posture still delivers, and the two diverge on one declared row.**
 `proof/skeleton_fixture.toml`'s `[[native_observation]]` for `attestator_3`
@@ -1215,7 +1215,7 @@ Designator-held act (no witness was shown a reading there), an absent chair
 (a dead chair asked again is not a second attempt), a chair with no first attempt
 to follow, a **page witness** (below), and an act whose **witness layer is
 closed** (below). The orchestrator never invokes it, and that is a decision
-rather than a gap: principle 7 gives recovery to *coverage* — a missed region,
+rather than a gap: recovery exists for *coverage* — a missed region,
 a cut crop, a continuation — while a witness reread recovers *priming*, so
 driving it from the recovery loop would make witness quality a loop variable.
 `RECOVERY_KINDS` is unchanged. This is an operator repair with a documented
@@ -1239,10 +1239,10 @@ one reading of the proposal, plus one for each recovery crop cut since
 Archetypus and Armarium each enforce). Witness testimony never moves it.
 
 That is a decision, not an omission. A Testimonium is a clue that primes a
-reading, never the ink the reading is established from (ARCHITECTURE;
-principle 1), so a second look by a witness does not make a second reading exist — and
-re-reading an act because a witness spoke again is the re-roll principle 7
-refuses. The alternatives were weighed and rejected: advancing the ordinal on any
+reading, never the ink the reading is established from (ARCHITECTURE),
+so a second look by a witness does not make a second reading exist — and
+re-reading an act because a witness spoke again is the re-roll recovery —
+coverage, never quality — refuses. The alternatives were weighed and rejected: advancing the ordinal on any
 new current evidence makes witness quality a loop variable at the four stages that
 decide whether text may be established, and deleting the reread outright leaves
 the whole pass as the only retry, which costs every chair on every act its
@@ -1259,7 +1259,7 @@ reading can be pending even on a closed act): it is that a witness is only ever
 shown the act's *original proposal crop* (`proposed_regions`; the Perlector
 refuses testimony naming a recovery crop), so a second look can only ever add
 priming, never coverage — and re-reading because a witness spoke again is
-principle 7's re-roll. Mechanically, the Perlector would also recompute the
+the re-roll recovery — coverage, never quality — refuses. Mechanically, the Perlector would also recompute the
 same ordinal, build a different payload, and meet its own immutable record. A held act's or an
 absent chair's `not-run` reading cites no testimony and closes nothing. A pass
 that only repeats attempts already sealed is a resume and is untouched.

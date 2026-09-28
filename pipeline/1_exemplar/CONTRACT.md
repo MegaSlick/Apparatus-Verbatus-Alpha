@@ -89,7 +89,7 @@ rate and approval reference, the Perlector instrument rate and approval
 reference, and `draft_fed`, which `real_run_policy_digest` closes under one
 name. A real run resumed with a different `--models-config` would otherwise
 publish stage-3 testimony naming one model and stage-4 dossiers naming another,
-every check green, which is principle 6 broken silently on the one path that
+every check green, which is provenance broken silently on the one path that
 will ever carry real material.
 
 **A real run created before these three names cannot be resumed under this
@@ -183,9 +183,9 @@ the 72-DPI floor stay in code. **300 rests on geometry, not on measured accuracy
 it was chosen from line pitch and x-height against
 real material, and because a 400-DPI page exceeds the reading models' own resize
 ceiling while costing 1.78x the pixels to render, store and keep until export. It has
-still never been checked against reading accuracy on an approved real sample, which
-principle 10 asks for before scale. The reasoning is in `config/pdf_render.toml`'s
-own header.
+still never been checked against reading accuracy on an approved real sample, which a
+small real test ought to settle before this scales further. The reasoning is in
+`config/pdf_render.toml`'s own header.
 
 ## Door `kind="admission"`
 
@@ -359,7 +359,7 @@ master's.
   into that raw frame space rather than silently applying EXIF orientation.
 - **The apply recipe's library versions are a record, not an enforcement.** The
   frozen `triage-raster-apply-v1` recipe is compared exactly; the Pillow, pillow-heif
-  and libheif versions beside it are provenance under principle 6 and are *not*
+  and libheif versions beside it are provenance and are *not*
   compared against the running host. Refusing on version drift would make every
   archived run unverifiable on the next routine upgrade. The byte comparison is the
   property; when it fails and the recorded versions differ from this host's, the

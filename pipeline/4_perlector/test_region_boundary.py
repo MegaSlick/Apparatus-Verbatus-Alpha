@@ -503,7 +503,7 @@ def test_a_non_attempted_page_testimonium_may_not_retain_a_provider_response(rea
     Stripping the image evidence satisfies the presented/observed/inputs rule,
     so without this refusal the record passes while still naming retained
     response bytes outside its own input set. Downstream coverage then reads a
-    served chair as a non-attempt (principle 2).
+    served chair as a non-attempt.
     """
     context, _ = real_region
     proposals = perlector.sealed_proposal_regions(context)

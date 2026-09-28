@@ -473,7 +473,7 @@ def test_recovery_replaces_the_current_partition_snapshot_without_erasing_histor
     assert before["self_hash"] != after["self_hash"]
 
     # The receipt is the one record replaced in place. The evidence it was
-    # derived from is append-only (principle 4) and must still be on disk, or
+    # derived from is append-only and must still be on disk, or
     # the round that produced the recrop could no longer be reconstructed.
     assert tree.resolve(requested["review_ref"]["relative_path"]).exists()
 

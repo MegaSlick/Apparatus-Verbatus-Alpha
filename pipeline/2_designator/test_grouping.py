@@ -815,7 +815,7 @@ def test_a_page_of_nothing_but_bezel_groups_to_nothing_so_the_fallback_grid_fire
 
 
 def test_the_partition_is_invariant_under_input_order():
-    """Principle 1: a partition, never an election.
+    """A partition, never an election.
 
     Each component is measured against the page it sits on, independently of
     every other, so no presentation order can change which side it lands on.

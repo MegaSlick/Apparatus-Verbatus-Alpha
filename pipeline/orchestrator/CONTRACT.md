@@ -33,7 +33,7 @@ then verifies its evidence before cutting. Screening the batch first keeps an un
 request from leaving half a round behind it.
 `report_undispatchable_recoveries` then names every refused act and request before the
 `ContractError` is raised — console output records the dispatch it would not
-make (principle 2); the durable evidence is the
+make; the durable evidence is the
 immutable request artifact and its `recovery-requested` review, which nothing here touches.
 
 The Recensor can publish a measured real-ingress recrop request. The shape check

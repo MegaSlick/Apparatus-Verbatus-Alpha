@@ -5,8 +5,7 @@ expected act exactly one outcome. Nothing it does touches a reading.
 
 **Recovery is bounded and recorded.** The budget comes from `config/recovery.toml`,
 every request is an artifact, and a spent budget holds the act for review. Recovery
-recovers coverage, not quality, so nothing is re-rolled until it looks better
-(principle 7).
+recovers coverage, not quality, so nothing is re-rolled until it looks better.
 
 **It does not select among witnesses.** Witness outcomes form a coverage record that
 can mark an act under-witnessed and the run visibly partial. On a Perlector
@@ -1468,7 +1467,7 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
                 f"a Designator region names source page {ordinal}, which the Exemplar "
                 "did not seal; a crop of unsealed pixels is invariant #10's imbalance"
             )
-        # Digest the bytes actually measured, not an earlier read (principle 8).
+        # Digest the bytes actually measured, not an earlier read.
         image_bytes = sealed_page_bytes(
             context.tree, page, what="the residual-ink check", refusal=FatalAccounting
         )
@@ -2391,7 +2390,7 @@ def continuation_unmeasured_reason(
     """Say, in one sentence, why a declared-unanchored act's uncovered text has no verdict.
 
     The observation is kept, but it is not a shortfall: by declaration no span of such an
-    act can enter the union (principle 8). With no aligned spans on the page this is the
+    act can enter the union. With no aligned spans on the page this is the
     page's `reason`; beside a measured verdict it rides as `unmeasured_reason`, scoped to
     those acts.
     """
@@ -2685,7 +2684,7 @@ def geometry_coverage_for(findings: dict[int, dict], ordinal: int) -> dict:
 
     The Designator publishes a record for every page it sealed, so a missing record
     means the page never reached it (a door refusal). Defaulting to
-    `ink_measurable: False` would restate a measurement nobody took (principle 8), so
+    `ink_measurable: False` would restate a measurement nobody took, so
     absence is recorded as absence.
     """
     return copy.deepcopy(findings.get(ordinal, NO_PAGE_CONSERVATION))
@@ -2708,8 +2707,8 @@ def testimony_content_for_continuation_pages(
 
     Without this, a continuation page's finding reached no review. These rows are not
     route inputs: their verdict is `None` where the Perlector declared the page
-    unanchorable, and routing on `None` would route an absence; they make it visible
-    (principle 2). Present and empty for a one-page act, so "no continuation" differs
+    unanchorable, and routing on `None` would route an absence; they make it visible.
+    Present and empty for a one-page act, so "no continuation" differs
     from "never derived".
     """
     ordinals = sorted(_region_page_ordinals(act_regions) - {primary_ordinal})
@@ -3060,8 +3059,7 @@ def write_partition_receipt(context, budget: dict) -> None:
     Manifests are a cache, checked against disk first; the denominator is rederived
     through `expected_acts`, and every record is read afresh. The receipt speaks only
     for the proposal-act and witness denominators at review time, not for the run's
-    final export: a page with no region cut on it lies outside every denominator here
-    (principle 2).
+    final export: a page with no region cut on it lies outside every denominator here.
     """
     for stage in (DESIGNATOR, ATTESTATORES, PERLECTOR, RECENSOR):
         if not context.tree.manifest_agrees_with_disk(stage):

@@ -229,7 +229,7 @@ def test_the_one_churro_parser_name_runs_and_no_other_does():
 
 
 def test_the_vendor_pin_travels_on_every_churro_capture_beside_the_model_identity():
-    """Principle 6's other half once the chair runs the vendor's own system.
+    """Provenance's other half once the chair runs the vendor's own system.
 
     Keyed on the bytes the view retained rather than on a framing name, so a
     record cannot name a pin for a prompt it did not send.
@@ -297,7 +297,7 @@ def test_the_grammars_own_findings_reach_the_capture_beside_the_repetition_scan(
 
     The retired `<output>` envelope still reads, so retained history parses --
     and it says, as a finding, that it arrived in a framing this chair no longer
-    sends (principle 2).
+    sends.
     """
     tree = _Tree()
     record = retain_model_view(

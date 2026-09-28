@@ -112,7 +112,7 @@ _FORBIDDEN_TEXT_KEYS = frozenset(
         "token",
         "tokens",
         # Not text: the retired picker's words for an elected witness
-        # (GLOSSARY, "Retired terms"). No stage elects a witness (principle 1).
+        # (GLOSSARY, "Retired terms"). No stage elects a witness.
         "chosen",
         "pivot",
     }
@@ -160,7 +160,7 @@ def _refuse_text_fields(value, path: str = "$", *, kind: str = "act-group") -> N
 # corroborates: `shared-detection` (a real region that also covers another act),
 # `split-detection` (several regions each cover half) and `model-only` (none
 # does). Every value without measured bounds carries null bounds and zero counts,
-# since nothing was measured (principle 8).
+# since nothing was measured.
 ACT_GROUP_EVIDENCE = frozenset(
     {
         "detected",
@@ -560,7 +560,7 @@ def page_pixels(
     """Decode one sealed page and infer its own background, with the evidence.
 
     Returns the full background evidence, not an integer, so an interior-mode
-    page's dark distribution is published rather than dropped (principle 2).
+    page's dark distribution is published rather than dropped.
 
     Decodes with `grayscale_rows`, not `decode_grayscale_png`, because the latter
     accepts only this project's own encoder output and a sealed photograph from
@@ -675,7 +675,7 @@ def _claim_structural_group(analysis: dict, group: dict, act_key: str, what: str
 
     Two acts inside one detected group means the pass missed the boundary
     between them; letting both claim it would record detection corroborating
-    each act when it found neither (principle 8). Brace-linked pairs are two
+    each act when it found neither. Brace-linked pairs are two
     groups sharing an anchor, so each still claims its own.
     """
     claims = analysis.setdefault("group_claims", {})
@@ -1815,7 +1815,7 @@ def _publish_page_fallback(
     act_id = derive_minted_act_id(page_id, "page-fallback", page_bounds)
     act_key = fallback_page_act_key(ordinal)
     # Exclude this act's own tiles, or a resumed pass would subtract them from
-    # themselves, mint nothing and seal one act short (principle 2).
+    # themselves, mint nothing and seal one act short.
     claimed = [claim for claim in claimed if claim["act_id"] != act_id]
     tiles = _unclaimed_fallback_tiles(analysis["groups"], claimed)
     if not tiles:
@@ -2366,8 +2366,8 @@ def initial_pass(context) -> bool:
     expected.extend(residual_rows)
     seal_inputs.extend(_evidence_of(residual_rows))
     _publish_proposal_seal(context, expected, seal_inputs, provenance)
-    # Any hold, secondary hold or unmeasured page withholds "complete"
-    # (principle 2). An unmeasured page has not reconciled, but its crops still
+    # Any hold, secondary hold or unmeasured page withholds "complete".
+    # An unmeasured page has not reconciled, but its crops still
     # go downstream; only the run's completion claim is withheld.
     return _initial_pass_has_holds(
         expected, failures, secondary_held=secondary_held, unmeasured=unmeasured
@@ -2379,7 +2379,7 @@ def _live_secondary_provenance(context) -> dict:
 
     Resolved every run, as in `secondary_provenance`. A configured secondary
     chair is refused: the live path serves none and may not write a receipt for
-    a call it did not make (principle 6).
+    a call it did not make.
     """
     resolved = context.registry.resolve(SECONDARY_PROPOSER_CHAIR)
     if isinstance(resolved, AbsentChair):
@@ -3184,7 +3184,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             "transform; a recovery must add coverage rather than re-read identical pixels"
         )
     # The same rule over pixels: a recrop inside what the act already covers,
-    # even jointly, adds nothing (principle 7). Refused rather than flagged,
+    # even jointly, adds nothing. Refused rather than flagged,
     # because it would spend the act's bounded recovery budget.
     covered = _coverage_on_page(existing_regions, page_ordinal, page_record["subject_id"])
     if not _uncovered_area(bounds, covered):

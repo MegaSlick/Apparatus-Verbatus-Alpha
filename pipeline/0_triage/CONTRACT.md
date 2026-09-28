@@ -123,7 +123,7 @@ the transcription source explicitly; it must not synthesize geometry.
 The seam builds the actor itself from the project's recorded `version`, and refuses a
 project that records none. A caller supplies the known corpus, batch mode and override
 flag, but no actor claim: a caller-supplied version would assert something about an
-artifact nobody read (principle 6), and a caller-supplied `kind` would let a
+artifact nobody read, and a caller-supplied `kind` would let a
 transcribed row claim to be natively produced, which is exactly what "distinguishable
 by actor alone" is for.
 
@@ -138,8 +138,8 @@ correcting or as a human whose identity the project file does not carry. The
 overriding person's own identity lands in Unit 4's decision-record shape, which is
 where the plan puts a manual crop.
 
-A human actor's `revision` is `null`, not a placeholder string. principle 6 binds the
-resolved revision of the *model* that produced a record; a person has none, and a
+A human actor's `revision` is `null`, not a placeholder string. The resolved revision
+belongs to the *model* that produced a record; a person has none, and a
 required string would only buy a value that protects nothing.
 
 ## Unit 6B producer and confirmation contract
@@ -349,8 +349,8 @@ rather than an edit, and both homes have one:
   Only the head, because every link contains its predecessor's members; withdrawing one
   from the middle would leave every successor asserting the captures it withdrew. A page
   corrected two links deep takes two retractions, and a page back to no link reads as the
-  empty list. The retracted link and its reason stay in the register as evidence
-  (principle 4), and `members_of` stops returning it (principle 2).
+  empty list. The retracted link and its reason stay in the register as evidence,
+  and `members_of` stops returning it.
 - **Door documents.** `manifest.json` and `clusters.json` are republished wholesale, not
   appended to, so the correction there is a producer pass without the wrong confirmation.
   Each confirmation has its own retained authority document; together with the register's

@@ -201,7 +201,7 @@ def _validate_actor(actor: Any) -> None:
     if not isinstance(actor["identity"], str) or not actor["identity"].strip():
         raise SchemaRefusal("triage actor identity must be a non-blank resolved name")
     if actor["kind"] == "human":
-        # principle 6 binds the resolved revision of the *model* that produced a
+        # The resolved revision belongs to the *model* that produced a
         # record. A person has no revision, and requiring a string here would only
         # buy a placeholder that protects nothing. Null says "no revision exists"
         # exactly, and refusing anything else keeps one spelling of that fact.
@@ -328,7 +328,7 @@ def validate_manifest(
     `clusters` is optional only because a manifest whose rows name no cluster has
     nothing to resolve. A manifest that *does* name one is refused without the
     corpus-scoped records rather than validated with its cluster references
-    silently unchecked (principle 2).
+    silently unchecked.
     """
     if (
         not isinstance(manifest, dict)
@@ -430,7 +430,7 @@ def transcribe_scantailor_project(
     that was.
 
     The actor is built here from the project's own recorded version rather than
-    taken from the caller.  principle 6 asks the record to protect the past, and
+    taken from the caller. The record protects the past, and
     a caller-supplied version is an assertion about an artifact nobody read; a
     caller-supplied *kind* would also let a transcribed row claim to be natively
     produced, which is precisely what the "distinguishable by actor alone"
