@@ -48,10 +48,10 @@ conflict.
   model host — read its official documentation, check the installed version and see how
   it is wired in here. A surprising metric or a failed command is a symptom to explain,
   not a verdict on the tool.
-- Graphify: `graphify update .` builds `graphify-out/` from code alone, and `query`,
-  `path`, `explain` and `god-nodes` read it. Never run `graphify .`, `extract`, `label`,
-  `cluster-only` or `/graphify`: they send documents to a model, and real register
-  material must not leave this machine.
+- Graphify: use only `graphify update .`, which builds `graphify-out/` locally, and
+  `query`, `path`, `explain` and `god-nodes`, which read it. Every other command can send
+  content to a model or the network, or write hooks, and real register material must not
+  leave this machine.
 
 ## How rules are written
 

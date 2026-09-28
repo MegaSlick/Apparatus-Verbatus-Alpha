@@ -40,7 +40,7 @@ verbatus = "operations.operator.entry:main"
 requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
-# Kept identical to the pin in .githooks/check-all.sh and .github/workflows/ci.yml.
+# The one uv pin: .githooks/check-all.sh and .github/workflows/ci.yml read it from here.
 # uv itself refuses to run against this project when the resolved binary does not
 # match, rather than letting a drifted uv silently resolve or sync something the
 # gate's own version check would have caught anyway.
