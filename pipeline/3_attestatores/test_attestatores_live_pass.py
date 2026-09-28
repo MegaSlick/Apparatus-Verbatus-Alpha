@@ -2937,6 +2937,27 @@ def test_live_page_witnesses_align_against_the_anchor_derived_from_chandras_own_
     assert dai_a1["alignment"] is None and dai_a1["attached"] is True
 
 
+def test_live_page_blocks_touching_neighbouring_regions_keep_disjoint_act_spans(live_run, tmp_path):
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    # Each reported block reaches across the gap into the other sealed act region.
+    crossing = CHANDRA_PAGE_ONE.replace("100 77 900 385", "100 77 900 481").replace(
+        "100 462 900 846", "100 365 900 846"
+    )
+    scripts["attestator_1"][0] = ScriptedAnswer(content=crossing, finish_reason="stop")
+    world = LiveWorld(live_run, tmp_path, scripts)
+
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+    entries = attachment_entries(RunTree(run_root, RUN_ID))
+    for act_key in ("a1", "a2"):
+        for chair in ("attestator_1", "attestator_3"):
+            [primary] = [entry for entry in entries[act_key][chair] if entry["page_ordinal"] == 1]
+            assert primary["attached"] is True
+            assert primary["span"] is not None
+            assert primary["alignment"]["status"] == "aligned"
+            assert primary["alignment"].get("reason") != "ambiguous-overlapping-act-alignment"
+
+
 def test_derived_chandra_anchor_locates_lines_by_geometry_and_names_what_it_cannot():
     """The derivation itself, over hand-built facts: geometry decides, text
     follows, and an act no block overlaps -- or whose blocks carry no
@@ -3000,5 +3021,51 @@ def test_derived_chandra_anchor_locates_lines_by_geometry_and_names_what_it_cann
             "start": len("first line "),
             "end": len("first line second line"),
             "line_geometry": [{"bbox": {"x": 0, "y": 60, "w": 100, "h": 50}}],
+        },
+    }
+
+
+def test_derived_chandra_anchor_assigns_largest_overlap_and_leaves_ties_unowned():
+    page_text = "FIRST\nTIED\nSECOND"
+    observed = [
+        {
+            "bounds": {"x": 0, "y": y, "w": 100, "h": height},
+            "bounds_source": "native",
+            "span": {"start": start, "end": end},
+        }
+        for y, height, start, end in ((0, 50, 0, 5), (40, 20, 6, 10), (50, 50, 11, 17))
+    ]
+
+    def region(y):
+        return {
+            "payload": {
+                "transform": {
+                    "source_page_ordinal": 1,
+                    "bounds": {"x": 0, "y": y, "w": 100, "h": 55},
+                }
+            }
+        }
+
+    anchors = attestatores.derived_chandra_anchor(
+        page_text=page_text,
+        observed=observed,
+        page_ordinal=1,
+        page_acts=[
+            {"act_id": "first", "page_ordinal": 1},
+            {"act_id": "second", "page_ordinal": 1},
+        ],
+        regions_by_act={"first": ([region(0)], None), "second": ([region(45)], None)},
+    )
+
+    assert anchors == {
+        "first": {
+            "start": 0,
+            "end": 5,
+            "line_geometry": [{"bbox": {"x": 0, "y": 0, "w": 100, "h": 50}}],
+        },
+        "second": {
+            "start": 11,
+            "end": 17,
+            "line_geometry": [{"bbox": {"x": 0, "y": 50, "w": 100, "h": 50}}],
         },
     }
