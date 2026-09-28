@@ -176,7 +176,7 @@ def test_required_provenance_and_closed_values_are_refused(field, value, match):
 
 
 def test_a_human_actor_is_recorded_without_inventing_a_revision():
-    # principle 6 binds a *model's* revision. A person has none, and the schema
+    # The resolved revision belongs to a *model*. A person has none, and the schema
     # says so with null rather than accepting a placeholder string.
     human = row(actor={"kind": "human", "identity": "operator", "revision": None})
     assert validate_manifest(manifest([human]))
@@ -695,7 +695,7 @@ def test_scantailor_transcription_reads_every_part_of_its_geometry():
 
 
 def test_scantailor_actor_revision_is_the_project_version_not_the_callers_claim():
-    # principle 6: the record protects the past. A caller-supplied version would
+    # The record protects the past. A caller-supplied version would
     # be an assertion about an artifact nobody read, and a caller-supplied kind
     # would let a transcribed row claim to be natively produced.
     transcribed = transcribe(
@@ -845,7 +845,7 @@ def test_the_row_vocabulary_still_covers_unit_20s_comparability_facts():
     # explicit non-condition allowlist (identity, geometry, provenance-of-row).
     # A new row field forces a decision here -- read it in the derivation, or
     # name it below as not describing the capture condition -- instead of two
-    # differently-captured rows quietly comparing equal (principle 8).
+    # differently-captured rows quietly comparing equal.
     assert TRIAGE_ROW_FIELDS - set(TRIAGE_FACT_FIELDS) == {
         "corpus_id",
         "source_frame_sha256",

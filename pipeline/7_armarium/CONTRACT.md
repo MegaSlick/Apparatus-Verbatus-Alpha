@@ -238,7 +238,7 @@ says whether the reading that left carries ink the Perlector knew was there and
 could not read. Neither that field nor the record's `annotations` layer used to be
 read here at all, so an act the pipeline itself knew was damaged was exported and
 aggregated exactly like a whole one, and the run reported `complete` with an empty
-reason list — principle 2 failing at the last boundary in a case expected to
+reason list — silent loss at the last boundary in a case expected to
 be ordinary ("many of our records are damaged").
 
 Both now travel, and neither is taken on trust:

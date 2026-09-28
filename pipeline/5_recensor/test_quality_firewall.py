@@ -232,8 +232,8 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     # `runpy` is on this list because it needs none of the others: one
     # `runpy.run_path("pipeline/4_perlector/run.py")` re-invokes the reading
     # stage in this very process, importing nothing banned, and the guard would
-    # have reported a pass over exactly the re-roll principle 7 forbids and
-    # this file exists to make impossible. `pty` reaches a shell the same way
+    # have reported a pass over exactly the re-roll recovery -- coverage,
+    # never quality -- forbids, and this file exists to make impossible. `pty` reaches a shell the same way
     # `subprocess` does.
     #
     # `asyncio` is here even though its subprocess routes all land on

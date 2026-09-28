@@ -107,7 +107,7 @@ def test_the_withheld_pass_b_prompt_carries_neither_the_draft_nor_its_fragment()
 def test_the_prior_draft_is_never_the_last_word_before_the_reader_is_addressed():
     """Ordering is part of what the prompt asserts. The neutral fragment sits
     immediately after the draft, so the draft is never the final instruction
-    the reader sees about it -- principle 1's 'no picker' in prompt bytes,
+    the reader sees about it -- 'no picker' in prompt bytes,
     not only in the dossier guard."""
     lines = prompts.build_prompt(
         "fake-perlector-v0", "perlector", _fed_dossier(), _sealed_protocol_config()
@@ -269,8 +269,8 @@ def test_unproven_real_perlector_reproduces_the_neutral_template_plus_the_pinned
 
 
 def test_the_pinned_transcription_instruction_names_no_preference_and_sets_no_floor():
-    """Principle 1 ('the Perlector never picks') and principle 8 ('the
-    instrument may not constrain what it measures'), enforced on the one
+    """'The Perlector never picks' and 'the
+    instrument may not constrain what it measures', enforced on the one
     sentence this recipe adds beyond the shared neutral structure."""
     lowered = prompts.TRANSCRIPTION_INSTRUCTION.lower()
     forbidden = (

@@ -3,7 +3,7 @@
 The record verifies its region evidence (digest against the sealed reference, decoded
 size against the claimed transform), records every region and testimonium it saw by
 reference, and never counts witnesses: dissent is computed after the reading is fixed
-and cannot reach back into it (principle 1).
+and cannot reach back into it.
 
 The sealed serving-recipe row picks the reader. A `kind = "vllm"` row for the Perlector
 chair selects `live_reader.VLLMReader`; any other row selects the fixture reader, whose
@@ -779,7 +779,7 @@ def sealed_proposal_regions(context) -> list[dict]:
 def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[dict]:
     """Every chair's current testimonium for this act: the latest attempt only.
 
-    Attempts are append-only (principle 4). Every record is validated, but only each
+    Attempts are append-only. Every record is validated, but only each
     chair's latest attempt is evidence, as in the Recensor's `chair_current_attempts`, so
     dissent, witness coverage and the recorded basis never see a superseded attempt.
     """
@@ -1430,7 +1430,7 @@ def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
 def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) -> list[dict]:
     """Give dissent a safe comparison view without changing retained testimony.
 
-    Dissent gets a copy; the retained Testimonium stays verbatim (principle 4).
+    Dissent gets a copy; the retained Testimonium stays verbatim.
 
     * A page witness gets this act's anchored, markup-stripped slice of its page
       reading from `act_attachment_view`; without one, `dissent_against` reports it
@@ -1441,10 +1441,9 @@ def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) 
 
     The capability says a chair can mark uncertainty, not which notation it uses. The
     bracket view fits the only act-scoped chair bound today, but another chair's markers
-    would survive and read as disagreement (principle 8).
+    would survive and read as disagreement.
 
-    Every view derives from the chair's own retained bytes, after the reading is fixed
-    (principle 1).
+    Every view derives from the chair's own retained bytes, after the reading is fixed.
     """
     views = attachment_view["comparison_views"]
     result = []
@@ -1476,7 +1475,7 @@ def verify_region(context, region: dict) -> dict:
 
     The digest catches changed bytes, decoding catches a non-image, and the dimensions
     catch a crop that does not match its transform. The cause goes into the refusal
-    text because `run_stage` prints only the refusal (principle 2); these messages name
+    text because `run_stage` prints only the refusal; these messages name
     ordinals and run-relative paths, never a submitted filename.
     """
     try:
@@ -1565,9 +1564,9 @@ def provenance_for(
 
     An outcome that attempted no reading (a held act, an absent chair) names what would
     have read and carries no receipt. An attempted reading re-verifies the snapshot when
-    it is made (principle 6). `receipt_ref` is the live chair's own receipt, passed only
+    it is made. `receipt_ref` is the live chair's own receipt, passed only
     in live mode: a fixture receipt beside a real engine's reading would put a declared
-    value where a measurement belongs (principle 8).
+    value where a measurement belongs.
     """
     if receipt_ref is not None and not attempted:
         raise SchemaRefusal(
@@ -1690,8 +1689,7 @@ def _start_live_reader(run: "_Pass") -> None:
     """Start this run's one chair and keep its reader and receipt reference on the pass.
 
     Every record the pass publishes names the receipt of the service that answered,
-    which `ChairClient.__enter__` has checked names this chair and revision
-    (principle 6).
+    which `ChairClient.__enter__` has checked names this chair and revision.
     """
     # Assigned before entering so `close` covers any failure from here on; closing an
     # unstarted client is a no-op.
@@ -1957,8 +1955,7 @@ def _reading_image_inputs(
 
 # Closed and checked before publication: a missing field (identity, dissent, regime) is
 # the failure a per-field type check never sees. Every record kind carries the doubt
-# report, because a doubt reported on an instrument call is a measurement too
-# (principle 2).
+# report, because a doubt reported on an instrument call is a measurement too.
 _READING_FIELDS: Final = frozenset(
     {
         "act_key",
@@ -2633,7 +2630,7 @@ def _assessed(result: dict[str, Any], *, text: str) -> dict[str, Any]:
 
     No `assessment` key means `not-assessed`: the producer never invents a report. A
     report that cannot anchor to the exact text becomes `malformed`, carrying the
-    refusal as its problem, never an empty confident list (principle 8).
+    refusal as its problem, never an empty confident list.
     """
     report = result.get("assessment")
     if report is None:
@@ -3731,11 +3728,11 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
         context, act_id, ordinal, act_key=act_key
     ):
         # Never asked again: a second live reading would differ and the store refuses
-        # it (principle 4).
+        # it.
         return None
 
     # A declared engine outcome stands in for a real engine's report, so it is valid
-    # only when no engine answers (principle 8).
+    # only when no engine answers.
     declared_failure = declared_reading_failure(context, act_key)
     if run.serving_mode == "live" and declared_failure is not None:
         raise ContractError(
@@ -4311,7 +4308,7 @@ def _next_attempt(context, act_id: str, regions: list[dict]) -> int:
     One reading of the proposal plus one per recovery region cut since, so a rerun that
     changed nothing recomputes the same ordinal and reuses the same bytes. Witness
     testimony is not counted: a Testimonium primes a reading and never makes a new
-    attempt (principles 1, 7).
+    attempt.
 
     Counted by the shared `recovery_region_count`: the Recensor, Archetypus and Armarium
     each require an act's reading count to equal its recovery crops plus one, and it

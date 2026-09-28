@@ -229,7 +229,7 @@ def test_the_ink_map_refuses_a_run_it_was_handed_no_sealed_page_of():
     """An empty map is not a mapped run: every sealed page has exactly one record.
 
     A stage that sealed a boundary over zero records would report a completed
-    ink map for a run it never measured, which is principle 2's silent loss
+    ink map for a run it never measured, which is silent loss
     wearing a completion seal.
     """
     refused = {"subject_id": "page-1", "outcome": "refused", "payload": {"ordinal": 1}}
@@ -264,7 +264,7 @@ def test_the_ink_map_declares_the_decode_route_it_actually_takes():
     The map and the Recensor's late reconciliation call the same
     `page_residual_ink` over the same `common/imaging.py` decoder, so a stage
     seal claiming a different route family for one of them is a false statement
-    about its own pass (principle 6) and makes the decode-environment census
+    about its own pass and makes the decode-environment census
     report drift that is not there.
     """
     from common.contracts.stages import RECENSOR
@@ -454,7 +454,7 @@ def test_the_ink_map_refuses_a_page_whose_verified_pixels_will_not_decode(monkey
     them. `run_stage` only catches `RunHalted` and `ContractError`
     (`common/stage.py`), so an uncaught decoder `ValueError` here would escape as
     an unhandled traceback with `seal_boundary`/`finish` never reached --
-    principle 2's silent loss with extra steps.
+    silent loss with extra steps.
     """
     page = _sealed_page(1)
 
@@ -655,7 +655,7 @@ def test_the_stage_proves_the_background_policy_bytes_against_the_runs_own_seal(
     ]
     background = context.published[0]["payload"]["background"]
     assert background["config_sha256"] == load_background_config()["config_sha256"]
-    # principle 6, as fields rather than as a sentence: the paper value, where
+    # Provenance, as fields rather than as a sentence: the paper value, where
     # it came from, the level this stage measured at, and the derived margin the
     # Designator will measure the same page at.
     assert background["background_level"] == 230

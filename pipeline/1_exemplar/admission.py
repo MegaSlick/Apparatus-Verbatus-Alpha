@@ -20,7 +20,7 @@ first of a multi-page TIFF; removing the action removes the failure rather than
 testing for it.  `render-pages` is restricted at load time to PDF alone for the
 mirror-image reason: routing a raster format through it would re-encode every
 ordinary single-page file for nothing, and a single-page TIFF that seals cleanly as
-its own bytes must keep them (principle 4 — the Exemplar is the immutable source).
+its own bytes must keep them — the Exemplar is the immutable source.
 """
 
 from __future__ import annotations

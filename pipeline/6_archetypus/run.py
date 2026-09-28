@@ -2,7 +2,7 @@
 
 The authoritative pipeline output — a machine reading, not truth. Every closed
 field set in this file exists so a producer cannot rebuild a second text field
-one name at a time (principle 5: one established text, projected identically);
+one name at a time (one established text, projected identically);
 `_REGION_FIELDS` closes the same way because a region is embedded whole and
 travels into the export whole.
 
@@ -488,7 +488,7 @@ def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
     Spec 10 test 3: an empty `text` with `established` status is refused at the
     schema. `no_readable_text` is a positive finding and
     requires its own evidence reference — an unlabeled empty string is never
-    proof that a page was blank (4c: principle 2's exact enemy).
+    proof that a page was blank (4c: exactly the silent loss this pipeline refuses).
     """
     if text_status not in TEXT_STATUSES:
         raise SchemaRefusal(f"text_status {text_status!r} is not one of {sorted(TEXT_STATUSES)}")
@@ -990,7 +990,7 @@ def _require_the_partition_this_reading_was_made_over(
     ``logical_act_id`` alone would make that provenance the caller's assertion
     rather than the reading's -- a row naming five captures stapled to a joint
     autopsia that only ever presented two, and an established record claiming
-    evidence its own reading never demonstrated (principle 8).
+    evidence its own reading never demonstrated.
 
     The dossier's ``cross_capture_autopsia`` closes it. It is a full
     ``cross-capture-autopsia.v1`` (``assemble_reader_input`` puts the validated

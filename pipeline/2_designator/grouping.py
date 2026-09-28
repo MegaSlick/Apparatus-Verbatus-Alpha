@@ -1,6 +1,6 @@
 """Act grouping: crops assemble into acts by geometry and structural cues only.
 
-Principle 1: nothing here scores, ranks or elects among candidate regions by
+Nothing here scores, ranks or elects among candidate regions by
 quality. Every decision is a deterministic partition or overlap test over
 fixed geometry -- a component belongs to a column because of where it sits, a
 body run splits because a boundary crosses it, an anchor attaches because
@@ -115,7 +115,7 @@ def partition_page_spanning(
     conservation record, and `conservation.reconcile` still counts every
     withheld pixel in `total_ink_pixel_count`. Each component is measured only
     against the sealed fraction, independently -- a deterministic partition,
-    never a comparison between components (principle 1).
+    never a comparison between components.
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no area to measure against")

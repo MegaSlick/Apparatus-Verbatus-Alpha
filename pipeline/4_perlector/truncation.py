@@ -89,7 +89,7 @@ class TruncationMeasure(TypedDict):
     recomputes `length_suspicious` rather than trusting it. The floor travels
     on the record and not only in the run's config_digest because
     configuration protects reproducibility going forward while the record
-    protects the past (principle 6): a reader with the record but not that
+    protects the past: a reader with the record but not that
     run's `config/perlector_protocol.toml` could otherwise only take the
     signal on trust.
     """

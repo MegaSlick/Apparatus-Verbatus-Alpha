@@ -25,7 +25,7 @@ there is no adapter-shaped capture to retain.
 extra decoding parameters. ``generation_declared`` retains the whole carried
 view as evidence; ``generation_sent`` allow-lists only the three fields vLLM
 does accept, so an unnamed carried key defaults to not being sent rather than
-leaking onto the wire (principle 3).
+leaking onto the wire.
 
 **Every chair's generation bound is decided by one rule, against the sealed
 row**: ``common/request_capacity.py::sendable_max_tokens`` -- ``min(the
@@ -55,7 +55,7 @@ references share one digest under two stage-owned paths.
 **Confirming a blank response**: ``genuinely-empty`` is confirmed only when
 the transport word is a recognized natural completion; an empty response
 whose stop word is a cut-off, unreported, or unrecognized is held as
-``failed`` instead (principle 8 forbids defaulting any of those to "finished
+``failed`` instead (none of those default to "finished
 naturally"). This applies on both the page-scoped and act-scoped paths alike.
 """
 
@@ -91,7 +91,7 @@ from operations.serving.client import ChairRequest, ChairResponse
 
 # The subset of `feeding.dai_generation()` vLLM's endpoint accepts as extra
 # decoding parameters. Everything else is retained evidence but never sent
-# (principle 3: never silently substitute our own reading of a vendor field).
+# (never silently substitute our own reading of a vendor field).
 _DAI_GENERATION_SENT_KEYS = ("repetition_penalty", "top_k", "top_p")
 
 
@@ -451,8 +451,8 @@ def _finish_reason_facts(response: ChairResponse) -> tuple[str, bool | None, boo
     The transport word travels verbatim, defaulted only to the literal absence
     marker, never to a meaning. ``completed``/``cut_off`` are ``True``/``False``
     only when the word positively says so; an absent or unrecognized
-    ``finish_reason`` leaves both ``None`` rather than guessing (principle 8:
-    an unread engine signal is never defaulted to a meaning).
+    ``finish_reason`` leaves both ``None`` rather than guessing (an unread
+    engine signal is never defaulted to a meaning).
     """
 
     finish_reason = response.finish_reason
@@ -789,7 +789,7 @@ def captured_page_attempt(
         view["generation"] = generation_declared
     if framing is not None:
         # By name, on the record, so one run's readings compare with another's
-        # without digesting two prompts to discover they differ (principle 6).
+        # without digesting two prompts to discover they differ.
         view["framing"] = framing
     # `served=True`: these bytes came off a chair that answered, so Chandra's
     # fixture-placeholder parser may not run (a served chair answering in a
@@ -815,7 +815,7 @@ def captured_page_attempt(
         # adapter but the two page-scoped ones, so a membership test here
         # would only be a second, quieter copy of that list -- and a third
         # page chair added above and forgotten here would then silently
-        # derive no geometry (principle 2). Both page-scoped adapters derive
+        # derive no geometry. Both page-scoped adapters derive
         # their block geometry in `run.py` from these same bytes rather than
         # from the parsed text (Churro reports none, but the bytes still
         # travel the same way as Chandra's).

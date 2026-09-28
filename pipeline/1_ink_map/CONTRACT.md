@@ -36,8 +36,7 @@ statistics.
 `payload["background"]` records the paper value, the branch it came from, the
 page's dark mode, the Designator's derived margin, this stage's own contrast,
 the ink threshold that produced every count on the record, and the digest of the
-sealed policy — so a reader can recompute the level the page was measured at
-(principle 6).
+sealed policy — so a reader can recompute the level the page was measured at.
 
 ## A page whose paper cannot be inferred is named, not zeroed
 
@@ -71,7 +70,7 @@ NOT YET MEASURED.** What is measured is the fixture: page 1 of
 21.8 KiB of JSON. That figure says nothing about a 300-DPI register page, whose
 larger raster and denser handwriting move both terms, and this stage's shard is
 described elsewhere in units of a thousand pages. Extrapolating from the fixture
-would be exactly the unmeasured claim principle 8 forbids, so the shard disk
+would be exactly the unmeasured claim we refuse to make, so the shard disk
 budget stays an open question against real material and is named here rather
 than assumed away.
 

@@ -535,7 +535,7 @@ def test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals(tmp_pa
         # compares the instrument against its own generator, so an edit that
         # made the generator directional would agree with its own output
         # everywhere. This is the one place the delivered text is held still
-        # from outside the instrument (principle 8).
+        # from outside the instrument.
         for reproof in request["reproofs"]:
             start = reproof["location"]["start"]
             end = reproof["location"]["end"]
@@ -623,7 +623,7 @@ def test_a_directional_or_empty_audit_request_is_refused_at_the_delivery_boundar
     it is stored. `payload.audit.reproofs` was already held to `neutral_prompt`
     exactly; the request now goes through the same screen, so a prompt telling
     the reader which way to argue cannot reach a reader by travelling on the
-    delivered copy instead of the sealed one (principle 8)."""
+    delivered copy instead of the sealed one."""
     request = audit.audit_request(
         act_key="a1",
         attempt_ordinal=1,
@@ -723,8 +723,7 @@ def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tm
     still sealed -- they are what the exhausted-cap uncertainty spans point at --
     but no reader is called at all. Recording that as an absent request is the
     difference between "a re-proof confirmed this span" and "nothing re-examined
-    it", which is exactly the distinction principle 8 asks a measurement to
-    keep.
+    it", which is exactly the distinction honest measurement requires.
     """
     exhausted = tmp_path / "exhausted.toml"
     exhausted.write_text(

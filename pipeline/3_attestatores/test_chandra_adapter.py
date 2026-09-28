@@ -413,7 +413,7 @@ def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary
     set without writing the new adapter's own branch would therefore publish a
     Testimonium whose retained view and parser name a chair that never produced
     those bytes -- the resolved identity and the record disagreeing, which
-    principle 6 does not permit. A comment said so and nothing checked it; this
+    provenance does not permit. A comment said so and nothing checked it; this
     is the check, and it fires where the set widens rather than at whatever
     later reads the misfiled record.
     """
@@ -536,7 +536,7 @@ def test_overlapping_native_blocks_are_both_retained_as_reported_geometry():
     A real page segmenter overlaps constantly: a heading inside its own column,
     a marginal name inside the act it belongs to. Nothing here may merge, drop
     or prefer between them -- the pipeline retains every reported box and lets
-    the partition record hold the competing pairings (principle 1).
+    the partition record hold the competing pairings.
     """
     chandra = load_stage("3_attestatores", "chandra")
     raw = (
@@ -1169,7 +1169,7 @@ def test_a_page_witness_that_mixed_reported_geometry_with_an_echo_is_refused_by_
     Both page adapters return either reported geometry or the no-geometry echo,
     never both, so this is unreachable today. Filtering a mix instead of refusing
     it would publish a page geometry derived from half a record and
-    indistinguishable from a complete one (principle 2), which is why the
+    indistinguishable from a complete one, which is why the
     behaviour is pinned rather than left to the adapters' current manners.
     """
     attestatores = load_stage("3_attestatores")
@@ -1269,7 +1269,7 @@ def test_chandra_asks_a_served_chair_in_the_carried_vendor_prompt_bytes():
 
     The digests are the ones `common/chandra_layout.py` seals at import against
     the vendor commit, restated on the record every reading carries, so a
-    Testimonium says which vendor pin its prompt came from (principle 6).
+    Testimonium says which vendor pin its prompt came from.
     """
     chandra = load_stage("3_attestatores", "chandra")
 
@@ -1515,8 +1515,7 @@ def test_an_unplaced_block_keeps_its_text_and_its_finding_and_reports_no_box():
     The vendor prints "defaulting to full image" and substitutes [0, 0, 1, 1] --
     a few pixels in the corner, not the full image its message claims. Here the
     text stays in the page reading, the geometry stays unresolved, the fact is a
-    finding on the retained capture, and no rectangle is published for it
-    (principle 2 and principle 8).
+    finding on the retained capture, and no rectangle is published for it.
     """
     chandra = load_stage("3_attestatores", "chandra")
     feeding = load_stage("3_attestatores", "feeding")
@@ -1568,7 +1567,7 @@ def test_a_degenerate_chandra_reading_is_a_finding_and_a_partial_stop_reason():
 
     `chandra/model/vllm.py` re-rolls a stuck page up a rising-temperature ladder
     under `_should_retry`. Re-rolling a reading until it stops looking stuck is
-    recovering quality, which principle 7 refuses to a recovery loop, so the
+    recovering quality, which recovery never does, so the
     ladder stays with the vendor's harness. What crosses is the observation:
     without it a page that degenerated but still ended under its bound would
     reach the Perlector as full testimony under `transport_stop_reason "stop"`.
@@ -1598,7 +1597,7 @@ def test_a_degenerate_chandra_reading_is_a_finding_and_a_partial_stop_reason():
     assert record["findings"][0]["inspected"] == "parsed-text"
     assert record["stop_reason"] == "partial-post-hoc-repetition-detected"
     # The bytes are untouched and the reading is untouched: the scan runs after
-    # capture and records, it does not gate (principle 3).
+    # capture and records, it does not gate.
     assert tree.read_bytes(record["raw_response_ref"]["relative_path"]) == body
     validate_native_capture(record)
 
@@ -1631,7 +1630,7 @@ def test_a_repeated_tail_under_an_unplaceable_shape_keeps_the_parse_outcome():
 
     A body this grammar could not place is the more load-bearing fact about the
     capture, so it is what the stop reason names; the repetition stays in
-    `findings` either way, so nothing is lost by the ordering (principle 2).
+    `findings` either way, so nothing is lost by the ordering.
     The raw bytes are what was inspected, because no parse produced a text.
     """
     chandra = load_stage("3_attestatores", "chandra")

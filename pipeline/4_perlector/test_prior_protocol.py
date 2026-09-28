@@ -633,7 +633,7 @@ def test_control_sampling_design_refuses_an_approval_for_the_other_experiment():
 def test_a_published_control_names_the_approval_record_it_was_drawn_under(
     published_primed_without_prior_payload, _sealed_protocol
 ):
-    """Principle 8: a sample of unknown design measures nothing. The control
+    """A sample of unknown design measures nothing. The control
     arm's design record must carry the *typed* reference to the one approval that
     authorized it -- the same binding the nuda arm carries, asserted against the
     record this fixture pre-placed rather than against whatever the payload says
@@ -803,7 +803,7 @@ def _write_protocol(tmp_path, **overrides):
 
 
 def test_a_pass_b_fragment_asserting_the_prior_was_wrong_is_refused(tmp_path):
-    """Principle 1's control (iterative_reader.md:46-51, principle 8): the protocol
+    """The no-picking control (iterative_reader.md:46-51): the protocol
     declaration cannot ship a fragment that forces a change, only one that
     reports the finding."""
     path = _write_protocol(tmp_path, pass_b_fragment="The prior reading was wrong; correct it.")
@@ -819,14 +819,14 @@ def test_a_pass_b_fragment_asserting_the_prior_was_wrong_is_refused(tmp_path):
         "The earlier draft is incorrect; rewrite it.",
         # Tells the reader to follow the draft: a picker under another name.
         "Trust the prior reading; reproduce it verbatim.",
-        # principle 8's own example of an instrument constraining its measure.
+        # An instrument constraining its own measure.
         "Rate your confidence no higher than medium.",
     ],
 )
 def test_a_pass_b_fragment_that_is_not_the_declared_neutral_form_is_refused(tmp_path, fragment):
     """Every one of these was ACCEPTED before the fragment was pinned: the
     phrase blacklist below catches five literal words and nothing else, so it
-    could not be the principle 1 / principle 8 control it was named as."""
+    could not be the no-picking / measure-honestly control it was named as."""
     with pytest.raises(ContractError, match="not the declared neutral form"):
         protocol.load(_write_protocol(tmp_path, pass_b_fragment=fragment))
 

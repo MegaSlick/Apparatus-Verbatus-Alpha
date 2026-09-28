@@ -568,7 +568,7 @@ def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(
 ):
     """One request per reader call, and one reader call per arm.
 
-    Principle 3: the pipeline does not gate model behaviour. A retry, a second
+    The pipeline does not gate model behaviour. A retry, a second
     sample, or a re-ask on a disappointing answer would all show up here as more
     requests than the pass has arms.
     """
@@ -738,7 +738,7 @@ def test_an_invalid_failed_record_is_refused_before_immutable_publication(
 def test_a_resumed_live_pass_never_asks_the_chair_about_an_act_already_sealed(
     live_run, tmp_path, monkeypatch
 ):
-    """Principle 4: a live chair cannot reproduce immutable bytes.
+    """A live chair cannot reproduce immutable bytes.
 
     A fixture resume republishes byte-identical readings and the store reuses
     them. A live one cannot, so an act already sealed at this ordinal is left
@@ -1798,7 +1798,7 @@ def test_a_zero_length_anchored_span_does_not_attach_a_page_witness(monkeypatch)
     The trivial attach a genuinely empty page reading gets carries
     `anchor_basis: "act-anchor"` with a zero-length `witness_span`. Reading the
     anchor basis alone would attach it and count a chair toward the floor for a
-    slice with no characters in it (principle 8); the span's length is what
+    slice with no characters in it; the span's length is what
     separates the two.
     """
     context, act, testimonia, bases = _primary_context(
@@ -1958,7 +1958,7 @@ def test_an_uncertainty_declaring_act_chair_is_given_a_bracket_stripped_view():
     rows = perlector.dissent_testimonia(testimonia, {"comparison_views": {}})
     assert rows[0]["payload"]["comparison_reported"] == "Marie  Dupont"
     # The retained record is untouched: the copy exists so the verbatim bytes
-    # stay verbatim (principle 4).
+    # stay verbatim.
     assert testimonia[0]["payload"] == {
         "chair": "attestator_2",
         "payload": "Marie [UNCERTAIN] Dupont",

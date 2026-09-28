@@ -263,7 +263,7 @@ class ArmariumProjection:
     ink_map_pages: tuple[dict[str, Any], ...] = ()
     # A clustered run's proposal-seal row count. There `expected_acts` counts
     # logical acts, so the seal's own count travels beside it for a reader to
-    # reconcile against the seal (principles 2 and 8). `None` for an image-local
+    # reconcile against the seal. `None` for an image-local
     # run, where the two counts are equal.
     local_proposal_rows: int | None = None
     # `None` means the basis is missing, not that everything was measured;
@@ -861,7 +861,7 @@ def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -
 
 
 # A run can be `DELIVERED` and `complete` over instruments that never measured.
-# Every bundle names them (principle 8), with each status derived from the run's
+# Every bundle names them, with each status derived from the run's
 # own records so a run that measured reads differently from one that did not.
 NOT_MEASURED_SCHEMA: Final = "armarium-not-measured.v1"
 NOT_MEASURED_BASIS_SCHEMA: Final = "armarium-not-measured-basis.v1"
@@ -1354,7 +1354,7 @@ def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
 
 
 def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
-    """Package integrity and principle 5's one text, in a single extraction.
+    """Package integrity and "one text everywhere", in a single extraction.
 
     The manifest asserts ``canonical_text.identity_verified_across``, and this is
     the last gate before a recipient, so the publish path checks that claim as
@@ -1380,7 +1380,7 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
 
     Uncertainty, text status and transcription annotations are compared with the
     text, so formats that disagree about whether an act is damaged fail as a
-    diverging literal would (principle 5).
+    diverging literal would.
     """
     projections: dict[str, dict[str, tuple]] = {}
     selected_literal_formats = [name for name in _LITERAL_TEXT_FORMATS if name in formats.formats]
@@ -1571,7 +1571,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
     """Close the ink-map source rows before anything derives a hold from them.
 
     Only pages the Ink Map flagged are re-measured; the rest carry
-    `remeasured: None` rather than zeros nobody measured (principle 8). An
+    `remeasured: None` rather than zeros nobody measured. An
     `ink-not-measurable` page stays in the rows because it is in the page census,
     and can never be held because it has no counts.
     """
@@ -1717,8 +1717,7 @@ def _act_partition_claim(
     """The act denominator, under the name of the thing that was actually counted.
 
     A clustered run counts logical acts and carries the seal's row count and the
-    membership beside it, so a reader can reconcile the bundle with the seal
-    (principle 8).
+    membership beside it, so a reader can reconcile the bundle with the seal.
     """
     claim = {
         "denominator": _ACT_PARTITION_DENOMINATOR,
@@ -1757,7 +1756,7 @@ def _validate_logical_act_conservation(
 
     Refuses a logical act exported beside its own members (the same ink counted
     twice), and a member that reached no logical act, which would vanish because
-    the logical denominator is smaller than the seal's row count (principle 2).
+    the logical denominator is smaller than the seal's row count.
     """
     logical_rows = [act for act in projection.acts if "logical_membership" in act]
     if not logical_rows:
@@ -1920,7 +1919,7 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
         if detail["acts_assessed"] == 0 and detail["acts_with_uncertain_spans"] == 0:
             return "declared-unproduced"
         # Partly measured: some readers assessed, or a sealed cap of 0 let the
-        # exhausted-cap projection mint spans with no reader assessing (principle 8).
+        # exhausted-cap projection mint spans with no reader assessing.
         return "not-measured"
     if instrument == _GEOMETRY_CALIBRATION:
         return (
@@ -2148,7 +2147,7 @@ def _require_damage_record(
     """Recompute a delivered act's text status from the layers carried beside it.
 
     A carried status is never believed: a package must not say `established` over
-    an act whose own gap list records unread ink (principle 2).
+    an act whose own gap list records unread ink.
     `annotations == []` means no damage was marked; `None` means no record.
     """
     # Type before membership, so an unhashable JSON value is refused, not raised.

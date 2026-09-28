@@ -913,7 +913,7 @@ def provenance_for(
 
     A live chair already published its receipt when serving started, so the live
     pass passes ``receipt_ref``. Without it, an attempted fixture chair gets a
-    receipt that says `fixture://` (principle 8).
+    receipt that says `fixture://`.
     """
     if receipt_ref is not None and not attempted:
         raise ContractError(
@@ -1864,7 +1864,7 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
     # resume must match, or the rebuilt page record differs from the sealed one.
     served_by_a_chair = payload.get("serving_call_ref") is not None
     # Gated on outcome, not `recordable`, which is also true for a parsed but
-    # cut-off `failed` response that carried no geometry (principle 4).
+    # cut-off `failed` response that carried no geometry.
     parsed_into_a_payload = _retains_chandra_observation_payload(record)
     if raw_response_ref is not None:
         validate_raw_response_ref(raw_response_ref)
@@ -2196,7 +2196,7 @@ def _fixture_raw_response_attempt(
         raise SchemaRefusal("fixture raw_response is not text encoding retained response bytes")
     raw_response = response["raw_response"].encode("utf-8")
     # This is Chandra's recipe; any other adapter's bytes would be filed under
-    # Chandra's model boundary (principle 6).
+    # Chandra's model boundary.
     if witness_adapter != "chandra.v1":
         raise SchemaRefusal(
             f"fixture raw_response for adapter {witness_adapter!r} would be "
@@ -2223,7 +2223,7 @@ def _fixture_raw_response_attempt(
     if parsed["state"] == "parsed" and response.get("payload") != native_payload:
         raise SchemaRefusal("fixture Chandra raw response text differs from its declared payload")
     # Health is kept as `prepared_response` computed it; recomputing it from a
-    # `None` payload would erase an unrecordable channel (principle 2).
+    # `None` payload would erase an unrecordable channel.
     native_payload, witness_reported, capabilities, health, recording_problem = prepared_response(
         {**response, "payload": native_payload}
     )
@@ -2532,7 +2532,7 @@ def publish_attempt(
     """Seal one immutable Testimonium. The only write path for an attempt.
 
     ``live`` only stops fixture `[[native_observation]]` rows standing in for the
-    geometry a live response carried (principle 8).
+    geometry a live response carried.
     """
     # First, so a bad roster refuses before any record is built.
     page_witness_chairs = declared_page_witness_chairs(context)
@@ -3053,7 +3053,7 @@ def _blank_reading_alignment(
         "anchor_chair": anchor_chair if located else None,
         "anchor_span": {"start": start, "end": start},
         "witness_span": {"start": 0, "end": 0},
-        # Recorded anyway, so "no match" never looks like "not measured" (principle 2).
+        # Recorded anyway, so "no match" never looks like "not measured".
         "anchor_line_match": {
             "anchor_characters": act_anchor["end"] - start if located else 0,
             "matched_characters": 0,
@@ -3442,7 +3442,7 @@ def publish_page_testimonia_and_attachments(
             )
             reading = outcome in WITNESS_READING_OUTCOMES
             # Whether a response arrived, judged by retained bytes: an unparsable
-            # live body arrived (principle 2), but a request refused before
+            # live body arrived, but a request refused before
             # sending is also filed as a capture and nothing arrived for it.
             arrived = native_capture is not None or (
                 page_captures is not None
@@ -3592,7 +3592,7 @@ def publish_page_testimonia_and_attachments(
             page_observations[(page_ordinal, chair)] = observed
         if page_captures is not None:
             # Live anchors come from the anchor chair's own served response,
-            # never fixture rows (principle 8).
+            # never fixture rows.
             anchor_page_text = page_texts.get((page_ordinal, anchor_chair))
             if page_outcomes.get((page_ordinal, anchor_chair)) == "read" and isinstance(
                 anchor_page_text, str
@@ -3837,7 +3837,7 @@ def _page_capture_from_record(
         and _retains_chandra_observation_payload(record)
     ):
         # Parse state alone is too wide: a parsed but cut-off `failed` body
-        # carried no geometry bytes originally (principle 4). The bytes are
+        # carried no geometry bytes originally. The bytes are
         # re-read and digest-checked because the page geometry is re-derived
         # from them on republish.
         reference = validate_raw_response_ref(capture["raw_response_ref"])
@@ -5261,7 +5261,7 @@ def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what
             "by a crop: new ink must route through a Recensor recovery request, which mints "
             "a region and moves the reading ordinal. New testimony after a reading is "
             "refused; new INK after a reading is a recovery request. Re-asking a witness "
-            "because it spoke again is the re-roll principle 7 refuses"
+            "because it spoke again is the re-roll recovery -- coverage, never quality -- refuses"
         )
 
 
@@ -5474,7 +5474,7 @@ def _run_full_pass(
             ordinal,
             declarations,
             index,
-            # A live chair cannot reproduce immutable bytes (principle 4).
+            # A live chair cannot reproduce immutable bytes.
             resume_incomplete_pass=bool(live_chairs) or not has_prior_boundary,
             resolve=pending_live_attempt if live_chairs else None,
             fixture_declared=not real,

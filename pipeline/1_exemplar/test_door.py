@@ -640,8 +640,8 @@ def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp
     """The offset-0 TIFF gap: a real file must never vanish from the census.
 
     An offset-0 TIFF must not fan to zero ordinals -- not admitted, not refused,
-    absent even from the run's source_manifest, exactly the silent loss
-    principle 2 forbids. The file beside it must be unaffected: per-file, never
+    absent even from the run's source_manifest, exactly the kind of silent loss
+    nothing here allows. The file beside it must be unaffected: per-file, never
     per-folder.
     """
     import struct as _struct
@@ -807,7 +807,7 @@ def test_a_single_page_tiff_is_sealed_as_its_own_untouched_bytes(tmp_path):
     """The common TIFF is one image, and the Exemplar seals the submitted bytes.
 
     A TIFF is *usually* one page, unlike a PDF, and re-encoding an ordinary scan on
-    the way in would spend the Exemplar's immutability (principle 4) for nothing.
+    the way in would spend the Exemplar's immutability for nothing.
     The check that matters is the last assertion: the stored blob is byte-identical
     to what was submitted, not merely an image of the same size.
     """
@@ -1878,8 +1878,7 @@ def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
     path did not, so two real submissions selecting different
     `--serving-recipes-config` files produced the same digest. `RunTree.create`
     saw no change, the same run id was reusable across them, and nothing in the
-    authority could afterwards say which catalogue the run had been served from
-    (principle 6).
+    authority could afterwards say which catalogue the run had been served from.
     """
 
     models = _fixture_models()
@@ -2813,7 +2812,7 @@ def test_a_ledgered_file_absent_from_the_folder_keeps_its_ordinal_and_is_named(
     A file the sealed ledger names and the folder no longer holds is the door's
     ordinary per-source alarm: it keeps its ordinal, is refused by name, and the
     source beside it still admits. It may not vanish into a smaller corpus that
-    later looks complete (principle 2), and it may not abort the whole census.
+    later looks complete, and it may not abort the whole census.
     """
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png(4, 3), "FS-2.png": png(5, 5)}
@@ -3023,7 +3022,7 @@ def test_two_identical_broken_sources_are_each_told_the_truth_about_themselves(t
 
     The duplicate reason says "identical content already admitted as source-N". If a
     second copy of a corrupt file were given that reason, the record would assert an
-    admission that never happened (principle 8), and the census would read "one
+    admission that never happened, and the census would read "one
     corrupt file, one duplicate" when the truth is two corrupt files, each needing
     the same fix.
 
@@ -3285,7 +3284,7 @@ def test_a_wholly_refused_door_does_not_publish_a_completion_seal(tmp_path):
 def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(tmp_path):
     """A file that vanishes at expansion time never gets a refusal record at all.
 
-    principle 2: nothing is lost silently. A PDF too damaged to count pages cannot
+    Nothing is lost silently. A PDF too damaged to count pages cannot
     be fanned out, so it takes one slot and is refused by name in it — the
     alternative is a submitted file with no outcome anywhere in the run.
     """
@@ -3416,7 +3415,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'models' entry bound to the roster digest; without it a real run resumed under a "
         "moved chair revision publishes stage-3 Testimonia naming one model and stage-4 "
-        "dossiers naming another (principle 6)"
+        "dossiers naming another"
     )
     formats_digest, _formats = door.bind_armarium_formats(door.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH)
     assert sealed.get("armarium-formats") == formats_digest, (
@@ -3663,7 +3662,7 @@ def test_a_real_admission_names_the_data_handling_policy_that_governed_it(tmp_pa
 
     The run now names it. Not an approval record: nothing here refuses a submission
     for want of a sign-off, and the per-run approval requirement stays cut, not
-    reinstated. This is provenance, which principle 6 asks travel with the record.
+    reinstated. This is provenance, and it travels with the record.
     """
     files = {"FS-9001.png": png(4, 3)}
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
