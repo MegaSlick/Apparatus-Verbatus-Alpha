@@ -908,7 +908,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "",
         "# churro-truncation isolates the visibly cut, still-parseable response:",
         "# the transport said `length`, the text is kept, truncated is true, and",
-        "# nothing completes or re-asks it (principle 3).",
+        "# nothing completes or re-asks it.",
         "[[scenario]]",
         'name = "churro-truncation"',
         "recover_acts = []",

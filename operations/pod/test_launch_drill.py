@@ -781,7 +781,7 @@ def test_e_a_supervisor_close_leaves_the_launch_side_seeing_a_terminal_lease(
 
     # And the verified evidence itself is not replaceable by the shared token:
     # a launch side that closed again and recorded a lesser observation would
-    # turn a proven close back into a question (principle 4).
+    # turn a proven close back into a question.
     with pytest.raises(LeaseOwnershipError, match="verified close evidence"):
         drill.store.record_close(
             owner_token=OWNER,

@@ -416,8 +416,7 @@ def _checkout_commit() -> str | None:
 def _code_ref_check(code_ref: str) -> dict[str, Any]:
     """What checking `code_ref` against this checkout actually found.
 
-    A declaration is not a measurement, and the report says which this is
-    (principle 8).
+    A declaration is not a measurement, and the report says which this is.
     """
     head = _checkout_commit()
     if head is None:

@@ -310,7 +310,7 @@ handle would not make the reader's read-after-write atomic.
 
 `client.ChairClient` is the one client a stage holds for one chair across a pass. It
 composes a built `ServingManager` and never starts a pod, picks a chair, retries, re-samples
-or edits a response (principle 3). Use it as a context manager: `__enter__` calls
+or edits a response. Use it as a context manager: `__enter__` calls
 `manager.start`, then re-reads the published receipt through the tree
 (`read_receipt=context.tree.read_run_receipt` in production) and refuses with
 `ReceiptDriftRefusal` (`CHAIR_RECEIPT_DRIFT`), stopping the service, unless it still names
@@ -456,7 +456,7 @@ all four chairs at all three tiers — so the selector under test is the sealed 
   reads its vendor's `HistoricalDocument` grammar, which has no coordinates, so it does not
   attach and two witnesses fall short of the floor of three. Attaching a witness without
   geometry is the Perlector's `anchor-line` basis, not yet built. Even then, one scripted run
-  over a fixture is not a proven pipeline (principle 8).
+  over a fixture is not a proven pipeline.
 - **Two independent drivers reach the same fixture tree byte for byte**: the orchestrator's
   subprocess chain, and this suite's driver pointed at the committed fixture catalogue with
   `--placement-tier` and in-process stage `main`s. Whether the fixture tree itself moved is

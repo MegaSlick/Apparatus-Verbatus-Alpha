@@ -35,8 +35,8 @@ approval record; the project lead removed it because this material never goes ne
 it runs on a GPU host and `workbench/` is gitignored. The commit hooks refuse
 credentials and oversized payloads before anything is committed; CI's full-history scan
 runs only after a push, so it detects a leak but cannot prevent one. Keeping real
-transcriptions and images out of the repository is the rule (PRINCIPLES.md principle 12),
-not something a scan guarantees.
+transcriptions and images out of the repository is the rule CONTRIBUTING.md sets for
+what enters the repository, not something a scan guarantees.
 
 What remains, and is unaffected: a folder handed to this tool is never a fixture, by
 construction — it never goes near `load_fixture` — and both the submitted folder and
@@ -66,8 +66,8 @@ never appear there.
   old repository ignored personal material by extension and leaked acts as `.md`
   through the gap; a rule keyed on a suffix is a rule anyone can walk past by
   renaming. Storage roots are chosen by the stage that wrote the file.
-- **Testimonia survive per-stage cleanup.** They are pipeline records under
-  PRINCIPLES.md principle 4 (evidence is never overwritten) and remain until the whole run
+- **Testimonia survive per-stage cleanup.** They are pipeline records — evidence
+  is never overwritten — and remain until the whole run
   reaches its sealed disposal condition; they are destroyed with that whole volume,
   not retained beyond it.
 - Temporary writes are same-directory, flushed and `fsync`ed before atomic
@@ -88,7 +88,7 @@ never appear there.
 It checks that declared synthetic target paths and temporary paths are absent, that
 declared logs contain no forbidden marker, and that a volume object listing is empty
 where a volume applies. It is never a claim of forensic unrecoverability from storage
-media, snapshots or provider backups, which no filesystem check can establish
-(PRINCIPLES.md principle 8). Where there is no volume, it reports `None` rather than an empty
+media, snapshots or provider backups, which no filesystem check can establish.
+Where there is no volume, it reports `None` rather than an empty
 listing: unknown is never zero. Routine deletion is unavailable here: retain every
 run artifact until the settled whole-run disposal condition is recorded elsewhere.

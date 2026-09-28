@@ -54,7 +54,7 @@ class TimerContext:
     stamped from ``timer.now()``, the same injected clock the timer itself
     uses to decide expiry, never from wall-clock time: a report claiming an
     acknowledgement moment nobody's clock measured is exactly what
-    principle 8 forbids.
+    measuring honestly forbids.
     """
 
     timer: PodDeadmanTimer
@@ -548,7 +548,7 @@ def _durable_failure_close(
     Whether the fallback receipt itself reached the volume is carried in the
     raised error too, rather than swallowed: an operator finding no receipt
     must be able to tell a write that failed twice from one that never ran --
-    principle 2, on the only durable evidence this pod leaves behind.
+    the only durable evidence this pod leaves behind must not lose that either.
 
     The breadcrumb goes out first here too: this path also issues a DELETE from
     inside the container it destroys, so the same "never tried versus destroyed
@@ -563,7 +563,7 @@ def _durable_failure_close(
             "close": result.close_report.to_record() if result.close_report else None,
             # Close attempts already made before the report write failed, plus
             # this one -- a fallback claiming one attempt after three would hide
-            # the three (principle 2).
+            # the three.
             "close_attempts": prior_attempts + 1,
             "green": False,
         },

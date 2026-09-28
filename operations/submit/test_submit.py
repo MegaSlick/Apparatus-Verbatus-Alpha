@@ -357,7 +357,7 @@ def test_a_submit_budget_alarm_writes_the_source_name_to_its_private_report(
     assert "more than 1 files" in report["refusals"][0]["reason"]
 
 
-# --- Evidence is never overwritten (principle 4) --------------------------------
+# --- Evidence is never overwritten -----------------------------------------
 
 
 def test_resubmitting_changed_content_to_one_path_refuses_rather_than_replacing(submission):
@@ -467,7 +467,7 @@ def test_an_uncomparable_target_is_not_reported_as_a_changed_submission(tmp_path
         assert "seals different content" not in str(caught.value)
     assert "seals different content" in str(differs.value)
     assert "could not be read as a regular file" not in str(differs.value)
-    # Whichever refusal fired, principle 4 holds and nothing was written.
+    # Whichever refusal fired, evidence was never overwritten and nothing was written.
     assert os.readlink(linked) == str(referent)
     assert directory.is_dir() and not any(directory.iterdir())
     assert changed.read_bytes() == b"a genuinely different sealed record"

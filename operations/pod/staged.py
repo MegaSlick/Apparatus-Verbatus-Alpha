@@ -18,7 +18,7 @@ confirmation in ``spend.py`` remains the money gate underneath, per-process and
 single-use by design; this layer records what that gate was spent on.
 
 Every path out of a boot leaves durable money evidence, because the one thing
-principle 2 cannot tolerate here is a pod that billed and left nothing behind:
+that must never happen here is a pod that billed and left nothing behind:
 a grant claim and an explicitly unknown cost intent before the create, a boot
 record the moment a pod exists, and then either a cost record or a named close
 failure. A close that raised is the case where a pod is most likely to be
@@ -298,8 +298,8 @@ class StageCloseFailure:
 
     Deliberately a different schema rather than a cost record with a null close:
     a reader totalling spend must not be able to mistake "we do not know what
-    this cost" for "this cost nothing", and principle 2 asks a partial result
-    to look partial rather than to be a field away from looking complete.
+    this cost" for "this cost nothing", and a partial result must look partial
+    rather than be a field away from looking complete.
     """
 
     collection_id: str
@@ -325,7 +325,7 @@ class StageCostStore:
     Two addressing schemes, because two different facts are being kept. A cost
     intent, cost, boot or close-failure record is *content*-addressed: writing the same
     evidence twice is a no-op, and different bytes at one address is a refusal,
-    because principle 4 does not overwrite evidence. A claim is *key*-addressed
+    because evidence is never overwritten. A claim is *key*-addressed
     by its grant, because there the file's existence is the fact: the exclusive
     create is what makes one grant unable to boot a second pod, in this process
     or in one that starts after a crash.

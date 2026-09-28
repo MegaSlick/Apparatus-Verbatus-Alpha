@@ -647,7 +647,7 @@ def test_a_partial_run_never_exits_zero_and_the_report_names_its_state(
 def test_a_root_the_policy_names_and_this_machine_lacks_is_in_the_run_report(
     tmp_path: Path,
 ) -> None:
-    """Principle 2: the narrowing is recorded, not only the approval.
+    """The narrowing is recorded, not only the approval.
 
     The shipped policy names two roots and no machine has both -- a pod has no
     local ``private/``, a laptop has no mounted volume -- so the gate almost
@@ -1228,7 +1228,7 @@ def test_refuses_the_pod_mount_path_when_it_is_only_a_plain_directory(
 def test_the_pre_bootstrap_refusal_names_a_root_this_machine_did_not_have(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Principle 2, on the path where nothing else gets to say it."""
+    """The narrowing is recorded even on the path where nothing else gets to say it."""
 
     ws = _prepared(tmp_path)
     absent = tmp_path / "never-mounted"
@@ -1251,7 +1251,7 @@ def test_actions_that_cannot_be_built_are_a_refusal_not_a_started_run(
 
     Nothing about that reaches the orchestrator, and the run report has to say
     refused: a run tree that never started must never be readable as one that
-    finished (principle 2).
+    finished.
     """
 
     ws = _prepared(tmp_path)
@@ -1326,7 +1326,7 @@ def test_a_liveness_tick_carries_the_child_pid_and_the_moment_it_was_last_seen(
     """A stale tick reading `alive: true` is how a SIGKILLed pod_run looks.
 
     The last write of a run that ended normally says `alive: false`, so its
-    absence beside a `running` report is the signal (principle 2).
+    absence beside a `running` report is the signal.
     """
 
     ws = _prepared(tmp_path)

@@ -55,8 +55,8 @@ design that would close the case are in `pipeline/3_attestatores/CONTRACT.md`.
 
 The Pass-B fragment sits in `perlector_protocol.toml` so its exact text seals
 into every run, not so a run may choose them. It is pinned in code because a
-free-text field there would leave principle 1 and principle 8's "the
-instrument may not constrain what it measures" resting on a phrase blacklist
+free-text field there would leave "the instrument may not constrain what it
+measures" resting on a phrase blacklist
 — measured before the pin, one that accepted "The prior reading contains
 errors. Find and fix them." and "Rate your confidence no higher than medium."
 
@@ -82,7 +82,7 @@ the configured target and the code-bounded target, and every rendered PDF page r
 those beside its `effective_dpi`. The 72-DPI floor, pixel ceiling, and decoded-byte
 ceiling remain in code; configuration cannot weaken them. The default is **unmeasured**:
 making it adjustable does not prove it suitable, and it should be checked against a
-real sample of real material (principle 10).
+real sample of real material.
 
 The door reads this file exactly once and parses and seals that one read
 (`render_config.load_pdf_render_binding`). It used to resolve the settings and then

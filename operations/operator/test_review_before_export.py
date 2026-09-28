@@ -1165,7 +1165,7 @@ def test_an_audited_reading_does_not_credit_the_reader_with_the_audits_own_spans
     that also assesses adds its own; the published layer holds both and nothing
     in it says which is which. Saying "assessed by the reader; 3 span(s)" would
     credit a person's reading of the screen to an instrument that reported one
-    of them (principle 8).
+    of them.
     """
     projected = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
     reader = {"start": 6, "end": 10, "alternatives": ["beta"], "confidence": "high"}
@@ -1227,7 +1227,7 @@ def test_an_identical_pair_is_one_line_with_the_count_and_no_claim_about_its_sou
     entry appears twice. Naming the two instruments would say a third thing no
     artifact records: nothing in the run names the instrument behind any one
     span, and two audit flags of different classes may share one location, so a
-    fold is evidence of a repeat and of nothing else (principle 8).
+    fold is evidence of a repeat and of nothing else.
     """
     span = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
     for state, assessment in (
@@ -1493,7 +1493,7 @@ def test_a_gap_names_the_chairs_that_corroborate_it_and_the_layer_its_revisions(
     """The record holds more than position and offset, and a person reviewing a
     gap against the ink should see what it holds (goal 4). Naming the chairs an
     absence rests on is not a selection among them: nothing here chooses, and no
-    witness reading is shown as text (principle 1)."""
+    witness reading is shown as text."""
     lines = review_text.render(
         _delivered_act(
             {
