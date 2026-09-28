@@ -332,6 +332,7 @@ def _all_refused_door_tree(root: Path) -> RunTree:
         adapter_recipes=bindings["adapter_recipes"],
         witness_chairs=bindings["witness_chairs"],
         ingress=synthetic_fixture_ingress_record(),
+        sealed_config_digests=bindings["sealed_config_digests"],
     )
     context = StageContext(
         tree=tree,

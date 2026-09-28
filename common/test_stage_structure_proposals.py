@@ -50,12 +50,19 @@ import pytest
 
 import common.stage as stage_contract
 from common.chairs import ChairIdentity, ChairRegistry
+from common.chandra_presentation import (
+    STRUCTURE_REQUEST_IMAGE_KIND,
+    STRUCTURE_REQUEST_IMAGE_SCHEMA,
+    presented_transform,
+    render_page,
+)
 from common.contracts.canonical import self_hash
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import attempt_id
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
+from common.decoding import load_decoding_policy, structure_recovery_policy
 from common.imaging import dimensions
 from common.runtree.store import RunTree
 from common.stage import (
@@ -354,35 +361,132 @@ class _StructureDesignator:
     ) -> dict[str, str]:
         """One `structure-answer` record, text-free as SPEC_D §1.3 requires."""
         page = self.pages[ordinal]
-        record = self.call_record() if call_record == "default" else call_record
+        source_page_id = page["subject_id"]
+        source_ref = self.context.input_ref(page["payload"]["image_path"])
+        page_bytes = self.tree.read_bytes(page["payload"]["image_path"])
+        page_w, page_h = dimensions(page_bytes)
+        model_image, target = render_page(page_bytes, {"x": 0, "y": 0, "w": page_w, "h": page_h})
+        image_ref = self.context.retain(model_image)
+        presented = {
+            "kind": "adapter-crop",
+            "source_page_id": source_page_id,
+            "source_page_ordinal": ordinal,
+            "image_path": image_ref["relative_path"],
+            "image_sha256": image_ref["sha256"],
+            "transform": presented_transform(
+                source_page_id, ordinal, {"x": 0, "y": 0, "w": page_w, "h": page_h}, target
+            ),
+        }
+        presentation = self.context.publish(
+            kind=STRUCTURE_REQUEST_IMAGE_KIND,
+            subject_id=source_page_id,
+            outcome="proposed",
+            inputs=[source_ref],
+            payload={
+                "schema": STRUCTURE_REQUEST_IMAGE_SCHEMA,
+                "page_id": source_page_id,
+                "page_ordinal": ordinal,
+                "source_image_ref": source_ref,
+                "presented": presented,
+            },
+        )
+        presentation_ref = self.context.input_ref(presentation.relative_path)
+        decoding_policy, _ = load_decoding_policy()
+        temperature = decoding_policy["structure"]["temperature"]
+        capacity = {"images": [{"width": target[0], "height": target[1]}]}
+        raw_ref = self.context.retain(b"{}")
+        record = (
+            self.call_record(
+                request_sha256="a" * 64,
+                image_sha256s=[image_ref["sha256"]],
+                generation_sent={"seed": 0, "temperature": temperature},
+                raw_response_ref=raw_ref,
+                response_sha256=raw_ref["sha256"],
+                response_status=200,
+                capacity=capacity,
+            )
+            if call_record == "default"
+            else call_record
+        )
         _, stored = self.tree.put_blob(DESIGNATOR, json.dumps(record).encode("utf-8"))
+        answer_provenance = self.provenance() if provenance is None else provenance
+        attempt_payload = {
+            "schema": schema,
+            "page_id": source_page_id if page_id is None else page_id,
+            "page_ordinal": ordinal if page_ordinal is None else page_ordinal,
+            "page_w": page_w,
+            "page_h": page_h,
+            "prompt_version": "fixture",
+            "prompt_sha256": "a" * 64,
+            "answer_schema": "fixture",
+            "text_view": "fixture",
+            "vendor": {},
+            "call_record_ref": (
+                self.context.input_ref(stored.relative_path)
+                if call_record_ref == "default"
+                else call_record_ref
+            ),
+            "raw_response_ref": raw_ref,
+            "custody_ref": None,
+            "custody_problem": None,
+            "receipt_ref": self.receipt,
+            "request_sha256": "a" * 64,
+            "finish_reason": "stop",
+            "served_model_id": "hand-built-structure-chair-model",
+            "call_problem": None,
+            "parse_state": parse_state,
+            "parse_outcome": parse_outcome,
+            "disposition": "proposed",
+            "reason_code": None,
+            "block_count": len(rectangles),
+            "act_count": len(rectangles) if act_count is None else act_count,
+            "acts": [
+                {
+                    "ordinal": index,
+                    "box_1000": None,
+                    "raw_bounds": rectangle,
+                    "text_digest": None,
+                    "text_length": 0,
+                    "label_vocabulary": None,
+                    "label_declared": None,
+                    "label_digest": None,
+                    "label_length": 0,
+                    "nested_bbox_count": 0,
+                }
+                for index, rectangle in enumerate(rectangles, start=1)
+            ],
+            "blocks_without_proposal": [],
+            "findings": [],
+            "quantization": "fixture",
+            "page_text_rule": "fixture",
+            "decoding": {
+                "policy": STRUCTURE_DECODING_POLICY,
+                "temperature": temperature,
+                "decoding_config_sha256": self.decoding_sha256,
+            },
+            "provenance": answer_provenance,
+            "capacity": capacity,
+            "attempt_ordinal": 1,
+            "attempts": [],
+            "attempt_seed": 0,
+            "attempt_policy": structure_recovery_policy(decoding_policy),
+            "presentation_ref": presentation_ref,
+        }
+        attempt = self.context.publish(
+            kind="structure-attempt",
+            subject_id=page["subject_id"],
+            outcome="proposed",
+            attempt=attempt_id(page["subject_id"], "structure", 1),
+            inputs=[source_ref, presentation_ref],
+            payload=attempt_payload,
+        )
+        terminal = {**attempt_payload, "attempts": [self.context.input_ref(attempt.relative_path)]}
         published = self.context.publish(
             kind=STRUCTURE_ANSWER_KIND,
             subject_id=page["subject_id"],
             outcome="proposed",
-            inputs=[self.context.input_ref(page["payload"]["image_path"])],
-            payload={
-                "schema": schema,
-                "page_id": page["subject_id"] if page_id is None else page_id,
-                "page_ordinal": ordinal if page_ordinal is None else page_ordinal,
-                "parse_state": parse_state,
-                "parse_outcome": parse_outcome,
-                "call_record_ref": (
-                    self.context.input_ref(stored.relative_path)
-                    if call_record_ref == "default"
-                    else call_record_ref
-                ),
-                "act_count": len(rectangles) if act_count is None else act_count,
-                "acts": [
-                    {
-                        "ordinal": index,
-                        "raw_bounds": rectangle,
-                        "text_length": 0,
-                    }
-                    for index, rectangle in enumerate(rectangles, start=1)
-                ],
-                "provenance": self.provenance() if provenance is None else provenance,
-            },
+            inputs=[source_ref, presentation_ref],
+            payload=terminal,
         )
         return self.context.input_ref(published.relative_path)
 
