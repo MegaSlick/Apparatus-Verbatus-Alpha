@@ -36,6 +36,23 @@ def test_source_revision_vocabulary_matches_the_perlector_producer() -> None:
     assert canonical_uncertainty._SOURCE_REVISION_FIELDS == frozenset(produced[0])
 
 
+def test_withheld_draft_has_no_self_revision_measurement() -> None:
+    payload = {
+        "text": "Maria",
+        "lectio_kind": "primed-draft-withheld",
+        "self_revision": [],
+        "uncertain_spans": [],
+        "gaps": [],
+        "uncertainty_assessment": _ASSESSED,
+    }
+    layer = from_perlectio(payload)
+    assert layer["self_revisions"] is None
+    assert layer["lectio_kind"] == "primed-draft-withheld"
+    assert validate(layer, "Maria") == layer
+    with pytest.raises(SchemaRefusal, match="not measured"):
+        validate({**layer, "self_revisions": []}, "Maria")
+
+
 def test_whitespace_only_text_accepts_a_whole_act_gap() -> None:
     layer = {
         "uncertain_spans": [],

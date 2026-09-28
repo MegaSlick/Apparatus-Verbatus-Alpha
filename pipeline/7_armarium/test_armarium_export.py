@@ -5016,6 +5016,24 @@ def test_the_doubt_on_each_half_travels_with_the_reconstruction(tmp_path):
         verify_export_bundle(forged, tmp_path / "forged")
 
 
+def test_reconstruction_does_not_count_a_withheld_draft_as_zero(tmp_path):
+    layer = {
+        "uncertain_spans": [],
+        "gaps": [],
+        "self_revisions": None,
+        "lectio_kind": "primed-draft-withheld",
+        "assessment": {"state": "assessed", "problem": None},
+    }
+    bundle = build_armarium_bundle(
+        _joined(head_uncertainty=layer), _formats(embed_pixels=False), _source_bytes
+    )
+    members = _members(bundle.data)
+    (record,) = [json.loads(line) for line in members["reconstructions.jsonl"].splitlines()]
+    assert record["head_doubt"]["self_revisions"] is None
+    assert record["head_doubt"]["lectio_kind"] == "primed-draft-withheld"
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+
+
 def test_chained_joins_reconstruct_each_pair_and_mirror_both_notes(tmp_path):
     bundle = build_armarium_bundle(
         _joined(chained=True), _formats(embed_pixels=False), _source_bytes

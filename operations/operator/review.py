@@ -785,6 +785,9 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
     payload = _payload_of(reading_row, "the Perlectio record")
     truncation = payload.get("truncation")
     audit = payload.get("audit")
+    lectio_kind = payload.get("lectio_kind")
+    if lectio_kind == "primed-draft-withheld" and payload.get("self_revision") != []:
+        raise SchemaRefusal("a draft-withheld Perlectio cannot claim self-revisions")
     return {
         "outcome": reading_row["outcome"],
         "text": payload.get("text"),
@@ -795,7 +798,10 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
         # Kept as the producer's own field name, not the canonical layer's
         # `self_revisions`, to avoid a second copy of that rename free to
         # drift from it.
-        "self_revision": payload.get("self_revision"),
+        "self_revision": None
+        if lectio_kind == "primed-draft-withheld"
+        else payload.get("self_revision"),
+        "lectio_kind": lectio_kind,
         "truncation": truncation,
         # Absent stays absent; an object is projected to the two fields read
         # here; anything else is carried through exactly as the record holds

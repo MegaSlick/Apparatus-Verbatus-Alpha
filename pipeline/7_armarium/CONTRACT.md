@@ -187,7 +187,9 @@ projection configuration. The bundle may contain these plainly specified formats
   (`verbatus-page-join.v1`, nothing added, removed or normalised), labelled
   `RECONSTRUCTED … not an act`, and carries each half's `text_status`, its reader
   assessment state and a count of its uncertain spans, gaps and self-revisions (the
-  offsets stay on each half's own literal).
+  offsets stay on each half's own literal). A `primed-draft-withheld` reading carries
+  `self_revisions: null` and its lectio kind: the reader did not see Pass A, so a
+  self-revision count was not measured.
   It is written to `reconstructions.jsonl` (with `jsonl`) and as a
   `## RECONSTRUCTED <join_id> (not an act)` section, with mirrored
   `possible-continuation-on/-from` notes in each named act's own section (with

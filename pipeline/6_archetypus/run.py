@@ -58,6 +58,7 @@ from common.contracts.outcomes import (  # noqa: E402
     terminal_category,
 )
 from common.contracts.outcomes import derive_text_status as derive_text_status  # noqa: E402
+from common.contracts.prior_draft import validate_establishing_view  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
     ARCHETYPUS,
     ATTESTATORES,
@@ -654,7 +655,7 @@ def accepted_primed_perlectio(
         raise SchemaRefusal(
             f"act {act_id} claims primed-without-prior but carries a prior-draft reference"
         )
-    if lectio_kind != "primed-with-prior":
+    if lectio_kind not in ("primed-with-prior", "primed-draft-withheld"):
         raise SchemaRefusal(
             f"act {act_id} names lectio_kind {lectio_kind!r}; only an explicitly primed "
             "Lectio may establish, and a Lectio nuda is an instrument record, never an "
@@ -703,17 +704,15 @@ def accepted_primed_perlectio(
         raise SchemaRefusal(
             f"act {act_id} carries an act-attachment dossier view without a direct input reference"
         )
-    # Unconditional: `lectio_kind` is already proved to be `primed-with-prior`
-    # above, and nothing below it reassigns the name. Guarding these checks on
-    # the value again would read as though some other kind reached them, which
-    # would make the whole prior-draft chain look optional at the one stage
-    # that reads a Perlectio back off disk.
+    # Both establishing kinds retain the prior as evidence, including when it
+    # was withheld from the reader. Its reference still binds to this attempt.
     prior_draft = claimed_prior_draft
     prior_reference = prior_draft.get("reference") if isinstance(prior_draft, dict) else None
     if not _is_ref_shaped(prior_reference):
         raise SchemaRefusal(
-            f"act {act_id} claims primed-with-prior but carries no prior-draft reference"
+            f"act {act_id} claims {lectio_kind} but carries no prior-draft reference"
         )
+    validate_establishing_view(payload, claimed_dossier, f"act {act_id}")
     if prior_reference not in reading.get("inputs", []):
         raise SchemaRefusal(
             f"act {act_id} carries a prior-draft reference that is not a digest-checked "
@@ -1301,17 +1300,15 @@ def establish_logical_record(
             "logical establishment's read Perlectio has no string text payload; the "
             "Archetypus is refused because absence or a malformed result is not a reading"
         )
-    # The same discriminator `accepted_primed_perlectio` applies on the
-    # image-local path: the establishing joint pass seals
-    # `lectio_kind = "primed-with-prior"` (the Perlector's combined protocol),
-    # and a Lectio nuda, lectio-prior, or primed-without-prior arm is an
-    # instrument record whose draft text may never become established text.
-    if payload.get("lectio_kind") != "primed-with-prior":
+    # The joint pass also establishes from witnesses whether or not it saw the
+    # retained draft; the instrument arms never establish text.
+    if payload.get("lectio_kind") not in ("primed-with-prior", "primed-draft-withheld"):
         raise SchemaRefusal(
             f"logical establishment's Perlectio names lectio_kind "
             f"{payload.get('lectio_kind')!r}; only the explicitly primed establishing "
             "pass may establish, and an instrument arm is evidence, never text"
         )
+    validate_establishing_view(payload, payload.get("dossier"), "logical establishment's Perlectio")
     if payload.get("primed") not in (None, True):
         raise SchemaRefusal(
             "logical establishment's Perlectio carries an explicitly non-primed flag, "

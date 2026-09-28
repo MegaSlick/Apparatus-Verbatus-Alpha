@@ -1293,6 +1293,22 @@ def _reading_act(reading: dict) -> dict:
     }
 
 
+def test_withheld_reading_displays_unmeasured_self_revisions():
+    reading = {
+        "outcome": "read",
+        "text": "alpha beta",
+        "lectio_kind": "primed-draft-withheld",
+        "self_revision": None,
+        "uncertain_spans": [],
+        "gaps": [],
+        "uncertainty_assessment": {"state": "assessed", "problem": None},
+    }
+    text = "\n".join(review_text.render(_reading_act(reading)))
+    assert "self-revisions not measured (primed-draft-withheld)" in text
+    with pytest.raises(review_text.ProjectionShapeError, match="null for a withheld draft"):
+        review_text.render(_reading_act({**reading, "self_revision": []}))
+
+
 def test_a_delivered_act_with_no_uncertainty_layer_still_says_so():
     """An absent or damaged layer printed nothing at all after the export.
 
@@ -1531,12 +1547,15 @@ def test_a_held_acts_reading_and_doubt_survive_the_export(exported_run: Path):
         if (act.get("row") or {}).get("text") is None and (act.get("row") or {}).get("reading")
     ]
     assert held, "this exported run must carry a non-delivered act with a sealed reading"
+    assert all(act["row"]["reading"]["lectio_kind"] == "primed-draft-withheld" for act in held)
+    assert all(act["row"]["reading"]["self_revision"] is None for act in held)
     text = "\n".join(review_text.render(projection))
 
     # Both halves of the same screen: the delivered act's layer, and the held
     # act's reading read back from the run tree.
     assert text.count("doubts:") == len(projection["acts"])
     assert "doubts: not-assessed — the reader reports no doubt assessment" in text
+    assert "self-revisions not measured (primed-draft-withheld)" in text
 
 
 def test_the_pre_export_reading_path_prints_every_state_the_same_way():
