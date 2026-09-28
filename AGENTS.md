@@ -40,9 +40,10 @@ conflict.
   tell the lead when one opens. Name work outside that goal to the lead before its first
   push.
 - **CI on the pull request is the gate.** Locally, run the tests you touched and
-  `.githooks/check-static.sh`; the full suite runs in CI (it overheats this machine). There is no pre-push hook; CI scans the full history on
-  every pull request. Never skip the commit hooks: they are the only check before a
-  credential leaves the machine.
+  `.githooks/check-static.sh`; the full suite runs in CI (it overheats this machine).
+  There is no pre-push hook; CI scans the full history on every pull request.
+  Never skip the commit hooks: they are the only check before a credential leaves
+  the machine.
 - **The git deny rules in `.claude/settings.json` catch accidents, not every
   spelling.** GitHub's protection of `main` is the real control. The rule that agents
   never push or merge is an instruction, not a mechanism.
@@ -62,8 +63,6 @@ conflict.
   readers for anything touching pods, money, credentials or git hooks.
 - Fix or decline every real finding, with a reason. A fix after review makes a new
   candidate; reviewers read the exact commit that is pushed.
-- Commits carry `Co-Authored-By:` for the model that wrote the lines and `Reviewed-by:`
-  for any model that reviewed them.
 
 ## Agents
 
@@ -75,7 +74,7 @@ conflict.
   (cd ../verbatus-worktrees/<topic> && uv sync --frozen --group test --group audit)
   ```
 
-- **An agent never pushes, opens or merges a pull request, edits a lead-approved file,
+- **An agent never pushes, opens or merges a pull request, edits core documents,
   sends a notification, or starts paid infrastructure.** It commits on its branch and
   names it in its report; the host session integrates.
 - Brief agents against what is actually on disk. Every brief names the objective, the

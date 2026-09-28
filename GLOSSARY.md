@@ -34,7 +34,7 @@ can be swapped without touching code.
 **door** — the intake step before the Exemplar: it checks and seals what was submitted,
 and records anything it refuses.
 
-**sealed** — written once with a recorded hash, so any later change is detectable.
+**sealed** — written once with a recorded hash, so an accidental later change is detectable.
 
 **held** — set aside for human review rather than silently dropped or passed as done.
 
@@ -57,14 +57,14 @@ and records anything it refuses.
 
 ## What the stages produce
 
-**Testimonium** (plural *Testimonia*) — one witness's report on an act: unverified, of uncertain quality,
-never final, always kept. It carries the identity and revision of the model that made it.
+**Testimonium** (plural *Testimonia*) — an unverified witness report on an act,
+of uncertain quality, always kept and never final; it names its model and revision.
 
 **Lectio** — one reading pass by the Perlector, either shown witness testimony
 (primed) or not.
 
-**Lectio nuda** — an unprimed reading, with no witness shown. The baseline that shows
-whether the reader can read without help.
+**Lectio nuda** — a sampled unprimed baseline, separate from the universal Pass-A
+draft (*lectio-prior*); both see the same inputs and measure sampling variance.
 
 **Perlectio** — what the Perlector returns: the reading, what it was based on, and where
 it departed from every witness (its dissent).

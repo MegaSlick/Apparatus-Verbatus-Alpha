@@ -8,14 +8,14 @@ traces back to the exact region of the image it came from, and uncertainty is to
 flagged, never guessed.
 
 It is built primarily for Quebec parish registers of the 1700s to 1900s, and developed
-and tuned on those records and on French records of the same era (the RecordGold pages).
+and tested on those records and on French records of the same era (the RecordGold pages).
 It should also work, to a lesser degree, on other archival records — censuses, fur-trade
 ledgers, notarial contracts — and on some English-language records.
 
-**Status: alpha.** The staged pipeline, its accounting and its export are implemented and
-tested on synthetic pages. Real pages have run on a GPU pod through the three witnesses,
-but no real run has yet produced a final export, so accuracy is not yet established. The
-live reader does not yet mark word-level uncertainty; the export says so for every act.
+**Status: alpha.** The staged pipeline, accounting, and export pass synthetic tests.
+Real pages have run through three witnesses on a GPU pod, but no real final export
+exists, so accuracy is unestablished. The live reader is asked to use `[[?]]` for
+unreadable ink and `[[reading]]` for doubt; they become gaps and uncertain spans.
 
 ## How it works
 
