@@ -654,7 +654,7 @@ def accepted_primed_perlectio(
         raise SchemaRefusal(
             f"act {act_id} claims primed-without-prior but carries a prior-draft reference"
         )
-    if lectio_kind != "primed-with-prior":
+    if lectio_kind not in ("primed-with-prior", "primed-draft-withheld"):
         raise SchemaRefusal(
             f"act {act_id} names lectio_kind {lectio_kind!r}; only an explicitly primed "
             "Lectio may establish, and a Lectio nuda is an instrument record, never an "
@@ -703,16 +703,29 @@ def accepted_primed_perlectio(
         raise SchemaRefusal(
             f"act {act_id} carries an act-attachment dossier view without a direct input reference"
         )
-    # Unconditional: `lectio_kind` is already proved to be `primed-with-prior`
-    # above, and nothing below it reassigns the name. Guarding these checks on
-    # the value again would read as though some other kind reached them, which
-    # would make the whole prior-draft chain look optional at the one stage
-    # that reads a Perlectio back off disk.
+    # Both establishing kinds retain the prior as evidence, including when it
+    # was withheld from the reader. Its reference still binds to this attempt.
     prior_draft = claimed_prior_draft
     prior_reference = prior_draft.get("reference") if isinstance(prior_draft, dict) else None
     if not _is_ref_shaped(prior_reference):
         raise SchemaRefusal(
-            f"act {act_id} claims primed-with-prior but carries no prior-draft reference"
+            f"act {act_id} claims {lectio_kind} but carries no prior-draft reference"
+        )
+    expected_view = "fed" if lectio_kind == "primed-with-prior" else "withheld"
+    if claimed_dossier.get("prior_draft_view") != expected_view:
+        raise SchemaRefusal(
+            f"act {act_id} names {lectio_kind} without a {expected_view} prior-draft view"
+        )
+    protocol_record = payload.get("protocol")
+    if not isinstance(protocol_record, dict) or protocol_record.get("draft_fed") is not (
+        expected_view == "fed"
+    ):
+        raise SchemaRefusal(
+            f"act {act_id} names {lectio_kind} contrary to its prior-draft protocol"
+        )
+    if lectio_kind == "primed-draft-withheld" and payload.get("self_revision") != []:
+        raise SchemaRefusal(
+            f"act {act_id} claims self-revisions against a draft withheld from its reader"
         )
     if prior_reference not in reading.get("inputs", []):
         raise SchemaRefusal(
@@ -1301,16 +1314,31 @@ def establish_logical_record(
             "logical establishment's read Perlectio has no string text payload; the "
             "Archetypus is refused because absence or a malformed result is not a reading"
         )
-    # The same discriminator `accepted_primed_perlectio` applies on the
-    # image-local path: the establishing joint pass seals
-    # `lectio_kind = "primed-with-prior"` (the Perlector's combined protocol),
-    # and a Lectio nuda, lectio-prior, or primed-without-prior arm is an
-    # instrument record whose draft text may never become established text.
-    if payload.get("lectio_kind") != "primed-with-prior":
+    # The joint pass also establishes from witnesses whether or not it saw the
+    # retained draft; the instrument arms never establish text.
+    if payload.get("lectio_kind") not in ("primed-with-prior", "primed-draft-withheld"):
         raise SchemaRefusal(
             f"logical establishment's Perlectio names lectio_kind "
             f"{payload.get('lectio_kind')!r}; only the explicitly primed establishing "
             "pass may establish, and an instrument arm is evidence, never text"
+        )
+    expected_view = "fed" if payload["lectio_kind"] == "primed-with-prior" else "withheld"
+    dossier = payload.get("dossier")
+    if not isinstance(dossier, dict) or dossier.get("prior_draft_view") != expected_view:
+        raise SchemaRefusal(
+            f"logical establishment's Perlectio names {payload['lectio_kind']} "
+            f"without a {expected_view} prior-draft view"
+        )
+    protocol_record = payload.get("protocol")
+    if not isinstance(protocol_record, dict) or protocol_record.get("draft_fed") is not (
+        expected_view == "fed"
+    ):
+        raise SchemaRefusal(
+            "logical establishment's Perlectio kind contradicts its prior-draft protocol"
+        )
+    if payload["lectio_kind"] == "primed-draft-withheld" and payload.get("self_revision") != []:
+        raise SchemaRefusal(
+            "logical establishment claims self-revisions against a draft withheld from its reader"
         )
     if payload.get("primed") not in (None, True):
         raise SchemaRefusal(

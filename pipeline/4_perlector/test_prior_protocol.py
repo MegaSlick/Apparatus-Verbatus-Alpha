@@ -59,6 +59,7 @@ def sampling_approval_records(scenario, *extra) -> dict:
         nuda_approval_ref=nuda_ref,
         perlector_instrument_per_mille=control_rate,
         perlector_instrument_approval_ref=control_ref,
+        draft_fed="--draft-fed" in extra,
     )
     return {
         subject: build_approval_record(
@@ -125,6 +126,7 @@ def test_sampled_triple_has_all_three_records_and_nuda_stays_unfed(tmp_path):
         "1000",
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "--draft-fed",
     )
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
@@ -212,6 +214,8 @@ def test_default_withholds_prior_draft_from_prompt_text(tmp_path):
     )
     assert final["protocol"]["draft_fed"] is False
     assert final["dossier"]["prior_draft_view"] == "withheld"
+    assert final["lectio_kind"] == "primed-draft-withheld"
+    assert final["self_revision"] == []
     prior_text = final["dossier"]["prior_draft"]["text"]
     assert prior_text
 
@@ -234,6 +238,35 @@ def test_default_withholds_prior_draft_from_prompt_text(tmp_path):
         protocol_config,
     )
     assert changed_rendered == rendered
+
+
+def test_fed_draft_has_the_primed_kind_and_real_self_revision(tmp_path):
+    root = tmp_path / "runs"
+    result = _run(root, "r", "happy", "--draft-fed")
+    assert result.returncode == 0, result.stderr
+    finals = [record["payload"] for record in _records(RunTree(root, "r"), "perlectio")]
+    assert all(payload["lectio_kind"] == "primed-with-prior" for payload in finals)
+    assert all(payload["dossier"]["prior_draft_view"] == "fed" for payload in finals)
+    assert any(payload["self_revision"] for payload in finals)
+
+
+def test_withheld_draft_cannot_publish_self_revisions(tmp_path):
+    root = tmp_path / "runs"
+    result = _run(root, "r", "happy")
+    assert result.returncode == 0, result.stderr
+    payload = copy.deepcopy(_records(RunTree(root, "r"), "perlectio")[0]["payload"])
+    payload["self_revision"] = [
+        {"reading_span": {"start": 0, "end": 1}, "prior_span": {"start": 0, "end": 1}}
+    ]
+    protocol_config, protocol_sha256 = protocol.load(ROOT / "config" / "perlector_protocol.toml")
+    with pytest.raises(SchemaRefusal, match="cannot claim self-revisions"):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
 
 
 def test_control_selection_has_no_run_id_input_at_all():
@@ -629,6 +662,8 @@ def test_a_reading_whose_view_contradicts_its_declared_draft_fed_is_refused(
     protocol_config, protocol_sha256 = _sealed_protocol
     payload = copy.deepcopy(published_perlectio_payload)
     assert payload["protocol"]["draft_fed"] is True
+    payload["lectio_kind"] = "primed-draft-withheld"
+    payload["self_revision"] = []
     payload["dossier"]["prior_draft_view"] = "withheld"
     # Reseal, so the forgery reaches this refusal rather than stopping at the
     # dossier digest a careless forger would also have fixed.

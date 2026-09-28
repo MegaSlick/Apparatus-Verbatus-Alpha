@@ -910,7 +910,8 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(monkeypat
     payload = {
         "text": text,
         "lectio_kind": "primed-with-prior",
-        "dossier": {"logical_act_id": "pac_0123456789abcdef"},
+        "dossier": {"logical_act_id": "pac_0123456789abcdef", "prior_draft_view": "fed"},
+        "protocol": {"draft_fed": True},
         "basis": {"regions": [_REGION]},
         "provenance": {"chair": "perlector", "revision": "fixture"},
         "annotations": [wire_note],

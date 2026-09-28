@@ -9,9 +9,9 @@ names `salvage-promotion` as a future approval action and nothing more), so the
 second test forges a plausible one — otherwise the check could be passing by
 special-casing Testimonium and nobody would know.
 
-R5a's Perlectio records the closed `lectio_kind="primed-with-prior"` marker.
-The constructor requires that exact production marker; controls and un-fed
-instruments are distinct artifact kinds and cannot establish by a relabel.
+The constructor accepts the production kind for the recorded draft view;
+controls and un-fed instruments are distinct artifact kinds and cannot
+establish by a relabel.
 """
 
 import json
@@ -174,6 +174,26 @@ def test_an_unrecognised_lectio_kind_cannot_establish_either(tmp_path):
     assert "only an explicitly primed" in result.stderr
 
 
+def test_withheld_draft_cannot_establish_with_self_revisions(tmp_path):
+    def invent_revision(payload):
+        assert payload["lectio_kind"] == "primed-draft-withheld"
+        payload["self_revision"] = [
+            {"reading_span": {"start": 0, "end": 1}, "prior_span": {"start": 0, "end": 1}}
+        ]
+
+    result = _archetypus_after(tmp_path, invent_revision)
+    assert result.returncode == 2, result.stderr
+    assert "against a draft withheld" in result.stderr
+
+
+def test_fed_kind_cannot_relabel_a_withheld_reading(tmp_path):
+    result = _archetypus_after(
+        tmp_path, lambda payload: payload.update(lectio_kind="primed-with-prior")
+    )
+    assert result.returncode == 2, result.stderr
+    assert "without a fed prior-draft view" in result.stderr
+
+
 def test_primed_with_prior_claim_without_a_prior_reference_cannot_establish(tmp_path):
     def remove_prior_reference(payload):
         dossier = dict(payload["dossier"])
@@ -184,7 +204,7 @@ def test_primed_with_prior_claim_without_a_prior_reference_cannot_establish(tmp_
     result = _archetypus_after(tmp_path, remove_prior_reference)
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
-    assert "claims primed-with-prior but carries no prior-draft reference" in result.stderr
+    assert "claims primed-draft-withheld but carries no prior-draft reference" in result.stderr
 
 
 def test_primed_without_prior_claim_with_a_prior_reference_cannot_establish(tmp_path):

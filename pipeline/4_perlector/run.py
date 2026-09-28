@@ -2350,7 +2350,7 @@ def validate_reading_payload(
         raise SchemaRefusal("a Perlector dossier digest does not match the dossier it seals")
     dossier_module.assert_no_order_bearing_field(dossier_body)
     _validate_cross_capture_dossier(reading_dossier, inputs=inputs)
-    _validate_lectio_kind(payload.get("lectio_kind"), reading_dossier)
+    _validate_lectio_kind(payload, reading_dossier)
     if "act_attachment" in reading_dossier:
         attachment = reading_dossier["act_attachment"]
         if (
@@ -2410,20 +2410,24 @@ def validate_reading_payload(
     annotations.validate_annotations(payload, outcome=outcome)
 
 
-def _validate_lectio_kind(lectio_kind: Any, reading_dossier: dict) -> None:
+def _validate_lectio_kind(payload: dict, reading_dossier: dict) -> None:
+    lectio_kind = payload.get("lectio_kind")
     prior_draft = reading_dossier.get("prior_draft")
-    if lectio_kind == "primed-with-prior":
+    if lectio_kind in ("primed-with-prior", "primed-draft-withheld"):
+        expected_view = "fed" if lectio_kind == "primed-with-prior" else "withheld"
         if (
             not isinstance(prior_draft, dict)
             or set(prior_draft) != {"reference", "text"}
             or not isinstance(prior_draft["text"], str)
-            or reading_dossier.get("prior_draft_view") not in {"fed", "withheld"}
+            or reading_dossier.get("prior_draft_view") != expected_view
         ):
             raise SchemaRefusal(
-                "a Perlectio claims primed-with-prior but carries no closed prior-draft "
-                "reference and view"
+                f"a Perlectio claims {lectio_kind} but carries no closed prior-draft "
+                f"reference with view {expected_view!r}"
             )
         validate_input_refs([prior_draft["reference"]])
+        if lectio_kind == "primed-draft-withheld" and payload.get("self_revision") != []:
+            raise SchemaRefusal("a draft-withheld Perlectio cannot claim self-revisions")
     elif lectio_kind == "primed-without-prior":
         # Key presence, not value: the shape check admits these keys, so a None
         # prior_draft beside a view key would pass a value test.
@@ -3427,8 +3431,8 @@ def _established_row(
         "gaps": gaps,
         "uncertainty_assessment": sealed_doubt,
         "provenance": provenance,
-        "lectio_kind": "primed-with-prior",
-        "self_revision": departures(reading, prior["text"]),
+        "lectio_kind": "primed-with-prior" if context.draft_fed else "primed-draft-withheld",
+        "self_revision": departures(reading, prior["text"]) if context.draft_fed else [],
         "protocol": _protocol_record(context, attempt.protocol_config),
     }
     return {
@@ -4212,7 +4216,11 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
     payload["dissent"] = dissent_against(
         final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
     )
-    payload["self_revision"] = departures(final_text, row["prior"]["text"])
+    payload["self_revision"] = (
+        departures(final_text, row["prior"]["text"])
+        if payload["lectio_kind"] == "primed-with-prior"
+        else []
+    )
     payload["truncation"] = _audited_truncation(
         pass_b=payload["truncation"],
         declared_failure=row["declared_failure"],
@@ -4255,7 +4263,11 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
         payload["dissent"] = dissent_against(
             "", dissent_testimonia(row["testimonia"], row["attachment_view"])
         )
-        payload["self_revision"] = departures("", row["prior"]["text"])
+        payload["self_revision"] = (
+            departures("", row["prior"]["text"])
+            if payload["lectio_kind"] == "primed-with-prior"
+            else []
+        )
     return reproof_truncation
 
 
