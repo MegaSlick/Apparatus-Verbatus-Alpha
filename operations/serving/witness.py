@@ -1,7 +1,8 @@
 """Shared rules for the page-only smoke witness."""
 
-PAGE_WITNESS_ALPHABET = "ABCEFGHJKMNPRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+PAGE_WITNESS_ALPHABET = "ABEFGHJMNRTYabdefghijmnqrty23456789"
 PAGE_WITNESS_LENGTH = 43
+PAGE_WITNESS_MAX_EDIT_DISTANCE = 2
 
 
 def is_page_witness(value: object) -> bool:

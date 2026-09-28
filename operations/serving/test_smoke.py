@@ -19,22 +19,61 @@ from pathlib import Path
 from string import ascii_letters, digits
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from .errors import ServingConfigurationError
 from .smoke import (
     NvidiaSmiUtilization,
     VisionSmokeCall,
     fresh_page_witness,
+    page_witness_edit_distance,
     render_golden_page,
 )
 from .witness import PAGE_WITNESS_ALPHABET, PAGE_WITNESS_LENGTH
+
+TEST_WITNESS = (PAGE_WITNESS_ALPHABET * 2)[:PAGE_WITNESS_LENGTH]
+
+
+def test_smoke_accepts_two_reading_slips_but_refuses_broken_answers() -> None:
+    assert page_witness_edit_distance(f"PAGE-WITNESS: {TEST_WITNESS}", TEST_WITNESS) is not None
+    assert (
+        page_witness_edit_distance(
+            f"PAGE-WITNESS: C{TEST_WITNESS[1:20]} P{TEST_WITNESS[21:]}", TEST_WITNESS
+        )
+        is not None
+    )
+    for answer in (
+        "",
+        TEST_WITNESS,
+        f"PAGE-WITNESS: {TEST_WITNESS[:10]}",
+        f"PAGE-WITNESS: {'A' * PAGE_WITNESS_LENGTH}",
+        f"PAGE-WITNESS: {TEST_WITNESS} ",
+        f"PAGE-WITNESS: {TEST_WITNESS[:20]}!{TEST_WITNESS[21:]}",
+    ):
+        assert page_witness_edit_distance(answer, TEST_WITNESS) is None
+
+
+@pytest.mark.parametrize(
+    ("code", "distance"),
+    [
+        (TEST_WITNESS, 0),
+        ("Z" + TEST_WITNESS[1:], 1),
+        (TEST_WITNESS[:20] + "A" + TEST_WITNESS[20:], 1),
+        (TEST_WITNESS[:-1], 1),
+        (TEST_WITNESS[:-2], 2),
+    ],
+)
+def test_smoke_records_substitution_insertion_and_truncation_distance(
+    code: str, distance: int
+) -> None:
+    assert page_witness_edit_distance(f"PAGE-WITNESS: {code}", TEST_WITNESS) == distance
+    assert page_witness_edit_distance(f"PAGE-WITNESS: {code}", TEST_WITNESS) is not None
 
 
 def test_a_fresh_witness_is_one_the_smoke_callable_accepts_and_two_draws_differ(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    choices = iter(PAGE_WITNESS_ALPHABET * 2)
+    choices = iter(PAGE_WITNESS_ALPHABET * 3)
     monkeypatch.setattr(secrets, "choice", lambda _alphabet: next(choices))
     first = fresh_page_witness()
     second = fresh_page_witness()
@@ -44,8 +83,9 @@ def test_a_fresh_witness_is_one_the_smoke_callable_accepts_and_two_draws_differ(
     assert first != second
     assert len(first) == PAGE_WITNESS_LENGTH
     assert set(first) <= set(PAGE_WITNESS_ALPHABET)
-    assert set(PAGE_WITNESS_ALPHABET) == set(ascii_letters + digits) - set("IlL10OoQD")
-    assert not set(first) & set("IlL10OoQD")
+    excluded = "IlL10OoQDcCoOpPsSuUvVwWxXzZkK"
+    assert set(PAGE_WITNESS_ALPHABET) == set(ascii_letters + digits) - set(excluded)
+    assert not set(first) & set(excluded)
     assert all(first[index] != first[index + 1] for index in range(len(first) - 1))
     assert len(first) * math.log2(len(PAGE_WITNESS_ALPHABET)) >= 200
 
@@ -138,7 +178,20 @@ def test_the_witness_line_fits_inside_the_page_bounds_for_the_worst_case_width(
     # 40pt this line can overrun the page and PIL clips it silently at the
     # canvas edge; render_golden_page must shrink the font (or refuse) rather
     # than let that happen.
-    worst_case_witness = "".join("WV"[index % 2] for index in range(PAGE_WITNESS_LENGTH))
+    draw = ImageDraw.Draw(Image.new("L", (1, 1)))
+    font = ImageFont.load_default(size=40)
+    widest_pair = max(
+        (
+            (left, right)
+            for left in PAGE_WITNESS_ALPHABET
+            for right in PAGE_WITNESS_ALPHABET
+            if left != right
+        ),
+        key=lambda pair: draw.textlength(
+            "".join(pair[index % 2] for index in range(PAGE_WITNESS_LENGTH)), font=font
+        ),
+    )
+    worst_case_witness = "".join(widest_pair[index % 2] for index in range(PAGE_WITNESS_LENGTH))
     page = tmp_path / "worst-case.png"
 
     render_golden_page(page, worst_case_witness)
@@ -157,7 +210,7 @@ def test_the_witness_line_fits_inside_the_page_bounds_for_the_worst_case_width(
 def test_rendering_refuses_a_witness_that_exceeds_the_generator_length(
     tmp_path: Path,
 ) -> None:
-    too_long_witness = "".join("WV"[index % 2] for index in range(PAGE_WITNESS_LENGTH + 1))
+    too_long_witness = "".join("MY"[index % 2] for index in range(PAGE_WITNESS_LENGTH + 1))
     page = tmp_path / "too-long.png"
 
     with pytest.raises(ServingConfigurationError):

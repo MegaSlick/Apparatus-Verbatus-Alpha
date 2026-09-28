@@ -22,7 +22,7 @@ from .config import (
     profile_preflight_digest,
 )
 from .errors import ServingConfigurationError
-from .smoke import answer_is_page_witness
+from .smoke import page_witness_edit_distance
 from .witness import is_page_witness
 
 DESCRIPTION = """Verify a real-silicon preflight and render profile proof candidates.
@@ -303,9 +303,24 @@ def _verify_smoke(
     choice = choices[0]
     message = choice.get("message") if isinstance(choice, dict) else None
     answer = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(answer, str) or not answer_is_page_witness(answer, witness):
+    if "page_witness_edit_distance" not in smoke:
         raise QualificationRefusal(
-            f"chair {identity.role!r} output was not the retained page witness exactly"
+            f"chair {identity.role!r} missing edit distance "
+            "(receipt predates distance recording; re-run preflight)"
+        )
+    distance = page_witness_edit_distance(answer, witness) if isinstance(answer, str) else None
+    if distance is None:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} output was not a near transcription of the retained page witness"
+        )
+    if smoke.get("page_witness_edit_distance") != distance or isinstance(
+        smoke.get("page_witness_edit_distance"), bool
+    ):
+        raise QualificationRefusal(f"chair {identity.role!r} page-read edit distance disagrees")
+    if distance != 0:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} read the page witness with edit distance {distance}; "
+            "only an exact read can prove a profile row"
         )
     if smoke["smoke_fixture_output_sha256"] != digest_bytes(canonical_bytes([answer])):
         raise QualificationRefusal(

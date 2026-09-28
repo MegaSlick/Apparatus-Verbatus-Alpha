@@ -18,7 +18,7 @@ from .qualify import QualificationRefusal, _verified_artifact_bytes, qualificati
 from .qualify import main as qualification_main
 
 HASH = "a" * 64
-PAGE_WITNESS = "ABCEFGHJKMNPRSTUVWXYZabcdefghijkmnpqrstuvwx"
+PAGE_WITNESS = "ABEFGHJMNRTYabdefghijmnqrty23456789ABEFGHJM"
 
 
 def _write_artifact(root: Path, kind: str, value: dict[str, object]) -> dict[str, str]:
@@ -157,6 +157,7 @@ def _qualification_fixture(
                 "served_model_id": served_model_id,
                 "page_witness_sha256": witness_sha256,
                 "page_witness_matches": True,
+                "page_witness_edit_distance": 0,
                 "page_witness_reference": witness_ref,
                 "smoke_service_request_count": 1,
                 "smoke_fixture_request_count": 1,
@@ -444,10 +445,37 @@ def test_qualification_accepts_internal_witness_whitespace_with_raw_digest(tmp_p
     )
 
 
+@pytest.mark.parametrize("code", [PAGE_WITNESS[:-1], PAGE_WITNESS[:-2], PAGE_WITNESS + "A"])
+def test_qualification_refuses_near_reads_even_when_preflight_is_green(
+    tmp_path: Path, code: str
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path, answer=f"PAGE-WITNESS: {code}")
+    smokes = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"]  # type: ignore[index]
+    for smoke in smokes:
+        smoke["page_witness_edit_distance"] = abs(len(code) - len(PAGE_WITNESS))
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match="only an exact read can prove"):
+        _qualify(paths)
+
+
+def test_qualification_names_a_receipt_without_recorded_edit_distance(tmp_path: Path) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smokes = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"]  # type: ignore[index]
+    del smokes[0]["page_witness_edit_distance"]
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(
+        QualificationRefusal,
+        match=r"missing edit distance \(receipt predates distance recording; re-run preflight\)",
+    ):
+        _qualify(paths)
+
+
 @pytest.mark.parametrize(
     "answer",
     [
-        f"PAGE-WITNESS: {PAGE_WITNESS[:-1]}X",
+        f"PAGE-WITNESS: {PAGE_WITNESS[:-3]}CCC",
         f"PAGE-WITNESS: {PAGE_WITNESS} ",
         f"PAGE-WITNESS: {PAGE_WITNESS}\u200b",
     ],
@@ -455,7 +483,7 @@ def test_qualification_accepts_internal_witness_whitespace_with_raw_digest(tmp_p
 def test_qualification_refuses_other_answer_changes(tmp_path: Path, answer: str) -> None:
     paths, _ = _qualification_fixture(tmp_path, answer=answer)
 
-    with pytest.raises(QualificationRefusal, match="retained page witness exactly"):
+    with pytest.raises(QualificationRefusal, match="near transcription"):
         _qualify(paths)
 
 
