@@ -159,6 +159,7 @@ def test_clustered_logical_passes_make_one_establishing_call_and_no_capture_loca
         protocol_config={"max_images": 6},
         nuda_sampled=True,
         control_sampled=True,
+        draft_fed=True,
     )
     assert set(output) == {"lectio-prior", "lectio-nuda", "primed-without-prior", "perlectio"}
     assert [call[1] for call in reader.calls] == [
@@ -178,6 +179,10 @@ def test_clustered_logical_passes_make_one_establishing_call_and_no_capture_loca
         {"capture": B},
     ]
     assert output["perlectio"]["dossier"]["prior_draft"] == {"text": "joint ink"}
+    assert (
+        next(call[0] for call in reader.calls if call[1] == "perlectio")["prior_draft_view"]
+        == "fed"
+    )
 
 
 def test_a_withheld_prior_is_retained_after_but_not_delivered_to_the_reader():

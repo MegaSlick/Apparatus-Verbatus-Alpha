@@ -564,7 +564,8 @@ input and is digest-checked whenever the control artifact is read.
 
 The Pass-B dossier contains a digest-checked reference to the Pass-A draft and
 records whether its text was `fed` or `withheld`. The `--draft-fed` default is
-fed; B5a remains the project lead's routed production decision.
+withheld under the project lead's B5a ruling of 2026-09-28; feeding remains an
+explicit toggle.
 
 **Four reading kinds, three conditions.** `lectio-nuda` and `lectio-prior` are
 built from identical dossier arguments — page context, no Testimonia, no prior

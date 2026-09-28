@@ -201,9 +201,9 @@ def test_control_refuses_without_the_project_leads_approval_on_fixture_path(tmp_
     assert not (root / "r").exists()
 
 
-def test_draft_fed_toggle_records_both_states_and_withholds_prompt_text(tmp_path):
+def test_default_withholds_prior_draft_from_prompt_text(tmp_path):
     root = tmp_path / "runs"
-    result = _run(root, "r", "happy", "--no-draft-fed")
+    result = _run(root, "r", "happy")
     assert result.returncode == 0, result.stderr
     final = next(
         record["payload"]
@@ -361,7 +361,7 @@ def published_lectio_prior_payload(tmp_path_factory):
 def published_perlectio_payload(tmp_path_factory):
     """A real production payload for prior-reference relation forgeries."""
     root = tmp_path_factory.mktemp("perlectio-prior-relation") / "runs"
-    result = _run(root, "r", "happy")
+    result = _run(root, "r", "happy", "--draft-fed")
     assert result.returncode == 0, result.stderr
     return _records(RunTree(root, "r"), "perlectio")[0]["payload"]
 

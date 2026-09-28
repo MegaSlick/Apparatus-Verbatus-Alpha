@@ -41,7 +41,7 @@ def run_logical_passes(
     protocol_config: dict[str, Any],
     nuda_sampled: bool,
     control_sampled: bool,
-    draft_fed: bool = True,
+    draft_fed: bool = False,
     publish_prior: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Use one atomic presentation for every requested arm of one logical act.

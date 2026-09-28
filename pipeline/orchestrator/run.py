@@ -553,10 +553,10 @@ def main() -> int:
     parser.add_argument(
         "--draft-fed",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="feed the Pass-A draft to Pass B (fed) or withhold it (--no-draft-fed); "
-        "changing the default needs the project lead's permission through B5a (config/README.md, R5a toggle "
-        "register)",
+        default=False,
+        help="feed the Pass-A draft to Pass B; the default withholds it "
+        "(--no-draft-fed), as ruled by the project lead through B5a "
+        "(config/README.md, R5a toggle register)",
     )
     parser.add_argument(
         "--perlector-audit-config", default=str(DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH)
