@@ -50,6 +50,7 @@ def pod(tmp_path):
         "POD_GUARD_INTERVAL": "1",
         "POD_GUARD_IDLE_SECONDS": "2",
         "POD_GUARD_CGROUP": str(tmp_path / "cgroup"),
+        "POD_GUARD_NETDEV": str(tmp_path / "netdev"),
         "FAKE_RUNPODCTL_FAIL": "never",
         "FAKE_GUARD": str(GUARD),
     }
@@ -81,7 +82,7 @@ def test_a_pod_doing_no_work_is_deleted(pod):
     env, calls, state = pod
     run_until(["sh", str(GUARD), "5", "30"], env, lambda: "pod delete testpod" in lines(calls))
     assert "pod delete testpod" in lines(calls)
-    assert "no GPU or CPU work" in log_of(state)
+    assert "no GPU, CPU or network work" in log_of(state)
 
 
 def test_a_busy_gpu_keeps_the_pod_until_its_time_is_up(pod):
@@ -89,7 +90,7 @@ def test_a_busy_gpu_keeps_the_pod_until_its_time_is_up(pod):
     env["FAKE_GPU_UTIL"] = "80"
     run_until(["sh", str(GUARD), "0.001", "30"], env, lambda: "pod delete testpod" in lines(calls))
     assert "approved time is up" in log_of(state)
-    assert "no GPU or CPU work" not in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
 
 
 def test_a_gpu_that_cannot_report_counts_as_busy(pod):
@@ -123,7 +124,45 @@ def test_container_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
         stop.set()
         writer.join()
     assert "approved time is up" in log_of(state)
-    assert "no GPU or CPU work" not in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
+
+
+def test_network_download_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
+    env, calls, state = pod
+    netdev = tmp_path / "netdev"
+    stop = threading.Event()
+
+    def download():
+        received = 0
+        while not stop.is_set():
+            received += 5_000_000
+            netdev.write_text(
+                "Inter-|   Receive\n face |bytes packets\n"
+                f"    lo: 999 1 0 0 0 0 0 0 999 1 0 0 0 0 0 0\n"
+                f"  eth0: {received} 10 0 0 0 0 0 0 100 1 0 0 0 0 0 0\n"
+            )
+            time.sleep(0.5)
+
+    writer = threading.Thread(target=download)
+    writer.start()
+    try:
+        run_until(
+            ["sh", str(GUARD), "0.002", "30"], env, lambda: "pod delete testpod" in lines(calls)
+        )
+    finally:
+        stop.set()
+        writer.join()
+    assert "approved time is up" in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
+
+
+def test_a_deadline_more_than_a_week_out_is_ignored(pod):
+    env, calls, state = pod
+    state.mkdir()
+    (state / "deadline-testpod").write_text(f"{int(time.time()) * 1000}\n")
+    env["FAKE_GPU_UTIL"] = "80"
+    run_until(["sh", str(GUARD), "0.001", "30"], env, lambda: "pod delete testpod" in lines(calls))
+    assert "approved time is up" in log_of(state)
 
 
 def test_a_fresh_keepalive_holds_off_the_idle_delete(pod):
@@ -132,7 +171,7 @@ def test_a_fresh_keepalive_holds_off_the_idle_delete(pod):
     (state / "keepalive-testpod").touch()
     run_until(["sh", str(GUARD), "0.001", "30"], env, lambda: "pod delete testpod" in lines(calls))
     assert "approved time is up" in log_of(state)
-    assert "no GPU or CPU work" not in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
 
 
 def test_a_garbled_deadline_file_is_replaced_not_trusted(pod):
@@ -184,7 +223,7 @@ def test_the_start_command_arms_the_guard_and_keeps_the_container_up(pod):
     argv, env = start_command(env, "5")
     alive = run_until(argv, env, lambda: "pod delete testpod" in lines(calls))
     assert "armed for pod testpod" in log_of(state)
-    assert "no GPU or CPU work" in log_of(state)
+    assert "no GPU, CPU or network work" in log_of(state)
     assert alive
 
 

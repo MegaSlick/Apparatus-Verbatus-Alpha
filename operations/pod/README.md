@@ -410,8 +410,9 @@ caller, so the claim cannot be set from outside.
 `pod_guard.sh` runs on the pod and deletes that same pod when its approved time runs out
 or when it has done no work for 30 minutes: no GPU use (under 5 % at every one-minute
 sample; a GPU that cannot report counts as busy), no container CPU use (under half a core,
-from the container's own cgroup, not the shared host's load), and no touch of the pod's
-keep-alive file. It needs nothing from the laptop or a Claude session, so a crashed
+from the container's own cgroup, not the shared host's load), no download (under
+256 KB/s received), and no touch of the pod's keep-alive file. A deadline more than a week
+out is taken as a typo and ignored. It needs nothing from the laptop or a Claude session, so a crashed
 session, a closed app or a sleeping Mac cannot leave a pod billing. It uses RunPod's
 documented self-stop route: every pod has `runpodctl` and a pod-scoped `RUNPOD_API_KEY`.
 It keeps asking until the pod is gone, falls back to stopping it, and the network volume
@@ -428,8 +429,8 @@ runpodctl create pod ... --args "$(sh operations/pod/pod_start_command.sh <hours
 
 `<hours>` is the approved window and `<sha>` a commit on `main` that carries the guard.
 
-- **Work that uses neither GPU nor CPU for half an hour** (a long quiet wait that is
-  still wanted) touches `/workspace/.pod_guard/keepalive-<pod id>`.
+- **A long quiet wait that is still wanted** (no GPU, CPU or network use for half an
+  hour) touches `/workspace/.pod_guard/keepalive-<pod id>`.
 - **More time:** write the new deadline (epoch seconds) to a temporary file and move it
   over `/workspace/.pod_guard/deadline-<pod id>`; the guard and the backstop both read it.
   A pod that was stopped and is started again keeps its old deadline, so write a new one

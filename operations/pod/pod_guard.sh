@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs on a RunPod pod and deletes that same pod when its approved time runs out or when
-# it has done no work (no GPU use, no container CPU use), so a pod left behind by a crashed
+# it has done no work (no GPU, CPU or network use), so a pod left behind by a crashed
 # session or a closed laptop stops billing on its own. The network volume survives.
 #
 #   pod_guard.sh <max_hours> [idle_minutes]
@@ -20,7 +20,9 @@ interval=${POD_GUARD_INTERVAL:-60}
 idle_limit=${POD_GUARD_IDLE_SECONDS:-$((idle_minutes * 60))}
 busy_percent=${POD_GUARD_BUSY_PERCENT:-5}
 busy_cpu_percent=${POD_GUARD_BUSY_CPU_PERCENT:-50}
+busy_net_kbps=${POD_GUARD_BUSY_NET_KBPS:-256}
 cgroup=${POD_GUARD_CGROUP:-/sys/fs/cgroup}
+netdev=${POD_GUARD_NETDEV:-/proc/net/dev}
 log="$dir/guard.log"
 deadline_file="$dir/deadline-$pod"
 
@@ -38,13 +40,14 @@ limited() {
 }
 say() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$log" 2>/dev/null; }
 is_epoch() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
+# A deadline more than a week out is a typo (a millisecond value, an extra digit), not an approval.
+sane_deadline() { is_epoch "$1" && [ "$1" -le $(($(date +%s) + 7 * 86400)) ]; }
 
 deadline=$(cat "$deadline_file" 2>/dev/null)
-if ! is_epoch "$deadline"; then
+if ! sane_deadline "$deadline"; then
   deadline=$(awk -v h="$max_hours" -v now="$(date +%s)" 'BEGIN { printf "%d", now + h * 3600 }')
   printf '%s\n' "$deadline" >"$deadline_file"
 fi
-say "armed for pod $pod: deadline $deadline, idle limit ${idle_limit}s"
 
 delete_pod() {
   limited runpodctl pod delete "$pod" && return 0
@@ -113,7 +116,24 @@ cpu_usec() {
   fi
 }
 
+# Bytes this container has received on every interface but loopback: a download bound by
+# the network can use little CPU and no GPU.
+net_bytes() {
+  [ -r "$netdev" ] && awk -F'[: ]+' 'NR > 2 && $2 != "lo" { total += $3 } END { printf "%d", total }' "$netdev"
+}
+
 cpu_before=$(cpu_usec)
+net_before=$(net_bytes)
+say "armed for pod $pod: deadline $deadline, idle limit ${idle_limit}s, cpu ${cpu_before:-unreadable} usec, net ${net_before:-unreadable} bytes"
+
+net_busy() {
+  now=$(net_bytes)
+  before=$net_before
+  net_before=$now
+  is_epoch "$now" && is_epoch "$before" || return 1
+  [ $((now - before)) -ge $((interval * busy_net_kbps * 1024)) ]
+}
+
 cpu_busy() {
   now=$(cpu_usec)
   before=$cpu_before
@@ -129,13 +149,25 @@ kept_alive() {
 idle_for=0
 while :; do
   latest=$(cat "$deadline_file" 2>/dev/null)
-  if is_epoch "$latest"; then deadline=$latest; fi
+  if [ "$latest" != "$deadline" ] && [ "$latest" != "${ignored-}" ]; then
+    if sane_deadline "$latest"; then
+      deadline=$latest
+      say "deadline now $deadline"
+    else
+      ignored=$latest
+      say "ignored deadline file value '$latest'"
+    fi
+  fi
   if [ "$(date +%s)" -ge "$deadline" ]; then shut_down "approved time is up"; fi
-  if cpu_busy || gpu_busy || kept_alive; then
+  cpu_busy
+  cpu=$?
+  net_busy
+  net=$?
+  if [ "$cpu" -eq 0 ] || [ "$net" -eq 0 ] || gpu_busy || kept_alive; then
     idle_for=0
   else
     idle_for=$((idle_for + interval))
-    if [ "$idle_for" -ge "$idle_limit" ]; then shut_down "no GPU or CPU work for ${idle_for}s"; fi
+    if [ "$idle_for" -ge "$idle_limit" ]; then shut_down "no GPU, CPU or network work for ${idle_for}s"; fi
   fi
   sleep "$interval"
 done
