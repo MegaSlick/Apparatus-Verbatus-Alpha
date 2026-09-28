@@ -13,12 +13,14 @@ The documented store root is
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
 import stat
 import tempfile
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -233,6 +235,23 @@ def materialize_real_roster(
     """
 
     root = Path(store_root).resolve()
+    with _materialization_lock(root):
+        return _materialize_real_roster_locked(root, fetcher)
+
+
+@contextmanager
+def _materialization_lock(root: Path):
+    """Keep the staging sweep and the final verification under one store-wide lock."""
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / ".materialize.lock").open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _materialize_real_roster_locked(root: Path, fetcher: MaterializationFetcher) -> dict[str, Any]:
     record = _initial_materialization_record()
     active = root / "download_record.json"
     if active.exists():

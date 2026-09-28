@@ -6,6 +6,8 @@ import json
 import os
 import re
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import replace
 from pathlib import Path
 
@@ -980,9 +982,33 @@ def test_materializer_joins_a_loaded_record_to_the_roster_before_indexing_it(tmp
 def test_materializer_clears_leftover_staging_before_fetch(tmp_path):
     staging = tmp_path / "staging"
     staging.mkdir()
-    (staging / ".other-materializer.fetch-live").mkdir()
+    (staging / ".abandoned.fetch-leftover").mkdir()
 
     receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+
+    assert receipt["unattributed_staging_entries"] == []
+    assert list(staging.iterdir()) == []
+
+
+def test_materializer_waits_for_store_lock_before_sweeping_staging(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    live = staging / ".other-materializer.fetch-live"
+    live.mkdir()
+    started = threading.Event()
+
+    def second_writer():
+        started.set()
+        return materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with model_store._materialization_lock(tmp_path):
+            future = workers.submit(second_writer)
+            assert started.wait(timeout=5)
+            with pytest.raises(TimeoutError):
+                future.result(timeout=0.2)
+            assert live.is_dir()
+        receipt = future.result(timeout=10)
 
     assert receipt["unattributed_staging_entries"] == []
     assert list(staging.iterdir()) == []

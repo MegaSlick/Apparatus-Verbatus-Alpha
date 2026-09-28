@@ -763,9 +763,11 @@ def test_a_per_call_cache_cleanup_failure_does_not_fail_the_fetch(tmp_path, monk
             (source / "model.safetensors").write_bytes(b"pinned bytes")
             return source
 
-    def refuse_cleanup(path, ignore_errors=False):
-        if not ignore_errors:
-            raise PermissionError("cache cleanup denied")
+    cleanup_calls = []
+
+    def refuse_cleanup(path, **kwargs):
+        cleanup_calls.append(path)
+        raise PermissionError("cache cleanup denied")
 
     monkeypatch.setattr("common.chairs.registry.shutil.rmtree", refuse_cleanup)
     destination = tmp_path / "staging"
@@ -775,6 +777,8 @@ def test_a_per_call_cache_cleanup_failure_does_not_fail_the_fetch(tmp_path, monk
         "fixture-org/pinned", "a" * 40, destination
     )
     assert (destination / "model.safetensors").read_bytes() == b"pinned bytes"
+    assert cleanup_calls == [Path(f"{destination}.huggingface-cache")]
+    assert Path(f"{destination}.huggingface-cache").exists()
 
 
 @pytest.mark.hostile_local
