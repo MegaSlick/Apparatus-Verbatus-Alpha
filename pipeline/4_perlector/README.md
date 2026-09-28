@@ -3,8 +3,8 @@
 R5a adds the retained prior-draft protocol: universal `lectio-prior`, optional
 `primed-without-prior` control, and the production Perlectio. They are separate
 artifact kinds and attempt operations. Nuda remains its own un-fed instrument.
-Only the explicitly `primed-with-prior` Perlectio may cross the Archetypus
-boundary.
+Only the production Perlectio (`primed-with-prior` or `primed-draft-withheld`) may
+cross the Archetypus boundary.
 
 Reads the ink and establishes the text.
 
