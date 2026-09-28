@@ -1246,8 +1246,8 @@ def test_projection_identity_refuses_a_self_consistent_package_with_drifted_unce
     A writer that changed only `uncertainty` -- never touching `canonical_clean_text`
     or its hash -- would pass the literal-text identity check by construction: the
     text is untouched. Uncertainty is a projected reading beside that text, not a
-    decoration this guarantee ignores, so a format that silently drifted on it
-    alone must fail identity exactly as a drifted literal would (U3).
+    decoration outside the one-reading guarantee, so a format that silently
+    drifted on it alone must fail identity exactly as a drifted literal would.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
@@ -1713,8 +1713,8 @@ def test_a_full_text_index_poisoned_with_terms_no_act_carries_is_refused(tmp_pat
     every `act_search` column and the fold's own terms exactly as sealed, so a
     per-row phrase probe still finds what it went looking for. The recipient's
     search, meanwhile, now returns this act for words the Archetypus never
-    established -- a second reading of the act inside the same package, which is
-    so the export would no longer show one reading per act.
+    established -- a second reading of the act inside the same package, when
+    every format must show one reading per act.
     """
     tampered = _resealed_acts_database(
         tmp_path,
@@ -1800,7 +1800,7 @@ def test_an_established_reading_that_folds_to_no_search_token_still_publishes(tm
     on every code point. A reading made only of characters in that gap folds to a
     non-empty key that tokenizes to nothing, which a per-row phrase probe reads as
     a missing index entry -- and the whole export died, naming a tampered index
-    that was never tampered with. goal 2: an act refused at the terminal gate for
+    that was never tampered with. An act refused at the terminal gate for
     an instrument's own disagreement is an act that does not leave the pipeline.
     """
     projection = _projection()
@@ -3011,9 +3011,9 @@ def test_a_display_that_does_not_strip_back_to_the_canonical_field_is_refused(tm
     """Spec 11 test 2's rendered half, on the written product.
 
     A display convention that changed the reading -- rather than annotating it --
-    would be a second text leaving the pipeline -- exactly what "one text
-    everywhere" forbids. The
-    verifier strips the rendering and requires the canonical field back exactly.
+    would be a second text leaving the pipeline, when every export must show the
+    same established reading. The verifier strips the rendering and requires the
+    canonical field back exactly.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
@@ -4357,7 +4357,7 @@ def test_the_export_names_every_instrument_of_this_build_exactly_once_in_order()
     assert [row["instrument"] for row in block["entries"]] == list(NOT_MEASURED_INSTRUMENTS)
     for row in block["entries"]:
         assert set(row) == {"instrument", "status", "detail", "recorded_in"}
-        # Where a reader goes to check the row against the evidence (goal 4).
+        # Where a reader goes to check the row against the evidence.
         assert row["recorded_in"].strip()
     assert (
         _entry(block, "page-testimony-content-coverage")["recorded_in"]

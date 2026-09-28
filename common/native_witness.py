@@ -381,7 +381,8 @@ def validate_observed(
 
     A span addresses this Testimonium's exact retained string in code points,
     never the normalized alignment view. It may be null, but it may not name an
-    offset the record cannot answer (goal 4).
+    offset the record cannot answer, so every span stays checkable against
+    the record.
     """
     if not isinstance(value, list):
         raise SchemaRefusal("a Testimonium observed block is not a list")
@@ -501,8 +502,9 @@ def validate_presented_page_binding(
 ) -> None:
     """Bind a presentation to the sealed page it names.
 
-    Otherwise a record could name page 1 while carrying page 2's pixels (goal 4).
-    An adapter-crop must re-derive its digest from the sealed page bytes.
+    Otherwise a record could name page 1 while carrying page 2's pixels,
+    breaking the trace back to the source page. An adapter-crop must
+    re-derive its digest from the sealed page bytes.
     """
     kind = presented["kind"]
     whole_page = {"x": 0, "y": 0, "w": page_size[0], "h": page_size[1]}
@@ -649,7 +651,8 @@ def validate_page_testimonium_payload(
     validate_unpresented_regions(payload)
     validated = validate_native_witness_geometry(payload)
     # The page spoken for and the page shown must agree, or a consumer keying on
-    # `page_ordinal` reads another page's geometry (goal 4).
+    # `page_ordinal` reads another page's geometry, breaking the trace back
+    # to the source page.
     presented = payload["presented"]
     if presented and presented["source_page_ordinal"] != payload["page_ordinal"]:
         raise SchemaRefusal(

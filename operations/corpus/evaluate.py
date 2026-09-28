@@ -18,7 +18,7 @@ each page's comparison record so a reader can see which pairs were eligible.
 Two aggregate rates: the matched-pairs rate is the arithmetic of the pairs the
 assignment made, so a record the pipeline never found affects it not at all. The
 second rate additionally counts every missed record's reference units as
-deletions, since GOALS 1 says a missed act is worse than a poorly read one — this
+deletions, since a missed act is worse than a poorly read one — this
 is the number a capture failure actually moves. Neither rate counts a
 not-attempted record; `reference_records_not_attempted` is where a reader sees
 that coverage gap.
@@ -593,7 +593,7 @@ def evaluate_run(
         for act in reference["acts"]:
             pair = matched.get(act["physical_act_id"])
             if pair is None:
-                # GOALS 1: the act nobody found. It scores nothing in the
+                # The act nobody found. It scores nothing in the
                 # matched-pairs rate and its whole reference in the other.
                 _accumulate(
                     cer_with_missed,

@@ -120,7 +120,7 @@ def assert_resized_pixels_within_trained_geometry(
     training range (Model card "Parameters", ``processor_config.json``) reads
     a page at the wrong scale with no error anywhere else -- the same
     silent-drop failure mode as an unrecognised ``mm_processor_kwargs``,
-    GOALS 2's worst-rated failure.
+    the worst-rated kind of failure.
     """
 
     if resized_width <= 0 or resized_height <= 0:

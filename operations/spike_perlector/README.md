@@ -204,7 +204,7 @@ real controversy.
 
 ### Predeclared normalization decision
 
-Long-s/allographic handling can favour a candidate, so this protocol selects and hashes `graphemic-v1` before the first real run. It treats long-s as an allograph of round `s` while preserving historic spelling, which serves GOALS 2's comparison “against the ink itself” better than charging a model for two glyph forms of the same letter. The alternative `allographic-v1` definition remains closed for synthetic comparison but is refused at the real-run boundary. `i/j`, `u/v`, `œ/æ`, diacritics, and historic spelling stay significant. No hidden normalization knob may change after results appear.
+Long-s/allographic handling can favour a candidate, so this protocol selects and hashes `graphemic-v1` before the first real run. It treats long-s as an allograph of round `s` while preserving historic spelling, which serves the comparison against the ink itself better than charging a model for two glyph forms of the same letter. The alternative `allographic-v1` definition remains closed for synthetic comparison but is refused at the real-run boundary. `i/j`, `u/v`, `œ/æ`, diacritics, and historic spelling stay significant. No hidden normalization knob may change after results appear.
 
 ## 7. Exact CER/WER and response states
 

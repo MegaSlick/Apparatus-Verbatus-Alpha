@@ -161,7 +161,7 @@ _MAX_DOCUMENT_DEPTH: Final = 256
 # Whitespace, for the purpose of collapsing an indented answer, means ASCII
 # whitespace and nothing else. A non-breaking space or any other Unicode space
 # a model writes is a character it wrote, and this parser does not rewrite it
-# into a plain space (goal 1).
+# into a plain space: the exact character read is part of the reading.
 _ASCII_WHITESPACE: Final = " \t\n\r\f\v"
 _WHITESPACE_RUN: Final = re.compile(f"[{re.escape(_ASCII_WHITESPACE)}]+")
 # What this parser can conclude.  `not-requested` and `pending` are states of

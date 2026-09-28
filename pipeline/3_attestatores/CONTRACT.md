@@ -332,7 +332,7 @@ established.
 The deadline is what changed. An
 unaligned page witness is not `comparable`, so it leaves the act's witness floor
 -- which means a deadline short enough to fire on real work records a *slow
-comparison* as coverage that is missing (goal 2). `config/alignment.toml` now
+comparison* as coverage that is missing. `config/alignment.toml` now
 carries 25 s rather than 5 s.
 
 The number is chosen from the legitimate ceiling, not from the pathological one,
@@ -623,7 +623,7 @@ it. The Designator, asked the same question, held the single page and published
 the rest. That asymmetry is closed: `run.py::capacity_refusal_attempt` records
 the refusal as this attempt's own `outcome="failed"`, in the same shape an
 empty or malformed response takes, and the pass moves to the next unit. A
-missed act is worse than a poorly read one (goal 2), and one page's arithmetic
+missed act is worse than a poorly read one, and one page's arithmetic
 is no reason to lose another page's reading.
 
 What that record says, and what it refuses to say: the **no-response** health,
@@ -746,8 +746,8 @@ asserted through the other.
 page text is exactly its two acts reaches `delivered`. Nothing follows about a
 real page. A real register carries headers, folio
 numbers and marginalia no proposal covers; Churro will transcribe them, and that
-page will hold on content coverage. That is the rule working (goal 2; nothing
-lost silently), not a regression to repair by loosening a floor.
+page will hold on content coverage. That is the coverage guarantee working,
+not a regression to repair by loosening a floor.
 
 **The offline posture still delivers, and the two diverge on one declared row.**
 `proof/skeleton_fixture.toml`'s `[[native_observation]]` for `attestator_3`
@@ -1241,8 +1241,8 @@ Archetypus and Armarium each enforce). Witness testimony never moves it.
 That is a decision, not an omission. A Testimonium is a clue that primes a
 reading, never the ink the reading is established from (ARCHITECTURE),
 so a second look by a witness does not make a second reading exist — and
-re-reading an act because a witness spoke again is the re-roll recovery —
-coverage, never quality — refuses. The alternatives were weighed and rejected: advancing the ordinal on any
+re-reading an act because a witness spoke again is a re-roll, and recovery
+restores coverage, never quality. The alternatives were weighed and rejected: advancing the ordinal on any
 new current evidence makes witness quality a loop variable at the four stages that
 decide whether text may be established, and deleting the reread outright leaves
 the whole pass as the only retry, which costs every chair on every act its
@@ -1259,7 +1259,7 @@ reading can be pending even on a closed act): it is that a witness is only ever
 shown the act's *original proposal crop* (`proposed_regions`; the Perlector
 refuses testimony naming a recovery crop), so a second look can only ever add
 priming, never coverage — and re-reading because a witness spoke again is
-the re-roll recovery — coverage, never quality — refuses. Mechanically, the Perlector would also recompute the
+a re-roll, and recovery restores coverage, never quality. Mechanically, the Perlector would also recompute the
 same ordinal, build a different payload, and meet its own immutable record. A held act's or an
 absent chair's `not-run` reading cites no testimony and closes nothing. A pass
 that only repeats attempts already sealed is a resume and is untouched.
@@ -1343,7 +1343,7 @@ pages come from the sealed proposal facts instead — its own `page_ordinal` plu
 the fixture's declared continuation page. A refused crop was never shown to a
 witness, but the page-level non-reading Testimonium is still published for every
 page it covered: turning an isolated crop failure into a page that vanishes from
-the denominator is the silent loss goal 2 is about.
+the denominator is the exact silent loss this pipeline exists to catch.
 
 `page_role` is written by a producer that holds one page's whole act list, and
 read back by two stages that hold different amounts of it. The Perlector holds

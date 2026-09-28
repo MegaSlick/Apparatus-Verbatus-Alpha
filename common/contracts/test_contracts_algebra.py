@@ -383,7 +383,7 @@ def test_attribution_naming_an_act_or_a_page_the_run_never_had_is_fatal():
 
 
 def test_an_edge_hold_forces_partial_and_names_the_page_once():
-    """Nothing lost silently, at page scope: a held page counted as one page.
+    """A page is never lost silently, even when held: a held page counted as one page.
 
     A page whose edge ink no Designator crop claimed keeps the run partial even
     when every act cut from it was delivered, because no act can own that ink
@@ -524,7 +524,7 @@ def test_aggregate_reason_order_does_not_depend_on_mapping_insertion_order():
 
 
 def test_under_witnessed_coverage_forces_partial_even_when_every_act_delivered():
-    """The strict reading of "nothing is lost silently", queued for the project lead in spec 01: an act
+    """The strict reading of "nothing is lost silently": an act
     delivered on two live chairs against a floor of three stays `delivered`, and
     the run says partial with the shortfall named. The act's own category is
     untouched — witness coverage never demotes text."""
@@ -579,7 +579,7 @@ def test_a_fully_sealed_census_leaves_a_complete_run_complete():
 
 
 def test_a_refused_page_forces_partial_and_names_the_loss():
-    """Nothing lost silently, at page granularity. Before this, the seal was the only
+    """A page is never lost silently, at any granularity. Before this, the seal was the only
     conservation authority and it never mentioned pages: a run that lost a whole
     page at the door could still report `status: complete, reasons: []`."""
     aggregate = run_aggregate(

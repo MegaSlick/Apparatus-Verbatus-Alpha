@@ -1026,12 +1026,12 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
     which is why it is now asserted BY NAME below rather than left to
     `reasons == []` to imply.
 
-    **A delivered offline e2e is not a proven pipeline** (hard
-    rule 1). The claim is that one scripted run over a fixture whose page text
-    is exactly its two acts reaches `delivered`, and nothing more. A real
-    register page carries headers, folio numbers and marginalia the Designator
-    did not propose; Churro will transcribe them; that page will hold on content
-    coverage, and that is the rule working (goal 2), not a regression.
+    **A delivered offline e2e is not a proven pipeline.** The claim is that
+    one scripted run over a fixture whose page text is exactly its two acts
+    reaches `delivered`, and nothing more. A real register page carries
+    headers, folio numbers and marginalia the Designator did not propose;
+    Churro will transcribe them; that page will hold on content coverage, and
+    that is coverage working as intended, not a regression.
     """
     assert live_seam.tail == {
         "pipeline/5_recensor/run.py": EXIT_COMPLETE,

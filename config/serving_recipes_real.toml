@@ -82,7 +82,7 @@
 #
 # `max_pixels` is deliberately NOT reduced to fit a smaller context.  Cutting
 # pixels to fit a context trades a measurable refusal for an unmeasurable
-# misreading, which goal 2 does not permit; the lever that works is the
+# misreading, and that trade is never made here; the lever that works is the
 # context, and each chair's is now sized to what its own trained geometry
 # needs.
 #

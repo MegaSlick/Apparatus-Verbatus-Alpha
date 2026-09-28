@@ -1897,8 +1897,8 @@ def test_captured_page_attempt_real_churro_adapter_still_reads_the_retired_envel
     """Retained history parses, and says on the record that it is history.
 
     A bare `<output>` body is the framing this chair no longer sends. It still
-    reads -- throwing a page of ink away over an envelope would be the loss
-    goal 2 refuses -- and the capture carries `retired-output-envelope` so a
+    reads -- throwing a page of ink away over an envelope would be exactly the
+    loss this pipeline refuses -- and the capture carries `retired-output-envelope` so a
     shape nobody asked for is visible rather than silent.
     """
     response, _, blob_store = _read_one(

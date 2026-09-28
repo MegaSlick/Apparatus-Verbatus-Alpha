@@ -191,7 +191,7 @@ kinds of damage — `uncertain` against `uncertain_spans`, `illegible` against `
 each carries a fact the other's schema cannot hold: a `certainty` of `unknown` has no
 canonical equivalent, and a canonical gap's `position`, `chair` and `testimonium_id` have
 no place on an `illegible` note. Folding one into the other would therefore lose evidence,
-which is not allowed, so both are sealed and both travel. They cannot
+and evidence is never discarded, so both are sealed and both travel. They cannot
 contradict each other into silence because `text_status` is the union of the two: either
 one recording unread ink makes the record `partial`.
 

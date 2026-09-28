@@ -1223,7 +1223,7 @@ def test_a_request_the_sealed_row_cannot_hold_costs_that_attempt_and_not_the_pas
     """The Attestatores hold per request, exactly as the Designator already did.
 
     A pre-send capacity refusal becomes this attempt's own failure, and the
-    pass carries on: a missed act is worse than a poorly read one (goal 2), so
+    pass carries on: a missed act is worse than a poorly read one, so
     one oversized request must not cost every other page's testimony.
 
     Both scopes at once: DAI is act-scoped and Churro page-scoped, their rows
@@ -2809,7 +2809,7 @@ def test_the_retired_envelope_reads_and_attaches_on_its_anchor_line(live_run, tm
     for, and the capture carries `retired-output-envelope` so the arrival of a
     shape nobody asked for is visible. It still parses, still
     retains, and still aligns to the anchor -- throwing a page of ink away over
-    an envelope would be the loss goal 2 refuses. It carries no coordinates, so
+    an envelope would be exactly the loss this pipeline refuses. It carries no coordinates, so
     its only observation is the `presented` echo routing and coverage exclude
     (asserted below as the counterfactual: no reported geometry here for any
     derivation to read), and it attaches instead on the `anchor-line` basis --

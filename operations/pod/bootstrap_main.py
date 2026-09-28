@@ -1509,8 +1509,8 @@ def _write_refusal_report(
     legitimately nowhere yet to write it (``report_path`` is ``None``); any
     other case returns a description of the failure, so the caller (``refuse``)
     can name it rather than letting the durable record's own absence go
-    unmentioned -- nothing lost silently binds this failure too, not only the
-    refusal it was trying to record.
+    unmentioned -- this failure must be named too, not only the refusal it
+    was recording.
     """
 
     if report_path is None:

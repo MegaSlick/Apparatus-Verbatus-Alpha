@@ -609,8 +609,8 @@ def test_the_instrument_records_carry_the_doubt_report_too(tmp_path):
     below raises each to 1000 per mille with its approval reference exactly as
     `test_prior_protocol.py` does. Named because the first version of this test
     ran the plain `happy` scenario and looped over two empty collections: two
-    assertions that never executed and read as a pass (the
-    independent review of 2026-09-11).
+    assertions that never executed and read as a pass, caught by independent
+    review.
     """
     root = tmp_path / "runs"
     perlector = load_stage("4_perlector")

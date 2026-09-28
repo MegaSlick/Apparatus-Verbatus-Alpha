@@ -367,7 +367,7 @@ def test_every_matched_span_names_text_that_is_actually_equal(witness, anchor, e
     bookkeeping. A matcher that returned nothing at all would satisfy every
     assertion in the loop below while turning aligned records into `unaligned`
     ones -- and an unaligned page witness leaves the act's witness floor, so
-    the silent-empty regression costs coverage (goal 2) exactly where this
+    the silent-empty regression costs coverage exactly where this
     file is meant to be watching. Only the two empty-input rows may return
     nothing.
     """
@@ -465,8 +465,8 @@ def test_the_page_that_set_the_deadline_still_aligns_under_the_sealed_limits():
 
     A fired deadline is `unaligned`, an unaligned page witness is not
     `comparable`, and an incomparable chair leaves the act's witness floor -- so
-    a comparison that is merely slow is recorded as coverage that is missing
-    (goal 2). The input below is 7,500 characters of register prose whose acts
+    a comparison that is merely slow is recorded as coverage that is missing.
+    The input below is 7,500 characters of register prose whose acts
     repeat one formula verbatim, which is what a scribe copying one form
     actually produces, and which is the shape Ratcliff-Obershelp works hardest
     on. It measures 10.1 s: under a shorter deadline it came back `unaligned`,

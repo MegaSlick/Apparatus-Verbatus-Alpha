@@ -231,7 +231,7 @@ def test_grayscale_rows_refuses_a_transparent_page_rather_than_counting_it_as_in
 def test_grayscale_rows_still_reads_a_page_whose_alpha_channel_says_nothing() -> None:
     """The refusal is about transparency, not about the presence of a channel: a
     fully opaque alpha channel loses nothing, and refusing it would cost a page
-    for no reading at all (goal 2)."""
+    for no reading at all."""
     opaque = BytesIO()
     Image.new("RGBA", (2, 1), (10, 10, 10, 255)).save(opaque, format="PNG")
 
@@ -347,7 +347,7 @@ def test_every_16bit_mode_scales_rather_than_refusing_the_page(mode: str, byte_o
     Pillow 12.3.0 compiles a callable `point` for `I`, `I;16` and `F` only; the
     three byte-order spellings raise `ValueError("point operation not supported
     for this mode")` before a pixel is read, which `grayscale_rows` re-worded as
-    "not a decodable image" and turned into a dropped page (goal 2). Measured,
+    "not a decodable image" and turned into a dropped page. Measured,
     not assumed: this parametrisation failed on `I;16L`, `I;16B` and `I;16N`
     before the fix and passes on all four after it.
 
@@ -519,7 +519,7 @@ def test_a_palette_whose_used_entries_are_opaque_still_reads() -> None:
     """The refusal is about a transparent entry the page actually draws with.
 
     An opaque palette reads, and so does a page whose transparent entry nothing
-    on it references — refusing either would cost an act (goal 2) for a byte
+    on it references — refusing either would cost an act for a byte
     that changes no pixel.
     """
     assert list(_grayscale_samples(_palette_page((255,) * 4, (0, 1, 2, 3))).tobytes()) == [

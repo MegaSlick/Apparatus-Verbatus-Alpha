@@ -1469,7 +1469,7 @@ def _validate_uncertainty_projection(
         agrees = published == expected_uncertainty
     if not agrees:
         raise SchemaRefusal(f"reading of {act_id} disagrees with its audit uncertainty projection")
-    # A gap is unread ink (goal 2): outside `assessed`, only the whole-act gap of a
+    # A gap is unread ink: outside `assessed`, only the whole-act gap of a
     # `no-readable-text` outcome may appear.
     gaps = payload.get("gaps")
     if not isinstance(gaps, list):

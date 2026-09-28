@@ -33,8 +33,8 @@ _SPAN_FIELDS: Final = frozenset({"start", "end", "alternatives", "confidence"})
 _GAP_FIELDS: Final = frozenset({"position", "start", "end", "witness_evidence"})
 # A gap's evidence names the chair, what it reported, and *which artifact said
 # so*. The chair alone is a claim about a witness; the digest-checked reference
-# is the witness's own sealed record, which is what goal 4 means by a result
-# returning to the witnesses that saw it. Without it a displayed
+# is the witness's own sealed record, so a result can be traced back to the
+# witnesses that saw it. Without it a displayed
 # "(illegible -- witnesses agree: Chair-A)" cannot be traced back to the
 # Testimonium it came from.
 _EVIDENCE_FIELDS: Final = frozenset({"chair", "testimonium_id", "reference", "variant"})

@@ -1170,8 +1170,8 @@ def _tree_snapshot(root: Path) -> dict[str, str]:
 
     Each bound the preparer enforces tells the operator that nothing was written.
     That is a statement about the approved tree, and until it is compared against
-    the tree it is a statement the suite takes on trust -- exactly the shape
-    an honest measurement refuses, since a preparer that had already laid down part of the
+    the tree it is a statement the suite takes on trust -- exactly a claim
+    taken on trust rather than checked, since a preparer that had already laid down part of the
     ready folder would still print it.
     """
     return {

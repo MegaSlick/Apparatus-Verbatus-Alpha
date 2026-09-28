@@ -249,7 +249,7 @@ def test_two_acts_on_one_page_never_claim_the_same_page_witness_bytes(run_tree, 
     """F-X2. A span is a provenance claim about which of this chair's characters
     belong to this act. Two acts asserting the identical range of one page
     reading is not a partition of that reading, it is the same claim made
-    twice, and goal 4 asks every result to return to the exact ink it came
+    twice, and every result must return to the exact ink it came
     from.
 
     Strengthened on the P2 review from identity to disjointness: two acts

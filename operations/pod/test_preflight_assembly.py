@@ -3,7 +3,7 @@
 A fixture-only run legitimately carries the note "fixture-only result; no real
 chair or GPU assembly is proven". On a rented card that same note would be a
 false record of a paid measurement: the receipt disowns the one measurement
-the pod was rented to make. Understatement binds as much as
+the pod was rented to make. An understatement is as untrue as an
 overstatement -- claims are made only about what was actually measured, and
 "nothing was measured" is itself a claim.
 

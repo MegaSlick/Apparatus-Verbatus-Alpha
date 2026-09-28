@@ -183,8 +183,8 @@ the 72-DPI floor stay in code. **300 rests on geometry, not on measured accuracy
 it was chosen from line pitch and x-height against
 real material, and because a 400-DPI page exceeds the reading models' own resize
 ceiling while costing 1.78x the pixels to render, store and keep until export. It has
-still never been checked against reading accuracy on an approved real sample, which a
-small real test ought to settle before this scales further. The reasoning is in
+still never been checked against reading accuracy on an approved real sample, and
+that must hold on a small real test before any run at scale. The reasoning is in
 `config/pdf_render.toml`'s own header.
 
 ## Door `kind="admission"`

@@ -197,8 +197,8 @@ class RecordingTransport:
         ``Exception`` and reports ``PROVIDER_FAILURE`` with no pod identity
         and no lease, when in fact a pod was created and is now billing
         unleashed. So a recorder failure is caught here, named loudly on
-        stderr, nothing lost silently, and never allowed to
-        stand in for the provider's own exception.
+        stderr so nothing is lost, and never allowed to stand in for the
+        provider's own exception.
         """
 
         try:

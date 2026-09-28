@@ -473,8 +473,8 @@ def build_dossier(
         raise SchemaRefusal("a prior-draft view cannot exist without its referenced draft")
     # Swept before the digest is taken: a preference-bearing field sealed into
     # the digest is already in the record by the time anyone could object. This
-    # is the guard that keeps anything from picking, so it runs on the production path
-    # and not only in the tests.
+    # is the guard that keeps a witness preference out of the dossier, so it
+    # runs on the production path and not only in the tests.
     assert_no_order_bearing_field(dossier)
     dossier["dossier_digest"] = digest_of(dossier)
     return dossier

@@ -164,8 +164,8 @@ def _refuse_generation_that_cannot_be_recorded_as_sent(
 class ReceiptDriftRefusal(ServingError):
     """The receipt re-read after start no longer names this chair's exact identity.
 
-    The record itself protects the past, applied at the moment a client is
-    about to start reading against it.
+    Nothing may retroactively change what the receipt recorded, so this fires
+    at the moment a client is about to start reading against it.
     """
 
     def __init__(self, code: str, detail: str) -> None:

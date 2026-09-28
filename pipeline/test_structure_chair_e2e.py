@@ -1235,8 +1235,8 @@ def test_a_resumed_live_pass_keeps_the_page_it_fell_back_to_tiles_on(designated,
     therefore subtracts the page's own tiles from themselves, finds nothing
     uncovered, mints no act, and seals a denominator one act shorter than the
     one the first pass sealed — an immutable `proposal-seal` that no longer
-    accounts for crops sitting on disk, which breaks both the no-silent-loss
-    rule and invariant 8. The page's own fallback act is excluded from its claim set for
+    accounts for crops sitting on disk, letting a page vanish silently and
+    breaking invariant 8. The page's own fallback act is excluded from its claim set for
     exactly that reason, so the grid is the same on every pass.
     """
     run_root = fresh_tree(designated, tmp_path)
@@ -1277,7 +1277,7 @@ def test_a_pass_interrupted_after_its_fallback_tiles_seals_them_on_the_resume(
     the same denominator: a seal that silently dropped `page-fallback:2` would
     exit 0 over a run whose next stage refuses it as an unaccounted act, and
     the seal's own immutability would make every later pass reproduce the same
-    short denominator (goal 2).
+    short denominator.
     """
     run_root = fresh_tree(designated, tmp_path)
     world = StructureWorld(

@@ -549,8 +549,9 @@ def test_a_refusal_report_write_failure_is_named_not_swallowed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A refusal that also fails to leave its durable reason must not exit
-    like a clean one. Nothing lost silently binds the write failure too: it
-    must be named on stderr, and the refusal exit code stays exactly what it was.
+    like a clean one. This failure must be named too, not only the refusal
+    it was recording: it goes to stderr, and the refusal exit code stays
+    exactly what it was.
     """
 
     ws = _workspace(tmp_path)

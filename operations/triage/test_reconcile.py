@@ -28,8 +28,8 @@ def _tree_snapshot(root: Path) -> dict[str, str]:
 
     Each path guard in `_canonical_distinct_paths` tells the operator that nothing
     was written. That is a statement about this directory, and until it is compared
-    against the directory it is a statement the suite takes on trust -- exactly the
-    shape an honest measurement refuses, since a pass that published the disagreement
+    against the directory it is a statement the suite takes on trust -- exactly a
+    claim taken on trust rather than checked, since a pass that published the disagreement
     document and then refused would still print it.
     """
     return {
@@ -232,7 +232,7 @@ def test_a_fact_only_one_seat_reported_keeps_that_seat_s_act_enumeration():
 
     A frame only one seat reported on is where an act is likeliest to be lost, so
     the missing-fact record carries that seat's whole enumeration as the coverage
-    denominator and names who reported it. GOALS 1 ranks a missed act above a
+    denominator and names who reported it. A missed act is worse than a
     poorly read one; recording only "missing-fact" would drop both acts silently.
     """
     verdicts = [

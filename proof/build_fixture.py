@@ -1089,7 +1089,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "# Under `blank-with-dissent` only two of three chairs agree -- the third",
         "# reads real text -- so the identical Perlector finding must instead be",
         "# held for review: a single dissenting witness is exactly the",
-        "# disagreement goal 2 says may never be silently resolved.",
+        "# disagreement that must never be silently resolved.",
         "",
         "[[reading_failure]]",
         'scenario = "confirmed-blank"',
