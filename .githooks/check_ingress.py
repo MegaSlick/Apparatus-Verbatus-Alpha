@@ -15,11 +15,13 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import tomllib
 from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
+from typing import IO
 
 NORMAL_MAX_BYTES = 1_048_576
 FIXTURE_MAX_BYTES = 25 * 1_048_576
@@ -245,15 +247,18 @@ class GitObjects:
 
     def __init__(self):
         self._processes: dict[str, subprocess.Popen] = {}
+        self._errors: dict[str, IO[bytes]] = {}
 
     def _header(self, mode: str, oid: str) -> tuple[subprocess.Popen, str, int]:
         process = self._processes.get(mode)
         if process is None:
+            # Git's errors go to a file, so a long error stream cannot fill a pipe and stall.
+            errors = self._errors[mode] = tempfile.TemporaryFile()
             process = self._processes[mode] = subprocess.Popen(
                 ["git", "cat-file", mode],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=errors,
             )
         try:
             process.stdin.write(oid.encode("ascii") + b"\n")
@@ -262,8 +267,13 @@ class GitObjects:
             pass
         fields = process.stdout.readline().split()
         if len(fields) != 3 or fields[0] != oid.encode("ascii"):
-            # No reply means Git exited, so its stderr is complete and says why.
-            reason = fields[-1] if fields else process.stderr.read()
+            # No reply means Git exited, so its error file is complete and says why.
+            if fields:
+                reason = fields[-1]
+            else:
+                process.wait()
+                self._errors[mode].seek(0)
+                reason = self._errors[mode].read()
             detail = reason.decode("utf-8", "replace").strip() or "no reply"
             raise ScanFailure(f"git cat-file {mode} could not read {oid[:12]}: {detail}")
         try:
@@ -287,7 +297,10 @@ class GitObjects:
     def close(self) -> None:
         for process in self._processes.values():
             process.communicate()
+        for errors in self._errors.values():
+            errors.close()
         self._processes.clear()
+        self._errors.clear()
 
 
 OBJECTS = GitObjects()

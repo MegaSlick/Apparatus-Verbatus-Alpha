@@ -21,7 +21,8 @@ The project lead decides:
   before any pod work. Use the smallest card that does the job: debug one stage or a
   small model (DAI, Churro) on a small card at around $0.50 an hour, and ask for a
   larger budget only for end-to-end runs that need the 27B Perlector;
-- declaring anything proven, excluding material, publishing or deploying;
+- declaring anything proven, when a small test is good enough to scale, excluding
+  material, publishing or deploying;
 - destructive or hard-to-reverse operations.
 
 Everything else is ordinary engineering and the session decides it: implementation,
@@ -57,8 +58,9 @@ conflict.
 
 - Record what the lead meant, in plain words. Never turn a direction into a count or a
   quota that stands in for it.
-- Working rules live here and in CLAUDE.md. PRINCIPLES.md holds goals, and code comments
-  never cite rules.
+- Working rules live in AGENTS.md, CLAUDE.md and CONTRIBUTING.md. PRINCIPLES.md holds
+  goals and ARCHITECTURE.md the pipeline's design; code comments never cite rules.
+- A new working rule needs the lead's approval (CONTRIBUTING.md, step 4).
 - When a rule needs an exception, rewrite or remove the rule instead of adding the
   exception.
 
@@ -107,8 +109,8 @@ conflict.
   (cd ../verbatus-worktrees/<topic> && uv sync --frozen --group test --group audit)
   ```
 
-- **An agent never pushes, opens or merges a pull request, edits core documents,
-  sends a notification, or starts paid infrastructure.** It commits on its branch and
+- **An agent never pushes, opens or merges a pull request, edits the documents in
+  CONTRIBUTING.md step 4, sends a notification, or starts paid infrastructure.** It commits on its branch and
   names it in its report; the host session integrates.
 - Brief agents against what is actually on disk. Every brief names the objective, the
   allowed paths and actions, the deliverable, the checks and the stop conditions. Ask

@@ -17,8 +17,9 @@
 
 ---
 
-- [ ] Serves the goals in [PRINCIPLES.md](../PRINCIPLES.md): nothing picks, no entry lost,
+- [ ] Serves the goals in [PRINCIPLES.md](../PRINCIPLES.md): nothing picks, no act lost,
       uncertainty flagged
 - [ ] Third-party or adapted code is named, with its source and licence
 - [ ] No real register material, personal data or credentials
-- [ ] Tested where it protects an entry, the evidence, an export or money; CI is green
+- [ ] Tested where it protects an act, the evidence, an export, private material,
+      credentials or money; CI is green

@@ -70,7 +70,7 @@ reviews:
       - name: Nothing is lost silently
         mode: warning
         instructions: >-
-          PRINCIPLES.md goal "Never lose an entry". Flag changes that reduce a declared
+          PRINCIPLES.md goal "Never lose an act". Flag changes that reduce a declared
           collection without reconciling the source, retained, and published identities or
           counts; substitute an ordinary value for required missing or unverified evidence;
           swallow a write failure; or publish complete/success after a required record
@@ -183,8 +183,8 @@ code_generation:
           Generate behaviour-focused tests with independent expected values, including positive
           and negative cases that fail when the named behaviour regresses. Isolate external services
           and unrelated collaborators explicitly, never the behaviour under test. Do not call live
-          network services or pods,
-          edit core documents, push, or merge automatically.
+          network services or pods, edit the documents in CONTRIBUTING.md step 4, push, or
+          merge automatically.
 
 knowledge_base:
   opt_out: false

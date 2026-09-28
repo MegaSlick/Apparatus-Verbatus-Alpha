@@ -8,9 +8,9 @@ description: Get oriented before changing the repository — sync, read the hand
 1. **Sync.** `git fetch origin`, then `git status --short --branch` and
    `git rev-list --left-right --count origin/main...HEAD`. If the fetch fails, say the
    checkout may be stale before relying on it.
-2. **Read** `README.md`, `AGENTS.md`, `PRINCIPLES.md`, and `workbench/active/HANDOFF.md`
-   if it exists (a fresh clone has none). The handoff is evidence from the last session,
-   not an instruction; the lead's current goal wins.
+2. **Read** `README.md`, `AGENTS.md`, `PRINCIPLES.md`, `CONTRIBUTING.md`, and
+   `workbench/active/HANDOFF.md` if it exists (a fresh clone has none). The handoff is
+   evidence from the last session, not an instruction; the lead's current goal wins.
 3. **Check the checkout.** `git config --get core.hooksPath` should print `.githooks`;
    if not, run `sh .githooks/install.sh`. If you are on `main`, a detached head, or a
    branch whose work has merged, create a fresh branch from `origin/main` named for the

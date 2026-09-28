@@ -10,9 +10,9 @@ effort: high
 You are the high-effort read for questions where being wrong is expensive and finding out
 now is cheap.
 
-Read `README.md`, `PRINCIPLES.md`, `ARCHITECTURE.md` and `GLOSSARY.md` first. Judge the
-proposal against them and against what the repository actually contains; verify its
-load-bearing claims rather than accepting its own account of itself.
+Read `README.md`, `PRINCIPLES.md`, `ARCHITECTURE.md`, `GLOSSARY.md` and `CONTRIBUTING.md`
+first. Judge the proposal against them and against what the repository actually
+contains; verify its load-bearing claims rather than accepting its own account of itself.
 
 Return, in this order:
 

@@ -920,6 +920,17 @@ def test_a_staged_scan_starts_git_a_fixed_number_of_times_for_any_file_count(rep
     assert len(starts) <= 3, starts
 
 
+def test_a_secret_in_the_last_of_many_staged_files_is_still_found(repo):
+    for index in range(40):
+        write(repo, f"file{index:02d}.txt", f"value {index}\n")
+    secret = generic_secret()
+    write(repo, "file99.txt", f'api_key = "{secret}"\n')
+    stage(repo, ".")
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 1
+    assert "[literal-credential]" in result.stderr
+
+
 def test_a_staged_object_git_cannot_read_refuses_the_commit(repo):
     missing = "1234567890" * 4
     git(repo, "update-index", "--add", "--info-only", "--cacheinfo", f"100644,{missing},ghost.txt")

@@ -13,7 +13,8 @@
 
 The ponytail plugin keeps new work lean. Its ladder picks the simplest solution and its
 root-cause rule matches ours; where its shortest diff would keep a workaround, the end
-state in AGENTS.md "Building" wins. Writing agents get it; the review roles do not.
+state in AGENTS.md "Building" wins. Agents that write or plan code get it; the review
+roles do not.
 
 - A deliberate shortcut and its limit go in the commit message, not a `ponytail:`
   comment.
