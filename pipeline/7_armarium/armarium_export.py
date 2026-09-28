@@ -76,7 +76,7 @@ EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v7"
 EXPORT_MANIFEST_CLUSTERED_SCHEMA: Final = "armarium-export-manifest.v8"
 # The act row and SQLite ids move with the row shape, so a consumer keying on the
 # id never reads an old shape out of a new row.
-ACT_RECORD_SCHEMA: Final = "armarium-act.v2"
+ACT_RECORD_SCHEMA: Final = "armarium-act.v3"
 _ACT_RECORD_FIELDS: Final = frozenset(
     {
         "schema",
@@ -105,13 +105,13 @@ _ACT_RECORD_FIELDS: Final = frozenset(
 _REVIEW_ITEM_FIELDS: Final = frozenset(
     {"schema", "act_id", "act_key", "category", "reason", "evidence_refs"}
 )
-_SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v2"
-_SQLITE_USER_VERSION: Final = 2
+_SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v3"
+_SQLITE_USER_VERSION: Final = 3
 # Field sets are checked exactly, so each shape change needs a new id.
 SOURCES_SCHEMA: Final = "armarium-sources.v3"
 SALVAGE_RECORD_SCHEMA: Final = "armarium-salvage-item.v1"
-JOIN_RULE: Final = "verbatus-page-join.v1"
-RECONSTRUCTION_SCHEMA: Final = "armarium-reconstructed-join.v1"
+JOIN_RULE: Final = "verbatus-page-join.v2"
+RECONSTRUCTION_SCHEMA: Final = "armarium-reconstructed-join.v2"
 RECONSTRUCTION_LABEL: Final = (
     "RECONSTRUCTED: two literal page readings joined at a page break; not an act, "
     "not a reading, unconfirmed"
@@ -397,8 +397,7 @@ def _doubt(layer: Any) -> dict[str, int | str | None]:
         ),
         "assessment": assessment.get("state") if isinstance(assessment, dict) else None,
     }
-    if "lectio_kind" in layer:
-        result["lectio_kind"] = layer["lectio_kind"]
+    result["lectio_kind"] = layer["lectio_kind"]
     return result
 
 

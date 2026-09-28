@@ -2355,6 +2355,13 @@ def validate_reading_payload(
         raise SchemaRefusal("a Perlector dossier digest does not match the dossier it seals")
     dossier_module.assert_no_order_bearing_field(dossier_body)
     _validate_cross_capture_dossier(reading_dossier, inputs=inputs)
+    protocol_record = payload.get("protocol")
+    if protocol_record is not None and (
+        not isinstance(protocol_record, dict)
+        or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "draft_fed"}
+        or not isinstance(protocol_record["draft_fed"], bool)
+    ):
+        raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
     _validate_lectio_kind(payload, reading_dossier)
     if "act_attachment" in reading_dossier:
         attachment = reading_dossier["act_attachment"]
@@ -2506,12 +2513,6 @@ def _validate_reading_prompt(
     except TypeError as error:
         raise SchemaRefusal("a Perlector prompt carries a malformed chair identity") from error
     protocol_record = payload.get("protocol")
-    if protocol_record is not None and (
-        not isinstance(protocol_record, dict)
-        or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "draft_fed"}
-        or not isinstance(protocol_record["draft_fed"], bool)
-    ):
-        raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
     if protocol_config is None and protocol_record is not None:
         raise SchemaRefusal(
             "a Perlector reading carries a prior-draft protocol record but this validation "

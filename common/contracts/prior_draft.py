@@ -29,12 +29,6 @@ def validate_establishing_view(payload: dict, dossier: Any, subject: str) -> str
     if not isinstance(dossier, dict) or dossier.get("prior_draft_view") != expected:
         raise SchemaRefusal(f"{subject} names {kind} without a {expected} prior-draft view")
     protocol = payload.get("protocol")
-    if (
-        isinstance(protocol, dict)
-        and "draft_fed" in protocol
-        and not isinstance(protocol["draft_fed"], bool)
-    ):
-        raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
     if not isinstance(protocol, dict) or protocol.get("draft_fed") is not (expected == "fed"):
         raise SchemaRefusal(f"{subject} names {kind} contrary to its prior-draft protocol")
     if expected == "withheld" and payload.get("self_revision") != []:

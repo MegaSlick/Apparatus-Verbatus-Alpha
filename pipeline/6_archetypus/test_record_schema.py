@@ -55,6 +55,7 @@ def _uncertainty(**overrides) -> dict:
         "gaps": [],
         "self_revisions": [],
         "assessment": _ASSESSED,
+        "lectio_kind": "primed-with-prior",
         **overrides,
     }
 
@@ -394,7 +395,13 @@ def test_from_perlectio_refuses_a_non_object_self_revision_by_name():
     """A resealed producer value is a schema refusal, never an AttributeError."""
     with pytest.raises(SchemaRefusal, match=r"self_revision\[0\].*closed source schema"):
         from_perlectio(
-            {"text": "Maria", "uncertain_spans": [], "gaps": [], "self_revision": [None]}
+            {
+                "text": "Maria",
+                "lectio_kind": "primed-with-prior",
+                "uncertain_spans": [],
+                "gaps": [],
+                "self_revision": [None],
+            }
         )
 
 

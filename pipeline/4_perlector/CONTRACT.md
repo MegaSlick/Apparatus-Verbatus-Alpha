@@ -203,9 +203,8 @@ draft is fed, `self_revision` offsets index it: `reading_span` in the final text
 differences from an unseen draft are not revisions. Pass A's marks stay on its own
 record. Truncation is measured on the clean text. The re-proof answers in JSON and
 reports no doubts; a replacement carrying a mark, or a replacement over text Pass B
-marked, publishes `malformed`, because the
-marks cannot be re-anchored through the edit. Whether a real reader uses the marks is
-measured on the first live run.
+marked, publishes `malformed`, because the marks cannot be re-anchored through the
+edit. Whether a real reader uses the marks is measured on the first live run.
 
 *The assessed tail is not bound to a reader.* Where the state is `assessed`,
 `common/perlector_audit.py::validate_chain` proves the exhausted-cap projection

@@ -272,6 +272,7 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "category": "delivered",
                 "canonical_clean_text": "Cǣsar d’Amours",
                 "uncertainty": {
+                    "lectio_kind": "primed-with-prior",
                     "uncertain_spans": [],
                     "gaps": [],
                     "self_revisions": [],
@@ -1252,6 +1253,7 @@ def test_projection_identity_refuses_a_self_consistent_package_with_drifted_unce
     members = _members(bundle.data)
     records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
     records[0]["uncertainty"] = {
+        "lectio_kind": "primed-with-prior",
         # Cap-projection-shaped on purpose (no alternatives), so this forged
         # copy stays a layer the pipeline could legitimately have written under
         # a reader with no doubt channel; what the test is about is that it
@@ -1321,6 +1323,7 @@ def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(
     delivered = {
         **original.acts[0],
         "uncertainty": {
+            "lectio_kind": "primed-with-prior",
             "uncertain_spans": [
                 {"start": 0, "end": len(literal), "alternatives": ["?"], "confidence": "low"}
             ],
@@ -1382,6 +1385,7 @@ def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal
     own_literal = _projection().acts[0]["canonical_clean_text"]
     other_literal = own_literal + " belongs to a different act"
     other_layer = {
+        "lectio_kind": "primed-with-prior",
         "uncertain_spans": [
             {
                 "start": len(own_literal),
@@ -1517,6 +1521,7 @@ def test_a_non_delivered_act_may_not_carry_an_uncertainty_layer(tmp_path):
     held = {
         **original.acts[1],
         "uncertainty": {
+            "lectio_kind": "primed-with-prior",
             "uncertain_spans": [],
             "gaps": [],
             "self_revisions": [],
@@ -3468,6 +3473,7 @@ def _refresh_manifest(members: dict[str, bytes], manifest: dict) -> None:
 def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, text):
     """Offsets count Unicode code points, never UTF-8 bytes or UTF-16 units."""
     layer = {
+        "lectio_kind": "primed-with-prior",
         "uncertain_spans": [{"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}],
         "gaps": [
             {"position": "trailing", "start": len(text), "end": len(text), "witness_evidence": []}
@@ -3514,6 +3520,7 @@ def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, 
 def _internal_gap_layer(text: str) -> dict:
     middle = len(text) // 2
     return {
+        "lectio_kind": "primed-with-prior",
         "uncertain_spans": [],
         "gaps": [{"position": "internal", "start": middle, "end": middle, "witness_evidence": []}],
         "self_revisions": [],
@@ -4992,6 +4999,7 @@ def test_a_dropped_join_row_fails_the_aggregate_recompute(tmp_path):
 
 def test_the_doubt_on_each_half_travels_with_the_reconstruction(tmp_path):
     layer = {
+        "lectio_kind": "primed-with-prior",
         "uncertain_spans": [_SPAN, {**_SPAN, "start": 2, "end": 3}],
         "gaps": [],
         "self_revisions": [],
@@ -5008,6 +5016,7 @@ def test_the_doubt_on_each_half_travels_with_the_reconstruction(tmp_path):
         "gaps": 0,
         "self_revisions": 0,
         "assessment": "assessed",
+        "lectio_kind": "primed-with-prior",
     }
     assert record["tail_doubt"]["assessment"] == "not-assessed"
     assert '"uncertain_spans": 2' in _text(members)

@@ -1484,7 +1484,7 @@ def _validate_uncertainty_projection(
     # The last check before the Recensor publishes. Self-revisions index the prior
     # draft, so they are held at the Archetypus instead.
     try:
-        uncertainty.validate(
+        uncertainty.validate_audit_projection(
             {
                 "uncertain_spans": published,
                 "gaps": gaps,

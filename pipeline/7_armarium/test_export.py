@@ -509,6 +509,7 @@ def _established_uncertainty_case(armarium, monkeypatch):
         "uncertain_spans": [],
         "gaps": [],
         "self_revisions": [],
+        "lectio_kind": "primed-with-prior",
         "assessment": {
             "state": "not-assessed",
             "problem": "this fixture reader has no channel for a doubt report",

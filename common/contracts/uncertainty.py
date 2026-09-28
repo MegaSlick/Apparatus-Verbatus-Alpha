@@ -11,12 +11,8 @@ from typing import Any, Final
 from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 
-_FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment"})
-# The four-field shape is also used to check only the audit's span/gap projection,
-# before the reading's prior-draft evidence is bound at establishment.
-_KIND_FIELDS = _FIELDS | {"lectio_kind"}
-# So an empty list is never read as confidence. The Perlector's annotations
-# produce under these same vocabularies.
+_FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment", "lectio_kind"})
+_AUDIT_FIELDS = _FIELDS - {"lectio_kind"}
 ASSESSMENT_STATES: Final = frozenset({"assessed", "not-assessed", "malformed"})
 _ASSESSMENT_FIELDS = frozenset({"state", "problem"})
 CONFIDENCE_LEVELS: Final = frozenset({"low", "medium", "high"})
@@ -35,7 +31,7 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(source_revisions, list):
         raise SchemaRefusal("Perlectio self_revision is not a list")
     lectio_kind = payload.get("lectio_kind")
-    if lectio_kind not in (None, "primed-with-prior", "primed-draft-withheld"):
+    if lectio_kind not in ("primed-with-prior", "primed-draft-withheld"):
         raise SchemaRefusal(f"Perlectio has unknown lectio kind {lectio_kind!r}")
     if lectio_kind == "primed-draft-withheld" and source_revisions:
         raise SchemaRefusal("a draft-withheld Perlectio cannot claim self-revisions")
@@ -62,9 +58,8 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
         "gaps": payload.get("gaps"),
         "self_revisions": None if lectio_kind == "primed-draft-withheld" else revisions,
         "assessment": {"state": assessment["state"], "problem": assessment["problem"]},
+        "lectio_kind": lectio_kind,
     }
-    if lectio_kind is not None:
-        layer["lectio_kind"] = lectio_kind
     validate(layer, payload.get("text"))
     return layer
 
@@ -98,9 +93,18 @@ def validate_assessment_record(assessment: Any, subject: str = "canonical uncert
 
 def validate(layer: Any, text: Any) -> dict[str, Any]:
     """Refuse uncertainty that cannot anchor exactly to the supplied text."""
+    return _validate(layer, text, _FIELDS)
+
+
+def validate_audit_projection(layer: Any, text: Any) -> dict[str, Any]:
+    """Check an audit projection before prior-draft evidence is bound."""
+    return _validate(layer, text, _AUDIT_FIELDS)
+
+
+def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
     if not isinstance(text, str):
         raise SchemaRefusal("uncertainty offsets require exactly one string text field")
-    if not isinstance(layer, dict) or set(layer) not in (_FIELDS, _KIND_FIELDS):
+    if not isinstance(layer, dict) or set(layer) != fields:
         raise SchemaRefusal("uncertainty is not its closed canonical schema")
     uncertain = layer["uncertain_spans"]
     gaps = layer["gaps"]

@@ -147,18 +147,19 @@ projection configuration. The bundle may contain these plainly specified formats
   `claims.display.status` says so on the face of every bundle.
 - `acts.sqlite` — an `acts` table with the literal Archetypus field, and a
   separate `act_search` / FTS5 layer whose search fold is visibly derived and
-  revision-marked. Metadata schema `armarium-acts-sqlite.v2`
-  (`PRAGMA user_version=2`): v2 covers R8's `annotations_json` →
+  revision-marked. Metadata schema `armarium-acts-sqlite.v3`
+  (`PRAGMA user_version=3`): v2 covers R8's `annotations_json` →
   `uncertainty_json` rename (which kept v1 — a real versioning miss)
-  and this change's damage-record columns.
+  and the damage-record columns. V3 marks the nullable withheld-draft uncertainty.
 - `acts.jsonl` — one record per expected act, with canonical text only for a
   delivered act, provenance, source regions, its established-text status and
   transcription annotation layer, and the explicit pending claim for the separate
-  semantic annotation layer. Record schema `armarium-act.v2`: v1's bare
+  semantic annotation layer. Record schema `armarium-act.v3`: v1's bare
   `annotations`/`annotation_status` pair is renamed apart into
   `semantic_annotations`/`semantic_annotation_status`, and `text_status`/
   `transcription_annotations` join the row — a consumer keying on the schema id
-  must never read a v1 shape out of a v2 row. `sources.json` is
+  must never read a v1 shape out of a v2 row. V3 requires `lectio_kind` and
+  permits null self-revisions when Pass A was withheld. `sources.json` is
   `armarium-sources.v3` for the same reason twice over: at v2 its act-outcome
   rows began to REQUIRE `text_status` under exact-field-set validation, and at
   v3 `ink_map_pages` joins the source graph, so a v2 file cannot answer a v3
@@ -184,12 +185,13 @@ projection configuration. The bundle may contain these plainly specified formats
   `text-bundle` is selected, else `not-reconstructed` with a named reason and no text. The
   head and tail pages must be adjacent and among the pages each named act was marked
   out on. A reconstructed join is the head literal, one U+000A, then the tail literal
-  (`verbatus-page-join.v1`, nothing added, removed or normalised), labelled
+  (`verbatus-page-join.v2`, nothing added, removed or normalised), labelled
   `RECONSTRUCTED … not an act`, and carries each half's `text_status`, its reader
   assessment state and a count of its uncertain spans, gaps and self-revisions (the
   offsets stay on each half's own literal). A `primed-draft-withheld` reading carries
   `self_revisions: null` and its lectio kind: the reader did not see Pass A, so a
-  self-revision count was not measured.
+  self-revision count was not measured. V2 permits null head/tail doubt counts
+  and carries each half's `lectio_kind` in `armarium-reconstructed-join.v2`.
   It is written to `reconstructions.jsonl` (with `jsonl`) and as a
   `## RECONSTRUCTED <join_id> (not an act)` section, with mirrored
   `possible-continuation-on/-from` notes in each named act's own section (with

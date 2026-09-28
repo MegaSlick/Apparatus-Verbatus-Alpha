@@ -242,6 +242,7 @@ def test_a_report_the_schema_cannot_anchor_becomes_a_visible_malformed_record(
 def test_the_canonical_layer_refuses_a_perlectio_sealed_before_the_assessment_existed():
     payload = {
         "text": "alpha",
+        "lectio_kind": "primed-with-prior",
         "uncertain_spans": [],
         "gaps": [],
         "self_revision": [],
