@@ -19,7 +19,7 @@ from pathlib import Path
 from string import ascii_letters, digits
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from .errors import ServingConfigurationError
 from .smoke import (
@@ -27,6 +27,7 @@ from .smoke import (
     VisionSmokeCall,
     answer_is_page_witness,
     fresh_page_witness,
+    page_witness_edit_distance,
     render_golden_page,
 )
 from .witness import PAGE_WITNESS_ALPHABET, PAGE_WITNESS_LENGTH
@@ -48,6 +49,23 @@ def test_smoke_accepts_two_reading_slips_but_refuses_broken_answers() -> None:
         f"PAGE-WITNESS: {TEST_WITNESS[:20]}!{TEST_WITNESS[21:]}",
     ):
         assert not answer_is_page_witness(answer, TEST_WITNESS)
+
+
+@pytest.mark.parametrize(
+    ("code", "distance"),
+    [
+        (TEST_WITNESS, 0),
+        ("Z" + TEST_WITNESS[1:], 1),
+        (TEST_WITNESS[:20] + "A" + TEST_WITNESS[20:], 1),
+        (TEST_WITNESS[:-1], 1),
+        (TEST_WITNESS[:-2], 2),
+    ],
+)
+def test_smoke_records_substitution_insertion_and_truncation_distance(
+    code: str, distance: int
+) -> None:
+    assert page_witness_edit_distance(f"PAGE-WITNESS: {code}", TEST_WITNESS) == distance
+    assert answer_is_page_witness(f"PAGE-WITNESS: {code}", TEST_WITNESS)
 
 
 def test_a_fresh_witness_is_one_the_smoke_callable_accepts_and_two_draws_differ(
@@ -158,7 +176,20 @@ def test_the_witness_line_fits_inside_the_page_bounds_for_the_worst_case_width(
     # 40pt this line can overrun the page and PIL clips it silently at the
     # canvas edge; render_golden_page must shrink the font (or refuse) rather
     # than let that happen.
-    worst_case_witness = "".join("MY"[index % 2] for index in range(PAGE_WITNESS_LENGTH))
+    draw = ImageDraw.Draw(Image.new("L", (1, 1)))
+    font = ImageFont.load_default(size=40)
+    widest_pair = max(
+        (
+            (left, right)
+            for left in PAGE_WITNESS_ALPHABET
+            for right in PAGE_WITNESS_ALPHABET
+            if left != right
+        ),
+        key=lambda pair: draw.textlength(
+            "".join(pair[index % 2] for index in range(PAGE_WITNESS_LENGTH)), font=font
+        ),
+    )
+    worst_case_witness = "".join(widest_pair[index % 2] for index in range(PAGE_WITNESS_LENGTH))
     page = tmp_path / "worst-case.png"
 
     render_golden_page(page, worst_case_witness)

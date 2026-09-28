@@ -72,19 +72,19 @@ _GOLDEN_PAGE_FONT_STEP = 2
 _NVIDIA_SMI_TIMEOUT_SECONDS = 30.0
 
 
-def answer_is_page_witness(answer: str, witness: str) -> bool:
-    """Require the marker and a near transcription, allowing internal layout whitespace."""
+def page_witness_edit_distance(answer: str, witness: str) -> int | None:
+    """Return code edit distance when marker and layout are valid."""
 
     if not answer.startswith(_WITNESS_PREFIX):
-        return False
+        return None
     code = answer[len(_WITNESS_PREFIX) :]
     if not code or code[0].isspace() or code[-1].isspace():
-        return False
+        return None
     normalized = code.translate(str.maketrans("", "", " \t\r\n"))
     if not normalized or not normalized.isascii() or not normalized.isalnum():
-        return False
+        return None
     if abs(len(normalized) - len(witness)) > PAGE_WITNESS_MAX_EDIT_DISTANCE:
-        return False
+        return None
     previous = list(range(len(witness) + 1))
     for row, character in enumerate(normalized, start=1):
         current = [row]
@@ -97,9 +97,15 @@ def answer_is_page_witness(answer: str, witness: str) -> bool:
                 )
             )
         if min(current) > PAGE_WITNESS_MAX_EDIT_DISTANCE:
-            return False
+            return None
         previous = current
-    return previous[-1] <= PAGE_WITNESS_MAX_EDIT_DISTANCE
+    return previous[-1] if previous[-1] <= PAGE_WITNESS_MAX_EDIT_DISTANCE else None
+
+
+def answer_is_page_witness(answer: str, witness: str) -> bool:
+    """Accept a near page read with the required marker and layout."""
+
+    return page_witness_edit_distance(answer, witness) is not None
 
 
 class SmokeExchangeRetainedError(ServingError):
@@ -326,8 +332,8 @@ class VisionSmokeCall:
         ).request_payload()
         # Qwen3.8 thinks by default, but this proof asks the Perlector for one
         # literal transcription line.  Select the model's documented direct
-        # response mode for this smoke alone; the exact-output check below
-        # remains the proof and every other chair keeps its declared template.
+        # response mode for this smoke alone; the witness check below
+        # still gates preflight and every other chair keeps its template.
         if identity.role == "perlector":
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         # Inspect the sealed payload, not the path: reopening the fixture could
@@ -362,14 +368,18 @@ class VisionSmokeCall:
 
         shape_valid = len(answer.outputs) == 1
         # Keep this independent of shape: multiple parsed choices are still
-        # nonempty, even though they fail the one-output and exact-format rules.
+        # nonempty, even though they fail the one-output and format rules.
         # `parse_openai_answer` already refuses a blank choice, so a blank
         # answer never reaches this line — it arrives at the runner as
         # `smoke-read-failed`, earlier and louder.
         nonempty = bool(answer.outputs) and all(output.strip() for output in answer.outputs)
-        # Keep the marker and token boundaries exact. Some readers split a
-        # long token across lines, so only internal ASCII layout whitespace is ignored.
-        format_valid = shape_valid and answer_is_page_witness(answer.outputs[0], self.page_witness)
+        # Some readers split a long token across lines; layout whitespace is ignored.
+        distance = (
+            page_witness_edit_distance(answer.outputs[0], self.page_witness)
+            if shape_valid
+            else None
+        )
+        format_valid = distance is not None
         samples = self.utilization()
         if not isinstance(samples, tuple) or not all(
             isinstance(sample, UtilizationSample) for sample in samples
@@ -390,6 +400,7 @@ class VisionSmokeCall:
             "served_model_id": answer.model_id,
             "page_witness_sha256": hashlib.sha256(self.page_witness.encode()).hexdigest(),
             "page_witness_matches": format_valid,
+            "page_witness_edit_distance": distance,
         }
         if self.raw_exchange_publisher is not None:
             if exchange_references is None:

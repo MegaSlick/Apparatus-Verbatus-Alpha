@@ -157,6 +157,7 @@ def _qualification_fixture(
                 "served_model_id": served_model_id,
                 "page_witness_sha256": witness_sha256,
                 "page_witness_matches": True,
+                "page_witness_edit_distance": 0,
                 "page_witness_reference": witness_ref,
                 "smoke_service_request_count": 1,
                 "smoke_fixture_request_count": 1,
@@ -433,7 +434,7 @@ def test_qualification_refuses_an_output_digest_that_does_not_match_the_witness(
 
 
 def test_qualification_accepts_internal_witness_whitespace_with_raw_digest(tmp_path: Path) -> None:
-    answer = f"PAGE-WITNESS: C{PAGE_WITNESS[1:8]} \t{PAGE_WITNESS[8:20]}\n{PAGE_WITNESS[20:]}"
+    answer = f"PAGE-WITNESS: {PAGE_WITNESS[:8]} \t{PAGE_WITNESS[8:20]}\n{PAGE_WITNESS[20:]}"
     paths, _ = _qualification_fixture(tmp_path, answer=answer)
 
     record = _qualify(paths)
@@ -442,6 +443,20 @@ def test_qualification_accepts_internal_witness_whitespace_with_raw_digest(tmp_p
         item["smoke_fixture_output_sha256"] == digest_bytes(canonical_bytes([answer]))
         for item in record["candidates"]
     )
+
+
+@pytest.mark.parametrize("code", [PAGE_WITNESS[:-1], PAGE_WITNESS[:-2], PAGE_WITNESS + "A"])
+def test_qualification_refuses_near_reads_even_when_preflight_is_green(
+    tmp_path: Path, code: str
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path, answer=f"PAGE-WITNESS: {code}")
+    smokes = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"]  # type: ignore[index]
+    for smoke in smokes:
+        smoke["page_witness_edit_distance"] = abs(len(code) - len(PAGE_WITNESS))
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match="only an exact read can prove"):
+        _qualify(paths)
 
 
 @pytest.mark.parametrize(

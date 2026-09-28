@@ -15,6 +15,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping, Protocol
+from urllib.parse import urlsplit
 
 from common.chairs.errors import ChairRefusal
 from common.chairs.model_store import MaterializationFetcher, materialize_real_roster
@@ -158,11 +159,8 @@ def verify_image_contract(
       *fetches and checks out*; it has never cloned, so an image with no
       checkout in it fails at the first git call with the volume already
       attached and the card already billing.
-    * Git can fetch without reading outside credentials: the image check
-      accepts an anonymous HTTPS origin, and the pinned fetch immediately
-      proves whether it is reachable. ``BOOTSTRAP_ENVIRONMENT`` has no HOME,
-      disables system config and terminal prompts, and the local config cannot
-      include an outside file or call a credential helper.
+    * Git can fetch from an HTTPS origin under the scrubbed environment.
+      Local config cannot include another file or invoke external credential routes.
     * The running interpreter and its ``sys.prefix`` inside ``<repository>/.venv``,
       because that is the environment ``uv sync`` fills and the one ServingManager
       later inspects.  A standard virtual environment's ``bin/python`` is usually
@@ -194,25 +192,23 @@ def verify_image_contract(
             "pinned commit inside a checkout the image already carries -- it has never "
             "cloned one, so there is nothing here for the pinned commit to land in"
         )
-    try:
-        config_text = config_path.read_text(encoding="utf-8", errors="replace")
-    except OSError as error:
-        # Named here rather than escaping as a bare OSError the step turns into
-        # an unexplained red: a config this process cannot read is an image
-        # fact like every other one on this list.
-        raise ImageContractRefusal(
-            f"the checkout at {repository} has a configuration this process cannot read "
-            f"({error.strerror}); the bootstrap reads it to prove there is an origin to "
-            "fetch from, and cannot proceed on the assumption that there is one"
-        ) from error
-    entries = _git_config_entries(config_text)
-    if any(section in {"include", "includeif"} for section, _, _, _ in entries):
-        raise ImageContractRefusal(
-            f"the checkout at {repository} includes git configuration outside its own config; "
-            "the bootstrap cannot prove that no outside credential source is read"
+    entries = _git_config_entries(config_path, environment, repository)
+    for key, _value in entries:
+        lowered = key.lower()
+        parts = lowered.split(".")
+        forbidden = (
+            parts[0] in {"include", "includeif", "credential"}
+            or lowered in {"core.askpass", "core.sshcommand"}
+            or (parts[0] == "http" and parts[-1] in {"cookiefile", "sslkey", "sslcert"})
+            or (parts[0] == "url" and parts[-1] in {"insteadof", "pushinsteadof"})
         )
-    origin = _config_value(entries, "remote", "origin", "url")
-    if not origin:
+        if forbidden:
+            raise ImageContractRefusal(
+                f"the checkout at {repository} configures a forbidden git key in {parts[0]}; "
+                "remove the external credential or configuration route before bootstrap"
+            )
+    origins = [value for key, value in entries if key.lower() == "remote.origin.url"]
+    if not origins:
         raise ImageContractRefusal(
             f"the checkout at {repository} names no origin remote; the pinned commit is "
             "fetched from origin, and a checkout with no remote cannot be advanced to it"
@@ -225,30 +221,33 @@ def verify_image_contract(
             "the bootstrap git environment exposes HOME, which may supply credentials "
             "outside the checked-out repository"
         )
-    scheme = origin.split("://", 1)[0].lower() if "://" in origin else ""
-    # Only over http/https does userinfo carry a credential. `user@host` in an
-    # SSH remote is a login name, and recording that as an embedded credential
-    # would put a false statement in the receipt.
-    embedded_credential = (
-        scheme in {"http", "https"} and "@" in origin.split("://", 1)[-1].split("/", 1)[0]
-    )
-    if _any_subsection_value(entries, "credential", "helper"):
-        raise ImageContractRefusal(
-            f"the checkout at {repository} configures a credential helper, which may read "
-            "credentials outside the checkout"
+    try:
+        valid_https = all(
+            urlsplit(origin).scheme.lower() == "https" and urlsplit(origin).hostname
+            for origin in origins
         )
-    local_credential_route = bool(_any_subsection_value(entries, "http", "extraheader"))
-    # A public HTTPS origin needs no credential route. The actual pinned fetch
-    # below proves reachability under the scrubbed environment; a private
-    # origin with no route fails there before checkout or model work.
+    except ValueError:
+        valid_https = False
+    if not valid_https:
+        raise ImageContractRefusal(
+            f"the checkout at {repository} has a non-HTTPS origin; use an HTTPS origin "
+            "before bootstrap"
+        )
+    origin = origins[0]
+    embedded_credential = "@" in urlsplit(origin).netloc
+    local_credential_route = any(
+        key.lower().startswith("http.")
+        and key.lower().endswith(".extraheader")
+        or key.lower() == "http.extraheader"
+        for key, _value in entries
+    )
+    # The pinned fetch proves reachability under the scrubbed environment.
     verified["credential_route"] = (
         "embedded-in-url"
         if embedded_credential
         else "repository-local"
         if local_credential_route
         else "anonymous-https"
-        if scheme == "https"
-        else "not-in-the-repository-config"
     )
 
     expected_venv = Path(os.path.abspath(repository / REPOSITORY_VENV_DIRECTORY))
@@ -350,50 +349,41 @@ def _git_config_path(repository: Path) -> Path | None:
     return git_dir / "config"
 
 
-_SECTION = re.compile(r'^\s*\[\s*([A-Za-z0-9.\-]+)\s*(?:"(.*)")?\s*\]\s*$')
-_ENTRY = re.compile(r"^\s*([A-Za-z][A-Za-z0-9\-]*)\s*=\s*(.*?)\s*$")
+def _git_config_entries(
+    config_path: Path, environment: Mapping[str, str], repository: Path
+) -> list[tuple[str, str]]:
+    """Ask Git to parse only the checkout config, preserving every key and value."""
 
-
-def _git_config_entries(text: str) -> list[tuple[str, str | None, str, str]]:
-    """``(section, subsection, key, value)`` for every plain entry in a config."""
-
-    entries: list[tuple[str, str | None, str, str]] = []
-    section: str | None = None
-    subsection: str | None = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith(("#", ";")):
+    try:
+        result = subprocess.run(
+            ["/usr/bin/git", "config", "--file", str(config_path), "--no-includes", "--list", "-z"],
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+        )
+    except OSError as error:
+        raise ImageContractRefusal(
+            f"the checkout at {repository} config could not be inspected by git; "
+            "repair the image's git installation or config"
+        ) from error
+    if result.returncode != 0:
+        raise ImageContractRefusal(
+            f"the checkout at {repository} has git config that git cannot parse; repair it "
+            "before bootstrap"
+        )
+    entries = []
+    for record in result.stdout.split(b"\0"):
+        if not record:
             continue
-        header = _SECTION.match(line)
-        if header is not None:
-            section = header.group(1).lower()
-            subsection = header.group(2)
-            continue
-        entry = _ENTRY.match(line)
-        if entry is not None and section is not None:
-            entries.append((section, subsection, entry.group(1).lower(), entry.group(2)))
+        key, separator, value = record.partition(b"\n")
+        if not separator:
+            raise ImageContractRefusal(
+                f"the checkout at {repository} has malformed git config output"
+            )
+        entries.append(
+            (key.decode("utf-8", errors="replace"), value.decode("utf-8", errors="replace"))
+        )
     return entries
-
-
-def _config_value(
-    entries: list[tuple[str, str | None, str, str]],
-    section: str,
-    subsection: str | None,
-    key: str,
-) -> str | None:
-    for entry_section, entry_subsection, entry_key, value in entries:
-        if entry_section == section and entry_subsection == subsection and entry_key == key:
-            return value
-    return None
-
-
-def _any_subsection_value(
-    entries: list[tuple[str, str | None, str, str]], section: str, key: str
-) -> str | None:
-    for entry_section, _subsection, entry_key, value in entries:
-        if entry_section == section and entry_key == key and value:
-            return value
-    return None
 
 
 class BootstrapStep(StrEnum):

@@ -53,8 +53,8 @@ after it.  A manifest present with no configured target is still a refusal,
 never a silently skipped upload.
 
 **The image this process assumes is written down.**  ``operations/pod/README.md``
-carries the pod image contract -- a checkout with an ``origin`` whose
-credentials a HOME-less git can see, a pre-built ``<repository>/.venv`` this
+carries the pod image contract -- a checkout with an HTTPS ``origin`` that
+the scrubbed git environment can fetch, a pre-built ``<repository>/.venv`` this
 process is started from, and git/uv at the pinned absolute paths -- and
 ``bootstrap.verify_image_contract``, wired into REPOSITORY by ``build_actions``,
 refuses by name when the image does not meet it.  It runs before ``git fetch``,
@@ -1323,7 +1323,9 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 "Supply the complete bootstrap plan and start a new schema-v3 journal.",
             )
         try:
-            models_source = _read_configuration_source(plan.models_config, "model roster")
+            models_source = _read_configuration_source(
+                plan.models_config, "model roster", plan.repository
+            )
             parsed_models, models_sha256 = parse_sealed_toml(
                 models_source, f"model roster {plan.models_config}"
             )
@@ -1353,9 +1355,11 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
             )
         try:
             serving_source = _read_configuration_source(
-                plan.serving_recipes_config, "serving catalogue"
+                plan.serving_recipes_config, "serving catalogue", plan.repository
             )
-            placement_source = _read_configuration_source(placement, "placement table")
+            placement_source = _read_configuration_source(
+                placement, "placement table", plan.repository
+            )
         except ContractError as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
@@ -1410,25 +1414,25 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
     return _validate
 
 
-def _read_configuration_source(path: Path, label: str) -> bytes:
+def _read_configuration_source(path: Path, label: str, repository: Path) -> bytes:
+    if not path.is_absolute() or ".." in path.parts or not path.is_relative_to(repository):
+        raise ContractError(
+            f"{label} {path} escapes the checked-out repository; select a file inside it"
+        )
     try:
-        return path.read_bytes()
+        resolved_root = repository.resolve(strict=True)
+        resolved_path = path.resolve(strict=True)
+        if not resolved_path.is_relative_to(resolved_root):
+            raise ContractError(
+                f"{label} {path} escapes the checked-out repository; select a file inside it"
+            )
+        return resolved_path.read_bytes()
     except OSError as error:
         raise ContractError(f"{label} {path} could not be read: {error}") from error
 
 
 def build_actions(plan: Plan) -> BootstrapActions:
-    """The real, tracked composition. Tests inject a fake instead of calling this.
-
-    The image contract rides on REPOSITORY, the first step: what it checks --
-    git and uv at their absolute paths, a checkout with an origin remote that
-    HOME-less git can fetch anonymously or with checkout-local credentials,
-    and this interpreter inside ``<repository>/.venv`` -- are facts about the
-    image, and every one of them
-    is cheaper to refuse here than to discover after the wheel download. The
-    check is wired only in this tracked composition, because it is the only
-    caller that has a real pod image under it.
-    """
+    """The real composition; check image facts at REPOSITORY before paid setup."""
 
     return SubprocessBootstrapActions(
         repository=plan.repository,  # type: ignore[arg-type]

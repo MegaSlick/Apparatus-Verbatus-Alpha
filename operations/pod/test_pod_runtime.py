@@ -5638,7 +5638,7 @@ _HTTPS_ORIGIN = "https://example.invalid/verbatus"
 
 
 def _image(
-    tmp_path: Path, *, origin: str | None = _SSH_ORIGIN, credential_helper: bool = False
+    tmp_path: Path, *, origin: str | None = _HTTPS_ORIGIN, credential_helper: bool = False
 ) -> Path:
     """A synthetic pod image's checkout: a config with an origin, and a .venv."""
 
@@ -5907,12 +5907,56 @@ def test_the_image_contract_accepts_anonymous_https_without_external_credentials
 
     # A helper in local config can still read /etc/verbatus-credentials.
     with_helper = _image(tmp_path / "helper", origin=_HTTPS_ORIGIN, credential_helper=True)
-    with pytest.raises(ImageContractRefusal, match="credential helper"):
+    with pytest.raises(ImageContractRefusal, match="forbidden git key in credential"):
         verify_image_contract(
             with_helper,
             interpreter=_interpreter(with_helper),
             executables=_tools(tmp_path),
             environment={},
+        )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "[include] path = /tmp/outside",
+        '[includeIf "gitdir:/tmp/"] path = /tmp/outside',
+        "[credential] helper = store",
+        "[credential] useHttpPath = true",
+        '[credential "https://example.invalid"] helper = store',
+        "[core] askPass = /tmp/helper",
+        "[core] sshCommand = /tmp/helper",
+        "[http] cookieFile = /tmp/cookies",
+        '[http "https://example.invalid"] cookieFile = /tmp/cookies',
+        "[http] sslKey = /tmp/key",
+        "[http] sslCert = /tmp/cert",
+        '[url "https://elsewhere.invalid/"] insteadOf = https://example.invalid/',
+        '[url "https://elsewhere.invalid/"] pushInsteadOf = https://example.invalid/',
+    ],
+)
+def test_image_contract_refuses_external_git_config_routes(tmp_path: Path, entry: str) -> None:
+    repository = _image(tmp_path)
+    config = repository / ".git" / "config"
+    config.write_text(config.read_text() + entry + "\n", encoding="utf-8")
+
+    with pytest.raises(ImageContractRefusal, match="forbidden git key"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            executables=_tools(tmp_path),
+            environment=BOOTSTRAP_ENVIRONMENT,
+        )
+
+
+def test_image_contract_refuses_ssh_origin(tmp_path: Path) -> None:
+    repository = _image(tmp_path, origin=_SSH_ORIGIN)
+
+    with pytest.raises(ImageContractRefusal, match="non-HTTPS origin"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            executables=_tools(tmp_path),
+            environment=BOOTSTRAP_ENVIRONMENT,
         )
 
 

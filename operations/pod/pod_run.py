@@ -72,13 +72,9 @@ with no pod running.  The run report records which way it went in
 ``held_to_hard_deadline``, so the choice is in the durable record and not
 only here (principle 2).
 
-**The measured placement tier is forwarded.**  The green bootstrap's
-``PREFLIGHT`` receipt supplies the tier recorded here and passed to the
-orchestrator; a receipt without one is refused by name.
+**The measured placement tier is forwarded.**  A receipt without one is refused.
 
-``--mechanics-qualification`` is an explicit run choice, recorded in the
-report and forwarded to the orchestrator so unproven real rows can execute
-without changing their preflight state.
+``--mechanics-qualification`` permits unproven rows for that run.
 
 **The data gate is checked before the bootstrap spends anything.**  The
 orchestrator's Door refuses a submission folder outside the policy's approved

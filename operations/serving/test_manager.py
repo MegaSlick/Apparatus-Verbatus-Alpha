@@ -3758,6 +3758,7 @@ def test_vision_smoke_call_accepts_the_exact_model_answer_and_records_identity(
     assert result.receipt["resolved_identity"] == chair.to_record()
     assert result.receipt["resolved_revision"] == "b" * 40
     assert result.receipt["resolved_revision_kind"] == "git-commit"
+    assert result.receipt["page_witness_edit_distance"] == 0
     request = http.calls[-1][2]
     assert isinstance(request, dict)
     assert "chat_template_kwargs" not in request
@@ -3795,6 +3796,25 @@ def test_vision_smoke_call_ignores_whitespace_inside_the_page_witness(
     assert result.shape_valid is True
     assert result.format_valid is True
     assert result.receipt["page_witness_matches"] is True
+    assert result.receipt["page_witness_edit_distance"] == 0
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_receipt_retains_near_read_distance(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS[:-2]}"}
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert result.format_valid is True
+    assert result.receipt["page_witness_matches"] is True
+    assert result.receipt["page_witness_edit_distance"] == 2
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
 
@@ -3805,9 +3825,9 @@ def test_vision_smoke_call_ignores_whitespace_inside_the_page_witness(
         f"PAGE-WITNESS: {PAGE_WITNESS[:-3]}CCC",
         PAGE_WITNESS,
     ],
-    ids=("wrong-character", "missing-marker"),
+    ids=("three-character-errors", "missing-marker"),
 )
-def test_vision_smoke_call_still_requires_exact_code_and_marker(
+def test_vision_smoke_call_refuses_three_code_errors_or_missing_marker(
     tmp_path: Path,
     answer: str,
 ) -> None:

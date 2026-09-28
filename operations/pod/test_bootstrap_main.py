@@ -1439,6 +1439,26 @@ def test_configuration_names_an_unreadable_selected_source_and_its_repair(
     assert f"{label} {selected} could not be read" in str(refusal.value.__cause__)
 
 
+def test_configuration_refuses_a_selected_symlink_outside_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
+    selected = plan.serving_recipes_config
+    assert selected is not None
+    outside = tmp_path / "outside.toml"
+    outside.write_bytes(selected.read_bytes())
+    selected.unlink()
+    selected.symlink_to(outside)
+
+    with pytest.raises(BootstrapStepFailure, match="escapes the checked-out repository"):
+        bootstrap_main._build_configuration_validation(plan)()
+
+
+def test_configuration_refuses_relative_parent_path(tmp_path: Path) -> None:
+    with pytest.raises(ContractError, match="escapes the checked-out repository"):
+        bootstrap_main._read_configuration_source(Path("../x"), "model roster", tmp_path)
+
+
 @pytest.mark.parametrize(
     ("attribute", "contents", "named_source"),
     [

@@ -70,7 +70,7 @@ BOOT_B_REPOSITORY_PATH = "/opt/verbatus"
 Not on the volume: the bootstrap requires the lockfile and every config inside
 `--repository`, and the volume's own paths are separately constrained. The image
 contract in `operations/pod/README.md` says what has to be true of this
-directory -- an `origin` remote whose credentials a HOME-less git can see, and a
+directory -- an HTTPS `origin` fetched under the scrubbed git environment, and a
 pre-built `.venv` the pod's primary process is started from.
 """
 
