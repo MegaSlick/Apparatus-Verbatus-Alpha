@@ -18,7 +18,7 @@ empty (the "sees no text" case). Any other key, at the top level or inside an ac
 `unverified-response-schema`: the wire shape is unverified (`chandra.py`'s own
 docstring says why -- the vendor publishes no response specimen), so nothing
 outside the declared shape is read as though it were understood. Nothing here
-repairs, reorders, trims, or defaults a malformed answer (principle 3); a
+repairs, reorders, trims, or defaults a malformed answer; a
 truncated or malformed response is refused whole, never salvaged in part.
 
 **Geometry.** Box entries are JSON numbers in `[0, 1000]`, finite, with
@@ -325,7 +325,7 @@ def parse(raw: bytes, *, page_w: int, page_h: int) -> ParsedAnswer | dict[str, s
 
     Accepts only the closed `{"schema", "acts"}` shape this module's docstring
     describes. Nothing is repaired, reordered, trimmed, or defaulted: the first
-    malformed act refuses the whole response (principle 3).
+    malformed act refuses the whole response.
     """
     decoded, problem = decode_json_body(raw, max_bytes=MAX_RESPONSE_BYTES)
     if problem is not None:

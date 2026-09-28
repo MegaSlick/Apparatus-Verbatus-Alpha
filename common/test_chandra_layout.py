@@ -498,7 +498,7 @@ def test_ink_outside_every_block_is_counted_rather_than_dropped_into_a_clean_par
     nothing to mark it. Read here, that same page would have come back
     `parse`d, with `findings == []` and the words simply absent from
     `page_text` and from every span -- a missed act under a successful status,
-    which goal 2 rates worst and principle 2 forbids. The finding is a count
+    which goal 2 rates worst and which must never happen silently. The finding is a count
     rather than the text, because the response bytes are retained whole and a
     chair's own words are published here as a length.
     """

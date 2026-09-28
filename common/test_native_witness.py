@@ -572,8 +572,8 @@ def test_the_public_page_seam_actually_reaches_the_retained_response_check():
     the Recensor hands it `read_bytes` precisely so the retained bytes are
     re-hashed against their recorded digests. A stray `return` above that call
     made the whole check unreachable while the unit tests stayed green: the
-    record then reported a verified retained response nobody had verified
-    (principle 8). This case goes through the public function, so the dead
+    record then reported a verified retained response nobody had verified.
+    This case goes through the public function, so the dead
     path fails loudly rather than quietly.
     """
     raw = b"retained native response"
@@ -796,8 +796,8 @@ def test_an_unreported_churro_boundary_publishes_unknown_truncation_not_false():
     The shared page contract re-derived a Churro page record's health from its
     capture by asking one question -- "is this word a cut-off word" -- and an
     engine that reported *nothing* answered it "no", which the record then
-    published as `truncated: false`: a completed boundary nobody observed
-    (principle 8). The live boundary measures three states, and this is the
+    published as `truncated: false`: a completed boundary nobody observed.
+    The live boundary measures three states, and this is the
     third: unknown, said so in the basis. Before the fix this payload was
     refused by name, so a live Churro chair whose wire carried no
     `finish_reason` could not publish a page record at all.
@@ -1385,7 +1385,7 @@ def test_a_plain_reading_is_the_shape_the_paper_era_harness_expected_and_still_p
 
 
 def test_the_retired_output_envelope_still_reads_and_says_that_it_is_retired():
-    """Retained history parses; a shape nobody asked for is visible (principle 2)."""
+    """Retained history parses; a shape nobody asked for is visible."""
     result = parse_churro_response(b"<output>plain reading</output>")
     assert result["state"] == "parsed"
     assert result["shape"] == "output-element"
@@ -1524,7 +1524,7 @@ def test_a_finding_kind_from_neither_half_is_still_refused_by_name():
 
 
 def test_the_parse_outcome_wins_over_a_repeated_tail_and_the_repetition_is_still_recorded():
-    """As `failed` already did, and the finding stays in `findings` (principle 2).
+    """As `failed` already did, and the finding stays in `findings`.
 
     Pinned on the record rather than on a contrived body. What the validator
     must refuse is a capture that carries both facts and lets the repetition
@@ -2225,7 +2225,7 @@ def test_a_capture_naming_a_parser_no_grammar_answers_to_is_refused_by_name(pars
 
     Left as "any non-empty string" it surfaced as a `KeyError` from inside
     `verify_native_capture_bytes` -- from a stage whose whole contract is that
-    a fault arrives with its cause attached (principle 2).
+    a fault arrives with its cause attached.
     """
     capture = _native_capture()
     capture["adapter"] = "chandra.v1"

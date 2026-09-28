@@ -2262,8 +2262,8 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
     artifact. Validating the *existing* file before writing the new one meant a
     torn write, a truncated file, or a receipt from an older schema left the run
     permanently unable to record a partition it could recompute perfectly well.
-    principle 4 protects evidence; this is not evidence, and the refusal
-    protected nothing while blocking recovery.
+    Evidence is what must never be overwritten; this is not evidence, and the
+    refusal protected nothing while blocking recovery.
 
     The refusal that *does* matter — a valid receipt disagreeing about the sealed
     proposal-act denominator — is pinned by the test above and is unaffected.
@@ -2387,7 +2387,7 @@ def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_no
     # absorbs 2,000 levels**, because the deliberately wrong `self_hash` earns the
     # same refusal whether or not the deep walk was ever the thing that failed. A
     # test that stops testing without saying so is worse than one that breaks, and
-    # a skip is visible where a silent pass is not (principle 2). So the premise
+    # a skip is visible where a silent pass is not. So the premise
     # is asserted first, against the same walk the code uses.
     try:
         parsed_deep = json.loads(deep_text)

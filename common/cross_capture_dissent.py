@@ -138,7 +138,7 @@ def _span_or_gap_ref(value: Any) -> Any:
     established text, or a digest-bound reference to the gap artifact where the
     reading declined to place either observed form. Anything free-form here
     could carry the established string itself, which this record must never
-    duplicate (principle 5).
+    duplicate.
     """
     if value is None:
         return None

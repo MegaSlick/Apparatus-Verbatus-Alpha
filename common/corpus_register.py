@@ -524,7 +524,7 @@ def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> N
     """Refuse a nested capture-preference claim, naming the record it was in.
 
     Public because a Testimonium must not express preference either
-    (ARCHITECTURE, principle 1).
+    (ARCHITECTURE — a witness's reading is never itself an output).
     """
     cycle = (
         f"{what} contains itself, so no sweep of it can terminate and a "

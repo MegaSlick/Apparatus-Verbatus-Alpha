@@ -182,7 +182,7 @@ def test_an_all_markup_input_normalizes_to_a_genuinely_zero_width_offset_map():
 )
 def test_alignment_deadline_reports_unaligned_honestly_never_a_partial_map(monkeypatch):
     """The timeout path must say `unaligned` -- never return a spans list that
-    stopped partway through and pretend it was complete (principle 2 / principle 8).
+    stopped partway through and pretend it was complete.
 
     The deadline is forced deterministically: a matcher that sleeps past the
     timeout stands in for the real one, so the alarm always fires. Racing

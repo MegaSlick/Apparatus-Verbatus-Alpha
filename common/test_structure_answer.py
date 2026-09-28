@@ -209,7 +209,7 @@ def test_malformed_act_when_label_is_explicit_json_null():
     """`label` is an optional *string*: present-as-string, or absent. An
     explicit `null` is neither, and is refused rather than read as a synonym
     for absent -- SPEC_D §1.2 declares the shape, and this module does not
-    normalize a value it does not contain (principle 3)."""
+    normalize a value it does not contain."""
     body = json.dumps(
         {
             "schema": STRUCTURE_ANSWER_SCHEMA,

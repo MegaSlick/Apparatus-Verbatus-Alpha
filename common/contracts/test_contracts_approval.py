@@ -6,7 +6,7 @@ approval requirement for real input. All three are gone: real material never
 reaches git regardless of any per-run sign-off, so the requirement bought
 nothing. What remains — and what this file now covers — is the approval-record
 contract itself (`exclusion` and `salvage-promotion` still need the project
-lead's approval under principle 9) and the closed fixture-or-real ingress
+lead's approval) and the closed fixture-or-real ingress
 record every run authority carries.
 """
 
@@ -42,7 +42,7 @@ def approval(*, action="exclusion", target=None, timestamp="2026-08-04T12:00:00Z
 def test_data_gate_is_not_an_approvable_action():
     """Real input no longer needs a per-run approval, and this action no longer
     exists to claim one against. `exclusion` and `salvage-promotion` remain —
-    principle 9 still requires the project lead's approval for an exclusion."""
+    the project lead's approval is still required for an exclusion."""
     assert "data-gate" not in ACTIONS
     assert set(ACTIONS) == {"advance", "exclusion", "salvage-promotion", "other"}
     with pytest.raises(ApprovalRefusal, match="not one of"):

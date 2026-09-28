@@ -8,7 +8,7 @@ the shared validation lives here (`pipeline/4_perlector/audit.py` re-exports it)
 The audit request lives here too: `reproof_plan` defines the plan,
 `audit_request` wraps it into the object the reader is given, and
 `validate_chain` re-derives both from the frozen draft, so the seal, the
-delivery and the check are one computation (principle 8).
+delivery and the check are one computation.
 `payload.audit.request_digest` binds a response to its request; it is `None`
 exactly when no request was delivered.
 """
@@ -39,7 +39,7 @@ SCHEMA: Final = "perlector-audit.v3"
 LEGACY_SCHEMA: Final = "perlector-audit.v2"
 # Refused by name: a v1 record cannot say whether a delivered re-proof
 # completed, and inferring it from silence would be the claim it could not make.
-# Its act is re-read under the current schema; the old bytes stay (principle 4).
+# Its act is re-read under the current schema; the old bytes stay.
 RETIRED_SCHEMAS: Final = frozenset({"perlector-audit.v1"})
 # Versioned apart from `SCHEMA`: this names the shape handed to the reader,
 # `SCHEMA` the sealed policy.
@@ -105,7 +105,7 @@ _TRUNCATION_SIGNALS: Final = frozenset(
     {"stop_reason_declared", "unclosed_structure", "length_suspicious", "ends_abruptly"}
 )
 # Every term of the length predicate, floor included, so a reader re-derives
-# the signal without the run's protocol file in hand (principle 6).
+# the signal without the run's protocol file in hand.
 _TRUNCATION_MEASURE: Final = frozenset(
     {"region_pixels", "page_pixels", "characters", "length_floor_characters_per_page"}
 )
@@ -376,7 +376,7 @@ def _validate_reproof_rows(
     `text_length=None` is the pre-read pass: the prompt is checked against the
     location's own end, and `validate_chain` re-runs this with the real length.
     A prompt must equal `neutral_prompt` for its location exactly, which leaves
-    no room for a sentence telling the reader which way to argue (principle 8).
+    no room for a sentence telling the reader which way to argue.
     """
     for reproof in rows:
         if not isinstance(reproof, dict) or set(reproof) != {"class", "location", "prompt"}:

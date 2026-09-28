@@ -139,8 +139,8 @@ def test_grayscale_crop_preserves_a_profile_with_no_system_profile_to_borrow() -
 
     The reviewer's case skips wherever no valid grayscale profile happens to be
     installed, which on a CI worker is most of the time — and a regression that
-    skips on the machine that gates the merge is not a regression test
-    (principle 8: a metric that cannot be measured is a failure, not a pass).
+    skips on the machine that gates the merge is not a regression test:
+    a metric that cannot be measured is a failure, not a pass.
     The profile here is a minimal, synthetic, structurally
     valid grayscale ICC header rather than a vendored system asset: what is
     under test is that the crop carries the bytes it was given, not that any
@@ -311,7 +311,7 @@ def test_native_decoder_rejects_invalid_internal_png(case: str, message: str) ->
     Adjusted from the reviewer's version in one way: each case asserts the
     *named* refusal rather than any ValueError, because a decoder that refused
     all seven with one message would pass the original test while telling an
-    operator nothing about which fault it found (principle 2).
+    operator nothing about which fault it found.
     """
     with pytest.raises(ValueError, match=message):
         decode_grayscale_png(_invalid_png(case))
@@ -507,7 +507,7 @@ def test_a_palette_that_hides_its_alpha_is_refused_by_name() -> None:
     purpose: no decoder in this stack was measured to produce an RGBA palette
     from a file (PNG, GIF, BMP, TIFF and WebP all return an `RGB` palette, with
     any alpha in `info["transparency"]`), so claiming a reachable page here would
-    be a claim the measurement does not support (principle 8). The guard is
+    be a claim the measurement does not support. The guard is
     defence in depth beside the two crop-side callers that already ask the
     palette the same question.
     """

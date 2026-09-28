@@ -1,6 +1,6 @@
 """The no-picker screens are enumerated here, and none of them may recurse.
 
-principle 1 is enforced at runtime by a family of walks that refuse a
+Nothing picks is enforced at runtime by a family of walks that refuse a
 preference-bearing field anywhere in a payload. They were converted to explicit
 worklists one at a time, each conversion arguing the same case in its own
 docstring: the value is untrusted or model-derived, so depth must cost the walk
@@ -68,7 +68,7 @@ def _dossier():
     return load_stage("4_perlector", "dossier")
 
 
-# Every runtime screen standing over principle 1, as (file, function). Each
+# Every runtime screen standing over the no-picker rule, as (file, function). Each
 # walks a payload it does not control -- caller JSON, witness output, or a
 # dossier carrying testimonia verbatim -- looking for a field that would name a
 # preference among witnesses.

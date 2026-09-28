@@ -181,7 +181,7 @@ def _validate_details(identity: ChairIdentity, details: ServingDetails) -> None:
         value = getattr(details, field)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ReceiptRefusal(chair, f"{field} must be a non-negative integer")
-    # The base of an adapter chair also answered, so it is bound too (principle 6).
+    # The base of an adapter chair also answered, so it is bound too.
     if details.adapter_identity is not None:
         _validate_identity(details.adapter_identity)
     if identity.adapter_of is None:

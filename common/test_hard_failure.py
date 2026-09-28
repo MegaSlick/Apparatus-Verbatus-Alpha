@@ -460,7 +460,7 @@ def test_a_third_hard_failure_breaches(tmp_path):
 
 def test_a_recovered_act_still_counts_the_incident_that_happened(tmp_path):
     """A hard failure that was later recovered away is still an incident: coverage
-    recovery does not erase the record that a failure occurred (principle 2)."""
+    recovery does not erase the record that a failure occurred."""
     tree = make_run(tmp_path)
     publish(
         tree,

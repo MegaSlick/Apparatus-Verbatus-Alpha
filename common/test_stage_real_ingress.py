@@ -576,7 +576,7 @@ def test_a_row_with_both_a_hold_and_a_page_fallback_record_is_refused_as_ambiguo
     """Class is decided by which evidence exists; two kinds of evidence is no class.
 
     Nothing tries residual, then page-fallback, until one verifies -- that would
-    be a picker over the producer's own records (principle 1).
+    be a picker over the producer's own records.
     """
     designator = _Designator(real_root)
     designator.propose_served(1, designator.rectangle(1))

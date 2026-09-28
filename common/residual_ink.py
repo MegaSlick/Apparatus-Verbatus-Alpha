@@ -26,7 +26,7 @@ still passes.
 
 A page whose background the shared inference refuses raises
 `BackgroundInferenceRefusal` here too; the caller records it rather than
-publishing a zero nobody measured (principle 8).
+publishing a zero nobody measured.
 """
 
 from pathlib import Path

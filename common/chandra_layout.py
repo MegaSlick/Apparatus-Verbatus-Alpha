@@ -16,9 +16,9 @@ two things:
    `html.parser`, so nothing here imports a vendor package. It departs from
    the vendor in five recorded places (**Departures** below), always in the
    same direction: the vendor drops or substitutes, and we retain and name
-   (principle 2).
+   it.
 
-It establishes no text and selects nothing (principle 1): bytes in, one named
+It establishes no text and selects nothing: bytes in, one named
 reading out, with every unresolved fact carried beside it as a finding. The
 adapter deciding what a chair is asked is `pipeline/3_attestatores/chandra.py`;
 the Designator's structure pass reads the same grammar. Both call this; neither
@@ -376,7 +376,7 @@ def _quoted(value: str | None) -> dict[str, Any]:
 # been read as a number by a rule whose refusal says it is not a plain decimal
 # integer. `int("7\n")` is 7, so nothing was ever misread; the claim in the
 # record was simply false, and a check that does not enforce what it states is
-# the kind of thing principle 8 is about.
+# not an honest measurement.
 #
 # The digit count is bounded too. A valid component is at most four digits
 # (`BBOX_SCALE` is 1000), so a cap of 16 is already generous headroom; without
@@ -753,7 +753,7 @@ def _count_top_level_divs(html: str) -> int:
 def parse_layout_html(raw: Any) -> ParsedLayout | dict[str, str]:
     """Chandra's layout answer, read whole -- or one named refusal.
 
-    Nothing here repairs, reorders, trims or defaults an answer (principle 3).
+    Nothing here repairs, reorders, trims or defaults an answer.
     A block whose geometry cannot be resolved is still a block, and the fact
     that it could not be resolved is a finding beside it; the caller decides
     what an unplaced block means for its own record, and the retained bytes

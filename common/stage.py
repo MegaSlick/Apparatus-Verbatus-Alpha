@@ -1409,7 +1409,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
             "without it. Deliberately NOT sealed into config_digest: it is a measured "
             "runtime fact of the card, not run configuration, so it carries no "
             "'--no-placement-tier' companion and is simply omitted from a fixture "
-            "run's argv. Principle 6 — 'the record itself protects the past' — is "
+            "run's argv. 'The record itself protects the past' is "
             "why the receipt records the caps that actually bound the serving "
             "moment (the launch audit's profile.tier) rather than folding this into "
             "the reproducibility contract config_digest exists to protect."
@@ -1857,7 +1857,7 @@ def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
     """Configured roles no stage in this pipeline will ever ask for.
 
     A misspelt role is still valid configuration, and would otherwise be
-    silently never asked (principle 2).  Absent chairs, and the base of an
+    silently never asked.  Absent chairs, and the base of an
     addressed adapter (recorded in its receipt), count as addressed.
     """
     addressed = set(models.witness_chairs) | {
@@ -1962,7 +1962,7 @@ def validate_serving_provenance(
     if not isinstance(chair, str) or not chair:
         raise SchemaRefusal("model provenance has no chair name")
     # Only the Designator's structure chair records an engine call; anywhere
-    # else it claims a serving moment that was not its own (principle 6).
+    # else it claims a serving moment that was not its own.
     if provenance.get("engine_call") is not None:
         if producer_stage != DESIGNATOR:
             raise SchemaRefusal(
@@ -2223,7 +2223,7 @@ def _verify_real_act_denominator(
     Each row's class comes from which Designator record exists for it (residual
     hold, page hold, page-fallback, or own-page region), then is recomputed.
     Ambiguous or unevidenced rows are refused; classes are never tried in turn
-    until one passes (principle 1).
+    until one passes.
     """
     fallbacks_by_subject = _designator_records_by_subject(context, "page-fallback")
     # Regions are placed against this run's pages, not the row under test.
@@ -2765,8 +2765,8 @@ def _verify_proposal_act_row(
 
     With a served chair, the rectangle must appear exactly in the chair's
     published answer for a scanned page, or the act would carry the chair's
-    provenance over ink it never proposed (principles 6, 8).  Exact match only:
-    a nearest match would be a selection (principle 1).  Presence, not
+    provenance over ink it never proposed.  Exact match only:
+    a nearest match would be a selection.  Presence, not
     uniqueness: identical rectangles on one page are one act.
 
     The published act list is checked, not the retained response bytes, so a
@@ -3051,8 +3051,8 @@ def _verify_every_conservation_residual_is_accounted(
     """Every residual a conservation record found must reach the denominator.
 
     The reverse of `_verify_minted_act_rows`: a residual the seal never named
-    leaves no artifact to miss, so without this it vanishes silently
-    (principle 2). A current record lists every component, either as an
+    leaves no artifact to miss, so without this it vanishes silently.
+    A current record lists every component, either as an
     individual hold or in the retained aggregate for a page hold.
     """
     if holds_by_subject is None:
@@ -3454,7 +3454,7 @@ def _verify_page_fallback_act_row(
     """The one extra row that may be `proposed`, checked against its own evidence.
 
     Besides identity, its premise is checked: the page's `structure-status`
-    must say the structure pass fell back to tiles (principle 8).
+    must say the structure pass fell back to tiles.
     """
     record = fallbacks_by_subject.get(act_id)
     if record is None:
@@ -3503,7 +3503,7 @@ def _verify_page_residual_act_row(
 
     Aggregated records keep their components. Rectangle, identity, premise
     (the page's conservation record), grouping digest (against the run's seal),
-    component count (principle 8) and cause are all recomputed.
+    component count and cause are all recomputed.
     """
     payload = _payload_of(hold)
     if "residual_bounds" in payload:
@@ -3673,7 +3673,7 @@ def _designator_records_by_subject(context, kind: str) -> dict[str, dict[str, An
     """Every Designator record of one kind, by the act it is evidence for.
 
     A subject with two records is refused; keeping either would pick by
-    manifest order (principle 1).
+    manifest order.
     """
     records: dict[str, dict[str, Any]] = {}
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
@@ -4115,8 +4115,7 @@ def latest_attempt(records: list[dict[str, Any]], what: str, *, operation: str) 
     a default 0 lets listing order pick the current record.
     `operation` lets the attempt id be re-derived from subject and ordinal: the
     envelope does not bind the payload's ordinal, so a forged high ordinal would
-    otherwise become current.  Ordinals must run 1..N; a gap is a lost attempt
-    (principle 2).
+    otherwise become current.  Ordinals must run 1..N; a gap is a lost attempt.
     """
     if not records:
         raise FatalAccounting(f"no {what} to derive a current outcome from")
@@ -4337,7 +4336,7 @@ def require_current_witness_basis(
     """Refuse a reading whose witness basis is no longer each chair's current attempt.
 
     A Testimonium appended after the reading would otherwise be invisible to
-    the export's `complete` (principle 2).  Independent of the Attestatores'
+    the export's `complete`.  Independent of the Attestatores'
     own guard, for trees assembled some other way.
     """
     basis = reading.get("payload", {}).get("basis")

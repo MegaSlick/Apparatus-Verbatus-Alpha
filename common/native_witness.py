@@ -136,8 +136,7 @@ CHURRO_OUTPUT_TOKENS: Final = DECLARED_ANSWER_BOUND_TOKENS["attestator_3"]
 # over 209 bytes per declared token, far beyond any transcription.
 # `churro_document` takes it as an argument rather than declaring its own.
 CHURRO_MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
-# Shortest repeating unit and minimum tail repeats.  Declared, not measured
-# (principle 8).
+# Shortest repeating unit and minimum tail repeats.  Declared, not measured.
 _REPETITION_WINDOW: Final = 24
 _REPETITION_MIN_REPEATS: Final = 3
 
@@ -616,7 +615,7 @@ def unpresented_region_ids(
 def _truncation_from_stop_word(transport_stop_reason: str) -> tuple[bool | None, str]:
     """Truncated, not truncated, or unknown when the engine reported no stop reason.
 
-    An unreported stop is never recorded as a natural one (principle 8).
+    An unreported stop is never recorded as a natural one.
     """
 
     if transport_stop_reason == STOP_REASON_UNREPORTED:
@@ -805,7 +804,7 @@ def validate_retained_response_refs(
 
 
 # Declared and unmeasured: only zero overlap is recorded, because a near-overlap
-# threshold would be a measurement claim nobody has made (principle 8).
+# threshold would be a measurement claim nobody has made.
 UNROUTED_OBSERVATION_OVERLAP: Final = {"rule": "positive-area", "status": "unmeasured"}
 
 
@@ -997,7 +996,7 @@ def partition_disagreement(
     *,
     page_edge_overshoots: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Record page/chair partition facts without selecting any pairing (principle 1)."""
+    """Record page/chair partition facts without selecting any pairing."""
     payload = testimonium["payload"]
     presented = payload["presented"]
     page_id = presented.get("source_page_id") if isinstance(presented, dict) else None
@@ -1145,7 +1144,7 @@ def detect_repetition(raw: bytes | bytearray | str) -> dict[str, Any] | None:
     """Report a repeated tail after capture; this function has no generation input.
 
     Chair-neutral.  Returns a finding for the caller to record; it never
-    re-rolls or gates (principle 7).  Bytes that are not UTF-8 give an
+    re-rolls or gates.  Bytes that are not UTF-8 give an
     "uninspected" finding rather than an exception.
     """
     if isinstance(raw, str):
@@ -1193,7 +1192,7 @@ def derive_churro_capture(
 
     Oversized bytes stay in the blob store unparsed and unscanned, and the
     record says so.  `parser` is `None` for no parse; an unknown name is
-    refused rather than recorded as `not-requested` (principle 2).  The
+    refused rather than recorded as `not-requested`.  The
     repetition scan reads the parsed text where there is one, since repetition
     is about what was transcribed, not the XML around it.
     """
@@ -1394,7 +1393,7 @@ def validate_vendor_identity(value: Any) -> dict[str, Any]:
     """Close which vendor pin the bytes beside this capture were taken from.
 
     The prompt, message shape and grammar are the vendor's at one commit, and a
-    different pin reads the same bytes differently (principle 6).  ``sha`` is
+    different pin reads the same bytes differently.  ``sha`` is
     an exact commit, never a movable tag.  ``carried_strings`` digests each
     string carried from that pin (DAI's ``repository`` is its weights repository).
     """

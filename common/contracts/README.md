@@ -30,7 +30,7 @@ derivation is able to do, rather than something code has to remember.
 record and never into a manifest category or a character of text. An act whose
 every chair is `failed` still reaches the Perlector, which reads the ink. If you
 ever find yourself giving a witness outcome a terminal category, you are building a
-picker under an accounting name — principle 1.
+picker under an accounting name.
 
 **An outcome with no class is fatal, not a warning.** Harvest invariant #10.
 `check_algebra_is_total()` proves both mappings total rather than trusting them, so

@@ -21,7 +21,7 @@ measured floor is recorded beside it but never admits, because admitting on a
 lower bound admits exactly the requests that overflow.
 
 Whether vLLM's own prompt assembly agrees with these counts token for token has
-never been observed; only a pod can settle it (principle 8).
+never been observed; only a pod can settle it.
 """
 
 from __future__ import annotations
