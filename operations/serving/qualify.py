@@ -313,9 +313,8 @@ def _verify_smoke(
         raise QualificationRefusal(
             f"chair {identity.role!r} output was not a near transcription of the retained page witness"
         )
-    if smoke.get("page_witness_edit_distance") != distance or isinstance(
-        smoke.get("page_witness_edit_distance"), bool
-    ):
+    recorded_distance = smoke.get("page_witness_edit_distance")
+    if type(recorded_distance) is not int or recorded_distance != distance:
         raise QualificationRefusal(f"chair {identity.role!r} page-read edit distance disagrees")
     if distance != 0:
         raise QualificationRefusal(

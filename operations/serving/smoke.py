@@ -102,6 +102,30 @@ def page_witness_edit_distance(answer: str, witness: str) -> int | None:
     return previous[-1] if previous[-1] <= PAGE_WITNESS_MAX_EDIT_DISTANCE else None
 
 
+def _prompt_contains_near_witness(prompt: str, witness: str) -> bool:
+    """Reject prompt text a reader could copy as a near page read."""
+
+    shortest = PAGE_WITNESS_LENGTH - PAGE_WITNESS_MAX_EDIT_DISTANCE
+    longest = PAGE_WITNESS_LENGTH + PAGE_WITNESS_MAX_EDIT_DISTANCE
+    for start, first in enumerate(prompt):
+        if not first.isascii() or not first.isalnum():
+            continue
+        code = ""
+        for character in prompt[start:]:
+            if character.isascii() and character.isalnum():
+                code += character
+                if len(code) > longest:
+                    break
+                if (
+                    len(code) >= shortest
+                    and page_witness_edit_distance(_WITNESS_PREFIX + code, witness) is not None
+                ):
+                    return True
+            elif character not in " \t\r\n":
+                break
+    return False
+
+
 class SmokeExchangeRetainedError(ServingError):
     """A smoke parser refusal whose exact request and response are retained."""
 
@@ -283,9 +307,11 @@ class VisionSmokeCall:
             )
         # A subclass can override `prompt`; keep the page-only claim enforced at
         # construction even though the base prompt is constant.
-        if self.page_witness in self.prompt:
+        if self.page_witness in self.prompt or _prompt_contains_near_witness(
+            self.prompt, self.page_witness
+        ):
             raise ServingConfigurationError(
-                "golden-page witness occurs in the smoke prompt, so a text-only answer "
+                "golden-page witness or near read occurs in the smoke prompt, so a text-only answer "
                 "copied from the prompt would satisfy the page-read check"
             )
         if not callable(self.utilization):

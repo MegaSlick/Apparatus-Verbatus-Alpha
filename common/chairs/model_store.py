@@ -19,6 +19,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -151,6 +152,8 @@ MODEL_PAYLOAD_SUFFIXES = frozenset({".bin", ".gguf", ".onnx", ".pt", ".pth", ".s
 MAX_DOWNLOAD_RECORD_BYTES = 1_048_576
 # Repository-controlled JSON may not claim unbounded memory.
 MAX_SHARD_INDEX_BYTES = 16_777_216
+MATERIALIZATION_LOCK_TIMEOUT_SECONDS = 60.0
+MATERIALIZATION_LOCK_POLL_SECONDS = 0.1
 
 
 class MaterializationFetcher(Protocol):
@@ -242,9 +245,35 @@ def materialize_real_roster(
 @contextmanager
 def _materialization_lock(root: Path):
     """Keep the staging sweep and the final verification under one store-wide lock."""
-    root.mkdir(parents=True, exist_ok=True)
-    with (root / ".materialize.lock").open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise DigestMismatchRefusal(
+            "model-store", f"cannot create materialization root {root}: {error}"
+        ) from error
+    try:
+        lock = (root / ".materialize.lock").open("a+b")
+    except OSError as error:
+        raise DigestMismatchRefusal(
+            "model-store", f"cannot open materialization lock for {root}: {error}"
+        ) from error
+    with lock:
+        deadline = time.monotonic() + MATERIALIZATION_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as error:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DigestMismatchRefusal(
+                        "model-store", f"timed out acquiring materialization lock for {root}"
+                    ) from error
+                time.sleep(min(MATERIALIZATION_LOCK_POLL_SECONDS, remaining))
+            except OSError as error:
+                raise DigestMismatchRefusal(
+                    "model-store", f"cannot acquire materialization lock for {root}: {error}"
+                ) from error
         try:
             yield
         finally:
