@@ -111,7 +111,9 @@ def test_container_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
         used = 0
         while not stop.is_set():
             used += 2_000_000
-            stat.write_text(f"usage_usec {used}\nuser_usec {used}\n")
+            staged = cgroup / "cpu.stat.new"
+            staged.write_text(f"usage_usec {used}\nuser_usec {used}\n")
+            staged.replace(stat)
             time.sleep(0.5)
 
     writer = threading.Thread(target=burn)
@@ -136,11 +138,13 @@ def test_network_download_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
         received = 0
         while not stop.is_set():
             received += 5_000_000
-            netdev.write_text(
+            staged = tmp_path / "netdev.new"
+            staged.write_text(
                 "Inter-|   Receive\n face |bytes packets\n"
                 f"    lo: 999 1 0 0 0 0 0 0 999 1 0 0 0 0 0 0\n"
                 f"  eth0: {received} 10 0 0 0 0 0 0 100 1 0 0 0 0 0 0\n"
             )
+            staged.replace(netdev)
             time.sleep(0.5)
 
     writer = threading.Thread(target=download)

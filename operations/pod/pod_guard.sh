@@ -126,19 +126,22 @@ cpu_before=$(cpu_usec)
 net_before=$(net_bytes)
 say "armed for pod $pod: deadline $deadline, idle limit ${idle_limit}s, cpu ${cpu_before:-unreadable} usec, net ${net_before:-unreadable} bytes"
 
+# A reading that comes back unreadable (a file caught mid-write) keeps the last good one.
 net_busy() {
   now=$(net_bytes)
+  is_epoch "$now" || return 1
   before=$net_before
   net_before=$now
-  is_epoch "$now" && is_epoch "$before" || return 1
+  is_epoch "$before" || return 1
   [ $((now - before)) -ge $((interval * busy_net_kbps * 1024)) ]
 }
 
 cpu_busy() {
   now=$(cpu_usec)
+  is_epoch "$now" || return 1
   before=$cpu_before
   cpu_before=$now
-  is_epoch "$now" && is_epoch "$before" || return 1
+  is_epoch "$before" || return 1
   [ $((now - before)) -ge $((interval * 10000 * busy_cpu_percent)) ]
 }
 
