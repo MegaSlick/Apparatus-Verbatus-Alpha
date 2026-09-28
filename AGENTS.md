@@ -17,7 +17,10 @@ The project lead decides:
 - changes to the documents listed in CONTRIBUTING.md, step 4;
 - anything that costs money or runs on live infrastructure — **no GPU pod starts without
   the lead's permission in that session**, and shutdown is verified against the
-  provider's own state and billing, never assumed. Read `operations/pod/README.md`
+  provider's own state and billing, never assumed. The permission can be standing for
+  the session (for example any card up to a stated hourly rate, or deleting and
+  re-creating network volumes for cold-start tests); it then covers every start, card
+  switch or delete within its limits. Read `operations/pod/README.md`
   before any pod work. Use the smallest card that does the job: debug one stage or a
   small model (DAI, Churro) on a small card at around $0.50 an hour, and ask for a
   larger budget only for end-to-end runs that need the 27B Perlector;

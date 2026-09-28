@@ -26,13 +26,8 @@
       "Bash(git*filter-repo*)"
     ],
     "ask": [
-      "Bash(runpodctl create*)",
-      "Bash(runpodctl start*)",
-      "Bash(runpodctl remove*)",
-      "Bash(runpodctl project*)",
       "Bash(runpodctl send*)",
       "Bash(runpodctl receive*)",
-      "Bash(runpodctl exec*)",
       "Bash(runpodctl ssh*)",
       "Bash(runpodctl config*)",
       "Bash(runpodctl update*)"
