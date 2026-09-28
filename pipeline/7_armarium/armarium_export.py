@@ -387,13 +387,19 @@ def _doubt(layer: Any) -> dict[str, int | str | None]:
     """How much doubt a literal carries, so a join never reads cleaner than its halves."""
     layer = layer if isinstance(layer, dict) else {}
     assessment = layer.get("assessment")
-    return {
-        **{
-            kind: len(layer.get(kind) or [])
-            for kind in ("uncertain_spans", "gaps", "self_revisions")
-        },
+    result = {
+        "uncertain_spans": len(layer.get("uncertain_spans") or []),
+        "gaps": len(layer.get("gaps") or []),
+        "self_revisions": (
+            None
+            if layer.get("lectio_kind") == "primed-draft-withheld"
+            else len(layer.get("self_revisions") or [])
+        ),
         "assessment": assessment.get("state") if isinstance(assessment, dict) else None,
     }
+    if "lectio_kind" in layer:
+        result["lectio_kind"] = layer["lectio_kind"]
+    return result
 
 
 def _reconstructions(joins, literals: dict[str, tuple[str, Any, Any]]) -> list[dict[str, Any]]:

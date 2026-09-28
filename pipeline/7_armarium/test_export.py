@@ -103,7 +103,8 @@ def test_armarium_seals_a_self_verifying_product_bundle(tmp_path):
     assert all(reading["self_revision"] == [] for reading in readings)
     with ZipFile(BytesIO(tree.read_bytes(reference["relative_path"]))) as archive:
         acts = [json.loads(line) for line in archive.read("acts.jsonl").splitlines()]
-    assert all(act["uncertainty"]["self_revisions"] == [] for act in acts)
+    assert all(act["uncertainty"]["self_revisions"] is None for act in acts)
+    assert all(act["uncertainty"]["lectio_kind"] == "primed-draft-withheld" for act in acts)
     # The happy fixture loses nothing, so the ledger says so. A status that reads
     # `partial` on every run whatever happened could not report the run that did.
     assert manifest["claims"]["status"] == "complete"

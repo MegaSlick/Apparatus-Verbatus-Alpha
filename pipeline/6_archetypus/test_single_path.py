@@ -178,7 +178,7 @@ def test_withheld_draft_cannot_establish_with_self_revisions(tmp_path):
     def invent_revision(payload):
         assert payload["lectio_kind"] == "primed-draft-withheld"
         payload["self_revision"] = [
-            {"reading_span": {"start": 0, "end": 1}, "prior_span": {"start": 0, "end": 1}}
+            {"reading_span": {"start": 0, "end": 1}, "testimonium_span": {"start": 0, "end": 1}}
         ]
 
     result = _archetypus_after(tmp_path, invent_revision)
@@ -194,7 +194,13 @@ def test_fed_kind_cannot_relabel_a_withheld_reading(tmp_path):
     assert "without a fed prior-draft view" in result.stderr
 
 
-def test_primed_with_prior_claim_without_a_prior_reference_cannot_establish(tmp_path):
+def test_withheld_kind_cannot_contradict_its_protocol_record(tmp_path):
+    result = _archetypus_after(tmp_path, lambda payload: payload["protocol"].update(draft_fed=True))
+    assert result.returncode == 2, result.stderr
+    assert "contrary to its prior-draft protocol" in result.stderr
+
+
+def test_withheld_claim_without_a_prior_reference_cannot_establish(tmp_path):
     def remove_prior_reference(payload):
         dossier = dict(payload["dossier"])
         dossier.pop("prior_draft")

@@ -199,8 +199,8 @@ raw answer unchanged under `malformed`. Gap marks over an answer that is otherwi
 blank add nothing: the `no-readable-text` outcome's whole-act gap already says it.
 When Pass B is fed Pass A's clean text, `self_revision` offsets index the draft it was
 shown. When the draft is withheld, `self_revision` is empty; differences from an unseen
-draft are not revisions. Pass A's marks stay on its own record. Truncation is measured on the clean
-text. The re-proof answers in JSON and reports no doubts; a replacement carrying a
+draft are not revisions. Pass A's marks stay on its own record. Truncation is measured
+on the clean text. The re-proof answers in JSON and reports no doubts; a replacement carrying a
 mark, or a replacement over text Pass B marked, publishes `malformed`, because the
 marks cannot be re-anchored through the edit. Whether a real reader uses the marks is
 measured on the first live run.
@@ -546,7 +546,7 @@ Every readable act now emits a `kind="lectio-prior"` Pass-A draft under the
 not Lectio nuda and cannot establish text. The production `kind="perlectio"`
 is `lectio_kind="primed-with-prior"` only when the draft was fed and then carries
 equality-only `self_revision` spans against it. When the draft was withheld, it is
-`lectio_kind="primed-draft-withheld"` with no `self_revision`. Both production kinds
+`lectio_kind="primed-draft-withheld"` with an empty `self_revision`. Both production kinds
 retain the Pass-A reference and can establish text; the kind records what the reader saw.
 
 The optional `kind="primed-without-prior"` control is gated by the run-sealed

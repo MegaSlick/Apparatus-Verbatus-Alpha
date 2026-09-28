@@ -2715,6 +2715,7 @@ def test_a_whitespace_reproof_publishes_empty_text_with_its_own_measure():
         "payload": {
             "text": "abc",
             "lectio_kind": "primed-draft-withheld",
+            "dossier": {"prior_draft_view": "withheld"},
             "gaps": [],
             "uncertain_spans": [],
             "truncation": perlector.truncation.classify(
