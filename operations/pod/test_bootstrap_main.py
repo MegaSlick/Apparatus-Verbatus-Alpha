@@ -894,6 +894,17 @@ def test_refuses_a_models_config_outside_the_checked_out_repository(
     assert "checked-out repository" in err
 
 
+def test_plan_refuses_a_relative_models_config_that_escapes_the_repository(
+    tmp_path: Path,
+) -> None:
+    ws = _workspace(tmp_path)
+    argv = _argv(ws)
+    argv[argv.index("--models-config") + 1] = "../x"
+
+    with pytest.raises(PlanRefusal, match="--models-config"):
+        resolve_plan(build_parser().parse_args(argv), _environ(Clock()))
+
+
 def test_a_roster_other_than_the_fixture_one_must_name_its_own_catalogue(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

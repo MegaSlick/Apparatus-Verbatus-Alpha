@@ -11,6 +11,7 @@ import inspect
 import itertools
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -5665,8 +5666,15 @@ def _tools(tmp_path: Path) -> dict[str, str]:
     for name in ("git", "uv"):
         path = tmp_path / "tools" / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("#!/bin/sh\n", encoding="utf-8")
-        path.chmod(0o755)
+        if name == "git":
+            git = shutil.which("git")
+            assert git is not None
+            if not path.exists():
+                path.symlink_to(git)
+        else:
+            if not path.exists():
+                path.write_text("#!/bin/sh\n", encoding="utf-8")
+                path.chmod(0o755)
         tools[name] = str(path)
     return tools
 
@@ -5930,6 +5938,11 @@ def test_the_image_contract_accepts_anonymous_https_without_external_credentials
         '[http "https://example.invalid"] cookieFile = /tmp/cookies',
         "[http] sslKey = /tmp/key",
         "[http] sslCert = /tmp/cert",
+        "[http] proxySSLKey = /tmp/key",
+        "[http] proxySSLCert = /tmp/cert",
+        '[http "https://example.invalid"] proxySSLKey = /tmp/key',
+        '[http "https://example.invalid"] proxySSLCert = /tmp/cert',
+        "[extensions] worktreeConfig = true",
         '[url "https://elsewhere.invalid/"] insteadOf = https://example.invalid/',
         '[url "https://elsewhere.invalid/"] pushInsteadOf = https://example.invalid/',
     ],
@@ -5946,6 +5959,42 @@ def test_image_contract_refuses_external_git_config_routes(tmp_path: Path, entry
             executables=_tools(tmp_path),
             environment=BOOTSTRAP_ENVIRONMENT,
         )
+
+
+def test_git_config_parser_accepts_a_valueless_key_as_true(tmp_path: Path) -> None:
+    repository = _image(tmp_path)
+    config = repository / ".git" / "config"
+    config.write_text(config.read_text() + "[custom]\n\tmarker\n", encoding="utf-8")
+
+    entries = bootstrap_module._git_config_entries(
+        config, BOOTSTRAP_ENVIRONMENT, repository, _tools(tmp_path)["git"]
+    )
+
+    assert ("custom.marker", "true") in entries
+
+
+def test_git_config_parser_uses_the_verified_git_and_its_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _image(tmp_path)
+    tools = _tools(tmp_path)
+    observed: list[tuple[str, object]] = []
+    real_run = subprocess.run
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        observed.append((argv[0], kwargs.get("timeout")))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(bootstrap_module.subprocess, "run", run)
+
+    verify_image_contract(
+        repository,
+        interpreter=_interpreter(repository),
+        executables=tools,
+        environment=BOOTSTRAP_ENVIRONMENT,
+    )
+
+    assert observed == [(tools["git"], bootstrap_module.GIT_COMMAND_TIMEOUT_SECONDS)]
 
 
 def test_image_contract_refuses_ssh_origin(tmp_path: Path) -> None:

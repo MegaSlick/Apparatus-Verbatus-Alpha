@@ -47,6 +47,7 @@ BOOTSTRAP_EXECUTABLES = {
     "apt-get": "/usr/bin/apt-get",
     "dpkg-query": "/usr/bin/dpkg-query",
 }
+GIT_COMMAND_TIMEOUT_SECONDS = 600
 CUDA_COMPAT_PATH = "/usr/local/cuda-13.0/compat"
 CUDA_COMPAT_PACKAGE = "cuda-compat-13-0"
 CUDA_COMPAT_VERSION = "580.178.04-1ubuntu1"
@@ -192,14 +193,18 @@ def verify_image_contract(
             "pinned commit inside a checkout the image already carries -- it has never "
             "cloned one, so there is nothing here for the pinned commit to land in"
         )
-    entries = _git_config_entries(config_path, environment, repository)
+    entries = _git_config_entries(config_path, environment, repository, executables["git"])
     for key, _value in entries:
         lowered = key.lower()
         parts = lowered.split(".")
         forbidden = (
             parts[0] in {"include", "includeif", "credential"}
             or lowered in {"core.askpass", "core.sshcommand"}
-            or (parts[0] == "http" and parts[-1] in {"cookiefile", "sslkey", "sslcert"})
+            or (
+                parts[0] == "http"
+                and parts[-1] in {"cookiefile", "sslkey", "sslcert", "proxysslkey", "proxysslcert"}
+            )
+            or lowered == "extensions.worktreeconfig"
             or (parts[0] == "url" and parts[-1] in {"insteadof", "pushinsteadof"})
         )
         if forbidden:
@@ -350,18 +355,19 @@ def _git_config_path(repository: Path) -> Path | None:
 
 
 def _git_config_entries(
-    config_path: Path, environment: Mapping[str, str], repository: Path
+    config_path: Path, environment: Mapping[str, str], repository: Path, git_executable: str
 ) -> list[tuple[str, str]]:
     """Ask Git to parse only the checkout config, preserving every key and value."""
 
     try:
         result = subprocess.run(
-            ["/usr/bin/git", "config", "--file", str(config_path), "--no-includes", "--list", "-z"],
+            [git_executable, "config", "--file", str(config_path), "--no-includes", "--list", "-z"],
             env=dict(environment),
             capture_output=True,
             check=False,
+            timeout=GIT_COMMAND_TIMEOUT_SECONDS,
         )
-    except OSError as error:
+    except (OSError, subprocess.TimeoutExpired) as error:
         raise ImageContractRefusal(
             f"the checkout at {repository} config could not be inspected by git; "
             "repair the image's git installation or config"
@@ -377,9 +383,7 @@ def _git_config_entries(
             continue
         key, separator, value = record.partition(b"\n")
         if not separator:
-            raise ImageContractRefusal(
-                f"the checkout at {repository} has malformed git config output"
-            )
+            value = b"true"
         entries.append(
             (key.decode("utf-8", errors="replace"), value.decode("utf-8", errors="replace"))
         )
@@ -1211,7 +1215,7 @@ class SubprocessBootstrapActions:
             if argv[0].endswith(("/nvidia-smi", "/dpkg-query"))
             else 300
             if argv[0].endswith(("/apt-cache", "/apt-get"))
-            else 600
+            else GIT_COMMAND_TIMEOUT_SECONDS
             if argv[0] == self.executables["git"]
             else 3600
             if argv[0] == self.executables["uv"]

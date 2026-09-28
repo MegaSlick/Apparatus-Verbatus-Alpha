@@ -102,12 +102,6 @@ def page_witness_edit_distance(answer: str, witness: str) -> int | None:
     return previous[-1] if previous[-1] <= PAGE_WITNESS_MAX_EDIT_DISTANCE else None
 
 
-def answer_is_page_witness(answer: str, witness: str) -> bool:
-    """Accept a near page read with the required marker and layout."""
-
-    return page_witness_edit_distance(answer, witness) is not None
-
-
 class SmokeExchangeRetainedError(ServingError):
     """A smoke parser refusal whose exact request and response are retained."""
 

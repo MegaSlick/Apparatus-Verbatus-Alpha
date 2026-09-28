@@ -459,6 +459,19 @@ def test_qualification_refuses_near_reads_even_when_preflight_is_green(
         _qualify(paths)
 
 
+def test_qualification_names_a_receipt_without_recorded_edit_distance(tmp_path: Path) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smokes = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"]  # type: ignore[index]
+    del smokes[0]["page_witness_edit_distance"]
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(
+        QualificationRefusal,
+        match=r"missing edit distance \(receipt predates distance recording; re-run preflight\)",
+    ):
+        _qualify(paths)
+
+
 @pytest.mark.parametrize(
     "answer",
     [

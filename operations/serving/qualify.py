@@ -303,6 +303,11 @@ def _verify_smoke(
     choice = choices[0]
     message = choice.get("message") if isinstance(choice, dict) else None
     answer = message.get("content") if isinstance(message, dict) else None
+    if "page_witness_edit_distance" not in smoke:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} missing edit distance "
+            "(receipt predates distance recording; re-run preflight)"
+        )
     distance = page_witness_edit_distance(answer, witness) if isinstance(answer, str) else None
     if distance is None:
         raise QualificationRefusal(

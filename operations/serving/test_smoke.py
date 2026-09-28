@@ -25,7 +25,6 @@ from .errors import ServingConfigurationError
 from .smoke import (
     NvidiaSmiUtilization,
     VisionSmokeCall,
-    answer_is_page_witness,
     fresh_page_witness,
     page_witness_edit_distance,
     render_golden_page,
@@ -36,9 +35,12 @@ TEST_WITNESS = (PAGE_WITNESS_ALPHABET * 2)[:PAGE_WITNESS_LENGTH]
 
 
 def test_smoke_accepts_two_reading_slips_but_refuses_broken_answers() -> None:
-    assert answer_is_page_witness(f"PAGE-WITNESS: {TEST_WITNESS}", TEST_WITNESS)
-    assert answer_is_page_witness(
-        f"PAGE-WITNESS: C{TEST_WITNESS[1:20]} P{TEST_WITNESS[21:]}", TEST_WITNESS
+    assert page_witness_edit_distance(f"PAGE-WITNESS: {TEST_WITNESS}", TEST_WITNESS) is not None
+    assert (
+        page_witness_edit_distance(
+            f"PAGE-WITNESS: C{TEST_WITNESS[1:20]} P{TEST_WITNESS[21:]}", TEST_WITNESS
+        )
+        is not None
     )
     for answer in (
         "",
@@ -48,7 +50,7 @@ def test_smoke_accepts_two_reading_slips_but_refuses_broken_answers() -> None:
         f"PAGE-WITNESS: {TEST_WITNESS} ",
         f"PAGE-WITNESS: {TEST_WITNESS[:20]}!{TEST_WITNESS[21:]}",
     ):
-        assert not answer_is_page_witness(answer, TEST_WITNESS)
+        assert page_witness_edit_distance(answer, TEST_WITNESS) is None
 
 
 @pytest.mark.parametrize(
@@ -65,7 +67,7 @@ def test_smoke_records_substitution_insertion_and_truncation_distance(
     code: str, distance: int
 ) -> None:
     assert page_witness_edit_distance(f"PAGE-WITNESS: {code}", TEST_WITNESS) == distance
-    assert answer_is_page_witness(f"PAGE-WITNESS: {code}", TEST_WITNESS)
+    assert page_witness_edit_distance(f"PAGE-WITNESS: {code}", TEST_WITNESS) is not None
 
 
 def test_a_fresh_witness_is_one_the_smoke_callable_accepts_and_two_draws_differ(
