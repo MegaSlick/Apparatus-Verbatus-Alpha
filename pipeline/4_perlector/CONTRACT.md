@@ -303,10 +303,13 @@ with its `reason`. A page is rendered with its long edge capped at
 `maximum_edge` (2,560), `reason: "legible-ink"`, so its ink is legible to the
 reader and not only its layout; 2,560 keeps a 300-DPI letter or A4 page inside
 the 27B Perlector row's `max_pixels`, so the chair sees exactly the rendered
-pixels. A page the act's own crops cover whole (their union is the page, as for
-a continuation act's whole-page crops) already reaches the reader at full
-resolution through those crops, so it is rendered at `covered_page_edge`
-(1,024), `reason: "covered-by-crop"`, as layout only. The edge is a bound, not a
+pixels. A page the act's own crops cover whole (their union is the page) already reaches
+the reader at full resolution through those crops, so it is rendered at
+`covered_page_edge` (1,024), `reason: "covered-by-crop"`, as layout only; every
+page of an act spanning more than one page is rendered at `covered_page_edge`
+too, `reason: "multi-page-act"`, so the page render never refuses an act the
+row held with layout renders. The rule is decided from the act's crops, never
+from whether a request fits. The edge is a bound, not a
 divisor. `transform` records `{operation, source_dimensions, target_dimensions,
 maximum_edge, resampler}` and `source` names the sealed page it came from, so
 the render is reproducible from the Exemplar plus the record (ARCHITECTURE
@@ -316,16 +319,15 @@ that did not happen.
 
 Every one of the 4,572 RecordGold gold acts, each on one page, fits the row
 under this rule with its neighbour clues, as it did at 1,024
-(`operations/corpus/perlector_request_fit.py`). The shapes the row does not hold
-are pinned in `operations/serving/test_serving_catalogue_capacity.py`: an act
-over three pages even with whole-page crops, a dense act over a page turn with a
-whole-page recovery crop and a fed prior draft (both refused at 1,024 too), and
-one shape the legible render newly refuses -- a dense act over a page turn with
-half-page crops, three witnesses reporting two pages of text each and a fed prior
-draft charged at the reading cap, which needs 31,514 tokens at 1,024 and 38,732
-at 2,560 against 32,768. The live reader refuses each before sending; the act is
-published failed with the capacity record, never read with a page dropped or
-downscaled to fit.
+(`operations/corpus/perlector_request_fit.py`), and no pinned shape needs more
+under this rule than at 1,024. The shapes the row does not hold, refused at
+1,024 as well, are pinned in
+`operations/serving/test_serving_catalogue_capacity.py`: an act over three
+pages with whole-page crops (34,967 tokens against 32,768), and a dense act over
+a page turn with a whole-page recovery crop, three witnesses reporting two pages
+of text each and a fed prior draft charged at the reading cap (36,617). The live
+reader refuses each before sending; the act is published failed with the
+capacity record, never read with a page dropped or downscaled to fit.
 
 **Neighbour clues.** A primed dossier names the acts just before and just after
 this one in the Designator's `expected_acts` sequence, across page breaks, and

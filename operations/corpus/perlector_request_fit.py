@@ -141,7 +141,7 @@ def request_record(
             edge
             if edge is not None
             else context["covered_page_edge"]
-            if _covered(page, boxes)
+            if len(pages) > 1 or _covered(page, boxes)
             else context["maximum_edge"],
         )
         for page, boxes in pages

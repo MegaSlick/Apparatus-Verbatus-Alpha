@@ -130,6 +130,7 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
 # show whole.
 LEGIBLE_INK: Final = "legible-ink"
 COVERED_BY_CROP: Final = "covered-by-crop"
+MULTI_PAGE_ACT: Final = "multi-page-act"
 
 
 def union_area(rectangles: list[tuple[int, int, int, int]]) -> int:
@@ -156,6 +157,7 @@ def build_page_render(
     source_page_ordinal: int,
     page_context: dict[str, int],
     crop_bounds: list[dict[str, int]],
+    multi_page: bool = False,
 ) -> dict[str, Any]:
     """The page render for one act's page, with its transform and its reason
     recorded (ARCHITECTURE invariant 3: the exact image shown is reproducible
@@ -166,7 +168,10 @@ def build_page_render(
     act's own crops on it (`crop_bounds`, sealed-page coordinates) cover the
     whole page: those crops already carry every pixel at full resolution, so the
     page is rendered at `covered_page_edge` as layout only, and a second
-    full-resolution copy does not crowd the act out of the served row.
+    full-resolution copy does not crowd the act out of the served row. Every
+    page of an act spanning more than one page (`multi_page`) is rendered at
+    `covered_page_edge` too: a legible render of each page would refuse acts
+    over a page turn that the served row holds with layout renders.
     """
     page, page_bytes = read_sealed_page(context.tree, source_page_id)
     width, height = dimensions(page_bytes)
@@ -184,7 +189,8 @@ def build_page_render(
         )
         == width * height
     )
-    edge = page_context["covered_page_edge"] if covered else page_context["maximum_edge"]
+    reason = MULTI_PAGE_ACT if multi_page else COVERED_BY_CROP if covered else LEGIBLE_INK
+    edge = page_context["maximum_edge" if reason == LEGIBLE_INK else "covered_page_edge"]
     try:
         downscaled, transform = _downscale_page(page_bytes, maximum_edge=edge)
     except (OSError, ValueError, Image.DecompressionBombError) as error:
@@ -204,7 +210,7 @@ def build_page_render(
         "image_path": published["relative_path"],
         "image_sha256": published["sha256"],
         "transform": transform,
-        "reason": COVERED_BY_CROP if covered else LEGIBLE_INK,
+        "reason": reason,
     }
 
 

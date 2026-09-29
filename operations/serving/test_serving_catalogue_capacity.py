@@ -394,13 +394,13 @@ SHAPES = {
     "dense over a page turn, half-page crops, fed prior": (
         [(LETTER, [BOTTOM]), (LETTER, [TOP])],
         PRIOR,
-        (38732, False),
+        (31514, True),
         (31514, True),
     ),
     "dense over a page turn, a whole-page recovery crop, fed prior": (
         [(LETTER, [BOTTOM]), (LETTER, [TOP, WHOLE])],
         PRIOR,
-        (40777, False),
+        (36617, False),
         (36617, False),
     ),
     "three pages, whole-page crops": (
@@ -416,10 +416,10 @@ SHAPES = {
 def test_each_pinned_request_shape_against_the_row_under_both_page_renders(name):
     """What the sealed `[page_context]` rule costs, shape by shape, against the old render.
 
-    A page the act's crops cover whole is rendered at the layout edge, so an act over
-    a page turn with whole-page crops costs what it did. The dense two-page act with
-    half-page crops and a fed prior draft is the one shape here that the legible
-    render newly refuses: it fits at 1,024 and not at 2,560. Every gold act fits
+    A page the act's crops cover whole, and every page of an act spanning more than
+    one page, is rendered at the layout edge, so each shape here costs exactly what
+    it did at 1,024: the page render refuses no act the old render admitted. The two
+    shapes the row does not hold were refused at 1,024 too. Every gold act fits
     under both (`operations/corpus/perlector_request_fit.py`).
     """
     pages, prior, sealed_rule, old = SHAPES[name]

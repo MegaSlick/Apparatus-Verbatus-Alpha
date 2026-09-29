@@ -580,6 +580,11 @@ def test_a_page_the_acts_crops_cover_whole_is_rendered_as_layout_only(evidence):
     assert covered["transform"]["maximum_edge"] == PAGE_CONTEXT["covered_page_edge"]
     assert partial["reason"] == dossier.LEGIBLE_INK
     assert partial["transform"]["maximum_edge"] == EDGE
+    spanning = dossier.build_page_render(
+        context, **page, page_context=PAGE_CONTEXT, crop_bounds=halves[:1], multi_page=True
+    )
+    assert spanning["reason"] == dossier.MULTI_PAGE_ACT
+    assert spanning["transform"]["maximum_edge"] == PAGE_CONTEXT["covered_page_edge"]
 
 
 def test_a_page_past_the_bound_is_actually_downscaled_to_it():

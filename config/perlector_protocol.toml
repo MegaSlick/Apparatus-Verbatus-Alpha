@@ -53,8 +53,8 @@ fragment = "The neighbouring acts are the acts written just before and just afte
 # Perlector row's max_pixels (5,299,200), so the chair sees exactly the rendered
 # pixels (4,960 image tokens for the letter page). A page the act's own crops
 # cover whole already reaches the reader at full resolution, so it is rendered
-# at covered_page_edge, a layout-only size, and costs about 800 tokens
-# instead. Every RecordGold gold act fits the row (max_model_len 32,768) under
+# at covered_page_edge, a layout-only size costing about 800 tokens, and so is
+# every page of an act spanning more than one page. Every RecordGold gold act fits the row (max_model_len 32,768) under
 # this rule with neighbour clues, as it did at 1,024
 # (`operations/corpus/perlector_request_fit.py`); the shapes that do not are
 # pinned in `operations/serving/test_serving_catalogue_capacity.py`, and the

@@ -2074,6 +2074,7 @@ def _page_renders_for(context, bases: list[dict], *, page_context: dict[str, int
             source_page_ordinal=on_page[0]["source_page_ordinal"],
             page_context=page_context,
             crop_bounds=[basis["transform"]["bounds"] for basis in on_page],
+            multi_page=len(by_page) > 1,
         )
         for page_id, on_page in by_page.items()
     ]
