@@ -693,20 +693,32 @@ def scan_tree(entries: dict[str, Blob], context: str) -> list[Issue]:
                 )
             continue
 
-        data = entry_data(entry)
-        issues.extend(secret_issues(path, data, context))
-        if data.startswith(LFS_HEADER):
-            issues.append(Issue(path, "git-lfs", "Git LFS pointers are not allowed", context))
-        if is_binary(data) and not fixture:
-            issues.append(
-                Issue(
-                    path,
-                    "binary",
-                    "binary payload is not hash-bound in proof/fixtures.toml",
-                    context,
-                )
-            )
+        issues.extend(content_issues(path, entry, bool(fixture), context))
     return issues
+
+
+# A history scan meets the same file version in every commit that carries it; its content
+# findings depend only on path, bytes and fixture status, so each is worked out once.
+_CONTENT_ISSUES: dict[tuple[str, str, bool], list[Issue]] = {}
+
+
+def content_issues(path: str, entry: Blob, fixture: bool, context: str) -> list[Issue]:
+    key = (path, entry.oid, fixture)
+    if entry.data is None and entry.oid and key in _CONTENT_ISSUES:
+        return _CONTENT_ISSUES[key]
+    data = entry_data(entry)
+    found = secret_issues(path, data, context)
+    if data.startswith(LFS_HEADER):
+        found.append(Issue(path, "git-lfs", "Git LFS pointers are not allowed", context))
+    if is_binary(data) and not fixture:
+        found.append(
+            Issue(
+                path, "binary", "binary payload is not hash-bound in proof/fixtures.toml", context
+            )
+        )
+    if entry.data is None and entry.oid:
+        _CONTENT_ISSUES[key] = found
+    return found
 
 
 def unique_issues(issues: list[Issue]) -> list[Issue]:

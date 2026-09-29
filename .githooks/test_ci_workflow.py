@@ -608,6 +608,48 @@ def test_ingress_step_on_branch_skips_tag_object_and_fails_closed(recorded_ingre
     assert failed.returncode != 0
 
 
+def test_ingress_step_scans_only_new_commits_when_the_start_commit_is_known(recorded_ingress):
+    git = ["git", "-C", str(recorded_ingress)]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run(
+        [
+            *git,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+        check=True,
+    )
+    base = subprocess.run(
+        [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    result = run_shell(
+        step_run("Repository ingress"),
+        recorded_ingress,
+        {"GITHUB_REF": "refs/pull/1/merge", "GITHUB_HEAD_REF": "work/topic", "SCAN_BASE": base},
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls(recorded_ingress) == ["--ref-fields", f"--history {base}..HEAD"]
+
+
+def test_ingress_step_scans_everything_when_the_start_commit_is_unknown(recorded_ingress):
+    for base in ("", "0" * 40, "f" * 40):
+        (recorded_ingress / "calls").unlink(missing_ok=True)
+        result = run_shell(
+            step_run("Repository ingress"),
+            recorded_ingress,
+            {"GITHUB_REF": "refs/heads/main", "GITHUB_HEAD_REF": "", "SCAN_BASE": base},
+        )
+        assert result.returncode == 0, result.stderr
+        assert calls(recorded_ingress) == ["--ref-fields", "--history HEAD"]
+
+
 def test_every_third_party_import_in_the_gate_suite_is_declared():
     """A package the gate's own tests import but nothing declares arrives only as an
     unpinned transitive, as `yaml` once did through huggingface_hub."""
