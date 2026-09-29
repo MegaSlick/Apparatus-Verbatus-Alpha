@@ -258,6 +258,37 @@ def test_a_failed_saved_pass_a_is_recorded_and_the_establishing_call_still_reads
     assert output["perlectio"]["dossier"]["prior_draft_view"] == "withheld"
 
 
+def test_a_saved_pass_a_failure_with_no_recorder_still_raises():
+    with pytest.raises(RuntimeError):
+        run_logical_passes(
+            PassAFailsReader(),
+            autopsia=autopsia(),
+            dossier={"testimonia": []},
+            read_bytes=READ_BYTES,
+            protocol_config={"max_images": 6},
+            nuda_sampled=False,
+            control_sampled=False,
+            blind_read="saved",
+            saved_prior_failures=(RuntimeError,),
+        )
+
+
+def test_a_saved_pass_a_failure_not_on_the_list_still_raises():
+    with pytest.raises(RuntimeError):
+        run_logical_passes(
+            PassAFailsReader(),
+            autopsia=autopsia(),
+            dossier={"testimonia": []},
+            read_bytes=READ_BYTES,
+            protocol_config={"max_images": 6},
+            nuda_sampled=False,
+            control_sampled=False,
+            blind_read="saved",
+            saved_prior_failures=(KeyError,),
+            record_prior_failure=lambda error: pytest.fail("an unlisted failure is not recorded"),
+        )
+
+
 def test_a_failed_fed_pass_a_still_raises():
     with pytest.raises(RuntimeError):
         run_logical_passes(

@@ -2467,6 +2467,8 @@ def test_the_blind_read_setting_reaches_the_orchestrator_and_the_run_receipt(
         assert "--blind-read" not in command
     else:
         assert _argv_value(command, "--blind-read") == blind_read
+    receipts = surface._run_receipts()
+    assert receipts and {payload["blind_read"] for _path, payload in receipts} == {blind_read}
 
 
 def test_real_ingress_paths_are_made_absolute_against_the_operators_own_cwd(
