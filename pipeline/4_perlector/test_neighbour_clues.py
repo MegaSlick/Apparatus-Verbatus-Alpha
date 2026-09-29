@@ -400,11 +400,14 @@ def _published(fed_run) -> dict:
     return _by_act(fed_run, "perlectio")["a1"]
 
 
+_CAP = _sealed_protocol()["neighbours"]["characters_per_row"]
+
+
 def _refused_with(fed_run, change, match: str) -> None:
     dossier = copy.deepcopy(_published(fed_run)["payload"]["dossier"])
     change(dossier["neighbours"])
     with pytest.raises(SchemaRefusal, match=match):
-        perlector._validate_neighbours(dossier)
+        perlector._validate_neighbours(dossier, _CAP)
 
 
 def test_a_neighbour_naming_this_act_is_refused(fed_run):
@@ -430,4 +433,50 @@ def test_a_neighbour_ref_outside_the_attestatores_testimonia_is_refused(fed_run)
 
 
 def test_the_published_neighbours_pass_their_own_validation(fed_run):
-    perlector._validate_neighbours(_published(fed_run)["payload"]["dossier"])
+    perlector._validate_neighbours(_published(fed_run)["payload"]["dossier"], _CAP)
+
+
+def _reading(side: str, shown: str, length: int) -> dict:
+    witness = {
+        "witness_label": "w1",
+        "outcome": "read",
+        "reported": "x" * length,
+        "reported_basis": "own-report",
+        "shown": shown,
+        "testimonium_ref": {
+            "relative_path": perlector._TESTIMONIUM_PREFIX + "x.json",
+            "sha256": "0" * 64,
+        },
+    }
+    entry = {
+        "act_id": "other",
+        "act_key": "k",
+        "same_page": True,
+        "witnesses": [witness],
+        "unavailable": None,
+    }
+    return {"act_id": "own", "neighbours": {"preceding": None, "following": None, side: entry}}
+
+
+@pytest.mark.parametrize(
+    ("side", "shown", "length"),
+    [
+        ("following", "whole", _CAP + 1),
+        ("preceding", "tail", _CAP - 1),
+        ("preceding", "tail", _CAP + 1),
+        ("following", "head", _CAP - 1),
+        ("following", "tail", _CAP),
+        ("preceding", "head", _CAP),
+    ],
+)
+def test_a_reading_not_cut_as_the_sealed_cap_cuts_it_is_refused(side, shown, length):
+    with pytest.raises(SchemaRefusal, match="sealed neighbour cap"):
+        perlector._validate_neighbours(_reading(side, shown, length), _CAP)
+
+
+@pytest.mark.parametrize(
+    ("side", "shown", "length"),
+    [("following", "whole", _CAP), ("preceding", "tail", _CAP), ("following", "head", _CAP)],
+)
+def test_a_reading_cut_as_the_producer_cuts_it_is_accepted(side, shown, length):
+    perlector._validate_neighbours(_reading(side, shown, length), _CAP)

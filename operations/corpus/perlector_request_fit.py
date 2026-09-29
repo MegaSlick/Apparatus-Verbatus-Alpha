@@ -91,15 +91,21 @@ def _witness_rows() -> list[dict[str, Any]]:
 _ROWS: list[dict[str, Any]] | None = None
 
 
-def _neighbour(texts: list[str] | None, side: str, cap: int) -> dict[str, Any] | None:
-    if texts is None:
+def _neighbour(clue: tuple[list[str], bool] | None, side: str, cap: int) -> dict[str, Any] | None:
+    if clue is None:
         return None
+    texts, same_page = clue
     witnesses = []
     for chair, text in zip(WITNESSES, texts, strict=True):
         shown = "whole" if len(text) <= cap else ("tail" if side == "preceding" else "head")
         cut = text if shown == "whole" else (text[-cap:] if side == "preceding" else text[:cap])
         witnesses.append({"witness_label": chair, "reported": cut, "shown": shown})
-    return {"act_key": "neighbour", "same_page": True, "witnesses": witnesses, "unavailable": None}
+    return {
+        "act_key": "neighbour",
+        "same_page": same_page,
+        "witnesses": witnesses,
+        "unavailable": None,
+    }
 
 
 def _rendered(page: tuple[int, int], edge: int) -> tuple[int, int]:
@@ -120,13 +126,14 @@ def request_record(
     *,
     pages: list[tuple[tuple[int, int], list[tuple[int, int, int, int]]]],
     witness_texts: list[str],
-    neighbours: tuple[list[str] | None, list[str] | None] | None,
+    neighbours: tuple[tuple[list[str], bool] | None, tuple[list[str], bool] | None] | None,
     prior_text: str | None,
     edge: int | None,
 ) -> dict[str, Any]:
     """The capacity record for one act's request.
 
     `pages` is each page's size and the act's crops on it as `(x, y, w, h)`.
+    Each neighbour is its witness texts and whether it shares a page with the act.
     `edge=None` applies the sealed `[page_context]` rule; an integer renders every
     page at that edge. `neighbours=None` renders no neighbour clues.
     """
@@ -187,11 +194,13 @@ def gold_shapes(pages: list[dict], padding: dict[str, int]) -> list[dict[str, An
             x, y, w, h = record["bbox"]
             if w <= 0 or h <= 0 or not record["text"].strip():
                 continue
-            acts.append({"size": size, "box": (x, y, w, h), "text": record["text"]})
+            acts.append(
+                {"page": id(page), "size": size, "box": (x, y, w, h), "text": record["text"]}
+            )
     for index, act in enumerate(acts):
         act["crop"] = padded_crop(act["box"], act["size"], padding)
-        act["before"] = acts[index - 1]["text"] if index else None
-        act["after"] = acts[index + 1]["text"] if index + 1 < len(acts) else None
+        act["before"] = acts[index - 1] if index else None
+        act["after"] = acts[index + 1] if index + 1 < len(acts) else None
     return acts
 
 
@@ -203,6 +212,13 @@ def padded_crop(box, page, padding) -> tuple[int, int, int, int]:
     x1 = min(page[0], x + w + round_half_up_bp(w, padding["right_bp"]))
     y1 = min(page[1], y + h + round_half_up_bp(h, padding["bottom_bp"]))
     return (x0, y0, x1 - x0, y1 - y0)
+
+
+def _clue(act: dict[str, Any], other: dict[str, Any] | None) -> tuple[list[str], bool] | None:
+    """A neighbour's texts and whether it sits on the act's page, as the live dossier sets it."""
+    if other is None:
+        return None
+    return [other["text"]] * len(WITNESSES), other["page"] == act["page"]
 
 
 def fit_table(acts: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
@@ -223,8 +239,8 @@ def fit_table(acts: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
                 pages=[(act["size"], [act["crop"]])],
                 witness_texts=[act["text"]] * len(WITNESSES),
                 neighbours=(
-                    ([act["before"]] * 3 if act["before"] else None),
-                    ([act["after"]] * 3 if act["after"] else None),
+                    _clue(act, act["before"]),
+                    _clue(act, act["after"]),
                 )
                 if with_neighbours
                 else None,

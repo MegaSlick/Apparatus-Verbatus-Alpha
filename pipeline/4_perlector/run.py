@@ -2614,7 +2614,12 @@ def validate_reading_payload(
             raise SchemaRefusal(
                 "an unprimed reading's dossier cannot carry the neighbouring acts' witness readings"
             )
-        _validate_neighbours(reading_dossier)
+        _validate_neighbours(
+            reading_dossier,
+            None
+            if protocol_config is None
+            else protocol_config[protocol.NEIGHBOURS_TABLE]["characters_per_row"],
+        )
     _validate_dossier_testimonia(
         reading_dossier,
         basis,
@@ -2675,12 +2680,17 @@ def neighbour_testimonium_refs(reading_dossier: dict) -> list[dict[str, str]]:
     ]
 
 
-def _validate_neighbours(reading_dossier: dict) -> None:
-    """The closed neighbour-clue shape: two sides, never this act, sealed witness refs."""
+def _validate_neighbours(reading_dossier: dict, characters_per_row: int | None) -> None:
+    """The closed neighbour-clue shape: two sides, never this act, sealed witness refs.
+
+    With the sealed `characters_per_row`, each reading must be cut as `neighbour_entry`
+    cuts it: whole within the cap, else exactly the cap's tail (preceding) or head
+    (following). Without one (an unsealed test call) the lengths are not checked.
+    """
     neighbours = reading_dossier["neighbours"]
     if not isinstance(neighbours, dict) or set(neighbours) != _NEIGHBOUR_SIDES:
         raise SchemaRefusal("a Perlector dossier's neighbours are not {preceding, following}")
-    for entry in neighbours.values():
+    for side, entry in neighbours.items():
         if entry is None:
             continue
         if (
@@ -2711,6 +2721,16 @@ def _validate_neighbours(reading_dossier: dict) -> None:
                 or witness["shown"] not in shown
             ):
                 raise SchemaRefusal("a neighbour witness row carries a malformed reading")
+            if characters_per_row is not None and reported is not None:
+                cut = {"preceding": "tail", "following": "head"}[side]
+                if (
+                    len(reported) > characters_per_row
+                    if witness["shown"] == "whole"
+                    else witness["shown"] != cut or len(reported) != characters_per_row
+                ):
+                    raise SchemaRefusal(
+                        "a neighbour witness reading is not cut as the sealed neighbour cap cuts it"
+                    )
             reference = digest_ref(witness["testimonium_ref"], "a neighbour testimonium_ref")
             if not reference["relative_path"].startswith(_TESTIMONIUM_PREFIX):
                 raise SchemaRefusal(
