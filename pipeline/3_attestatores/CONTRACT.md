@@ -550,19 +550,29 @@ smaller than what the row leaves, and the gap between the two is then also the
 margin against an undercount.
 `DECLARED_ANSWER_BOUND_TOKENS` carries the four bounds with their sources —
 Chandra 12,384 (`chandra/settings.py::MAX_OUTPUT_TOKENS`), DAI 1,024 (its model
-card's own `model.generate`), Churro 20,000 (the CHURRO paper §B.2, replacing a
-24,000 this repository had described as a carried value the model's
-`generation_config.json` does not contain). Churro alone used to send a bound,
+card's own `model.generate`), Churro 25,000 (the vendor's `DEFAULT_OCR_MAX_TOKENS`,
+`src/churro_ocr/providers/specs.py:77` at v0.3.0). Every Churro row carries a
+32,768-token context that holds it, so Churro sends its bound on every tier and
+`request_capacity_or_refuse` reserves the whole 25,000 for a Churro page: a row
+that could not hold it refuses the request instead of letting the engine cut
+the answer short. Churro alone used to send a bound,
 and only where the row could hold the whole declared value beside the prompt;
 Chandra and DAI sent **nothing**, which is not the same as being unbounded —
 with no `max_tokens` the engine sets the answer budget to `max_model_len −
 prompt` itself, so a DAI act crop could generate some 7,700 tokens against a
 1,024-token upstream bound on a card billing by the hour. On every row this
-catalogue ships that is the case for DAI alone; Chandra's 12,384 and Churro's
-20,000 are both above what their rows leave, so those three chairs send no
-bound and behave exactly as before. A `"length"` stop means the vendor's bound
+catalogue ships that is the case for DAI alone; Chandra's 12,384 is above what its
+24/48 GB rows leave, so it sends none there and behaves as before. A `"length"` stop means the vendor's bound
 wherever one was sent and the context wherever none was, and the retained
-chair-call record's `generation_sent` says which. The declaration is untouched: `generation_declared` still
+chair-call record's `generation_sent` says which.
+
+*Unknowns to verify on the next pod.* (1) Whether vLLM 0.27.1 honours
+`--mm-processor-kwargs` `min_pixels`/`max_pixels` for Qwen3-VL (Chandra, the
+Perlector): compare `usage.prompt_tokens_details` image-token counts with
+`request_capacity`'s count for the same image. (2) vLLM's default
+`--limit-mm-per-prompt` against the Perlector's requests of up to 32 images.
+
+The declaration is untouched: `generation_declared` still
 carries Churro's `max_new_tokens` and DAI's whole carried
 `generation_config.json`, and the retained Churro model view still requires the
 bound. `test_live_witness.py` walks every Churro row in the shipped catalogue at

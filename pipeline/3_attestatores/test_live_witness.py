@@ -299,11 +299,11 @@ def test_page_chair_request_builds_churros_system_only_framing_and_declares_the_
     assert user["content"][0]["type"] == "image_url"
     # The declaration is unchanged and still retained on every request.
     assert request.generation_declared == {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
-    # The sealed row is shorter than the declared bound, so the row is what
-    # binds and no bound is sent -- the engine's own budget is the same
-    # quantity, measured by the component that holds the tokenizer.
-    assert CHURRO_OUTPUT_TOKENS >= row.max_model_len
+    # The row holds the vendor's whole 25,000-token bound beside the page, so
+    # the bound is what binds and it goes on the wire.
+    assert CHURRO_OUTPUT_TOKENS < row.max_model_len
     assert dict(request.generation_sent) == {
+        "max_tokens": CHURRO_OUTPUT_TOKENS,
         # Churro's own shipped penalty, which `generation_config = "vllm"`
         # would otherwise replace with vLLM's default 1.0.
         "repetition_penalty": 1.05,
@@ -330,23 +330,20 @@ def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends()
         capacity = request.capacity
         assert capacity is not None
         prompt = capacity["image_prompt_tokens"] + capacity["prompt_tokens"]
-        if "max_tokens" in sent:
-            assert prompt + sent["max_tokens"] < row.max_model_len, row.tier
-        else:
-            # The smaller rows remain below the declared bound. Stated rather
-            # than left implicit: a row raised past `CHURRO_OUTPUT_TOKENS`
-            # must reach the branch above.
-            assert CHURRO_OUTPUT_TOKENS >= row.max_model_len, row.tier
+        # Every tier holds the vendor's whole bound, so it is always sent.
+        assert sent["max_tokens"] == CHURRO_OUTPUT_TOKENS, row.tier
+        assert prompt + sent["max_tokens"] < row.max_model_len, row.tier
 
 
-def test_the_old_flat_bound_is_refused_by_smaller_churro_rows_and_fits_80gb():
+def test_a_churro_row_too_short_for_the_vendor_bound_refuses_the_page_instead_of_cutting_it():
 
     rows = _sealed_churro_rows()
-    over = [row.tier for row in rows if CHURRO_OUTPUT_TOKENS >= row.max_model_len]
-    assert over == ["generic-24gb", "generic-48gb"]
-    # The smaller tiers retain the disclosed 8,192-token constraint. The 80 GB
-    # row alone admits the full vendor answer budget at 32,768.
-    assert [row.max_model_len for row in rows] == [8192, 8192, 32768]
+    assert [row.max_model_len for row in rows] == [32768, 32768, 32768]
+    short = dataclasses.replace(rows[0], max_model_len=8192)
+    with pytest.raises(RequestCapacityRefusal) as error:
+        _churro_page_request(short)
+    assert error.value.capacity["answer_budget"] == CHURRO_OUTPUT_TOKENS
+    assert error.value.capacity["fits"] is False
 
 
 def _stand_in_row(max_model_len, chair="attestator_3"):
@@ -535,7 +532,8 @@ def test_a_page_that_fits_carries_its_capacity_record_onto_the_request():
     # instruction was a two-message brief.
     assert capacity["prompt_tokens"] == 27
     # Measured over the vendor's own `HistoricalDocument` grammar.
-    assert capacity["answer_budget"] == 1905
+    # Churro reserves the vendor's whole answer bound, not the measured page.
+    assert capacity["answer_budget"] == CHURRO_OUTPUT_TOKENS
 
 
 def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_the_numbers():
@@ -544,9 +542,9 @@ def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_th
     A 300-dpi A4 page is 2,480x3,508. Against the Churro row's own
     `max_pixels` (401,408 / 4,014,080, its trained geometry, the same at every
     tier) it costs 5,100 image tokens; with the measured 27-token vendor
-    system string and the 1,905-token dense-page answer that is 7,032 --
+    system string and the vendor's 25,000-token answer bound that is 30,127 --
     against a `max_model_len = 2048` row, which answers HTTP 400 for real, so
-    nothing is built. The shipped row is 8,192 and admits the same page,
+    nothing is built. The shipped row is 32,768 and admits the same page,
     which `operations/serving/test_serving_catalogue_capacity.py` asserts; the
     row is reconstructed here because the drill is about the refusal, not the
     row.
@@ -558,12 +556,12 @@ def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_th
         _page_request_of_size(2480, 3508, row)
     record = error.value.capacity
     assert record["image_prompt_tokens"] == 5100
-    assert record["need"] == 7032
-    assert record["headroom"] == 2048 - 7032
+    assert record["need"] == 30127
+    assert record["headroom"] == 2048 - 30127
     assert record["fits"] is False
     assert "downscaled" in str(error.value)
     # And the row the catalogue actually ships admits it.
-    assert shipped.max_model_len == 8192
+    assert shipped.max_model_len == 32768
     admitted = _page_request_of_size(2480, 3508, shipped)
     assert admitted.capacity["fits"] is True
 
@@ -573,9 +571,9 @@ def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
 
     The measured case from the token study: a fallback band's presented crop
     was 1,291x1,826, costing 2,990 image tokens against DAI's own
-    `max_pixels` (2,359,296, the same at every tier as `DAI_MAX_TOTAL_PIXELS`),
-    which the 24 GB row cannot hold beside an 84-token prompt even with the
-    *smaller* single-act answer budget reserved. ``adapter.present`` is
+    `max_pixels` (12,845,056, the vendor processor's own), which a 2,048-token
+    row cannot hold beside an 84-token prompt even with the *smaller*
+    single-act answer budget reserved. ``adapter.present`` is
     stubbed to hand the presentation back unchanged, so this drill exercises
     `request_capacity_or_refuse`'s own arithmetic on a fixed image size, not
     the resize rule, and the
@@ -667,7 +665,9 @@ def test_page_chair_request_builds_chandras_single_user_turn():
     # record admitted for a different chair than the one it is asked to bound,
     # so a row borrowed across chairs must be relabelled to the chair this
     # request is actually for.
-    chandra_row = dataclasses.replace(_sealed_churro_rows()[0], chair="attestator_1")
+    chandra_row = dataclasses.replace(
+        _sealed_churro_rows()[0], chair="attestator_1", max_model_len=8192
+    )
     request = live_witness.page_chair_request(
         context, adapter, "chandra.v1", presentation, profile=chandra_row
     )
