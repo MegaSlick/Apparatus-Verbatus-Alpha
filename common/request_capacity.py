@@ -16,7 +16,7 @@ defaulted.
 No tokenizer runs here (no ``torch`` wheel for this host), so fixed prompts
 carry a measured constant sealed to a digest of the prompt text, and editing
 the prompt invalidates it.  The Perlector's prompt is built at run time, so it
-is admitted on a measured upper bound (:func:`perlector_prompt_bound`); its
+is admitted on an upper bound of one token per text byte (:func:`perlector_prompt_bound`); its
 measured floor is recorded beside it but never admits, because admitting on a
 lower bound admits exactly the requests that overflow.
 
@@ -27,6 +27,7 @@ never been observed; only a pod can settle it.
 from __future__ import annotations
 
 import math
+import unicodedata
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, Iterable, Mapping, Sequence
@@ -500,15 +501,16 @@ PERLECTOR_TOKENS_PER_WORD: Final = (120, 73)
 
 # --- and the upper bound admission actually rests on ---------------------------
 #
-# Tokens per character over 168 prompts rendered through `build_prompt` with the
-# pinned tokenizer and chat template (1/3/5 testimonia, 0-1,200 words each, with
-# and without prior draft, reproofs and a second view).  The ratio falls as the
-# dossier grows, so the sealed value is the maximum, 0.4126394, rounded up.  The
-# doubt-mark instruction lowered the maximum to 0.3940 on the same grid, so the
-# sealed value still bounds it.
-PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS: Final = 4127
-# Kept apart from the ratio so measurement and margin stay visible.
-PERLECTOR_BOUND_SAFETY_MARGIN: Final = (105, 100)
+# The text is charged one token per UTF-8 byte (after NFC, the form the
+# tokenizer normalises to).  A byte-level BPE vocabulary holds every single
+# byte, so no string can encode to more tokens than it has bytes: that is a
+# bound for any text, including a draft that has degenerated into a loop.  The
+# earlier measured ratio (0.4126 tokens per character over 168 well-formed
+# prompts) was not one: on the 2026-09-27 run a looping `[[?]]` draft
+# was counted by the engine at 31,232 text tokens for about 50,000 characters
+# (0.62), and a looping letter draft at about 0.48, so a ratio over prose says nothing
+# about the text a pass can feed back.  A tighter bound needs the tokenizer run
+# over adversarial text, which no host here has.
 # Chat-template cost: 52 per turn plus 2 per image, charged at the protocol's
 # `max_images` ceiling so it bounds any request; a test reconciles the 32 with
 # `config/perlector_protocol.toml`.
@@ -522,7 +524,7 @@ PERLECTOR_PROMPT_TEMPLATE_DIGEST: Final = (
 # The representative dossier's size and bound, for weighing the shipped rows
 # against what is admitted on; a test re-derives the bound from the size.
 PERLECTOR_REPRESENTATIVE_PROMPT_CHARACTERS: Final = 2438
-PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS: Final = 1173
+PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS: Final = 2554
 # Reconciled with `config/models-real.toml`: with no fixed prompt to digest, the
 # pinned revision is what expires the Perlector's measurements.
 PERLECTOR_MEASURED_TOKENIZER: Final = (
@@ -575,29 +577,22 @@ def perlector_prompt_tokens(text: str) -> tuple[int, str]:
 def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str]:
     """``(tokens, basis)`` for one rendered Perlector prompt: the upper bound.
 
-    Per character, not per word: JSON scaffolding has few words for its tokens,
-    so the per-word rate spreads five-fold across dossiers where the
-    per-character rate spreads 1.6-fold.  ``template_digest`` is ``prompts.py``'s
-    module digest, checked because the ratio describes only that builder's bytes.
+    One token per UTF-8 byte of the text (see the note on the constants above)
+    plus the chat template's own overhead.  ``template_digest`` is ``prompts.py``'s
+    module digest, checked because that overhead was measured over that builder.
     """
 
     if template_digest != PERLECTOR_PROMPT_TEMPLATE_DIGEST:
         raise RequestCapacityRefusal(
             f"the Perlector prompt builder digests to {template_digest}, but the measured "
-            f"tokens-per-character bound this chair is admitted on was taken over "
+            f"chat-template overhead this chair is admitted on was measured over "
             f"{PERLECTOR_PROMPT_TEMPLATE_DIGEST} with "
             f"{PERLECTOR_MEASURED_TOKENIZER[0]} at {PERLECTOR_MEASURED_TOKENIZER[1]}; the "
             "prompt template changed after it was measured, and a request is never admitted "
             "against the token cost of text nobody renders any more. Re-measure the rate and "
             "update common/request_capacity.py"
         )
-    margin_numerator, margin_denominator = PERLECTOR_BOUND_SAFETY_MARGIN
-    body = -(
-        -len(text)
-        * PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS
-        * margin_numerator
-        // (10_000 * margin_denominator)
-    )
+    body = len(unicodedata.normalize("NFC", text).encode("utf-8"))
     return PERLECTOR_PROMPT_OVERHEAD_TOKENS + body, PROMPT_TOKENS_MEASURED_BOUND
 
 

@@ -225,8 +225,8 @@ def test_the_two_view_page_fallback_act_fits_the_supported_tiers_context():
         )
         needs[row.tier] = (record["need"], record["fits"])
     assert needs == {
-        # 4x5,100 + 1,173 + 1,318, against 32,768
-        "generic-80gb-plus": (22891, True),
+        # 4x5,100 + 2,554 + 1,318, against 32,768
+        "generic-80gb-plus": (24272, True),
     }
 
 

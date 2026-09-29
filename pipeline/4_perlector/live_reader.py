@@ -37,9 +37,8 @@ A check admitting on a lower bound would admit exactly the requests it should
 refuse: a dossier carrying five witnesses' full act texts, or a pass-B prompt
 with reproof instruments appended, would pass it and then be answered with the
 HTTP 400 the check exists to prevent. ``perlector_prompt_bound`` is the
-measured upper bound this reader admits on -- the maximum tokens-per-character
-ratio over 168 rendered prompts, with a stated margin, over the measured
-chat-template overhead -- and it is sealed against ``prompts.py``'s own module
+upper bound this reader admits on -- one token per UTF-8 byte of the text,
+over the measured chat-template overhead -- and it is sealed against ``prompts.py``'s own module
 digest, so editing the
 prompt builder expires the measurement rather than leaving a stale rate in
 force. The floor is still computed, and is recorded on the capacity record

@@ -866,12 +866,12 @@ def test_a_two_view_page_fallback_act_needs_the_raised_perlector_row(
     region crops that are whole pages and two page renders. At the 24 GB tier's
     `max_pixels` each costs 1,715 tokens and a page-fallback act's reading is
     1,318. The prompt is this suite's own small dossier, which the sealed
-    tokens-per-character bound puts at 310 -- 4x1,715 + 310 + 1,318 = 8,488. At
-    8,192 that is over by 296 and refused on this laptop; at the 16,384 the
-    shipped row now states it fits with 7,896 to spare.
+    byte bound puts at 562 -- 4x1,715 + 562 + 1,318 = 8,740. At
+    8,192 that is over by 548 and refused on this laptop; at the 16,384 the
+    shipped row now states it fits with 7,644 to spare.
 
-    The shipped catalogue is weighed against a real dossier's 1,173 rather than
-    against this one's 310
+    The shipped catalogue is weighed against a real dossier's 2,554 rather than
+    against this one's 562
     (`operations/serving/test_serving_catalogue_capacity.py`); what is pinned
     here is the row boundary and the four image costs, which the prompt does not
     move.
@@ -902,18 +902,18 @@ def test_a_two_view_page_fallback_act_needs_the_raised_perlector_row(
             _reader(client, chair).read(dossier, pass_kind="perlectio", delivered_pixels=pixels)
     record = error.value.capacity
     assert [entry["image_prompt_tokens"] for entry in record["images"]] == [1715] * 4
-    assert record["prompt_tokens"] == 310
+    assert record["prompt_tokens"] == 562
     assert record["prompt_tokens_basis"] == "measured-upper-bound-for-this-prompt-shape"
     assert record["answer_budget"] == 1318
-    assert (record["need"], record["headroom"]) == (8488, -296)
+    assert (record["need"], record["headroom"]) == (8740, -548)
     assert endpoint.requests == []
     assert len(blob_store) == 0
 
 
 # --- admission is on the upper bound, not on the floor -----------------------
 
-# One 73-word 18th-century French baptism act, the register prose the sealed
-# tokens-per-character bound was measured over. Retyped here rather than
+# One 73-word 18th-century French baptism act, the register prose the old
+# tokens-per-character ratio was measured over. Retyped here rather than
 # imported: what a testimonium reports is a stage's own evidence, and what is
 # being proved is that a dossier carrying real act text is weighed by its real
 # size.
@@ -956,10 +956,10 @@ def test_a_real_dossier_the_floor_admits_and_the_bound_refuses_is_refused(
 
     Five witnesses reporting four acts each is an ordinary page's testimony, not
     a pathological input. Its prompt costs at least 2,557 tokens by the measured
-    floor and at most 4,539 by the measured bound. At a row stating 6,144, with
+    floor and at most 10,322 by the byte bound. At a row stating 6,144, with
     a 1,404-token region crop, a 1,715-token page render and one act's
     216-token reading beside it, the floor's 5,892 fits with 252 to spare and
-    the bound's 7,874 is over by 1,730.
+    the bound's 13,657 is over by 7,513.
 
     The floor admitted it, the engine would not have: `prompt_tokens +
     max_tokens > max_model_len` is answered with HTTP 400 before generation, the
@@ -986,12 +986,12 @@ def test_a_real_dossier_the_floor_admits_and_the_bound_refuses_is_refused(
             )
     record = error.value.capacity
     assert [entry["image_prompt_tokens"] for entry in record["images"]] == [1404, 1715]
-    assert record["prompt_tokens"] == 4539
+    assert record["prompt_tokens"] == 10322
     assert record["prompt_tokens_basis"] == "measured-upper-bound-for-this-prompt-shape"
     assert record["prompt_tokens_floor"] == 2557
     assert record["prompt_tokens_floor_basis"] == "measured-tokens-per-word-extrapolation"
     assert record["answer_budget"] == 216
-    assert (record["need"], record["headroom"]) == (7874, -1730)
+    assert (record["need"], record["headroom"]) == (13657, -7513)
     assert record["fits"] is False
     # Nothing was sent, so nothing could have been answered with a 400.
     assert endpoint.requests == []
@@ -1017,7 +1017,7 @@ def test_a_real_dossier_the_floor_admits_and_the_bound_refuses_is_refused(
 def test_the_same_dossier_is_admitted_where_its_bound_really_fits(tmp_path: Path) -> None:
     """Not a refusal that fires on everything: one more token of context admits it."""
 
-    client, endpoint, _blobs, chair = _built(tmp_path, max_pixels=1806336, max_model_len=7874)
+    client, endpoint, _blobs, chair = _built(tmp_path, max_pixels=1806336, max_model_len=13657)
     region_image = _image_bytes(b"REGION", width=2480, height=584)
     page_image = _image_bytes(b"PAGE", width=2480, height=3508)
     dossier = _dossier_with_testimonia(
