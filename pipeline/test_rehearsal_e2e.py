@@ -229,8 +229,9 @@ def test_combined_rehearsal_accounts_for_every_act_and_verifies_export(tmp_path,
     ]
     assert {row["payload"]["act_key"] for row in not_run} == HELD_KEYS
     assert all(row["payload"]["hold"]["code"] == CROSS_CAPTURE_READ_NOT_BUILT for row in not_run)
-    # Three reader calls for each of the five delivered acts, none for the held captures.
-    assert len(reader.endpoint.requests) == 15
+    # Two reader calls for each of the five delivered acts, none for the held captures:
+    # Pass A runs only under --draft-fed, which this run is not.
+    assert len(reader.endpoint.requests) == 10
     assert set(delivered).isdisjoint(held)
     aggregate = payload["aggregate"]
     assert aggregate["status"] == "partial"

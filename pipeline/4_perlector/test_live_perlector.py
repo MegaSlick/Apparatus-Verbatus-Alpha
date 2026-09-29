@@ -652,8 +652,9 @@ def test_a_reply_that_reaches_its_bound_holds_the_act_and_is_never_asked_again(
     readings = _published_readings(root)
     assert readings
     assert all(record["outcome"] == "truncated" for record in readings)
-    # Pass A, Pass B and the one re-proof each ask once; the stop re-asks nothing.
-    assert len(endpoint.requests) == 3 * len(readings)
+    # Pass B and the one re-proof each ask once (Pass A runs only under --draft-fed);
+    # the stop re-asks nothing.
+    assert len(endpoint.requests) == 2 * len(readings)
     retained_bounds = {
         json.loads(path.read_bytes())["generation_sent"]["max_tokens"]
         for path in (root / "r" / "4_perlector" / "blobs" / "sha256").glob("*")
