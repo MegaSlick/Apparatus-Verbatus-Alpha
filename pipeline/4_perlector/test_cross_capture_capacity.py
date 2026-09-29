@@ -45,6 +45,7 @@ def over_capacity_run(tmp_path_factory):
             str(root),
             "--perlector-protocol-config",
             str(protocol),
+            "--draft-fed",
         ],
         capture_output=True,
         text=True,
@@ -106,8 +107,8 @@ def test_an_over_capacity_presentation_holds_its_act_without_killing_the_stage(o
 def test_no_reader_pass_is_published_for_an_act_that_never_fit(over_capacity_run):
     """Capacity refusal must precede every arm, including the retained prior.
 
-    The lectio-prior assertion is the load-bearing one, because the prior arm is
-    universal. The lectio-nuda assertion below is a shape check only: this
+    The lectio-prior assertion is the load-bearing one, because the prior arm runs
+    under `--draft-fed`, which this run sets. The lectio-nuda assertion below is a shape check only: this
     fixture declares no `--nuda-per-mille`, so that directory would be absent
     even with the capacity hold removed entirely, and it cannot fail for the
     reason this test is named for.

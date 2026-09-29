@@ -178,7 +178,9 @@ def _live_catalogue(destination: Path) -> Path:
     return path
 
 
-def _chain_through_attestatores(root: Path, catalogue: Path, *, scenario: str = "happy") -> None:
+def _chain_through_attestatores(
+    root: Path, catalogue: Path, *, scenario: str = "happy", extra: tuple[str, ...] = ()
+) -> None:
     for program in CHAIN_THROUGH_ATTESTATORES:
         result = subprocess.run(
             [
@@ -192,6 +194,7 @@ def _chain_through_attestatores(root: Path, catalogue: Path, *, scenario: str = 
                 scenario,
                 "--serving-recipes-config",
                 str(catalogue),
+                *extra,
             ],
             cwd=ROOT,
             capture_output=True,
@@ -212,6 +215,16 @@ def chained_run(tmp_path_factory) -> tuple[Path, Path]:
     catalogue = _live_catalogue(base)
     root = base / "runs"
     _chain_through_attestatores(root, catalogue)
+    return root, catalogue
+
+
+@pytest.fixture(scope="module")
+def fed_chained_run(tmp_path_factory) -> tuple[Path, Path]:
+    """The same chain sealed with `--draft-fed`, the only run that makes a Pass A."""
+    base = tmp_path_factory.mktemp("live-perlector-fed")
+    catalogue = _live_catalogue(base)
+    root = base / "runs"
+    _chain_through_attestatores(root, catalogue, extra=("--draft-fed",))
     return root, catalogue
 
 
@@ -809,21 +822,33 @@ def _perlectiones(root: Path) -> dict[str, dict[str, Any]]:
 
 @pytest.mark.parametrize("kind", ["lectio-prior", "audit-draft"])
 def test_a_live_pass_refuses_to_resume_an_act_it_left_half_read(
-    live_run, tmp_path, monkeypatch, kind
+    request, tmp_path, monkeypatch, kind
 ):
     """One reading comes from one serving session: an interrupted act is never finished."""
-    root, _catalogue = live_run
+    # Pass A exists only in a draft-fed run.
+    fed = ("--draft-fed",) if kind == "lectio-prior" else ()
+    template, catalogue = request.getfixturevalue("fed_chained_run" if fed else "chained_run")
+    live_run = (tmp_path / "runs", catalogue)
+    shutil.copytree(template, live_run[0])
+    root = live_run[0]
     answer = ScriptedAnswer(content=READING, finish_reason="stop")
     _interrupt_after(monkeypatch, kind)
     with pytest.raises(_Interrupted):
-        _run_perlector(live_run, tmp_path, monkeypatch, answer)
+        _run_perlector(live_run, tmp_path, monkeypatch, answer, extra_args=fed)
     artifacts = root / "r" / "4_perlector" / "artifacts"
     before = {path: path.read_bytes() for path in artifacts.rglob("*.json")}
     monkeypatch.undo()
 
     endpoints: list = []
     with pytest.raises(ContractError, match="interrupted live attempt"):
-        _run_perlector(live_run, tmp_path / "resume", monkeypatch, answer, endpoint_out=endpoints)
+        _run_perlector(
+            live_run,
+            tmp_path / "resume",
+            monkeypatch,
+            answer,
+            endpoint_out=endpoints,
+            extra_args=fed,
+        )
     assert endpoints[0].requests == []
     assert {path: path.read_bytes() for path in artifacts.rglob("*.json")} == before
 

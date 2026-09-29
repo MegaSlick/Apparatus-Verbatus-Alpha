@@ -196,10 +196,9 @@ text. The grammar carries no level of doubt, so every marked span is `low`. A
 `[[` or `]]` that is not a closed mark, or a mark whose reading is `?`, publishes the
 raw answer unchanged under `malformed`. Gap marks over an answer that is otherwise
 blank add nothing: the `no-readable-text` outcome's whole-act gap already says it.
-By default Pass B does not see Pass A's clean text; `--draft-fed` opts in. When the
+By default there is no Pass A; `--draft-fed` opts in to Pass A and to Pass B seeing its clean text. When the
 draft is fed, `self_revision` offsets index it: `reading_span` in the final text,
-`testimonium_span` in the draft. When it is withheld, `self_revision` is not measured;
-differences from an unseen draft are not revisions. Pass A's marks stay on its own
+`testimonium_span` in the draft. When it is withheld, `self_revision` is not measured. Pass A's marks stay on its own
 record. Truncation is measured on the clean text. The re-proof answers in JSON and
 reports no doubts; a replacement carrying a mark, or a replacement over text Pass B
 marked, publishes `malformed`, because the marks cannot be re-anchored through the
@@ -541,13 +540,16 @@ ever have recorded for a real reading.
 
 ## R5a prior-draft protocol
 
-Every readable act now emits a `kind="lectio-prior"` Pass-A draft under the
-`lectio-prior` attempt operation. It sees the images and no Testimonia; it is
-not Lectio nuda and cannot establish text. The production `kind="perlectio"`
-is `lectio_kind="primed-with-prior"` only when the draft was fed and then carries
-equality-only `self_revision` spans against it. When the draft was withheld, it is
-`lectio_kind="primed-draft-withheld"` with an empty `self_revision`. Both production kinds
-retain the Pass-A reference and can establish text; the kind records what the reader saw.
+Pass A, the image-only draft, runs only under `--draft-fed`. Then every readable act
+emits a `kind="lectio-prior"` draft under the `lectio-prior` attempt operation. It sees
+the images and no Testimonia; it is not Lectio nuda and cannot establish text. By
+default (withheld) no Pass A is read: the reader sees the image and every witness
+in one call, and the act makes no `lectio-prior` record. The production
+`kind="perlectio"` is `lectio_kind="primed-with-prior"` only when the draft was fed
+and then carries equality-only `self_revision` spans against it and the Pass-A
+reference. When the draft was withheld, it is `lectio_kind="primed-draft-withheld"`
+with an empty `self_revision` and no prior reference. Both production kinds can
+establish text; the kind records what the reader saw.
 
 The optional `kind="primed-without-prior"` control is gated by the run-sealed
 Perlector instrument rate and typed approval record.
@@ -564,10 +566,11 @@ prior are separately tallied when failed; they do not consume the ruled
 production hard-failure cap. Its approval reference is likewise an envelope
 input and is digest-checked whenever the control artifact is read.
 
-The Pass-B dossier contains a digest-checked reference to the Pass-A draft and
-records whether its text was `fed` or `withheld`. The `--draft-fed` default is
+The Pass-B dossier records whether the draft was `fed` or `withheld`. A fed dossier
+carries a digest-checked reference to the Pass-A draft; a withheld dossier carries no
+`prior_draft` at all, and one that does is refused. The `--draft-fed` default is
 withheld under the project lead's B5a ruling of 2026-09-28; feeding remains an
-explicit toggle.
+explicit toggle and is the only way to run Pass A.
 
 **Four reading kinds, three conditions.** `lectio-nuda` and `lectio-prior` are
 built from identical dossier arguments — page context, no Testimonia, no prior
@@ -576,9 +579,8 @@ draft — so for one act they carry the same `dossier_digest` and the same
 pinned by a test, because it is not visible from the kind names. With a real
 chair, nuda against lectio-prior measures sampling variance; the
 witness-dependence contrast is lectio-prior, or the sampled control, against
-the production Perlectio. Whether the approval-gated nuda arm still earns its
-second model call once Pass A is universal belongs to B4's three-condition
-matrix and to the project lead — no answer is claimed here.
+the production Perlectio. Where Pass A does not run, the approval-gated sampled
+Lectio nuda is the unprimed baseline.
 
 **One thing about nuda did change, and it is not in the list above.**
 `common/hard_failure.py`'s `PERLECTOR_INSTRUMENT_KINDS` covers `lectio-nuda`

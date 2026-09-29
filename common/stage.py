@@ -1356,7 +1356,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         "--draft-fed",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="whether Pass B receives the prior draft (default: withheld)",
+        help="run Pass A and feed its draft to Pass B (default: no Pass A)",
     )
     parser.add_argument("--formats-config", default=str(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH))
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))

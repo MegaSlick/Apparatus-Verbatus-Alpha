@@ -623,6 +623,7 @@ def test_the_instrument_records_carry_the_doubt_report_too(tmp_path):
         "1000",
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "--draft-fed",
     )
     # A sampled instrument is the project lead's decision and the Perlector resolves the
     # approval record it was told to; the run refuses without one on disk. The

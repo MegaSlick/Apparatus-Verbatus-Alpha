@@ -593,6 +593,68 @@ def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str
     return reading, reference
 
 
+def _verify_prior_draft(context, reading: dict, payload: dict, dossier: dict, act_id: str) -> None:
+    """Only a fed run made a Pass A: it must be cited, and a withheld run must carry none."""
+    prior_draft = dossier.get("prior_draft")
+    if payload["lectio_kind"] == "primed-draft-withheld":
+        if prior_draft is not None:
+            raise SchemaRefusal(
+                f"act {act_id} claims primed-draft-withheld but carries a prior-draft reference"
+            )
+        return
+    prior_reference = prior_draft.get("reference") if isinstance(prior_draft, dict) else None
+    if not _is_ref_shaped(prior_reference):
+        raise SchemaRefusal(
+            f"act {act_id} claims primed-with-prior but carries no prior-draft reference"
+        )
+    if prior_reference not in reading.get("inputs", []):
+        raise SchemaRefusal(
+            f"act {act_id} carries a prior-draft reference that is not a digest-checked "
+            "direct input of the reading"
+        )
+    prior_record = context.tree.read_artifact_reference(
+        prior_reference,
+        stage=PERLECTOR,
+        kind="lectio-prior",
+        subject_id=act_id,
+    )
+    prior_payload = prior_record.get("payload")
+    if (
+        not isinstance(prior_payload, dict)
+        or not isinstance(prior_draft.get("text"), str)
+        or prior_draft["text"] != prior_payload.get("text")
+    ):
+        raise SchemaRefusal(
+            f"act {act_id} embeds prior-draft text that disagrees with its referenced lectio-prior"
+        )
+    # The reference is bound to stage, kind, subject and digest above -- and
+    # not, until here, to the attempt. A recovered act carries one Pass-A
+    # draft per attempt, and a Perlectio citing a superseded one would
+    # publish `self_revision` measured against a draft its reader never saw.
+    # Where the two drafts happen to read alike (the ordinary case: recovery
+    # recovers coverage, not text) every other check above passes, so this
+    # is the binding that makes the citation the reading's own.
+    #
+    # Both ordinals are held to be integers before the comparison. The reading's
+    # own is already proven by `latest_attempt`, but this function documents
+    # itself as the whole of the boundary for a caller that resolved its
+    # arguments some other way — and two absent ordinals comparing None == None
+    # would pass the one binding this block exists to make.
+    for owner, candidate in (("lectio-prior", prior_payload), ("Perlectio", payload)):
+        ordinal = candidate.get("attempt_ordinal")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise SchemaRefusal(
+                f"act {act_id} carries a {owner} payload with no integer attempt ordinal; "
+                "an attempt binding cannot be made over a missing ordinal"
+            )
+    if prior_payload.get("attempt_ordinal") != payload.get("attempt_ordinal"):
+        raise SchemaRefusal(
+            f"act {act_id} cites a prior draft from reading attempt "
+            f"{prior_payload.get('attempt_ordinal')!r}, not its own "
+            f"{payload.get('attempt_ordinal')!r}"
+        )
+
+
 def accepted_primed_perlectio(
     context, review, reading, reading_ref, act_id, *, page_id
 ) -> tuple[dict, dict, list]:
@@ -704,62 +766,9 @@ def accepted_primed_perlectio(
         raise SchemaRefusal(
             f"act {act_id} carries an act-attachment dossier view without a direct input reference"
         )
-    # Both establishing kinds retain the prior as evidence, including when it
-    # was withheld from the reader. Its reference still binds to this attempt.
-    prior_draft = claimed_prior_draft
-    prior_reference = prior_draft.get("reference") if isinstance(prior_draft, dict) else None
-    if not _is_ref_shaped(prior_reference):
-        raise SchemaRefusal(
-            f"act {act_id} claims {lectio_kind} but carries no prior-draft reference"
-        )
     validate_establishing_view(payload, claimed_dossier, f"act {act_id}")
-    if prior_reference not in reading.get("inputs", []):
-        raise SchemaRefusal(
-            f"act {act_id} carries a prior-draft reference that is not a digest-checked "
-            "direct input of the reading"
-        )
-    prior_record = context.tree.read_artifact_reference(
-        prior_reference,
-        stage=PERLECTOR,
-        kind="lectio-prior",
-        subject_id=act_id,
-    )
-    prior_payload = prior_record.get("payload")
-    if (
-        not isinstance(prior_payload, dict)
-        or not isinstance(prior_draft.get("text"), str)
-        or prior_draft["text"] != prior_payload.get("text")
-    ):
-        raise SchemaRefusal(
-            f"act {act_id} embeds prior-draft text that disagrees with its referenced lectio-prior"
-        )
     _verify_act_attachment_view(context, act_id, page_id, regions, claimed_dossier)
-    # The reference is bound to stage, kind, subject and digest above -- and
-    # not, until here, to the attempt. A recovered act carries one Pass-A
-    # draft per attempt, and a Perlectio citing a superseded one would
-    # publish `self_revision` measured against a draft its reader never saw.
-    # Where the two drafts happen to read alike (the ordinary case: recovery
-    # recovers coverage, not text) every other check above passes, so this
-    # is the binding that makes the citation the reading's own.
-    #
-    # Both ordinals are held to be integers before the comparison. The reading's
-    # own is already proven by `latest_attempt`, but this function documents
-    # itself as the whole of the boundary for a caller that resolved its
-    # arguments some other way — and two absent ordinals comparing None == None
-    # would pass the one binding this block exists to make.
-    for owner, candidate in (("lectio-prior", prior_payload), ("Perlectio", payload)):
-        ordinal = candidate.get("attempt_ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise SchemaRefusal(
-                f"act {act_id} carries a {owner} payload with no integer attempt ordinal; "
-                "an attempt binding cannot be made over a missing ordinal"
-            )
-    if prior_payload.get("attempt_ordinal") != payload.get("attempt_ordinal"):
-        raise SchemaRefusal(
-            f"act {act_id} cites a prior draft from reading attempt "
-            f"{prior_payload.get('attempt_ordinal')!r}, not its own "
-            f"{payload.get('attempt_ordinal')!r}"
-        )
+    _verify_prior_draft(context, reading, payload, claimed_dossier, act_id)
     witnesses: dict[tuple[str, str], str | None] = {}
     for index, item in enumerate(testimonia):
         if not isinstance(item, dict):

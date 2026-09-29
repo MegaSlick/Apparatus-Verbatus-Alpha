@@ -185,7 +185,7 @@ def test_clustered_logical_passes_make_one_establishing_call_and_no_capture_loca
     )
 
 
-def test_a_withheld_prior_is_retained_after_but_not_delivered_to_the_reader():
+def test_a_withheld_run_makes_no_pass_a_and_no_prior_draft():
     reader = RecordingReader()
     body = {"testimonia": []}
     output = run_logical_passes(
@@ -197,16 +197,16 @@ def test_a_withheld_prior_is_retained_after_but_not_delivered_to_the_reader():
         nuda_sampled=False,
         control_sampled=False,
         draft_fed=False,
+        publish_prior=lambda *_: pytest.fail("a withheld run publishes no lectio-prior"),
     )
-    reader_dossier = next(call[0] for call in reader.calls if call[1] == "perlectio")
+    assert [call[1] for call in reader.calls] == ["perlectio"]
+    assert "lectio-prior" not in output
+    reader_dossier = reader.calls[0][0]
     assert reader_dossier["prior_draft_view"] == "withheld"
     assert "prior_draft" not in reader_dossier
     reader_body = {key: value for key, value in reader_dossier.items() if key != "dossier_digest"}
     assert reader_dossier["dossier_digest"] == digest_of(reader_body)
-
-    retained = output["perlectio"]["dossier"]
-    assert retained["prior_draft_view"] == "withheld"
-    assert retained["prior_draft"] == {"text": "joint ink"}
+    assert output["perlectio"]["dossier"] == reader_dossier
 
 
 def test_sealed_capacity_holds_a_cluster_before_any_logical_reader_call():
@@ -367,6 +367,7 @@ def test_the_unprimed_arms_carry_no_witness_derived_region_coverage():
         protocol_config={"max_images": 6},
         nuda_sampled=True,
         control_sampled=True,
+        draft_fed=True,
     )
     for arm in ("lectio-prior", "lectio-nuda"):
         seen = output[arm]["dossier"]

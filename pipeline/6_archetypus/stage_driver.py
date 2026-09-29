@@ -29,11 +29,17 @@ def invoke(
         scenario,
     ]
     for key, value in extra.items():
-        command.extend((f"--{key.replace('_', '-')}", str(value)))
+        flag = f"--{key.replace('_', '-')}"
+        command.extend((flag,) if value is True else (flag, str(value)))
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
-def run_through_recensor(root: Path, run_id: str, scenario: str = "happy") -> None:
+def run_through_recensor(
+    root: Path, run_id: str, scenario: str = "happy", *, draft_fed: bool = False
+) -> None:
+    """`draft_fed` seals the run with Pass A, whose reference a fed reading carries."""
     for program in programs_through("recensor"):
-        result = invoke(root, run_id, scenario, program)
+        result = invoke(
+            root, run_id, scenario, program, **({"draft_fed": True} if draft_fed else {})
+        )
         assert result.returncode in (0, 3), f"{program}: {result.stderr}"

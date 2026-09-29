@@ -54,7 +54,9 @@ def accepted_review(tree: RunTree) -> dict:
 _repoint_review = reseal_chain.repoint_review
 
 
-def _orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+def _orchestrate(
+    root: Path, run_id: str, scenario: str, *, draft_fed: bool = False
+) -> subprocess.CompletedProcess:
     """A whole run, recovery drain included, for the one test that needs a
     second reading attempt to exist before it can forge anything."""
     return subprocess.run(
@@ -69,6 +71,7 @@ def _orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.Completed
             run_id,
             "--run-root",
             str(root),
+            *(("--draft-fed",) if draft_fed else ()),
         ],
         cwd=ROOT,
         capture_output=True,
@@ -152,12 +155,14 @@ def test_an_outstanding_recovery_request_is_held_not_silently_skipped(tmp_path):
 _reseal_reading = reseal_chain.reseal_reviewed_reading
 
 
-def _archetypus_after(tmp_path: Path, mutate) -> subprocess.CompletedProcess:
+def _archetypus_after(tmp_path: Path, mutate, *, fed: bool = False) -> subprocess.CompletedProcess:
     root = tmp_path / "runs"
-    run_through_recensor(root, "r")
+    run_through_recensor(root, "r", draft_fed=fed)
     tree = RunTree(root, "r")
     _reseal_reading(tree, accepted_review(tree), mutate)
-    return invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    return invoke(
+        root, "r", "happy", "pipeline/6_archetypus/run.py", **({"draft_fed": True} if fed else {})
+    )
 
 
 def test_an_explicitly_unprimed_lectio_kind_cannot_establish(tmp_path):
@@ -200,23 +205,58 @@ def test_withheld_kind_cannot_contradict_its_protocol_record(tmp_path):
     assert "contrary to its prior-draft protocol" in result.stderr
 
 
-def test_withheld_claim_without_a_prior_reference_cannot_establish(tmp_path):
-    def remove_prior_reference(payload):
-        dossier = dict(payload["dossier"])
-        dossier.pop("prior_draft")
-        dossier.pop("prior_draft_view")
-        payload["dossier"] = dossier
-
-    result = _archetypus_after(tmp_path, remove_prior_reference)
+def test_fed_claim_without_a_prior_reference_cannot_establish(tmp_path):
+    result = _archetypus_after(
+        tmp_path, _reseal_dossier(lambda dossier: dossier.pop("prior_draft")), fed=True
+    )
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
-    assert "claims primed-draft-withheld but carries no prior-draft reference" in result.stderr
+    assert "claims primed-with-prior but carries no prior-draft reference" in result.stderr
+
+
+def test_withheld_claim_carrying_a_prior_reference_cannot_establish(tmp_path):
+    """A withheld run makes no Pass A, so a prior beside that view is a defect."""
+
+    def add_prior_reference(payload):
+        prior = {"reference": payload["basis"]["testimonia"][0]["reference"], "text": "x"}
+        _reseal_dossier(lambda dossier: dossier.update(prior_draft=prior))(payload)
+
+    result = _archetypus_after(tmp_path, add_prior_reference)
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "claims primed-draft-withheld but carries a prior-draft reference" in result.stderr
+
+
+def test_a_withheld_run_establishes_with_no_lectio_prior_on_disk(tmp_path):
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    assert not any(
+        entry["kind"] == "lectio-prior" for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+    )
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_fed_run_establishes_and_references_its_lectio_prior(tmp_path):
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r", draft_fed=True)
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py", draft_fed=True)
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
+    reading = json.loads(
+        tree.resolve(accepted_review(tree)["payload"]["perlectio_ref"]["relative_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert reading["payload"]["dossier"]["prior_draft"]["reference"] in reading["inputs"]
 
 
 def test_primed_without_prior_claim_with_a_prior_reference_cannot_establish(tmp_path):
     result = _archetypus_after(
         tmp_path,
         lambda payload: payload.update(lectio_kind="primed-without-prior"),
+        fed=True,
     )
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
@@ -225,13 +265,12 @@ def test_primed_without_prior_claim_with_a_prior_reference_cannot_establish(tmp_
 
 def test_embedded_prior_text_must_match_the_referenced_lectio_prior(tmp_path):
     def diverge_prior_text(payload):
-        dossier = dict(payload["dossier"])
-        prior_draft = dict(dossier["prior_draft"])
-        prior_draft["text"] += " forged"
-        dossier["prior_draft"] = prior_draft
-        payload["dossier"] = dossier
+        def forge(dossier):
+            dossier["prior_draft"] = {**dossier["prior_draft"], "text": "forged"}
 
-    result = _archetypus_after(tmp_path, diverge_prior_text)
+        _reseal_dossier(forge)(payload)
+
+    result = _archetypus_after(tmp_path, diverge_prior_text, fed=True)
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "disagrees with its referenced lectio-prior" in result.stderr
@@ -416,7 +455,7 @@ def test_a_prior_draft_from_another_reading_attempt_cannot_establish(tmp_path):
     root = tmp_path / "runs"
     # The orchestrator, not the raw stage sequence: `review`'s second attempt
     # only exists after the recovery drain, and that drain is the orchestrator's.
-    orchestrated = _orchestrate(root, "r", "review")
+    orchestrated = _orchestrate(root, "r", "review", draft_fed=True)
     assert orchestrated.returncode == EXIT_HELD, orchestrated.stderr
     tree = RunTree(root, "r")
     # The orchestrator already established this act honestly. Clear that record
@@ -470,7 +509,7 @@ def test_a_prior_draft_from_another_reading_attempt_cannot_establish(tmp_path):
         },
     )
 
-    result = invoke(root, "r", "review", "pipeline/6_archetypus/run.py")
+    result = invoke(root, "r", "review", "pipeline/6_archetypus/run.py", draft_fed=True)
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "cites a prior draft from reading attempt 1, not its own 2" in result.stderr
@@ -484,7 +523,7 @@ def test_a_prior_draft_with_no_attempt_ordinal_cannot_bind(tmp_path):
     to be an integer by name rather than compared as whatever it is.
     """
     root = tmp_path / "runs"
-    orchestrated = _orchestrate(root, "r", "review")
+    orchestrated = _orchestrate(root, "r", "review", draft_fed=True)
     assert orchestrated.returncode == EXIT_HELD, orchestrated.stderr
     tree = RunTree(root, "r")
     for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]:
@@ -571,7 +610,7 @@ def test_a_prior_draft_with_no_attempt_ordinal_cannot_bind(tmp_path):
         },
     )
 
-    result = invoke(root, "r", "review", "pipeline/6_archetypus/run.py")
+    result = invoke(root, "r", "review", "pipeline/6_archetypus/run.py", draft_fed=True)
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert f"act {act_id} carries a lectio-prior payload with no integer attempt ordinal" in (

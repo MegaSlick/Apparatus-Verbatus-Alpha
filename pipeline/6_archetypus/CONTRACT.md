@@ -45,8 +45,9 @@ accepted later review.
 
 - an unprimed or instrument reading is refused — production `lectio_kind` is
   `primed-with-prior` when the draft was fed or `primed-draft-withheld` when it was
-  withheld. The latter carries no self-revisions. Both retain the same-attempt Pass-A
-  reference; Lectio nuda, `lectio-prior`, and `primed-without-prior` cannot establish,
+  withheld. The latter carries no self-revisions and no Pass-A reference (a withheld
+  run makes no Pass A, and one that carries a reference is refused); the former retains
+  the same-attempt Pass-A reference. Lectio nuda, `lectio-prior`, and `primed-without-prior` cannot establish,
   nor can a contradictory explicit `primed: false`;
 - `tier`, `source_tier` or `reading_tier` of `salvage` is refused (invariant #31's
   boundary);
