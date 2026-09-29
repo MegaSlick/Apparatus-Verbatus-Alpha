@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import subprocess
 from pathlib import Path
 
@@ -61,6 +62,7 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         cache_root=None,
         store_root=None,
         mechanics_qualification=False,
+        perlector_concurrency=None,
     )
 
 
@@ -78,6 +80,63 @@ def test_invoke_forwards_explicit_mechanics_qualification_to_stage(tmp_path, mon
 
     assert orchestrator.invoke("pipeline/1_exemplar/door.py", args) == 0
     assert observed["command"].count("--mechanics-qualification") == 1
+
+
+def test_invoke_forwards_perlector_concurrency_to_the_perlector_alone(tmp_path, monkeypatch):
+    orchestrator = load_stage("orchestrator")
+    commands = []
+
+    def completed(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(orchestrator.subprocess, "run", completed)
+    args = _invoke_args(tmp_path)
+    assert orchestrator.invoke(orchestrator.STAGE_PROGRAMS["perlector"], args) == 0
+    # Unset means the stage's own default, the served row's bound.
+    assert "--perlector-concurrency" not in commands[-1]
+
+    args.perlector_concurrency = 1
+    for program in orchestrator.STAGE_PROGRAMS.values():
+        assert orchestrator.invoke(program, args) == 0
+    forwarded = [
+        command[command.index("--perlector-concurrency") + 1]
+        for command in commands[1:]
+        if "--perlector-concurrency" in command
+    ]
+    assert forwarded == ["1"]
+    assert (
+        "--perlector-concurrency"
+        in commands[1:][list(orchestrator.STAGE_PROGRAMS).index("perlector")]
+    )
+
+
+def test_the_timing_journal_names_the_perlector_concurrency_asked_for(tmp_path):
+    orchestrator = load_stage("orchestrator")
+    journal = tmp_path / "timings.jsonl"
+    args = argparse.Namespace(
+        stage_timing_journal=journal,
+        run_id="r",
+        run_root=tmp_path / "runs",
+        repository_commit=None,
+        perlector_concurrency=2,
+    )
+    for program in (
+        orchestrator.STAGE_PROGRAMS["perlector"],
+        orchestrator.STAGE_PROGRAMS["recensor"],
+    ):
+        orchestrator._record_stage_timing(
+            args,
+            program=program,
+            extra={},
+            started_at="2026-01-01T00:00:00Z",
+            finished_at="2026-01-01T00:00:01Z",
+            duration_ms=1000,
+            exit_code=0,
+            gpu_utilization=(None, "not sampled"),
+        )
+    entries = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert [entry["perlector_concurrency"] for entry in entries] == [2, None]
 
 
 def test_child_python_ignores_an_injected_pythonpath_sitecustomize(tmp_path, monkeypatch):

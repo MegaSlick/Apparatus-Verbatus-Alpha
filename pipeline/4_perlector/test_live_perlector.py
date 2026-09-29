@@ -21,6 +21,8 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
@@ -60,7 +62,7 @@ from operations.serving.fakes import (
     ScriptedAnswer,
     scripted_prompt_too_long,
 )
-from operations.serving.http import EndpointUnavailable
+from operations.serving.http import EndpointUnavailable, HttpResponse
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
@@ -94,7 +96,7 @@ def _toml_value(value: Any) -> str:
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _live_row(identity) -> dict[str, Any]:
+def _live_row(identity, *, max_num_seqs: int = 1) -> dict[str, Any]:
     """One `kind = "vllm"` row for the fixture roster's own Perlector chair.
 
     `preflight_state = "proven"` with the two real digests, because the manager
@@ -124,7 +126,7 @@ def _live_row(identity) -> dict[str, Any]:
         # real catalogue: raise the context, never shrink what the chair is
         # shown.
         "max_model_len": 16384,
-        "max_num_seqs": 1,
+        "max_num_seqs": max_num_seqs,
         "max_num_batched_tokens": 512,
         "gpu_memory_utilization": "0.58",
         "min_pixels": 3136,
@@ -155,7 +157,7 @@ def _live_row(identity) -> dict[str, Any]:
     return row
 
 
-def _live_catalogue(destination: Path) -> Path:
+def _live_catalogue(destination: Path, *, max_num_seqs: int = 1) -> Path:
     """The committed fixture catalogue with its Perlector rows made live.
 
     Every other chair keeps its fixture row, so this is exactly the shape
@@ -171,7 +173,7 @@ def _live_catalogue(destination: Path) -> Path:
         "head plus one live Perlector row, so that trailing profile would be "
         "dropped from the rebuilt catalogue"
     )
-    row = _live_row(_perlector_identity())
+    row = _live_row(_perlector_identity(), max_num_seqs=max_num_seqs)
     body = "\n".join(f"{key} = {_toml_value(value)}" for key, value in row.items())
     path = destination / "serving_recipes_live_perlector.toml"
     path.write_text(f"{head}[[profiles]]\n{body}\n", encoding="utf-8")
@@ -279,7 +281,9 @@ class _TreeBlobs:
         return self._tree.resolve(self._tree.blob_path(PERLECTOR, sha256)).exists()
 
 
-def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lock: Path):
+def _serving_factory(
+    endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lock: Path, *, now=None
+):
     """The `(context, chair, tier) -> ChairClient` seam `main` injects against.
 
     Deliberately close to `stage_chair_client`: the same manager, the
@@ -302,6 +306,7 @@ def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lo
             log_root=log_root,
             package_inspector=FakePackages({"vllm": "0.test"}),
             residency_lease=FileResidencyLease(lock),
+            now=now,
         )
         return ChairClient(
             manager=manager,
@@ -2123,3 +2128,226 @@ def test_a_page_witness_still_takes_its_anchored_slice_not_a_bracket_strip():
         testimonia, {"comparison_views": {"attestator_3": "ACT ONE text"}}
     )
     assert rows[0]["payload"]["comparison_reported"] == "ACT ONE text"
+
+
+# --- concurrent reader calls ---------------------------------------------------
+
+BATCH = 2  # the fixture has two acts, so a row bound of two is the most it can reach
+
+
+@pytest.fixture(scope="module")
+def batching_chained_run(tmp_path_factory) -> tuple[Path, Path]:
+    """The same chain sealed under a live Perlector row whose `max_num_seqs` is `BATCH`."""
+    base = tmp_path_factory.mktemp("live-perlector-batching")
+    catalogue = _live_catalogue(base, max_num_seqs=BATCH)
+    root = base / "runs"
+    _chain_through_attestatores(root, catalogue)
+    return root, catalogue
+
+
+class _ContentEndpoint(FakeEndpoint):
+    """Answers each reading by its content, never by arrival order, and counts overlap.
+
+    Every reading is held briefly so calls sent together are in flight together. A
+    request carrying `fail_marker` gets a transport failure, whenever it arrives.
+    """
+
+    def __init__(self, *, fail_marker: str | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._lock = threading.Lock()
+        self._fail_marker = fail_marker
+        self._in_flight = 0
+        self._reproofs_in_flight = 0
+        self.most_in_flight = 0
+        self.most_reproofs_in_flight = 0
+        self.bodies: list[bytes] = []
+
+    def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
+        if method != "POST" or body is None or not self._readiness_probe_answered:
+            return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
+        reproof = _unchanged_reproof_response(body)
+        with self._lock:
+            self.bodies.append(body)
+            self._in_flight += 1
+            self._reproofs_in_flight += reproof is not None
+            self.most_in_flight = max(self.most_in_flight, self._in_flight)
+            self.most_reproofs_in_flight = max(
+                self.most_reproofs_in_flight, self._reproofs_in_flight
+            )
+        try:
+            time.sleep(0.3)
+            if self._fail_marker is not None and self._fail_marker.encode() in body:
+                raise EndpointUnavailable("simulated transport failure for one act")
+            content = reproof if reproof is not None else READING
+            answer = {
+                "model": self.served_model_id,
+                "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+            }
+            return HttpResponse(200, json.dumps(answer).encode())
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+                self._reproofs_in_flight -= reproof is not None
+
+
+def _run_batching(
+    template: tuple[Path, Path],
+    tmp_path: Path,
+    name: str,
+    monkeypatch,
+    *extra_args: str,
+    fail_marker: str | None = None,
+) -> tuple[Path, _ContentEndpoint]:
+    """Run the stage on a fresh copy of `template` named `name`.
+
+    Runs in one test share the serving log root, lock and a fixed clock: the launch
+    argv names the log root, and a receipt's `started_at` is a serving moment. Those
+    are the only inputs that differ between two otherwise identical passes, and
+    every record cites the receipt and the launch audit.
+    """
+    source, catalogue = template
+    root = tmp_path / name / "runs"
+    shutil.copytree(source, root)
+    endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID, fail_marker=fail_marker)
+    factory = _serving_factory(
+        endpoint,
+        catalogue,
+        tmp_path / "logs",
+        tmp_path / "pod-gpu.lock",
+        now=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--serving-recipes-config",
+            str(catalogue),
+            "--placement-tier",
+            TIER,
+            *extra_args,
+        ],
+    )
+    assert perlector.main(serving_factory=factory) == 0
+    return root, endpoint
+
+
+def _stage_bytes(root: Path) -> dict[str, bytes]:
+    """Every file of the Perlector's sealed inventory: artifacts, blobs and manifest."""
+    stage = root / "r" / "4_perlector"
+    return {
+        str(path.relative_to(stage)): path.read_bytes()
+        for path in sorted(stage.rglob("*"))
+        if path.is_file() and SERVING_LOGS_DIR not in path.relative_to(stage).parts
+    }
+
+
+def test_concurrent_calls_publish_exactly_the_bytes_a_serial_pass_publishes(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    serial_root, serial = _run_batching(
+        batching_chained_run, tmp_path, "serial", monkeypatch, "--perlector-concurrency", "1"
+    )
+    batched_root, batched = _run_batching(batching_chained_run, tmp_path, "batched", monkeypatch)
+
+    assert serial.most_in_flight == 1
+    # The row's bound is the default, is reached, and is never exceeded.
+    assert batched.most_in_flight == BATCH
+    # Both acts were due a re-proof, and those were batched too.
+    assert batched.most_reproofs_in_flight == BATCH
+    # Each act's request carries only sealed inputs, never another act's reading, so
+    # every request is byte-identical whichever act was in flight beside it.
+    assert sorted(batched.bodies) == sorted(serial.bodies)
+    assert (batched_root / "r" / "4_perlector" / "manifest.json").exists()
+    assert _stage_bytes(batched_root) == _stage_bytes(serial_root)
+
+
+def test_one_failed_call_in_a_batch_fails_only_its_own_act(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    # The fixture's first act, by its witnesses' text; no other act's request carries it.
+    marker = "SYNTHETIC ACT ONE"
+    serial_root, _ = _run_batching(
+        batching_chained_run,
+        tmp_path,
+        "serial",
+        monkeypatch,
+        "--perlector-concurrency",
+        "1",
+        fail_marker=marker,
+    )
+    batched_root, batched = _run_batching(
+        batching_chained_run, tmp_path, "batched", monkeypatch, fail_marker=marker
+    )
+
+    assert batched.most_in_flight == BATCH
+    outcomes = sorted(record["outcome"] for record in _perlectiones(batched_root).values())
+    assert len(outcomes) == 2 and outcomes.count("failed") == 1, outcomes
+    assert _stage_bytes(batched_root) == _stage_bytes(serial_root)
+
+
+def test_the_deadline_is_checked_before_each_call_is_started(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    """A refusal before the second act's call leaves only the first act's call sent."""
+    checks = 0
+    refuse = perlector._refuse_past_deadline
+    sent: list = []
+
+    def refuse_the_second_act(deadline, seconds_needed, what):
+        nonlocal checks
+        if what.startswith("reading the"):
+            checks += 1
+            if checks == 2:
+                raise ContractError("simulated deadline")
+        refuse(deadline, seconds_needed, what)
+
+    original_init = _ContentEndpoint.__init__
+
+    def recording_init(self, **kwargs):
+        original_init(self, **kwargs)
+        sent.append(self)
+
+    monkeypatch.setattr(perlector, "_refuse_past_deadline", refuse_the_second_act)
+    monkeypatch.setattr(_ContentEndpoint, "__init__", recording_init)
+    with pytest.raises(ContractError, match="simulated deadline"):
+        _run_batching(batching_chained_run, tmp_path, "refused", monkeypatch)
+    assert checks == 2
+    assert len(sent[0].bodies) == 1
+    assert not _perlectiones(tmp_path / "refused" / "runs")
+
+
+def test_a_draft_fed_or_fixture_pass_reads_one_act_at_a_time():
+    """Pass A is published before the call that cites it, so a fed pass never overlaps."""
+    args = SimpleNamespace(perlector_concurrency=4)
+    fed = SimpleNamespace(draft_fed=True)
+    withheld = SimpleNamespace(draft_fed=False)
+    # Neither consults the catalogue: a fed or fixture pass has no bound to look up.
+    assert perlector._reading_concurrency(fed, args, None, "live") == 1
+    assert perlector._reading_concurrency(withheld, args, None, "fixture") == 1
+
+
+def test_the_window_finishes_in_order_within_its_bound():
+    lock = threading.Lock()
+    in_flight = most = 0
+    finished: list[int] = []
+
+    def call(index: int) -> int:
+        nonlocal in_flight, most
+        with lock:
+            in_flight += 1
+            most = max(most, in_flight)
+        time.sleep(0.05 * (5 - index))  # later jobs finish first
+        with lock:
+            in_flight -= 1
+        return index
+
+    jobs = ((partial(call, index), finished.append) for index in range(5))
+    perlector._in_order_window(3, jobs)
+    assert finished == [0, 1, 2, 3, 4]
+    assert most == 3

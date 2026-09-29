@@ -927,6 +927,16 @@ never inside one; the acts it has read stay half-read, so the run ends there wit
 artifact retained (see the resume rule above). Pinned by
 `::test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_starts`.
 
+**Concurrent calls.** A live pass keeps up to `--perlector-concurrency` reader calls in
+flight (default and ceiling: the served row's `max_num_seqs`), so the engine can batch
+them; the orchestrator forwards the flag and journals it, and it is not sealed. Every act
+is prepared, and every record published, on the main thread in act order, exactly as a
+serial pass would; only the calls overlap, and no call's request depends on another
+act's reading. A failed call is that act's failed Perlectio alone. Pass-C re-proofs share
+the same window. A draft-fed or fixture pass reads one act at a time. The deadline is
+checked before each call is started. A batched reply at temperature 0 can differ from an
+unbatched one in low-order bits; each record holds the reply its call actually received.
+
 **One live-resume limit remains, named rather than hidden.** Every re-invocation of a live
 pass starts and stops the service, so an `--act` recovery loop pays a full model load per
 act (`pipeline/orchestrator/run.py`'s per-act dispatch). Serving policy permits a server that

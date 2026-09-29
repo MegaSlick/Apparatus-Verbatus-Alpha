@@ -429,6 +429,12 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         )
     )
     command.append("--draft-fed" if args.draft_fed else "--no-draft-fed")
+    if program == STAGE_PROGRAMS["perlector"]:
+        # A scheduling choice, not run configuration: unsealed, so a resume may change it.
+        command += _argv(
+            (("--perlector-concurrency", getattr(args, "perlector_concurrency", None)),),
+            omit_unset=True,
+        )
     command += _argv((f"--{key.replace('_', '-')}", value) for key, value in extra.items())
 
     # Streams are inherited, not buffered: stage output is unbounded, and a
@@ -537,6 +543,14 @@ def _record_stage_timing(
         # the same as zero or as a pass.
         "gpu_utilization": gpu_utilization[0],
         "gpu_utilization_reason": gpu_utilization[1],
+        # What the Perlector was asked to keep in flight; `None` is its served row's
+        # `max_num_seqs`. A scheduling choice, so journaled rather than sealed; each
+        # record already holds the exact reply its call received.
+        "perlector_concurrency": (
+            getattr(args, "perlector_concurrency", None)
+            if program == STAGE_PROGRAMS["perlector"]
+            else None
+        ),
     }
     try:
         # Inside the try: this runs from a `finally`, and a refusal here would
@@ -695,6 +709,13 @@ def main() -> int:
     )
     parser.add_argument(
         "--perlector-audit-config", default=str(DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH)
+    )
+    parser.add_argument(
+        "--perlector-concurrency",
+        type=int,
+        default=None,
+        help="Perlector reader calls kept in flight at once on a live chair; absent means "
+        "the served row's max_num_seqs, and 1 reads one act at a time",
     )
     parser.add_argument(
         "--pdf-render-config",
