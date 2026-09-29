@@ -2280,6 +2280,7 @@ def test_real_timing_writer_and_reader_audit_mixed_and_damaged_lines(tmp_path: P
             finished_at="finish",
             duration_ms=1,
             exit_code=0,
+            gpu_utilization=(None, "test"),
         )
 
     write()
@@ -2331,6 +2332,7 @@ def test_timing_writer_refuses_an_existing_foreign_file(
         finished_at="finish",
         duration_ms=1,
         exit_code=0,
+        gpu_utilization=(None, "test"),
     )
 
     assert journal.read_text(encoding="utf-8") == first

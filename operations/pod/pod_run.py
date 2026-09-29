@@ -114,7 +114,7 @@ from common.stage import verify_predecessor_seal
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
-from pipeline.orchestrator.run import SEQUENCE_NAMES
+from pipeline.orchestrator.run import SEQUENCE_NAMES, STAGE_TIMING_JOURNAL_SCHEMA
 
 from . import boot_a_request, bootstrap_main
 from .bootstrap import BootstrapActions, BootstrapReport
@@ -895,7 +895,7 @@ def _records_at_close(
                             continue  # A later append can leave a torn line in the middle.
                         if (
                             not isinstance(record, dict)
-                            or record.get("schema") != "stage-timing-journal.v3"
+                            or record.get("schema") != STAGE_TIMING_JOURNAL_SCHEMA
                         ):
                             unreadable_lines += 1
                             continue

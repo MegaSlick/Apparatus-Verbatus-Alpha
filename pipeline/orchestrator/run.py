@@ -145,10 +145,13 @@ GPU_BUSY_PERCENT = 95
 class GpuSampler:
     """Polls GPU utilisation while a stage runs, so the journal can say how busy it kept the card.
 
-    Mean and busy fraction cover every read; only the stored list is capped. A
-    read that fails is counted apart and never becomes a zero: with no
-    successful read the result is `None` plus the reason. The sampler never
-    raises into the stage. `run` and `interval` are injectable for tests.
+    Each read is parsed per card and per field: a field the driver reports as
+    `[N/A]` is `None` and costs nothing else. A sample's utilisation is its
+    busiest card's, and the busy measure counts samples above 95%. Mean, max
+    and busy fraction cover every read; only the stored list is capped. A read
+    with no utilisation is counted in `failed_reads` and never becomes a zero:
+    with no successful read the result is `None` plus the reason. The sampler
+    never raises into the stage. `run` and `interval` are injectable for tests.
     """
 
     def __init__(self, run=subprocess.run, interval: float = GPU_SAMPLE_INTERVAL_SECONDS):
@@ -156,7 +159,8 @@ class GpuSampler:
         self._interval = interval
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="gpu-sampler", daemon=True)
-        self._samples: list[dict[str, int]] = []
+        self._started = False
+        self._samples: list[dict[str, object]] = []
         self._count = 0
         self._sum = 0
         self._max = 0
@@ -165,12 +169,17 @@ class GpuSampler:
         self._reason: str | None = None
 
     def __enter__(self) -> "GpuSampler":
-        self._thread.start()
+        try:
+            self._thread.start()
+            self._started = True
+        except Exception as error:  # noqa: BLE001 -- the stage runs unmeasured
+            self._reason = f"sampling could not start: {type(error).__name__}: {error}"
         return self
 
     def __exit__(self, *exc) -> None:
         self._stop.set()
-        self._thread.join(timeout=30)
+        if self._started:
+            self._thread.join(timeout=30)
 
     def _loop(self) -> None:
         while True:
@@ -185,20 +194,46 @@ class GpuSampler:
         self._failed += 1
         self._reason = self._reason or reason
 
+    @staticmethod
+    def _field(text: str) -> int | None:
+        try:
+            return int(text.strip())
+        except ValueError:
+            return None
+
     def _read(self) -> None:
         result = self._run(list(GPU_QUERY), capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
             self._fail(f"nvidia-smi exited {result.returncode}: {result.stderr.strip()[:200]}")
             return
-        rows = [line.split(",") for line in result.stdout.strip().splitlines()]
-        # One row per GPU; a multi-GPU pod is read as its busiest card.
-        utilization = max(int(row[0]) for row in rows)
-        memory = max(int(row[1]) for row in rows)
+        cards = []
+        for line in result.stdout.strip().splitlines():
+            fields = line.split(",")
+            cards.append(
+                {
+                    "utilization_percent": self._field(fields[0]),
+                    "memory_used_mib": self._field(fields[1]) if len(fields) > 1 else None,
+                }
+            )
+        utilizations = [
+            c["utilization_percent"] for c in cards if c["utilization_percent"] is not None
+        ]
+        if not utilizations:
+            self._fail(f"nvidia-smi gave no utilisation reading: {result.stdout.strip()[:200]!r}")
+            return
+        utilization = max(utilizations)
+        memories = [c["memory_used_mib"] for c in cards if c["memory_used_mib"] is not None]
         self._count += 1
         self._sum += utilization
         self._max = max(self._max, utilization)
         self._busy += utilization > GPU_BUSY_PERCENT
-        self._samples.append({"utilization_percent": utilization, "memory_used_mib": memory})
+        self._samples.append(
+            {
+                "utilization_percent": utilization,
+                "memory_used_mib": max(memories) if memories else None,
+                "cards": cards,
+            }
+        )
         del self._samples[:-GPU_SAMPLES_KEPT]
 
     def result(self) -> tuple[dict[str, object] | None, str | None]:
@@ -211,6 +246,7 @@ class GpuSampler:
             "samples": list(self._samples),
             "sample_count": self._count,
             "failed_reads": self._failed,
+            "first_failure_reason": self._reason,
             "mean": self._sum / self._count,
             "max": self._max,
             "busy_fraction_over_95": self._busy / self._count,
@@ -406,20 +442,26 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # Bound before the try: set inside it, an interrupted stage would leave it
     # unbound and `finally` would raise a NameError that hides the real error.
     exit_code: int | None = None
+    finished: tuple[str, float] | None = None
     sampler = GpuSampler()
     try:
         with sampler:
-            completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
+            try:
+                completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
+            finally:
+                # The stage's end, taken before the sampler's shutdown can add to it.
+                finished = (_stamp(), _clock())
         exit_code = completed.returncode
     finally:
+        finished_at, ended = finished or (_stamp(), _clock())
         # The invocations a reader most wants timed are the ones that went wrong.
         _record_stage_timing(
             args,
             program=program,
             extra=extra,
             started_at=started_at,
-            finished_at=_stamp(),
-            duration_ms=max(0, round((_clock() - started) * 1000)),
+            finished_at=finished_at,
+            duration_ms=max(0, round((ended - started) * 1000)),
             exit_code=exit_code,
             gpu_utilization=sampler.result(),
         )
@@ -463,7 +505,7 @@ def _record_stage_timing(
     finished_at: str,
     duration_ms: int,
     exit_code: int | None,
-    gpu_utilization: tuple[dict[str, object] | None, str | None] = (None, "not sampled"),
+    gpu_utilization: tuple[dict[str, object] | None, str | None],
 ) -> None:
     """Append one stage's clock to the timing journal, best effort.
 
