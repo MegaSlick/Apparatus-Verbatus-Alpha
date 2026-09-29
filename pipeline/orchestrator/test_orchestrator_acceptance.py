@@ -11,6 +11,7 @@ asserts an exact expected count.
 """
 
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -3736,12 +3737,21 @@ def test_a_short_or_decorated_revision_is_refused_before_the_door_runs(tmp_path)
     assert not (root / "r").exists()
 
 
-def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tmp_path):
+def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(
+    tmp_path, monkeypatch
+):
     """Outside the tree deliberately: a run tree is pinned byte-identical across a
     rerun, a resume and a restored backup, and a clock is not that. `pod_run` names
     this journal beside its report on the volume, where the transcript and the
     liveness tick already live."""
 
+    # A fake card on PATH: the stages inherit it, so a real reading must land.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake = fake_bin / "nvidia-smi"
+    fake.write_text("#!/bin/sh\necho '97, 1234'\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
     root = tmp_path / "runs"
     journal = tmp_path / "timings" / "pod-run-report-timings.json"
 
@@ -3753,7 +3763,7 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tm
     )
 
     entries = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
-    assert all(entry["schema"] == "stage-timing-journal.v2" for entry in entries)
+    assert all(entry["schema"] == "stage-timing-journal.v3" for entry in entries)
     assert all(entry["run_id"] == "r" for entry in entries)
     stages = [entry["stage"] for entry in entries]
     # Every program the automatic sequence invokes, the Door and the Exemplar
@@ -3767,6 +3777,11 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tm
         assert entry["started_at"].endswith("Z") and entry["finished_at"].endswith("Z")
         assert entry["repository_commit"] == COMMIT
         assert entry["repository_commit_detail"] is None
+        gpu = entry["gpu_utilization"]
+        assert entry["gpu_utilization_reason"] is None
+        assert gpu["sample_count"] >= 1 and gpu["mean"] == 97 and gpu["max"] == 97
+        assert gpu["busy_fraction_over_95"] == 1.0
+        assert gpu["samples"][0]["memory_used_mib"] == 1234
 
 
 def test_a_short_revision_is_refused_on_a_run_that_does_not_start_at_the_door(tmp_path):
