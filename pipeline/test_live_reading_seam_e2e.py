@@ -113,6 +113,7 @@ from operations.serving.fakes import (  # noqa: E402
     FakeLauncher,
     FakePackages,
     ScriptedAnswer,
+    scripted_input_too_long,
 )
 from operations.serving.http import chat_image_bytes_all  # noqa: E402
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
@@ -549,9 +550,12 @@ class VaryingReadingEndpoint(RecordingEndpoint):
     which is the property this endpoint needed all along.
     """
 
-    def __init__(self, *, finish_reason: Any, **keywords: Any) -> None:
+    def __init__(
+        self, *, finish_reason: Any, refusal: ScriptedAnswer | None = None, **keywords: Any
+    ) -> None:
         super().__init__(**keywords)
         self._finish_reason = finish_reason
+        self._refusal = refusal
 
     def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
         if (
@@ -559,6 +563,9 @@ class VaryingReadingEndpoint(RecordingEndpoint):
             and url.endswith("/chat/completions")
             and self._readiness_probe_answered
         ):
+            if self._refusal is not None:
+                self.script(self._refusal)
+                return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
             reproof_response = _unchanged_reproof_response(body)
             images = chat_image_bytes_all(json.loads(body)) if body is not None else []
             digest = hashlib.sha256(b"".join(images)).hexdigest()[:12] if images else "no-pixels"
@@ -673,17 +680,26 @@ class WitnessWorld:
 class ReaderWorld:
     """The Perlector's single resident chair, over one scripted endpoint."""
 
-    def __init__(self, catalogue: Path, work: Path, *, finish_reason: Any) -> None:
+    def __init__(
+        self,
+        catalogue: Path,
+        work: Path,
+        *,
+        finish_reason: Any,
+        refusal: ScriptedAnswer | None = None,
+    ) -> None:
         self.catalogue = catalogue
         self.work = work
         self.work.mkdir(parents=True, exist_ok=True)
         self.finish_reason = finish_reason
+        self.refusal = refusal
         self.endpoint: RecordingEndpoint | None = None
 
     def factory(self, context, identity, tier: str) -> ChairClient:
         policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
         endpoint = VaryingReadingEndpoint(
             finish_reason=self.finish_reason,
+            refusal=self.refusal,
             served_model_id=f"served-{identity.role}",
             blob_store=_TreeBlobs(context, PERLECTOR),
             assert_retained_before_next_request=True,
@@ -1448,6 +1464,63 @@ def test_an_engine_word_this_pipeline_never_measured_fails_each_act_with_retaine
         (blobs / record["payload"]["failure"]["raw_response_ref"]["sha256"]).exists()
         for record in readings
     )
+
+
+def test_an_engine_prompt_too_long_400_is_a_retained_failed_perlectio_held_downstream(
+    designated, witnessed, tmp_path
+):
+    """The engine is the true gate: its context-length 400 is a visible failed act.
+
+    The body is the shape vLLM 0.27.1 returned on the 2026-09-27 run. Each act
+    gets one request, no retry; its Perlectio is `failed`, names the retained
+    refusing bytes, the stage completes, and the Recensor holds every act for
+    review rather than delivering or dropping it.
+    """
+    run_root = tmp_path / "runs"
+    shutil.copytree(witnessed.run_root, run_root)
+    refusal = scripted_input_too_long(max_model_len=32768, input_tokens=34741)
+    reader = ReaderWorld(
+        designated.catalogue, tmp_path / "reader", finish_reason="stop", refusal=refusal
+    )
+    assert (
+        run_in_process(
+            perlector,
+            run_root,
+            designated.catalogue,
+            placement_tier=TIER,
+            serving_factory=reader.factory,
+        )
+        == EXIT_COMPLETE
+    )
+    readings = published_readings(run_root)
+    assert len(readings) == 2
+    # One request per act: a refusal is never retried.
+    assert reader.endpoint.served.count(refusal.body) == len(readings)
+    blobs = run_root / RUN_ID / "4_perlector" / "blobs" / "sha256"
+    for record in readings:
+        assert record["outcome"] == "failed"
+        failure = record["payload"]["failure"]
+        assert failure["code"] == "CHAIR_RESPONSE_HTTP_ERROR"
+        assert failure["kind"] == "chair-response"
+        assert failure["raw_response_ref"] in record["inputs"]
+        retained = (blobs / failure["raw_response_ref"]["sha256"]).read_bytes()
+        assert retained == refusal.body
+        assert b"exceeds model's maximum context length (32768)" in retained
+    tail = {
+        program: invoke_stage(program, run_root, designated.catalogue, placement_tier=TIER)
+        for program in TAIL_FROM_RECENSOR
+    }
+    reviews = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(
+            (run_root / RUN_ID / "5_recensor" / "artifacts" / "review").glob("*.json")
+        )
+    ]
+    assert len(reviews) == len(readings), tail
+    for review in reviews:
+        assert review["outcome"] == "held-for-review", review["outcome"]
+    export = verify_final_seal(RunTree(run_root, RUN_ID))
+    assert export["payload"]["delivered"] == []
 
 
 # ============================ the fixture path, unmoved =======================

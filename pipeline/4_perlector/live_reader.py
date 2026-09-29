@@ -350,8 +350,14 @@ class VLLMReader:
         # cap is one value for every reading pass. The two are told apart by
         # the delivered instrument, never by the pass label.
         policy_cap = self._max_tokens if instrument is None else self._reproof_max_tokens
+        # A fed prior draft is a model reply that may have looped, so it is
+        # charged its bytes, or the reply cap where there is one
+        # (`perlector_prompt_bound`).
+        prior = dossier["prior_draft"]["text"] if dossier.get("prior_draft_view") == "fed" else ""
         prompt_bound, bound_basis = perlector_prompt_bound(
-            text, template_digest=prompts.BUILDER_SHA256
+            text,
+            template_digest=prompts.BUILDER_SHA256,
+            capped_spans=[(prior, self._max_tokens)] if prior else (),
         )
         prompt_floor, floor_basis = perlector_prompt_tokens(text)
         region_sizes = image_sizes(region_images)
