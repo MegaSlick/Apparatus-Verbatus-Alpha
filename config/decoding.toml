@@ -1,4 +1,4 @@
-# These exact bytes are sealed into every run's decoding provenance.
+# Its values are sealed into every run's decoding provenance.
 schema = "decoding.v4"
 
 [reading_of_record]

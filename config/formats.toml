@@ -1,6 +1,6 @@
 # Which product projections the Armarium writes. Spec 11.
 #
-# These bytes are sealed into the run's `config_digest` at the door, so the format
+# These values are sealed into the run's `config_digest` at the door, so the format
 # choice is part of the run authority and a run's product cannot be re-projected
 # under a different selection without a new run over the same Exemplar.
 #
