@@ -59,7 +59,7 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         perlector_instrument_approval_ref="",
         perlector_protocol_config=ROOT / "config" / "perlector_protocol.toml",
         perlector_audit_config=ROOT / "config" / "perlector_audit.toml",
-        draft_fed=True,
+        blind_read="fed",
         corpus_register=None,
         submission_folder=None,
         submission_manifest=None,

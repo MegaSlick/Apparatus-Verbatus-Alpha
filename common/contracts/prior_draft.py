@@ -4,6 +4,10 @@ from typing import Any, Callable
 
 from common.contracts.errors import SchemaRefusal
 
+# off: no blind read. fed: Pass A is fed to the establishing reading. saved: Pass A is made
+# and kept as a training witness; the establishing reading never sees it.
+BLIND_READ_MODES = ("off", "fed", "saved")
+
 
 def kind_for_view(view: str) -> str:
     if view == "fed":
@@ -29,7 +33,8 @@ def validate_establishing_view(payload: dict, dossier: Any, subject: str) -> str
     if not isinstance(dossier, dict) or dossier.get("prior_draft_view") != expected:
         raise SchemaRefusal(f"{subject} names {kind} without a {expected} prior-draft view")
     protocol = payload.get("protocol")
-    if not isinstance(protocol, dict) or protocol.get("draft_fed") is not (expected == "fed"):
+    mode = protocol.get("blind_read") if isinstance(protocol, dict) else None
+    if mode not in BLIND_READ_MODES or (mode == "fed") != (expected == "fed"):
         raise SchemaRefusal(f"{subject} names {kind} contrary to its prior-draft protocol")
     if expected == "withheld" and payload.get("self_revision") != []:
         raise SchemaRefusal(

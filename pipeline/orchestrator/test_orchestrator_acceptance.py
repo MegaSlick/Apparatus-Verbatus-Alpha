@@ -119,10 +119,10 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # the ink map must confirm ink under it before it may spend a recovery or hold
 # an act; here it cannot, so a2 goes straight to a hold without a
 # second recovery round.
-HAPPY_SNAPSHOT_FILES = 100
-REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "def36962294fb9795e64084f84fae04c8014bb51b3feaaaa0143e90fad310ba8"
-REVIEW_RUN_TREE_DIGEST = "cb319cb9e8c4f371a0d4ee67d7704a8d75fe93e90fbb39e459d750c52672368f"
+HAPPY_SNAPSHOT_FILES = 98
+REVIEW_SNAPSHOT_FILES = 108
+HAPPY_RUN_TREE_DIGEST = "c8c48ebf2d49202a998472b61ae3c8075cacb2770118729342ca40137bd9224c"
+REVIEW_RUN_TREE_DIGEST = "cd76c9d92483d49e50a180551d0407f56c802aaa529381cb1286a00053f3bc8f"
 
 
 def orchestrate(
@@ -366,7 +366,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         perlector_instrument_approval_ref="",
         perlector_protocol_config=ROOT / "config" / "perlector_protocol.toml",
         perlector_audit_config=ROOT / "config" / "perlector_audit.toml",
-        draft_fed=False,
+        blind_read="off",
         # The corpus-register argv surface, which `invoke` reads by name on every
         # stage. A stand-in that omits it is not the surface it claims to mirror.
         corpus_register=None,

@@ -220,11 +220,18 @@ def chained_run(tmp_path_factory) -> tuple[Path, Path]:
 
 @pytest.fixture(scope="module")
 def fed_chained_run(tmp_path_factory) -> tuple[Path, Path]:
-    """The same chain sealed with `--draft-fed`, the only run that makes a Pass A."""
+    """The same chain sealed with `--blind-read fed`, the only run that makes a Pass A."""
     base = tmp_path_factory.mktemp("live-perlector-fed")
     catalogue = _live_catalogue(base)
     root = base / "runs"
-    _chain_through_attestatores(root, catalogue, extra=("--draft-fed",))
+    _chain_through_attestatores(
+        root,
+        catalogue,
+        extra=(
+            "--blind-read",
+            "fed",
+        ),
+    )
     return root, catalogue
 
 
@@ -652,7 +659,7 @@ def test_a_reply_that_reaches_its_bound_holds_the_act_and_is_never_asked_again(
     readings = _published_readings(root)
     assert readings
     assert all(record["outcome"] == "truncated" for record in readings)
-    # Pass B and the one re-proof each ask once (Pass A runs only under --draft-fed);
+    # Pass B and the one re-proof each ask once (Pass A runs only under --blind-read fed);
     # the stop re-asks nothing.
     assert len(endpoint.requests) == 2 * len(readings)
     retained_bounds = {
@@ -867,8 +874,15 @@ def test_a_live_pass_refuses_to_resume_an_act_it_left_half_read(
     request, tmp_path, monkeypatch, kind
 ):
     """One reading comes from one serving session: an interrupted act is never finished."""
-    # Pass A exists only in a draft-fed run.
-    fed = ("--draft-fed",) if kind == "lectio-prior" else ()
+    # Pass A exists only in a fed run.
+    fed = (
+        (
+            "--blind-read",
+            "fed",
+        )
+        if kind == "lectio-prior"
+        else ()
+    )
     template, catalogue = request.getfixturevalue("fed_chained_run" if fed else "chained_run")
     live_run = (tmp_path / "runs", catalogue)
     shutil.copytree(template, live_run[0])

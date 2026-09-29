@@ -922,7 +922,7 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
         "lectio_kind": lectio_kind,
         "dossier": {"logical_act_id": "pac_0123456789abcdef", "prior_draft_view": view}
         | ({"prior_draft": {"reference": prior_ref, "text": text}} if draft_fed else {}),
-        "protocol": {"draft_fed": draft_fed},
+        "protocol": {"blind_read": "fed" if draft_fed else "off"},
         "basis": {"regions": [_REGION]},
         "provenance": {"chair": "perlector", "revision": "fixture"},
         "annotations": [wire_note],
@@ -1010,7 +1010,7 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
             cross_capture_dissent_ref=dissent_ref,
         )
     payload["lectio_kind"] = original_kind
-    payload["protocol"]["draft_fed"] = not draft_fed
+    payload["protocol"]["blind_read"] = "off" if draft_fed else "fed"
     reseal_refs()
     with pytest.raises(SchemaRefusal, match="contrary to its prior-draft protocol"):
         archetypus.establish_logical_record(
@@ -1023,7 +1023,7 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
             cross_capture_dissent=dissent,
             cross_capture_dissent_ref=dissent_ref,
         )
-    payload["protocol"]["draft_fed"] = draft_fed
+    payload["protocol"]["blind_read"] = "fed" if draft_fed else "off"
     if not draft_fed:
         payload["self_revision"] = [
             {

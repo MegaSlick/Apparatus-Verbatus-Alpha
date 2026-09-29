@@ -596,14 +596,14 @@ def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str
 def _prior_draft_of(reading: dict, payload: dict, dossier: dict, subject: str) -> dict | None:
     """The Pass-A draft an establishing reading must cite, or None when it must cite none.
 
-    Only a fed run made a Pass A. A withheld reading carrying one comes from a run
-    that predates Pass A being gated behind `--draft-fed` and must be re-read.
+    Only a fed run shows an establishing reading a Pass A. A withheld reading (off or
+    saved) must carry none; one that does is refused and must be re-read.
     """
     if payload["lectio_kind"] == "primed-draft-withheld":
         if "prior_draft" in dossier:
             raise SchemaRefusal(
                 f"{subject} claims primed-draft-withheld but carries a prior-draft reference; "
-                "the run predates Pass A being gated behind --draft-fed and must be re-read"
+                "a withheld reading (off or saved) cannot cite a Pass A and must be re-read"
             )
         return None
     prior_draft = dossier.get("prior_draft")

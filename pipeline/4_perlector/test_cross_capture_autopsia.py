@@ -159,7 +159,7 @@ def test_clustered_logical_passes_make_one_establishing_call_and_no_capture_loca
         protocol_config={"max_images": 6},
         nuda_sampled=True,
         control_sampled=True,
-        draft_fed=True,
+        blind_read="fed",
     )
     assert set(output) == {"lectio-prior", "lectio-nuda", "primed-without-prior", "perlectio"}
     assert [call[1] for call in reader.calls] == [
@@ -196,7 +196,7 @@ def test_a_withheld_run_makes_no_pass_a_and_no_prior_draft():
         protocol_config={"max_images": 6},
         nuda_sampled=False,
         control_sampled=False,
-        draft_fed=False,
+        blind_read="off",
         publish_prior=lambda *_: pytest.fail("a withheld run publishes no lectio-prior"),
     )
     assert [call[1] for call in reader.calls] == ["perlectio"]
@@ -219,7 +219,7 @@ def test_a_withheld_run_with_a_sampled_nuda_reads_only_nuda_and_the_establishing
         protocol_config={"max_images": 6},
         nuda_sampled=True,
         control_sampled=False,
-        draft_fed=False,
+        blind_read="off",
     )
     assert [call[1] for call in reader.calls] == ["lectio-nuda", "perlectio"]
 
@@ -227,9 +227,9 @@ def test_a_withheld_run_with_a_sampled_nuda_reads_only_nuda_and_the_establishing
 @pytest.mark.parametrize("round_cap", [0, 1, 2])
 @pytest.mark.parametrize("control", [0, 500])
 @pytest.mark.parametrize("nuda", [0, 500])
-@pytest.mark.parametrize("draft_fed", [False, True])
+@pytest.mark.parametrize("blind_read", ["off", "fed", "saved"])
 def test_the_planned_calls_per_act_are_the_calls_the_passes_make(
-    draft_fed, nuda, control, round_cap
+    blind_read, nuda, control, round_cap
 ):
     """The reading deadline plans from `calls_per_act`; it must match what is read."""
     reader = RecordingReader()
@@ -241,11 +241,11 @@ def test_the_planned_calls_per_act_are_the_calls_the_passes_make(
         protocol_config={"max_images": 6},
         nuda_sampled=bool(nuda),
         control_sampled=bool(control),
-        draft_fed=draft_fed,
+        blind_read=blind_read,
     )
     planned = SimpleNamespace(
         context=SimpleNamespace(
-            draft_fed=draft_fed, nuda_per_mille=nuda, perlector_instrument_per_mille=control
+            blind_read=blind_read, nuda_per_mille=nuda, perlector_instrument_per_mille=control
         ),
         audit_policy={"round_cap": round_cap},
     )
@@ -410,7 +410,7 @@ def test_the_unprimed_arms_carry_no_witness_derived_region_coverage():
         protocol_config={"max_images": 6},
         nuda_sampled=True,
         control_sampled=True,
-        draft_fed=True,
+        blind_read="fed",
     )
     for arm in ("lectio-prior", "lectio-nuda"):
         seen = output[arm]["dossier"]

@@ -72,6 +72,7 @@ from common.contracts.errors import (  # noqa: E402
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.outcomes import ATTACHMENT_BASES, page_attachment_basis  # noqa: E402
 from common.contracts.prior_draft import (  # noqa: E402
+    BLIND_READ_MODES,
     kind_for_view,
     self_revision_for_view,
     validate_establishing_view,
@@ -2368,8 +2369,8 @@ def validate_reading_payload(
     protocol_record = payload.get("protocol")
     if protocol_record is not None and (
         not isinstance(protocol_record, dict)
-        or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "draft_fed"}
-        or not isinstance(protocol_record["draft_fed"], bool)
+        or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "blind_read"}
+        or protocol_record["blind_read"] not in BLIND_READ_MODES
     ):
         raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
     _validate_lectio_kind(payload, reading_dossier)
@@ -3254,7 +3255,7 @@ def _protocol_record(context, protocol_config: dict[str, Any]) -> dict[str, Any]
     return {
         "selection_rule": protocol_config["selection_rule"],
         "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
-        "draft_fed": context.draft_fed,
+        "blind_read": context.blind_read,
     }
 
 
@@ -3592,7 +3593,7 @@ class _Pass:
         return (
             1
             + self.audit_policy["round_cap"]
-            + bool(self.context.draft_fed)
+            + (self.context.blind_read != "off")
             + bool(self.context.nuda_per_mille)
             + bool(self.context.perlector_instrument_per_mille)
         )
@@ -3870,7 +3871,7 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
             protocol_config=run.protocol_config,
             nuda_sampled=nuda_sampled,
             control_sampled=control_sampled,
-            draft_fed=context.draft_fed,
+            blind_read=context.blind_read,
             # Runs before the establishing arm, which embeds the prior reference it returns.
             publish_prior=partial(_publish_lectio_prior, context, attempt),
         )

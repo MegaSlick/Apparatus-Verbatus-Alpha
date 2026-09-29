@@ -47,7 +47,7 @@ design that would close the case are in `pipeline/3_attestatores/CONTRACT.md`.
 
 | Knob | Default | Who changes it | What retires it |
 |---|---|---|---|
-| `--draft-fed` | off, so no Pass A is read and Pass B sees image and witnesses; a fed draft anchors the reader | the project lead through B5a | a recorded B5a decision replacing the withheld default |
+| `--blind-read` | `off`, so no Pass A is read and Pass B sees image and witnesses; `fed` feeds the blind read to Pass B as a prior (it anchors the reader); `saved` makes it and keeps it as a training witness Pass B never sees | the project lead through B5a | a recorded B5a decision replacing the `off` default |
 | `--perlector-instrument-per-mille` | 0 | the project lead, with `--perlector-instrument-approval-ref` | a replacement approved instrument design |
 | Perlector protocol selection-rule name | `digest-threshold-over-frame-page-seed-act.v1` | ordinary engineering with recorded evidence | a replacement rule recorded with its coverage evidence |
 | Perlector protocol Pass-B fragment | the neutral form sealed in `perlector_protocol.toml` | **not a knob** — pinned to `protocol.PASS_B_FRAGMENT`; rewording is a reviewed two-file change | a B5a prompt-framing ablation the project lead records, which retires the pin rather than edits around it |

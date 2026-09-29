@@ -196,7 +196,7 @@ text. The grammar carries no level of doubt, so every marked span is `low`. A
 `[[` or `]]` that is not a closed mark, or a mark whose reading is `?`, publishes the
 raw answer unchanged under `malformed`. Gap marks over an answer that is otherwise
 blank add nothing: the `no-readable-text` outcome's whole-act gap already says it.
-By default there is no Pass A; `--draft-fed` opts in to Pass A and to Pass B seeing its clean text. When the
+By default there is no Pass A; `--blind-read fed` opts in to Pass A and to Pass B seeing its clean text (`--blind-read saved` makes Pass A but never shows it to Pass B). When the
 draft is fed, `self_revision` offsets index it: `reading_span` in the final text,
 `testimonium_span` in the draft. When it is withheld, `self_revision` is not measured. Pass A's marks stay on its own
 record. Truncation is measured on the clean text. The re-proof answers in JSON and
@@ -548,14 +548,18 @@ ever have recorded for a real reading.
 
 ## R5a prior-draft protocol
 
-Pass A, the image-only draft, runs only under `--draft-fed`. Then every readable act
+`--blind-read` sets the Pass A blind read: `off` (default), `fed` or `saved`. Pass A, the
+image-only draft, runs under `fed` and `saved`. Then every readable act
 emits a `kind="lectio-prior"` draft under the `lectio-prior` attempt operation. It sees
 the images and no Testimonia; it is not Lectio nuda and cannot establish text. By
-default (withheld) no Pass A is read: the reader sees the image and every witness
-in one call, and the act makes no `lectio-prior` record. The production
+default (`off`) no Pass A is read: the reader sees the image and every witness
+in one call, and the act makes no `lectio-prior` record. Under `saved` the draft is
+made and kept as a training witness: the `lectio-prior` record's `protocol.blind_read` reads
+`saved`, it is found under stage `4_perlector`, kind `lectio-prior`, it is never exported as a
+reading, and no establishing reading, dossier or input references it. The production
 `kind="perlectio"` is `lectio_kind="primed-with-prior"` only when the draft was fed
 and then carries equality-only `self_revision` spans against it and the Pass-A
-reference. When the draft was withheld, it is `lectio_kind="primed-draft-withheld"`
+reference. When the draft was withheld (`off` or `saved`), it is `lectio_kind="primed-draft-withheld"`
 with an empty `self_revision` and no prior reference. Both production kinds can
 establish text; the kind records what the reader saw.
 
@@ -575,10 +579,11 @@ production hard-failure cap. Its approval reference is likewise an envelope
 input and is digest-checked whenever the control artifact is read.
 
 The Pass-B dossier records whether the draft was `fed` or `withheld`. A fed dossier
-carries a digest-checked reference to the Pass-A draft; a withheld dossier carries no
-`prior_draft` at all, and one that does is refused. The `--draft-fed` default is
-withheld because a fed draft anchors the reader; feeding remains an explicit toggle
-and is the only way to run Pass A.
+carries a digest-checked reference to the Pass-A draft; a withheld dossier (under `off` or
+`saved`) carries no `prior_draft` at all, and one that does is refused. The withheld dossier
+of a `saved` run is the one an `off` run builds. The `--blind-read` default is `off` because a
+fed draft anchors the reader; `blind_read` is sealed in the run's policy digest and in every
+reading's `protocol` record, and Pass A counts in `calls_per_act` under `fed` and `saved`.
 
 **Four reading kinds, three conditions.** `lectio-nuda` and `lectio-prior` are
 built from identical dossier arguments — page context, no Testimonia, no prior
@@ -586,13 +591,13 @@ draft — so for one act they carry the same `dossier_digest` and the same
 `rendered_sha256`. That is correct (they *are* the same condition) and it is
 pinned by a test, because it is not visible from the kind names.
 
-What each contrast measures depends on the mode. In a **fed** run (`--draft-fed`),
+What each contrast measures depends on the mode. In a **fed** run (`--blind-read fed`),
 nuda against lectio-prior measures sampling variance; lectio-prior (or nuda) against
 the sampled control measures witness dependence, because the control sees witnesses
 and no draft; the control against the production Perlectio measures anchoring on the
-draft. In a **withheld** run there is no lectio-prior and, because the control would
+draft. In an **off** run there is no lectio-prior and, in a **saved** run the lectio-prior is a witness for training only; in both, because the control would
 be byte-identical to production, no control either (`--perlector-instrument-per-mille`
-is refused without `--draft-fed`). The approval-gated sampled Lectio nuda is then the
+is refused unless `--blind-read fed`). The approval-gated sampled Lectio nuda is then the
 only unprimed reading, and nuda against the production Perlectio measures witness
 dependence.
 

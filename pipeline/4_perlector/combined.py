@@ -40,13 +40,14 @@ def run_logical_passes(
     protocol_config: dict[str, Any],
     nuda_sampled: bool,
     control_sampled: bool,
-    draft_fed: bool = False,
+    blind_read: str = "off",
     publish_prior: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Use one atomic presentation for every requested arm of one logical act.
 
-    Pass A (``lectio-prior``) runs only when ``draft_fed``: a withheld run
-    makes no image-only draft and its establishing reading carries none.
+    Pass A (``lectio-prior``) runs unless ``blind_read`` is ``off``. Only ``fed`` shows it to
+    the establishing reading; ``saved`` keeps it as a training witness and the establishing
+    dossier is the withheld one, exactly as under ``off``.
     ``publish_prior`` must return the closed prior reference and text before
     the establishing call; without a publisher, only the text is retained.
     """
@@ -55,7 +56,7 @@ def run_logical_passes(
         max_images = None
     output: dict[str, Any] = {}
     prior_draft: dict[str, Any] | None = None
-    if draft_fed:
+    if blind_read != "off":
         prior_dossier, _prior_pixels, prior = invoke_one_logical_read(
             reader,
             autopsia=autopsia,
@@ -65,11 +66,12 @@ def run_logical_passes(
             pass_kind="lectio-prior",
         )
         output["lectio-prior"] = {"dossier": prior_dossier, "result": prior}
-        prior_draft = (
+        published = (
             publish_prior(prior_dossier, prior)
             if publish_prior is not None
             else {"text": prior["text"]}
         )
+        prior_draft = published if blind_read == "fed" else None
     if nuda_sampled:
         nuda_dossier, _nuda_pixels, nuda = invoke_one_logical_read(
             reader,
@@ -93,7 +95,7 @@ def run_logical_passes(
     establishing = copy.deepcopy(dossier)
     if prior_draft is not None:
         establishing["prior_draft"] = prior_draft
-    establishing["prior_draft_view"] = "fed" if draft_fed else "withheld"
+    establishing["prior_draft_view"] = "fed" if blind_read == "fed" else "withheld"
     final_dossier, _final_pixels, final = invoke_one_logical_read(
         reader,
         autopsia=autopsia,
