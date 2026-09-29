@@ -991,7 +991,9 @@ def _first_pass_a_is_refused(run_kind, mode, request, tmp_path, monkeypatch):
 def test_a_failed_saved_blind_read_is_kept_and_costs_no_production_reading(
     request, tmp_path, monkeypatch
 ):
-    root, exit_code = _first_pass_a_is_refused("saved_chained_run", "saved", request, tmp_path, monkeypatch)
+    root, exit_code = _first_pass_a_is_refused(
+        "saved_chained_run", "saved", request, tmp_path, monkeypatch
+    )
 
     assert exit_code == 0
     readings = _published_readings(root)
@@ -1012,7 +1014,9 @@ def test_a_failed_saved_blind_read_is_kept_and_costs_no_production_reading(
 
 
 def test_a_failed_fed_blind_read_still_fails_its_act(request, tmp_path, monkeypatch):
-    root, exit_code = _first_pass_a_is_refused("fed_chained_run", "fed", request, tmp_path, monkeypatch)
+    root, exit_code = _first_pass_a_is_refused(
+        "fed_chained_run", "fed", request, tmp_path, monkeypatch
+    )
 
     assert exit_code == 0
     assert any(record["outcome"] == "failed" for record in _published_readings(root))
