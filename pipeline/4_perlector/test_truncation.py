@@ -313,10 +313,12 @@ def test_a_real_act_crop_cut_off_after_one_line_must_not_be_complete():
     assert truncation.holds_as_failure(record["classification"]) is True
 
 
-def test_a_full_line_cut_from_a_four_line_crop_is_caught_too():
-    """The cutoff is caught at a whole line's width, not only at the 40 characters
-    of the case above."""
-    record = classify(LINE_TEXT, region_pixels=ACT_CROP, page_pixels=LEAF_PAGE, stop_reason="stop")
+def test_half_a_line_cut_from_a_four_line_crop_is_caught_too():
+    """The floor catches a reading of a line or less; a whole 76-character line of
+    the same crop reads 633 and is not caught (the floor's caveat says why)."""
+    record = classify(
+        LINE_TEXT[:30], region_pixels=ACT_CROP, page_pixels=LEAF_PAGE, stop_reason="stop"
+    )
     assert record["classification"] != truncation.COMPLETE
 
 
@@ -493,7 +495,7 @@ def test_a_policy_with_no_floor_at_all_is_refused_by_name():
 
 def _protocol_with(replacement: str, tmp_path: Path) -> Path:
     shipped = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
-    edited = shipped.replace("length_floor_characters_per_page = 640", replacement)
+    edited = shipped.replace("length_floor_characters_per_page = 400", replacement)
     assert edited != shipped
     path = tmp_path / "perlector_protocol.toml"
     path.write_text(edited, encoding="utf-8")
@@ -510,7 +512,7 @@ def test_the_sealed_table_refuses_a_calibration_claim_without_a_sample(tmp_path)
     shipped = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
     claimed = shipped.replace(
         "calibrated_for_this_corpus = false", "calibrated_for_this_corpus = true"
-    )
+    ).replace("sample_count = 4572", "sample_count = 0")
     assert claimed != shipped
     path = tmp_path / "perlector_protocol.toml"
     path.write_text(claimed, encoding="utf-8")
