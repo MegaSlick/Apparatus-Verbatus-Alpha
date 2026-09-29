@@ -81,16 +81,21 @@ from common.contracts.prior_draft import (  # noqa: E402
     self_revision_for_view,
     validate_establishing_view,
 )
-from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMAS  # noqa: E402
+from common.contracts.serving import (  # noqa: E402
+    CHAIR_CALL_RECORD_SCHEMAS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+)
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.corpus_register import refuse_capture_preference  # noqa: E402
 from common.cross_capture_autopsia import (  # noqa: E402
     atomic_delivered_pixels,
     over_capacity_reason,
+    presented_image_sha256s,
     validate_autopsia,
 )
 from common.decoding import load_decoding_policy, perlector_max_tokens  # noqa: E402
 from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_lineage  # noqa: E402
+from common.image_sniff import PNG_SIGNATURE  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
@@ -1750,6 +1755,16 @@ def _reading_already_sealed(context, act_id: str, ordinal: int, *, act_key: str)
     reading = context.tree.read_artifact(PERLECTOR, "perlectio", identifier)
     if reading["outcome"] == "failed" and "failure" in reading["payload"]:
         validate_failed_perlectio(context, reading, act_id, expected_act_key=act_key)
+    elif (
+        reading["outcome"] not in ("failed", "not-run")
+        and _semi_final_record(context, act_id, ordinal) is None
+    ):
+        # Only live passes skip sealed acts, and every live reading has its semi-final;
+        # without it the page flags a resume computes would miss this act.
+        raise FatalAccounting(
+            f"act {act_key!r} has a live Perlectio but no semi-final, so a resumed audit "
+            "cannot compute its page's flags over every act; read this page in a new run"
+        )
     return True
 
 
@@ -1770,8 +1785,8 @@ def _published_arm_refs(context, act_id: str, ordinal: int) -> list[dict[str, st
     ]
 
 
-# The slowest live call observed (441 answer tokens beside ~6,500 prompt tokens, 80 GB
-# card, 2026-09-22) took about 33 s; the mean of fifteen was 12 s.
+# Above the slowest measured live call: about 33 s for 441 answer tokens beside ~6,500
+# prompt tokens on an 80 GB card, against a mean of 12 s.
 PLANNED_SECONDS_PER_CALL: Final = 40
 
 
@@ -1860,14 +1875,6 @@ def _sent_refs(context, act_id: str, act_key: str, ordinal: int, pass_name: str)
     ]
 
 
-def _presented_image_sha256s(autopsia: dict[str, Any]) -> list[str]:
-    """The image digests a reader call about this act carries, in the order it sends them."""
-    views = autopsia["views"]
-    return [ref["sha256"] for view in views for ref in view["page_render_refs"]] + [
-        ref["sha256"] for view in views for ref in view["region_refs"]
-    ]
-
-
 def _publish_sent(
     run: "_Pass", act_id: str, act_key: str, ordinal: int, pass_name: str, autopsia: dict
 ) -> None:
@@ -1893,49 +1900,69 @@ def _publish_sent(
             "send": send,
             "receipt_ref": dict(run.receipt_ref),
             "concurrency": run.concurrency,
-            "image_sha256s": _presented_image_sha256s(autopsia),
+            "image_sha256s": presented_image_sha256s(autopsia),
         },
     )
 
 
-def _retained_replies(context) -> list[tuple[str, dict[str, Any]]]:
-    """Every retained chair call record in this stage that carries an engine response."""
-    replies = []
-    for name in context.tree.build_manifest(PERLECTOR, verify_inputs=False)["blobs"]:
-        path = context.tree.blob_path(PERLECTOR, name)
-        try:
-            record = json.loads(context.tree.read_bytes(path))
-        except (ValueError, UnicodeDecodeError):
-            continue
-        if (
-            isinstance(record, dict)
-            and record.get("schema") in CHAIR_CALL_RECORD_SCHEMAS
-            and record.get("response_status") is not None
-        ):
-            replies.append((path, record))
-    return replies
+# Blobs the serving manager keeps in a stage's own store beside the chair's calls.
+_SERVING_BLOB_SCHEMAS: Final = frozenset({"serving-launch-audit.v1", "serving-evidence.v1"})
 
 
-def _unrecorded_reply(
-    context, act_id: str, ordinal: int, markers: list[dict], replies: list
-) -> bool:
-    """Whether a send of this act has a retained reply that none of its records binds."""
+def _json_object(data: bytes) -> dict[str, Any] | None:
+    try:
+        value = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _unrecorded_replies(context) -> tuple[list[dict[str, Any]], bool]:
+    """Every retained reply no record of this stage binds, as far as it can be attributed.
+
+    Returns the unbound call records that carry a reply, and whether any retained blob is
+    a reply that cannot be attributed at all. The client retains a reply's raw bytes
+    before the call record that names them, so a pass stopped between the two leaves
+    bytes no call record names: every blob that is not a call record, a reply one names,
+    serving evidence, a page render, or an input of some record is counted as such a
+    reply.
+    """
+    manifest = context.tree.build_manifest(PERLECTOR)
     bound = {
         reference["relative_path"]
-        for kind, identifier in [
-            *_present_arms(context, act_id, ordinal),
-            (SEMI_FINAL_KIND, _semi_final_id(act_id, ordinal)),
+        for entry in manifest["artifacts"]
+        for reference in context.tree.read_artifact(PERLECTOR, entry["kind"], entry["artifact_id"])[
+            "inputs"
         ]
-        if context.tree.has_artifact(PERLECTOR, kind, identifier)
-        for reference in context.tree.read_artifact(PERLECTOR, kind, identifier)["inputs"]
     }
+    calls, named, others = [], set(), []
+    for name in manifest["blobs"]:
+        path = context.tree.blob_path(PERLECTOR, name)
+        data = context.tree.read_bytes(path)
+        if data.startswith(PNG_SIGNATURE):
+            # A page render this stage cut for a reader call; a chat endpoint's reply is
+            # never an image.
+            continue
+        record = _json_object(data)
+        schema = record.get("schema") if record is not None else None
+        if schema in CHAIR_CALL_RECORD_SCHEMAS or schema == CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA:
+            reply = record.get("raw_response_ref")
+            if reply is not None:
+                named.add(reply["relative_path"])
+                if path not in bound:
+                    calls.append(record)
+        elif schema not in _SERVING_BLOB_SCHEMAS:
+            others.append(path)
+    unattributed = any(path not in bound and path not in named for path in others)
+    return calls, unattributed
+
+
+def _answers_a_send(calls: list[dict[str, Any]], markers: list[dict[str, Any]]) -> bool:
+    """Whether an unbound reply came from one of these sends' sessions, about these images."""
     sent = [
         (record["payload"]["receipt_ref"], record["payload"]["image_sha256s"]) for record in markers
     ]
-    return any(
-        path not in bound and (record.get("receipt_ref"), record.get("image_sha256s")) in sent
-        for path, record in replies
-    )
+    return any((call.get("receipt_ref"), call.get("image_sha256s")) in sent for call in calls)
 
 
 def _acts_left_to_read(context, wanted: list[dict[str, Any]]) -> int:
@@ -1966,8 +1993,9 @@ def _acts_left_to_read(context, wanted: list[dict[str, Any]]) -> int:
         pass_name = REPROOF_PASS if adopted else READING_PASS
         markers = _sent_records(context, act_id, act_key, ordinal, pass_name)
         if markers:
-            replies = _retained_replies(context) if replies is None else replies
-            if _unrecorded_reply(context, act_id, ordinal, markers, replies):
+            replies = _unrecorded_replies(context) if replies is None else replies
+            calls, unattributed = replies
+            if unattributed or _answers_a_send(calls, markers):
                 unrecorded.append(act_key)
                 continue
         left += not adopted
@@ -1980,9 +2008,10 @@ def _acts_left_to_read(context, wanted: list[dict[str, Any]]) -> int:
         )
     if unrecorded:
         raise ContractError(
-            f"acts {unrecorded} have a reply retained from an interrupted live attempt that "
-            "no record names; asking again would read them twice. Read these pages in a new "
-            "run; the retained replies remain that attempt's evidence"
+            f"acts {unrecorded} were sent in an interrupted live attempt, and a reply is "
+            "retained that no record names and that may be theirs; asking again would read "
+            "them twice. Read these pages in a new run; the retained replies remain that "
+            "attempt's evidence"
         )
     return left
 
@@ -4131,6 +4160,7 @@ def _prepare_act(run: _Pass, act: dict[str, Any]):
         # it. Not counted in `unread`: `_acts_left_to_read` already excluded it.
         semi_final = _semi_final_record(context, act_id, ordinal)
         if semi_final is not None:
+            _validate_semi_final(run, semi_final)
             run.sealed_semi_finals.extend(
                 audit_semi_finals_for_pages(
                     act_id=act_id,
@@ -4375,6 +4405,33 @@ def _publish_semi_final(run: _Pass, row: dict[str, Any]) -> None:
     row["inputs"].append(context.input_ref(published.relative_path))
 
 
+def _validate_semi_final(run: _Pass, record: dict[str, Any]) -> None:
+    """Refuse a semi-final read back that this run could not have written.
+
+    Its payload is checked as the reading it is, and it must have been made under this
+    run's sealed configuration and reading protocol, blind-read setting included.
+    """
+    context, payload = run.context, record["payload"]
+    if record["config_digest"] != context.config_digest or payload.get("protocol") != (
+        _protocol_record(context, run.protocol_config)
+    ):
+        raise ContractError(
+            f"act {payload.get('act_key')!r}'s semi-final was made under another "
+            "configuration or reading protocol than this run's; read this page in a new run"
+        )
+    validate_reading_payload(
+        payload,
+        outcome=record["outcome"],
+        fields=(_PERLECTIO_FIELDS - {"audit"})
+        | ({"engine_call"} if "engine_call" in payload else set()),
+        run_id=context.tree.run_id,
+        config_digest=context.config_digest,
+        protocol_config=run.protocol_config,
+        protocol_sha256=run.protocol_sha256,
+        inputs=record["inputs"],
+    )
+
+
 def _adopted_row(run: _Pass, prepared: _PreparedAct, _result: None) -> dict[str, Any]:
     """Rebuild an act's audit row from its retained semi-final, asking nothing.
 
@@ -4399,22 +4456,16 @@ def _adopted_row(run: _Pass, prepared: _PreparedAct, _result: None) -> dict[str,
     expected = row["inputs"] + _sent_refs(
         context, attempt.act_id, attempt.act_key, attempt.ordinal, READING_PASS
     )
-    if sorted(map(_input_order, expected)) != sorted(map(_input_order, record["inputs"])):
+    if (
+        sorted(map(_input_order, expected)) != sorted(map(_input_order, record["inputs"]))
+        or payload["basis"]["regions"] != attempt.bases
+    ):
         raise ContractError(
             f"act {attempt.act_key!r}'s retained semi-final was made from other evidence "
             "than the act has now; it is not adopted and the act is not asked again. Read "
             "this page in a new run"
         )
-    validate_reading_payload(
-        payload,
-        outcome=record["outcome"],
-        fields=row["fields"] - {"audit"},
-        run_id=context.tree.run_id,
-        config_digest=context.config_digest,
-        protocol_config=run.protocol_config,
-        protocol_sha256=run.protocol_sha256,
-        inputs=record["inputs"],
-    )
+    _validate_semi_final(run, record)
     row["inputs"].append(context.artifact_ref(PERLECTOR, SEMI_FINAL_KIND, record["artifact_id"]))
     return row
 

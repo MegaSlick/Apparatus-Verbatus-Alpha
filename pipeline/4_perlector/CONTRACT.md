@@ -954,17 +954,29 @@ Before any chair starts, `_acts_left_to_read` sorts every act that has no Perlec
   that carries Pass B's;
 - with nothing, it is untouched and read;
 - with `reader-sent` records and no reply on record, the call was in flight when the
-  pass stopped. It is sent again, as the next `send`, only if no retained chair call
-  record from those sends' sessions, for those images, carries a response that no
-  record of the act binds. Otherwise the pass refuses: the reply exists, and asking
-  again would read the act twice;
+  pass stopped. It is sent again, as the next `send`, only if no retained reply could be
+  its answer. The client retains a reply's raw bytes first and then the call record that
+  names them, so a reply is looked for in both forms (`_unrecorded_replies`): a call
+  record that carries a reply (`raw_response_ref` set) and that no record of this stage
+  binds, from one of those sends' sessions and for the act's images, refuses the act;
+  and any stage blob that is not a call record, not a reply a call record names, not
+  serving evidence, not a page render (a PNG; a chat reply is never an image) and not an
+  input of some record is a reply nobody can attribute, and
+  refuses every act with an unanswered send. A reply some record binds, of this act or
+  of another act with the same crops, is on record and refuses nothing;
 - with sampled arms but no `semi-final`, or with an audit draft or finding but no
-  Perlectio, a reply was received and only partly recorded; the pass refuses.
+  Perlectio, a reply was received and only partly recorded; the pass refuses. That
+  includes a `saved` or `fed` blind read stopped during its Pass B: its `lectio-prior`
+  is already published, and those pages are read in a new run.
 
-A refused act's records stay as that attempt's evidence and its pages are read in a new
-run. The page flags of Pass C are computed over every act's semi-final, as in an
+An adopted `semi-final` must also have been made under this run's `config_digest` and
+reading protocol (the blind-read setting included), and name exactly the act's current
+region basis; the run policy itself is compared with the sealed run when the stage
+opens. A refused act's records stay as that attempt's evidence and its pages are read in
+a new run. The page flags of Pass C are computed over every act's semi-final, as in an
 uninterrupted pass: the semi-finals of acts this pass found sealed are read back from
-their records. A per-act failure the pass can name (`_ACT_LOCAL_READING_FAILURES`)
+their records and validated, and a sealed live reading with no `semi-final` is refused
+as `FatalAccounting`, because its page's flags could not be computed over every act. A per-act failure the pass can name (`_ACT_LOCAL_READING_FAILURES`)
 publishes a failed Perlectio and is not half-read; that includes a request the capacity
 check refuses before sending (`request-capacity`), and a transport failure such as the
 pod going away. Pinned in `test_live_perlector.py` by
@@ -972,7 +984,12 @@ pod going away. Pinned in `test_live_perlector.py` by
 by an interrupt or by the deadline, at widths 1 and 2, the resumed tree is byte-identical
 to the uninterrupted one),
 `test_a_call_interrupted_in_flight_is_sent_again_and_the_second_send_names_the_first`,
-`test_a_reply_retained_but_named_by_no_record_refuses_the_resume` and
+`test_a_reply_retained_but_named_by_no_record_refuses_the_resume`,
+`test_a_reply_retained_before_its_call_record_refuses_the_resume`,
+`test_a_reproof_interrupted_in_flight_is_sent_again_only_if_no_reply_came_back`,
+`test_a_reply_another_record_binds_answers_no_send`,
+`test_a_semi_final_made_from_other_evidence_is_refused_not_adopted`,
+`test_each_record_names_the_session_that_made_it_after_a_resume` and
 `test_a_live_pass_refuses_to_resume_an_act_it_left_half_read`, and downstream by
 `pipeline/test_live_reading_seam_e2e.py::`
 `test_a_pass_stopped_mid_reading_resumes_without_asking_again_and_the_tail_accepts_it`.
@@ -1018,10 +1035,10 @@ act (`pipeline/orchestrator/run.py`'s per-act dispatch). Serving policy permits 
 outlives one stage, but no cross-process handle exists; that is the next serving item.
 
 **A response refusal exits in this stage's own vocabulary.** `ChairResponseRefusal` is a
-`ServingError`, which is a `RuntimeError` and not a `ContractError`, so `run_stage` never
-saw it: vLLM's 400 explaining a context overflow — the likeliest first answer from a real
-card — produced a Python traceback and exit 1 rather than a named refusal and `EXIT_FATAL`.
-`main` now translates it at the stage boundary and nowhere earlier: `ChairClient` still
+`ServingError`, which is a `RuntimeError` and not a `ContractError`, so `run_stage` does
+not catch it: vLLM's 400 explaining a context overflow — the likeliest first answer from a real
+card — would otherwise end in a Python traceback and exit 1 rather than a named refusal and
+`EXIT_FATAL`. `main` translates it at the stage boundary and nowhere earlier: `ChairClient` still
 retains before it refuses, `live_reader` keeps its posture, and the refusal's code and the
 engine's own sentence travel verbatim into the message the stage exits on. The clause takes
 the whole class, so the wrong-model refusal raised before any parse arrives the same way —

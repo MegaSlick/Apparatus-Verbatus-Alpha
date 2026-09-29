@@ -34,6 +34,7 @@ from common.contracts.serving import (
 )
 from common.contracts.stages import PERLECTOR
 from common.corpus_register import refuse_capture_preference
+from common.cross_capture_autopsia import presented_image_refs, presented_image_sha256s
 
 SCHEMA: Final = "perlector-audit.v3"
 LEGACY_SCHEMA: Final = "perlector-audit.v2"
@@ -733,8 +734,7 @@ def _validate_live_reproof_request(
         for view in views
     ):
         raise SchemaRefusal("an audit re-proof has no atomic presentation to rebuild its request")
-    page_refs = [ref for view in views for ref in view.get("page_render_refs", [])]
-    region_refs = [ref for view in views for ref in view.get("region_refs", [])]
+    page_refs, region_refs = presented_image_refs(autopsia)
 
     def image_part(reference: dict[str, str]) -> dict[str, Any]:
         data = read_verified(tree.read_bytes, reference, "an audit re-proof image")
@@ -746,7 +746,7 @@ def _validate_live_reproof_request(
     content = [image_part(ref) for ref in page_refs]
     content.append({"type": "text", "text": prompt["rendered_text"]})
     content.extend(image_part(ref) for ref in region_refs)
-    image_sha256s = [ref["sha256"] for ref in page_refs + region_refs]
+    image_sha256s = presented_image_sha256s(autopsia)
     receipt = tree.read_run_receipt(call["receipt_ref"])
     body = _rebuild_chair_request_bytes(
         recorded_generation=call.get("generation_sent"),

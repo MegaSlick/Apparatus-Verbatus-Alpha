@@ -70,6 +70,7 @@ from reader import PASS_KINDS, DeliveredPixels, LectioResult, validate_audit_del
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import ContractError
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
+from common.cross_capture_autopsia import presented_image_sha256s
 from common.perlector_audit import render_reproof_instruction
 from common.request_capacity import (
     act_answer_budget,
@@ -290,10 +291,7 @@ class VLLMReader:
                 "both region_refs and page_render_refs, so the order the delivered pixels were "
                 "sent in cannot be recovered"
             )
-        image_sha256s = tuple(
-            [ref["sha256"] for view in autopsia["views"] for ref in view["page_render_refs"]]
-            + [ref["sha256"] for view in autopsia["views"] for ref in view["region_refs"]]
-        )
+        image_sha256s = tuple(presented_image_sha256s(autopsia))
         declared_sha256s = [region["image_sha256"] for region in dossier.get("regions", [])] + [
             render["image_sha256"] for render in dossier.get("page_renders", [])
         ]
