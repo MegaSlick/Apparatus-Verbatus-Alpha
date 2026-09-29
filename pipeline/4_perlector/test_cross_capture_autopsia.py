@@ -209,6 +209,49 @@ def test_a_withheld_run_makes_no_pass_a_and_no_prior_draft():
     assert output["perlectio"]["dossier"] == reader_dossier
 
 
+def test_a_withheld_run_with_a_sampled_nuda_reads_only_nuda_and_the_establishing_call():
+    reader = RecordingReader()
+    run_logical_passes(
+        reader,
+        autopsia=autopsia(),
+        dossier={"testimonia": []},
+        read_bytes=READ_BYTES,
+        protocol_config={"max_images": 6},
+        nuda_sampled=True,
+        control_sampled=False,
+        draft_fed=False,
+    )
+    assert [call[1] for call in reader.calls] == ["lectio-nuda", "perlectio"]
+
+
+@pytest.mark.parametrize("round_cap", [0, 1, 2])
+@pytest.mark.parametrize("control", [0, 500])
+@pytest.mark.parametrize("nuda", [0, 500])
+@pytest.mark.parametrize("draft_fed", [False, True])
+def test_the_planned_calls_per_act_are_the_calls_the_passes_make(
+    draft_fed, nuda, control, round_cap
+):
+    """The reading deadline plans from `calls_per_act`; it must match what is read."""
+    reader = RecordingReader()
+    run_logical_passes(
+        reader,
+        autopsia=autopsia(),
+        dossier={"testimonia": []},
+        read_bytes=READ_BYTES,
+        protocol_config={"max_images": 6},
+        nuda_sampled=bool(nuda),
+        control_sampled=bool(control),
+        draft_fed=draft_fed,
+    )
+    planned = SimpleNamespace(
+        context=SimpleNamespace(
+            draft_fed=draft_fed, nuda_per_mille=nuda, perlector_instrument_per_mille=control
+        ),
+        audit_policy={"round_cap": round_cap},
+    )
+    assert perlector_run._Pass.calls_per_act.fget(planned) == len(reader.calls) + round_cap
+
+
 def test_sealed_capacity_holds_a_cluster_before_any_logical_reader_call():
     reader = RecordingReader()
     with pytest.raises(SchemaRefusal, match=OVER_CAPACITY):

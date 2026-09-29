@@ -155,11 +155,8 @@ def test_nuda_and_the_pass_a_prior_are_fed_the_identical_condition(tmp_path):
     run tree would not guess: four Perlector reading kinds, only three
     conditions. Once a real chair sits here, nuda against lectio-prior measures
     sampling variance, not witness dependence; the witness-dependence contrast
-    is lectio-prior (or the sampled control) against the production Perlectio.
-    Whether the approval-gated nuda arm still earns its second model call is
-    B4's three-condition matrix and the project lead's, not this build's -- but it cannot
-    be answered by anyone who does not know the two arms are the same draw.
-    This test makes either arm drifting a deliberate, visible change.
+    is either of them against the sampled control, which sees witnesses and no
+    draft. Neither arm may drift from the other without this test noticing.
     """
     root = tmp_path / "runs"
     result = _run(
@@ -218,6 +215,18 @@ def test_control_refuses_without_the_project_leads_approval_on_fixture_path(tmp_
     assert result.returncode != 0
     assert "sampling design selector" in result.stderr
     assert not (root / "r").exists()
+
+
+def test_a_control_without_pass_a_is_refused_at_run_creation():
+    """Withheld, the control would be byte-identical to production."""
+    with pytest.raises(ContractError, match="needs --draft-fed"):
+        sampling_approval_records(
+            "happy",
+            "--perlector-instrument-per-mille",
+            "1000",
+            "--perlector-instrument-approval-ref",
+            perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        )
 
 
 def test_default_withholds_prior_draft_from_prompt_text(tmp_path):
@@ -372,6 +381,7 @@ def test_two_different_run_ids_over_the_same_corpus_facts_sample_the_control_ide
         "500",
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "--draft-fed",
     )
     first = _run(root, "run-one", "happy", *extra)
     second = _run(root, "run-two", "happy", *extra)
@@ -495,6 +505,7 @@ def published_primed_without_prior_payload(tmp_path_factory):
         "1000",
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "--draft-fed",
     )
     assert result.returncode == 0, result.stderr
     return _records(RunTree(root, "r"), "primed-without-prior")[0]["payload"]
@@ -516,6 +527,25 @@ def test_a_real_published_lectio_prior_satisfies_its_closed_schema(
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
+
+
+@pytest.mark.parametrize("key", ["prior_draft_view", "prior_draft"])
+def test_an_unprimed_record_carrying_prior_draft_data_is_refused(
+    published_lectio_prior_payload, _sealed_protocol, key
+):
+    payload = copy.deepcopy(published_lectio_prior_payload)
+    payload["dossier"][key] = "withheld" if key == "prior_draft_view" else {"text": "x"}
+    body = {k: v for k, v in payload["dossier"].items() if k != "dossier_digest"}
+    payload["dossier"]["dossier_digest"] = perlector.digest_of(body)
+    protocol_config, protocol_sha256 = _sealed_protocol
+    with pytest.raises(SchemaRefusal):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._LECTIO_PRIOR_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
 
 
 def test_validator_refuses_a_protocol_record_without_threaded_sealed_config(
@@ -674,6 +704,7 @@ def test_a_published_control_names_the_approval_record_it_was_drawn_under(
         "1000",
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "--draft-fed",
     )[perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT]
     approval_digest = digest_bytes(canonical_bytes(record))
     assert published_primed_without_prior_payload["sampling"] == {
@@ -696,6 +727,7 @@ def test_a_control_refuses_when_its_bound_approval_receipt_is_replaced(tmp_path)
         "1000",
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "--draft-fed",
     )
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")

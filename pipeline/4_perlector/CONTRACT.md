@@ -569,18 +569,24 @@ input and is digest-checked whenever the control artifact is read.
 The Pass-B dossier records whether the draft was `fed` or `withheld`. A fed dossier
 carries a digest-checked reference to the Pass-A draft; a withheld dossier carries no
 `prior_draft` at all, and one that does is refused. The `--draft-fed` default is
-withheld under the project lead's B5a ruling of 2026-09-28; feeding remains an
-explicit toggle and is the only way to run Pass A.
+withheld because a fed draft anchors the reader; feeding remains an explicit toggle
+and is the only way to run Pass A.
 
 **Four reading kinds, three conditions.** `lectio-nuda` and `lectio-prior` are
 built from identical dossier arguments — page context, no Testimonia, no prior
 draft — so for one act they carry the same `dossier_digest` and the same
 `rendered_sha256`. That is correct (they *are* the same condition) and it is
-pinned by a test, because it is not visible from the kind names. With a real
-chair, nuda against lectio-prior measures sampling variance; the
-witness-dependence contrast is lectio-prior, or the sampled control, against
-the production Perlectio. Where Pass A does not run, the approval-gated sampled
-Lectio nuda is the unprimed baseline.
+pinned by a test, because it is not visible from the kind names.
+
+What each contrast measures depends on the mode. In a **fed** run (`--draft-fed`),
+nuda against lectio-prior measures sampling variance; lectio-prior (or nuda) against
+the sampled control measures witness dependence, because the control sees witnesses
+and no draft; the control against the production Perlectio measures anchoring on the
+draft. In a **withheld** run there is no lectio-prior and, because the control would
+be byte-identical to production, no control either (`--perlector-instrument-per-mille`
+is refused without `--draft-fed`). The approval-gated sampled Lectio nuda is then the
+only unprimed reading, and nuda against the production Perlectio measures witness
+dependence.
 
 **One thing about nuda did change, and it is not in the list above.**
 `common/hard_failure.py`'s `PERLECTOR_INSTRUMENT_KINDS` covers `lectio-nuda`
@@ -905,8 +911,9 @@ strand an act whose Pass A fitted and whose Pass B did not. Pinned by
 
 **The reading deadline.** `--reading-deadline <UTC ISO time>` makes a live pass refuse to
 start when the chair's `startup_timeout_seconds` plus every call left
-(`calls_per_act` = two passes + the audit round cap + one per instrument arm enabled
-for the run, at `PLANNED_SECONDS_PER_CALL`) would run past it. It also refuses to begin
+(`calls_per_act` = the one establishing call + one for Pass A when the draft is fed
++ the audit round cap + one per instrument arm enabled for the run, at
+`PLANNED_SECONDS_PER_CALL`) would run past it. It also refuses to begin
 another act, or another re-proof, when the calls left would. It stops between calls,
 never inside one; the acts it has read stay half-read, so the run ends there with every
 artifact retained (see the resume rule above). Pinned by

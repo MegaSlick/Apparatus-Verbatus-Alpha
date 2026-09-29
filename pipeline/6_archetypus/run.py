@@ -593,25 +593,39 @@ def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str
     return reading, reference
 
 
-def _verify_prior_draft(context, reading: dict, payload: dict, dossier: dict, act_id: str) -> None:
-    """Only a fed run made a Pass A: it must be cited, and a withheld run must carry none."""
-    prior_draft = dossier.get("prior_draft")
+def _prior_draft_of(reading: dict, payload: dict, dossier: dict, subject: str) -> dict | None:
+    """The Pass-A draft an establishing reading must cite, or None when it must cite none.
+
+    Only a fed run made a Pass A. A withheld reading carrying one comes from a run
+    that predates Pass A being gated behind `--draft-fed` and must be re-read.
+    """
     if payload["lectio_kind"] == "primed-draft-withheld":
-        if prior_draft is not None:
+        if "prior_draft" in dossier:
             raise SchemaRefusal(
-                f"act {act_id} claims primed-draft-withheld but carries a prior-draft reference"
+                f"{subject} claims primed-draft-withheld but carries a prior-draft reference; "
+                "the run predates Pass A being gated behind --draft-fed and must be re-read"
             )
-        return
+        return None
+    prior_draft = dossier.get("prior_draft")
     prior_reference = prior_draft.get("reference") if isinstance(prior_draft, dict) else None
     if not _is_ref_shaped(prior_reference):
         raise SchemaRefusal(
-            f"act {act_id} claims primed-with-prior but carries no prior-draft reference"
+            f"{subject} claims primed-with-prior but carries no prior-draft reference"
         )
     if prior_reference not in reading.get("inputs", []):
         raise SchemaRefusal(
-            f"act {act_id} carries a prior-draft reference that is not a digest-checked "
+            f"{subject} carries a prior-draft reference that is not a digest-checked "
             "direct input of the reading"
         )
+    return prior_draft
+
+
+def _verify_prior_draft(context, reading: dict, payload: dict, dossier: dict, act_id: str) -> None:
+    """A fed reading's cited draft must be its own attempt's lectio-prior, text for text."""
+    prior_draft = _prior_draft_of(reading, payload, dossier, f"act {act_id}")
+    if prior_draft is None:
+        return
+    prior_reference = prior_draft["reference"]
     prior_record = context.tree.read_artifact_reference(
         prior_reference,
         stage=PERLECTOR,
@@ -1309,8 +1323,8 @@ def establish_logical_record(
             "logical establishment's read Perlectio has no string text payload; the "
             "Archetypus is refused because absence or a malformed result is not a reading"
         )
-    # The joint pass also establishes from witnesses whether or not it saw the
-    # retained draft; the instrument arms never establish text.
+    # The joint pass establishes from witnesses whether or not it saw a Pass-A draft;
+    # the instrument arms never establish text.
     if payload.get("lectio_kind") not in ("primed-with-prior", "primed-draft-withheld"):
         raise SchemaRefusal(
             f"logical establishment's Perlectio names lectio_kind "
@@ -1318,6 +1332,10 @@ def establish_logical_record(
             "pass may establish, and an instrument arm is evidence, never text"
         )
     validate_establishing_view(payload, payload.get("dossier"), "logical establishment's Perlectio")
+    if isinstance(payload.get("dossier"), dict):
+        _prior_draft_of(
+            accepted_perlectio, payload, payload["dossier"], "logical establishment's Perlectio"
+        )
     if payload.get("primed") not in (None, True):
         raise SchemaRefusal(
             "logical establishment's Perlectio carries an explicitly non-primed flag, "

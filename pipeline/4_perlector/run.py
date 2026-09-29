@@ -2451,12 +2451,14 @@ def _validate_lectio_kind(payload: dict, reading_dossier: dict) -> None:
                 "a Perlectio claims primed-without-prior but carries prior-draft data"
             )
     elif lectio_kind is not None:
-        # `None` is the kinds whose field sets exclude the key. Any other value would
-        # publish its prior-draft evidence uninspected.
+        # Any other value would publish its prior-draft evidence uninspected.
         raise SchemaRefusal(
             f"a Perlector reading names unknown lectio kind {lectio_kind!r}; a kind this "
             "validator cannot name would publish its prior-draft evidence unchecked"
         )
+    elif "prior_draft" in reading_dossier or "prior_draft_view" in reading_dossier:
+        # Lectio nuda and lectio-prior are unprimed and see no prior-draft data.
+        raise SchemaRefusal("an unprimed Perlector reading carries prior-draft data")
 
 
 def _validate_dossier_testimonia(
@@ -3393,9 +3395,7 @@ def _established_row(
     primed_dossier = _reseal_dossier(establishing["dossier"])
     result = establishing["result"]
     prior = primed_dossier.get("prior_draft")
-    # The prompt is reproduced from the retained dossier. In the withheld arm
-    # `combined.py` removed the prior text before the call; the prompt builder
-    # ignores a withheld prior, so both copies render the same bytes.
+    # The prompt is reproduced from the dossier the reader was handed.
     prompt = prompts.prompt_evidence(
         attempt.chair, primed_dossier, attempt.protocol_config, attempt.protocol_sha256
     )

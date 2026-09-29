@@ -225,6 +225,16 @@ def test_withheld_claim_carrying_a_prior_reference_cannot_establish(tmp_path):
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "claims primed-draft-withheld but carries a prior-draft reference" in result.stderr
+    assert "must be re-read" in result.stderr
+
+
+def test_a_withheld_claim_carrying_an_empty_prior_key_cannot_establish(tmp_path):
+    """Key presence decides, as in the producer, not the value under it."""
+    result = _archetypus_after(
+        tmp_path, _reseal_dossier(lambda dossier: dossier.update(prior_draft=None))
+    )
+    assert result.returncode == 2, result.stderr
+    assert "carries a prior-draft reference" in result.stderr
 
 
 def test_a_withheld_run_establishes_with_no_lectio_prior_on_disk(tmp_path):
