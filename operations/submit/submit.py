@@ -43,6 +43,7 @@ from common.contracts.canonical import (  # noqa: E402
     verify_self_hash,
 )
 from common.contracts.errors import ContractError  # noqa: E402
+from common.image_sniff import sniff  # noqa: E402
 from operations.submit import gate, inventory  # noqa: E402
 
 DESCRIPTION = "The submit door: a local folder in, a checksummed and sealed manifest out."
@@ -55,6 +56,7 @@ REFUSAL_REPORT_SCHEMA: Final = "submission-refusal-report.v0"
 # file's content to do that, so nothing is retained; the digest is still
 # streamed and exact.
 RETAIN_NO_BYTES: Final = 0
+_OS_CLUTTER_NAMES: Final = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 
 # Every field `log()` may carry. The immutable records carry filename linkage;
 # terminal presentation carries only counts, digests, and report locations. Image
@@ -112,14 +114,28 @@ def log(event: str, **fields: Any) -> None:
     print(f"{event}: {rendered}" if rendered else event)
 
 
-def walk_folder(source: Path) -> list[dict[str, Any]]:
-    """Every regular file under `source`, sorted, hashed. No format sniffing.
+def _is_os_clutter(relative_path: str) -> bool:
+    """Files an operating system adds beside pages; never a page, never recorded."""
+    name = relative_path.rsplit("/", 1)[-1]
+    return name in _OS_CLUTTER_NAMES or name.startswith("._")
 
-    Not one byte of content is retained. This tool writes a manifest of paths,
+
+def walk_folder(source: Path) -> list[dict[str, Any]]:
+    """Every page file under `source`, sorted, hashed; OS clutter is skipped and any other
+    non-image file refuses the seal. Admission by signature only, as the pod does.
+
+    Only each file's opening bytes are read, for the signature; none is kept. This tool writes a manifest of paths,
     digests and sizes, and never looks at what a file holds — so `max_bytes=0` is
     the honest request. The digest is streamed and exact whatever the file's size.
     """
-    sources = inventory.read_submission(source, max_bytes=RETAIN_NO_BYTES)
+    found = inventory.read_submission(source, max_bytes=RETAIN_NO_BYTES)
+    sources = [item for item in found if not _is_os_clutter(item.relative_path)]
+    strays = [item.relative_path for item in sources if sniff(item.head) is None]
+    if strays:
+        raise SubmitRefusal(
+            "the submitted folder holds files that are not page images; nothing was sealed. "
+            "Move these out of the folder, or remove them, then seal again: " + ", ".join(strays)
+        )
     if not sources:
         raise SubmitRefusal(
             "the submitted folder contains no files to submit; an empty folder is a loud "

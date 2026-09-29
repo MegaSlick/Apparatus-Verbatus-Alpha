@@ -656,3 +656,34 @@ def test_a_submitted_name_that_is_not_valid_utf8_is_a_named_refusal(submission):
         )
     ]
     assert raw_name.hex() not in result.stderr
+
+
+def _paths(folder):
+    return [row["relative_path"] for row in submit.walk_folder(folder)]
+
+
+def test_os_clutter_is_skipped_and_never_recorded(tmp_path):
+    (tmp_path / "page-1.png").write_bytes(b"\x89PNG\r\n\x1a\nfirst")
+    for name in (".DS_Store", "._page-1.png", "Thumbs.db", "desktop.ini"):
+        (tmp_path / name).write_bytes(b"clutter")
+
+    assert _paths(tmp_path) == ["page-1.png"]
+
+
+def test_a_page_in_an_unexpected_admitted_format_still_seals(tmp_path):
+    (tmp_path / "scan.dat").write_bytes(b"II*\x00tiff-shaped bytes")
+    (tmp_path / "leaf.bin").write_bytes(b"%PDF-1.7 a scan")
+
+    assert _paths(tmp_path) == ["leaf.bin", "scan.dat"]
+
+
+@pytest.mark.parametrize("name", ["notes.txt", "scan.pdf"])
+def test_a_stray_non_image_refuses_the_seal_and_is_named(tmp_path, name):
+    (tmp_path / "page-1.png").write_bytes(b"\x89PNG\r\n\x1a\nfirst")
+    (tmp_path / name).write_bytes(b"just some words, no image signature")
+
+    with pytest.raises(submit.SubmitRefusal, match="then seal again") as refusal:
+        submit.walk_folder(tmp_path)
+
+    assert name in str(refusal.value)
+    assert "page-1.png" not in str(refusal.value)
