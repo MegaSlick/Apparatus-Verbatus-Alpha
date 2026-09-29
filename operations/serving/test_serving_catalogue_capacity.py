@@ -443,7 +443,8 @@ def test_a_legible_render_stays_inside_the_rows_pixel_bound():
     for page in (LETTER, A4_300DPI):
         width, height = fit._rendered(page, sealed["page_context"]["maximum_edge"])
         assert width * height <= row.max_pixels
-=======
+
+
 # --- vendor-fidelity pins for the shipped rows -----------------------------------
 
 
@@ -489,4 +490,3 @@ def test_perlector_min_pixels_is_the_vendors_shortest_edge_and_no_row_trusts_rem
     assert [row.min_pixels for row in perlector] == [65_536]
     tiny = request_fits(perlector[0], [(40, 40)], 100, 100)["images"][0]
     assert tiny["resized_width"] * tiny["resized_height"] >= 65_536
->>>>>>> work/model-fidelity

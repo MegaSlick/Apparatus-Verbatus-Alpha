@@ -2228,12 +2228,25 @@ def batching_chained_run(tmp_path_factory) -> tuple[Path, Path]:
 class _ContentEndpoint(FakeEndpoint):
     """Answers each reading by its content, never by arrival order, and counts overlap.
 
-    Every reading is held briefly so calls sent together are in flight together. A
-    request carrying `fail_marker` gets a transport failure, whenever it arrives.
+    With `overlap` (readings) or `reproof_overlap` (re-proofs) above one, each such call
+    blocks until that many are in flight together, and the test fails loudly if they
+    never are. Otherwise a call is held briefly. A request carrying `fail_marker` gets a
+    transport failure, whenever it arrives.
     """
 
-    def __init__(self, *, fail_marker: str | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        *,
+        fail_marker: str | None = None,
+        overlap: int = 1,
+        reproof_overlap: int = 1,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
+        self._readings_meet = threading.Barrier(overlap, timeout=10) if overlap > 1 else None
+        self._reproofs_meet = (
+            threading.Barrier(reproof_overlap, timeout=10) if reproof_overlap > 1 else None
+        )
         self._lock = threading.Lock()
         self._fail_marker = fail_marker
         self._in_flight = 0
@@ -2255,7 +2268,11 @@ class _ContentEndpoint(FakeEndpoint):
                 self.most_reproofs_in_flight, self._reproofs_in_flight
             )
         try:
-            time.sleep(0.3)
+            meet = self._readings_meet if reproof is None else self._reproofs_meet
+            if meet is None:
+                time.sleep(0.3)
+            else:
+                meet.wait()  # BrokenBarrierError: the calls never overlapped
             if self._fail_marker is not None and self._fail_marker.encode() in body:
                 raise EndpointUnavailable("simulated transport failure for one act")
             content = reproof if reproof is not None else READING
@@ -2277,6 +2294,8 @@ def _run_batching(
     monkeypatch,
     *extra_args: str,
     fail_marker: str | None = None,
+    overlap: int = 1,
+    reproof_overlap: int = 1,
     resume: bool = False,
     endpoint: _ContentEndpoint | None = None,
     started: datetime = datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -2294,7 +2313,10 @@ def _run_batching(
     if not resume:
         shutil.copytree(source, root)
     endpoint = endpoint or _ContentEndpoint(
-        served_model_id=SERVED_MODEL_ID, fail_marker=fail_marker
+        served_model_id=SERVED_MODEL_ID,
+        fail_marker=fail_marker,
+        overlap=overlap,
+        reproof_overlap=reproof_overlap,
     )
     factory = _serving_factory(
         endpoint,
@@ -2390,7 +2412,14 @@ def test_concurrent_calls_publish_exactly_the_bytes_a_serial_pass_publishes(
     )
     serial_writes, writes[:] = writes[:], []
     batched_root, batched = _run_batching(
-        batching_chained_run, tmp_path, "batched", monkeypatch, "--perlector-concurrency", "5"
+        batching_chained_run,
+        tmp_path,
+        "batched",
+        monkeypatch,
+        "--perlector-concurrency",
+        "5",
+        overlap=BATCH,
+        reproof_overlap=BATCH,
     )
 
     assert serial.most_in_flight == 1
@@ -2428,7 +2457,7 @@ def test_one_failed_call_in_a_batch_fails_only_its_own_act(
         fail_marker=marker,
     )
     batched_root, batched = _run_batching(
-        batching_chained_run, tmp_path, "batched", monkeypatch, fail_marker=marker
+        batching_chained_run, tmp_path, "batched", monkeypatch, fail_marker=marker, overlap=BATCH
     )
 
     assert batched.most_in_flight == BATCH
