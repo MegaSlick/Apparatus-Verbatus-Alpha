@@ -94,6 +94,9 @@ class PreflightedActions(FakeActions):
                         "perlector",
                     )
                 ],
+                # The record detector runs in-process: a verified cache, no smoke read.
+                "placements": [{"chair": "secondary_proposer", "state": "in-process"}],
+                "cache_receipts": [{"chair": "secondary_proposer"}],
             },
         )
 

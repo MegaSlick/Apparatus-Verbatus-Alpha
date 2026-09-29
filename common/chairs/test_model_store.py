@@ -94,7 +94,7 @@ def _store(tmp_path):
     return record
 
 
-def test_host_download_record_fixture_derives_six_chair_inventory_and_verifies_bytes(tmp_path):
+def test_host_download_record_fixture_derives_seven_chair_inventory_and_verifies_bytes(tmp_path):
     record = _store(tmp_path)
 
     inventory = verify_store(tmp_path)
@@ -104,7 +104,7 @@ def test_host_download_record_fixture_derives_six_chair_inventory_and_verifies_b
         item.chair for item in REQUIRED_ARTIFACTS
     ]
     assert inventory["refusals"] == [SURYA_OCR_2_REFUSAL]
-    assert len({row["artifact"] for row in inventory["artifacts"]}) == 5
+    assert len({row["artifact"] for row in inventory["artifacts"]}) == 6
 
 
 def test_derived_inventory_cannot_restate_divergent_store_facts(tmp_path):
@@ -650,7 +650,7 @@ def test_validate_record_refuses_a_four_artifact_record(tmp_path):
     record = _store(tmp_path)
     record["artifacts"] = record["artifacts"][:4]
 
-    with pytest.raises(DigestMismatchRefusal, match="exactly 5 unique roster"):
+    with pytest.raises(DigestMismatchRefusal, match="exactly 6 unique roster"):
         derived_inventory(record)
 
 
@@ -715,11 +715,11 @@ def test_a_store_whose_surya_bundle_has_not_landed_verifies_and_says_so(tmp_path
     assert inventory["complete"] is False
     assert inventory["pending"] == ["surya2-detection"]
     rows = {row["chair"]: row for row in inventory["artifacts"]}
-    assert len(rows) == 6
+    assert len(rows) == 7
     assert rows["proposer_surya2"]["state"] == "pending-fetch"
     assert rows["proposer_surya2"]["reason"] == "s3 bundle not yet fetched by the host"
     assert "snapshot" not in rows["proposer_surya2"]
-    # The four artifacts that did land are verified exactly as before.
+    # The artifacts that did land are verified exactly as before.
     assert all(rows[chair]["state"] == "present" for chair in rows if chair != "proposer_surya2")
     assert inventory == derived_inventory(record)
 

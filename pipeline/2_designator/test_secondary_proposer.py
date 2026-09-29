@@ -128,13 +128,14 @@ DECLARED_DETECTIONS = (
 )
 
 
-def _configured(tmp_path: Path, detections=DECLARED_DETECTIONS) -> list[str]:
+def _configured(tmp_path: Path) -> list[str]:
     """Stage flags for a run whose `secondary_proposer` is a fixture detector.
 
     A copy of the shipped roster with the chair configured (reusing the
-    structure chair's fixture snapshot as its stand-in identity), the shipped
-    catalogue with the chair's fixture rows added, and the proof fixture with
-    `detections` declared as the boxes it finds.
+    structure chair's fixture snapshot as its stand-in identity) and the
+    shipped catalogue with the chair's fixture rows added. The fixture detector
+    answers with the fixture's `[[detector_record]]` rows; the shipped fixture
+    declares none, so a test that needs records declares them on the context.
     """
     config_root = tmp_path / "chair-config"
     shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
@@ -158,27 +159,11 @@ def _configured(tmp_path: Path, detections=DECLARED_DETECTIONS) -> list[str]:
         ),
         encoding="utf-8",
     )
-    fixture_root = tmp_path / "fixture-root"
-    shutil.copytree(
-        ROOT / "proof", fixture_root, ignore=shutil.ignore_patterns("*.py", "__pycache__")
-    )
-    declaration = fixture_root / "skeleton_fixture.toml"
-    declaration.write_text(
-        declaration.read_text(encoding="utf-8")
-        + "".join(
-            f"\n[[detector_record]]\npage_ordinal = {row['page_ordinal']}\n"
-            f"corners = {row['corners']}\nscore_bp = {row['score_bp']}\n"
-            for row in detections
-        ),
-        encoding="utf-8",
-    )
     return [
         "--models-config",
         str(models),
         "--serving-recipes-config",
         str(catalogue),
-        "--fixture-root",
-        str(fixture_root),
     ]
 
 
@@ -243,7 +228,13 @@ def test_declared_detections_become_page_evidence_that_decides_nothing(tmp_path)
     """Every record is kept with its oriented box, hull, score, class and act
     overlaps; none holds, rescues or enters an act; a collapsed box is kept uncut.
     """
-    designator, context = _populated_context(tmp_path, _configured(tmp_path))
+    designator = load_stage("2_designator")
+    context = _prepared_context(
+        designator, tmp_path / "runs", _configured(tmp_path), "detector records test"
+    )
+    context.fixture["detector_record"] = [dict(row) for row in DECLARED_DETECTIONS]
+    assert designator.initial_pass(context) is False
+    context.finish()
     pages = _records(context, designator, "detector-page")
     by_page = {record["payload"]["page_ordinal"]: record["payload"] for record in pages}
     assert {ordinal: page["detection_count"] for ordinal, page in by_page.items()} == {1: 3, 2: 0}
@@ -700,15 +691,11 @@ def test_configuring_the_detector_changes_no_authoritative_outcome(tmp_path):
 
     assert seal_outcomes(absent_tree) == seal_outcomes(configured_tree)
 
-    # This fixture has no stray ink, so no rescue crop is cut either way; only
-    # the detector's own page evidence is added.
+    # This fixture has no stray ink, so no rescue crop is cut either way, and it
+    # declares no detections, so the detector adds only its per-page census.
     absent_kinds = {entry["kind"] for entry in absent_tree.build_manifest(DESIGNATOR)["artifacts"]}
     configured_kinds = {
         entry["kind"] for entry in configured_tree.build_manifest(DESIGNATOR)["artifacts"]
     }
-    assert configured_kinds - absent_kinds == {
-        "detector-page",
-        "detector-record",
-        "detector-region",
-    }
+    assert configured_kinds - absent_kinds == {"detector-page"}
     assert absent_kinds <= configured_kinds

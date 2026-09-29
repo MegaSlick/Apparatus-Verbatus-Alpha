@@ -465,6 +465,18 @@ class RunPlan:
         return roles
 
 
+def _receipt_chairs(receipt: object, field: str, *, state: str | None = None) -> set[str]:
+    """The chairs one PREFLIGHT receipt list names, optionally in one placement state."""
+    rows = receipt.get(field) if isinstance(receipt, dict) else None
+    if not isinstance(rows, list):
+        return set()
+    return {
+        row.get("chair")
+        for row in rows
+        if isinstance(row, dict) and (state is None or row.get("state") == state)
+    }
+
+
 def _named(value: Path | None, flag: str) -> Path:
     if value is None:
         raise RunRefusal(f"the bootstrap plan names no {flag}; a run cannot proceed without it")
@@ -1221,7 +1233,12 @@ def main(
             if isinstance(smokes, list)
             else set()
         )
-        missing = plan.required_chairs(configured_only=True) - smoked
+        required = plan.required_chairs(configured_only=True)
+        # A chair its own stage runs in-process has no engine to smoke-read; its
+        # verified cache is what PREFLIGHT can show for it.
+        in_process = required & _receipt_chairs(receipt, "placements", state="in-process")
+        cached = _receipt_chairs(receipt, "cache_receipts")
+        missing = (required - in_process - smoked) | (in_process - cached)
         if missing:
             raise RunRefusal(
                 f"selection needs a chair without a green PREFLIGHT smoke receipt: {sorted(missing)}"
