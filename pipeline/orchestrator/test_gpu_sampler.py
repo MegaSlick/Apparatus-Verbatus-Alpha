@@ -5,7 +5,11 @@ import threading
 import time
 from types import SimpleNamespace
 
-from pipeline.orchestrator.run import GPU_QUERY, GpuSampler
+from conftest import load_stage
+
+orchestrator = load_stage("orchestrator")
+GPU_QUERY = orchestrator.GPU_QUERY
+GpuSampler = orchestrator.GpuSampler
 
 
 def _runner(outputs):
@@ -104,7 +108,7 @@ def test_a_failed_read_among_good_ones_is_counted_and_its_first_reason_kept():
 
 
 def test_the_cap_keeps_the_last_samples_but_the_statistics_cover_every_read(monkeypatch):
-    monkeypatch.setattr("pipeline.orchestrator.run.GPU_SAMPLES_KEPT", 2)
+    monkeypatch.setattr(orchestrator, "GPU_SAMPLES_KEPT", 2)
     run, calls = _runner([_ok("10, 1\n"), _ok("100, 1\n"), _ok("30, 1\n")])
     # Drive reads by hand so the totals are exact.
     sampler = GpuSampler(run=run, interval=60)

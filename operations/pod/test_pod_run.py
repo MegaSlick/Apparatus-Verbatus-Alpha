@@ -2362,6 +2362,7 @@ def test_timing_writer_does_not_follow_a_symlink(
         finished_at="finish",
         duration_ms=1,
         exit_code=0,
+        gpu_utilization=(None, "test"),
     )
 
     assert evidence.read_bytes() == b"bootstrap evidence\n"
