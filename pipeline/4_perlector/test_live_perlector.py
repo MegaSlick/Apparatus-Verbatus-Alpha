@@ -2198,6 +2198,7 @@ def _run_batching(
     *extra_args: str,
     fail_marker: str | None = None,
     resume: bool = False,
+    endpoint: _ContentEndpoint | None = None,
 ) -> tuple[Path, _ContentEndpoint]:
     """Run the stage on a fresh copy of `template` named `name`.
 
@@ -2210,7 +2211,9 @@ def _run_batching(
     root = tmp_path / name / "runs"
     if not resume:
         shutil.copytree(source, root)
-    endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID, fail_marker=fail_marker)
+    endpoint = endpoint or _ContentEndpoint(
+        served_model_id=SERVED_MODEL_ID, fail_marker=fail_marker
+    )
     factory = _serving_factory(
         endpoint,
         catalogue,
@@ -2249,6 +2252,46 @@ def _stage_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+def _without_width(root: Path) -> dict[str, Any]:
+    """The Perlector's inventory with its window width taken out.
+
+    The width is the one fact a batched pass records differently: each `reader-sent`
+    record carries it, and every later record of the act binds that record by digest.
+    Everything else must be identical: the blobs, and every record apart from the
+    digests that bind it to those records. The seal and manifest only digest the rest.
+    """
+
+    def digests_out(value: Any) -> Any:
+        if isinstance(value, list):
+            return [digests_out(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        return {
+            key: digests_out(item)
+            for key, item in value.items()
+            if key not in {"self_hash", "finding_digest", "request_digest"}
+            and not (key == "sha256" and "relative_path" in value)
+        }
+
+    view: dict[str, Any] = {}
+    for path, data in _stage_bytes(root).items():
+        if path.startswith("blobs/"):
+            view[path] = data
+        elif path.startswith("artifacts/") and "/stage-seal/" not in path:
+            record = json.loads(data)
+            if record["kind"] == perlector.SENT_KIND:
+                del record["payload"]["concurrency"]
+            view[path] = digests_out(record)
+    return view
+
+
+def _widths(root: Path) -> set[int]:
+    return {
+        json.loads(path.read_text(encoding="utf-8"))["payload"]["concurrency"]
+        for path in _artifacts(root, perlector.SENT_KIND)
+    }
+
+
 def test_concurrent_calls_publish_exactly_the_bytes_a_serial_pass_publishes(
     batching_chained_run, tmp_path, monkeypatch
 ):
@@ -2271,15 +2314,20 @@ def test_concurrent_calls_publish_exactly_the_bytes_a_serial_pass_publishes(
     assert serial.most_in_flight == 1
     # Asked for more than the row's bound, the pass is capped at it, and reaches it.
     assert batched.most_in_flight == BATCH
-    # Every record is written in the order the serial pass wrote it.
-    assert writes == serial_writes
+    # Every record is written in the order the serial pass wrote it; a send is recorded
+    # as its call leaves, which in a batch is before the earlier act's record.
+    assert [write for write in writes if write[0] != perlector.SENT_KIND] == [
+        write for write in serial_writes if write[0] != perlector.SENT_KIND
+    ]
     # Both acts were due a re-proof, and those were batched too.
     assert batched.most_reproofs_in_flight == BATCH
     # Each act's request carries only sealed inputs, never another act's reading, so
     # every request is byte-identical whichever act was in flight beside it.
     assert sorted(batched.bodies) == sorted(serial.bodies)
     assert (batched_root / "r" / "4_perlector" / "manifest.json").exists()
-    assert _stage_bytes(batched_root) == _stage_bytes(serial_root)
+    assert _without_width(batched_root) == _without_width(serial_root)
+    # The width each call was sent under is on the record.
+    assert (_widths(serial_root), _widths(batched_root)) == ({1}, {BATCH})
 
 
 def test_one_failed_call_in_a_batch_fails_only_its_own_act(
@@ -2303,7 +2351,7 @@ def test_one_failed_call_in_a_batch_fails_only_its_own_act(
     assert batched.most_in_flight == BATCH
     outcomes = sorted(record["outcome"] for record in _perlectiones(batched_root).values())
     assert len(outcomes) == 2 and outcomes.count("failed") == 1, outcomes
-    assert _stage_bytes(batched_root) == _stage_bytes(serial_root)
+    assert _without_width(batched_root) == _without_width(serial_root)
 
 
 def test_a_refusal_mid_batch_still_publishes_every_act_already_sent(
@@ -2445,3 +2493,203 @@ def test_a_refused_job_source_still_finishes_every_job_already_sent():
     with pytest.raises(ContractError, match="third"):
         perlector._in_order_window(3, jobs())
     assert finished == [0, 1]
+
+
+# --- resume never asks again about a reply it has on record -------------------
+
+ACT_ONE, ACT_TWO = b"SYNTHETIC ACT ONE", b"SYNTHETIC ACT TWO"
+
+
+def _main_pass_bodies(endpoint: _ContentEndpoint, act: bytes) -> list[bytes]:
+    """The reading requests about one act, leaving out its Pass-C re-proof."""
+    return [
+        body
+        for body in endpoint.bodies
+        if act in body and _unchanged_reproof_response(body) is None
+    ]
+
+
+def _stop_after_the_first_semi_final(monkeypatch, *, wait: float = 0.0) -> None:
+    """Interrupt the pass the moment act one's main-pass result is on record.
+
+    `wait` lets a call already in flight answer first, as it would when an operator's
+    Ctrl-C lands a moment after the engine replied.
+    """
+    real_publish = StageContext.publish
+    struck = False
+
+    def publish_then_interrupt(self, **kwargs):
+        nonlocal struck
+        result = real_publish(self, **kwargs)
+        if kwargs["kind"] == perlector.SEMI_FINAL_KIND and not struck:
+            struck = True
+            time.sleep(wait)
+            raise KeyboardInterrupt
+        return result
+
+    monkeypatch.setattr(StageContext, "publish", publish_then_interrupt)
+
+
+def _stop_before_the_second_act(monkeypatch) -> None:
+    """The reading deadline refuses the second act, after the first was sent."""
+    refuse = perlector._refuse_past_deadline
+    checks = 0
+
+    def refuse_the_second_act(deadline, seconds_needed, what):
+        nonlocal checks
+        if what.startswith("reading the"):
+            checks += 1
+            if checks == 2:
+                raise ContractError("simulated deadline")
+        refuse(deadline, seconds_needed, what)
+
+    monkeypatch.setattr(perlector, "_refuse_past_deadline", refuse_the_second_act)
+
+
+def _join_reader_threads() -> None:
+    """Wait for any reader call an interrupt left running to come back and be retained."""
+    for thread in threading.enumerate():
+        if thread.name.startswith("ThreadPoolExecutor"):
+            thread.join()
+
+
+@pytest.mark.parametrize("stop", ["interrupt", "deadline"])
+@pytest.mark.parametrize("width", ["1", "2"])
+def test_a_resume_adopts_every_main_pass_reply_on_record_and_asks_nothing_again(
+    batching_chained_run, tmp_path, monkeypatch, width, stop
+):
+    """Stopped after act one's main-pass reply, the resumed tree is the uninterrupted one.
+
+    Act one is never asked again: its reading is adopted from its `semi-final`, and only
+    its re-proof, which no earlier session sent, goes to the chair. At width two act
+    two's reply arrives before the interrupt is handled and is recorded too.
+    """
+    concurrency = ("--perlector-concurrency", width)
+    whole_root, _whole = _run_batching(
+        batching_chained_run, tmp_path, "whole", monkeypatch, *concurrency
+    )
+
+    with monkeypatch.context() as patch:
+        if stop == "interrupt":
+            _stop_after_the_first_semi_final(patch, wait=0.6 if width == "2" else 0.0)
+            expected = KeyboardInterrupt
+        else:
+            _stop_before_the_second_act(patch)
+            expected = ContractError
+        with pytest.raises(expected):
+            _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, *concurrency)
+    _join_reader_threads()
+    root = tmp_path / "run" / "runs"
+    assert _perlectiones(root) == {}
+    adopted = len(_artifacts(root, perlector.SEMI_FINAL_KIND))
+    assert adopted == (2 if (stop, width) == ("interrupt", "2") else 1)
+
+    _root, resumed = _run_batching(
+        batching_chained_run, tmp_path, "run", monkeypatch, *concurrency, resume=True
+    )
+    assert _main_pass_bodies(resumed, ACT_ONE) == []
+    assert len(_main_pass_bodies(resumed, ACT_TWO)) == 2 - adopted
+    assert _stage_bytes(root) == _stage_bytes(whole_root)
+
+
+class _HeldEndpoint(_ContentEndpoint):
+    """Holds act two's first reading until released, then answers or drops it."""
+
+    def __init__(self, *, answer: bool, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.release = threading.Event()
+        self._answer = answer
+        self._held = False
+
+    def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
+        if body is not None and ACT_TWO in body and not self._held:
+            self._held = True
+            self.release.wait(10)
+            if not self._answer:
+                raise EndpointUnavailable("the connection dropped with the call in flight")
+        return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
+
+
+def _interrupt_with_act_two_in_flight(
+    batching_chained_run, tmp_path, monkeypatch, *, answer: bool
+) -> Path:
+    endpoint = _HeldEndpoint(answer=answer, served_model_id=SERVED_MODEL_ID)
+    with monkeypatch.context() as patch:
+        _stop_after_the_first_semi_final(patch)
+        with pytest.raises(KeyboardInterrupt):
+            _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, endpoint=endpoint)
+    endpoint.release.set()
+    _join_reader_threads()
+    return tmp_path / "run" / "runs"
+
+
+def _sends(root: Path, act_id: str) -> list[dict[str, Any]]:
+    records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in _artifacts(root, perlector.SENT_KIND)
+    ]
+    return sorted(
+        (record for record in records if record["subject_id"] == act_id),
+        key=lambda record: (record["payload"]["pass"], record["payload"]["send"]),
+    )
+
+
+def test_a_call_interrupted_in_flight_is_sent_again_and_the_second_send_names_the_first(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    root = _interrupt_with_act_two_in_flight(
+        batching_chained_run, tmp_path, monkeypatch, answer=False
+    )
+    before = _stage_bytes(root)
+
+    _root, resumed = _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, resume=True)
+    assert _main_pass_bodies(resumed, ACT_ONE) == []
+    assert len(_main_pass_bodies(resumed, ACT_TWO)) == 1
+    # Nothing the interrupted session wrote was rewritten.
+    after = _stage_bytes(root)
+    assert all(after[path] == data for path, data in before.items() if "manifest" not in path)
+    readings = _perlectiones(root)
+    assert sorted(record["outcome"] for record in readings.values()) == ["read", "read"]
+    act_two = next(
+        act_id for act_id, record in readings.items() if record["payload"]["act_key"] == "a2"
+    )
+    reading_sends = [
+        record for record in _sends(root, act_two) if record["payload"]["pass"] == "reading"
+    ]
+    assert [record["payload"]["send"] for record in reading_sends] == [1, 2]
+
+    def names(record: dict[str, Any], named: dict[str, Any]) -> bool:
+        return any(
+            reference["relative_path"].endswith(f"/{named['artifact_id']}.json")
+            for reference in record["inputs"]
+        )
+
+    # The second send names the first, and the act's semi-final names both.
+    assert names(reading_sends[1], reading_sends[0])
+    semi_final = next(
+        record
+        for record in (
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in _artifacts(root, perlector.SEMI_FINAL_KIND)
+        )
+        if record["subject_id"] == act_two
+    )
+    assert all(names(semi_final, send) for send in reading_sends)
+
+
+def test_a_reply_retained_but_named_by_no_record_refuses_the_resume(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    """The reply came back after the pass had stopped recording: asking again would
+    read the act twice, so the pass refuses before its chair starts."""
+    root = _interrupt_with_act_two_in_flight(
+        batching_chained_run, tmp_path, monkeypatch, answer=True
+    )
+    before = _stage_bytes(root)
+    endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID)
+    with pytest.raises(ContractError, match="no record names"):
+        _run_batching(
+            batching_chained_run, tmp_path, "run", monkeypatch, resume=True, endpoint=endpoint
+        )
+    assert endpoint.bodies == []
+    assert _stage_bytes(root) == before

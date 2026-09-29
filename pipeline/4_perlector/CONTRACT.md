@@ -905,17 +905,66 @@ reuses them (`_next_attempt`'s docstring); a live chair cannot promise that, and
 store refuses the collision. Skipped acts are counted apart from `read`, because this
 invocation did not read them.
 
-**Live resume is all-or-nothing per act.** An attempt publishes up to five artifacts
-before its Perlectio (`lectio-prior`, `lectio-nuda`, `primed-without-prior`,
-`audit-draft`, `audit-finding`). Finishing such an act in a second serving session would
-pair two engines' answers in one reading, so before any chair starts
-`_acts_left_to_read` refuses the pass if any act holds those artifacts without a
-Perlectio. The interrupted attempt's artifacts stay as its evidence; those pages are read
-in a new run. A per-act failure the pass can name (`_ACT_LOCAL_READING_FAILURES`)
-publishes a failed Perlectio and is not half-read; that includes a request the
-capacity check refuses before sending (`request-capacity`), which could otherwise
-strand an act whose Pass A fitted and whose Pass B did not. Pinned by
-`test_live_perlector.py::test_a_live_pass_refuses_to_resume_an_act_it_left_half_read`.
+**Live resume never asks again about a reply it received.** A live pass keeps two
+records that exist for resume, beside everything else it publishes:
+
+```text
+kind="reader-sent"  {schema: "perlector-reader-sent.v1", act_key, attempt_ordinal,
+                     pass, send, receipt_ref, concurrency, image_sha256s}
+kind="semi-final"   the act's Pass-B payload: the Perlectio field set without `audit`
+```
+
+A `reader-sent` record is published on the main thread before an act's calls leave:
+`pass` is `reading` for the main pass (Pass A, the sampled arms and Pass B, sent as one
+job) and `audit-reproof` for its re-proof. `send` numbers the sends of one pass of one
+attempt from 1, and a later send binds the earlier ones as inputs, so a call re-sent
+after an interruption is on the record, never silent. `receipt_ref` names the serving
+session that sent it (also bound as an input), `concurrency` the width of the window it
+was sent in (below), and `image_sha256s` the images every call about the act carries, in
+the order sent. The outcome is `read`, as on the audit records: the envelope's closed
+vocabulary has no word for a request.
+
+The `semi-final` is published, in act order, as soon as the act's main-pass calls
+return, after its sampled arms, at `perlegere:<ordinal>`, with the outcome Pass B
+resolved. It binds the act's reading inputs and every `reading` send; the audit draft,
+the Perlectio and a re-proof failure then bind the `semi-final` in turn, so every
+reading reaches its sends through its own inputs. A failed Perlectio after it must bind
+it and must be the re-proof's (`common/perlector_failure.py`). Both records are live-only:
+a fixture resume republishes identical bytes, so the fixture tree is unchanged.
+
+Before any chair starts, `_acts_left_to_read` sorts every act that has no Perlectio:
+
+- with a `semi-final` and no audit artifact, it is **adopted**: `_adopted_row` rebuilds
+  its audit row from the record without a call, after re-deriving the record's inputs
+  from the act's current evidence and refusing any difference. Only its re-proof, if
+  due, is sent. An adopted re-proof sent in a later session names that session's
+  receipt on its own call record; the Perlectio's `provenance` stays Pass B's, and a
+  re-proof failure carries the failing session's provenance and binds the `semi-final`
+  that carries Pass B's;
+- with nothing, it is untouched and read;
+- with `reader-sent` records and no reply on record, the call was in flight when the
+  pass stopped. It is sent again, as the next `send`, only if no retained chair call
+  record from those sends' sessions, for those images, carries a response that no
+  record of the act binds. Otherwise the pass refuses: the reply exists, and asking
+  again would read the act twice;
+- with sampled arms but no `semi-final`, or with an audit draft or finding but no
+  Perlectio, a reply was received and only partly recorded; the pass refuses.
+
+A refused act's records stay as that attempt's evidence and its pages are read in a new
+run. The page flags of Pass C are computed over every act's semi-final, as in an
+uninterrupted pass: the semi-finals of acts this pass found sealed are read back from
+their records. A per-act failure the pass can name (`_ACT_LOCAL_READING_FAILURES`)
+publishes a failed Perlectio and is not half-read; that includes a request the capacity
+check refuses before sending (`request-capacity`), and a transport failure such as the
+pod going away. Pinned in `test_live_perlector.py` by
+`test_a_resume_adopts_every_main_pass_reply_on_record_and_asks_nothing_again` (stopped
+by an interrupt or by the deadline, at widths 1 and 2, the resumed tree is byte-identical
+to the uninterrupted one),
+`test_a_call_interrupted_in_flight_is_sent_again_and_the_second_send_names_the_first`,
+`test_a_reply_retained_but_named_by_no_record_refuses_the_resume` and
+`test_a_live_pass_refuses_to_resume_an_act_it_left_half_read`, and downstream by
+`pipeline/test_live_reading_seam_e2e.py::`
+`test_a_pass_stopped_mid_reading_resumes_without_asking_again_and_the_tail_accepts_it`.
 
 **The reading deadline.** `--reading-deadline <UTC ISO time>` makes a live pass refuse to
 start when the chair's `startup_timeout_seconds` plus every call left
@@ -923,8 +972,8 @@ start when the chair's `startup_timeout_seconds` plus every call left
 + the audit round cap + one per instrument arm enabled for the run, at
 `PLANNED_SECONDS_PER_CALL`) would run past it. It also refuses to begin
 another act, or another re-proof, when the calls left would. It stops between calls,
-never inside one; the acts it has read stay half-read, so the run ends there with every
-artifact retained (see the resume rule above). Pinned by
+never inside one; every act already sent is finished and its `semi-final` published, so
+a resumed pass adopts them (see above). Pinned by
 `::test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_starts`.
 
 **Concurrent calls.** A live pass keeps up to `--perlector-concurrency` acts unfinished
@@ -936,11 +985,20 @@ records, arms, audit drafts, findings and Perlectiones alike. Only the calls ove
 no act's request carries another act's reading. A failed call is that act's failed
 Perlectio alone. If preparing an act, a call or a publication raises, every act already
 sent is still finished in order before the error stops the pass, so no reply is left
-without its record; an interrupt instead stops at once so the chair can be shut down.
-Pass-C re-proofs share the same window. A draft-fed or fixture pass reads one act at a
-time. The deadline is checked before each act is prepared, against the serial estimate,
-which stays conservative for batched calls. A batched reply at temperature 0 can differ
-from an unbatched one in low-order bits; each record holds the reply its call received.
+without its record. An interrupt stops waiting at once so the chair can be shut down; it
+first finishes every act whose reply has already arrived, even behind an earlier call
+still out, since a record's bytes do not depend on the order it was written in. A
+`reader-sent` record is written when its call leaves, so in a batch it precedes an
+earlier act's records. Pass-C re-proofs share the same window. A draft-fed or fixture
+pass reads one act at a time. The deadline is checked before each act is prepared,
+against the serial estimate, which stays conservative for batched calls. A batched reply
+at temperature 0 can differ from an unbatched one in low-order bits; each record holds
+the reply its call received, and each `reader-sent` record carries the width its call
+was sent under as `concurrency`, so two runs' readings can be told apart from the tree
+alone. It is the window's width, the most calls this pass kept in flight; the batch the
+engine actually decoded a call in was at most that. It sits on the send rather than in
+`provenance` because provenance names one serving session while an adopted act's
+re-proof may run in another; each send names its own session and width.
 
 **One live-resume limit remains, named rather than hidden.** Every re-invocation of a live
 pass starts and stops the service, so an `--act` recovery loop pays a full model load per
