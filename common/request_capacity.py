@@ -574,12 +574,24 @@ def perlector_prompt_tokens(text: str) -> tuple[int, str]:
     return PERLECTOR_PROMPT_FLOOR_TOKENS, PROMPT_TOKENS_MEASURED_FLOOR
 
 
-def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str]:
+def _text_bytes(text: str) -> int:
+    return len(unicodedata.normalize("NFC", text).encode("utf-8"))
+
+
+def perlector_prompt_bound(
+    text: str, *, template_digest: str, capped_spans: Sequence[tuple[str, int]] = ()
+) -> tuple[int, str]:
     """``(tokens, basis)`` for one rendered Perlector prompt: the upper bound.
 
     One token per UTF-8 byte of the text (see the note on the constants above)
     plus the chat template's own overhead.  ``template_digest`` is ``prompts.py``'s
     module digest, checked because that overhead was measured over that builder.
+
+    ``capped_spans`` are pieces of ``text`` known to be one model reply generated
+    under a token cap (the prior draft): each is charged ``min(bytes, cap)``.
+    Stored reply text re-encodes to about the tokens it was generated as and to
+    no more than its bytes; the cap is the caller's claim about the run that made
+    the reply, so a draft made under a higher or no cap is passed without one.
     """
 
     if template_digest != PERLECTOR_PROMPT_TEMPLATE_DIGEST:
@@ -592,7 +604,17 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
             "against the token cost of text nobody renders any more. Re-measure the rate and "
             "update common/request_capacity.py"
         )
-    body = len(unicodedata.normalize("NFC", text).encode("utf-8"))
+    rest = text
+    body = 0
+    for span, ceiling in capped_spans:
+        if span not in rest:
+            raise RequestCapacityRefusal(
+                "a capped span was named that is not in the rendered prompt, so its token "
+                "ceiling cannot stand in for bytes that were never counted"
+            )
+        rest = rest.replace(span, "", 1)
+        body += min(_text_bytes(span), _positive(ceiling, "a capped span's ceiling"))
+    body += _text_bytes(rest)
     return PERLECTOR_PROMPT_OVERHEAD_TOKENS + body, PROMPT_TOKENS_MEASURED_BOUND
 
 

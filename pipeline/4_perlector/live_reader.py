@@ -347,8 +347,13 @@ class VLLMReader:
         # Admitted on the measured upper bound, with the measured floor recorded
         # beside it: a request is never let through on a number that says only
         # what it costs *at least*.
+        # A fed prior draft is a reply this reader capped at `max_tokens`, so it
+        # is charged at most that (`perlector_prompt_bound`).
+        prior = dossier["prior_draft"]["text"] if dossier.get("prior_draft_view") == "fed" else ""
         prompt_bound, bound_basis = perlector_prompt_bound(
-            text, template_digest=prompts.BUILDER_SHA256
+            text,
+            template_digest=prompts.BUILDER_SHA256,
+            capped_spans=[(prior, self._max_tokens)] if prior and self._max_tokens else (),
         )
         prompt_floor, floor_basis = perlector_prompt_tokens(text)
         region_sizes = image_sizes(region_images)

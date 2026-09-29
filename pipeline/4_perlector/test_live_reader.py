@@ -1446,3 +1446,35 @@ def test_the_audit_reproof_pass_sends_the_same_base_prompt_plus_its_delivered_in
         posted, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     assert result["request_sha256"] == digest_bytes(posted_bytes)
+
+
+def test_a_looping_fed_prior_draft_is_charged_the_reply_cap_not_its_bytes(tmp_path: Path) -> None:
+    """A capped reader charges a fed prior draft at most its cap; an uncapped one, its bytes."""
+
+    region_image = _image_bytes(b"REGION")
+    page_image = _image_bytes(b"PAGE")
+    bounds = {}
+    for cap in (None, 4096):
+        client, endpoint, _blobs, chair = _built(
+            tmp_path / str(cap), max_pixels=1806336, max_model_len=32768
+        )
+        dossier = _witnessed_dossier(
+            region_image=region_image, page_image=page_image, pass_kind="perlectio"
+        )
+        dossier["prior_draft"]["text"] = "[[?]]\n" * 7243
+        endpoint.script(ScriptedAnswer(content="a reading", finish_reason="stop"))
+        with client:
+            try:
+                _reader(client, chair, max_tokens=cap).read(
+                    dossier,
+                    pass_kind="perlectio",
+                    delivered_pixels=_delivered_pixels(
+                        region_image=region_image, page_image=page_image
+                    ),
+                )
+            except RequestCapacityRefusal as refusal:
+                bounds[cap] = refusal.capacity["prompt_tokens"]
+                continue
+            bounds[cap] = "admitted"
+    assert bounds[None] > 43_000  # uncapped: refused on the loop's bytes
+    assert bounds[4096] == "admitted"  # capped: 4,096 plus the small rest fits the row

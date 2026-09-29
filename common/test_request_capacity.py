@@ -580,6 +580,32 @@ def test_the_bound_never_falls_below_what_the_engine_counted_on_a_looping_draft(
     assert tokens > act["old_bound"]
 
 
+def test_a_capped_reply_is_charged_its_cap_and_a_looping_one_still_never_undercounts():
+    """The hybrid: a fed prior draft generated under a cap costs at most the cap.
+
+    A 44,000-character `[[?]]` loop is 29,127 tokens to the engine when uncapped
+    (the run's own call record).  Under a 4,096-token cap the reply cannot have
+    been longer, so it is charged 4,096; the bound over the request is still at
+    least the tokens the engine counts for the rest (scaffolding is charged at
+    its bytes).  Without a cap the draft is charged its bytes, above the 29,127.
+    """
+
+    digest = PERLECTOR_PROMPT_TEMPLATE_DIGEST
+    loop = "[[?]]\n" * 7243
+    scaffold = "testimonia: abcdefghi " * 100
+    text = scaffold + loop
+    uncapped, _ = perlector_prompt_bound(text, template_digest=digest)
+    capped, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, 4096)])
+    assert uncapped >= 29_127 + 116
+    assert capped == PERLECTOR_PROMPT_OVERHEAD_TOKENS + len(scaffold) + 4096
+    # A ceiling above the bytes never raises the charge, and a span that is not in
+    # the prompt is refused rather than silently ignored.
+    over, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, 10**6)])
+    assert over == uncapped
+    with pytest.raises(RequestCapacityRefusal):
+        perlector_prompt_bound(text, template_digest=digest, capped_spans=[("absent", 5)])
+
+
 def test_the_failing_act_is_now_refused_before_it_is_sent():
     """26,692 admitted, 34,741 counted: with the byte bound the request is over the row."""
 
