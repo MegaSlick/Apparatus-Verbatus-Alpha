@@ -3728,7 +3728,7 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
         context, act_id, ordinal, act_key=act_key
     ):
         # Never asked again: a second live reading would differ and the store refuses
-        # it. Counted apart from `read`: this invocation did not read it.
+        # it. Not counted in `unread`: `_acts_left_to_read` already excluded it.
         return None
 
     # A declared engine outcome stands in for a real engine's report, so it is valid
@@ -3967,8 +3967,8 @@ def _publish_audited_reading(
         "examination": examination,
         "reproof_truncation": reproof_truncation,
         "reproof_edits": reproof.edits if reproof else None,
-        # None for the fixture reader; named here because the Perlectio's `engine_call`
-        # stays Pass B's when the text is unchanged.
+        # None when nothing was re-proofed or the reader is the fixture reader; named here
+        # because the Perlectio's `engine_call` stays Pass B's when the text is unchanged.
         "reproof_call": reproof.call_record if reproof else None,
     }
     audit.validate_finding(

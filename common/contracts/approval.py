@@ -1,16 +1,13 @@
 """The approval-record artifact — the one shape every approval is recorded in.
 
-Only the project lead approves an exclusion, declares the pipeline proven, or
-grants the permissions the rules require. No automated agent may act as the human
-in any rule. This module cannot enforce that — a file says what it says — but it
-can make an approval *checkable*: one shape, self-hashed, naming the exact policy
-version it approved, so a claimed approval with no artifact is refused at the
-schema and an artifact edited afterwards fails its own hash.
+An approval is a human act: the project lead approves an exclusion, declares the
+pipeline proven, or grants a permission. This module cannot enforce who signed —
+a file says what it says — but it makes an approval *checkable*: one shape, self-hashed and bound to the exact
+policy version it approved, so a claimed approval with no artifact is refused at
+the schema and an artifact edited afterwards fails its own hash.
 
-The exact-version binding is the part that earns its keep. An approval that named
-only the action would silently keep approving after the thing it approved changed
-underneath it; naming the target's hash means a changed target needs a new
-approval, which is the honest behaviour.
+Naming the target's hash means a changed target needs a new approval; an approval
+that named only the action would keep approving after the target changed.
 
 `timestamp` is present here and absent from every other artifact in this package.
 Deterministic artifacts carry no timestamps, because two identical runs must

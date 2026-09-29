@@ -21,7 +21,7 @@ from test_structure_chair_e2e import (
     StructureWorld,
     WitnessWorld,
     artifacts,
-    chandra_page,
+    witness_scripts,
     write_catalogue,
 )
 
@@ -29,13 +29,14 @@ from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import digest_bytes
 from common.contracts.identities import physical_page_id
 from common.contracts.outcomes import ArmariumCategory
-from common.contracts.stages import DESIGNATOR
+from common.contracts.stages import DESIGNATOR, PERLECTOR
 from common.corpus_register import append_records, empty_register, register_digest
 from common.decoding import load_decoding_policy
+from common.physical_act_partition import CROSS_CAPTURE_READ_NOT_BUILT
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD, verify_final_seal
 from conftest import load_stage
-from operations.serving.fakes import ScriptedAnswer, scripted_structure_answer
+from operations.serving.fakes import scripted_structure_answer
 from operations.submit import gate, submit
 from proof.synthetic_pages import PAGE_BREAK_PAGES, render_page
 
@@ -126,28 +127,10 @@ def _register(work: Path, pages: dict[int, bytes]) -> Path:
     return register
 
 
-def _witness_scripts() -> dict[str, list[ScriptedAnswer]]:
-    page_acts = [ACTS_BY_PAGE[ordinal] for ordinal in sorted(ACTS_BY_PAGE)]
-    return {
-        "attestator_1": [
-            ScriptedAnswer(content=chandra_page(acts), finish_reason="stop") for acts in page_acts
-        ],
-        "attestator_2": [
-            ScriptedAnswer(content=text, finish_reason="stop")
-            for acts in page_acts
-            for _bounds, text in acts
-        ],
-        "attestator_3": [
-            ScriptedAnswer(
-                content="<output>" + "\n".join(text for _bounds, text in acts) + "</output>",
-                finish_reason="stop",
-            )
-            for acts in page_acts
-        ],
-    }
-
-
 def test_combined_rehearsal_accounts_for_every_act_and_verifies_export(tmp_path, monkeypatch):
+    """Both re-shoot captures are held, because reading across a physical page's
+    captures is not built yet; the remaining five acts are delivered and exported.
+    """
     approved, source, ledger, policy, pages = _submission(tmp_path)
     register = _register(tmp_path, pages)
     catalogue = write_catalogue(
@@ -164,7 +147,10 @@ def test_combined_rehearsal_accounts_for_every_act_and_verifies_export(tmp_path,
         ],
     )
     witnesses = WitnessWorld(
-        catalogue, decoding_sha256, tmp_path / "witness-world", _witness_scripts()
+        catalogue,
+        decoding_sha256,
+        tmp_path / "witness-world",
+        witness_scripts([ACTS_BY_PAGE[ordinal] for ordinal in sorted(ACTS_BY_PAGE)]),
     )
     reader = ReaderWorld(catalogue, tmp_path / "reader", finish_reason="stop")
     injected = {
@@ -237,11 +223,14 @@ def test_combined_rehearsal_accounts_for_every_act_and_verifies_export(tmp_path,
     assert len(payload["non_delivered"]) == len(held) == 2
     assert set(delivered) == KEYS - HELD_KEYS
     assert set(held) == HELD_KEYS
-    assert all(
-        row["category"] == ArmariumCategory.HELD_FOR_REVIEW.value
-        and "cross-capture-read-not-built" in row["reason"]
-        for row in held.values()
-    )
+    assert all(row["category"] == ArmariumCategory.HELD_FOR_REVIEW.value for row in held.values())
+    not_run = [
+        row for row in artifacts(root, PERLECTOR, "perlectio") if row["outcome"] == "not-run"
+    ]
+    assert {row["payload"]["act_key"] for row in not_run} == HELD_KEYS
+    assert all(row["payload"]["hold"]["code"] == CROSS_CAPTURE_READ_NOT_BUILT for row in not_run)
+    # Three reader calls for each of the five delivered acts, none for the held captures.
+    assert len(reader.endpoint.requests) == 15
     assert set(delivered).isdisjoint(held)
     aggregate = payload["aggregate"]
     assert aggregate["status"] == "partial"
