@@ -593,6 +593,9 @@ def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str
     return reading, reference
 
 
+_LECTIO_PRIOR_PATH = "4_perlector/artifacts/lectio-prior/"
+
+
 def _prior_draft_of(reading: dict, payload: dict, dossier: dict, subject: str) -> dict | None:
     """The Pass-A draft an establishing reading must cite, or None when it must cite none.
 
@@ -600,6 +603,15 @@ def _prior_draft_of(reading: dict, payload: dict, dossier: dict, subject: str) -
     saved) must carry none; one that does is refused and must be re-read.
     """
     if payload["lectio_kind"] == "primed-draft-withheld":
+        if any(
+            isinstance(ref, dict)
+            and str(ref.get("relative_path", "")).startswith(_LECTIO_PRIOR_PATH)
+            for ref in reading.get("inputs", [])
+        ):
+            raise SchemaRefusal(
+                f"{subject} claims primed-draft-withheld but lists a lectio-prior among its "
+                "inputs; a withheld reading never saw a Pass A and must be re-read"
+            )
         if "prior_draft" in dossier:
             raise SchemaRefusal(
                 f"{subject} claims primed-draft-withheld but carries a prior-draft reference; "

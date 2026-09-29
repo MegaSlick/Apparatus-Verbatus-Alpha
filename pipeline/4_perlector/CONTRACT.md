@@ -196,7 +196,8 @@ text. The grammar carries no level of doubt, so every marked span is `low`. A
 `[[` or `]]` that is not a closed mark, or a mark whose reading is `?`, publishes the
 raw answer unchanged under `malformed`. Gap marks over an answer that is otherwise
 blank add nothing: the `no-readable-text` outcome's whole-act gap already says it.
-By default there is no Pass A; `--blind-read fed` opts in to Pass A and to Pass B seeing its clean text (`--blind-read saved` makes Pass A but never shows it to Pass B). When the
+By default there is no Pass A; `--blind-read fed` opts in to Pass A and to Pass B seeing its
+clean text (`--blind-read saved` makes Pass A but never shows it to Pass B). When the
 draft is fed, `self_revision` offsets index it: `reading_span` in the final text,
 `testimonium_span` in the draft. When it is withheld, `self_revision` is not measured. Pass A's marks stay on its own
 record. Truncation is measured on the clean text. The re-proof answers in JSON and
@@ -595,23 +596,28 @@ What each contrast measures depends on the mode. In a **fed** run (`--blind-read
 nuda against lectio-prior measures sampling variance; lectio-prior (or nuda) against
 the sampled control measures witness dependence, because the control sees witnesses
 and no draft; the control against the production Perlectio measures anchoring on the
-draft. In an **off** run there is no lectio-prior and, in a **saved** run the lectio-prior is a witness for training only; in both, because the control would
-be byte-identical to production, no control either (`--perlector-instrument-per-mille`
-is refused unless `--blind-read fed`). The approval-gated sampled Lectio nuda is then the
-only unprimed reading, and nuda against the production Perlectio measures witness
-dependence.
+draft. In an **off** run there is no lectio-prior. In a **saved** run the lectio-prior is
+an unprimed reading too, kept as a training witness and never shown to the production
+reading, so nuda against it still measures sampling variance. In both, the control would
+be byte-identical to production, so there is none (`--perlector-instrument-per-mille`
+is refused unless `--blind-read fed`). In an off run the approval-gated sampled Lectio
+nuda is the only unprimed reading, and nuda against the production Perlectio measures
+witness dependence.
 
-**One thing about nuda did change, and it is not in the list above.**
-`common/hard_failure.py`'s `PERLECTOR_INSTRUMENT_KINDS` covers `lectio-nuda`
-as well as the two new kinds, so a failed Lectio nuda no longer spends the
-ruled production hard-failure cap; before this it did, because the
-policy is written per (stage, outcome) and nuda is a Perlector artifact. That
-is the right disposition — the cap is a circuit breaker on the production
-reading path, and an instrument arm tripping it would halt a run over a
-measurement nothing downstream consumes — and the failures stay visible in the
-tally's `instrument_by_kind` and on the orchestrator's checkpoint line. It is
-recorded here rather than left to be rediscovered, because it is a change to
-the meaning of a ruled threshold.
+Under `saved`, a Pass A that fails on an engine, chair-response, transport or capacity
+failure never costs the production reading: it is retained as its own failed record of
+kind `lectio-prior` (the failed-Perlectio payload shape, with its call evidence as
+inputs) and the establishing reading goes on, withheld as usual. Under `fed` a Pass A
+failure fails the act as the production reading would, because the reading depends on it.
+A contract or schema defect is fatal in every mode.
+
+**Instrument arms and the hard-failure cap.**
+`common/hard_failure.py`'s `PERLECTOR_INSTRUMENT_KINDS` covers `lectio-nuda`,
+`lectio-prior` and `primed-without-prior`, so a failed instrument arm does not spend
+the ruled production hard-failure cap. The cap is a circuit breaker on the production
+reading path; an instrument arm must not halt a run over a measurement nothing
+downstream consumes. Such failures stay visible in the tally's `instrument_by_kind`
+and on the orchestrator's checkpoint line.
 
 ## R5b Pass-C audit, and the request the reader actually receives
 

@@ -74,6 +74,7 @@ from common.contracts.outcomes import ATTACHMENT_BASES, page_attachment_basis  #
 from common.contracts.prior_draft import (  # noqa: E402
     BLIND_READ_MODES,
     kind_for_view,
+    refuse_removed_draft_fed,
     self_revision_for_view,
     validate_establishing_view,
 )
@@ -98,6 +99,7 @@ from common.native_witness import (  # noqa: E402
 )
 from common.perlector_failure import (  # noqa: E402
     PRE_PERLECTIO_ARTIFACTS,
+    validate_failed_payload,
     validate_failed_perlectio,
 )
 from common.physical_act_partition import CROSS_CAPTURE_READ_NOT_BUILT  # noqa: E402
@@ -2367,6 +2369,7 @@ def validate_reading_payload(
     dossier_module.assert_no_order_bearing_field(dossier_body)
     _validate_cross_capture_dossier(reading_dossier, inputs=inputs)
     protocol_record = payload.get("protocol")
+    refuse_removed_draft_fed(protocol_record, "a Perlector reading")
     if protocol_record is not None and (
         not isinstance(protocol_record, dict)
         or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "blind_read"}
@@ -3339,6 +3342,37 @@ def _publish_lectio_prior(
     }
 
 
+def _publish_lectio_prior_failure(context, attempt: _Attempt, error: Exception) -> None:
+    """Keep a failed saved-mode Pass A as its own failed `lectio-prior`, never as a Perlectio.
+
+    A contract or schema defect (no failure fact) is not an instrument failure and stays fatal.
+    """
+    failure = _failure_record(error, phase="establishing")
+    if failure is None:
+        raise error
+    payload = {
+        "act_key": attempt.act_key,
+        "attempt_ordinal": attempt.ordinal,
+        "reason": f"saved blind read {failure['kind']} failure: {failure['code']}",
+        "failure": failure,
+        "provenance": attempt.provenance(context),
+    }
+    validate_failed_payload(payload)
+    evidence = [
+        dict(failure[name])
+        for name in ("raw_response_ref", "call_record_ref", "receipt_ref")
+        if failure[name] is not None
+    ]
+    context.publish(
+        kind="lectio-prior",
+        subject_id=attempt.act_id,
+        outcome="failed",
+        attempt=perlector_attempt_id(attempt.act_id, "lectio-prior", attempt.ordinal),
+        inputs=_distinct_inputs(evidence),
+        payload=payload,
+    )
+
+
 def _publish_primed_without_prior(
     context,
     attempt: _Attempt,
@@ -3874,6 +3908,8 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
             blind_read=context.blind_read,
             # Runs before the establishing arm, which embeds the prior reference it returns.
             publish_prior=partial(_publish_lectio_prior, context, attempt),
+            saved_prior_failures=_ACT_LOCAL_READING_FAILURES,
+            record_prior_failure=partial(_publish_lectio_prior_failure, context, attempt),
         )
     except _ACT_LOCAL_READING_FAILURES as error:
         failure = _failure_record(error, phase="establishing")

@@ -14,6 +14,7 @@ controls and un-fed instruments are distinct artifact kinds and cannot
 establish by a relabel.
 """
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -228,6 +229,31 @@ def test_withheld_claim_carrying_a_prior_reference_cannot_establish(tmp_path):
     assert "Traceback" not in result.stderr
     assert "claims primed-draft-withheld but carries a prior-draft reference" in result.stderr
     assert "must be re-read" in result.stderr
+
+
+def test_a_withheld_reading_listing_a_lectio_prior_among_its_inputs_cannot_establish(tmp_path):
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r", blind_read="saved")
+    tree = RunTree(root, "r")
+    prior = next(
+        entry
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "lectio-prior"
+    )
+    path = f"4_perlector/artifacts/lectio-prior/{prior['artifact_id']}.json"
+    prior_ref = {
+        "relative_path": path,
+        "sha256": hashlib.sha256(tree.resolve(path).read_bytes()).hexdigest(),
+    }
+    _reseal_reading(
+        tree,
+        accepted_review(tree),
+        lambda payload: None,
+        lambda reading: reading["inputs"].append(prior_ref),
+    )
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py", blind_read="saved")
+    assert result.returncode == 2, result.stderr
+    assert "lists a lectio-prior among its inputs" in result.stderr
 
 
 def test_a_withheld_claim_carrying_an_empty_prior_key_cannot_establish(tmp_path):

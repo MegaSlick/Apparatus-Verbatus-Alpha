@@ -42,12 +42,17 @@ def run_logical_passes(
     control_sampled: bool,
     blind_read: str = "off",
     publish_prior: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
+    saved_prior_failures: tuple[type[Exception], ...] = (),
+    record_prior_failure: Callable[[Exception], None] | None = None,
 ) -> dict[str, Any]:
     """Use one atomic presentation for every requested arm of one logical act.
 
     Pass A (``lectio-prior``) runs unless ``blind_read`` is ``off``. Only ``fed`` shows it to
     the establishing reading; ``saved`` keeps it as a training witness and the establishing
     dossier is the withheld one, exactly as under ``off``.
+    Under ``saved`` only, a Pass A failure named by ``saved_prior_failures`` is handed to
+    ``record_prior_failure`` and the establishing reading goes on without it: a witness
+    that could not be made must not cost the production reading. Under ``fed`` it raises.
     ``publish_prior`` must return the closed prior reference and text before
     the establishing call; without a publisher, only the text is retained.
     """
@@ -57,21 +62,27 @@ def run_logical_passes(
     output: dict[str, Any] = {}
     prior_draft: dict[str, Any] | None = None
     if blind_read != "off":
-        prior_dossier, _prior_pixels, prior = invoke_one_logical_read(
-            reader,
-            autopsia=autopsia,
-            dossier=_unprimed(dossier),
-            read_bytes=read_bytes,
-            max_images=max_images,
-            pass_kind="lectio-prior",
-        )
-        output["lectio-prior"] = {"dossier": prior_dossier, "result": prior}
-        published = (
-            publish_prior(prior_dossier, prior)
-            if publish_prior is not None
-            else {"text": prior["text"]}
-        )
-        prior_draft = published if blind_read == "fed" else None
+        try:
+            prior_dossier, _prior_pixels, prior = invoke_one_logical_read(
+                reader,
+                autopsia=autopsia,
+                dossier=_unprimed(dossier),
+                read_bytes=read_bytes,
+                max_images=max_images,
+                pass_kind="lectio-prior",
+            )
+        except saved_prior_failures as error:
+            if blind_read != "saved" or record_prior_failure is None:
+                raise
+            record_prior_failure(error)
+        else:
+            output["lectio-prior"] = {"dossier": prior_dossier, "result": prior}
+            published = (
+                publish_prior(prior_dossier, prior)
+                if publish_prior is not None
+                else {"text": prior["text"]}
+            )
+            prior_draft = published if blind_read == "fed" else None
     if nuda_sampled:
         nuda_dossier, _nuda_pixels, nuda = invoke_one_logical_read(
             reader,

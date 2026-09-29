@@ -883,6 +883,24 @@ def test_a_protocol_record_naming_a_rule_the_run_never_sealed_is_refused(
         )
 
 
+def test_a_reading_sealed_under_the_removed_draft_fed_flag_names_it(
+    published_perlectio_payload, _sealed_protocol
+):
+    protocol_config, protocol_sha256 = _sealed_protocol
+    payload = copy.deepcopy(published_perlectio_payload)
+    payload["protocol"].pop("blind_read")
+    payload["protocol"]["draft_fed"] = True
+
+    with pytest.raises(SchemaRefusal, match="removed --draft-fed flag"):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+
+
 def test_an_unknown_blind_read_is_not_its_closed_schema(
     published_perlectio_payload, _sealed_protocol
 ):

@@ -37,7 +37,7 @@ def repoint_review(tree, review: dict, forged_ref: dict) -> None:
     _rebind_stage_seal(tree, RECENSOR)
 
 
-def reseal_reviewed_reading(tree, review: dict, mutate) -> str:
+def reseal_reviewed_reading(tree, review: dict, mutate, mutate_record=None) -> str:
     """Mutate the reviewed Perlectio's payload and reseal the chain around it.
 
     Returns the review's subject act id, for tests that need to find the
@@ -47,6 +47,8 @@ def reseal_reviewed_reading(tree, review: dict, mutate) -> str:
     reading_path = tree.resolve(old_ref["relative_path"])
     reading = json.loads(reading_path.read_text(encoding="utf-8"))
     mutate(reading["payload"])
+    if mutate_record is not None:
+        mutate_record(reading)
     # Reseal the nested payload hash too, when present, or a stage-side check
     # of it would fail every forgery here before the refusal under test.
     if "self_hash" in reading["payload"]:

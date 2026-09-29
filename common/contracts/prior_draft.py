@@ -9,6 +9,16 @@ from common.contracts.errors import SchemaRefusal
 BLIND_READ_MODES = ("off", "fed", "saved")
 
 
+def refuse_removed_draft_fed(protocol: Any, subject: str) -> None:
+    """Name the removed `--draft-fed` flag when an old record still carries its field."""
+    if isinstance(protocol, dict) and "draft_fed" in protocol:
+        raise SchemaRefusal(
+            f"{subject} carries the protocol field draft_fed, which the removed --draft-fed "
+            "flag sealed; it is now --blind-read (off, fed or saved), so the run predates it "
+            "and must be re-read"
+        )
+
+
 def kind_for_view(view: str) -> str:
     if view == "fed":
         return "primed-with-prior"
@@ -33,6 +43,7 @@ def validate_establishing_view(payload: dict, dossier: Any, subject: str) -> str
     if not isinstance(dossier, dict) or dossier.get("prior_draft_view") != expected:
         raise SchemaRefusal(f"{subject} names {kind} without a {expected} prior-draft view")
     protocol = payload.get("protocol")
+    refuse_removed_draft_fed(protocol, subject)
     mode = protocol.get("blind_read") if isinstance(protocol, dict) else None
     if mode not in BLIND_READ_MODES or (mode == "fed") != (expected == "fed"):
         raise SchemaRefusal(f"{subject} names {kind} contrary to its prior-draft protocol")

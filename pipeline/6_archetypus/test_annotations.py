@@ -873,14 +873,15 @@ _REGION = {
 
 
 @pytest.mark.parametrize(
-    ("lectio_kind", "view", "draft_fed"),
+    ("lectio_kind", "view", "blind_read"),
     [
-        ("primed-with-prior", "fed", True),
-        ("primed-draft-withheld", "withheld", False),
+        ("primed-with-prior", "fed", "fed"),
+        ("primed-draft-withheld", "withheld", "off"),
+        ("primed-draft-withheld", "withheld", "saved"),
     ],
 )
 def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
-    monkeypatch, lectio_kind, view, draft_fed
+    monkeypatch, lectio_kind, view, blind_read
 ):
     """The clustered constructor must normalise before it seals, as the local one does.
 
@@ -912,6 +913,7 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
         },
     )
 
+    fed = blind_read == "fed"
     source = "a" * 64
     text = "established text"
     prior_ref = {"relative_path": "4_perlector/artifacts/lectio-prior/x.json", "sha256": "d" * 64}
@@ -921,8 +923,8 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
         "text": text,
         "lectio_kind": lectio_kind,
         "dossier": {"logical_act_id": "pac_0123456789abcdef", "prior_draft_view": view}
-        | ({"prior_draft": {"reference": prior_ref, "text": text}} if draft_fed else {}),
-        "protocol": {"blind_read": "fed" if draft_fed else "off"},
+        | ({"prior_draft": {"reference": prior_ref, "text": text}} if fed else {}),
+        "protocol": {"blind_read": blind_read},
         "basis": {"regions": [_REGION]},
         "provenance": {"chair": "perlector", "revision": "fixture"},
         "annotations": [wire_note],
@@ -934,7 +936,7 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
         },
         "self_revision": [],
     }
-    perlectio = {"outcome": "read", "payload": payload, "inputs": [prior_ref]}
+    perlectio = {"outcome": "read", "payload": payload, "inputs": [prior_ref] if fed else []}
     perlectio_ref = {
         "relative_path": "4_perlector/artifacts/perlectio/joint.json",
         "sha256": archetypus.digest_of(perlectio),
@@ -988,7 +990,7 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
     # is the equality the record schema enforces on every read back.
     assert archetypus.validate_logical_record(record) == record
     assert record["uncertainty"]["lectio_kind"] == lectio_kind
-    assert record["uncertainty"]["self_revisions"] == ([] if draft_fed else None)
+    assert record["uncertainty"]["self_revisions"] == ([] if fed else None)
 
     def reseal_refs():
         perlectio_ref["sha256"] = archetypus.digest_of(perlectio)
@@ -996,7 +998,7 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
         dissent_ref["sha256"] = archetypus.digest_of(dissent)
 
     original_kind = payload["lectio_kind"]
-    payload["lectio_kind"] = "primed-draft-withheld" if draft_fed else "primed-with-prior"
+    payload["lectio_kind"] = "primed-draft-withheld" if fed else "primed-with-prior"
     reseal_refs()
     with pytest.raises(SchemaRefusal, match="without a .* prior-draft view"):
         archetypus.establish_logical_record(
@@ -1010,7 +1012,7 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
             cross_capture_dissent_ref=dissent_ref,
         )
     payload["lectio_kind"] = original_kind
-    payload["protocol"]["blind_read"] = "off" if draft_fed else "fed"
+    payload["protocol"]["blind_read"] = "off" if fed else "fed"
     reseal_refs()
     with pytest.raises(SchemaRefusal, match="contrary to its prior-draft protocol"):
         archetypus.establish_logical_record(
@@ -1023,8 +1025,8 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
             cross_capture_dissent=dissent,
             cross_capture_dissent_ref=dissent_ref,
         )
-    payload["protocol"]["blind_read"] = "fed" if draft_fed else "off"
-    if not draft_fed:
+    payload["protocol"]["blind_read"] = blind_read
+    if not fed:
         payload["self_revision"] = [
             {
                 "reading_span": {"start": 0, "end": 1},

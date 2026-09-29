@@ -2424,3 +2424,43 @@ def test_a_descendant_holding_the_pipe_cannot_stop_the_runner_from_returning(
     assert completed.returncode == 0
     assert "still attached" in completed.stderr
     assert "parent" in transcript.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("blind_read", ["fed", "saved"])
+def test_blind_read_reaches_orchestrator_and_report(tmp_path: Path, blind_read: str) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+
+    code = main(
+        _run_argv(ws, extra=("--blind-read", blind_read)),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+
+    assert code == EXIT_COMPLETE
+    argv = runner.calls[0][0]
+    assert argv[argv.index("--blind-read") + 1] == blind_read
+    assert _report(ws)["plan"]["blind_read"] == blind_read
+
+
+def test_blind_read_defaults_to_off_in_the_pod_run_plan(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+
+    assert code == EXIT_COMPLETE
+    assert "--blind-read" not in runner.calls[0][0]
+    assert _report(ws)["plan"]["blind_read"] == "off"
