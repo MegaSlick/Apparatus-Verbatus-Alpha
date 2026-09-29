@@ -421,7 +421,7 @@ class ChairClient:
 
     @property
     def carries_chandra_native_recipe(self) -> bool:
-        """Whether this client was built from a decoding.v3 native recipe."""
+        """Whether this client was built from the decoding policy's native recipe."""
 
         return self._chandra_native_policy is not None
 

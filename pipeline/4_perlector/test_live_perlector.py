@@ -70,8 +70,8 @@ TIER = "generic-48gb"
 SERVED_MODEL_ID = "perlector-under-test"
 # Long enough that `truncation.is_length_suspicious` never fires on this
 # fixture's regions (80 characters over 12,800 or 16,000 pixels of a 52,000-pixel
-# page is 260-325 characters per page-equivalent, against the sealed floor of 50
-# in `config/perlector_protocol.toml`): the tests below are about the engine's
+# page is 260-325 characters per page-equivalent, on a page too small for the
+# sealed floor in `config/perlector_protocol.toml` to judge): the tests below are about the engine's
 # own stop word, and a reading the length heuristic independently called
 # suspicious would prove the wrong thing.
 READING = "SYNTHETIC LIVE READING alpha beta gamma delta epsilon zeta eta theta iota kappa"
@@ -178,7 +178,9 @@ def _live_catalogue(destination: Path) -> Path:
     return path
 
 
-def _chain_through_attestatores(root: Path, catalogue: Path, *, scenario: str = "happy") -> None:
+def _chain_through_attestatores(
+    root: Path, catalogue: Path, *, scenario: str = "happy", extra: tuple[str, ...] = ()
+) -> None:
     for program in CHAIN_THROUGH_ATTESTATORES:
         result = subprocess.run(
             [
@@ -192,6 +194,7 @@ def _chain_through_attestatores(root: Path, catalogue: Path, *, scenario: str = 
                 scenario,
                 "--serving-recipes-config",
                 str(catalogue),
+                *extra,
             ],
             cwd=ROOT,
             capture_output=True,
@@ -212,6 +215,16 @@ def chained_run(tmp_path_factory) -> tuple[Path, Path]:
     catalogue = _live_catalogue(base)
     root = base / "runs"
     _chain_through_attestatores(root, catalogue)
+    return root, catalogue
+
+
+@pytest.fixture(scope="module")
+def fed_chained_run(tmp_path_factory) -> tuple[Path, Path]:
+    """The same chain sealed with `--draft-fed`, the only run that makes a Pass A."""
+    base = tmp_path_factory.mktemp("live-perlector-fed")
+    catalogue = _live_catalogue(base)
+    root = base / "runs"
+    _chain_through_attestatores(root, catalogue, extra=("--draft-fed",))
     return root, catalogue
 
 
@@ -608,6 +621,48 @@ def test_an_engine_length_publishes_a_held_truncation_and_never_a_reading(
     assert exit_code == 0
 
 
+def test_a_reply_that_reaches_its_bound_holds_the_act_and_is_never_asked_again(
+    live_run, tmp_path, monkeypatch
+):
+    """The sealed output bound stops a runaway, and a stop is a hold, not a re-run.
+
+    Distinct bounds are sealed so each request shows which one it was sent
+    under: a reading gets the reading bound, a re-proof its own.
+    """
+    root, _catalogue = live_run
+    reading_bound, reproof_bound = 100, 200
+    monkeypatch.setattr(
+        perlector, "perlector_max_tokens", lambda _policy: (reading_bound, reproof_bound)
+    )
+    endpoint, _exit = _run_perlector(
+        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="length")
+    )
+
+    def is_reproof(request: dict[str, Any]) -> bool:
+        return any(
+            "zero-based Python Unicode code-point offsets" in part.get("text", "")
+            for part in request["messages"][0]["content"]
+        )
+
+    reproofs = [request for request in endpoint.requests if is_reproof(request)]
+    readings_sent = [request for request in endpoint.requests if not is_reproof(request)]
+    assert reproofs and readings_sent
+    assert {request["max_tokens"] for request in reproofs} == {reproof_bound}
+    assert {request["max_tokens"] for request in readings_sent} == {reading_bound}
+    readings = _published_readings(root)
+    assert readings
+    assert all(record["outcome"] == "truncated" for record in readings)
+    # Pass B and the one re-proof each ask once (Pass A runs only under --draft-fed);
+    # the stop re-asks nothing.
+    assert len(endpoint.requests) == 2 * len(readings)
+    retained_bounds = {
+        json.loads(path.read_bytes())["generation_sent"]["max_tokens"]
+        for path in (root / "r" / "4_perlector" / "blobs" / "sha256").glob("*")
+        if b'"generation_sent"' in path.read_bytes()
+    }
+    assert retained_bounds == {reading_bound, reproof_bound}
+
+
 def test_an_unreported_stop_reason_holds_the_reading_as_unknown(live_run, tmp_path, monkeypatch):
     """An engine that reported nothing is never `complete` (`truncation.py`).
 
@@ -809,21 +864,33 @@ def _perlectiones(root: Path) -> dict[str, dict[str, Any]]:
 
 @pytest.mark.parametrize("kind", ["lectio-prior", "audit-draft"])
 def test_a_live_pass_refuses_to_resume_an_act_it_left_half_read(
-    live_run, tmp_path, monkeypatch, kind
+    request, tmp_path, monkeypatch, kind
 ):
     """One reading comes from one serving session: an interrupted act is never finished."""
-    root, _catalogue = live_run
+    # Pass A exists only in a draft-fed run.
+    fed = ("--draft-fed",) if kind == "lectio-prior" else ()
+    template, catalogue = request.getfixturevalue("fed_chained_run" if fed else "chained_run")
+    live_run = (tmp_path / "runs", catalogue)
+    shutil.copytree(template, live_run[0])
+    root = live_run[0]
     answer = ScriptedAnswer(content=READING, finish_reason="stop")
     _interrupt_after(monkeypatch, kind)
     with pytest.raises(_Interrupted):
-        _run_perlector(live_run, tmp_path, monkeypatch, answer)
+        _run_perlector(live_run, tmp_path, monkeypatch, answer, extra_args=fed)
     artifacts = root / "r" / "4_perlector" / "artifacts"
     before = {path: path.read_bytes() for path in artifacts.rglob("*.json")}
     monkeypatch.undo()
 
     endpoints: list = []
     with pytest.raises(ContractError, match="interrupted live attempt"):
-        _run_perlector(live_run, tmp_path / "resume", monkeypatch, answer, endpoint_out=endpoints)
+        _run_perlector(
+            live_run,
+            tmp_path / "resume",
+            monkeypatch,
+            answer,
+            endpoint_out=endpoints,
+            extra_args=fed,
+        )
     assert endpoints[0].requests == []
     assert {path: path.read_bytes() for path in artifacts.rglob("*.json")} == before
 

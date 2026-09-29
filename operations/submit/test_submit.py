@@ -656,3 +656,99 @@ def test_a_submitted_name_that_is_not_valid_utf8_is_a_named_refusal(submission):
         )
     ]
     assert raw_name.hex() not in result.stderr
+
+
+def _paths(folder):
+    return [row["relative_path"] for row in submit.walk_folder(folder)]
+
+
+PNG = b"\x89PNG\r\n\x1a\nfirst"
+
+
+def test_os_clutter_is_skipped_when_its_bytes_match_and_never_recorded(tmp_path):
+    (tmp_path / "page-1.png").write_bytes(PNG)
+    (tmp_path / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1 rest")
+    (tmp_path / "._page-1.png").write_bytes(b"\x00\x05\x16\x07 apple double")
+    (tmp_path / "Thumbs.db").write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1 cfb")
+    (tmp_path / "desktop.ini").write_bytes(b"[.ShellClassInfo]\r\nIconFile=x\r\n")
+
+    entries, skipped = submit.inspect_folder(tmp_path)
+
+    assert [row["relative_path"] for row in entries] == ["page-1.png"]
+    assert skipped == 4
+
+
+def test_a_desktop_ini_saved_as_utf16_is_still_clutter(tmp_path):
+    (tmp_path / "page-1.png").write_bytes(PNG)
+    (tmp_path / "desktop.ini").write_bytes("[.ShellClassInfo]\r\n".encode("utf-16"))
+
+    assert _paths(tmp_path) == ["page-1.png"]
+
+
+def test_a_clutter_name_holding_a_page_is_a_page_and_holding_junk_is_refused(tmp_path):
+    (tmp_path / ".DS_Store").write_bytes(PNG)
+    assert _paths(tmp_path) == [".DS_Store"]
+
+    (tmp_path / "Thumbs.db").write_bytes(b"not thumbs data at all")
+    with pytest.raises(submit.NotPageImagesRefusal) as refusal:
+        submit.walk_folder(tmp_path)
+    assert refusal.value.entries == ("Thumbs.db",)
+
+
+def _ppm():
+    return b"P6\n2 2\n255\n" + bytes(12)
+
+
+def _jpeg2000():
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(buffer, "JPEG2000")
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"II*\x00tiff-shaped bytes", b"%PDF-1.7 a scan", _ppm(), _jpeg2000()],
+    ids=["tiff", "pdf", "ppm", "jpeg2000"],
+)
+def test_a_page_the_pod_would_admit_seals_whatever_its_extension(tmp_path, content):
+    (tmp_path / "leaf.dat").write_bytes(content)
+
+    assert _paths(tmp_path) == ["leaf.dat"]
+
+
+@pytest.mark.parametrize("name", ["notes.txt", "scan.pdf"])
+def test_a_stray_non_image_refuses_the_seal_and_the_message_carries_no_name(tmp_path, name):
+    (tmp_path / "page-1.png").write_bytes(PNG)
+    (tmp_path / name).write_bytes(b"just some words, no image signature")
+
+    with pytest.raises(submit.NotPageImagesRefusal, match="then seal again") as refusal:
+        submit.walk_folder(tmp_path)
+
+    assert refusal.value.entries == (name,)
+    assert name not in str(refusal.value)
+
+
+def test_a_stray_file_is_written_to_the_private_report_through_submit(submission):
+    (submission["folder"] / "CLIENT-notes.txt").write_bytes(b"plain words")
+
+    with pytest.raises(submit.SubmissionRefusal, match="then seal again") as refusal:
+        submit.submit(
+            submission["folder"],
+            submission["manifest_out"],
+            policy_path=submission["policy_path"],
+        )
+
+    assert refusal.value.refusal_count == 1
+    assert "CLIENT-notes.txt" not in str(refusal.value)
+    report = json.loads(refusal.value.report_path.read_text(encoding="utf-8"))
+    assert report["refusals"] == [
+        {
+            "relative_path": "CLIENT-notes.txt",
+            "reason": "not a page image: no image signature",
+        }
+    ]
+    assert not submission["manifest_out"].exists()

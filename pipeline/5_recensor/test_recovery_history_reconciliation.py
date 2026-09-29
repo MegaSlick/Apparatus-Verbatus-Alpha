@@ -191,11 +191,15 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
         ]
         measure = termination["measure"]
         measure["characters"] = 0
-        termination["signals"]["length_suspicious"] = length_signal(
-            characters=0,
-            region_pixels=measure["region_pixels"],
-            page_pixels=measure["page_pixels"],
-            floor=measure["length_floor_characters_per_page"],
+        termination["signals"]["length_suspicious"] = (
+            length_signal(
+                characters=0,
+                region_pixels=measure["region_pixels"],
+                page_pixels=measure["page_pixels"],
+                floor=measure["length_floor_characters_per_page"],
+            )
+            if measure["length_judged"]
+            else None
         )
         termination["classification"] = truncation_classification(termination["signals"])
     validate_finding(finding["payload"], text="", flag_text="")

@@ -107,8 +107,17 @@ _TRUNCATION_SIGNALS: Final = frozenset(
 # Every term of the length predicate, floor included, so a reader re-derives
 # the signal without the run's protocol file in hand.
 _TRUNCATION_MEASURE: Final = frozenset(
-    {"region_pixels", "page_pixels", "characters", "length_floor_characters_per_page"}
+    {
+        "region_pixels",
+        "page_pixels",
+        "smallest_page_pixels",
+        "characters",
+        "length_floor_characters_per_page",
+        "legible_page_pixels",
+        "length_judged",
+    }
 )
+_TRUNCATION_MEASURE_BOOLEANS: Final = frozenset({"length_judged"})
 # `characters` counts a reading that may legitimately be empty; the three areas
 # and the floor are all positive or the signal could not have been judged.
 _TRUNCATION_MEASURE_MAY_BE_ZERO: Final = frozenset({"characters"})
@@ -454,13 +463,24 @@ def unresolved_state(examination: str) -> bool:
     }
 
 
+def length_judged(*, smallest_page_pixels: int, legible_page_pixels: int) -> bool:
+    """Whether the length signal applies: every page the act spans is legible-sized.
+
+    The floor is a density per page, a page's lines times a line's characters; a
+    page below the sealed legible size cannot hold that many lines, so there is
+    no density for a reading to fall short of. The smallest page an act spans
+    decides, since one sub-legible page makes the summed area misleading.
+    """
+    return smallest_page_pixels >= legible_page_pixels
+
+
 def length_signal(*, characters: int, region_pixels: int, page_pixels: int, floor: int) -> bool:
     """The truncation length signal, as a pure function of its four terms.
 
     The reading's characters, scaled from its region to the page's area, against
     the sealed floor. An empty reading is never suspicious: that outcome is
     `no-readable-text`, decided elsewhere. Producer and validator share this so
-    the arithmetic cannot drift.
+    the arithmetic cannot drift. Whether it applies at all is `length_judged`.
     """
     return characters > 0 and characters * page_pixels < floor * region_pixels
 
@@ -468,19 +488,24 @@ def length_signal(*, characters: int, region_pixels: int, page_pixels: int, floo
 def truncation_classification(signals: dict[str, Any]) -> str:
     """The truncation instrument's verdict, as a pure function of its four signals.
 
-    The engine's `length` is authoritative for `truncated`; three suspicious
-    computed signals are `truncated`; a clean vote under a declared `stop` is
-    `complete`; anything else is `unknown`, which holds. Shared with
+    The engine's `length` is authoritative for `truncated`; every judged computed
+    signal suspicious is `truncated`; a clean vote of the judged signals under a
+    declared `stop` is `complete`; anything else is `unknown`, which holds. A
+    length signal that was not judged is `None`: neutral, neither a clean nor a
+    suspicious vote. Shared with
     `pipeline/4_perlector/truncation.py::classify` so the verdict and every check
     are one rule.
     """
     declared = signals["stop_reason_declared"]
     if declared == "length":
         return TRUNCATION_TRUNCATED
-    suspicious = sum(
-        bool(signals[name]) for name in ("unclosed_structure", "length_suspicious", "ends_abruptly")
-    )
-    if suspicious == 3:
+    judged = [
+        signals[name]
+        for name in ("unclosed_structure", "length_suspicious", "ends_abruptly")
+        if signals[name] is not None
+    ]
+    suspicious = sum(bool(vote) for vote in judged)
+    if suspicious == len(judged) and suspicious > 0:
         return TRUNCATION_TRUNCATED
     if suspicious == 0 and declared == "stop":
         return TRUNCATION_COMPLETE
@@ -493,13 +518,15 @@ def validate_truncation_record(
     label: str,
     text: str | None = None,
     length_floor_characters_per_page: int | None = None,
+    legible_page_pixels: int | None = None,
 ) -> dict[str, Any]:
     """The sealed shape of one raw truncation measurement, its verdict re-derived.
 
     `length_suspicious` and the classification are re-derived from the record's
     own measure and signals. `text` binds `characters`, and
-    `length_floor_characters_per_page` binds the floor, for a caller that holds
-    them; without them the record only agrees with itself. Only for raw records
+    `length_floor_characters_per_page` and `legible_page_pixels` bind the floor
+    and the legibility gate, for a caller that holds them; without them the
+    record only agrees with itself. Only for raw records
     such as `reproof_truncation`: the Perlectio's own `truncation` is reconciled
     on purpose in `pipeline/4_perlector/run.py` and must not be passed here.
     """
@@ -519,13 +546,19 @@ def validate_truncation_record(
             f"{label} declares stop reason {declared!r}, not one of "
             f"{sorted(DECLARED_STOP_WORDS)} or null"
         )
-    for name in ("unclosed_structure", "length_suspicious", "ends_abruptly"):
+    for name in ("unclosed_structure", "ends_abruptly"):
         if type(signals[name]) is not bool:
             raise SchemaRefusal(f"{label} has a non-boolean {name} signal")
+    if signals["length_suspicious"] is not None and type(signals["length_suspicious"]) is not bool:
+        raise SchemaRefusal(
+            f"{label} has a length_suspicious signal that is neither boolean nor null"
+        )
     measure = value["measure"]
     if not isinstance(measure, dict) or set(measure) != _TRUNCATION_MEASURE:
         raise SchemaRefusal(f"{label} does not carry the length signal's closed measure")
-    for name in sorted(_TRUNCATION_MEASURE):
+    if type(measure["length_judged"]) is not bool:
+        raise SchemaRefusal(f"{label} measure length_judged is not a boolean")
+    for name in sorted(_TRUNCATION_MEASURE - _TRUNCATION_MEASURE_BOOLEANS):
         floor = 0 if name in _TRUNCATION_MEASURE_MAY_BE_ZERO else 1
         if type(measure[name]) is not int or measure[name] < floor:
             raise SchemaRefusal(
@@ -537,8 +570,9 @@ def validate_truncation_record(
             f"{label} measure counts {measure['characters']} characters but the text it was "
             f"measured over has {len(text)}"
         )
-    # A record naming floor 1 under a sealed 50 would derive `complete` and clear
-    # the hold; refused before the derivation, so the refusal names the floor.
+    # A record naming a floor of 1 would derive `complete` and clear the hold; a
+    # gate above its pages would switch the signal off. Both are refused before
+    # the derivation, so the refusal names the term.
     if (
         length_floor_characters_per_page is not None
         and measure["length_floor_characters_per_page"] != length_floor_characters_per_page
@@ -548,11 +582,29 @@ def validate_truncation_record(
             f"{measure['length_floor_characters_per_page']} but this run sealed "
             f"{length_floor_characters_per_page}"
         )
-    derived_length_signal = length_signal(
-        characters=measure["characters"],
-        region_pixels=measure["region_pixels"],
-        page_pixels=measure["page_pixels"],
-        floor=measure["length_floor_characters_per_page"],
+    if legible_page_pixels is not None and measure["legible_page_pixels"] != legible_page_pixels:
+        raise SchemaRefusal(
+            f"{label} was judged under legible page size {measure['legible_page_pixels']} but "
+            f"this run sealed {legible_page_pixels}"
+        )
+    judged = length_judged(
+        smallest_page_pixels=measure["smallest_page_pixels"],
+        legible_page_pixels=measure["legible_page_pixels"],
+    )
+    if measure["length_judged"] != judged:
+        raise SchemaRefusal(
+            f"{label} claims length_judged {measure['length_judged']!r} but its smallest page "
+            f"and legible page size make it {judged!r}"
+        )
+    derived_length_signal = (
+        length_signal(
+            characters=measure["characters"],
+            region_pixels=measure["region_pixels"],
+            page_pixels=measure["page_pixels"],
+            floor=measure["length_floor_characters_per_page"],
+        )
+        if judged
+        else None
     )
     if signals["length_suspicious"] != derived_length_signal:
         raise SchemaRefusal(
@@ -1122,6 +1174,7 @@ def validate_finding(
     text: str,
     flag_text: str | None = None,
     length_floor_characters_per_page: int | None = None,
+    legible_page_pixels: int | None = None,
 ) -> dict[str, Any]:
     policy_schema = (
         payload["policy"].get("schema")
@@ -1208,6 +1261,7 @@ def validate_finding(
             label="an audit finding's re-proof termination",
             text=text,
             length_floor_characters_per_page=length_floor_characters_per_page,
+            legible_page_pixels=legible_page_pixels,
         )
     validate_reproof_call(
         value["reproof_call"],
@@ -1299,12 +1353,13 @@ def validate_chain(
     act_id: str,
     *,
     length_floor_characters_per_page: int | None = None,
+    legible_page_pixels: int | None = None,
 ) -> dict[str, Any]:
     """Validate the exact draft/finding/Perlectio relationship once for every reader.
 
-    `length_floor_characters_per_page` is the sealed `[truncation]` floor, from a
-    caller that holds the protocol bytes; `None` is a caller that does not (the
-    Recensor, the fixture chamber), a declared absence.
+    `length_floor_characters_per_page` and `legible_page_pixels` are the sealed
+    `[truncation]` terms, from a caller that holds the protocol bytes; `None` is a
+    caller that does not (the Recensor, the fixture chamber), a declared absence.
 
     Known limit: under an `assessed` uncertainty state this proves only that the
     exhausted-cap projection leads `uncertain_spans`. The tail is the reader's
@@ -1328,6 +1383,7 @@ def validate_chain(
         text=payload["text"],
         flag_text=draft_payload["semi_final_text"],
         length_floor_characters_per_page=length_floor_characters_per_page,
+        legible_page_pixels=legible_page_pixels,
     )
     shared_fields = (
         "act_key",

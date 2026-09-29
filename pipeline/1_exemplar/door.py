@@ -84,6 +84,7 @@ from common.corpus_register import (  # noqa: E402
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
+from common.image_sniff import SIGNATURE_PREFIX_BYTES  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.sealed_config import read_sealed_toml  # noqa: E402
@@ -183,7 +184,6 @@ DOOR_DUPLICATE_REPORT_SCHEMA: Final = "door-duplicate-report.v0"
 DOOR_DUPLICATE_REPORT_SUBJECT: Final = "duplicate-report"
 DOOR_CLUSTER_REPORT_SCHEMA: Final = "door-re-shoot-cluster-report.v1"
 _SOURCE_HASH_CHUNK: Final = 1024 * 1024
-_SNIFF_BYTES: Final = 4096
 # Triage JSON is untrusted input. A run holds at most one 1,000-page shard (the
 # corpus-frame validator's ceiling), so bound both before the triage manifest's
 # pairwise validation walks attacker-sized lists.
@@ -212,7 +212,7 @@ def _source_digest_stream(handle: BinaryIO) -> tuple[str, int]:
 def _sniff_source_stream(handle: BinaryIO) -> str | None:
     """Route an already-open source from a bounded prefix, then reset it."""
     handle.seek(0)
-    detected = sniff(handle.read(_SNIFF_BYTES))
+    detected = sniff(handle.read(SIGNATURE_PREFIX_BYTES))
     handle.seek(0)
     return detected
 
@@ -2046,6 +2046,7 @@ def _real_bindings(
         nuda_approval_ref=nuda_approval_ref,
         perlector_instrument_per_mille=perlector_instrument_per_mille,
         perlector_instrument_approval_ref=perlector_instrument_approval_ref,
+        draft_fed=draft_fed,
     )
     _, alignment_config_sha256 = load_alignment_limits(alignment_config_path)
     _decoding_policy, decoding_config_sha256 = load_decoding_policy(decoding_config_path)

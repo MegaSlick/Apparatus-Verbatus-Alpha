@@ -240,6 +240,48 @@ def test_placeholders_stay_visible_until_supplied() -> None:
     assert raw["image"] == raw["volume_id"] == raw["repository_commit"] == "<not yet supplied>"
 
 
+def test_a_request_with_no_volume_is_refused_before_any_provider_is_reached(
+    tmp_path: Path,
+) -> None:
+    """Every run needs a network volume; the unsupplied placeholder must not launch."""
+
+    raw = pod_request(
+        cheapest_card(load_placement_table(PLACEMENT)),
+        image="registry.example/verbatus@sha256:" + "a" * 64,
+        volume_id=None,
+        repository_commit="b" * 40,
+        hard_deadline=utc_now().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    )
+    raw["metadata"] = {"VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS": "3600"}
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="placeholder"):
+        _request(path)
+
+    raw["volume_id"] = "  <not yet supplied>"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="placeholder"):
+        _request(path)
+
+
+def test_a_request_naming_any_other_mount_path_is_refused(tmp_path: Path) -> None:
+    raw = pod_request(
+        cheapest_card(load_placement_table(PLACEMENT)),
+        image="registry.example/verbatus@sha256:" + "a" * 64,
+        volume_id="volume-1",
+        repository_commit="b" * 40,
+        hard_deadline=utc_now().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        volume_mount_path="/workspace/elsewhere",
+    )
+    raw["metadata"] = {"VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS": "3600"}
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="volume_mount_path must be"):
+        _request(path)
+
+
 def test_main_exits_zero_on_the_committed_policy(capsys: pytest.CaptureFixture[str]) -> None:
     status = main(["--spend", str(COMMITTED_SPEND), "--placement", str(PLACEMENT)])
 

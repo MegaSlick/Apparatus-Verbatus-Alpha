@@ -751,8 +751,8 @@ def test_ingest_names_every_undecodable_file_by_position_and_digest(
 ):
     """Refusals must identify bad frames without leaking sealed filenames."""
     source, output, policy, _approved = _inputs(tmp_path)
-    stray = source / ".DS_Store"
-    stray.write_bytes(b"\x00\x01Bud1 not an image")
+    stray = source / "0-corrupt.png"
+    stray.write_bytes(b"\x89PNG\r\n\x1a\nnot really a png")
     stray_digest = hashlib.sha256(stray.read_bytes()).hexdigest()
 
     assert (
@@ -777,10 +777,10 @@ def test_ingest_names_every_undecodable_file_by_position_and_digest(
     )
     rendered = capsys.readouterr().out
     assert "1 of 4 submitted file(s) could not be decoded" in rendered
-    # `.DS_Store` sorts before `page-1.png`, so it is file 1 in the ledger's order.
+    # `0-corrupt.png` sorts before `page-1.png`, so it is file 1 in the ledger's order.
     assert f"file 1 (digest {stray_digest[:12]})" in rendered
     # The path itself never reaches the terminal.
-    assert ".DS_Store" not in rendered
+    assert "0-corrupt.png" not in rendered
     assert not list(output.iterdir())
 
 

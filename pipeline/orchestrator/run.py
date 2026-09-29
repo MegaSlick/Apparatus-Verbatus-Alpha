@@ -37,6 +37,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,7 +130,140 @@ _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_
 # from wall-clock differences is wrong across a clock adjustment, and a
 # monotonic reading names no instant a reader could compare across records.
 _clock = time.monotonic
-STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v2"
+STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v3"
+
+GPU_QUERY = (
+    "nvidia-smi",
+    "--query-gpu=utilization.gpu,memory.used",
+    "--format=csv,noheader,nounits",
+)
+GPU_SAMPLE_INTERVAL_SECONDS = 5.0
+GPU_SAMPLES_KEPT = 720
+GPU_BUSY_PERCENT = 95
+GPU_SAMPLER_JOIN_SECONDS = 30
+
+
+class GpuSampler:
+    """Polls GPU utilisation while a stage runs, so the journal can say how busy it kept the card.
+
+    Each read is parsed per card and per field: a field the driver reports as
+    `[N/A]` is `None` and costs nothing else. A sample's utilisation is its
+    busiest card's, and the busy measure counts samples above 95%. Mean, max
+    and busy fraction cover every read; only the stored list is capped. A read
+    with no utilisation is counted in `failed_reads` and never becomes a zero:
+    with no successful read the result is `None` plus the reason. The sampler
+    never raises into the stage. A thread still alive after the join timeout is
+    abandoned and its partial statistics are never published. `run`, `interval`
+    and `join_timeout` are injectable for tests.
+    """
+
+    def __init__(
+        self,
+        run=subprocess.run,
+        interval: float = GPU_SAMPLE_INTERVAL_SECONDS,
+        join_timeout: float = GPU_SAMPLER_JOIN_SECONDS,
+    ):
+        self._run = run
+        self._interval = interval
+        self._join_timeout = join_timeout
+        self._abandoned = False
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name="gpu-sampler", daemon=True)
+        self._started = False
+        self._samples: list[dict[str, object]] = []
+        self._count = 0
+        self._sum = 0
+        self._max = 0
+        self._busy = 0
+        self._failed = 0
+        self._reason: str | None = None
+
+    def __enter__(self) -> "GpuSampler":
+        try:
+            self._thread.start()
+            self._started = True
+        except Exception as error:  # noqa: BLE001 -- the stage runs unmeasured
+            self._reason = f"sampling could not start: {type(error).__name__}: {error}"
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._started:
+            self._thread.join(timeout=self._join_timeout)
+            self._abandoned = self._thread.is_alive()
+
+    def _loop(self) -> None:
+        while True:
+            try:
+                self._read()
+            except Exception as error:  # noqa: BLE001 -- a gauge never fails a stage
+                self._fail(f"{type(error).__name__}: {error}")
+            if self._stop.wait(self._interval):
+                return
+
+    def _fail(self, reason: str) -> None:
+        self._failed += 1
+        self._reason = self._reason or reason
+
+    @staticmethod
+    def _field(text: str) -> int | None:
+        try:
+            return int(text.strip())
+        except ValueError:
+            return None
+
+    def _read(self) -> None:
+        result = self._run(list(GPU_QUERY), capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            self._fail(f"nvidia-smi exited {result.returncode}: {result.stderr.strip()[:200]}")
+            return
+        cards = []
+        for line in result.stdout.strip().splitlines():
+            fields = line.split(",")
+            cards.append(
+                {
+                    "utilization_percent": self._field(fields[0]),
+                    "memory_used_mib": self._field(fields[1]) if len(fields) > 1 else None,
+                }
+            )
+        utilizations = [
+            c["utilization_percent"] for c in cards if c["utilization_percent"] is not None
+        ]
+        if not utilizations:
+            self._fail(f"nvidia-smi gave no utilisation reading: {result.stdout.strip()[:200]!r}")
+            return
+        utilization = max(utilizations)
+        memories = [c["memory_used_mib"] for c in cards if c["memory_used_mib"] is not None]
+        self._count += 1
+        self._sum += utilization
+        self._max = max(self._max, utilization)
+        self._busy += utilization > GPU_BUSY_PERCENT
+        self._samples.append(
+            {
+                "utilization_percent": utilization,
+                "memory_used_mib": max(memories) if memories else None,
+                "cards": cards,
+            }
+        )
+        del self._samples[:-GPU_SAMPLES_KEPT]
+
+    def result(self) -> tuple[dict[str, object] | None, str | None]:
+        """The journal's `gpu_utilization` and, when it is `None`, why."""
+
+        if self._abandoned:
+            return None, f"the GPU sampler did not stop within {self._join_timeout:g} s"
+        if not self._count:
+            return None, self._reason or "the stage ended before the first read"
+        return {
+            "interval_seconds": self._interval,
+            "samples": list(self._samples),
+            "sample_count": self._count,
+            "failed_reads": self._failed,
+            "first_failure_reason": self._reason,
+            "mean": self._sum / self._count,
+            "max": self._max,
+            "busy_fraction_over_95": self._busy / self._count,
+        }, None
 
 
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
@@ -321,19 +455,28 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # Bound before the try: set inside it, an interrupted stage would leave it
     # unbound and `finally` would raise a NameError that hides the real error.
     exit_code: int | None = None
+    finished: tuple[str, float] | None = None
+    sampler = GpuSampler()
     try:
-        completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
+        with sampler:
+            try:
+                completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
+            finally:
+                # The stage's end, taken before the sampler's shutdown can add to it.
+                finished = (_stamp(), _clock())
         exit_code = completed.returncode
     finally:
+        finished_at, ended = finished or (_stamp(), _clock())
         # The invocations a reader most wants timed are the ones that went wrong.
         _record_stage_timing(
             args,
             program=program,
             extra=extra,
             started_at=started_at,
-            finished_at=_stamp(),
-            duration_ms=max(0, round((_clock() - started) * 1000)),
+            finished_at=finished_at,
+            duration_ms=max(0, round((ended - started) * 1000)),
             exit_code=exit_code,
+            gpu_utilization=sampler.result(),
         )
     if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED):
         raise ContractError(f"{program} exited {completed.returncode}")
@@ -375,6 +518,7 @@ def _record_stage_timing(
     finished_at: str,
     duration_ms: int,
     exit_code: int | None,
+    gpu_utilization: tuple[dict[str, object] | None, str | None],
 ) -> None:
     """Append one stage's clock to the timing journal, best effort.
 
@@ -402,6 +546,10 @@ def _record_stage_timing(
         "finished_at": finished_at,
         "duration_ms": duration_ms,
         "exit_code": exit_code,
+        # `None` plus a reason when no read succeeded: not taken, which is not
+        # the same as zero or as a pass.
+        "gpu_utilization": gpu_utilization[0],
+        "gpu_utilization_reason": gpu_utilization[1],
     }
     try:
         # Inside the try: this runs from a `finally`, and a refusal here would
@@ -425,7 +573,7 @@ def _record_stage_timing(
                     not isinstance(first, dict)
                     or first.get("schema") != STAGE_TIMING_JOURNAL_SCHEMA
                 ):
-                    raise ValueError("existing timing journal is not stage-timing-journal.v2")
+                    raise ValueError("existing timing journal is not stage-timing-journal.v3")
                 handle.seek(-1, os.SEEK_END)
                 if handle.read(1) != b"\n":
                     handle.write(b"\n")
@@ -554,8 +702,8 @@ def main() -> int:
         "--draft-fed",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="feed the Pass-A draft to Pass B; the default withholds it "
-        "(--no-draft-fed), as ruled by the project lead through B5a "
+        help="run Pass A and feed its draft to Pass B; the default reads no Pass A "
+        "(--no-draft-fed), because a fed draft anchors the reader "
         "(config/README.md, R5a toggle register)",
     )
     parser.add_argument(

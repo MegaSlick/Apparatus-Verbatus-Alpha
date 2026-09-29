@@ -582,6 +582,31 @@ def test_the_representative_dossiers_sealed_bound_is_the_arithmetic_over_its_own
     assert tokens > PERLECTOR_PROMPT_FLOOR_TOKENS
 
 
+def test_a_looping_prior_draft_is_never_undercounted_and_a_cap_bounds_it():
+    """A 44,000-character `[[?]]` loop is 29,127 tokens to the engine (the run's own call record).
+
+    At the ratio it would be charged about 19,000; as a capped span it is charged
+    its bytes uncapped (above the engine's count) and at most the reply cap when
+    it was generated under one.  Ordinary text around it stays at the ratio.
+    """
+
+    digest = PERLECTOR_PROMPT_TEMPLATE_DIGEST
+    loop = "[[?]]\n" * 7243
+    scaffold = "testimonia: abcdefghi " * 100
+    text = scaffold + loop
+    at_ratio, _ = perlector_prompt_bound(text, template_digest=digest)
+    uncapped, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, None)])
+    capped, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, 4096)])
+    rest, _ = perlector_prompt_bound(scaffold, template_digest=digest)
+    assert at_ratio < 29_127 + PERLECTOR_PROMPT_OVERHEAD_TOKENS  # the old under-count
+    assert uncapped >= 29_127 + PERLECTOR_PROMPT_OVERHEAD_TOKENS
+    assert capped == rest + 4096
+    over, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, 10**6)])
+    assert over == uncapped
+    with pytest.raises(RequestCapacityRefusal):
+        perlector_prompt_bound(text, template_digest=digest, capped_spans=[("absent", 5)])
+
+
 def test_an_edited_prompt_template_expires_the_measured_bound():
     """The seal, in the shape `sealed_prompt_tokens` uses for a fixed prompt.
 

@@ -120,8 +120,8 @@ def _spend_policy(tmp_path: Path, *, hourly: str = "1.00", margin: int = 3600) -
 def _manifest(tmp_path: Path) -> tuple[Path, Path]:
     source = tmp_path / "submitted-pages"
     source.mkdir()
-    (source / "page-one.bin").write_bytes(b"synthetic page one\n")
-    (source / "page-two.bin").write_bytes(b"synthetic page two\n")
+    (source / "page-one.bin").write_bytes(b"\x89PNG\r\n\x1a\nsynthetic page one\n")
+    (source / "page-two.bin").write_bytes(b"\x89PNG\r\n\x1a\nsynthetic page two\n")
     manifest = tmp_path / "sealed-submission.json"
     record = build_manifest(walk_folder(source))
     manifest.write_bytes(canonical_bytes(record))
@@ -1661,6 +1661,24 @@ def test_upload_publishes_the_manifest_only_after_every_image_verifies(tmp_path:
     assert (volume / "submission-manifest.json").read_bytes() == manifest.read_bytes()
 
 
+def test_upload_sends_only_the_sealed_pages_and_their_manifest(tmp_path: Path) -> None:
+    """Whatever else sits in the source folder never leaves the machine."""
+
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    (source / "notes-added-after-sealing.txt").write_bytes(b"private note\n")
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    surface.upload(source, sealed_manifest=manifest, target=store)
+
+    assert sorted(store.puts) == [
+        "submission-manifest.json",
+        "submission-manifest.sha256",
+        "submission/page-one.bin",
+        "submission/page-two.bin",
+    ]
+
+
 def test_upload_reuses_an_identical_published_submission_without_new_writes(
     tmp_path: Path,
 ) -> None:
@@ -1699,7 +1717,9 @@ def test_upload_refuses_a_different_manifest_before_writing_its_foreign_image(
 
     changed_source = tmp_path / "changed-pages"
     shutil.copytree(source, changed_source)
-    (changed_source / "foreign-page.bin").write_bytes(b"must never enter the sealed prefix\n")
+    (changed_source / "foreign-page.bin").write_bytes(
+        b"\x89PNG\r\n\x1a\nmust never enter the sealed prefix\n"
+    )
     changed_manifest = tmp_path / "changed-submission.json"
     changed_manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(changed_source))))
     before = _all_files(store.root)
@@ -1733,7 +1753,9 @@ def test_concurrent_conflicting_uploads_leave_one_permanent_prefix_owner(
     second_root.mkdir()
     first_source, first_manifest = _manifest(first_root)
     second_source, second_manifest = _manifest(second_root)
-    (second_source / "foreign-page.bin").write_bytes(b"belongs only to the second batch\n")
+    (second_source / "foreign-page.bin").write_bytes(
+        b"\x89PNG\r\n\x1a\nbelongs only to the second batch\n"
+    )
     second_manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(second_source))))
     store = RacingStore(tmp_path / "volume")
     outcomes: list[Path | OperatorError] = []
@@ -1788,7 +1810,7 @@ def test_a_named_prefix_adds_an_independent_immutable_batch_on_one_volume(
 
     second_source = tmp_path / "second-batch"
     second_source.mkdir()
-    (second_source / "page-three.bin").write_bytes(b"synthetic page three\n")
+    (second_source / "page-three.bin").write_bytes(b"\x89PNG\r\n\x1a\nsynthetic page three\n")
     second_manifest = tmp_path / "second-submission.json"
     second_manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(second_source))))
 
@@ -1801,7 +1823,9 @@ def test_a_named_prefix_adds_an_independent_immutable_batch_on_one_volume(
 
     assert (store.root / "submission-manifest.json").read_bytes() == first_manifest.read_bytes()
     assert (store.root / "batch-02-manifest.json").read_bytes() == second_manifest.read_bytes()
-    assert (store.root / "batch-02" / "page-three.bin").read_bytes() == b"synthetic page three\n"
+    assert (
+        store.root / "batch-02" / "page-three.bin"
+    ).read_bytes() == b"\x89PNG\r\n\x1a\nsynthetic page three\n"
 
 
 def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
@@ -1812,11 +1836,11 @@ def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
     surface = _surface(tmp_path)
     source = tmp_path / "submitted-pages"
     source.mkdir()
-    (source / "page-one.bin").write_bytes(b"first\n")
+    (source / "page-one.bin").write_bytes(b"\x89PNG\r\n\x1a\nfirst\n")
     manifest = tmp_path / "sealed-submission.json"
     original = canonical_bytes(build_manifest(walk_folder(source)))
     manifest.write_bytes(original)
-    (source / "page-two.bin").write_bytes(b"second\n")
+    (source / "page-two.bin").write_bytes(b"\x89PNG\r\n\x1a\nsecond\n")
     replacement = canonical_bytes(build_manifest(walk_folder(source)))
     real_resume = surface_module.ChecksummedTransfer.resume
 
@@ -1850,7 +1874,7 @@ def test_a_nothing_to_transfer_report_does_not_read_as_upload_complete(
     surface = _surface(tmp_path, output=messages)
     source = tmp_path / "submitted-pages"
     source.mkdir()
-    (source / "page-one.bin").write_bytes(b"first\n")
+    (source / "page-one.bin").write_bytes(b"\x89PNG\r\n\x1a\nfirst\n")
     manifest = tmp_path / "sealed-submission.json"
     manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(source))))
 
@@ -1898,7 +1922,7 @@ def test_upload_refuses_a_bad_sealed_manifest_as_refused_not_partial(tmp_path: P
     surface = _surface(tmp_path)
     source = tmp_path / "submitted-pages"
     source.mkdir()
-    (source / "page-one.bin").write_bytes(b"first\n")
+    (source / "page-one.bin").write_bytes(b"\x89PNG\r\n\x1a\nfirst\n")
     manifest = tmp_path / "sealed-submission.json"
     manifest.write_bytes(b'{"not": "a canonical submission manifest"}')
 
@@ -2651,7 +2675,7 @@ def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path:
     folder = tmp_path / "approved" / "submitted-pages"
     folder.mkdir(parents=True)
     for name in ("page-1.png", "page-2.png"):
-        (folder / name).write_bytes(b"not really a page, and never opened here")
+        (folder / name).write_bytes(b"\x89PNG\r\n\x1a\nnot really a page, and never opened here")
     manifest = tmp_path / "approved" / "submission-ledger.json"
     manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(folder))))
     messages: list[str] = []

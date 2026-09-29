@@ -11,6 +11,7 @@ asserts an exact expected count.
 """
 
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -118,10 +119,10 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # the ink map must confirm ink under it before it may spend a recovery or hold
 # an act; here it cannot, so a2 goes straight to a hold without a
 # second recovery round.
-HAPPY_SNAPSHOT_FILES = 100
-REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "def36962294fb9795e64084f84fae04c8014bb51b3feaaaa0143e90fad310ba8"
-REVIEW_RUN_TREE_DIGEST = "cb319cb9e8c4f371a0d4ee67d7704a8d75fe93e90fbb39e459d750c52672368f"
+HAPPY_SNAPSHOT_FILES = 98
+REVIEW_SNAPSHOT_FILES = 108
+HAPPY_RUN_TREE_DIGEST = "2ec667790c2a990494993ce28e483b3f296cddc485623aa55990bc3cf0efbdc7"
+REVIEW_RUN_TREE_DIGEST = "00a0bfdca41bafc549603176d74db1cc9ae2a85869f511158586ac3c9c6d38cb"
 
 
 def orchestrate(
@@ -3736,12 +3737,21 @@ def test_a_short_or_decorated_revision_is_refused_before_the_door_runs(tmp_path)
     assert not (root / "r").exists()
 
 
-def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tmp_path):
+def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(
+    tmp_path, monkeypatch
+):
     """Outside the tree deliberately: a run tree is pinned byte-identical across a
     rerun, a resume and a restored backup, and a clock is not that. `pod_run` names
     this journal beside its report on the volume, where the transcript and the
     liveness tick already live."""
 
+    # A fake card on PATH: the stages inherit it, so a real reading must land.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake = fake_bin / "nvidia-smi"
+    fake.write_text("#!/bin/sh\necho '97, 1234'\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
     root = tmp_path / "runs"
     journal = tmp_path / "timings" / "pod-run-report-timings.json"
 
@@ -3753,7 +3763,7 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tm
     )
 
     entries = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
-    assert all(entry["schema"] == "stage-timing-journal.v2" for entry in entries)
+    assert all(entry["schema"] == "stage-timing-journal.v3" for entry in entries)
     assert all(entry["run_id"] == "r" for entry in entries)
     stages = [entry["stage"] for entry in entries]
     # Every program the automatic sequence invokes, the Door and the Exemplar
@@ -3767,6 +3777,11 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tm
         assert entry["started_at"].endswith("Z") and entry["finished_at"].endswith("Z")
         assert entry["repository_commit"] == COMMIT
         assert entry["repository_commit_detail"] is None
+        gpu = entry["gpu_utilization"]
+        assert entry["gpu_utilization_reason"] is None
+        assert gpu["sample_count"] >= 1 and gpu["mean"] == 97 and gpu["max"] == 97
+        assert gpu["busy_fraction_over_95"] == 1.0
+        assert gpu["samples"][0]["memory_used_mib"] == 1234
 
 
 def test_a_short_revision_is_refused_on_a_run_that_does_not_start_at_the_door(tmp_path):

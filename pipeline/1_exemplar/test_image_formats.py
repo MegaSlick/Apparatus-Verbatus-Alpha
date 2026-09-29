@@ -49,6 +49,8 @@ from synthetic_sources import (
     tiff_next_ifd_offset,
 )
 
+from common import image_sniff
+
 # --- sniff -----------------------------------------------------------------------
 
 
@@ -112,7 +114,7 @@ def test_heic_brand_sniffing_does_not_scan_past_a_fixed_ceiling():
     `MAX_SOURCE_BYTES`, 64 MiB, ~16 million iterations -- it would reach and
     detect that brand. It must not.
     """
-    ceiling = image_formats._FTYP_BRAND_SCAN_CEILING
+    ceiling = image_sniff._FTYP_BRAND_SCAN_CEILING
     filler_slots = (ceiling - 16) // 4
     filler = b"".join(struct.pack(">I", i) for i in range(filler_slots))
     data = (
@@ -662,7 +664,7 @@ def test_no_complete_gif_prefix_is_admitted_after_its_header():
     block walk now make every prefix that still names GIF a named corruption alarm,
     instead of an immutable Exemplar page that silently lost its later frame."""
     data = _two_frame_gif()
-    for cut in range(len(image_formats.GIF_SIGNATURES[0]), len(data)):
+    for cut in range(len(image_sniff.GIF_SIGNATURES[0]), len(data)):
         with pytest.raises(FormatRefusal) as caught:
             decode_raster(data[:cut])
         assert caught.value.verdict is image_formats.FormatVerdict.CORRUPT

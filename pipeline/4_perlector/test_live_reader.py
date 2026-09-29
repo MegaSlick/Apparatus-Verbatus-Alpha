@@ -14,6 +14,7 @@ import hashlib
 import json
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Mapping
 
 import live_reader
@@ -42,6 +43,7 @@ from common.request_capacity import (
     PERLECTOR_PROMPT_TEMPLATE_DIGEST,
     PROMPT_TOKENS_MEASURED_CONSTANT,
     RequestCapacityRefusal,
+    dense_page_answer_budget,
     perlector_prompt_bound,
     perlector_prompt_tokens,
     request_fits,
@@ -365,15 +367,25 @@ def _delivered_pixels(*, region_image: bytes, page_image: bytes) -> dict:
     return atomic_delivered_pixels(autopsia, read_bytes=store.__getitem__, max_images=64)
 
 
+# Different on purpose, so a request can show which of the two it was sent under.
+READING_BOUND = 128
+REPROOF_BOUND = 160
+
+
 def _reader(
     client: ChairClient,
     chair: ChairIdentity,
     *,
-    max_tokens: int | None = None,
+    max_tokens: int = READING_BOUND,
+    reproof_max_tokens: int = REPROOF_BOUND,
     protocol_config: Mapping[str, str | int] | None = None,
 ) -> VLLMReader:
     return VLLMReader(
-        client=client, chair=chair, protocol_config=protocol_config, max_tokens=max_tokens
+        client=client,
+        chair=chair,
+        protocol_config=protocol_config,
+        max_tokens=max_tokens,
+        reproof_max_tokens=reproof_max_tokens,
     )
 
 
@@ -826,30 +838,35 @@ def test_a_page_sized_crop_reserves_a_page_of_reading_not_one_acts(tmp_path: Pat
     assert [len(store) for store in blob_stores] == [0, 0]
 
 
-def test_the_reserve_is_never_below_the_max_tokens_this_reader_would_send(
-    tmp_path: Path,
-) -> None:
-    """The wire bound and the reserve cannot drift apart.
+def test_a_large_prompt_is_sent_the_room_it_leaves_not_the_cap(tmp_path: Path) -> None:
+    """The engine refuses prompt + `max_tokens` over the row, so the cap is cut to fit.
 
-    `max_tokens` is what the engine is permitted to generate. A reserve below
-    it would admit a request whose own permitted answer does not fit the row,
-    so the reserve is the larger of the two -- checked here at a bound well
-    above every measured answer budget, where the reserve is the bound itself.
+    Admission reserves only the honest answer; the sent `max_tokens` is the
+    smaller of the policy cap and the context the prompt and images leave.
     """
 
-    client, _endpoint, _blob_store, chair = _built(tmp_path, max_pixels=1806336, max_model_len=2048)
-    region_image = _image_bytes(b"REGION", width=2480, height=584)
-    page_image = _image_bytes(b"PAGE", width=2480, height=3508)
+    client, endpoint, blobs, chair = _built(tmp_path)
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
     with client:
-        with pytest.raises(RequestCapacityRefusal) as error:
-            _reader(client, chair, max_tokens=4000).read(
-                _dossier(region_image=region_image, page_image=page_image),
-                pass_kind="perlectio",
-                delivered_pixels=_delivered_pixels(
-                    region_image=region_image, page_image=page_image
-                ),
-            )
-    assert error.value.capacity["answer_budget"] == 4000
+        endpoint.script(ScriptedAnswer(content="a", finish_reason="length"))
+        result = _reader(client, chair, max_tokens=100_000).read(
+            _dossier(region_image=region_image, page_image=page_image),
+            pass_kind="perlectio",
+            delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
+        )
+    call_record = next(
+        record
+        for record in (json.loads(written) for written in blobs.written)
+        if isinstance(record, dict) and record.get("schema") == CHAIR_CALL_RECORD_SCHEMA
+    )
+    capacity = call_record["capacity"]
+    leftover = (
+        capacity["max_model_len"] - capacity["image_prompt_tokens"] - capacity["prompt_tokens"]
+    )
+    assert result["stop_reason"] == "length"
+    assert endpoint.requests[0]["max_tokens"] == leftover < 100_000
+    assert call_record["generation_sent"]["max_tokens"] == leftover
+    assert capacity["answer_budget"] == 1318
 
 
 @pytest.mark.parametrize(
@@ -1124,13 +1141,10 @@ def test_a_prompt_too_long_400_is_retained_refused_by_name_and_not_a_length_stop
 ) -> None:
     """The Perlector's own reason for caring which of the two this is.
 
-    This reader sends no `max_tokens` on purpose, so that an engine `"length"`
-    honestly means the context itself was exhausted rather than that the
-    harness cut the reading short (`truncation.py`). The cost of that honesty
-    is that a *prompt*-side overrun cannot arrive as `"length"` at all: it
-    arrives as an HTTP 400 with no choices, before generation, and
-    `EngineSignalRefusal` never runs. It must therefore surface as the client's
-    own named response refusal with the bytes retained, not as a truncated
+    A *prompt*-side overrun cannot arrive as `"length"`: it arrives as an
+    HTTP 400 with no choices, before generation, and `EngineSignalRefusal`
+    never runs. It must therefore surface as the client's own named response
+    refusal with the bytes retained, not as a truncated
     reading.
     """
 
@@ -1222,7 +1236,7 @@ def test_audit_reproof_with_no_delivered_request_refuses_exactly_as_the_fixture_
 # --- generation_sent / generation_declared ------------------------------------
 
 
-def test_max_tokens_rides_generation_sent_only_when_given(tmp_path: Path) -> None:
+def test_max_tokens_always_rides_generation_sent(tmp_path: Path) -> None:
     client, endpoint, blobs, chair = _built(tmp_path)
     region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
     with client:
@@ -1248,18 +1262,84 @@ def test_max_tokens_rides_generation_sent_only_when_given(tmp_path: Path) -> Non
     }
 
 
-def test_no_max_tokens_still_selects_perlector_direct_response_mode(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "pass_kind", ["perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior"]
+)
+def test_every_reading_kind_is_sent_the_one_reading_bound(tmp_path: Path, pass_kind: str) -> None:
+    """The kinds stay one condition: nothing about the bound varies with the label."""
     client, endpoint, _blobs, chair = _built(tmp_path)
     region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
     with client:
         endpoint.script(ScriptedAnswer(content="a", finish_reason="stop"))
-        _reader(client, chair, max_tokens=None).read(
+        _reader(client, chair).read(
             _dossier(region_image=region_image, page_image=page_image),
-            pass_kind="perlectio",
+            pass_kind=pass_kind,
             delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
         )
-    assert "max_tokens" not in endpoint.requests[0]
-    assert endpoint.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert endpoint.requests[0]["max_tokens"] == READING_BOUND
+
+
+def test_a_reproof_is_sent_its_own_bound_not_the_reading_bound(tmp_path: Path) -> None:
+    client, endpoint, _blobs, chair = _built(tmp_path)
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
+    dossier = _dossier(region_image=region_image, page_image=page_image)
+    request = build_audit_request(
+        act_key=dossier["act_key"],
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/artifacts/draft.json", "sha256": "0" * 64},
+        semi_final_text="abcde fgh",
+        flags=[{"class": "repetition", "location": {"start": 0, "end": 5}}],
+    )
+    with client:
+        endpoint.script(ScriptedAnswer(content="confirmed unchanged", finish_reason="stop"))
+        _reader(client, chair).read(
+            dossier,
+            pass_kind="audit-reproof",
+            delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
+            audit_request=request,
+        )
+    assert endpoint.requests[0]["max_tokens"] == REPROOF_BOUND != READING_BOUND
+
+
+def test_a_page_fallback_reading_and_reproof_are_admitted_on_the_real_row(
+    tmp_path: Path,
+) -> None:
+    """The output caps take no part in admission, so they refuse nothing.
+
+    A dense page's honest answer is reserved, against the prompt's admission
+    upper bound and the images, on the shipped 32,768 row; the reading and the
+    re-proof prompt both fit, and the room left is what the cap is cut to.
+    """
+    _client, _endpoint, _blobs, chair = _built(tmp_path)
+    row = next(
+        SimpleNamespace(**profile)
+        for profile in tomllib.loads(
+            (
+                Path(__file__).resolve().parents[2] / "config" / "serving_recipes_real.toml"
+            ).read_text(encoding="utf-8")
+        )["profiles"]
+        if profile["recipe"] == "unproven-real-perlector" and profile["tier"] == "generic-80gb-plus"
+    )
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
+    dossier = _dossier(region_image=region_image, page_image=page_image)
+    reading_text = prompts.build_prompt(chair.serving_recipe, chair.role, dossier, None)
+    reproof = build_audit_request(
+        act_key=dossier["act_key"],
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/artifacts/draft.json", "sha256": "0" * 64},
+        semi_final_text="abcde fgh",
+        flags=[{"class": "repetition", "location": {"start": 0, "end": 5}}],
+    )
+    reproof_text = "\n".join([reading_text, render_reproof_instruction(reproof)])
+    images = [(2480, 3508), (2480, 3508)]
+    reserved = live_reader._reserved_answer_budget(
+        "perlector", profile=row, region_sizes=images[:1], page_render_sizes=images[1:]
+    )
+    assert reserved == dense_page_answer_budget("perlector")
+    for text in (reading_text, reproof_text):
+        bound, basis = perlector_prompt_bound(text, template_digest=prompts.BUILDER_SHA256)
+        record = request_fits(row, images, bound, reserved, prompt_tokens_basis=basis)
+        assert record["fits"]
 
 
 def test_retained_float_generation_rebuilds_exact_wire_bytes_and_exposes_tampering() -> None:
@@ -1446,3 +1526,36 @@ def test_the_audit_reproof_pass_sends_the_same_base_prompt_plus_its_delivered_in
         posted, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     assert result["request_sha256"] == digest_bytes(posted_bytes)
+
+
+def test_a_looping_fed_prior_draft_is_refused_uncapped_and_admitted_under_a_cap(
+    tmp_path: Path,
+) -> None:
+    """The reader charges a fed prior draft its bytes, or the reply cap where it has one."""
+
+    region_image = _image_bytes(b"REGION")
+    page_image = _image_bytes(b"PAGE")
+    outcome = {}
+    for cap in (None, 4096):
+        client, endpoint, _blobs, chair = _built(
+            tmp_path / str(cap), max_pixels=1806336, max_model_len=32768
+        )
+        dossier = _witnessed_dossier(
+            region_image=region_image, page_image=page_image, pass_kind="perlectio"
+        )
+        dossier["prior_draft"]["text"] = "[[?]]\n" * 7243
+        endpoint.script(ScriptedAnswer(content="a reading", finish_reason="stop"))
+        with client:
+            try:
+                _reader(client, chair, max_tokens=cap).read(
+                    dossier,
+                    pass_kind="perlectio",
+                    delivered_pixels=_delivered_pixels(
+                        region_image=region_image, page_image=page_image
+                    ),
+                )
+            except RequestCapacityRefusal:
+                outcome[cap] = "refused"
+            else:
+                outcome[cap] = "admitted"
+    assert outcome == {None: "refused", 4096: "admitted"}

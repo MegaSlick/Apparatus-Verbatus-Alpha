@@ -114,9 +114,9 @@ from common.stage import verify_predecessor_seal
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
-from pipeline.orchestrator.run import SEQUENCE_NAMES
+from pipeline.orchestrator.run import SEQUENCE_NAMES, STAGE_TIMING_JOURNAL_SCHEMA
 
-from . import boot_a_request, bootstrap_main
+from . import bootstrap_main
 from .bootstrap import BootstrapActions, BootstrapReport
 from .bootstrap_main import (
     DEFAULT_PROOF_FIXTURE,
@@ -539,24 +539,6 @@ def resolve_run_plan(
     # The report path first, so every later refusal has somewhere durable to go.
     volume = bootstrap.volume_mount_path
     report_path = _run_report_path(args.report_path, bootstrap, launch_token)
-    # boot_a_request.py seals BOOT_A_VOLUME_MOUNT_PATH into every real launch
-    # request; a directory at exactly that path that is not actually mounted
-    # is an unmounted local substitute on the pod's own ephemeral disk, not
-    # the approved network volume -- write_probe (bootstrap_main.py) only
-    # proves the path is a writable directory, and gate.resolve_storage_roots
-    # only proves it exists, so neither catches this on its own. This check
-    # is scoped to the one path a real launch actually seals, not to every
-    # --volume-mount-path a drill or test may name, so a plain temporary
-    # directory used as a stand-in volume elsewhere is unaffected.
-    if str(volume) == boot_a_request.BOOT_A_VOLUME_MOUNT_PATH and not os.path.ismount(volume):
-        raise RunRefusal(
-            f"--volume-mount-path {volume} is the pod's expected network-volume mount "
-            "point, but this machine does not have anything mounted there; an unmounted "
-            "local directory at that path is not the approved storage root, whatever "
-            "gate.resolve_storage_roots would otherwise admit for it existing and being "
-            "a directory",
-            report_path=report_path,
-        )
     if bootstrap.hold_only:
         raise RunRefusal(
             "pod_run needs a full bootstrap plan; --hold-only is the drill and runs nothing",
@@ -895,7 +877,7 @@ def _records_at_close(
                             continue  # A later append can leave a torn line in the middle.
                         if (
                             not isinstance(record, dict)
-                            or record.get("schema") != "stage-timing-journal.v2"
+                            or record.get("schema") != STAGE_TIMING_JOURNAL_SCHEMA
                         ):
                             unreadable_lines += 1
                             continue

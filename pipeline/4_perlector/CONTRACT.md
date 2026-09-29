@@ -196,10 +196,9 @@ text. The grammar carries no level of doubt, so every marked span is `low`. A
 `[[` or `]]` that is not a closed mark, or a mark whose reading is `?`, publishes the
 raw answer unchanged under `malformed`. Gap marks over an answer that is otherwise
 blank add nothing: the `no-readable-text` outcome's whole-act gap already says it.
-By default Pass B does not see Pass A's clean text; `--draft-fed` opts in. When the
+By default there is no Pass A; `--draft-fed` opts in to Pass A and to Pass B seeing its clean text. When the
 draft is fed, `self_revision` offsets index it: `reading_span` in the final text,
-`testimonium_span` in the draft. When it is withheld, `self_revision` is not measured;
-differences from an unseen draft are not revisions. Pass A's marks stay on its own
+`testimonium_span` in the draft. When it is withheld, `self_revision` is not measured. Pass A's marks stay on its own
 record. Truncation is measured on the clean text. The re-proof answers in JSON and
 reports no doubts; a replacement carrying a mark, or a replacement over text Pass B
 marked, publishes `malformed`, because the marks cannot be re-anchored through the
@@ -389,22 +388,30 @@ it is re-pinned: an interpreter upgrade is a digest event.
 
 ```text
 {classification: "complete" | "truncated" | "unknown",
- signals: {stop_reason_declared, unclosed_structure, length_suspicious, ends_abruptly},
- measure: {region_pixels, page_pixels, characters, length_floor_characters_per_page}}
+ signals: {stop_reason_declared, unclosed_structure, length_suspicious | null, ends_abruptly},
+ measure: {region_pixels, page_pixels, smallest_page_pixels, characters,
+           length_floor_characters_per_page, legible_page_pixels, length_judged}}
 ```
 
 `measure` is what the length signal was judged from, and it is closed:
 `common/perlector_audit.py::validate_truncation_record` refuses a record
 without it. The region's page-space area (the union of an act's crops per page,
-summed over the pages it spans), the sealed area of those pages, the reading's
-character count, and the floor from the run's own sealed
+summed over the pages it spans), the sealed area of those pages, the area of
+the smallest single page the act spans, the reading's character count, and the
+floor and legible page size from the run's own sealed
 `config/perlector_protocol.toml` `[truncation]` table — every term of
-`characters * page_pixels < floor * region_pixels`, so a reader holding the
+`characters * page_pixels < floor * region_pixels`, judged only when
+`smallest_page_pixels >= legible_page_pixels`, so a reader holding the
 record and nothing else re-derives `length_suspicious` instead of trusting it
 (configuration protects reproducibility going forward, the record
 protects the past). The shared validator does re-derive it, and refuses a record
 whose signal disagrees with its own geometry; where the caller also holds the
-reading the record was measured over it binds `characters` to that text as well.
+reading the record was measured over it binds `characters` to that text as well,
+and where it holds the sealed table it binds the floor and the legible size.
+When the smallest page is under the legible size, `length_judged` is false and
+`length_suspicious` is `null`: the length was not consulted, and it counts
+neither as a clean nor as a suspicious vote — the verdict comes from the other
+signals.
 The floor is dimensionless on purpose — an absolute pixels-per-character ratio
 held every ordinary 300-DPI act as truncated while clearing this repository's
 fixture pages — and it is sealed rather than a module
@@ -541,13 +548,16 @@ ever have recorded for a real reading.
 
 ## R5a prior-draft protocol
 
-Every readable act now emits a `kind="lectio-prior"` Pass-A draft under the
-`lectio-prior` attempt operation. It sees the images and no Testimonia; it is
-not Lectio nuda and cannot establish text. The production `kind="perlectio"`
-is `lectio_kind="primed-with-prior"` only when the draft was fed and then carries
-equality-only `self_revision` spans against it. When the draft was withheld, it is
-`lectio_kind="primed-draft-withheld"` with an empty `self_revision`. Both production kinds
-retain the Pass-A reference and can establish text; the kind records what the reader saw.
+Pass A, the image-only draft, runs only under `--draft-fed`. Then every readable act
+emits a `kind="lectio-prior"` draft under the `lectio-prior` attempt operation. It sees
+the images and no Testimonia; it is not Lectio nuda and cannot establish text. By
+default (withheld) no Pass A is read: the reader sees the image and every witness
+in one call, and the act makes no `lectio-prior` record. The production
+`kind="perlectio"` is `lectio_kind="primed-with-prior"` only when the draft was fed
+and then carries equality-only `self_revision` spans against it and the Pass-A
+reference. When the draft was withheld, it is `lectio_kind="primed-draft-withheld"`
+with an empty `self_revision` and no prior reference. Both production kinds can
+establish text; the kind records what the reader saw.
 
 The optional `kind="primed-without-prior"` control is gated by the run-sealed
 Perlector instrument rate and typed approval record.
@@ -564,21 +574,27 @@ prior are separately tallied when failed; they do not consume the ruled
 production hard-failure cap. Its approval reference is likewise an envelope
 input and is digest-checked whenever the control artifact is read.
 
-The Pass-B dossier contains a digest-checked reference to the Pass-A draft and
-records whether its text was `fed` or `withheld`. The `--draft-fed` default is
-withheld under the project lead's B5a ruling of 2026-09-28; feeding remains an
-explicit toggle.
+The Pass-B dossier records whether the draft was `fed` or `withheld`. A fed dossier
+carries a digest-checked reference to the Pass-A draft; a withheld dossier carries no
+`prior_draft` at all, and one that does is refused. The `--draft-fed` default is
+withheld because a fed draft anchors the reader; feeding remains an explicit toggle
+and is the only way to run Pass A.
 
 **Four reading kinds, three conditions.** `lectio-nuda` and `lectio-prior` are
 built from identical dossier arguments — page context, no Testimonia, no prior
 draft — so for one act they carry the same `dossier_digest` and the same
 `rendered_sha256`. That is correct (they *are* the same condition) and it is
-pinned by a test, because it is not visible from the kind names. With a real
-chair, nuda against lectio-prior measures sampling variance; the
-witness-dependence contrast is lectio-prior, or the sampled control, against
-the production Perlectio. Whether the approval-gated nuda arm still earns its
-second model call once Pass A is universal belongs to B4's three-condition
-matrix and to the project lead — no answer is claimed here.
+pinned by a test, because it is not visible from the kind names.
+
+What each contrast measures depends on the mode. In a **fed** run (`--draft-fed`),
+nuda against lectio-prior measures sampling variance; lectio-prior (or nuda) against
+the sampled control measures witness dependence, because the control sees witnesses
+and no draft; the control against the production Perlectio measures anchoring on the
+draft. In a **withheld** run there is no lectio-prior and, because the control would
+be byte-identical to production, no control either (`--perlector-instrument-per-mille`
+is refused without `--draft-fed`). The approval-gated sampled Lectio nuda is then the
+only unprimed reading, and nuda against the production Perlectio measures witness
+dependence.
 
 **One thing about nuda did change, and it is not in the list above.**
 `common/hard_failure.py`'s `PERLECTOR_INSTRUMENT_KINDS` covers `lectio-nuda`
@@ -903,8 +919,9 @@ strand an act whose Pass A fitted and whose Pass B did not. Pinned by
 
 **The reading deadline.** `--reading-deadline <UTC ISO time>` makes a live pass refuse to
 start when the chair's `startup_timeout_seconds` plus every call left
-(`calls_per_act` = two passes + the audit round cap + one per instrument arm enabled
-for the run, at `PLANNED_SECONDS_PER_CALL`) would run past it. It also refuses to begin
+(`calls_per_act` = the one establishing call + one for Pass A when the draft is fed
++ the audit round cap + one per instrument arm enabled for the run, at
+`PLANNED_SECONDS_PER_CALL`) would run past it. It also refuses to begin
 another act, or another re-proof, when the calls left would. It stops between calls,
 never inside one; the acts it has read stay half-read, so the run ends there with every
 artifact retained (see the resume rule above). Pinned by
@@ -929,11 +946,16 @@ that may not go on the wire, which is a defect in this code rather than an accou
 run, and a traceback naming the construction site is worth more there than a named exit.
 Pinned by `::test_a_non_200_from_the_engine_stops_the_pass_in_this_stage_s_exit_vocabulary`.
 
-**`max_tokens` is not sent, and that is a decision.** No output bound is sealed
-anywhere, and this section does not invent one. vLLM bounds generation by
-`max_model_len`, so an engine `"length"` then honestly means the context itself was
-exhausted rather than that the harness cut the reading short. A sealed output bound
-belongs with the variance-experiment section, which will need one too.
+**`max_tokens` is sent, from the sealed decoding policy.** `perlector_generation` holds
+one cap for every reading pass, so the passes stay one condition, and one for the
+audit re-proof, which answers in JSON. The value sent is the smaller of the cap and the
+context the admitted prompt leaves, and it rides `generation_sent` on the retained call
+record; the cap itself is visible through the decoding digest. A reply that reaches it
+comes back as an engine `"length"`, which the truncation classifier holds as a visible
+failure of the act; nothing re-asks. A cut re-proof usually fails to assemble first and
+is published as a failed Perlectio. The cap sits far above any honest reading and stops
+a reply that has begun to loop from filling the context. Admission still reserves only
+the act's or the dense page's measured answer, so the cap refuses no act that fits.
 
 **Proved end to end.** `pipeline/test_live_reading_seam_e2e.py` reads a tree the
 Attestatores wrote through three *live* witness chairs — every record on it

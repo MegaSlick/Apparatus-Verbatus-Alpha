@@ -94,7 +94,11 @@ def scratch(tmp_path):
     shutil.rmtree(root, ignore_errors=True)
 
 
+JPEG_MAGIC = b"\xff\xd8"
+
+
 def _cache_file(scratch, name: str, content: bytes) -> tuple[Path, str]:
+    content = JPEG_MAGIC + content
     path = scratch / "cache" / name
     path.write_bytes(content)
     return path, hashlib.sha256(content).hexdigest()
@@ -108,6 +112,7 @@ def _cache_body(scratch, content: bytes) -> str:
     resolves a page's cache path from its logged `response_sha256` alone, never
     from a name a caller chose.
     """
+    content = JPEG_MAGIC + content
     digest = hashlib.sha256(content).hexdigest()
     path = scratch / "cache" / f"{digest}.jpg"
     path.write_bytes(content)
@@ -188,8 +193,8 @@ def test_build_submission_writes_images_and_outside_sidecars(scratch):
     image2 = (
         Path(shard2["folder"]) / "Ardennes" / "geneanet" / "Ardennes_BMS" / "383351" / "00143.jpg"
     )
-    assert image1.read_bytes() == b"page-one-bytes"
-    assert image2.read_bytes() == b"page-two-bytes"
+    assert image1.read_bytes() == JPEG_MAGIC + b"page-one-bytes"
+    assert image2.read_bytes() == JPEG_MAGIC + b"page-two-bytes"
     # Hard-linked, not copied: same inode as the cache file.
     assert image1.stat().st_ino == page1_path.stat().st_ino
 
@@ -1067,7 +1072,7 @@ def test_cli_builds_a_shard_from_a_synthetic_log_and_cache(scratch, tmp_path):
         / "380403"
         / "00026.jpg"
     )
-    assert image.read_bytes() == b"page-bytes"
+    assert image.read_bytes() == JPEG_MAGIC + b"page-bytes"
 
     report_path = scratch / "ledger" / "val-submission-report.json"
     assert report_path.exists()

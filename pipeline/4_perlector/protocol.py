@@ -30,14 +30,15 @@ _STRING_FIELDS: Final = frozenset(
     {"selection_rule", "page_shared_prefix_policy", "pass_b_fragment"}
 )
 
-# The truncation instrument's one sealed number, kept here so the length
-# floor rides on the `perlector-protocol` seal rather than in source, where a
+# The truncation instrument's sealed numbers, kept here so the length
+# floor and the legibility gate ride on the `perlector-protocol` seal rather than in source, where a
 # change between runs would leave provenance byte-identical. The table carries
 # its own provenance block because a number with no declared source may not
 # ship as a default.
 TRUNCATION_TABLE: Final = "truncation"
 LENGTH_FLOOR_FIELD: Final = "length_floor_characters_per_page"
-_TRUNCATION_FIELDS: Final = frozenset({LENGTH_FLOOR_FIELD, "provenance"})
+LEGIBLE_PAGE_FIELD: Final = "legible_page_pixels"
+_TRUNCATION_FIELDS: Final = frozenset({LENGTH_FLOOR_FIELD, LEGIBLE_PAGE_FIELD, "provenance"})
 _PROVENANCE_FIELDS: Final = frozenset(
     {
         "source",
@@ -82,6 +83,12 @@ def validate_truncation_table(table: Any) -> dict[str, Any]:
             "positive integer; a floor of zero never fires and is the length signal switched "
             "off by a value rather than by a decision"
         )
+    if not _plain_int(table[LEGIBLE_PAGE_FIELD]) or table[LEGIBLE_PAGE_FIELD] <= 0:
+        raise ContractError(
+            f"the Perlector protocol declaration's {where} {LEGIBLE_PAGE_FIELD} is not a "
+            "positive integer; a gate of zero judges the length of pages that cannot hold a "
+            "legible line"
+        )
     provenance = table["provenance"]
     if not isinstance(provenance, dict) or set(provenance) != _PROVENANCE_FIELDS:
         raise ContractError(
@@ -112,7 +119,11 @@ def validate_truncation_table(table: Any) -> dict[str, Any]:
             f"the Perlector protocol declaration's {where}.provenance says "
             "calibrated_for_this_corpus but records no sample"
         )
-    return {LENGTH_FLOOR_FIELD: floor, "provenance": dict(provenance)}
+    return {
+        LENGTH_FLOOR_FIELD: floor,
+        LEGIBLE_PAGE_FIELD: table[LEGIBLE_PAGE_FIELD],
+        "provenance": dict(provenance),
+    }
 
 
 def load(path: str | Path) -> tuple[dict[str, Any], str]:

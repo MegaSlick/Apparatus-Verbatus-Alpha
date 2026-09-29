@@ -27,6 +27,7 @@ never been observed; only a pod can settle it.
 from __future__ import annotations
 
 import math
+import unicodedata
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, Iterable, Mapping, Sequence
@@ -572,13 +573,30 @@ def perlector_prompt_tokens(text: str) -> tuple[int, str]:
     return PERLECTOR_PROMPT_FLOOR_TOKENS, PROMPT_TOKENS_MEASURED_FLOOR
 
 
-def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str]:
+def _text_bytes(text: str) -> int:
+    return len(unicodedata.normalize("NFC", text).encode("utf-8"))
+
+
+def perlector_prompt_bound(
+    text: str, *, template_digest: str, capped_spans: Sequence[tuple[str, int | None]] = ()
+) -> tuple[int, str]:
     """``(tokens, basis)`` for one rendered Perlector prompt: the upper bound.
 
     Per character, not per word: JSON scaffolding has few words for its tokens,
     so the per-word rate spreads five-fold across dossiers where the
     per-character rate spreads 1.6-fold.  ``template_digest`` is ``prompts.py``'s
     module digest, checked because the ratio describes only that builder's bytes.
+
+    The ratio is measured over well-formed prose and dossiers.  A model reply
+    that has degenerated into a loop tokenizes far worse (0.62 tokens per
+    character for a ``[[?]]`` loop on the 2026-09-27 run, against 0.43 here), so
+    ``capped_spans`` names the pieces of ``text`` that are such a reply (the fed
+    prior draft): each is charged ``min(bytes, cap)`` -- one token per UTF-8
+    byte, which a byte-level BPE tokenizer cannot exceed, and no more than the
+    reply cap it was generated under, when there is one.  Everything else stays
+    at the measured ratio: an under-count there is answered by the engine with
+    HTTP 400, a visible failed act, while a pessimistic bound would refuse
+    honest dense pages that fit.
     """
 
     if template_digest != PERLECTOR_PROMPT_TEMPLATE_DIGEST:
@@ -592,7 +610,20 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
             "update common/request_capacity.py"
         )
     margin_numerator, margin_denominator = PERLECTOR_BOUND_SAFETY_MARGIN
-    body = -(
+    spans = 0
+    for span, ceiling in capped_spans:
+        if span not in text:
+            raise RequestCapacityRefusal(
+                "a capped span was named that is not in the rendered prompt, so its token "
+                "charge cannot stand in for text that was never counted"
+            )
+        text = text.replace(span, "", 1)
+        spans += (
+            _text_bytes(span)
+            if ceiling is None
+            else min(_text_bytes(span), _positive(ceiling, "a capped span's ceiling"))
+        )
+    body = spans - (
         -len(text)
         * PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS
         * margin_numerator

@@ -601,7 +601,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
         "outcome": "read",
         "payload": {
             "text": passes["perlectio"]["result"]["text"],
-            "lectio_kind": "primed-with-prior",
+            "lectio_kind": "primed-draft-withheld",
             # The dossier the joint reader was actually handed, autopsia and
             # all: `establish_logical_record` proves this record's member and
             # capture provenance against the partition that autopsia names,
@@ -609,9 +609,9 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
             "dossier": {
                 "logical_act_id": logical_act["logical_act_id"],
                 "cross_capture_autopsia": autopsia,
-                "prior_draft_view": "fed",
+                "prior_draft_view": "withheld",
             },
-            "protocol": {"draft_fed": True},
+            "protocol": {"draft_fed": False},
             "basis": {"regions": regions},
             "provenance": {"chair": "perlector", "revision": "fixture"},
             "reader_invocation_ref": _ref(
@@ -934,13 +934,13 @@ def _reading_inputs(
             "text": text,
             # The establishing joint pass is the primed one; instrument arms
             # (lectio-prior, lectio-nuda, primed-without-prior) never establish.
-            "lectio_kind": "primed-with-prior",
+            "lectio_kind": "primed-draft-withheld",
             "dossier": {
                 "logical_act_id": logical_act["logical_act_id"],
                 "cross_capture_autopsia": autopsia,
-                "prior_draft_view": "fed",
+                "prior_draft_view": "withheld",
             },
-            "protocol": {"draft_fed": True},
+            "protocol": {"draft_fed": False},
             "basis": {"regions": _joint_basis_regions(fixture, autopsia)},
             "provenance": {"chair": "perlector", "revision": "fixture"},
             "reader_invocation_ref": _ref(
@@ -1593,6 +1593,50 @@ def test_an_instrument_arm_reading_cannot_establish_a_logical_act(tmp_path):
         )
 
 
+REF_PRIOR = {"relative_path": "4_perlector/artifacts/lectio-prior/x.json", "sha256": "d" * 64}
+
+
+@pytest.mark.parametrize("fed", [False, True])
+def test_the_logical_path_holds_the_prior_draft_to_its_fed_or_withheld_view(tmp_path, fed):
+    """A withheld reading carries no Pass A; a fed one must cite its own as an input."""
+    fixture = _fixture()
+    register_path, physical_page, _physical_act = _register(tmp_path, fixture)
+    partition = _partition(register_path, fixture, physical_page, captures=fixture["captures"])
+    (logical_act,) = partition["logical_acts"]
+    autopsia, blobs = _autopsia(fixture, partition)
+    _reader, passes = _read(fixture, autopsia, blobs)
+    inputs = _reading_inputs(fixture, logical_act, autopsia, passes["perlectio"]["result"]["text"])
+    archetypus = load_stage("6_archetypus", isolate_path=True)
+    base = inputs["accepted_perlectio"]["payload"]
+    dossier = {**base["dossier"], "prior_draft": {"reference": REF_PRIOR, "text": "x"}}
+    if fed:
+        payload = {
+            **base,
+            "lectio_kind": "primed-with-prior",
+            "protocol": {"draft_fed": True},
+            "dossier": {**dossier, "prior_draft_view": "fed"},
+        }
+        message = "not a digest-checked direct input"
+    else:
+        payload = {**base, "dossier": dossier}
+        message = "must be re-read"
+    forged = {**inputs["accepted_perlectio"], "payload": payload}
+    with pytest.raises(SchemaRefusal, match=message):
+        archetypus.establish_logical_record(
+            partition=partition,
+            logical_act=logical_act,
+            accepted_perlectio=forged,
+            perlectio_ref={
+                "relative_path": "4_perlector/artifacts/perlectio/joint.json",
+                "sha256": digest_of(forged),
+            },
+            accepted_review=inputs["accepted_review"],
+            recensor_ref=inputs["recensor_ref"],
+            cross_capture_dissent=inputs["cross_capture_dissent"],
+            cross_capture_dissent_ref=inputs["cross_capture_dissent_ref"],
+        )
+
+
 def test_a_partition_row_cannot_be_stapled_onto_a_reading_that_never_saw_its_captures(tmp_path):
     """The established record may not claim evidence its own reading never received.
 
@@ -1683,7 +1727,7 @@ def test_a_partition_row_cannot_be_stapled_onto_a_reading_that_never_saw_its_cap
             **inputs["accepted_perlectio"]["payload"],
             "dossier": {
                 "logical_act_id": logical_act["logical_act_id"],
-                "prior_draft_view": "fed",
+                "prior_draft_view": "withheld",
             },
         },
     }

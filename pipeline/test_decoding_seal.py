@@ -82,7 +82,7 @@ def test_a_run_seals_the_exact_decoding_bytes_it_was_created_under(tmp_path):
         ),
         pytest.param(
             "legacy",
-            "sealed under decoding.v2, which this build no longer reads; re-run",
+            "sealed under decoding.v3, which this build no longer reads; re-run",
             id="legacy-schema",
         ),
     ],
@@ -102,7 +102,7 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, change:
     body = {
         "malformed": "temperature = ",
         "temperature": source.replace("temperature = 0", "temperature = 0.7", 1),
-        "legacy": source.replace('schema = "decoding.v3"', 'schema = "decoding.v2"', 1),
+        "legacy": source.replace('schema = "decoding.v4"', 'schema = "decoding.v3"', 1),
     }[change]
     substitute.write_text(body, encoding="utf-8")
     run_root = tmp_path / "runs"

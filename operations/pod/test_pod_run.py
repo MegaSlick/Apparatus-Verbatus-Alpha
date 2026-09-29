@@ -143,7 +143,7 @@ class RecordedRunner:
                 "".join(
                     json.dumps(
                         {
-                            "schema": "stage-timing-journal.v2",
+                            "schema": "stage-timing-journal.v3",
                             "run_id": self.journal_run_id,
                             "run_root": argv[argv.index("--run-root") + 1],
                         }
@@ -1214,7 +1214,7 @@ def test_refuses_the_pod_mount_path_when_it_is_only_a_plain_directory(
     """The one path a real launch seals must actually be mounted, not merely present."""
 
     ws = _prepared(tmp_path)
-    monkeypatch.setattr(pod_run.boot_a_request, "BOOT_A_VOLUME_MOUNT_PATH", str(ws.volume))
+    monkeypatch.setattr(pod_run.bootstrap_main, "POD_VOLUME_MOUNT_PATH", str(ws.volume))
 
     exit_code, runner = _refused(ws, _run_argv(ws))
 
@@ -2280,6 +2280,7 @@ def test_real_timing_writer_and_reader_audit_mixed_and_damaged_lines(tmp_path: P
             finished_at="finish",
             duration_ms=1,
             exit_code=0,
+            gpu_utilization=(None, "test"),
         )
 
     write()
@@ -2292,7 +2293,7 @@ def test_real_timing_writer_and_reader_audit_mixed_and_damaged_lines(tmp_path: P
     write()
     args.run_root = run_root
     with journal.open("ab") as handle:
-        handle.write(b'{"schema":"stage-timing-journal.v2"')
+        handle.write(b'{"schema":"stage-timing-journal.v3"')
     write()  # Repairs the torn tail before appending the next complete line.
 
     plan = object.__new__(pod_run.RunPlan)
@@ -2331,6 +2332,7 @@ def test_timing_writer_refuses_an_existing_foreign_file(
         finished_at="finish",
         duration_ms=1,
         exit_code=0,
+        gpu_utilization=(None, "test"),
     )
 
     assert journal.read_text(encoding="utf-8") == first
@@ -2360,6 +2362,7 @@ def test_timing_writer_does_not_follow_a_symlink(
         finished_at="finish",
         duration_ms=1,
         exit_code=0,
+        gpu_utilization=(None, "test"),
     )
 
     assert evidence.read_bytes() == b"bootstrap evidence\n"

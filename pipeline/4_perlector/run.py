@@ -83,7 +83,7 @@ from common.cross_capture_autopsia import (  # noqa: E402
     over_capacity_reason,
     validate_autopsia,
 )
-from common.decoding import load_decoding_policy  # noqa: E402
+from common.decoding import load_decoding_policy, perlector_max_tokens  # noqa: E402
 from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
@@ -1349,7 +1349,7 @@ def _checked_act_scoped_attachment(
     )
     if testimonium.get("payload", {}).get("chair") != chair:
         raise SchemaRefusal(f"act {act_id} attachment points to another chair's Testimonium")
-    # Structured reports stay retained but uncountable.
+    # Comparability comes from the Testimonium's own text; structured reports are uncountable.
     if attachment["comparable"] != (
         attachment["attached"] and isinstance(testimonium.get("payload", {}).get("payload"), str)
     ):
@@ -1699,10 +1699,8 @@ def _start_live_reader(run: "_Pass") -> None:
         client=run.service.client,
         chair=run.chair,
         protocol_config=run.protocol_config,
-        # No sealed output bound: vLLM bounds generation by `max_model_len`, so an
-        # engine `"length"` means the context was exhausted, not that the harness cut
-        # the reading.
-        max_tokens=None,
+        max_tokens=run.reading_max_tokens,
+        reproof_max_tokens=run.reproof_max_tokens,
     )
     run.reader, run.receipt_ref = reader, dict(run.service.client.handle.receipt_reference)
 
@@ -1912,6 +1910,19 @@ def _page_pixels(page_renders: list[dict]) -> int:
     sums regions, so the two form one ratio.
     """
     return sum(
+        render["transform"]["source_dimensions"]["w"]
+        * render["transform"]["source_dimensions"]["h"]
+        for render in page_renders
+    )
+
+
+def _smallest_page_pixels(page_renders: list[dict]) -> int:
+    """The area of the smallest single page an act's regions were cut from.
+
+    What the truncation legibility gate is judged on: a summed area would let one
+    sub-legible page hide behind a large one.
+    """
+    return min(
         render["transform"]["source_dimensions"]["w"]
         * render["transform"]["source_dimensions"]["h"]
         for render in page_renders
@@ -2284,6 +2295,8 @@ _DOSSIER_SHAPES: Final = tuple(
     for variant in (
         frozenset(),
         {"act_attachment"},
+        {"prior_draft_view"},
+        {"act_attachment", "prior_draft_view"},
         {"prior_draft", "prior_draft_view"},
         {"act_attachment", "prior_draft", "prior_draft_view"},
     )
@@ -2424,7 +2437,13 @@ def _validate_lectio_kind(payload: dict, reading_dossier: dict) -> None:
     prior_draft = reading_dossier.get("prior_draft")
     if lectio_kind in ("primed-with-prior", "primed-draft-withheld"):
         expected_view = validate_establishing_view(payload, reading_dossier, "a Perlectio")
-        if (
+        if expected_view == "withheld":
+            if "prior_draft" in reading_dossier:
+                raise SchemaRefusal(
+                    f"a Perlectio claims {lectio_kind} but carries a prior draft; a withheld "
+                    "run makes no Pass A"
+                )
+        elif (
             not isinstance(prior_draft, dict)
             or set(prior_draft) != {"reference", "text"}
             or not isinstance(prior_draft["text"], str)
@@ -2433,7 +2452,8 @@ def _validate_lectio_kind(payload: dict, reading_dossier: dict) -> None:
                 f"a Perlectio claims {lectio_kind} but carries no closed prior-draft "
                 f"reference with view {expected_view!r}"
             )
-        validate_input_refs([prior_draft["reference"]])
+        else:
+            validate_input_refs([prior_draft["reference"]])
     elif lectio_kind == "primed-without-prior":
         # Key presence, not value: the shape check admits these keys, so a None
         # prior_draft beside a view key would pass a value test.
@@ -2442,12 +2462,14 @@ def _validate_lectio_kind(payload: dict, reading_dossier: dict) -> None:
                 "a Perlectio claims primed-without-prior but carries prior-draft data"
             )
     elif lectio_kind is not None:
-        # `None` is the kinds whose field sets exclude the key. Any other value would
-        # publish its prior-draft evidence uninspected.
+        # Any other value would publish its prior-draft evidence uninspected.
         raise SchemaRefusal(
             f"a Perlector reading names unknown lectio kind {lectio_kind!r}; a kind this "
             "validator cannot name would publish its prior-draft evidence unchecked"
         )
+    elif "prior_draft" in reading_dossier or "prior_draft_view" in reading_dossier:
+        # Lectio nuda and lectio-prior are unprimed and see no prior-draft data.
+        raise SchemaRefusal("an unprimed Perlector reading carries prior-draft data")
 
 
 def _validate_dossier_testimonia(
@@ -2723,10 +2745,12 @@ def _reconciled_truncation(*, declared_failure: str | None, truncation_record: d
     return truncation_record
 
 
-def _sealed_length_floor(protocol_config: dict[str, Any] | None) -> int | None:
-    """This run's sealed truncation floor, or `None` when no sealed protocol reached this pass.
+def _sealed_length_floor(
+    protocol_config: dict[str, Any] | None, field: str = protocol.LENGTH_FLOOR_FIELD
+) -> int | None:
+    """One of this run's sealed truncation terms, or `None` when no sealed protocol reached this pass.
 
-    Never a guessed default: a re-proof is held to the floor this run sealed or to none.
+    Never a guessed default: a re-proof is held to the floor and gate this run sealed or to none.
     """
 
     if not isinstance(protocol_config, dict):
@@ -2734,7 +2758,7 @@ def _sealed_length_floor(protocol_config: dict[str, Any] | None) -> int | None:
     table = protocol_config.get(protocol.TRUNCATION_TABLE)
     if not isinstance(table, dict):
         return None
-    floor = table.get(protocol.LENGTH_FLOOR_FIELD)
+    floor = table.get(field)
     return floor if isinstance(floor, int) and not isinstance(floor, bool) else None
 
 
@@ -2747,6 +2771,7 @@ def _audited_truncation(
     page_pixels: int,
     truncation_policy: dict,
     stop_reason: str | None,
+    smallest_page_pixels: int | None = None,
     measured: dict | None = None,
 ) -> dict:
     """The truncation instrument, re-measured over an audit-changed reading.
@@ -2766,6 +2791,7 @@ def _audited_truncation(
             text,
             region_pixels=region_pixels,
             page_pixels=page_pixels,
+            smallest_page_pixels=smallest_page_pixels,
             truncation_policy=truncation_policy,
             stop_reason=stop_reason,
         ),
@@ -2947,6 +2973,7 @@ def _sealed_sibling_semi_finals(
             reading,
             act_id,
             length_floor_characters_per_page=_sealed_length_floor(protocol_config),
+            legible_page_pixels=_sealed_length_floor(protocol_config, protocol.LEGIBLE_PAGE_FIELD),
         )
         draft_payload = chain["draft"]["payload"]
         finding_payload = chain["finding"]["payload"]
@@ -3097,6 +3124,7 @@ def _row_truncation(
         text,
         region_pixels=row["region_pixels"],
         page_pixels=row["page_pixels"],
+        smallest_page_pixels=row["smallest_page_pixels"],
         truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
         stop_reason=stop_reason,
     )
@@ -3113,7 +3141,7 @@ def _reseal_dossier(dossier: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class _Attempt:
-    """The facts every record of one act's reading attempt is published with."""
+    """The facts every record of one act's reading attempt is published with, never rebound."""
 
     act_key: str
     act_id: str
@@ -3123,6 +3151,7 @@ class _Attempt:
     page_renders: list[dict]
     region_pixels: int
     page_pixels: int
+    smallest_page_pixels: int
     protocol_config: dict[str, Any]
     protocol_sha256: str
     receipt_ref: dict[str, str] | None
@@ -3135,6 +3164,7 @@ class _Attempt:
             text,
             region_pixels=self.region_pixels,
             page_pixels=self.page_pixels,
+            smallest_page_pixels=self.smallest_page_pixels,
             truncation_policy=self.protocol_config[protocol.TRUNCATION_TABLE],
             stop_reason=stop_reason,
         )
@@ -3359,6 +3389,11 @@ def _publish_primed_without_prior(
     )
 
 
+def _prior_text(prior: dict[str, Any] | None) -> str:
+    """The Pass-A text, or empty when the run made no Pass A."""
+    return prior["text"] if prior else ""
+
+
 def _established_row(
     context,
     attempt: _Attempt,
@@ -3378,10 +3413,8 @@ def _established_row(
     """
     primed_dossier = _reseal_dossier(establishing["dossier"])
     result = establishing["result"]
-    prior = primed_dossier["prior_draft"]
-    # The prompt is reproduced from the retained dossier. In the withheld arm
-    # `combined.py` removed the prior text before the call; the prompt builder
-    # ignores a withheld prior, so both copies render the same bytes.
+    prior = primed_dossier.get("prior_draft")
+    # The prompt is reproduced from the dossier the reader was handed.
     prompt = prompts.prompt_evidence(
         attempt.chair, primed_dossier, attempt.protocol_config, attempt.protocol_sha256
     )
@@ -3422,7 +3455,7 @@ def _established_row(
         "provenance": provenance,
         "lectio_kind": kind_for_view(primed_dossier["prior_draft_view"]),
         "self_revision": self_revision_for_view(
-            primed_dossier["prior_draft_view"], reading, prior["text"], departures
+            primed_dossier["prior_draft_view"], reading, _prior_text(prior), departures
         ),
         "protocol": _protocol_record(context, attempt.protocol_config),
     }
@@ -3436,11 +3469,12 @@ def _established_row(
         # re-proof's call when that text is published.
         "fields": with_engine_call(payload, result, _PERLECTIO_FIELDS),
         "outcome": outcome,
-        # Areas, not decoded pixels: holding every act's images until the audit loop
-        # would grow memory with the act count. A re-proof rebuilds its pixels from the
-        # sealed artifacts.
+        # Areas, not decoded pixels: holding every act's images until the audit loop would
+        # risk an OOM kill before any Perlectio publishes. A re-proof rebuilds its pixels
+        # from the sealed artifacts.
         "region_pixels": attempt.region_pixels,
         "page_pixels": attempt.page_pixels,
+        "smallest_page_pixels": attempt.smallest_page_pixels,
         "declared_failure": declared_failure,
         "testimonia": testimonia,
         "attachment_view": attachment_view,
@@ -3450,7 +3484,8 @@ def _established_row(
             context, attempt.bases, attempt.page_renders, autopsia=autopsia
         )
         + list(testimonium_references.values())
-        + [attachment_view["reference"], prior["reference"]]
+        + [attachment_view["reference"]]
+        + ([prior["reference"]] if prior else [])
         + engine_call_inputs(context, result.get("engine_call")),
     }
 
@@ -3531,6 +3566,9 @@ class _Pass:
     witness_context_table: Any
     protocol_config: dict[str, Any]
     protocol_sha256: str
+    # The sealed output bounds of a reading and of an audit re-proof.
+    reading_max_tokens: int
+    reproof_max_tokens: int
     nuda_approval: ApprovalRecordBinding | None
     instrument_approval: ApprovalRecordBinding | None
     audit_policy: dict[str, Any]
@@ -3552,8 +3590,9 @@ class _Pass:
     @property
     def calls_per_act(self) -> int:
         return (
-            2
+            1
             + self.audit_policy["round_cap"]
+            + bool(self.context.draft_fed)
             + bool(self.context.nuda_per_mille)
             + bool(self.context.perlector_instrument_per_mille)
         )
@@ -3573,6 +3612,7 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
     context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)
     decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
+    reading_max_tokens, reproof_max_tokens = perlector_max_tokens(decoding_policy)
     chair = perlector_chair(context)
     serving_mode = perlector_serving_mode(context, args, chair)
     reader = fixture_reader_for(context, chair, serving_mode)
@@ -3622,6 +3662,8 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         witness_context_table=witness_context_table,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
+        reading_max_tokens=reading_max_tokens,
+        reproof_max_tokens=reproof_max_tokens,
         nuda_approval=nuda_approval,
         instrument_approval=instrument_approval,
         audit_policy=audit_policy,
@@ -3728,7 +3770,7 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
         context, act_id, ordinal, act_key=act_key
     ):
         # Never asked again: a second live reading would differ and the store refuses
-        # it.
+        # it. Not counted in `unread`: `_acts_left_to_read` already excluded it.
         return None
 
     # A declared engine outcome stands in for a real engine's report, so it is valid
@@ -3752,6 +3794,7 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
     region_pixels = _region_pixels(bases)
     page_renders = _page_renders_for(context, bases)
     page_pixels = _page_pixels(page_renders)
+    smallest_page_pixels = _smallest_page_pixels(page_renders)
 
     # Resolved before any reader call so an absent member cannot become a partial
     # presentation.
@@ -3813,6 +3856,7 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
         page_renders=page_renders,
         region_pixels=region_pixels,
         page_pixels=page_pixels,
+        smallest_page_pixels=smallest_page_pixels,
         protocol_config=run.protocol_config,
         protocol_sha256=run.protocol_sha256,
         receipt_ref=run.receipt_ref,
@@ -3967,8 +4011,8 @@ def _publish_audited_reading(
         "examination": examination,
         "reproof_truncation": reproof_truncation,
         "reproof_edits": reproof.edits if reproof else None,
-        # Named here because the Perlectio's `engine_call` stays Pass B's when the
-        # text is unchanged.
+        # None when nothing was re-proofed or the reader is the fixture reader; named here
+        # because the Perlectio's `engine_call` stays Pass B's when the text is unchanged.
         "reproof_call": reproof.call_record if reproof else None,
     }
     audit.validate_finding(
@@ -4017,6 +4061,7 @@ def _publish_audited_reading(
         {"payload": payload, "inputs": reading_inputs},
         act_id,
         length_floor_characters_per_page=_sealed_length_floor(run.protocol_config),
+        legible_page_pixels=_sealed_length_floor(run.protocol_config, protocol.LEGIBLE_PAGE_FIELD),
     )
     validate_reading_payload(
         payload,
@@ -4183,7 +4228,8 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
         return reproof_truncation
     payload["text"] = final_text
     # The doubt report travels with the call whose text is published, so nothing is
-    # re-anchored by guesswork; this also drops a Pass-B whole-act gap.
+    # re-anchored by guesswork; this also drops a Pass-B whole-act gap, which a
+    # re-proof's own report can never carry.
     reproof_assessment = _assessed(reply, text=final_text)
     if "[[" in final_text or "]]" in final_text:
         reproof_assessment = annotations.malformed_assessment(
@@ -4208,7 +4254,7 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
         final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
     )
     payload["self_revision"] = self_revision_for_view(
-        payload["dossier"]["prior_draft_view"], final_text, row["prior"]["text"], departures
+        payload["dossier"]["prior_draft_view"], final_text, _prior_text(row["prior"]), departures
     )
     payload["truncation"] = _audited_truncation(
         pass_b=payload["truncation"],
@@ -4216,6 +4262,7 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
         text=final_text,
         region_pixels=row["region_pixels"],
         page_pixels=row["page_pixels"],
+        smallest_page_pixels=row["smallest_page_pixels"],
         truncation_policy=run.protocol_config[protocol.TRUNCATION_TABLE],
         stop_reason=reply["stop_reason"],
         measured=reproof_truncation,
@@ -4253,7 +4300,7 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
             "", dissent_testimonia(row["testimonia"], row["attachment_view"])
         )
         payload["self_revision"] = self_revision_for_view(
-            payload["dossier"]["prior_draft_view"], "", row["prior"]["text"], departures
+            payload["dossier"]["prior_draft_view"], "", _prior_text(row["prior"]), departures
         )
     return reproof_truncation
 

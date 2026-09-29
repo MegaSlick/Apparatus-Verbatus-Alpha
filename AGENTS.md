@@ -117,6 +117,10 @@ conflict.
 - **An agent never pushes, opens or merges a pull request, edits the documents in
   CONTRIBUTING.md step 4, sends a notification, or starts paid infrastructure.** It commits on its branch and
   names it in its report; the host session integrates.
+- **An agent never ends its turn while a job it started is still running.** It follows
+  the job to the end and reports, or hands it off cleanly: what is running, where its
+  log is, and what the host must check. The host never makes its next step wait on a
+  report alone; it checks the lanes on a timer and acts on what is on disk.
 - Brief agents against what is actually on disk. Every brief names the objective, the
   allowed paths and actions, the deliverable, the checks and the stop conditions. Ask
   reviewers for every finding, but cap how each is written up (file, line, claim).

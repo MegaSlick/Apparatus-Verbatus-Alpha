@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from common.contracts.errors import ContractError
 from common.decoding import (
     DEFAULT_DECODING_CONFIG_PATH,
     load_decoding_policy,
+    perlector_max_tokens,
     structure_recovery_policy,
 )
 
@@ -21,7 +23,12 @@ def test_shipped_decoding_policy_declares_a_zero_temperature_record_and_variance
         "seed": 20260820,
         "passes": 2,
     }
-    assert policy["schema"] == "decoding.v3"
+    assert policy["schema"] == "decoding.v4"
+    assert policy["perlector_generation"] == {
+        "reading_max_tokens": 4096,
+        "reproof_max_tokens": 8192,
+    }
+    assert perlector_max_tokens(policy) == (4096, 8192)
     assert policy["chandra_native_inference"] == recipe_record()
     assert policy["structure"] == {
         "temperature": 1,
@@ -35,7 +42,7 @@ def test_shipped_decoding_policy_declares_a_zero_temperature_record_and_variance
     assert len(digest) == 64
 
 
-@pytest.mark.parametrize("schema", ["decoding.v1", "decoding.v2"])
+@pytest.mark.parametrize("schema", ["decoding.v1", "decoding.v2", "decoding.v3"])
 def test_legacy_decoding_schema_is_refused_by_name(tmp_path: Path, schema: str):
     path = tmp_path / "decoding.toml"
     path.write_text(f'schema = "{schema}"\n', encoding="utf-8")
@@ -125,3 +132,36 @@ def test_decoding_policy_parse_refusals_name_the_actual_cause(tmp_path, body, me
         load_decoding_policy(path)
     assert "No run or stage artifact was written" in str(refusal.value)
     assert "Restore or correct the decoding file and retry" in str(refusal.value)
+
+
+@pytest.mark.parametrize(
+    "bound",
+    ["0", "-1", "4096.0", '"4096"', "true"],
+    ids=["zero", "negative", "float", "str", "bool"],
+)
+@pytest.mark.parametrize("field", ["reading_max_tokens", "reproof_max_tokens"])
+def test_a_perlector_output_bound_that_is_not_a_positive_integer_is_refused(
+    tmp_path: Path, field: str, bound: str
+):
+    source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
+    path = tmp_path / "decoding.toml"
+    path.write_text(
+        re.sub(rf"^{field} = \d+$", f"{field} = {bound}", source, count=1, flags=re.M),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ContractError, match="perlector_generation must declare positive integer"):
+        load_decoding_policy(path)
+
+
+def test_a_missing_perlector_generation_section_is_refused(tmp_path: Path):
+    source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
+    before, _section, after = source.partition("[perlector_generation]")
+    path = tmp_path / "decoding.toml"
+    path.write_text(
+        before + "[variance_experiment]" + after.partition("[variance_experiment]")[2],
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ContractError, match="wrong closed schema"):
+        load_decoding_policy(path)

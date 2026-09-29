@@ -183,7 +183,7 @@ retains. A body the reader can place in no shape at all lands in the
 already retained.
 
 **Attestator 1 carries Chandra's pinned native inference loop.** New runs seal
-`decoding.v3`'s exact `datalab-to/chandra@d4f7467` recipe: the initial
+the decoding policy's exact `datalab-to/chandra@d4f7467` recipe: the initial
 `temperature=0, top_p=0.1` request and at most six retries at temperatures
 0.2, 0.4, 0.6, 0.8, 0.8, 0.8 with `top_p=0.95`. Only the vendor's literal
 repeat detector (including its cut-last-50 probe) or an inference error advances

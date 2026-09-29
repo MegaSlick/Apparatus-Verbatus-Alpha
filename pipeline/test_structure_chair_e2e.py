@@ -343,29 +343,30 @@ def chandra_page(blocks) -> str:
     )
 
 
-def witness_scripts() -> dict[str, list[ScriptedAnswer]]:
-    """One answer per unit of each chair's own sealed scope, over three acts.
+def witness_scripts(page_acts) -> dict[str, list[ScriptedAnswer]]:
+    """One answer per unit of each chair's own sealed scope, over the given pages.
 
-    Two pages for the page-scoped chairs, three acts for the act-scoped one:
-    the same corpus read through two scopes, and a script whose length
+    One answer per page for the page-scoped chairs, one per act for the act-scoped
+    one: the same corpus read through two scopes, and a script whose length
     disagreed with that is the first thing that would notice a scope
     regression. DAI's answers are in seal order, which the act-by-act
     assertion below then proves rather than assumes.
     """
     return {
         "attestator_1": [
-            ScriptedAnswer(content=chandra_page(PAGE_ONE_ACTS), finish_reason="stop"),
-            ScriptedAnswer(content=chandra_page(PAGE_TWO_ACTS), finish_reason="stop"),
+            ScriptedAnswer(content=chandra_page(acts), finish_reason="stop") for acts in page_acts
         ],
         "attestator_2": [
-            ScriptedAnswer(content=text, finish_reason="stop") for text in SCRIPTED_TEXTS
+            ScriptedAnswer(content=text, finish_reason="stop")
+            for acts in page_acts
+            for _bounds, text in acts
         ],
         "attestator_3": [
             ScriptedAnswer(
-                content="<output>" + "\n".join(text for _b, text in page) + "</output>",
+                content="<output>" + "\n".join(text for _b, text in acts) + "</output>",
                 finish_reason="stop",
             )
-            for page in (PAGE_ONE_ACTS, PAGE_TWO_ACTS)
+            for acts in page_acts
         ],
     }
 
@@ -466,7 +467,7 @@ def whole_run(designated, marked_out) -> SimpleNamespace:
         designated.catalogue,
         decoding_sha256,
         designated.work / "witness-world",
-        witness_scripts(),
+        witness_scripts((PAGE_ONE_ACTS, PAGE_TWO_ACTS)),
     )
     assert (
         run_in_process(
@@ -1403,24 +1404,7 @@ def page_break_run(work: Path) -> SimpleNamespace:
         catalogue,
         decoding_sha256,
         work / "witness-world",
-        {
-            "attestator_1": [
-                ScriptedAnswer(content=chandra_page(acts), finish_reason="stop")
-                for acts in page_acts
-            ],
-            "attestator_2": [
-                ScriptedAnswer(content=text, finish_reason="stop")
-                for acts in page_acts
-                for _bounds, text in acts
-            ],
-            "attestator_3": [
-                ScriptedAnswer(
-                    content="<output>" + "\n".join(text for _b, text in acts) + "</output>",
-                    finish_reason="stop",
-                )
-                for acts in page_acts
-            ],
-        },
+        witness_scripts(page_acts),
     )
     witness_exit = _run_real_in_process(attestatores, run_root, catalogue, witnesses.factory)
     reader = ReaderWorld(catalogue, work / "reader", finish_reason="stop")
