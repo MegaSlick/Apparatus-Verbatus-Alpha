@@ -285,20 +285,16 @@ limit, not an oversight, and a ledger built without the snapshot says so in
 
 ## The DAI contamination risk
 
-The drafted real roster puts two Teklia repositories in these chairs —
-`attestator_2` = `Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR` and
-`secondary_proposer` = `Teklia/YOLOv26-DAI-CReTDHI-Record-Detection` — named
-live in `common/chairs/model_store.py`'s materialization inventory and
-drafted in `config/models.toml`'s commented roster. Neither is bound today:
-the live `attestator_2` row is a local fixture identity (`source =
-"local-repository"`, `license_note = "fixture identity only; no model weights
-or model license apply"`) and `secondary_proposer` is `state = "absent"`. The
-contamination bites the day that roster is activated, and the belief behind
-it is inference, not a read of Teklia's training config: both repositories
-share the `DAI-CReTDHI` lineage in their names, and `attestator_2`'s
-dataset/model card carries its own fine-tuned-Qwen benchmark row against a
-DAI test split (CER 9.24 / WER 21.25) — `secondary_proposer` does not even
-carry `RecordGold` in its name, so the case against it is weaker still.
+The real roster (`config/models-real.toml`) puts two Teklia repositories in
+these chairs — `attestator_2` = `Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`
+and `secondary_proposer` = `Teklia/YOLOv26-DAI-CReTDHI-Record-Detection`, DAI's
+own record detector — both configured and both named in
+`common/chairs/model_store.py`'s materialization inventory. The fixture roster
+(`config/models.toml`) binds neither. `attestator_2`'s dataset/model card
+carries its own fine-tuned-Qwen benchmark row against a DAI test split (CER
+9.24 / WER 21.25), and the detector's card at its pinned revision
+(`0c57f057…`) declares `datasets: Teklia/DAI-CReTDHI-RecordGold-ATR` in its
+own metadata and reports train/val/test figures of 1132/136/139 images.
 Whether either chair actually trained or validated on this corpus's exact
 splits was never verified against Teklia's own training configuration; that
 gap is recorded, not glossed over. If the inference holds, a box or text

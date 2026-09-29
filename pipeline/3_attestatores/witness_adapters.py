@@ -39,6 +39,7 @@ from common.contracts.errors import SchemaRefusal
 from common.exemplar_boundary import read_sealed_page
 from common.imaging import crop_png, dimensions, resize_png_lanczos
 from common.native_witness import validate_presented
+from common.stage import SECONDARY_PROPOSER_CHAIR
 from common.witness_adapters import AdapterRefusal, resolve_witness_adapter_name
 
 #: What an adapter that has not declared its own format capabilities records.
@@ -117,6 +118,10 @@ class RunnableAdapter:
     #: history only: the retention seam refuses this reader's parser name for a
     #: served chair (`feeding.retain_model_view`).
     fixture_parse: Callable[..., Any] | None = None
+    #: How a page-scoped occupant is shown its page: ``None`` for one whole-page
+    #: image, ``"detector-records"`` for one image per record its own project's
+    #: detector found (the Designator's `detector-region` records).
+    page_units: str | None = None
 
 
 def _retain_dai_model_view(
@@ -142,13 +147,13 @@ def _retain_dai_model_view(
 
 
 def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
-    """Cut and resize DAI's act view from its sealed source page.
+    """Cut and resize DAI's view of one region from its sealed source page.
 
-    The input is the Designator proposal presentation, not pixels the adapter
-    independently detected. DAI is act-scoped; this implementation does not run
-    its detector and begins its crop step from the proposal it was assigned. Its
-    presentation is an ``adapter-crop`` so the complete crop→resize recipe
-    remains executable in sealed-page space.
+    Page-scoped, the region is one record DAI's own project's detector found
+    (a Designator `detector-region`); act-scoped, it is the act's proposal. The
+    crop is the region's axis-aligned bounds, never rotated. Its presentation is
+    an ``adapter-crop`` so the complete crop→resize recipe remains executable in
+    sealed-page space.
     """
     validate_presented(presentation)
     if presentation["kind"] != "region":
@@ -251,17 +256,25 @@ def _validate_whole_page_adapter_crop(
 
 
 def validate_adapter_presentation(
-    name: object, source: dict[str, Any], presented: dict[str, Any]
+    name: object, source: dict[str, Any], presented: dict[str, Any], *, act_view: bool = False
 ) -> None:
     """Re-derive the exact presentation recipe an adapter can produce.
 
     Digest re-derivation proves that ``presented`` came from the sealed page,
     but not that this configured adapter could have produced that crop and
     target. Both facts are needed when an immutable Testimonium is tallied back.
+    ``act_view`` marks a page-scoped chair's act compatibility record, which
+    keeps the act's own Designator crop because the chair was not shown it.
     """
     resolved = resolve_witness_adapter_name(name)
     validate_presented(source)
     validate_presented(presented)
+    if act_view and resolved == "dai.v1":
+        if source["kind"] != "region" or presented != source:
+            raise SchemaRefusal(
+                "a page-scoped DAI act view does not keep its act's own proposal crop"
+            )
+        return
     if resolved == "churro.v1":
         _validate_whole_page_adapter_crop(
             resolved,
@@ -353,6 +366,7 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
         present=_dai_present,
         observe=_dai_observe,
         format_capabilities=feeding.DAI_FORMAT_CAPABILITIES,
+        page_units="detector-records",
     ),
 }
 
@@ -394,6 +408,17 @@ def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:
         if isinstance(identity, AbsentChair):
             continue
         adapter = resolve_runnable_adapter(identity.witness_adapter)
+        if (
+            identity.witness_scope == "page"
+            and adapter.page_units == "detector-records"
+            and not isinstance(models.chairs.get(SECONDARY_PROPOSER_CHAIR), ChairIdentity)
+        ):
+            raise SchemaRefusal(
+                f"chair {chair!r} reads the page as {identity.witness_adapter!r} does, one "
+                f"record at a time as its own detector finds them, and the {SECONDARY_PROPOSER_CHAIR!r} "
+                "chair that runs that detector is not configured; configure it, or scope "
+                "this chair 'act'"
+            )
         declared = models.witness_framings.get(chair)
         if declared is None:
             continue

@@ -1089,7 +1089,7 @@ def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_p
     present = {item["artifact"] for item in load_download_record(tmp_path)["artifacts"]} - {
         "surya2-detection"
     }
-    assert len(present) == 4
+    assert len(present) == 5
 
     calls = []
     real = model_store.verify_store
@@ -1491,7 +1491,7 @@ def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
         "notes were not compared"
     )
     assert carried == {role: drafted[role] for role in carried}
-    assert len(carried) == 5
+    assert len(carried) == 6
 
 
 def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothing():
@@ -1533,17 +1533,18 @@ def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
 
     plan = pod_materialization_plan(tmp_path)
 
-    # Five Hugging Face chairs over four snapshots: the two chandra chairs each
+    # Six Hugging Face chairs over five snapshots: the two chandra chairs each
     # need their own role-keyed cache entry, both made from the one stored
     # snapshot, because a cache entry is keyed by role and a store is not.
     assert {chair: row["snapshot"] for chair, row in plan["cache_root_entries"].items()} == {
         "designator_structure": "hf/chandra-ocr-2",
+        "secondary_proposer": "hf/yolov26-record-detection",
         "attestator_1": "hf/chandra-ocr-2",
         "attestator_2": "hf/dai-recordgold-atr",
         "attestator_3": "hf/churro-3B",
         "perlector": "hf/qwen3.8-27B",
     }
-    assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 4
+    assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 5
     # model_root is local-repository only; it is not a second cache.
     assert plan["model_root_entries"]["proposer_surya2"]["snapshot"] == ("local/surya2-detection")
     assert plan["download_record_sha256"] == derived_inventory(record)["download_record_sha256"]
@@ -1571,7 +1572,7 @@ def test_pod_materialization_plan_reverifies_source_bytes(tmp_path):
 def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(
     tmp_path, monkeypatch
 ):
-    """Five cache roles are supplied locally, including both Chandra roles."""
+    """Six cache roles are supplied locally, including both Chandra roles."""
 
     record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
     real = load_models_toml(ROOT / "config" / "models-real.toml")

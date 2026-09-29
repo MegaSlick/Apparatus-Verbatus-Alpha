@@ -32,7 +32,6 @@ from PIL import Image, ImageDraw
 from common.chairs.config import load_models_toml
 from common.chairs.errors import ServingRecipeRefusal, UnresolvedChairRefusal
 from common.chairs.models import (
-    AbsentChair,
     ChairIdentity,
     ModelsConfig,
     ServingDetails,
@@ -63,6 +62,7 @@ from .assembly import (
 from .client import ServingModeRefusal, serving_mode_for
 from .config import (
     FixtureProfile,
+    InProcessProfile,
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
@@ -104,6 +104,7 @@ from .manager import (
     ServiceHandle,
     ServingManager,
     StageContextReceiptPublisher,
+    _launchable,
     _progress_log_line,
     _redacted,
     _watchdog_timeout,
@@ -2574,13 +2575,12 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
 def test_real_catalogue_covers_each_chair_and_names_unservable_tiers():
     """The real roster is opt-in, and every configured chair has a row.
 
-    `secondary_proposer` is absent from `config/models-real.toml` (the
-    project lead's ruling, dated in the config's own `reason`), so it never
-    reaches `configured` and needs no row. Every chair that *is* configured
-    has a row at every tier, `attestator_1` included: Chandra is
-    served and read in the Attestatores' own call rather than reusing the
-    Designator's reading. The smaller Perlector tiers name their measured
-    refusal; live rows remain unproven on real silicon.
+    Every configured chair has a row at every tier, `attestator_1` included:
+    Chandra is served and read in the Attestatores' own call rather than
+    reusing the Designator's reading. `secondary_proposer`, DAI's own record
+    detector, is an in-process row the Designator runs on the CPU, never a
+    launched engine. The smaller Perlector tiers name their measured refusal;
+    live rows remain unproven on real silicon.
     """
 
     root = Path(__file__).resolve().parents[2]
@@ -2600,20 +2600,12 @@ def test_real_catalogue_covers_each_chair_and_names_unservable_tiers():
     ]
     assert {identity.role for identity in configured} == {
         "designator_structure",
+        "secondary_proposer",
         "attestator_1",
         "attestator_2",
         "attestator_3",
         "perlector",
     }
-    # The absence itself is a ruling, so the shipped roster must keep saying so
-    # and the catalogue must cover nothing for a chair no stage resolves.
-    secondary = real_models.chairs["secondary_proposer"]
-    assert isinstance(secondary, AbsentChair)
-    assert (
-        secondary.reason
-        == "the optional YOLO secondary proposer is not part of the first real roster"
-    )
-    assert [row for row in real_catalogue.profiles if row.chair == "secondary_proposer"] == []
     assert len(real_catalogue.profiles) == len(configured) * len(tiers)
     for identity in configured:
         for tier in tiers:
@@ -2623,10 +2615,51 @@ def test_real_catalogue_covers_each_chair_and_names_unservable_tiers():
                 with pytest.raises(ServingModeRefusal, match="51.7 GiB"):
                     serving_mode_for(real_catalogue, identity, tier)
                 continue
+            if identity.role == "secondary_proposer":
+                assert isinstance(profile, InProcessProfile)
+                assert (profile.engine, profile.device, profile.imgsz) == (
+                    "ultralytics",
+                    "cpu",
+                    1024,
+                )
+                assert serving_mode_for(real_catalogue, identity, tier) == "in-process"
+                continue
             assert isinstance(profile, ServingProfile)
             assert profile.preflight_state == "unproven"
             assert profile.required_packages["vllm"] == "0.27.1"
             assert serving_mode_for(real_catalogue, identity, tier) == "live"
+
+
+def test_an_in_process_row_is_never_launched_as_a_server() -> None:
+    """The Designator runs the detector itself; the manager refuses to start it."""
+
+    chair = identity("secondary_proposer", "unproven-real-secondary-proposer")
+    row = {
+        "kind": "in-process",
+        "recipe": chair.serving_recipe,
+        "chair": chair.role,
+        "tier": TIER,
+        "engine": "ultralytics",
+        "task": "obb",
+        "device": "cpu",
+        "imgsz": 1024,
+        "conf_bp": 2500,
+        "iou_bp": 7000,
+        "max_det": 300,
+        "required_packages": {"ultralytics": "8.4.14", "torch": "2.13.0"},
+    }
+    catalogue = parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [row]})
+    with pytest.raises(ServingConfigurationError, match="no serving process is ever started"):
+        _launchable(catalogue.for_identity(chair, TIER), chair)
+    for field, value, refusal in (
+        ("device", "cuda", "device must be one of"),
+        ("conf_bp", 10_001, "at most 10000"),
+        ("required_packages", {"ultralytics": "8.4.14"}, "pins exactly"),
+    ):
+        with pytest.raises(ServingConfigurationError, match=refusal):
+            parse_serving_recipes(
+                {"schema": "serving-recipes.v1", "profiles": [{**row, field: value}]}
+            )
 
 
 def test_unsupported_real_profile_refuses_by_cause_before_a_process_starts(

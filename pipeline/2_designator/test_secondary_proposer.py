@@ -1,11 +1,14 @@
-"""The secondary proposer adds recall, never a verdict.
+"""The secondary proposer adds recall and DAI's own records, never a verdict.
 
-Three levels, cheapest first: the pure candidate rule with no I/O at all, a
-real rescue crop published through a hand-fed page analysis, and a full
-end-to-end orchestrator run proving configuring the role changes no
-authoritative outcome relative to leaving it absent.
+The `secondary_proposer` chair is DAI's own project's record detector. The
+Designator runs it and publishes what it found as page evidence that decides
+nothing; its configured pixel-scan rescue is unchanged beside it. Three levels,
+cheapest first: the pure rules with no I/O, records and rescue crops published
+over a real run tree, and a full orchestrator run proving configuring the chair
+changes no authoritative outcome relative to leaving it absent.
 """
 
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -77,13 +80,109 @@ def test_removing_the_proposer_from_a_candidate_set_never_changes_the_rescue_set
     assert [row["candidate"] for row in with_both] == [rescuable]
 
 
-# --- level 2: a real rescue crop, published, flagged non-authoritative ---------
+def test_detector_corners_are_floored_into_the_page_before_the_hull():
+    designator = load_stage("2_designator")
+    corners = [[30.9, -3.2], [205.0, 30.1], [170.4, 261.8], [0.0, 61.3]]
+    assert designator._quantized_corners(corners, 200, 260) == [
+        {"x": 30, "y": 0},
+        {"x": 199, "y": 30},
+        {"x": 170, "y": 259},
+        {"x": 0, "y": 61},
+    ]
 
 
-def _run(
-    program: str, root: Path, models_config: Path | None = None
-) -> subprocess.CompletedProcess:
-    extra = [] if models_config is None else ["--models-config", str(models_config)]
+# --- level 2: records and rescue crops over a real run tree ---------------------
+
+_ABSENT_BLOCK = """[chairs.secondary_proposer]
+state = \"absent\"
+reason = \"no secondary proposer is configured for the offline walking skeleton\"
+"""
+
+_CONFIGURED_BLOCK = """[chairs.secondary_proposer]
+state = \"configured\"
+source = \"local-repository\"
+path = \"designator_structure\"
+digest_manifest = \"{digest_manifest}\"
+manifest = \"manifests/designator_structure.json\"
+serving_recipe = \"fake-secondary-proposer-v0\"
+license_note = \"fixture identity only; no model weights or model license apply\"
+"""
+
+TIERS = ("generic-24gb", "generic-48gb", "generic-80gb-plus")
+
+# Page 1 of the synthetic fixture holds a1 at (20, 20, 160, 80) and a2 at
+# (20, 120, 160, 100). One record lies inside a1, slightly rotated; one
+# straddles both acts; one collapses to a single pixel at the page corner.
+DECLARED_DETECTIONS = (
+    {
+        "page_ordinal": 1,
+        "corners": [[30.2, 30.7], [170.9, 30.1], [170.4, 60.8], [30.0, 61.3]],
+        "score_bp": 9731,
+    },
+    {"page_ordinal": 1, "corners": [[25, 95], [175, 95], [175, 150], [25, 150]], "score_bp": 8120},
+    {
+        "page_ordinal": 1,
+        "corners": [[199.9, 259.9], [250, 300], [210, 270], [199.5, 259.2]],
+        "score_bp": 2600,
+    },
+)
+
+
+def _configured(tmp_path: Path, detections=DECLARED_DETECTIONS) -> list[str]:
+    """Stage flags for a run whose `secondary_proposer` is a fixture detector.
+
+    A copy of the shipped roster with the chair configured (reusing the
+    structure chair's fixture snapshot as its stand-in identity), the shipped
+    catalogue with the chair's fixture rows added, and the proof fixture with
+    `detections` declared as the boxes it finds.
+    """
+    config_root = tmp_path / "chair-config"
+    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
+    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
+    live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
+    assert _ABSENT_BLOCK in live
+    digest_manifest = tomllib.loads(live)["chairs"]["designator_structure"]["digest_manifest"]
+    models = config_root / "models.toml"
+    models.write_text(
+        live.replace(_ABSENT_BLOCK, _CONFIGURED_BLOCK.format(digest_manifest=digest_manifest)),
+        encoding="utf-8",
+    )
+    catalogue = config_root / "serving_recipes.toml"
+    catalogue.write_text(
+        (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8")
+        + "".join(
+            '\n[[profiles]]\nkind = "fixture"\nrecipe = "fake-secondary-proposer-v0"\n'
+            f'chair = "secondary_proposer"\ntier = "{tier}"\n'
+            'description = "offline walking-skeleton fixture for the record detector"\n'
+            for tier in TIERS
+        ),
+        encoding="utf-8",
+    )
+    fixture_root = tmp_path / "fixture-root"
+    shutil.copytree(
+        ROOT / "proof", fixture_root, ignore=shutil.ignore_patterns("*.py", "__pycache__")
+    )
+    declaration = fixture_root / "skeleton_fixture.toml"
+    declaration.write_text(
+        declaration.read_text(encoding="utf-8")
+        + "".join(
+            f"\n[[detector_record]]\npage_ordinal = {row['page_ordinal']}\n"
+            f"corners = {row['corners']}\nscore_bp = {row['score_bp']}\n"
+            for row in detections
+        ),
+        encoding="utf-8",
+    )
+    return [
+        "--models-config",
+        str(models),
+        "--serving-recipes-config",
+        str(catalogue),
+        "--fixture-root",
+        str(fixture_root),
+    ]
+
+
+def _run(program: str, root: Path, extra: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             sys.executable,
@@ -94,61 +193,134 @@ def _run(
             "r",
             "--scenario",
             "happy",
-        ]
-        + extra,
+            *extra,
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
 
 
-def _designator_context(
-    designator,
-    root: Path,
-    models_config: Path | None = None,
-    description: str = "secondary proposer test",
-):
+def _designator_context(designator, root: Path, extra: list[str], description: str):
     from common.stage import open_context, stage_parser
 
-    extra = [] if models_config is None else ["--models-config", str(models_config)]
     args = stage_parser(description).parse_args(
-        ["--run-root", str(root), "--run-id", "r", "--scenario", "happy"] + extra
+        ["--run-root", str(root), "--run-id", "r", "--scenario", "happy", *extra]
     )
     return open_context(args, designator.DESIGNATOR)
 
 
-def _prepared_context(designator, root: Path, models_config: Path | None, description: str):
-    """Run the Door and Exemplar, then open the matching Designator context."""
+def _prepared_context(designator, root: Path, extra: list[str], description: str):
+    """Run the Door through the Ink Map, then open the matching Designator context."""
     for program in programs_through("ink-map"):
-        result = _run(program, root, models_config)
+        result = _run(program, root, extra)
         assert result.returncode == 0, f"{program}: {result.stderr}"
-    return _designator_context(designator, root, models_config, description)
+    return _designator_context(designator, root, extra, description)
 
 
-def _populated_context(tmp_path, models_config: Path | None = None):
+def _populated_context(tmp_path, extra: list[str]):
     root = tmp_path / "runs"
     for program in programs_through("designator"):
-        result = _run(program, root, models_config)
+        result = _run(program, root, extra)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     designator = load_stage("2_designator")
-    context = _designator_context(designator, root, models_config)
-    return designator, context
+    return designator, _designator_context(designator, root, extra, "secondary proposer test")
+
+
+def _records(context, designator, kind: str) -> list[dict]:
+    return [
+        context.tree.read_artifact(designator.DESIGNATOR, kind, entry["artifact_id"])
+        for entry in context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
+        if entry["kind"] == kind
+    ]
 
 
 def _published_secondary_provenance(designator, context):
-    return next(
-        context.tree.read_artifact(
-            designator.DESIGNATOR, "secondary-provenance", entry["artifact_id"]
-        )["payload"]
-        for entry in context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
-        if entry["kind"] == "secondary-provenance"
+    return _records(context, designator, "secondary-provenance")[0]["payload"]
+
+
+def test_declared_detections_become_page_evidence_that_decides_nothing(tmp_path):
+    """Every record is kept with its oriented box, hull, score, class and act
+    overlaps; none holds, rescues or enters an act; a collapsed box is kept uncut.
+    """
+    designator, context = _populated_context(tmp_path, _configured(tmp_path))
+    pages = _records(context, designator, "detector-page")
+    by_page = {record["payload"]["page_ordinal"]: record["payload"] for record in pages}
+    assert {ordinal: page["detection_count"] for ordinal, page in by_page.items()} == {1: 3, 2: 0}
+    page_id = by_page[1]["record_subjects"][0].rsplit("-detector-", 1)[0]
+    assert by_page[1]["record_subjects"] == [f"{page_id}-detector-{index}" for index in range(3)]
+
+    records = {
+        record["payload"]["detector_ordinal"]: record
+        for record in _records(context, designator, "detector-record")
+    }
+    claimed = designator._claimed_regions_by_page(context)[1]
+    inside, straddling, collapsed = (records[index]["payload"] for index in range(3))
+    # Corners floored to their pixels, the hull reaching one pixel past the last centre.
+    assert inside["bounds"] == {"x": 30, "y": 30, "w": 141, "h": 32}
+    assert straddling["bounds"] == {"x": 25, "y": 95, "w": 151, "h": 56}
+    assert inside["raw_proposal"]["geometry_kind"] == "obb"
+    assert inside["raw_proposal"]["geometry"] == [
+        {"x": 30, "y": 30},
+        {"x": 170, "y": 30},
+        {"x": 170, "y": 60},
+        {"x": 30, "y": 61},
+    ]
+    assert inside["raw_proposal"]["crop_policy"] == {"mode": "aabb-enclose", "loss_recorded": False}
+    assert (inside["score_bp"], inside["class_name"]) == (9731, "record")
+    for payload in (inside, straddling, collapsed):
+        assert payload["authoritative"] is False
+        assert payload["authority_effect"] == "none"
+        assert payload["quantization"] == designator.DETECTOR_QUANTIZATION
+    # Overlap with every act proposal is recorded, never acted on.
+    expected_overlaps = {
+        name: sorted(
+            (
+                {"act_id": entry["act_id"], "overlap_px": area}
+                for entry in claimed
+                if (area := designator._overlap_area(entry["bounds"], payload["bounds"])) > 0
+            ),
+            key=lambda row: row["act_id"],
+        )
+        for name, payload in (("inside", inside), ("straddling", straddling))
+    }
+    assert len(expected_overlaps["inside"]) == 1
+    assert len(expected_overlaps["straddling"]) == 2
+    assert inside["act_overlaps"] == expected_overlaps["inside"]
+    assert straddling["act_overlaps"] == expected_overlaps["straddling"]
+    assert collapsed["cut"] is False
+    assert collapsed["bounds"] is None and collapsed["region_ref"] is None
+
+    # One crop per cut record, of its hull, cut by the stage's one crop path.
+    regions = {
+        record["subject_id"]: record for record in _records(context, designator, "detector-region")
+    }
+    assert set(regions) == {records[0]["subject_id"], records[1]["subject_id"]}
+    region = regions[records[0]["subject_id"]]["payload"]
+    assert (region["origin"], region["padding"]) == ("detector", None)
+    assert region["transform"]["bounds"] == region["raw_bounds"] == inside["bounds"]
+    blob = context.tree.read_bytes(region["image_path"])
+    assert hashlib.sha256(blob).hexdigest() == region["image_sha256"]
+
+    # Records enter no act: the seal, the regions and the rescue path never see them.
+    kinds = {
+        entry["kind"] for entry in context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
+    }
+    assert "rescue-crop" not in kinds and "secondary-proposal" not in kinds
+    seal = context.tree.read_artifact(
+        designator.DESIGNATOR, "proposal-seal", designator._seal_artifact_id()
+    )
+    assert {row["act_key"] for row in seal["payload"]["expected_acts"]} == {"a1", "a2"}
+    assert all(
+        record["payload"]["origin"] != "detector"
+        for record in _records(context, designator, "region")
     )
 
 
 def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_rescue_crop(
     tmp_path,
 ):
-    designator, context = _populated_context(tmp_path, _configured_models_config(tmp_path))
+    designator, context = _populated_context(tmp_path, _configured(tmp_path))
     records = designator.page_records(context)
     pages = designator.sealed_pages(records)
     page_record = pages[1]
@@ -239,7 +411,7 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
     ],
 )
 def test_a_configured_secondary_proposer_refuses_incomplete_provenance(tmp_path, missing, refusal):
-    designator, context = _populated_context(tmp_path, _configured_models_config(tmp_path))
+    designator, context = _populated_context(tmp_path, _configured(tmp_path))
     records = designator.page_records(context)
     page_record = designator.sealed_pages(records)[1]
     width, height, rows, evidence = designator.page_pixels(
@@ -279,7 +451,7 @@ def test_a_page_with_more_rescue_candidates_than_the_bound_is_held_as_one_item(t
     """
     import dataclasses
 
-    designator, context = _populated_context(tmp_path, _configured_models_config(tmp_path))
+    designator, context = _populated_context(tmp_path, _configured(tmp_path))
     records = designator.page_records(context)
     page_record = designator.sealed_pages(records)[1]
     width, height, rows, evidence = designator.page_pixels(
@@ -338,50 +510,12 @@ def test_a_page_with_more_rescue_candidates_than_the_bound_is_held_as_one_item(t
     )
 
 
-# --- level 3: configuring the real roster changes no authoritative outcome -----
-
-
-_ABSENT_BLOCK = """[chairs.secondary_proposer]
-state = \"absent\"
-reason = \"no secondary proposer is configured for the offline walking skeleton\"
-"""
-
-_CONFIGURED_BLOCK = """[chairs.secondary_proposer]
-state = \"configured\"
-source = \"local-repository\"
-path = \"designator_structure\"
-digest_manifest = \"{digest_manifest}\"
-manifest = \"manifests/designator_structure.json\"
-serving_recipe = \"fake-designator-v0\"
-license_note = \"fixture identity only; no model weights or model license apply\"
-"""
-
-
-def _configured_models_config(tmp_path: Path) -> Path:
-    """A `models.toml` identical to the shipped one except a configured
-    `secondary_proposer`, reusing `designator_structure`'s own fixture
-    snapshot as the stand-in identity.
-    """
-    config_root = tmp_path / "chair-config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
-    assert _ABSENT_BLOCK in live
-    digest_manifest = tomllib.loads(live)["chairs"]["designator_structure"]["digest_manifest"]
-    (config_root / "models.toml").write_text(
-        live.replace(_ABSENT_BLOCK, _CONFIGURED_BLOCK.format(digest_manifest=digest_manifest)),
-        encoding="utf-8",
-    )
-    return config_root / "models.toml"
-
-
 def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_authority(
     tmp_path, monkeypatch
 ):
     designator = load_stage("2_designator")
     root = tmp_path / "runs"
-    models_config = _configured_models_config(tmp_path)
-    context = _prepared_context(designator, root, models_config, "secondary held-exit test")
+    context = _prepared_context(designator, root, _configured(tmp_path), "secondary held-exit test")
 
     # The stub must accept gap_tolerance_px too, or it silently wouldn't be
     # called the way the stage actually calls secondary_scan.
@@ -402,6 +536,14 @@ def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_aut
     assert {row["outcome"] for row in seal["payload"]["expected_acts"]} == {"proposed"}
 
 
+def test_detector_records_alone_never_hold_the_designator(tmp_path):
+    """Records are evidence, not holds: a clean page with records still exits complete."""
+    designator = load_stage("2_designator")
+    root = tmp_path / "runs"
+    context = _prepared_context(designator, root, _configured(tmp_path), "records exit test")
+    assert designator.initial_pass(context) is False
+
+
 def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_pass(
     tmp_path, monkeypatch
 ):
@@ -415,8 +557,7 @@ def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_
     """
     designator = load_stage("2_designator")
     root = tmp_path / "runs"
-    models_config = _configured_models_config(tmp_path)
-    context = _prepared_context(designator, root, models_config, "straddling rescue test")
+    context = _prepared_context(designator, root, _configured(tmp_path), "straddling rescue test")
 
     padding = designator.geometry.load_padding_config(context.args.designator_padding_config)
     page = next(row for row in context.fixture["page"] if row["ordinal"] == 1)
@@ -449,13 +590,7 @@ def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_
     # abutting claims make it ambiguous.
     proposals = [
         record
-        for record in (
-            context.tree.read_artifact(
-                designator.DESIGNATOR, "secondary-proposal", entry["artifact_id"]
-            )
-            for entry in context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
-            if entry["kind"] == "secondary-proposal"
-        )
+        for record in _records(context, designator, "secondary-proposal")
         if record["payload"]["page_ordinal"] == 1
     ]
     assert len(proposals) == 1
@@ -467,14 +602,11 @@ def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_
 def test_an_out_of_page_secondary_candidate_is_refused_as_a_contract_error(tmp_path, monkeypatch):
     """A secondary-scan candidate landing outside the page must be refused with
     this pipeline's own `ContractError`, never `crop_png`'s bare `ValueError`.
-    Unreachable today (candidates come from the page's own pixel scan, always
-    in-page by construction), but a real detector would not carry that guarantee.
     """
     designator = load_stage("2_designator")
     root = tmp_path / "runs"
-    models_config = _configured_models_config(tmp_path)
     context = _prepared_context(
-        designator, root, models_config, "out-of-page secondary candidate test"
+        designator, root, _configured(tmp_path), "out-of-page secondary candidate test"
     )
 
     def out_of_page_candidate(width, height, rows, *, background, gap_tolerance_px):
@@ -487,7 +619,27 @@ def test_an_out_of_page_secondary_candidate_is_refused_as_a_contract_error(tmp_p
         designator.initial_pass(context)
 
 
-def _orchestrate(root: Path, models_config: Path | None) -> subprocess.CompletedProcess:
+def test_a_detector_row_the_stage_cannot_run_is_refused_before_anything_is_cut(tmp_path):
+    """The record detector is run in-process or answered by the fixture, never served."""
+    designator = load_stage("2_designator")
+    root = tmp_path / "runs"
+    extra = _configured(tmp_path)
+    catalogue = Path(extra[extra.index("--serving-recipes-config") + 1])
+    source = catalogue.read_text(encoding="utf-8")
+    catalogue.write_text(
+        source.replace('recipe = "fake-secondary-proposer-v0"', 'recipe = "nothing-serves-this"'),
+        encoding="utf-8",
+    )
+    context = _prepared_context(designator, root, extra, "unrunnable detector test")
+    with pytest.raises(ContractError, match="serving posture of the record detector"):
+        designator.initial_pass(context)
+    assert _records(context, designator, "region") == []
+
+
+# --- level 3: configuring the detector changes no authoritative outcome ---------
+
+
+def _orchestrate(root: Path, extra: list[str]) -> subprocess.CompletedProcess:
     command = [
         sys.executable,
         str(ROOT / "pipeline" / "orchestrator" / "run.py"),
@@ -499,21 +651,22 @@ def _orchestrate(root: Path, models_config: Path | None) -> subprocess.Completed
         "r",
         "--run-root",
         str(root),
+        *extra,
     ]
-    if models_config is not None:
-        command.extend(("--models-config", str(models_config)))
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
-def test_configuring_the_real_roster_changes_no_authoritative_outcome(tmp_path):
+def test_configuring_the_detector_changes_no_authoritative_outcome(tmp_path):
     from common.contracts.identities import artifact_id
     from common.contracts.stages import ARMARIUM, DESIGNATOR
     from common.runtree.store import RunTree
 
     absent_root = tmp_path / "absent"
-    assert _orchestrate(absent_root, None).returncode == 0
+    absent = _orchestrate(absent_root, [])
+    assert absent.returncode == 0, absent.stderr
     configured_root = tmp_path / "configured"
-    assert _orchestrate(configured_root, _configured_models_config(tmp_path)).returncode == 0
+    configured = _orchestrate(configured_root, _configured(tmp_path))
+    assert configured.returncode == 0, configured.stderr
 
     absent_tree = RunTree(absent_root, "r")
     configured_tree = RunTree(configured_root, "r")
@@ -547,9 +700,15 @@ def test_configuring_the_real_roster_changes_no_authoritative_outcome(tmp_path):
 
     assert seal_outcomes(absent_tree) == seal_outcomes(configured_tree)
 
-    # This fixture has no stray ink, so no rescue crop is cut either way.
+    # This fixture has no stray ink, so no rescue crop is cut either way; only
+    # the detector's own page evidence is added.
     absent_kinds = {entry["kind"] for entry in absent_tree.build_manifest(DESIGNATOR)["artifacts"]}
     configured_kinds = {
         entry["kind"] for entry in configured_tree.build_manifest(DESIGNATOR)["artifacts"]
     }
-    assert absent_kinds == configured_kinds
+    assert configured_kinds - absent_kinds == {
+        "detector-page",
+        "detector-record",
+        "detector-region",
+    }
+    assert absent_kinds <= configured_kinds

@@ -856,7 +856,7 @@ class PreflightRunner:
         self.selected_roles = selected_roles
 
     def run(self, profile: GpuProfile) -> PreflightReport:
-        from operations.serving.config import UnsupportedProfile
+        from operations.serving.config import InProcessProfile, UnsupportedProfile
 
         issues: list[PreflightIssue] = []
         placements: list[ChairPlacement] = []
@@ -940,6 +940,24 @@ class PreflightRunner:
                         role,
                     )
                 )
+                continue
+            if isinstance(serving_profile, InProcessProfile):
+                # Loaded by its own stage on the CPU: no card residency to plan and
+                # no engine to smoke-read, but its weights are verified like any chair's.
+                placements.append(
+                    ChairPlacement(
+                        role,
+                        configured.serving_recipe,
+                        tier.identifier,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        "in-process",
+                    )
+                )
+                self._verify_cache(configured, issues, cache_receipts)
                 continue
             placements.append(
                 ChairPlacement(

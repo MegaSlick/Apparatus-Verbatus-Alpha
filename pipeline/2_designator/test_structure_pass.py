@@ -1958,8 +1958,12 @@ license_note = \"fixture identity only; no model weights or model license apply\
 """
 
 
-def test_a_configured_secondary_proposer_is_refused_on_the_live_path(tmp_path, monkeypatch):
-    """Absent by ruling; a live run writes no fixture receipt for one."""
+def test_a_record_detector_the_live_pass_cannot_run_is_refused_before_any_request(
+    tmp_path, monkeypatch
+):
+    """The live pass runs the record detector in-process once its structure chair
+    has closed; a detector with no runnable row refuses before the chair starts,
+    and no receipt is written for a call that was never made."""
     import tomllib
 
     config_root = tmp_path / "chair-config"
@@ -1988,9 +1992,7 @@ def test_a_configured_secondary_proposer_is_refused_on_the_live_path(tmp_path, m
         "argv",
         _argv(root, catalogue, "--placement-tier", TIER, "--models-config", str(models)),
     )
-    with pytest.raises(
-        ContractError, match="secondary proposer chair 'secondary_proposer' is configured"
-    ):
+    with pytest.raises(ContractError, match="serving posture of the record detector"):
         designator.main(serving_factory=factory)
     assert endpoint.requests == []
     assert _receipts(root) == []

@@ -36,6 +36,7 @@ from common.credentials import log_word_carries_credential, looks_like_credentia
 
 from .config import (
     FixtureProfile,
+    InProcessProfile,
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
@@ -1364,7 +1365,7 @@ def assert_no_discoverable_local_env(*, directory: str | Path | None = None) -> 
 
 
 def _launchable(
-    profile: "ServingProfile | FixtureProfile | UnsupportedProfile",
+    profile: "ServingProfile | InProcessProfile | FixtureProfile | UnsupportedProfile",
     identity: ChairIdentity,
     *,
     qualification: bool = False,
@@ -1381,6 +1382,12 @@ def _launchable(
             f"at tier {profile.tier!r} ({profile.description}); a fixture profile is never "
             "launched, and the offline walking skeleton answers it from declared serving "
             "details instead"
+        )
+    if isinstance(profile, InProcessProfile):
+        raise ServingConfigurationError(
+            f"chair {identity.role!r} resolves to in-process profile {profile.recipe!r} at "
+            f"tier {profile.tier!r}; its own stage loads and runs it on the "
+            f"{profile.device}, and no serving process is ever started for it"
         )
     if isinstance(profile, UnsupportedProfile):
         raise ServingConfigurationError(

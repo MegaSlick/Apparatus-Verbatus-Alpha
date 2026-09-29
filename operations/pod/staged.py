@@ -142,18 +142,23 @@ class ScheduledStage:
 # the fixture roster resolves to local snapshots and boots nothing, so a
 # schedule measured against it would under-report every real boot.
 #
-# `secondary_proposer` is absent from this schedule because it is absent from
-# the real roster itself (`config/models-real.toml`): a role this schedule
-# would need to name, if it were configured, is not a boot to describe until
-# it is.  Every other configured chair boots on the pod of the stage that
-# reads it, `attestator_1` included: Chandra is served and read again here, in
-# the Attestatores' own call, never handed down from the Designator's reading.
+# Every configured chair runs on the pod of the stage that reads it,
+# `attestator_1` included: Chandra is served and read again here, in the
+# Attestatores' own call, never handed down from the Designator's reading.
+# `secondary_proposer` is DAI's own record detector: the Designator runs it
+# in-process on the CPU once its structure chair has closed, so it shares the
+# Designator's pod and never the card.
 COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
     ScheduledStage("ingest-to-volume", False),
     ScheduledStage(
         "designator",
         True,
-        (ScheduledChair("designator_structure", "Chandra, structure and crop authority"),),
+        (
+            ScheduledChair("designator_structure", "Chandra, structure and crop authority"),
+            ScheduledChair(
+                "secondary_proposer", "DAI's record detector, in-process on the CPU after Chandra"
+            ),
+        ),
     ),
     ScheduledStage(
         "attestatores",

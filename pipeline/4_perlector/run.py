@@ -98,6 +98,7 @@ from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_line
 from common.image_sniff import PNG_SIGNATURE  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
+    record_presentations,
     reported_geometry_overlaps,
     unpresented_region_ids,
     unrouted_observations,
@@ -712,18 +713,22 @@ def validate_page_testimonium_record(
                 "traced to pixels the chair received. Retain the exact presentation before "
                 "publishing the attempted record"
             )
-        if (
-            presented["source_page_id"] != record["subject_id"]
-            or presented["source_page_ordinal"] != payload["page_ordinal"]
+        presentations = record_presentations(payload)
+        if any(
+            shown["source_page_id"] != record["subject_id"]
+            or shown["source_page_ordinal"] != payload["page_ordinal"]
+            for shown in presentations
         ):
             raise SchemaRefusal(
                 "wrong page Testimonium: its presentation names a different page than its "
                 "record. Its observations would be attributed to the wrong sealed ink. Restore "
                 "the page identity and ordinal of the presentation actually served"
             )
-        _validate_presented_page(context, payload, presented)
+        for shown in presentations:
+            _validate_presented_page(context, payload, shown)
         expected_inputs = [
-            {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]}
+            {"relative_path": shown["image_path"], "sha256": shown["image_sha256"]}
+            for shown in presentations
         ]
         # Each retained response is bound beside the presented pixels, so an ordinary
         # artifact read re-hashes it instead of trusting a nested reference.
@@ -752,7 +757,9 @@ def validate_page_testimonium_record(
         for region in proposal_regions
         if region["payload"]["transform"]["source_page_id"] == record["subject_id"]
     ]
-    if payload["unpresented_regions"] != unpresented_region_ids(presented, page_proposals):
+    if payload["unpresented_regions"] != unpresented_region_ids(
+        record_presentations(payload), page_proposals
+    ):
         raise SchemaRefusal(
             "a page Testimonium does not name exactly the proposal regions outside its "
             "presentation. Its derived layer would look more complete than the pixels shown. "
@@ -1143,9 +1150,12 @@ def _checked_page_attachment(
         and basis["region_id"] in proposal_region_ids
     ]
     # Native page and compatibility act outcomes are independent; legacy
-    # page joins instead derive their outcome from the act attempts.
+    # page joins instead derive their outcome from the act attempts. A page
+    # read one record at a time is a native page reading too.
     attachment_outcome = (
-        testimonium["outcome"] if native_capture is not None else chair_testimonium["outcome"]
+        testimonium["outcome"]
+        if native_capture is not None or "presentations" in page_payload
+        else chair_testimonium["outcome"]
     )
     # The producer's shared rule, recomputed so a resealed record cannot claim either
     # `attached` or its basis: a page witness attaches on its own ink over this act's
