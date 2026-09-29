@@ -476,6 +476,13 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     return completed.returncode
 
 
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise ValueError(f"{value!r} is not a positive count")
+    return number
+
+
 def _stamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -544,8 +551,9 @@ def _record_stage_timing(
         "gpu_utilization": gpu_utilization[0],
         "gpu_utilization_reason": gpu_utilization[1],
         # What the Perlector was asked to keep in flight; `None` is its served row's
-        # `max_num_seqs`. A scheduling choice, so journaled rather than sealed; each
-        # record already holds the exact reply its call received.
+        # `max_num_seqs`. The width it used follows from this, the sealed row and the
+        # sealed draft setting, and the stage prints it. A scheduling choice, so
+        # journaled rather than sealed; each record holds the reply its call received.
         "perlector_concurrency": (
             getattr(args, "perlector_concurrency", None)
             if program == STAGE_PROGRAMS["perlector"]
@@ -712,7 +720,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--perlector-concurrency",
-        type=int,
+        type=_positive_int,
         default=None,
         help="Perlector reader calls kept in flight at once on a live chair; absent means "
         "the served row's max_num_seqs, and 1 reads one act at a time",

@@ -3077,15 +3077,20 @@ def _page_flags(
     return audit.flags_once_per_page(frozen)
 
 
-def _publish_audit_draft(
+def _audit_draft(
     context,
     row: dict[str, Any],
     flags: list[dict[str, Any]],
     *,
     round_cap: int,
     policy_record: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, str]]:
-    """Freeze the Pass-B semi-final and its page flags before any re-proof."""
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
+    """Freeze the Pass-B semi-final and its page flags before any re-proof.
+
+    Returns the draft payload, its publication and the reference it will have once
+    published. The re-proof request binds that reference before the call, and the
+    draft itself is published in act order afterwards, beside its finding.
+    """
     payload = row["payload"]
     draft_payload = {
         "act_key": row["act"]["act_key"],
@@ -3100,15 +3105,31 @@ def _publish_audit_draft(
         ),
     }
     audit.validate_draft(draft_payload)
-    draft = context.publish(
-        kind="audit-draft",
-        subject_id=row["act_id"],
-        outcome="read",
-        attempt=perlector_attempt_id(row["act_id"], "perlegere", payload["attempt_ordinal"]),
-        inputs=row["inputs"],
-        payload=draft_payload,
-    )
-    return draft_payload, context.input_ref(draft.relative_path)
+    publication = {
+        "kind": "audit-draft",
+        "subject_id": row["act_id"],
+        "outcome": "read",
+        "attempt": perlector_attempt_id(row["act_id"], "perlegere", payload["attempt_ordinal"]),
+        "inputs": row["inputs"],
+        "payload": draft_payload,
+    }
+    envelope = context.envelope(**publication)
+    reference = {
+        "relative_path": context.tree.artifact_path(
+            PERLECTOR, "audit-draft", envelope["artifact_id"]
+        ),
+        "sha256": digest_bytes(canonical_bytes(envelope)),
+    }
+    return draft_payload, publication, reference
+
+
+def _publish_audit_draft(context, publication: dict[str, Any], reference: dict[str, str]) -> None:
+    published = context.publish(**publication)
+    if context.input_ref(published.relative_path) != reference:
+        raise SchemaRefusal(
+            f"the audit draft at {published.relative_path} is not the draft its re-proof "
+            f"request bound ({reference!r})"
+        )
 
 
 def _cap_exhausted_spans(flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3535,6 +3556,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     """One Perlector pass: every requested act read once and published once."""
     run = _open_pass(registry_factory, serving_factory, service)
     _refuse_a_live_start_past_the_deadline(run)
+    # The effective width, for the transcript: the journal holds only what was asked.
+    print(f"perlector: up to {run.concurrency} reader calls in flight", file=sys.stderr)
     rows = _in_order_window(run.concurrency, (_reading_job(run, act) for act in run.wanted))
     pending = [row for row in rows if row is not None]
     _publish_audited_readings(run, pending)
@@ -3760,21 +3783,31 @@ class _PreparedAct:
 def _reading_job(run: _Pass, act: dict[str, Any]):
     """Prepare one act on the main thread; return its reader call and in-order finish.
 
-    `None` when the act needs no call: its not-run record, if any, is already published.
+    An act with no call has no call: its finish publishes its not-run record, if any.
     """
     prepared = _prepare_act(run, act)
-    if prepared is None:
-        return None
-    return partial(_call_act, run, prepared), partial(_publish_act, run, prepared)
+    if isinstance(prepared, _PreparedAct):
+        return partial(_call_act, run, prepared), partial(_publish_act, run, prepared)
+    return None, partial(_publish_without_reading, prepared)
 
 
-def _prepare_act(run: _Pass, act: dict[str, Any]) -> _PreparedAct | None:
-    """Resolve one act up to its reader call, or publish why it is not read."""
+def _publish_without_reading(publication, _result: None) -> None:
+    if publication is not None:
+        publication()
+
+
+def _prepare_act(run: _Pass, act: dict[str, Any]):
+    """Resolve one act up to its reader call, or to the not-run record it will publish.
+
+    Returns the prepared act, the deferred not-run publication, or `None` for an act
+    already sealed.
+    """
     context, act_id, act_key = run.context, act["act_id"], act["act_key"]
     if act["outcome"] == "held":
         # Reading part of an act would deliver a truncation as output; acknowledged
         # explicitly, never skipped, so no unit goes unaccounted.
-        _publish_not_run(
+        return partial(
+            _publish_not_run,
             run,
             act,
             1,
@@ -3785,11 +3818,11 @@ def _prepare_act(run: _Pass, act: dict[str, Any]) -> _PreparedAct | None:
                 "truncation delivered as an output"
             ),
         )
-        return None
 
     if act_id in run.holds:
         # Derived, not fixed: an act re-asked after a recrop gets its next ordinal.
-        _publish_not_run(
+        return partial(
+            _publish_not_run,
             run,
             act,
             _next_attempt(context, act_id, act_regions(context, act_id)[0]),
@@ -3806,7 +3839,6 @@ def _prepare_act(run: _Pass, act: dict[str, Any]) -> _PreparedAct | None:
                 "partition_finding": run.holds[act_id],
             },
         )
-        return None
 
     # One region read answers both the attempt ordinal and the crops read, so
     # `_next_attempt` refuses an unplaceable origin before any immutable Perlectio exists.
@@ -3815,7 +3847,8 @@ def _prepare_act(run: _Pass, act: dict[str, Any]) -> _PreparedAct | None:
     if isinstance(run.chair, AbsentChair):
         # An explicit record of the absence: producing nothing would leave the Recensor
         # to infer a gap it cannot see.
-        _publish_not_run(
+        return partial(
+            _publish_not_run,
             run,
             act,
             ordinal,
@@ -3824,7 +3857,6 @@ def _prepare_act(run: _Pass, act: dict[str, Any]) -> _PreparedAct | None:
             basis={"regions": [], "testimonia": []},
             dissent=[],
         )
-        return None
 
     if run.serving_mode == "live" and _reading_already_sealed(
         context, act_id, ordinal, act_key=act_key
@@ -3871,7 +3903,9 @@ def _prepare_act(run: _Pass, act: dict[str, Any]) -> _PreparedAct | None:
     # the transport chunk its views.
     capacity_finding = over_capacity_reason(autopsia, run.max_images)
     if capacity_finding is not None:
-        _publish_not_run(
+        run.unread -= 1
+        return partial(
+            _publish_not_run,
             run,
             act,
             ordinal,
@@ -3883,8 +3917,6 @@ def _prepare_act(run: _Pass, act: dict[str, Any]) -> _PreparedAct | None:
             logical_act_id=logical_act_id,
             cross_capture_autopsia=autopsia,
         )
-        run.unread -= 1
-        return None
 
     _refuse_past_deadline(
         run.args.reading_deadline,
@@ -3951,9 +3983,12 @@ def _call_act(run: _Pass, prepared: _PreparedAct) -> dict[str, Any] | Exception:
             control_sampled=prepared.control_sampled,
             draft_fed=run.context.draft_fed,
             # Runs before the establishing arm, which embeds the prior reference it
-            # returns; only a draft-fed pass calls it, and that pass is serial, so it
-            # publishes on the main thread.
-            publish_prior=partial(_publish_lectio_prior, run.context, prepared.attempt),
+            # returns. Only a serial pass, calling inline on the main thread, may publish.
+            publish_prior=(
+                partial(_publish_lectio_prior, run.context, prepared.attempt)
+                if run.concurrency == 1
+                else None
+            ),
         )
     except _ACT_LOCAL_READING_FAILURES as error:
         return error
@@ -4017,38 +4052,52 @@ def _publish_act(
 
 
 def _in_order_window(width: int, jobs) -> list[Any]:
-    """Run each job's call with at most `width` in flight; finish every job in order here.
+    """Run jobs' calls with at most `width` jobs unfinished; finish every job in order here.
 
-    A job is `None` (nothing to call) or `(call, finish)`. Jobs are drawn lazily, so the
-    next one is prepared, and its deadline checked, only once a slot is free. `finish`
-    runs on this thread, strictly in job order, with what `call` returned, so records
-    are published exactly as a serial pass would publish them. A call that raises
-    re-raises at its own place in that order. Width 1 calls inline, with no thread.
+    A job is `(call, finish)`, and `call` is `None` for a job that only publishes. Jobs
+    are drawn lazily, so the next is prepared, and its deadline checked, only once fewer
+    than `width` are unfinished. `finish` runs on this thread, strictly in job order,
+    with what `call` returned (`None` without a call), so records are published in the
+    order a serial pass publishes them. Width 1 calls inline, with no thread.
+
+    Every job drawn is finished: if drawing a job, a call or a finish raises, the jobs
+    already drawn are still finished in order, so no reply is left without its record,
+    and then the first error re-raises with any later ones attached as notes. An
+    interrupt abandons the window at once, so the chair can be stopped without waiting.
     """
     finished: list[Any] = []
     if width == 1:
-        for job in jobs:
-            if job is not None:
-                call, finish = job
-                finished.append(finish(call()))
+        for call, finish in jobs:
+            finished.append(finish(call() if call is not None else None))
         return finished
+    pool = ThreadPoolExecutor(max_workers=width)
     window: deque = deque()
-    with ThreadPoolExecutor(max_workers=width) as pool:
+
+    def finish_first() -> None:
+        future, finish = window.popleft()
+        finished.append(finish(future.result() if future is not None else None))
+
+    error: Exception | None = None
+    try:
         try:
-            for job in jobs:
-                if job is None:
-                    continue
-                call, finish = job
-                window.append((pool.submit(call), finish))
-                if len(window) == width:
-                    future, finish = window.popleft()
-                    finished.append(finish(future.result()))
-            while window:
-                future, finish = window.popleft()
-                finished.append(finish(future.result()))
-        finally:
-            # Nothing queued is left to start after a refusal; running calls finish.
-            pool.shutdown(wait=True, cancel_futures=True)
+            for call, finish in jobs:
+                window.append((pool.submit(call) if call is not None else None, finish))
+                while window and (len(window) == width or window[0][0] is None):
+                    finish_first()
+        except Exception as raised:
+            error = raised
+        while window:
+            try:
+                finish_first()
+            except Exception as raised:
+                if error is None:
+                    error = raised
+                else:
+                    error.add_note(f"a later act also failed: {type(raised).__name__}: {raised}")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    if error is not None:
+        raise error
     return finished
 
 
@@ -4101,20 +4150,23 @@ class _Reproof:
 def _audit_job(
     run: _Pass, row: dict[str, Any], flags: list[dict[str, Any]], policy_record: dict[str, Any]
 ):
-    """Freeze the semi-final; finish the act now, or return its re-proof call and finish.
-
-    The draft is published first because the re-proof request binds its digest.
-    """
+    """Freeze the semi-final and return the act's re-proof call, if due, and its finish."""
     round_cap = run.audit_policy["round_cap"]
-    draft_payload, draft_ref = _publish_audit_draft(
+    draft_payload, draft_publication, draft_ref = _audit_draft(
         run.context, row, flags, round_cap=round_cap, policy_record=policy_record
     )
     finish = partial(
-        _publish_audited_reading, run, row, flags, policy_record, draft_payload, draft_ref
+        _publish_audited_reading,
+        run,
+        row,
+        flags,
+        policy_record,
+        draft_payload,
+        draft_publication,
+        draft_ref,
     )
     if not audit.reproof_delivery_due(flags, round_cap):
-        finish(None, None)
-        return None
+        return None, partial(finish, None)
     request = _reproof_request(run, row, flags, draft_ref)
     _refuse_past_deadline(
         run.args.reading_deadline, PLANNED_SECONDS_PER_CALL, "the next re-proof call"
@@ -4128,12 +4180,14 @@ def _publish_audited_reading(
     flags: list[dict[str, Any]],
     policy_record: dict[str, Any],
     draft_payload: dict[str, Any],
+    draft_publication: dict[str, Any],
     draft_ref: dict[str, str],
     request: dict[str, Any] | None,
     reply: dict[str, Any] | Exception | None,
 ) -> None:
-    """Adopt a delivered re-proof, if one was due, then publish finding and Perlectio."""
+    """Publish the draft, adopt a delivered re-proof if one was due, then finding and Perlectio."""
     context, payload, act_id = run.context, row["payload"], row["act_id"]
+    _publish_audit_draft(context, draft_publication, draft_ref)
     round_cap = run.audit_policy["round_cap"]
     # The one function `validate_chain` and `audit_request` also use, so the sealed,
     # delivered and recomputed plans are one computation.

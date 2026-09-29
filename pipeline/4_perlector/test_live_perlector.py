@@ -2197,6 +2197,7 @@ def _run_batching(
     monkeypatch,
     *extra_args: str,
     fail_marker: str | None = None,
+    resume: bool = False,
 ) -> tuple[Path, _ContentEndpoint]:
     """Run the stage on a fresh copy of `template` named `name`.
 
@@ -2207,7 +2208,8 @@ def _run_batching(
     """
     source, catalogue = template
     root = tmp_path / name / "runs"
-    shutil.copytree(source, root)
+    if not resume:
+        shutil.copytree(source, root)
     endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID, fail_marker=fail_marker)
     factory = _serving_factory(
         endpoint,
@@ -2250,14 +2252,27 @@ def _stage_bytes(root: Path) -> dict[str, bytes]:
 def test_concurrent_calls_publish_exactly_the_bytes_a_serial_pass_publishes(
     batching_chained_run, tmp_path, monkeypatch
 ):
+    writes: list[tuple[str, str]] = []
+    publish = RunTree.publish_artifact
+
+    def recording(tree, envelope):
+        writes.append((envelope["kind"], envelope["subject_id"]))
+        return publish(tree, envelope)
+
+    monkeypatch.setattr(RunTree, "publish_artifact", recording)
     serial_root, serial = _run_batching(
         batching_chained_run, tmp_path, "serial", monkeypatch, "--perlector-concurrency", "1"
     )
-    batched_root, batched = _run_batching(batching_chained_run, tmp_path, "batched", monkeypatch)
+    serial_writes, writes[:] = writes[:], []
+    batched_root, batched = _run_batching(
+        batching_chained_run, tmp_path, "batched", monkeypatch, "--perlector-concurrency", "5"
+    )
 
     assert serial.most_in_flight == 1
-    # The row's bound is the default, is reached, and is never exceeded.
+    # Asked for more than the row's bound, the pass is capped at it, and reaches it.
     assert batched.most_in_flight == BATCH
+    # Every record is written in the order the serial pass wrote it.
+    assert writes == serial_writes
     # Both acts were due a re-proof, and those were batched too.
     assert batched.most_reproofs_in_flight == BATCH
     # Each act's request carries only sealed inputs, never another act's reading, so
@@ -2291,17 +2306,21 @@ def test_one_failed_call_in_a_batch_fails_only_its_own_act(
     assert _stage_bytes(batched_root) == _stage_bytes(serial_root)
 
 
-def test_the_deadline_is_checked_before_each_call_is_started(
+def test_a_refusal_mid_batch_still_publishes_every_act_already_sent(
     batching_chained_run, tmp_path, monkeypatch
 ):
-    """A refusal before the second act's call leaves only the first act's call sent."""
+    """The deadline refuses the second act's re-proof while the first act's is in flight.
+
+    The first act's reply is still published as its Perlectio, so a resumed pass never
+    asks the chair about it again.
+    """
     checks = 0
     refuse = perlector._refuse_past_deadline
-    sent: list = []
+    endpoints: list[_ContentEndpoint] = []
 
-    def refuse_the_second_act(deadline, seconds_needed, what):
+    def refuse_the_second_reproof(deadline, seconds_needed, what):
         nonlocal checks
-        if what.startswith("reading the"):
+        if what == "the next re-proof call":
             checks += 1
             if checks == 2:
                 raise ContractError("simulated deadline")
@@ -2311,15 +2330,28 @@ def test_the_deadline_is_checked_before_each_call_is_started(
 
     def recording_init(self, **kwargs):
         original_init(self, **kwargs)
-        sent.append(self)
+        endpoints.append(self)
 
-    monkeypatch.setattr(perlector, "_refuse_past_deadline", refuse_the_second_act)
     monkeypatch.setattr(_ContentEndpoint, "__init__", recording_init)
-    with pytest.raises(ContractError, match="simulated deadline"):
-        _run_batching(batching_chained_run, tmp_path, "refused", monkeypatch)
+    with monkeypatch.context() as patch:
+        patch.setattr(perlector, "_refuse_past_deadline", refuse_the_second_reproof)
+        with pytest.raises(ContractError, match="simulated deadline"):
+            _run_batching(batching_chained_run, tmp_path, "run", monkeypatch)
+    root = tmp_path / "run" / "runs"
     assert checks == 2
-    assert len(sent[0].bodies) == 1
-    assert not _perlectiones(tmp_path / "refused" / "runs")
+    read = {
+        record["payload"]["act_key"]: record["outcome"] for record in _perlectiones(root).values()
+    }
+    assert read == {"a1": "read"}, read
+
+    _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, resume=True)
+    resumed = endpoints[-1]
+    assert resumed.bodies, "the unread act was not read on resume"
+    assert not [body for body in resumed.bodies if b"SYNTHETIC ACT ONE" in body]
+    assert sorted(record["outcome"] for record in _perlectiones(root).values()) == [
+        "read",
+        "read",
+    ]
 
 
 def test_a_draft_fed_or_fixture_pass_reads_one_act_at_a_time():
@@ -2351,3 +2383,65 @@ def test_the_window_finishes_in_order_within_its_bound():
     perlector._in_order_window(3, jobs)
     assert finished == [0, 1, 2, 3, 4]
     assert most == 3
+
+
+def test_the_window_never_holds_more_than_width_unfinished_jobs():
+    unfinished = most = 0
+    order: list[str] = []
+
+    def jobs():
+        nonlocal unfinished, most
+        for index in range(6):
+            unfinished += 1
+            most = max(most, unfinished)
+            call = None if index % 3 == 0 else partial(time.sleep, 0.02)
+            yield call, partial(finish, str(index))
+
+    def finish(name: str, _result) -> None:
+        nonlocal unfinished
+        unfinished -= 1
+        order.append(name)
+
+    perlector._in_order_window(2, jobs())
+    assert most == 2
+    assert order == [str(index) for index in range(6)]
+
+
+def test_a_call_that_raises_re_raises_at_its_place_after_every_sent_job_is_finished():
+    """Nothing is lost: earlier and later sent jobs are still finished, in order."""
+    finished: list[int] = []
+    started: list[int] = []
+
+    def call(index: int) -> int:
+        started.append(index)
+        time.sleep(0.02)
+        if index == 1:
+            raise RuntimeError("not act-local")
+        if index == 2:
+            raise ValueError("a second failure")
+        return index
+
+    def jobs():
+        for index in range(5):
+            yield partial(call, index), finished.append
+
+    with pytest.raises(RuntimeError, match="not act-local") as raised:
+        perlector._in_order_window(3, jobs())
+    # Job 1's failure stops the drawing; job 0 finished before it, and every job
+    # already sent after it was finished too rather than dropped.
+    assert finished == [0] + [index for index in sorted(started) if index > 2]
+    assert any("a second failure" in note for note in raised.value.__notes__)
+    assert 2 in started
+
+
+def test_a_refused_job_source_still_finishes_every_job_already_sent():
+    finished: list[int] = []
+
+    def jobs():
+        yield partial(time.sleep, 0.05), lambda _r: finished.append(0)
+        yield partial(time.sleep, 0.01), lambda _r: finished.append(1)
+        raise ContractError("refused while preparing the third")
+
+    with pytest.raises(ContractError, match="third"):
+        perlector._in_order_window(3, jobs())
+    assert finished == [0, 1]

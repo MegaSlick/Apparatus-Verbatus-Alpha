@@ -539,7 +539,34 @@ class StageContext:
                 "serving receipts are run receipts, never stage artifacts; "
                 "use StageContext.write_serving_receipt"
             )
-        envelope = build_envelope(
+        return self.tree.publish_artifact(
+            self.envelope(
+                kind=kind,
+                subject_id=subject_id,
+                outcome=outcome,
+                payload=payload,
+                inputs=inputs,
+                attempt=attempt,
+                approval_ref=approval_ref,
+            )
+        )
+
+    def envelope(
+        self,
+        *,
+        kind: str,
+        subject_id: str,
+        outcome: str,
+        payload: dict[str, Any],
+        inputs: list[dict[str, str]] | None = None,
+        attempt: str | None = None,
+        approval_ref: str | None = None,
+    ) -> dict[str, Any]:
+        """The validated envelope `publish` would write, built without writing it.
+
+        Its path and digest are what the published artifact's reference will name.
+        """
+        return build_envelope(
             run_id=self.tree.run_id,
             artifact_id=artifact_id(self.stage, kind, subject_id, attempt),
             subject_id=subject_id,
@@ -553,7 +580,6 @@ class StageContext:
             attempt=attempt,
             approval_ref=approval_ref,
         )
-        return self.tree.publish_artifact(envelope)
 
     def seal_boundary(self) -> PublishResult:
         """Witness this stage's complete on-disk boundary exactly once per change.

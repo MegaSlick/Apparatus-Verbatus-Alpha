@@ -51,6 +51,7 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         pdf_target_dpi=None,
         placement_tier=None,
         mechanics_qualification=False,
+        perlector_concurrency=None,
         witness_context="named",
         witness_context_config=ROOT / "config" / "witness_context.toml",
         nuda_per_mille=0,
