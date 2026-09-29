@@ -671,7 +671,9 @@ MEASURED_ACT_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 # * DAI, 1,024: the model card's `max_new_tokens`.  It is not in the vendor's
 #   `generation_config.json`, which `feeding.dai_generation()` carries byte for
 #   byte, so it lives here.
-# * Churro, 20,000: the CHURRO paper (arXiv:2509.19768), section B.2.
+# * Churro, 25,000: `DEFAULT_OCR_MAX_TOKENS` in the vendor's own `src/churro_ocr/providers/specs.py:77` at
+#   v0.3.0 (`stanford-oval/Churro` 4abb173); the paper (arXiv:2509.19768,
+#   section B.2) says only "chosen to allow generation of all gold outputs".
 #
 # The Perlector is a stock base model with no vendor bound;
 # `pipeline/4_perlector/live_reader.py` sends none.
@@ -680,7 +682,7 @@ DECLARED_ANSWER_BOUND_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
         "designator_structure": 12_384,
         "attestator_1": 12_384,
         "attestator_2": 1_024,
-        "attestator_3": 20_000,
+        "attestator_3": 25_000,
     }
 )
 

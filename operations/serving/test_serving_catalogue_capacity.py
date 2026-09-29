@@ -51,14 +51,14 @@ REAL_RECIPES = REPO_ROOT / "config" / "serving_recipes_real.toml"
 REAL_PLACEMENT = REPO_ROOT / "config" / "pod_placement.toml"
 
 # A 300-dpi A4 scan as each chair is actually shown it.  DAI is act-scoped and
-# its adapter's own ceilings (`pipeline/3_attestatores/feeding.dai_dimensions`:
-# width <= 1500, height <= 4096, area <= 2359296) bind before any serving row's
-# `max_pixels`, so the page it is charged for is 1291x1826.  Every other chair
+# its adapter's own width ceiling (`pipeline/3_attestatores/feeding.dai_dimensions`:
+# width <= 1500) binds before any serving row's `max_pixels`, so the page it is
+# charged for is 1500x2122.  Every other chair
 # is shown the sealed page unchanged.
 PAGE_AS_PRESENTED = {
     "designator_structure": A4_300DPI,
     "attestator_1": A4_300DPI,
-    "attestator_2": (1291, 1826),
+    "attestator_2": (1500, 2122),
     "attestator_3": A4_300DPI,
     "perlector": A4_300DPI,
 }
@@ -361,3 +361,50 @@ def test_no_shipped_row_serves_below_its_tiers_stated_vram_floor():
             f"({need_gib} GiB of {_TIER_VRAM_GIB[row.tier]})"
         )
     assert checked == len(_STATED_VRAM_NEED_GIB), "a stated VRAM floor went unchecked"
+
+
+# --- vendor-fidelity pins for the shipped rows -----------------------------------
+
+
+def test_dai_rows_carry_the_vendor_processors_own_pixel_range_and_hold_a_tall_act():
+    """`processor_config.json` at the pinned DAI revision: shortest_edge 3,136,
+    longest_edge 12,845,056.  A 1500x2500 act is about 4.8k image tokens, and it
+    fits the 8,192-token row beside DAI's prompt and 1,024-token answer."""
+
+    rows = [row for row in _shipped_rows() if row.chair == "attestator_2"]
+    assert len(rows) == 3
+    for row in rows:
+        assert (row.min_pixels, row.max_pixels) == (3_136, 12_845_056), row.tier
+        record = request_fits(
+            row, [(1500, 2500)], PROMPT_TOKENS[row.chair], DECLARED_ANSWER_BOUND_TOKENS[row.chair]
+        )
+        assert record["image_prompt_tokens"] == 4_806, row.tier
+        assert record["fits"] is True, record["reason"]
+        assert row.max_model_len == 8_192
+
+
+def test_every_churro_row_holds_the_vendors_whole_answer_bound_beside_a_full_page():
+    """25,000 (`DEFAULT_OCR_MAX_TOKENS`, Churro v0.3.0) + the largest image the
+    row's own `max_pixels` allows + the prompt, at every tier."""
+
+    rows = [row for row in _shipped_rows() if row.chair == "attestator_3"]
+    assert {row.tier for row in rows} == {"generic-24gb", "generic-48gb", "generic-80gb-plus"}
+    assert DECLARED_ANSWER_BOUND_TOKENS["attestator_3"] == 25_000
+    for row in rows:
+        widest = row.max_pixels // 784 * 784  # a token-exact square-ish bound
+        side = int(widest**0.5)
+        capacity = request_fits(row, [(side, side)], PROMPT_TOKENS[row.chair], 25_000)
+        assert capacity["fits"] is True, (row.tier, capacity["reason"])
+        assert sendable_max_tokens(row.chair, capacity) == {"max_tokens": 25_000}
+
+
+def test_perlector_min_pixels_is_the_vendors_shortest_edge_and_no_row_trusts_remote_code():
+    """Qwen3.8-27B `preprocessor_config.json`: size.shortest_edge 65,536.  None of
+    the four pinned repositories ships a `.py` file or an `auto_map`."""
+
+    rows = _shipped_rows()
+    assert all(not row.trust_remote_code for row in rows)
+    perlector = [row for row in rows if row.chair == "perlector"]
+    assert [row.min_pixels for row in perlector] == [65_536]
+    tiny = request_fits(perlector[0], [(40, 40)], 100, 100)["images"][0]
+    assert tiny["resized_width"] * tiny["resized_height"] >= 65_536

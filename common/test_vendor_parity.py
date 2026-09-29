@@ -523,8 +523,11 @@ CHAIR_VENDOR_SYSTEMS: Final[Mapping[str, Mapping[str, Any]]] = {
         "adapter": "churro.v1",
         "prompt_fields": ("system",),
         "user_parts": ("image_url",),
-        "generation_ceiling": 20_000,
-        "ceiling_source": "CHURRO paper section B.2, 'chosen to allow generation of all gold outputs'",
+        "generation_ceiling": 25_000,
+        "ceiling_source": (
+            "src/churro_ocr/providers/specs.py:77 DEFAULT_OCR_MAX_TOKENS at v0.3.0 "
+            "(CHURRO paper section B.2 gives the reason)"
+        ),
         "required_generation_sent": ("repetition_penalty",),
         "allowed_generation_sent": ("max_tokens", "repetition_penalty"),
     },
@@ -726,7 +729,7 @@ def _bound_is_owed(chair: str, row: Mapping[str, Any]) -> bool:
     Mirrors `refuse_unless_vendor_request_shape`'s own test: the vendor ceiling
     strictly below the row's headroom. At `ROW_TIER` with the sample costs
     above, this is true for the three chairs whose ceiling is the tighter
-    term (Chandra x2, DAI) and false for Churro, whose 20,000-token ceiling
+    term (Chandra x2, DAI) and false for Churro, whose 25,000-token ceiling
     exceeds anything this row leaves -- so both branches get exercised.
     """
     headroom = row["max_model_len"] - SAMPLE_IMAGE_TOKENS - SAMPLE_PROMPT_TOKENS
@@ -1392,6 +1395,10 @@ def test_the_carried_bytes_and_ports_equal_the_pinned_vendor_sources(request):
         assert keywords["user_prompt"].value is None, (
             "the vendor registry now gives churro-3B a user prompt; the image-only "
             "user turn this repository sends is no longer the vendor's answer"
+        )
+        assert _assigned_literal(specs, "DEFAULT_OCR_MAX_TOKENS") == 25_000, (
+            "the vendor's default OCR answer bound moved; the declared Churro bound in "
+            "common/request_capacity.py follows it"
         )
         profile = _function_call_keywords(specs, "churro_3b_profile")
         assert _name_of(profile["profile_name"]) == "CHURRO_3B_MODEL_ID"
