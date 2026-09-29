@@ -52,7 +52,7 @@ def _alarm(signum: int, frame: Any) -> None:
 # chair ("the witness timed out"); what actually happened is that this module's
 # own wall-clock backstop fired before it could say anything about coverage, and
 # the difference decides whether a shortfall is evidence or an absent
-# measurement (principle 8).
+# measurement.
 DEADLINE_REASON: Final = "alignment-deadline-exceeded"
 
 

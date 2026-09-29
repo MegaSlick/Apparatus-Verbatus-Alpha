@@ -847,14 +847,13 @@ def test_blob_cache_uses_a_byte_budget_instead_of_the_legacy_64_entry_limit(monk
     payloads = {f"{index:040x}": f"{index:08d}".encode("ascii") for index in range(65)}
     reads = []
 
-    def fake_git(*args):
-        assert args[:2] == ("cat-file", "blob")
-        oid = args[2]
+    def fake_data(oid, kind):
+        assert kind == "blob"
         reads.append(oid)
         return payloads[oid]
 
     cache = module.BlobDataCache(sum(map(len, payloads.values())))
-    monkeypatch.setattr(module, "git", fake_git)
+    monkeypatch.setattr(module.OBJECTS, "data", fake_data)
     monkeypatch.setattr(module, "_BLOB_DATA_CACHE", cache)
 
     for _ in range(2):
@@ -876,14 +875,13 @@ def test_blob_cache_evicts_by_bytes_and_never_retains_an_oversize_blob(monkeypat
     }
     reads = []
 
-    def fake_git(*args):
-        assert args[:2] == ("cat-file", "blob")
-        oid = args[2]
+    def fake_data(oid, kind):
+        assert kind == "blob"
         reads.append(oid)
         return payloads[oid]
 
     cache = module.BlobDataCache(10)
-    monkeypatch.setattr(module, "git", fake_git)
+    monkeypatch.setattr(module.OBJECTS, "data", fake_data)
     monkeypatch.setattr(module, "_BLOB_DATA_CACHE", cache)
 
     assert module.blob_data("a" * 40) == payloads["a" * 40]
@@ -902,6 +900,44 @@ def test_blob_cache_evicts_by_bytes_and_never_retains_an_oversize_blob(monkeypat
     assert reads.count("d" * 40) == 2
     assert cache.bytes_used == 7
     assert cache.entry_count == 1
+
+
+def test_a_staged_scan_starts_git_a_fixed_number_of_times_for_any_file_count(repo, monkeypatch):
+    module = scanner_module()
+    for index in range(40):
+        write(repo, f"file{index}.txt", f"value {index}\n")
+    stage(repo, ".")
+    starts = []
+    real_popen = subprocess.Popen
+
+    def counting_popen(args, *rest, **kwargs):
+        starts.append(args)
+        return real_popen(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", counting_popen)
+    monkeypatch.chdir(repo)
+    assert module.main(["--staged"]) == 0
+    assert len(starts) <= 3, starts
+
+
+def test_a_secret_in_the_last_of_many_staged_files_is_still_found(repo):
+    for index in range(40):
+        write(repo, f"file{index:02d}.txt", f"value {index}\n")
+    secret = generic_secret()
+    write(repo, "file99.txt", f'api_key = "{secret}"\n')
+    stage(repo, ".")
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 1
+    assert "[literal-credential]" in result.stderr
+
+
+def test_a_staged_object_git_cannot_read_refuses_the_commit(repo):
+    missing = "1234567890" * 4
+    git(repo, "update-index", "--add", "--info-only", "--cacheinfo", f"100644,{missing},ghost.txt")
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 2, result.stderr
+    assert "could not run" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 @SCANNER_CORE

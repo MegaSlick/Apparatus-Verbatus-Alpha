@@ -320,7 +320,8 @@ def load_model_card_metadata(path: Path) -> dict[str, object] | None:
 class ChairRegistry:
     """Resolve only the requested role, then verify only its pinned artifact.
 
-    Principle 6 applies to the values returned here as well as their consumers.
+    The resolved identity and revision travel with every value this returns,
+    and with what its consumers do with them.
     """
 
     def __init__(

@@ -195,8 +195,8 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
     # round; a2 goes straight to held-for-review instead
     # (the note above the digest pins in
     # `pipeline/orchestrator/test_orchestrator_acceptance.py` states the same fact).
-    # Spending an unconfirmed witness pointer here would be exactly the
-    # picker principle 1 forbids.
+    # Spending an unconfirmed witness pointer here would be letting a witness
+    # choose a pipeline action, which no step may do.
     assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2]
     # The ordinals prove a second Designator pass happened, not whose it was:
     # if the recovery moved from a1 to a2 they would still read [1, 2]. Name
@@ -210,7 +210,7 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
     # And what a2 became, not only what it did not ask for. `refused` is also a
     # non-delivered category that keeps this run at exit 3, so the absence of a
     # request does not by itself establish the held-for-review the comment above
-    # claims -- nor that a2 survived the run at all (goal 2).
+    # claims -- nor that a2 survived the run at all.
     export_entry = next(
         entry for entry in tree.build_manifest("armarium")["artifacts"] if entry["kind"] == "export"
     )

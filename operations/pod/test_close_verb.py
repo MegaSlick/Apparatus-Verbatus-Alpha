@@ -617,7 +617,7 @@ def test_every_close_refusal_leaves_a_durable_record(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Principle 2, on the verb most likely to be run into a closing terminal.
+    """Nothing is lost silently, on the verb most likely to be run into a closing terminal.
 
     `supervise.main` has filed one record per run since it landed; this is the
     same file, from the same function, for the other driver of the same close
@@ -680,7 +680,7 @@ def test_close_is_not_refused_by_a_provider_that_cannot_record_its_exchanges(
     The verb exists for the moment a pod is billing and something has already
     gone wrong. Trading a stopped meter for a fixture nobody asked for in that
     moment is the wrong way round -- so the unhonoured flag is recorded in the
-    close record (principle 2) rather than raised as a refusal.
+    close record rather than raised as a refusal.
     """
 
     drill = live_drill(build_drill)
@@ -773,7 +773,7 @@ def test_a_provider_factory_that_fails_is_a_recorded_close_not_a_traceback(
     assert expected in detail, detail
     assert reference in detail, "the record must name the reference that failed"
     assert "may still be billing" in detail
-    # Principle 2: the same durable per-run record every other close outcome
+    # The same durable per-run record every other close outcome
     # leaves, for the operator whose terminal is about to close.
     filed = final_records(drill.lease_root)
     assert [entry["exit_code"] for entry in filed] == [3], filed

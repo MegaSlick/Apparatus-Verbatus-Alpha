@@ -60,8 +60,7 @@ class BackgroundInferenceRefusal(ContractError):
     apart from a corrupt decode. A page this is raised for is still cut and
     still read -- it changes how the page is cut, never whether it is -- but it
     ends this stage's ink measurement for that page: substituting a stand-in
-    divider (the page's own mean) is a guess wearing a measurement's name,
-    which principle 8 forbids.
+    divider (the page's own mean) is a guess wearing a measurement's name.
     """
 
 

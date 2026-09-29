@@ -139,8 +139,8 @@ def test_grayscale_crop_preserves_a_profile_with_no_system_profile_to_borrow() -
 
     The reviewer's case skips wherever no valid grayscale profile happens to be
     installed, which on a CI worker is most of the time — and a regression that
-    skips on the machine that gates the merge is not a regression test
-    (principle 8: a metric that cannot be measured is a failure, not a pass).
+    skips on the machine that gates the merge is not a regression test:
+    a metric that cannot be measured is a failure, not a pass.
     The profile here is a minimal, synthetic, structurally
     valid grayscale ICC header rather than a vendored system asset: what is
     under test is that the crop carries the bytes it was given, not that any
@@ -231,7 +231,7 @@ def test_grayscale_rows_refuses_a_transparent_page_rather_than_counting_it_as_in
 def test_grayscale_rows_still_reads_a_page_whose_alpha_channel_says_nothing() -> None:
     """The refusal is about transparency, not about the presence of a channel: a
     fully opaque alpha channel loses nothing, and refusing it would cost a page
-    for no reading at all (goal 2)."""
+    for no reading at all."""
     opaque = BytesIO()
     Image.new("RGBA", (2, 1), (10, 10, 10, 255)).save(opaque, format="PNG")
 
@@ -311,7 +311,7 @@ def test_native_decoder_rejects_invalid_internal_png(case: str, message: str) ->
     Adjusted from the reviewer's version in one way: each case asserts the
     *named* refusal rather than any ValueError, because a decoder that refused
     all seven with one message would pass the original test while telling an
-    operator nothing about which fault it found (principle 2).
+    operator nothing about which fault it found.
     """
     with pytest.raises(ValueError, match=message):
         decode_grayscale_png(_invalid_png(case))
@@ -347,7 +347,7 @@ def test_every_16bit_mode_scales_rather_than_refusing_the_page(mode: str, byte_o
     Pillow 12.3.0 compiles a callable `point` for `I`, `I;16` and `F` only; the
     three byte-order spellings raise `ValueError("point operation not supported
     for this mode")` before a pixel is read, which `grayscale_rows` re-worded as
-    "not a decodable image" and turned into a dropped page (goal 2). Measured,
+    "not a decodable image" and turned into a dropped page. Measured,
     not assumed: this parametrisation failed on `I;16L`, `I;16B` and `I;16N`
     before the fix and passes on all four after it.
 
@@ -507,7 +507,7 @@ def test_a_palette_that_hides_its_alpha_is_refused_by_name() -> None:
     purpose: no decoder in this stack was measured to produce an RGBA palette
     from a file (PNG, GIF, BMP, TIFF and WebP all return an `RGB` palette, with
     any alpha in `info["transparency"]`), so claiming a reachable page here would
-    be a claim the measurement does not support (principle 8). The guard is
+    be a claim the measurement does not support. The guard is
     defence in depth beside the two crop-side callers that already ask the
     palette the same question.
     """
@@ -519,7 +519,7 @@ def test_a_palette_whose_used_entries_are_opaque_still_reads() -> None:
     """The refusal is about a transparent entry the page actually draws with.
 
     An opaque palette reads, and so does a page whose transparent entry nothing
-    on it references — refusing either would cost an act (goal 2) for a byte
+    on it references — refusing either would cost an act for a byte
     that changes no pixel.
     """
     assert list(_grayscale_samples(_palette_page((255,) * 4, (0, 1, 2, 3))).tobytes()) == [

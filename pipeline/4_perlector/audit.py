@@ -99,11 +99,12 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
         # `absolute_round_cap` is the sealed declaration of how far the cap may
         # ever be raised; this is what the code can currently honour. Pass C runs
         # exactly ONE span-scoped re-proof (design v2.1 §3: "ONE span-scoped
-        # re-proof pass ... no cascade re-opening"; principles 3 and 7 bear
+        # re-proof pass ... no cascade re-opening"; never repairing model output
+        # and recovery's coverage-only rule both bear
         # against multi-round text-changing loops), so a second round has no
         # implementation to run. Accepting `round_cap = 2` would seal that number
         # into every audit draft and finding on the run while still performing one
-        # round: a recorded budget nothing measured (principle 8), and an
+        # round: a recorded budget nothing measured, and an
         # approval granted for work that never happens. Refuse it here
         # rather than in the config file, so the sealed ceiling stays the standing
         # declaration and this refusal is what a multi-round build lifts.
@@ -130,7 +131,7 @@ def _numeric_key(digits: str) -> tuple[int, str]:
     whatever the reader emitted. A degenerate run of digits from a real reader
     would have ended the Perlector mid-page with an unnamed `ValueError`
     instead of a flag -- and surviving what a model emits is this stage's job,
-    not the model's (principle 3: feed it completely and measure it honestly).
+    not the model's, so nothing here may quietly drop or rewrite what came back.
 
     Length-then-lexicographic over the run with leading zeros stripped is
     exactly `int` ordering for non-negative decimals, at any length, with no

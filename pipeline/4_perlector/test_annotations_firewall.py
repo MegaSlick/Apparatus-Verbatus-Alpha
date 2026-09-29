@@ -296,7 +296,7 @@ def test_witness_evidence_entries_are_a_closed_record():
 
 def test_witness_evidence_must_name_the_testimonium_it_came_from():
     """A variant with no artifact behind it is a claim about a witness rather
-    than the witness's own sealed record (goal 4)."""
+    than the witness's own sealed record."""
     without_reference = {key: value for key, value in EVIDENCE.items() if key != "reference"}
     with pytest.raises(SchemaRefusal, match="witness_evidence"):
         annotations.validate_gaps(

@@ -1265,7 +1265,7 @@ def test_a_raising_notify_hook_never_prevents_the_observation() -> None:
     observed = live()
 
     assert observed.available_usd == Decimal("76.5")
-    # ... and the failure is not swallowed: principle 2 wants it visible where
+    # ... and the failure is not swallowed: it stays visible where
     # the money decision is written, which is the observation's own source.
     assert "balance notification raised and was contained" in observed.source
     assert "notify.sh is not on PATH" in observed.source
@@ -1549,7 +1549,7 @@ def test_a_body_wearing_the_decimal_mark_is_recorded_as_the_string_it_is(tmp_pat
     decodes with errors="replace"). A fixed sentinel mark, rewritten by a
     regex over the whole serialized line, would let a body echoing
     NUL + `decimal:` + digits + NUL be rewritten from a JSON string into a
-    bare number: evidence altered with no record of it (principle 4). The
+    bare number: evidence altered with no record of it. The
     mark carries a per-line nonce chosen after the body was read, closing
     that.
     """

@@ -548,7 +548,7 @@ def test_a_re_derivation_mismatch_names_a_decoder_upgrade_when_one_explains_it()
 
     Refusing on version drift would make every archived run unverifiable on the
     next routine Pillow upgrade, so the byte comparison stays the property and
-    the versions stay provenance (principle 6). But an operator reading "not
+    the versions stay provenance. But an operator reading "not
     reproducible" alone would go looking for forgery, and a decoder upgrade is
     the ordinary cause — so when the recorded versions differ from this host's,
     the refusal says which ones.

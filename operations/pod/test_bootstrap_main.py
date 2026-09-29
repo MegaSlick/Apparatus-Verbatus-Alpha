@@ -549,8 +549,9 @@ def test_a_refusal_report_write_failure_is_named_not_swallowed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A refusal that also fails to leave its durable reason must not exit
-    like a clean one. Principle 2 binds the write failure too: it must be
-    named on stderr, and the refusal exit code stays exactly what it was.
+    like a clean one. This failure must be named too, not only the refusal
+    it was recording: it goes to stderr, and the refusal exit code stays
+    exactly what it was.
     """
 
     ws = _workspace(tmp_path)
@@ -776,8 +777,7 @@ def test_refuses_a_report_path_missing_the_launch_token(
     """Mirrors ``models._required_timer_arguments``'s guard on the timer side.
 
     A volume is retained across pods; an unbound report path would let a
-    second launch's bootstrap/close evidence silently replace the first's
-    (principle 4).
+    second launch's bootstrap/close evidence silently replace the first's.
     """
 
     ws = _workspace(tmp_path)
@@ -1213,7 +1213,7 @@ def test_a_transfer_target_with_no_submission_manifest_is_refused_at_plan_time(
     tmp_path: Path,
 ) -> None:
     """The other half: a configured target with nothing to send would report a
-    success that moved nothing (principle 2)."""
+    success that moved nothing."""
 
     ws = _workspace(tmp_path)
 

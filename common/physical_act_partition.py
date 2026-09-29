@@ -835,7 +835,7 @@ def build_correspondence_proposal(
                 named[row["act_id"]] = "correspondence-page-mismatch"
         if named:
             # The component is withheld; every member left without a
-            # correspondence is named (principle 2).
+            # correspondence is named.
             plans.append(
                 {
                     "findings": [

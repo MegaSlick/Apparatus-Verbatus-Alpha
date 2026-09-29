@@ -2071,7 +2071,7 @@ def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visibl
 
     Both must actually reach a human: the review projection is the one
     surface a person reads, so a second advance decision that does not
-    appear there is lost exactly as principle 2 forbids, even though the
+    appear there is a silent loss, even though the
     bytes are safely on disk.
     """
     run_root, run_id = _make_run(tmp_path)
@@ -2674,7 +2674,7 @@ def test_only_the_advance_module_may_reach_the_approval_builder_or_writer():
     decision — so the risk inverts: not that it approves at all, but that a
     surface holding a legitimate write channel grows a second, illegitimate
     one beside it. `ACTIONS` also admits `exclusion` and `salvage-promotion`,
-    and principle 9 reserves an exclusion to the project lead named as
+    and an exclusion is reserved to the project lead named as
     `APPROVER`; a console that could mint
     one would be an automated agent standing in for the human in a rule.
 

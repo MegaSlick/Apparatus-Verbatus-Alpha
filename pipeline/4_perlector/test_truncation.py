@@ -291,7 +291,7 @@ def test_the_verdict_is_invariant_under_uniform_rescaling(scale):
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
-    reason="Principle 2: a one-line cutoff at leaf geometry is silently classified complete",
+    reason="A one-line cutoff at leaf geometry is silently classified complete",
 )
 def test_a_real_act_crop_cut_off_after_one_line_must_not_be_complete():
     cut_off = "L'an mil sept cent quarante deux le douze de may"[:40]
@@ -324,7 +324,7 @@ def test_the_shared_validator_refuses_a_record_without_its_measure():
 
 
 def test_the_record_carries_the_floor_it_was_judged_under():
-    """Principle 6: the record protects the past on its own.
+    """The record protects the past on its own.
 
     A consumer holding this block and nothing else -- not the run's
     `config/perlector_protocol.toml` -- has every term of the predicate and can

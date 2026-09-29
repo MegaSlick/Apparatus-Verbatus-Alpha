@@ -514,7 +514,7 @@ def _record_post_hoc_repetition(
     """Scan a retained capture for a repeated tail and record what it found.
 
     Re-rolling a reading until it looks better is recovering *quality*, which
-    principle 7 refuses; this only records the fact, after the bytes are
+    recovery never does; this only records the fact, after the bytes are
     already retained and parsed, so a degenerated-but-complete answer does not
     reach the Perlector as full testimony under ``stop_reason = "stop"``.
 
@@ -578,12 +578,12 @@ def retain_model_view(
     if not isinstance(transport_stop_reason, str) or not transport_stop_reason:
         raise SchemaRefusal("model-view transport stop reason is blank")
     # A parser that cannot run would leave `parse.state` at "pending" forever:
-    # a finished attempt wearing the look of one still in progress (principle 2).
+    # a finished attempt wearing the look of one still in progress.
     if parser is not None and (adapter, parser) not in _RUNNABLE_PARSERS:
         raise SchemaRefusal(f"model-view parser {parser!r} does not run for adapter {adapter!r}")
     # A served chair answering in the fixture's own placeholder schema answers
     # a question nobody put to it; reading that as page text would publish a
-    # reading whose shape was never verified (principle 8). Refused at the seam,
+    # reading whose shape was never verified. Refused at the seam,
     # not the parser, because the parser name is what the record will carry.
     if served and adapter == "chandra.v1" and parser == "json":
         raise SchemaRefusal(
@@ -635,7 +635,7 @@ def retain_model_view(
             else:
                 parsed = parsed_layout["page_text"]
                 # The grammar's own findings (malformed box, blank page, text
-                # outside every block, ...) travel with the reading (principle 2).
+                # outside every block, ...) travel with the reading.
                 record["findings"] = list(parsed_layout["findings"])
         else:
             parsed = chandra.parse_fixture_placeholder(raw_response)

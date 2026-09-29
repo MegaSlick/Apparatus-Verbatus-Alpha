@@ -82,7 +82,7 @@
 #
 # `max_pixels` is deliberately NOT reduced to fit a smaller context.  Cutting
 # pixels to fit a context trades a measurable refusal for an unmeasurable
-# misreading, which goal 2 does not permit; the lever that works is the
+# misreading, and that trade is never made here; the lever that works is the
 # context, and each chair's is now sized to what its own trained geometry
 # needs.
 #
@@ -169,7 +169,7 @@
 # ~210 s on a loaded host; and DAI (`attestator_2`) after its ~60 s measurement
 # (all 2026-09-27).
 # The 48 GB and 80 GB+ witness-row budgets extrapolate those 24 GB measurements;
-# they are not measurements at those tiers (principle 8). The Perlector on
+# they are not measurements at those tiers. The Perlector on
 # `generic-80gb-plus` is sized from retained vLLM logs (a cold start measured
 # about 375 s on 2026-09-22/23: weights 95 s off the volume,
 # torch.compile 107 s, profiling 76 s, multimodal warm-up 20 s).  The Perlector

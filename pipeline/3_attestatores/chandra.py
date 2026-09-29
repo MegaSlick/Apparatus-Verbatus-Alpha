@@ -103,8 +103,7 @@ def parse(raw_response: bytes) -> Any:
 
     Same two return kinds as `churro.parse`. Never repairs or reorders an
     answer: a block whose geometry could not be resolved is still a block, and
-    that fact is a finding on the capture rather than a substituted rectangle
-    (principle 2).
+    that fact is a finding on the capture rather than a substituted rectangle.
     """
 
     parsed = parse_layout(raw_response)
@@ -116,7 +115,7 @@ def parse(raw_response: bytes) -> Any:
 def declares_fixture_placeholder(raw_response: Any) -> bool:
     """Whether these bytes are the committed fixture's own JSON placeholder.
 
-    A shape question, not a choice among readings (principle 1): the vendor
+    A shape question, not a choice among readings: the vendor
     grammar is HTML with no `schema` member anywhere, so a body declaring
     `FIXTURE_RESPONSE_SCHEMA` cannot be a vendor answer too.
     """
@@ -135,7 +134,7 @@ def parse_fixture_placeholder(raw_response: bytes) -> Any:
     Retained history, never the live grammar: a served chair is never retained
     under this parser (`feeding.retain_model_view` refuses the pair), so a live
     answer in this shape lands as a named surprise rather than an unverified
-    reading (principle 8).
+    reading.
     """
 
     decoded, problem = _decode(raw_response)
@@ -175,7 +174,7 @@ def retain(
 
     Accepts no `adapter` argument to pin: forwarding one would let code that
     had resolved `chandra.v1` file the response under another chair's model
-    boundary (principle 6). Churro's and DAI's wrappers pin their names the
+    boundary. Churro's and DAI's wrappers pin their names the
     same way.
     """
 

@@ -71,7 +71,7 @@ startup refusal: holding with no bound cannot be tested and cannot be trusted.
 **A refusal leaves a durable reason, not just a stderr line nobody can read
 after the container is gone.**  Once ``--report-path`` has passed containment,
 every later refusal, an unparseable argv included, best-effort writes its
-reason there before exiting (principle 2 -- nothing is lost silently).  These
+reason there before exiting.  These
 stay stderr-only: the credential-argv scan (before argv is parsed), a missing
 or relative ``--volume-mount-path`` or missing ``--report-path``, and a
 ``--report-path`` that fails containment or lacks this launch's token (it may
@@ -579,7 +579,7 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
     token binds ``--report-path`` (and, for a full plan, ``--journal``) to this
     launch, mirroring ``models._required_timer_arguments``'s guard against a
     second launch on the same retained volume silently overwriting the first
-    launch's evidence (principle 4).  It must be read here, before ``main``
+    launch's evidence.  It must be read here, before ``main``
     scrubs the environment, because the token's own name is credential-shaped
     and would otherwise be popped before this ever ran.
     """
@@ -838,7 +838,7 @@ def _require_launch_token_named(
 ) -> None:
     """Mirror ``models._required_timer_arguments``'s guard, on the bootstrap side.
 
-    A volume is retained across pods by design (principle 4): an unbound
+    A volume is retained across pods by design: an unbound
     ``--report-path`` or ``--journal`` would let a second launch's evidence on
     the same volume silently replace the first's.  A launch with no token set
     gets no protection here, same as the pod-timer launch path when
@@ -1115,7 +1115,7 @@ def _golden_page(plan: Plan, seams: PreflightSeams) -> tuple[Path, str, bytes]:
     # PREFLIGHT under the same launch -- a resumed journal, a restarted
     # container -- draws a fresh CSPRNG witness, and a fixed name would put
     # those pixels over the page the first preflight's receipts already name by
-    # digest. Evidence is added, never replaced (principle 4), exactly as
+    # digest. Evidence is added, never replaced, exactly as
     # `PodPreflightReceiptPublisher` does for the serving records beside it. The
     # witness is URL-safe by construction (`secrets.token_urlsafe`), so it is a
     # filename as it stands.
@@ -1293,8 +1293,8 @@ class _LazyChairCache:
     the lockfile.  ``_build_cache`` eagerly reads ``--models-config`` off disk
     and verifies the retained-store source plan; built eagerly, a
     CHAIR_CACHE receipt would attest to whatever ``models.toml`` happened to be
-    on disk at container start, not to the commit the journal names
-    (principle 6).  The transfer and model-store actions are already lazy this
+    on disk at container start, not to the commit the journal names.
+    The transfer and model-store actions are already lazy this
     way (``materialize_model_store=lambda: ...``); this closes the one that
     was not.
     """
@@ -1495,7 +1495,7 @@ def _write_refusal_report(
     """Best-effort: leave the refusal reason durable on the volume before exit.
 
     Without this, a refusal is a stderr line that dies with the container --
-    unreachable from the laptop once the pod is destroyed (principle 2). Best
+    unreachable from the laptop once the pod is destroyed. Best
     effort because the volume that would hold this report may itself be the
     thing that just failed (an unwritable mount); a failed write here must not
     mask or replace the refusal already printed and returned.
@@ -1509,8 +1509,8 @@ def _write_refusal_report(
     legitimately nowhere yet to write it (``report_path`` is ``None``); any
     other case returns a description of the failure, so the caller (``refuse``)
     can name it rather than letting the durable record's own absence go
-    unmentioned -- principle 2 binds this failure too, not only the refusal
-    it was trying to record.
+    unmentioned -- this failure must be named too, not only the refusal it
+    was recording.
     """
 
     if report_path is None:

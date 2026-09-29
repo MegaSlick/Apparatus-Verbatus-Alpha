@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "env": {
     "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
-    "PONYTAIL_SUBAGENT_MATCHER": "(?!)"
+    "PONYTAIL_SUBAGENT_MATCHER": "^(general-purpose|claude|plan)$"
   },
   "permissions": {
     "deny": [
@@ -23,9 +23,14 @@
       "Bash(git config core.hooksPath *)",
       "Bash(git config --unset core.hooksPath*)",
       "Bash(git*filter-branch*)",
-      "Bash(git*filter-repo*)",
-      "Bash(git*reset --hard*)",
-      "Bash(runpodctl*)"
+      "Bash(git*filter-repo*)"
+    ],
+    "ask": [
+      "Bash(runpodctl send*)",
+      "Bash(runpodctl receive*)",
+      "Bash(runpodctl ssh*)",
+      "Bash(runpodctl config*)",
+      "Bash(runpodctl update*)"
     ]
   },
   "hooks": {
@@ -38,6 +43,17 @@
             "command": "sh \"$CLAUDE_PROJECT_DIR/operations/notify/notify.sh\" start \"An Apparatus Verbatus session has opened.\"",
             "async": true,
             "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/operations/pod/session_end_pod_check.sh\"",
+            "timeout": 10
           }
         ]
       }

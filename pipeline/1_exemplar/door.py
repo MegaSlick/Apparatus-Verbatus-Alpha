@@ -1,7 +1,7 @@
 """The door: what may enter at all, decided by bytes alone.
 
 Admissions and refusals are written into the Exemplar's directory, so no refusal
-is filed where nothing downstream reads it (principle 2).
+is filed where nothing downstream reads it.
 
 `admission.py` routes each source by its decoded bytes, never its extension.
 Ordinary rasters are decoded; PDF and TIFF containers fan out, one ordinal per page.

@@ -144,7 +144,7 @@ def test_store_refuses_a_pinned_licence_whose_bytes_are_gone(tmp_path):
         verify_store(tmp_path)
 
 
-# --- S1: publish-once custody (principle 4 — evidence is never overwritten) -----
+# --- S1: publish-once custody (evidence is never overwritten) -----
 
 
 def test_write_derived_inventory_reuses_identical_bytes_silently(tmp_path):
@@ -1195,7 +1195,7 @@ def test_a_resumed_boot_still_refuses_bytes_that_differ_from_the_first_fetch(tmp
     The recovery above works because a pinned revision fetched twice yields the
     same bytes, so the orphaned manifest is republished identically and reused.
     If it does not, the orphan is the pin and the new bytes lose: publication
-    never overwrites existing evidence (principle 4).
+    never overwrites existing evidence.
     """
 
     class _Drifted(_FakeMaterializationFetcher):

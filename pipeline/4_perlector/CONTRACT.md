@@ -98,10 +98,10 @@ been invoked is what makes a rerun of an unchanged run recompute the same ordina
 produce the same bytes, and be reused rather than rewritten.
 
 Testimony is deliberately absent from the derivation. A Testimonium is a clue that
-primes a reading, never the ink the reading is established from (ARCHITECTURE;
-principle 1), so a second look by a witness does not make a second reading exist,
-and re-reading an act because a witness spoke again is the re-roll principle 7
-refuses. The consequence for the upstream stage is that an act's witness layer
+primes a reading, never the ink the reading is established from (ARCHITECTURE),
+so a second look by a witness does not make a second reading exist,
+and re-reading an act because a witness spoke again is a re-roll, and
+recovery restores coverage, never quality. The consequence for the upstream stage is that an act's witness layer
 closes when this stage reads it, enforced at the Attestatores' own entry
 (`pipeline/3_attestatores/CONTRACT.md`, "The one attempt model") rather than
 discovered here as an immutability refusal on a reading identity nothing can move.
@@ -119,8 +119,7 @@ region whose place in the recovery denominator is unknown.
 Recensor, Archetypus and Armarium each pass the current reading back through
 `common/stage.py::require_current_witness_basis` before accepting, establishing or
 exporting it, so a Testimonium appended after the reading was established cannot
-be structurally invisible at the point where the export decides to say `complete`
-(principle 2).
+be structurally invisible at the point where the export decides to say `complete`.
 
 ## `kind="perlectio"`
 
@@ -171,7 +170,7 @@ uncertainty_assessment -- {state, problem}: the reader's doubt-report state for
                     Carried on the three instrument records too (Lectio nuda,
                     `lectio-prior`, `primed-without-prior`): a reader answers the
                     same way on an instrument call, and a doubt reported on a
-                    nuda reading is a measurement (principle 2).
+                    nuda reading is a measurement.
 audit            -- {draft_ref, finding_ref, finding_digest, unresolved,
                     examination, reproofs, request_digest}: the R5b Pass-C
                     chain, which re-proof instrument was actually delivered,
@@ -402,7 +401,7 @@ character count, and the floor from the run's own sealed
 `config/perlector_protocol.toml` `[truncation]` table — every term of
 `characters * page_pixels < floor * region_pixels`, so a reader holding the
 record and nothing else re-derives `length_suspicious` instead of trusting it
-(principle 6: configuration protects reproducibility going forward, the record
+(configuration protects reproducibility going forward, the record
 protects the past). The shared validator does re-derive it, and refuses a record
 whose signal disagrees with its own geometry; where the caller also holds the
 reading the record was measured over it binds `characters` to that text as well.
@@ -441,7 +440,7 @@ characters regardless of what `witness_evidence` says. `witness_evidence`
 attaches witness variants as linked, displayable evidence, never as text.
 Each evidence row is `{chair, testimonium_id, reference, variant}` — the
 digest-checked reference to the witness's own sealed record, not just a chair
-name a reader would then have to go looking for (goal 5).
+name a reader would then have to go looking for.
 `position` is one of `leading | internal | trailing | whole-act`, each with its
 own bound (leading starts at 0, internal is strictly inside the text, trailing
 ends at `len(text)`, whole-act requires
@@ -477,7 +476,7 @@ terminal like a Designator hold: it never requests recovery for the act and hold
 review with `cross-capture-read-not-built` and its remedy in the reason, which the
 export entry carries. The rest of the run is read, and the held acts reach the
 Archetypus and Armarium as held. Reading one capture would establish that capture's text for the physical act,
-which is a pick (principle 1); refusing the run would lose every other act's reading.
+which is a pick; refusing the run would lose every other act's reading.
 Any other partition finding is a defect in the denominator and still refuses the run
 before any Perlectio is published (`logical_reading.cross_capture_holds`).
 
@@ -508,7 +507,7 @@ subject travels with its typed reference to `nuda.sampling_design`, which refuse
 an approval for the other arm before publication. Each record carries
 `sampling = {nuda_per_mille, selection_rule, approval_ref}`, with
 `approval_ref` as the approval artifact's path and digest, because a sample of
-unknown design measures nothing (principle 8). The same reference is an
+unknown design measures nothing. The same reference is an
 envelope input, so an ordinary artifact read compares the approval digest to
 the retained receipt bytes instead of merely displaying an unchecked hash.
 
@@ -646,10 +645,10 @@ text and no ranking, and the prompt is
 byte-identical for every flag class. A `testimony-diff` flag's *location* is
 witness-derived, though, and now that the instrument is actually delivered the
 reader is directed to the exact spans where it disagreed with witnesses while
-the tree measures movement toward them — whether that is compatible with
-principle 1 ("never picks") and principle 8 ("the instrument may not constrain what it
-measures") is an open interpretation question routed to the project lead with
-the Tier-0 reproof change, not settled by this sentence.
+the tree measures movement toward them — whether that is compatible with no
+step picking among witnesses and with nothing in the prompt steering the
+reader's answer is an open interpretation question routed to the project lead
+with the Tier-0 reproof change, not settled by this sentence.
 
 **The re-proof plan is a delivered instrument, not a claim about one.** One
 function, `perlector_audit.reproof_plan`, turns the frozen flags into one
@@ -684,7 +683,7 @@ drift.
 **Neutrality and the `pass_kind` rule both hold, in the same mechanism.** Every
 prompt in a request and in the sealed copy must equal `neutral_prompt` for its
 location exactly — not merely avoid forbidden words — so nothing can tell the
-reader which way to argue (principle 8). And because the instrument travels
+reader which way to argue. And because the instrument travels
 as input, a reader still may not condition generation on `pass_kind`: a
 re-proof pass arriving with no request is refused by
 `reader.validate_audit_delivery`, as is a request delivered to any other pass,
@@ -752,7 +751,7 @@ tree exactly as the invocation found it — no orphaned `lectio-prior`, no engin
 spent on a reading that would be discarded, and no opaque `IncompatibleReuse` on the
 operator's retry. It refuses this way rather than letting a declared `no-readable-text`
 blank real transcribed ink, or a declared `truncated` overwrite a real `complete`, which
-would be a declared value standing where a measurement belongs (principle 8). The
+would be a declared value standing where a measurement belongs. The
 guard is one branch that never executes in fixture mode, so it does not move the
 acceptance pin. Proven end to end in
 `test_live_perlector.py::test_a_live_pass_refuses_a_fixture_declared_reading_failure`
@@ -806,8 +805,8 @@ bare `KeyError` or publishing two digests for one response.
 
 **`_distinct_inputs` narrows what this stage *expects*; it never widens what a record
 may claim.** The envelope refuses a repeated path outright, even at an identical digest
-(`validate_input_refs`) — that is the double-count guard principle 5's "one text" rests
-on, and nothing here touches it: a duplicate inside a published `inputs` list still
+(`validate_input_refs`) — that is the double-count guard that keeps one reading per act
+in every export, and nothing here touches it: a duplicate inside a published `inputs` list still
 reaches that refusal unchanged. It is used at exactly two seams, both of them places
 where one content-addressed blob is honestly reachable by two names.
 

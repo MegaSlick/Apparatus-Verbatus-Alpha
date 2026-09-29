@@ -5,16 +5,24 @@ please open an issue to discuss a change before sending a large pull request.
 
 ## Before you write code
 
-Read [PRINCIPLES.md](PRINCIPLES.md). Every change is held to it, in particular:
+Read [PRINCIPLES.md](PRINCIPLES.md) for what the project is aiming for, and
+[ARCHITECTURE.md](ARCHITECTURE.md) and [GLOSSARY.md](GLOSSARY.md) for the stages and
+their vocabulary. Above all: nothing picks among the witnesses, no act is lost
+silently, and uncertainty is flagged rather than fabricated. ARCHITECTURE's invariants
+are binding.
 
-- **Nothing picks.** No code may choose between witness readings.
-- **Nothing is lost silently.** Partial results stay visibly partial.
-- **Flag, never fabricate.** Uncertainty is recorded and passed on.
-- **Plain code.** Small functions, clear names, and comments that explain *why*, not
-  what changed or who asked for it.
+## How code is written here
 
-[ARCHITECTURE.md](ARCHITECTURE.md) and [GLOSSARY.md](GLOSSARY.md) explain the stages and
-their vocabulary.
+- **Plain code a stranger can trust.** Small functions, clear names, built the simplest
+  way that works. Nothing goes in that its author cannot explain line by line.
+- **Lean comments that explain intent.** A comment tells a newcomer, or a careless model
+  reading the file, what the code is for and what it works with. It never narrates
+  history, cites a rule or a date, or excuses a workaround: if a workaround needs an
+  excuse, fix the workaround. Reasons for a change go in the commit message.
+- **Checks where they protect something.** Add a check or a test where it protects an
+  act, the evidence, an export, private material, credentials or money. Housekeeping,
+  such as a leftover temporary file, is made harmless and easy to clear rather than
+  watched and reported.
 
 ## Setting up
 
@@ -26,11 +34,12 @@ change with `.venv/bin/python -m pytest <path>`; CI runs the full suite
 ## Making a change
 
 1. Branch from `main` for each focused task.
-2. Keep the change focused, and add or update tests alongside it.
+2. Keep the change focused.
 3. Open a pull request. CI must pass, and every review comment is either fixed or
    answered with a reason.
-4. A change to README, PRINCIPLES, ARCHITECTURE, GLOSSARY, CONTRIBUTING, AGENTS,
-   CLAUDE.md or `.claude/` needs the project lead's approval.
+4. A change to README, PRINCIPLES, ARCHITECTURE, GLOSSARY or CONTRIBUTING, a new working
+   rule in AGENTS.md or CLAUDE.md, or a change to what AI sessions are allowed to do
+   (`.claude/`) needs the project lead's approval.
 
 ## Rules for what enters the repository
 

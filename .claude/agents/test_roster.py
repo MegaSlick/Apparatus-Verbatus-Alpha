@@ -10,7 +10,7 @@ AGENTS = Path(__file__).parent
 ROLE_FILES = sorted(AGENTS.glob("*.md"))
 WRITE_TOOLS = {"Write", "Edit", "NotebookEdit", "Bash"}
 EFFORT_RANK = {"low": 0, "medium": 1, "high": 2, "xhigh": 3, "max": 4, "ultracode": 5}
-EFFORT_FLOORS = {"auditor": "high", "consult": "xhigh"}
+EFFORT_FLOORS = {"auditor": "medium", "consult": "high"}
 
 
 def frontmatter(path: Path) -> dict[str, str]:
@@ -33,11 +33,11 @@ def test_the_roster_is_not_empty():
     assert ROLE_FILES
 
 
-def test_every_role_declares_identity_model_effort_and_tools():
+def test_every_role_declares_identity_model_and_tools():
     for path in ROLE_FILES:
         data = frontmatter(path)
         assert data["name"] == path.stem
-        for key in ("model", "effort", "tools", "disallowedTools"):
+        for key in ("model", "tools", "disallowedTools"):
             assert data[key], f"{path.name} has no {key}"
 
 

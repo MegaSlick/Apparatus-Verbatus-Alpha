@@ -72,7 +72,7 @@ def resolve_framing(framing: Any = None) -> str:
     """One declared framing name, exactly, or a refusal listing the declared set.
 
     Selects the wording of a question before the page is read; it never
-    chooses among readings, so this is not a picker (principle 1).
+    chooses among readings, so this is not a picker.
     """
 
     if framing is None:
@@ -150,8 +150,8 @@ def retain(
 
     Accepts no ``adapter`` argument to pin: forwarding one would let code that
     had resolved ``churro.v1`` file this response under another chair's model
-    boundary, and the retained record would then name the wrong one
-    (principle 6). Chandra's and DAI's wrappers pin their names the same way.
+    boundary, and the retained record would then name the wrong one.
+    Chandra's and DAI's wrappers pin their names the same way.
     """
     return feeding.retain_model_view(
         context,

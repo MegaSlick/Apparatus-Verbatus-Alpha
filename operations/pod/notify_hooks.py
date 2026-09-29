@@ -24,7 +24,7 @@ close or launch path that was about to report it.
 
 **A failed ping cannot prevent a close.** Every function here returns a
 `NotifyOutcome` and never raises; the caller logs `.detail` in the durable
-receipt (principle 2: nothing is lost silently) and moves on.
+receipt, since nothing is lost silently, and moves on.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ def notify_close(
     path, and the cutoff can stand up to `billing_cutoff_margin_seconds` past
     the moment the pod was seen gone. The message says "billed" rather than
     "ran" for that reason: a number is reported as the thing that was actually
-    measured (principle 8), never as the nearer-sounding one.
+    measured, never as the nearer-sounding one.
     """
 
     message = (

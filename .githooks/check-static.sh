@@ -24,7 +24,10 @@ scripts=".githooks/check-all.sh
 .githooks/install.sh
 .githooks/pre-commit
 .githooks/pre-merge-commit
-operations/notify/notify.sh"
+operations/notify/notify.sh
+operations/pod/pod_guard.sh
+operations/pod/pod_start_command.sh
+operations/pod/session_end_pod_check.sh"
 
 # Repository ingress rejects control characters in paths, so this intentional
 # word split cannot turn one tracked path into several accepted paths.

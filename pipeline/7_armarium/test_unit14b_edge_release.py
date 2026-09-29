@@ -135,7 +135,7 @@ SEALED_ONE = _sealed_census()
 
 
 def test_a_mapped_page_records_the_measurement_nobody_took_as_absence():
-    """Principle 8: `remeasured: None`, never a reassuring row of zeros."""
+    """`remeasured: None`, never a reassuring row of zeros."""
     armarium = load_stage("7_armarium")
     rows = armarium.ink_map_page_rows(_context({INK_MAP: [_ink_record("a", 1)]}), SEALED_ONE, {})
     assert rows == ({"ordinal": 1, "initial_outcome": "mapped", "remeasured": None},)
@@ -503,7 +503,7 @@ def test_an_unmeasurable_page_stays_in_the_denominator_and_can_never_be_held():
     re-measure and no counts a hold could be derived from. The row must still
     exist -- the page census is reconciled against these rows, and a missing one
     is refused as a denominator mismatch -- and it must carry `remeasured: None`
-    for the same principle 8 reason a `mapped` page does, only more strongly:
+    for the same reason a `mapped` page does, only more strongly:
     here nothing was measured at all.
     """
     armarium = load_stage("7_armarium")

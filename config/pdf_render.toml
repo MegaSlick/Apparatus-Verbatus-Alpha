@@ -23,8 +23,8 @@
 #
 # **Still not proven, and adjustable for exactly that reason.** This is measured
 # against page geometry, not against reading accuracy: nothing here has read a real
-# act yet. Principle 10 wants a real approved sample before scale, and if a hand
-# turns out to need more, this is one number in one file.
+# act yet. It must hold on a small approved real sample before scale, and if a
+# hand turns out to need more, this is one number in one file.
 
 [pdf]
 target_dpi = 300

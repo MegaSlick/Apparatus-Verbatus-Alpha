@@ -101,7 +101,7 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   rates, each labelled**: `matched_pairs_only` is the arithmetic of the pairs the
   assignment made, which a missed act cannot move in either direction, and
   `including_missed_records` counts a missed record's reference units as deletions,
-  which is the number GOALS 1 cares about. A not-attempted record is in neither rate and
+  since a missed act is worse than a poorly read one. A not-attempted record is in neither rate and
   is counted on its own. Two facts the record states are measured rather than declared:
   the fixture label is read from the export's own sealed identity (`fixture_id` against
   `submission_id`), not from a flag an operator could omit, and a named reference ledger
@@ -221,14 +221,14 @@ distinct `source`/`volume` splits (`"Tours/geneanet"` joined with nothing, and
 reference record set, computes IoU between every sealed proposal's region and
 every reference box, takes the assignment maximising total IoU under a
 predeclared threshold, and writes `reference-comparison.v1` recording the whole
-matrix: matched pairs, unmatched reference acts (misses, scored — GOALS 1), and
+matrix: matched pairs, unmatched reference acts (misses, scored), and
 unmatched pipeline acts (reported, never scored, because `completeness` already
 says they may be legitimately out of scope). Per-act CER/WER reuses the sealed
 instruments this project already has — `operations/spike_perlector/normalization.py`'s
 `graphemic-v1` and `scoring.py`'s bare rapidfuzz — rather than a second scorer
 invented for this corpus.
 
-Why this respects PRINCIPLES.md, principle 1 ("The reader reads; nothing picks"):
+Why this is not a picker:
 it runs only after the pipeline's own output is sealed and cannot
 change; it never returns anything to the pipeline; it selects nothing about
 what the pipeline read, only which reference box a given output pairs with for

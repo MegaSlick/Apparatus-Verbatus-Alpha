@@ -15,7 +15,7 @@ formats = ["text-bundle", "acts-database", "jsonl", "review-items", "salvage-tie
 # Off by default. Embedding costs real disk -- every page and every crop, copied -- for
 # a benefit (offline pixel access with no run tree present) that is the project
 # lead's to spend rather than this build's to assume, and a bundle never claims
-# more than it carries (principle 8).
+# more than it carries.
 embed_pixels = false
 
 # TWO DECISIONS ARE DELIBERATELY NOT HERE, and both are the project lead's at

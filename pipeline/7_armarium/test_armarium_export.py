@@ -1065,7 +1065,7 @@ def test_the_ink_map_denominator_must_be_exactly_the_sealed_page_census():
 
 
 def test_a_page_the_map_never_flagged_may_not_carry_a_re_measurement():
-    """Principle 8: absence of a measurement is recorded as absence."""
+    """Absence of a measurement is recorded as absence."""
     with pytest.raises(SchemaRefusal, match="re-measures an ink-map page its own map never"):
         build_armarium_bundle(
             _otherwise_complete(
@@ -1246,8 +1246,8 @@ def test_projection_identity_refuses_a_self_consistent_package_with_drifted_unce
     A writer that changed only `uncertainty` -- never touching `canonical_clean_text`
     or its hash -- would pass the literal-text identity check by construction: the
     text is untouched. Uncertainty is a projected reading beside that text, not a
-    decoration outside principle 5's reach, so a format that silently drifted on it
-    alone must fail identity exactly as a drifted literal would (U3).
+    decoration outside the one-reading guarantee, so a format that silently
+    drifted on it alone must fail identity exactly as a drifted literal would.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
@@ -1537,7 +1537,7 @@ def test_a_non_delivered_act_may_not_carry_an_uncertainty_layer(tmp_path):
 
 
 def test_the_delivered_gate_asks_both_questions_the_manifest_claims_were_asked(tmp_path):
-    """Principle 5 on the path the product actually leaves by.
+    """One reading per act on the path the product actually leaves by.
 
     The package above is internally whole and carries two different readings of one
     act, and its own manifest says `identity_verified_across` all three literal
@@ -1713,8 +1713,8 @@ def test_a_full_text_index_poisoned_with_terms_no_act_carries_is_refused(tmp_pat
     every `act_search` column and the fold's own terms exactly as sealed, so a
     per-row phrase probe still finds what it went looking for. The recipient's
     search, meanwhile, now returns this act for words the Archetypus never
-    established -- a second reading of the act inside the same package, which is
-    what principle 5 forbids.
+    established -- a second reading of the act inside the same package, when
+    every format must show one reading per act.
     """
     tampered = _resealed_acts_database(
         tmp_path,
@@ -1800,7 +1800,7 @@ def test_an_established_reading_that_folds_to_no_search_token_still_publishes(tm
     on every code point. A reading made only of characters in that gap folds to a
     non-empty key that tokenizes to nothing, which a per-row phrase probe reads as
     a missing index entry -- and the whole export died, naming a tampered index
-    that was never tampered with. goal 2: an act refused at the terminal gate for
+    that was never tampered with. An act refused at the terminal gate for
     an instrument's own disagreement is an act that does not leave the pipeline.
     """
     projection = _projection()
@@ -1844,7 +1844,7 @@ def _real_resealed_manifest(mutate):
 
     Nothing crossed a boundary to get here. This is a sibling helper in this
     same module, adapted within the repository, not code carried from the old
-    pipeline or from a third party -- the quarantine rule (principle 12) governs
+    pipeline or from a third party -- the quarantine rule governs
     that crossing and has nothing to say about this one.
     """
     projection = replace(_projection(), fixture_id=None, submission_id="a" * 64)
@@ -3011,8 +3011,9 @@ def test_a_display_that_does_not_strip_back_to_the_canonical_field_is_refused(tm
     """Spec 11 test 2's rendered half, on the written product.
 
     A display convention that changed the reading -- rather than annotating it --
-    would be a second text leaving the pipeline under principle 5's nose. The
-    verifier strips the rendering and requires the canonical field back exactly.
+    would be a second text leaving the pipeline, when every export must show the
+    same established reading. The verifier strips the rendering and requires the
+    canonical field back exactly.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
@@ -3713,7 +3714,7 @@ def test_projection_identity_refuses_a_package_whose_formats_disagree_about_dama
 
     The literal is byte-identical in every format, so the text comparison passes
     by construction; the damage record is part of the same one reading and rides
-    in the same equality check (principle 5 does not stop at the characters).
+    in the same equality check (one reading per act covers more than the characters).
     """
     bundle = build_armarium_bundle(
         _partial_projection(), _formats(embed_pixels=False), _source_bytes
@@ -4356,7 +4357,7 @@ def test_the_export_names_every_instrument_of_this_build_exactly_once_in_order()
     assert [row["instrument"] for row in block["entries"]] == list(NOT_MEASURED_INSTRUMENTS)
     for row in block["entries"]:
         assert set(row) == {"instrument", "status", "detail", "recorded_in"}
-        # Where a reader goes to check the row against the evidence (goal 4).
+        # Where a reader goes to check the row against the evidence.
         assert row["recorded_in"].strip()
     assert (
         _entry(block, "page-testimony-content-coverage")["recorded_in"]
@@ -4486,7 +4487,7 @@ def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_aske
     needs both zero assessed readings and zero uncertain spans -- an exhausted
     cap that minted uncertain spans still counts as something measured, even
     with no assessed reading, and some assessed is a partial measurement that
-    may not be reported as a whole one (principle 8).
+    may not be reported as a whole one.
     """
     silenced = _entry(_block(_projection()), "perlector-uncertain-spans")
     assert silenced["status"] == "declared-unproduced"
@@ -4527,7 +4528,7 @@ def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_aske
     # The live configuration under a sealed cap of 0: no reader was asked, and
     # the exhausted-cap projection minted real spans onto delivered acts anyway.
     # Something was measured, so the block may not call the instrument
-    # unproduced (principle 8).
+    # unproduced.
     assert (
         _not_measured_status(
             "perlector-uncertain-spans",

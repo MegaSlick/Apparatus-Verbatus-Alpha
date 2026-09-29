@@ -29,7 +29,7 @@
 # regression tests with a zero fallback budget and with a page-level-only budget,
 # so it is not a branch no configuration can falsify.
 #
-# Recovery recovers COVERAGE, never quality (principle 7). A suspected
+# Recovery recovers COVERAGE, never quality. A suspected
 # fabrication or a poor reading may be flagged for review; it may never be
 # re-rolled until it looks better. Nothing disappears inside a loop: every
 # request and every outcome is an artifact.

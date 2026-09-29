@@ -54,7 +54,7 @@ namespace and its own extractor strips the prefix before comparing.
 envelope, which the prompt this pipeline now sends never asks for.  It is
 accepted so that retained history still parses, and it carries the finding
 `retired-output-envelope` so that a live response arriving in a shape nobody
-asked for is visible rather than silent (principle 2).
+asked for is visible rather than silent.
 
 ## Departures from the vendor's own flattener, and why each
 
@@ -154,14 +154,14 @@ DOCUMENT_SHAPES: Final = frozenset({"historical-document", "plain-text", "output
 # `xml.etree`'s own parser is iterative and will happily build a tree thousands
 # of elements deep; this flattener is recursive, so without a declared bound a
 # deeply nested answer would exhaust the interpreter stack and leave a
-# `RecursionError` where a named `failed` record belongs (principle 2). The
+# `RecursionError` where a named `failed` record belongs. The
 # grammar's own deepest legal path -- HistoricalDocument > Page > Body >
 # RecordEntry > List > Item > Line > Above > Emphasis -- is nine.
 _MAX_DOCUMENT_DEPTH: Final = 256
 # Whitespace, for the purpose of collapsing an indented answer, means ASCII
 # whitespace and nothing else. A non-breaking space or any other Unicode space
 # a model writes is a character it wrote, and this parser does not rewrite it
-# into a plain space (goal 1).
+# into a plain space: the exact character read is part of the reading.
 _ASCII_WHITESPACE: Final = " \t\n\r\f\v"
 _WHITESPACE_RUN: Final = re.compile(f"[{re.escape(_ASCII_WHITESPACE)}]+")
 # What this parser can conclude.  `not-requested` and `pending` are states of
@@ -243,7 +243,7 @@ def churro_prompt_view(variant: str) -> dict[str, str]:
 
 
 def churro_prompt_provenance(variant: str) -> dict[str, Any]:
-    """The vendor code identity to record beside the model identity (principle 6)."""
+    """The vendor code identity to record beside the model identity."""
     entry = _variant(variant)
     provenance: dict[str, Any] = {"prompt_variant": variant}
     provenance.update({field: entry[field] for field in _PROVENANCE_FIELDS})
@@ -476,7 +476,7 @@ def _flatten_document(root: ET.Element) -> dict[str, Any]:
         if outside:
             # Text no section of this page encloses is outside the vendor's
             # transcription; saying so is what keeps it from disappearing
-            # behind a successful state (principle 2, departure 5).
+            # behind a successful state (departure 5).
             findings.append({"kind": "page-text-outside-sections", "page_ordinal": page_index})
         for section_name in PAGE_SECTIONS:
             for section in [element for name, element in owned if name == section_name]:

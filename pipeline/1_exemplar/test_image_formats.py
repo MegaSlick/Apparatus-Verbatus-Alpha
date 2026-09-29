@@ -4,7 +4,7 @@ Every fixture here is built in memory by `synthetic_sources.py`, never a checked
 binary: the ingress guard only allows png/jpeg/tiff media types under
 `proof/fixtures/`, this module also needs to prove corrupt and PDF/GIF/HEIC bytes,
 and nothing here is register material in the first place — the synthetic-fixture
-rule (principle 12) applies to bytes that stand for a page, and these do not.
+rule applies to bytes that stand for a page, and these do not.
 
 The structural walkers distinguish malformed bytes from documented decoder limits.
 Their errors become closed admission alarms; no test below permits a format-policy
@@ -916,7 +916,7 @@ def test_a_16bit_tiff_seals_samples_a_grayscale_read_does_not_clip():
     reads its sealed page through `common.imaging.grayscale_rows`
     (`pipeline/2_designator/run.py::page_pixels`). The whole-page render keeps
     `I;16` samples, so a reader that converted straight to `L` returned almost
-    pure white for a page full of ink: a blank page, and a missed act (goal 2),
+    pure white for a page full of ink: a blank page, and a missed act,
     manufactured by the reader rather than present in the scan."""
     from common.imaging import grayscale_rows
 

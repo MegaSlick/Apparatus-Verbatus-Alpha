@@ -190,7 +190,7 @@ def is_control_sampled(
 def control_sampling_design(
     *, per_mille: int, selection_rule: str, approval_ref: ApprovalRecordBinding
 ) -> dict[str, object]:
-    """Bind each control sample to its rate, rule, and typed approval (principle 8)."""
+    """Bind each control sample to its rate, rule, and typed approval."""
     validate_control_per_mille(per_mille)
     if selection_rule != SELECTION_RULE:
         raise ValueError(

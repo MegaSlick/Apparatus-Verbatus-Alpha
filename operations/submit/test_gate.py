@@ -156,7 +156,7 @@ def test_the_full_shipped_policy_still_yields_a_usable_gate_on_any_machine(polic
 
 
 def test_a_skipped_root_comes_back_beside_the_resolved_ones_not_only_in_a_refusal(tmp_path, policy):
-    """Principle 2: the narrowing is a fact about the run, on every path.
+    """The narrowing is a fact about the run, on every path.
 
     Naming a skipped root only when *every* root fails left the ordinary case
     -- a partially resolving policy, which is nearly every machine -- returning

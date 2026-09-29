@@ -927,8 +927,9 @@ def test_a_wiped_attempt_layer_holds_rather_than_silently_restarting_history(tmp
     fixture's chairs are deterministic, so the ordinal-1 attempts come back
     byte-identical, but the ordinal-2 attempt a reread appended does not come back
     at all. This folder's own manifest recorded seven sealed attempts; the silent
-    restart left six and said nothing. principle 2 and principle 4 both refuse
-    that, and the inventory needed to notice it was on disk the whole time.
+    restart left six and said nothing -- exactly the silent loss and overwritten
+    evidence this project refuses -- and the inventory needed to notice it was
+    on disk the whole time.
     """
     run_root, tree = run_to_designator(tmp_path, "reread-failure")
     assert (
@@ -1535,7 +1536,7 @@ def test_chandra_combined_unrecordable_metadata_fails_one_attempt_without_holdin
     malformed = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
     assert malformed["outcome"] == "failed"
     # The native text a real witness sent is still retained as evidence -- only
-    # the untrustworthy self-report is discarded (principle 2, "kept, and
+    # the untrustworthy self-report is discarded ("kept, and
     # demoted").
     assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta gamma"
     assert malformed["payload"]["format_capabilities"] is None

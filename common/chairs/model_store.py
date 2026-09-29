@@ -6,7 +6,7 @@ revision; the network client itself lives in :mod:`common.chairs.registry`.
 Consumers use this module to prove the store and its derived records still
 agree. Its writers preserve every evidence version: inventories and manifests
 publish once, while each download-record version is digest-addressed and only
-its active copy moves. Differing evidence is never overwritten (principle 4).
+its active copy moves. Differing evidence is never overwritten.
 The documented store root is
 ``/Users/operator/verbatus-models`` (for example only, never a default).
 """
@@ -44,7 +44,7 @@ V1_STORE_SCHEMA = "verbatus-model-store.v1"
 INVENTORY_SCHEMA = "verbatus-model-inventory.v1"
 
 # An artifact entry is present, or `pending-fetch` naming its absence and reason,
-# so a partially fetched store is visibly partial (principle 2).
+# so a partially fetched store is visibly partial.
 PRESENT_FIELDS = {
     "artifact",
     "state",
@@ -635,7 +635,7 @@ def _snapshot_licence(snapshot: Path, requirement: RequiredArtifact) -> str:
 
     Licence text, a model-card declaration only, or nothing; the roster
     declaration tells the last two apart. A synthetic sentinel is written into
-    staging before the manifest is built, so the digest covers it (principle 4).
+    staging before the manifest is built, so the digest covers it.
     """
 
     try:
@@ -889,7 +889,7 @@ def write_download_record(record: Mapping[str, Any], store_root: str | Path) -> 
     """Version the host record immutably and move its active copy atomically.
 
     Each canonical record is published once at ``records/<sha256>.json``; only
-    ``download_record.json`` moves, and earlier versions stay (principle 4). A
+    ``download_record.json`` moves, and earlier versions stay. A
     present artifact never moves back to pending-fetch: bytes missing after
     acquisition are lost, not unfetched.
     """
@@ -1031,7 +1031,7 @@ def require_complete_store(store_root: str | Path) -> dict[str, Any]:
 def write_derived_inventory(record: Mapping[str, Any], path: str | Path) -> str:
     """Publish a derived record once; readers must call :func:`read_derived_inventory`.
 
-    Identical bytes are reused; differing bytes are refused (principle 4).
+    Identical bytes are reused; differing bytes are refused.
     """
 
     payload = canonical_bytes(derived_inventory(record))
@@ -1169,7 +1169,7 @@ def _verify_synthetic_licence_observation(snapshot: Path, item: Mapping[str, Any
         # bytes may genuinely disagree with the pin -- or this code's wording of
         # what it observed may have been edited since the fetch that wrote them,
         # in which case the store is intact and the only repair is a re-fetch.
-        # Under principle 4 the recorded observation is a layer and is not
+        # The recorded observation is a layer and is not
         # retroactively re-blessed, so the refusal states both readings.
         raise DigestMismatchRefusal(
             item["artifact"],
@@ -1196,7 +1196,7 @@ def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any
 
     The caller supplies an already-created staging directory.  This function does
     not copy or download bytes.  Publication follows the rest of this module's
-    custody rule (principle 4 — evidence is never overwritten): identical bytes
+    custody rule (evidence is never overwritten): identical bytes
     already published are reused silently, a differing manifest already at that
     name is refused, and the existing file is never touched either way. A picked
     manifest name is a pin, not a rolling pointer a second promotion may rewrite.

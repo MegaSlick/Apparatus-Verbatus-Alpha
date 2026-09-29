@@ -342,7 +342,7 @@ def detached_supervisor(argv: Sequence[str]) -> SupervisorProcess:
 
     The child's streams go nowhere on purpose: it is detached, nobody is
     watching its terminal, and `supervise` attempts a durable final record on
-    every exit path (principle 2) and names a failed attempt in its printed
+    every exit path and names a failed attempt in its printed
     exit record -- though with stdout here going to `DEVNULL`, a volume that
     refuses the write itself leaves nothing behind for this detached child to
     hand back.
@@ -1415,7 +1415,7 @@ class ObservingControllerArmer(ChannelControllerArmer):
             )
             filed = f"what it saw is recorded at {path}"
         except Exception as error:
-            # Principle 2: the failure to record the measurement is itself the
+            # The failure to record the measurement is itself the
             # finding, and it travels in the detail rather than vanishing.
             filed = f"its evidence file at {path} could not be written: {error}"
         return ControllerArming(

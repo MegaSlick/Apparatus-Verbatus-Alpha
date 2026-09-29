@@ -266,7 +266,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # Later stages may read only the run tree the Door sealed, never source paths.
     if program == STAGE_PROGRAMS["door"]:
         # Only the Door creates the run authority, so only it can seal the commit.
-        # An unread commit is omitted, never a placeholder (principle 8).
+        # An unread commit is omitted, never a placeholder.
         commit, _detail = repository_commit(args)
         command += _argv(
             (
@@ -283,7 +283,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
             omit_unset=True,
         )
     # The placement tier is a measured runtime fact of the card, not run
-    # configuration (principle 6), so an unset one is omitted and stage_parser's
+    # configuration, so an unset one is omitted and stage_parser's
     # own default (None) governs.
     command += _argv(
         (("--pdf-target-dpi", args.pdf_target_dpi), ("--placement-tier", args.placement_tier)),
@@ -350,7 +350,7 @@ def repository_commit(args: argparse.Namespace) -> tuple[str | None, str | None]
     Read from argv, not measured: on a pod the bootstrap already checked out and
     verified the pinned commit (`operations/pod/bootstrap.py`). Absence is
     `None` with a reason, never a refusal, since a source export has no version
-    control (principle 8). A short or decorated revision is refused: it names a
+    control. A short or decorated revision is refused: it names a
     commit only against the repository that resolved it.
     """
 
@@ -875,7 +875,7 @@ def checkpoint(args, checkpoint_name: str, hard_failure_policy: dict) -> dict | 
 
 
 def report_halt(args, tally: dict) -> None:
-    """The one place this halt is said out loud. Not lost silently (principle 2)."""
+    """The one place this halt is said out loud. Not lost silently."""
     print(
         f"run {args.run_id}: halted at the {tally['checkpoint']} checkpoint — {tally['count']} "
         f"hard failure(s) exceed the run-level cap of {tally['threshold']} (the project lead's ruling: "
@@ -934,7 +934,7 @@ def _is_measured_recrop_request(payload: dict | None) -> bool:
 
 
 def report_undispatchable_recoveries(args, refused: list[tuple[str, str, str, str]]) -> None:
-    """Say every refused dispatch out loud, by act, before the run stops (principle 2).
+    """Say every refused dispatch out loud, by act, before the run stops.
 
     The only record of this refusal, since the orchestrator keeps no file. On
     stderr because the operator surface keeps `completed.stderr or

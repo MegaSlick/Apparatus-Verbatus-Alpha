@@ -30,8 +30,8 @@ jobs:
           # Remote verification must name the candidate itself. The composing
           # session verifies that it contains freshly fetched main before merge.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          # The ingress check examines every reachable commit so that deleting a
-          # leaked credential in a later commit cannot turn the check green.
+          # Full history, so the ingress check can find the commit a change starts from
+          # and fall back to scanning everything when it cannot.
           fetch-depth: 0
           # Repository-controlled checks need no authenticated Git operation.
           # Do not leave GITHUB_TOKEN in local Git config while they execute.
@@ -45,10 +45,22 @@ jobs:
 
       - name: Repository ingress
         shell: bash
+        # Every commit on main was scanned by the run that brought it there, so a pull
+        # request scans only the commits it adds and a push to main only the ones it
+        # pushes. A tag, a new branch or a start commit that cannot be found gets the
+        # full history, so a deleted credential still cannot turn the check green.
+        env:
+          SCAN_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           printf '%s\0%s\0' "$GITHUB_REF" "$GITHUB_HEAD_REF" |
             python3 .githooks/check_ingress.py --ref-fields
-          python3 .githooks/check_ingress.py --history HEAD
+          if [[ "$GITHUB_REF" != refs/tags/* && "${SCAN_BASE:-}" =~ ^[0-9a-f]{40}$ &&
+                "$SCAN_BASE" != 0000000000000000000000000000000000000000 ]] &&
+             git cat-file -e "$SCAN_BASE^{commit}" 2>/dev/null; then
+            python3 .githooks/check_ingress.py --history "$SCAN_BASE..HEAD"
+          else
+            python3 .githooks/check_ingress.py --history HEAD
+          fi
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             python3 .githooks/check_ingress.py --ref-object "$GITHUB_REF"
           fi

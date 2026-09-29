@@ -169,3 +169,13 @@ High-level and binding. Detailed schemas and interface contracts are in each sta
 6. Partial or unresolved results can never appear complete.
 7. Pipeline output is a machine reading, not truth.
 8. Every proposed region ends as accepted text, an explicit exclusion, or a review item.
+9. A witness's reading is never itself an output. Showing testimony as testimony is not
+   a second text.
+10. No code repairs, rewrites or re-rolls what a model returned. Each model is asked
+    properly — complete input, in its documented format, with a way to mark what it
+    cannot read — and its answer is recorded as given and flagged if it looks wrong.
+11. Every stored reading carries the identity and revision of the model that produced
+    it, the image region it read and the transforms applied to that image.
+    Configuration protects future runs; the record protects the past.
+12. Every recovery attempt is kept, including each attempt of a model's own pinned
+    retry recipe.

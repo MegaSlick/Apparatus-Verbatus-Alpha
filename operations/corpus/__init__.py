@@ -39,7 +39,7 @@ package was inconsistent with itself here: `local_admission.py` already wrapped
 `reference.py`'s and `compare.py`'s names escape. Settled for the package and
 recorded here.
 
-**Not a picker (principle 1).** Nothing in this package selects among readings
+**Not a picker.** Nothing in this package selects among readings
 or witnesses. `plan.py` groups rows that already exist by the page they already
 belong to; `holdout.py` names pages the `test` split protects; `compare.py`
 runs only after a pipeline run is sealed, selects nothing about what the

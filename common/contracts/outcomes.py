@@ -20,8 +20,8 @@ this file that terminates nothing. They aggregate into a coverage record and nev
 into a category or a character of text. An act every one of whose chairs is `failed`
 or `dead` still reaches the Perlector, which reads the ink; it may be delivered,
 carrying `under_witnessed`. Any rule that let chair outcomes promote or demote an
-act's text would be a picker wearing an accounting name, and principle 1 forbids
-it under every name.
+act's text would be a picker wearing an accounting name, no matter what it is
+called.
 """
 
 from collections.abc import Mapping, Sequence
@@ -107,7 +107,7 @@ def anchor_line_located(alignment: Any) -> bool:
     * a positive-length `witness_span` -- the same trivial attach carries
       `{"start": 0, "end": 0}`. A zero-length slice is not text this act was
       placed in, and counting it would put a chair on the witness floor for a
-      reading that placed nothing (principle 8).
+      reading that placed nothing.
     * an `anchor_line_match` whose longest contiguous run reaches
       `ANCHOR_LINE_RUN_FLOOR` (or the whole anchor line, where the line is
       shorter than the floor).
@@ -159,7 +159,7 @@ def page_attachment_basis(*, reading: bool, geometry_overlaps: bool, alignment: 
 
     The anchor line exists for page witnesses whose grammar carries no geometry
     (Churro's `HistoricalDocument`), which could otherwise never attach.  Not a
-    picker (principle 1): the anchor, from another chair's response, decides only
+    picker: the anchor, from another chair's response, decides only
     whether this chair's text was placed in this act, never whose reading is
     right.  It does cost independence, and the live seam says so.  It also costs
     forgery resistance: the readers take the recorded alignment as evidence, so a
@@ -711,7 +711,7 @@ def run_aggregate(
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
-    Principle 2, read literally: a partial result is visibly partial, and
+    A partial result is visibly partial, and
     "complete" is refused unless everything reconciles. So `complete` here means
     every act reached a completed-class category, every configured chair
     reconciled against the configuration it was run under, AND every page in the
@@ -731,7 +731,7 @@ def run_aggregate(
     `act_text_status` maps each delivered act to its sealed `TEXT_STATUSES`
     word: `delivered` says where an act ended, not whether its reading is
     whole, so a non-`established` status is a reason.  A delivered act with no
-    status is named rather than assumed whole (principle 8); a status on an act
+    status is named rather than assumed whole; a status on an act
     that was not delivered is fatal, since no record exists for it to describe.
 
     `edge_hold_pages` is page-scoped because no act can yet own the unclaimed

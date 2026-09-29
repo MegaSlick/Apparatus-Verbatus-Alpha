@@ -26,7 +26,7 @@ still passes.
 
 A page whose background the shared inference refuses raises
 `BackgroundInferenceRefusal` here too; the caller records it rather than
-publishing a zero nobody measured (principle 8).
+publishing a zero nobody measured.
 """
 
 from pathlib import Path
@@ -67,7 +67,7 @@ MINIMUM_FRACTION_OUTSIDE_BP_FIELD: Final = "minimum_fraction_outside_bp"
 
 #: Outside-coverage ink that flags a page on its own, as a fraction of the page's
 #: AREA: the fraction gate alone lets several missed words through on a dense
-#: page (goal 2), and a flat count asked a 240-times stricter question of a real
+#: page, and a flat count asked a 240-times stricter question of a real
 #: leaf than of the fixture. Resolved to pixels as `substantial_ink_pixels`.
 SUBSTANTIAL_INK_AREA_BP_FIELD: Final = "substantial_ink_area_bp"
 

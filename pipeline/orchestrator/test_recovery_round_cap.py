@@ -279,7 +279,7 @@ def test_a_legacy_real_ingress_recrop_is_refused_and_recorded_before_anything_is
     # run's detail as `completed.stderr or completed.stdout`, and the
     # `ContractError` this raises is itself printed to stderr, so a listing on
     # stdout would be dropped from the receipt and this refusal would be
-    # recorded nowhere a human reads (principle 2).
+    # recorded nowhere a human reads.
     assert streams.out == ""
     printed = streams.err
     # Both acts, not only the one the raised exception carries.

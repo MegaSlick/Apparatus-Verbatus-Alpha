@@ -219,7 +219,7 @@ def test_an_oversized_page_is_an_alarm_before_a_bitmap_is_returned():
 def test_a_large_legitimate_page_renders_at_reduced_resolution_rather_than_refusing():
     """A page too big for the target DPI is captured, not lost.
 
-    goal 2: a poorly read act can be corrected later, a missed one cannot. So the
+    A poorly read act can be corrected later, a missed one cannot. So the
     resolution is capped downward toward the floor and the page still seals, and
     the contract records what it was actually rendered at — a recipe naming only
     the target would describe pixels these are not.

@@ -75,9 +75,9 @@ def _fake_perlector_v0(
 
 
 # The pinned instruction for `unproven-real-perlector`. It names no witness
-# preference and sets no floor (principles 1 and 8); it asks for the ink as
+# preference and sets no floor; it asks for the ink as
 # written and gives the reader the doubt marks `annotations.read_doubt_marks`
-# parses (principle 3).
+# parses.
 TRANSCRIPTION_INSTRUCTION: Final = (
     "Transcribe the ink exactly as it is written on the page. Do not modernize spelling, "
     "expand abbreviations, or correct the scribe. Read through to the end of the act. "
