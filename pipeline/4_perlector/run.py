@@ -1349,7 +1349,7 @@ def _checked_act_scoped_attachment(
     )
     if testimonium.get("payload", {}).get("chair") != chair:
         raise SchemaRefusal(f"act {act_id} attachment points to another chair's Testimonium")
-    # Structured reports stay retained but uncountable.
+    # Comparability comes from the Testimonium's own text; structured reports are uncountable.
     if attachment["comparable"] != (
         attachment["attached"] and isinstance(testimonium.get("payload", {}).get("payload"), str)
     ):
@@ -3113,7 +3113,7 @@ def _reseal_dossier(dossier: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class _Attempt:
-    """The facts every record of one act's reading attempt is published with."""
+    """The facts every record of one act's reading attempt is published with, never rebound."""
 
     act_key: str
     act_id: str
@@ -3436,9 +3436,9 @@ def _established_row(
         # re-proof's call when that text is published.
         "fields": with_engine_call(payload, result, _PERLECTIO_FIELDS),
         "outcome": outcome,
-        # Areas, not decoded pixels: holding every act's images until the audit loop
-        # would grow memory with the act count. A re-proof rebuilds its pixels from the
-        # sealed artifacts.
+        # Areas, not decoded pixels: holding every act's images until the audit loop would
+        # risk an OOM kill before any Perlectio publishes. A re-proof rebuilds its pixels
+        # from the sealed artifacts.
         "region_pixels": attempt.region_pixels,
         "page_pixels": attempt.page_pixels,
         "declared_failure": declared_failure,
@@ -3728,7 +3728,7 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
         context, act_id, ordinal, act_key=act_key
     ):
         # Never asked again: a second live reading would differ and the store refuses
-        # it.
+        # it. Not counted in `unread`: `_acts_left_to_read` already excluded it.
         return None
 
     # A declared engine outcome stands in for a real engine's report, so it is valid
@@ -3967,8 +3967,8 @@ def _publish_audited_reading(
         "examination": examination,
         "reproof_truncation": reproof_truncation,
         "reproof_edits": reproof.edits if reproof else None,
-        # Named here because the Perlectio's `engine_call` stays Pass B's when the
-        # text is unchanged.
+        # None when nothing was re-proofed or the reader is the fixture reader; named here
+        # because the Perlectio's `engine_call` stays Pass B's when the text is unchanged.
         "reproof_call": reproof.call_record if reproof else None,
     }
     audit.validate_finding(
@@ -4183,7 +4183,8 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
         return reproof_truncation
     payload["text"] = final_text
     # The doubt report travels with the call whose text is published, so nothing is
-    # re-anchored by guesswork; this also drops a Pass-B whole-act gap.
+    # re-anchored by guesswork; this also drops a Pass-B whole-act gap, which a
+    # re-proof's own report can never carry.
     reproof_assessment = _assessed(reply, text=final_text)
     if "[[" in final_text or "]]" in final_text:
         reproof_assessment = annotations.malformed_assessment(

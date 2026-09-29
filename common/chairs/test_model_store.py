@@ -1046,6 +1046,7 @@ def test_materializer_refuses_store_lock_after_bounded_wait(tmp_path, monkeypatc
     root = tmp_path / "store"
 
     def busy(*args, **kwargs):
+        assert args[1] & model_store.fcntl.LOCK_NB
         raise BlockingIOError("fixture lock held")
 
     monkeypatch.setattr(model_store.fcntl, "flock", busy)
