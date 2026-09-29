@@ -14,6 +14,7 @@ import hashlib
 import json
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Mapping
 
 import live_reader
@@ -28,6 +29,7 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.cross_capture_autopsia import atomic_delivered_pixels, build_autopsia
+from common.decoding import load_decoding_policy, perlector_max_tokens
 from common.imaging import encode_grayscale_png
 from common.perlector_audit import (
     _rebuild_chair_request_bytes,
@@ -42,6 +44,7 @@ from common.request_capacity import (
     PERLECTOR_PROMPT_TEMPLATE_DIGEST,
     PROMPT_TOKENS_MEASURED_CONSTANT,
     RequestCapacityRefusal,
+    dense_page_answer_budget,
     perlector_prompt_bound,
     perlector_prompt_tokens,
     request_fits,
@@ -365,15 +368,25 @@ def _delivered_pixels(*, region_image: bytes, page_image: bytes) -> dict:
     return atomic_delivered_pixels(autopsia, read_bytes=store.__getitem__, max_images=64)
 
 
+# Different on purpose, so a request can show which of the two it was sent under.
+READING_BOUND = 128
+REPROOF_BOUND = 160
+
+
 def _reader(
     client: ChairClient,
     chair: ChairIdentity,
     *,
-    max_tokens: int | None = None,
+    max_tokens: int = READING_BOUND,
+    reproof_max_tokens: int = REPROOF_BOUND,
     protocol_config: Mapping[str, str | int] | None = None,
 ) -> VLLMReader:
     return VLLMReader(
-        client=client, chair=chair, protocol_config=protocol_config, max_tokens=max_tokens
+        client=client,
+        chair=chair,
+        protocol_config=protocol_config,
+        max_tokens=max_tokens,
+        reproof_max_tokens=reproof_max_tokens,
     )
 
 
@@ -1222,7 +1235,7 @@ def test_audit_reproof_with_no_delivered_request_refuses_exactly_as_the_fixture_
 # --- generation_sent / generation_declared ------------------------------------
 
 
-def test_max_tokens_rides_generation_sent_only_when_given(tmp_path: Path) -> None:
+def test_max_tokens_always_rides_generation_sent(tmp_path: Path) -> None:
     client, endpoint, blobs, chair = _built(tmp_path)
     region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
     with client:
@@ -1248,18 +1261,76 @@ def test_max_tokens_rides_generation_sent_only_when_given(tmp_path: Path) -> Non
     }
 
 
-def test_no_max_tokens_still_selects_perlector_direct_response_mode(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "pass_kind", ["perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior"]
+)
+def test_every_reading_kind_is_sent_the_one_reading_bound(tmp_path: Path, pass_kind: str) -> None:
+    """The kinds stay one condition: nothing about the bound varies with the label."""
     client, endpoint, _blobs, chair = _built(tmp_path)
     region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
     with client:
         endpoint.script(ScriptedAnswer(content="a", finish_reason="stop"))
-        _reader(client, chair, max_tokens=None).read(
+        _reader(client, chair).read(
             _dossier(region_image=region_image, page_image=page_image),
-            pass_kind="perlectio",
+            pass_kind=pass_kind,
             delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
         )
-    assert "max_tokens" not in endpoint.requests[0]
-    assert endpoint.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert endpoint.requests[0]["max_tokens"] == READING_BOUND
+
+
+def test_a_reproof_is_sent_its_own_bound_not_the_reading_bound(tmp_path: Path) -> None:
+    client, endpoint, _blobs, chair = _built(tmp_path)
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
+    dossier = _dossier(region_image=region_image, page_image=page_image)
+    request = build_audit_request(
+        act_key=dossier["act_key"],
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/artifacts/draft.json", "sha256": "0" * 64},
+        semi_final_text="abcde fgh",
+        flags=[{"class": "repetition", "location": {"start": 0, "end": 5}}],
+    )
+    with client:
+        endpoint.script(ScriptedAnswer(content="confirmed unchanged", finish_reason="stop"))
+        _reader(client, chair).read(
+            dossier,
+            pass_kind="audit-reproof",
+            delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
+            audit_request=request,
+        )
+    assert endpoint.requests[0]["max_tokens"] == REPROOF_BOUND != READING_BOUND
+
+
+def test_the_sealed_bounds_still_admit_the_largest_act_the_real_run_read() -> None:
+    """The shipped bounds cost the largest run-measured act no admission.
+
+    The largest Perlector act on the 2026-09-27 real-page run needed 25,374
+    tokens of images and prompt on the 32,768 row. The sealed bounds are reserved
+    beside the measured 1,318-token dense-page answer, so that act must still fit,
+    and the row must still refuse a request whose reserve would overrun it.
+    """
+    policy, _digest = load_decoding_policy()
+    reading, reproof = perlector_max_tokens(policy)
+    row = next(
+        SimpleNamespace(**profile)
+        for profile in tomllib.loads(
+            (
+                Path(__file__).resolve().parents[2] / "config" / "serving_recipes_real.toml"
+            ).read_text(encoding="utf-8")
+        )["profiles"]
+        if profile["recipe"] == "unproven-real-perlector" and profile["tier"] == "generic-80gb-plus"
+    )
+    largest_measured = 25_374
+    for bound in (reading, reproof):
+        reserved = live_reader._reserved_answer_budget(
+            "perlector",
+            profile=row,
+            region_sizes=[(2480, 3508)],
+            page_render_sizes=[],
+            max_tokens=bound,
+        )
+        assert reserved == max(dense_page_answer_budget("perlector"), bound)
+        assert request_fits(row, [], largest_measured, reserved)["fits"]
+        assert not request_fits(row, [], row.max_model_len - reserved + 1, reserved)["fits"]
 
 
 def test_retained_float_generation_rebuilds_exact_wire_bytes_and_exposes_tampering() -> None:

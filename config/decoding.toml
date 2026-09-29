@@ -1,8 +1,16 @@
 # These exact bytes are sealed into every run's decoding provenance.
-schema = "decoding.v3"
+schema = "decoding.v4"
 
 [reading_of_record]
 temperature = 0
+
+[perlector_generation]
+# Output bounds for the Perlector's replies, far above any honest reading, so a
+# reply that runs away stops as a visible truncation and holds its act rather
+# than filling the context. One value covers every reading pass so the passes
+# stay one condition; the re-proof answers in JSON and has its own.
+reading_max_tokens = 2048
+reproof_max_tokens = 2048
 
 [variance_experiment]
 # A labelled experiment: every pass has its own identity; it is never a retry.

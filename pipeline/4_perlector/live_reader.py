@@ -16,13 +16,15 @@ the witness-dependence contrast measure the pipeline's own routing instead of th
 model. ``read`` below reads ``pass_kind`` in exactly two places: the closed
 membership check, and the delivery hand-off to ``validate_audit_delivery``.
 Nothing else in this module ever inspects it.
+The output bound follows the same rule: a reading's bound is one value for every
+reading kind, and only a delivered re-proof instrument selects the re-proof's own.
 
 **A request that cannot fit the sealed row is refused before it is sent.**
 ``read`` computes ``common.request_capacity``'s record for the images it is
 about to carry, the prompt it just rendered, and the answer budget
 ``_reserved_answer_budget`` decides -- one act's reading ordinarily, a dense
 page's wherever the act's own crop is as expensive as a whole-page render, and
-never below the ``max_tokens`` this reader would put on the wire -- and raises
+never below the ``max_tokens`` this reader puts on the wire -- and raises
 ``common.request_capacity.RequestCapacityRefusal`` -- carrying that record --
 when the row's ``max_model_len`` cannot hold them. That is a refusal rather
 than a hold because a Perlector reading has no ``failed`` shape (see
@@ -157,7 +159,7 @@ def _reserved_answer_budget(
     profile: Any,
     region_sizes: list[tuple[int, int]],
     page_render_sizes: list[tuple[int, int]],
-    max_tokens: int | None,
+    max_tokens: int,
 ) -> int:
     """How much room this request reserves for the reading it asks for.
 
@@ -183,7 +185,7 @@ def _reserved_answer_budget(
     more can only refuse a request the row could barely have held, and
     reserving less would send one the engine answers with HTTP 400.
 
-    **The wire bound**, ``max_tokens``, when this reader was given one: the
+    **The wire bound**, ``max_tokens``: the
     engine may generate that many tokens, so a reserve below it would admit a
     request whose own permitted answer does not fit.  Taking the maximum here
     is what keeps the bound and the reserve from drifting apart as either
@@ -196,7 +198,7 @@ def _reserved_answer_budget(
     page_sized_cost = min(page_render_costs, default=0)
     if any(cost >= page_sized_cost for cost in region_costs):
         budget = max(budget, dense_page_answer_budget(role))
-    return max(budget, max_tokens or 0)
+    return max(budget, max_tokens)
 
 
 class VLLMReader:
@@ -209,10 +211,11 @@ class VLLMReader:
     service. ``chair`` is the resolved identity whose ``serving_recipe``
     selects the declared prompt builder (``prompts.build_prompt``);
     ``protocol_config`` is the sealed R5a policy that same builder renders
-    through, or ``None`` to fall back to its own default. ``max_tokens`` is
-    an explicit run decision, not a sealed one (spec 08 section 3.3: vLLM
-    bounds generation by ``max_model_len`` when none is given, so an engine
-    ``"length"`` then honestly means the context itself was exhausted).
+    through, or ``None`` to fall back to its own default. ``max_tokens`` and
+    ``reproof_max_tokens`` are the output bounds sealed in the decoding policy,
+    for a reading and for an audit re-proof: a reply that hits one comes back
+    as an engine ``"length"``, which the truncation classifier holds as a
+    visible failure of the act, never a re-run.
     """
 
     def __init__(
@@ -221,12 +224,14 @@ class VLLMReader:
         client: ChairClient,
         chair: ChairIdentity,
         protocol_config: Mapping[str, str | int] | None,
-        max_tokens: int | None,
+        max_tokens: int,
+        reproof_max_tokens: int,
     ) -> None:
         self._client = client
         self._chair = chair
         self._protocol_config = protocol_config
         self._max_tokens = max_tokens
+        self._reproof_max_tokens = reproof_max_tokens
 
     def read(
         self,
@@ -339,15 +344,17 @@ class VLLMReader:
         # crop and every page render, across every capture view
         # (`config/perlector_protocol.toml` allows up to 32, a ceiling with no
         # relation to any row's context) -- so it is also the seam most likely
-        # to overrun.  `max_tokens` is deliberately unset here so that a
-        # `"length"` stop honestly means the context was exhausted; the cost of
-        # that honesty is that a *prompt*-side overrun surfaces as an HTTP 400
-        # the engine answers before generating, which `EngineSignalRefusal`
-        # never sees. Refusing here is what turns that into a laptop refusal
-        # naming the arithmetic rather than a stack trace on a billing card.
+        # to overrun.  A *prompt*-side overrun surfaces as an HTTP 400 the
+        # engine answers before generating, which `EngineSignalRefusal` never
+        # sees. Refusing here is what turns that into a laptop refusal naming
+        # the arithmetic rather than a stack trace on a billing card.
         # Admitted on the measured upper bound, with the measured floor recorded
         # beside it: a request is never let through on a number that says only
         # what it costs *at least*.
+        # An audit re-proof answers in JSON and has its own bound; a reading's
+        # bound is one value for every reading pass. The two are told apart by
+        # the delivered instrument, never by the pass label.
+        max_tokens = self._max_tokens if instrument is None else self._reproof_max_tokens
         prompt_bound, bound_basis = perlector_prompt_bound(
             text, template_digest=prompts.BUILDER_SHA256
         )
@@ -366,7 +373,7 @@ class VLLMReader:
                 profile=self._client.handle.profile,
                 region_sizes=region_sizes,
                 page_render_sizes=page_render_sizes,
-                max_tokens=self._max_tokens,
+                max_tokens=max_tokens,
             ),
             # The pass label is deliberately absent from this message: this
             # module may read it in exactly two places (the closed membership
@@ -390,7 +397,7 @@ class VLLMReader:
             generation_declared={},
             generation_sent={
                 "chat_template_kwargs": {"enable_thinking": False},
-                **({"max_tokens": self._max_tokens} if self._max_tokens is not None else {}),
+                "max_tokens": max_tokens,
             },
             capacity=capacity,
         )
