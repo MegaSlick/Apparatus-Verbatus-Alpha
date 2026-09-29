@@ -1356,7 +1356,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         "--draft-fed",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="whether Pass B receives the prior draft (default: withheld)",
+        help="run Pass A and feed its draft to Pass B (default: no Pass A)",
     )
     parser.add_argument("--formats-config", default=str(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH))
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
@@ -1449,6 +1449,7 @@ def validate_witness_context_bindings(
     nuda_approval_ref: str,
     perlector_instrument_per_mille: int,
     perlector_instrument_approval_ref: str,
+    draft_fed: bool = False,
 ) -> str:
     """Refuse a bad witness-context binding before a run tree exists, on every path.
 
@@ -1483,6 +1484,13 @@ def validate_witness_context_bindings(
             "needs the project lead's predeclared sampling design selector "
             f"{PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r} in "
             "--perlector-instrument-approval-ref; an arbitrary string is not an approval record"
+        )
+    if perlector_instrument_per_mille and not draft_fed:
+        # Without Pass A the control sees exactly what production sees, so it
+        # would measure nothing.
+        raise ContractError(
+            "a Perlector prior-draft control needs --draft-fed: without Pass A the "
+            "control is identical to the production reading"
         )
     validation = validate_witness_context_configuration(
         models,
@@ -1636,6 +1644,7 @@ def run_config_bindings(
         nuda_approval_ref=nuda_approval_ref,
         perlector_instrument_per_mille=perlector_instrument_per_mille,
         perlector_instrument_approval_ref=perlector_instrument_approval_ref,
+        draft_fed=draft_fed,
     )
     return {
         "witness_chairs": list(models.witness_chairs),
@@ -1719,6 +1728,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
         nuda_approval_ref=args.nuda_approval_ref,
         perlector_instrument_per_mille=args.perlector_instrument_per_mille,
         perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
+        draft_fed=args.draft_fed,
     )
     _, alignment_config_digest = load_alignment_limits(args.alignment_config)
     _corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(

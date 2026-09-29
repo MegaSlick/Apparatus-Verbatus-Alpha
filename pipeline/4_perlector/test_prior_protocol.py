@@ -155,11 +155,8 @@ def test_nuda_and_the_pass_a_prior_are_fed_the_identical_condition(tmp_path):
     run tree would not guess: four Perlector reading kinds, only three
     conditions. Once a real chair sits here, nuda against lectio-prior measures
     sampling variance, not witness dependence; the witness-dependence contrast
-    is lectio-prior (or the sampled control) against the production Perlectio.
-    Whether the approval-gated nuda arm still earns its second model call is
-    B4's three-condition matrix and the project lead's, not this build's -- but it cannot
-    be answered by anyone who does not know the two arms are the same draw.
-    This test makes either arm drifting a deliberate, visible change.
+    is either of them against the sampled control, which sees witnesses and no
+    draft. Neither arm may drift from the other without this test noticing.
     """
     root = tmp_path / "runs"
     result = _run(
@@ -170,6 +167,7 @@ def test_nuda_and_the_pass_a_prior_are_fed_the_identical_condition(tmp_path):
         "1000",
         "--nuda-approval-ref",
         perlector.NUDA_APPROVAL_SUBJECT,
+        "--draft-fed",
     )
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
@@ -187,13 +185,28 @@ def test_nuda_and_the_pass_a_prior_are_fed_the_identical_condition(tmp_path):
     )
 
 
-def test_unsampled_run_has_prior_and_production_but_no_control(tmp_path):
+def test_unsampled_default_run_has_production_only_and_no_pass_a(tmp_path):
     root = tmp_path / "runs"
     result = _run(root)
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
-    assert len(_records(tree, "lectio-prior")) == len(_records(tree, "perlectio")) == 2
+    assert len(_records(tree, "perlectio")) == 2
+    assert _records(tree, "lectio-prior") == []
     assert _records(tree, "primed-without-prior") == []
+
+
+def test_unsampled_fed_run_has_prior_and_production_but_no_control(tmp_path):
+    root = tmp_path / "runs"
+    result = _run(root, "r", "happy", "--draft-fed")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
+    priors = _records(tree, "lectio-prior")
+    finals = _records(tree, "perlectio")
+    assert len(priors) == len(finals) == 2
+    assert _records(tree, "primed-without-prior") == []
+    for final in finals:
+        reference = final["payload"]["dossier"]["prior_draft"]["reference"]
+        assert reference in final["inputs"]
 
 
 def test_control_refuses_without_the_project_leads_approval_on_fixture_path(tmp_path):
@@ -204,21 +217,28 @@ def test_control_refuses_without_the_project_leads_approval_on_fixture_path(tmp_
     assert not (root / "r").exists()
 
 
+def test_a_control_without_pass_a_is_refused_at_run_creation():
+    """Withheld, the control would be byte-identical to production."""
+    with pytest.raises(ContractError, match="needs --draft-fed"):
+        sampling_approval_records(
+            "happy",
+            "--perlector-instrument-per-mille",
+            "1000",
+            "--perlector-instrument-approval-ref",
+            perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        )
+
+
 def test_default_withholds_prior_draft_from_prompt_text(tmp_path):
     root = tmp_path / "runs"
     result = _run(root, "r", "happy")
     assert result.returncode == 0, result.stderr
-    final = next(
-        record["payload"]
-        for record in _records(RunTree(root, "r"), "perlectio")
-        if record["payload"]["dossier"]["prior_draft"]["text"] != record["payload"]["text"]
-    )
+    final = _records(RunTree(root, "r"), "perlectio")[0]["payload"]
     assert final["protocol"]["draft_fed"] is False
     assert final["dossier"]["prior_draft_view"] == "withheld"
+    assert "prior_draft" not in final["dossier"]
     assert final["lectio_kind"] == "primed-draft-withheld"
     assert final["self_revision"] == []
-    prior_text = final["dossier"]["prior_draft"]["text"]
-    assert prior_text
 
     protocol_config, _protocol_sha256 = protocol.load(ROOT / "config" / "perlector_protocol.toml")
     identity = perlector.ChairIdentity(**final["provenance"]["resolved_identity"])
@@ -228,17 +248,35 @@ def test_default_withholds_prior_draft_from_prompt_text(tmp_path):
         final["dossier"],
         protocol_config,
     )
-    assert prior_text not in rendered
+    assert "This is a prior reading" not in rendered
 
     changed_dossier = copy.deepcopy(final["dossier"])
-    changed_dossier["prior_draft"]["text"] = "WITHHELD-PRIOR-SENTINEL-7f4c2e"
-    changed_rendered = perlector.prompts.build_prompt(
-        identity.serving_recipe,
-        identity.role,
-        changed_dossier,
-        protocol_config,
+    changed_dossier["prior_draft"] = {"text": "WITHHELD-PRIOR-SENTINEL-7f4c2e"}
+    assert (
+        perlector.prompts.build_prompt(
+            identity.serving_recipe, identity.role, changed_dossier, protocol_config
+        )
+        == rendered
     )
-    assert changed_rendered == rendered
+
+
+def test_a_withheld_perlectio_carrying_a_prior_draft_is_refused(tmp_path):
+    root = tmp_path / "runs"
+    result = _run(root, "r", "happy")
+    assert result.returncode == 0, result.stderr
+    payload = copy.deepcopy(_records(RunTree(root, "r"), "perlectio")[0]["payload"])
+    payload["dossier"]["prior_draft"] = {"reference": {}, "text": "x"}
+    body = {key: value for key, value in payload["dossier"].items() if key != "dossier_digest"}
+    payload["dossier"]["dossier_digest"] = perlector.digest_of(body)
+    protocol_config, protocol_sha256 = protocol.load(ROOT / "config" / "perlector_protocol.toml")
+    with pytest.raises(SchemaRefusal, match="carries a prior draft"):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
 
 
 def test_fed_draft_has_the_primed_kind_and_real_self_revision(tmp_path):
@@ -343,6 +381,7 @@ def test_two_different_run_ids_over_the_same_corpus_facts_sample_the_control_ide
         "500",
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "--draft-fed",
     )
     first = _run(root, "run-one", "happy", *extra)
     second = _run(root, "run-two", "happy", *extra)
@@ -440,7 +479,7 @@ def published_lectio_prior_payload(tmp_path_factory):
     matching test_perlectio_schema.py's published_payload pattern for the
     kind that fixture only covers by inheritance until now."""
     root = tmp_path_factory.mktemp("lectio-prior-schema") / "runs"
-    result = _run(root, "r", "happy")
+    result = _run(root, "r", "happy", "--draft-fed")
     assert result.returncode == 0, result.stderr
     return _records(RunTree(root, "r"), "lectio-prior")[0]["payload"]
 
@@ -466,6 +505,7 @@ def published_primed_without_prior_payload(tmp_path_factory):
         "1000",
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "--draft-fed",
     )
     assert result.returncode == 0, result.stderr
     return _records(RunTree(root, "r"), "primed-without-prior")[0]["payload"]
@@ -487,6 +527,25 @@ def test_a_real_published_lectio_prior_satisfies_its_closed_schema(
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
+
+
+@pytest.mark.parametrize("key", ["prior_draft_view", "prior_draft"])
+def test_an_unprimed_record_carrying_prior_draft_data_is_refused(
+    published_lectio_prior_payload, _sealed_protocol, key
+):
+    payload = copy.deepcopy(published_lectio_prior_payload)
+    payload["dossier"][key] = "withheld" if key == "prior_draft_view" else {"text": "x"}
+    body = {k: v for k, v in payload["dossier"].items() if k != "dossier_digest"}
+    payload["dossier"]["dossier_digest"] = perlector.digest_of(body)
+    protocol_config, protocol_sha256 = _sealed_protocol
+    with pytest.raises(SchemaRefusal):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._LECTIO_PRIOR_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
 
 
 def test_validator_refuses_a_protocol_record_without_threaded_sealed_config(
@@ -645,6 +704,7 @@ def test_a_published_control_names_the_approval_record_it_was_drawn_under(
         "1000",
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "--draft-fed",
     )[perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT]
     approval_digest = digest_bytes(canonical_bytes(record))
     assert published_primed_without_prior_payload["sampling"] == {
@@ -667,6 +727,7 @@ def test_a_control_refuses_when_its_bound_approval_receipt_is_replaced(tmp_path)
         "1000",
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "--draft-fed",
     )
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")

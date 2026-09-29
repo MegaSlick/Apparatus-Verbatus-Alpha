@@ -2282,6 +2282,8 @@ _DOSSIER_SHAPES: Final = tuple(
     for variant in (
         frozenset(),
         {"act_attachment"},
+        {"prior_draft_view"},
+        {"act_attachment", "prior_draft_view"},
         {"prior_draft", "prior_draft_view"},
         {"act_attachment", "prior_draft", "prior_draft_view"},
     )
@@ -2422,7 +2424,13 @@ def _validate_lectio_kind(payload: dict, reading_dossier: dict) -> None:
     prior_draft = reading_dossier.get("prior_draft")
     if lectio_kind in ("primed-with-prior", "primed-draft-withheld"):
         expected_view = validate_establishing_view(payload, reading_dossier, "a Perlectio")
-        if (
+        if expected_view == "withheld":
+            if "prior_draft" in reading_dossier:
+                raise SchemaRefusal(
+                    f"a Perlectio claims {lectio_kind} but carries a prior draft; a withheld "
+                    "run makes no Pass A"
+                )
+        elif (
             not isinstance(prior_draft, dict)
             or set(prior_draft) != {"reference", "text"}
             or not isinstance(prior_draft["text"], str)
@@ -2431,7 +2439,8 @@ def _validate_lectio_kind(payload: dict, reading_dossier: dict) -> None:
                 f"a Perlectio claims {lectio_kind} but carries no closed prior-draft "
                 f"reference with view {expected_view!r}"
             )
-        validate_input_refs([prior_draft["reference"]])
+        else:
+            validate_input_refs([prior_draft["reference"]])
     elif lectio_kind == "primed-without-prior":
         # Key presence, not value: the shape check admits these keys, so a None
         # prior_draft beside a view key would pass a value test.
@@ -2440,12 +2449,14 @@ def _validate_lectio_kind(payload: dict, reading_dossier: dict) -> None:
                 "a Perlectio claims primed-without-prior but carries prior-draft data"
             )
     elif lectio_kind is not None:
-        # `None` is the kinds whose field sets exclude the key. Any other value would
-        # publish its prior-draft evidence uninspected.
+        # Any other value would publish its prior-draft evidence uninspected.
         raise SchemaRefusal(
             f"a Perlector reading names unknown lectio kind {lectio_kind!r}; a kind this "
             "validator cannot name would publish its prior-draft evidence unchecked"
         )
+    elif "prior_draft" in reading_dossier or "prior_draft_view" in reading_dossier:
+        # Lectio nuda and lectio-prior are unprimed and see no prior-draft data.
+        raise SchemaRefusal("an unprimed Perlector reading carries prior-draft data")
 
 
 def _validate_dossier_testimonia(
@@ -3357,6 +3368,11 @@ def _publish_primed_without_prior(
     )
 
 
+def _prior_text(prior: dict[str, Any] | None) -> str:
+    """The Pass-A text, or empty when the run made no Pass A."""
+    return prior["text"] if prior else ""
+
+
 def _established_row(
     context,
     attempt: _Attempt,
@@ -3376,10 +3392,8 @@ def _established_row(
     """
     primed_dossier = _reseal_dossier(establishing["dossier"])
     result = establishing["result"]
-    prior = primed_dossier["prior_draft"]
-    # The prompt is reproduced from the retained dossier. In the withheld arm
-    # `combined.py` removed the prior text before the call; the prompt builder
-    # ignores a withheld prior, so both copies render the same bytes.
+    prior = primed_dossier.get("prior_draft")
+    # The prompt is reproduced from the dossier the reader was handed.
     prompt = prompts.prompt_evidence(
         attempt.chair, primed_dossier, attempt.protocol_config, attempt.protocol_sha256
     )
@@ -3420,7 +3434,7 @@ def _established_row(
         "provenance": provenance,
         "lectio_kind": kind_for_view(primed_dossier["prior_draft_view"]),
         "self_revision": self_revision_for_view(
-            primed_dossier["prior_draft_view"], reading, prior["text"], departures
+            primed_dossier["prior_draft_view"], reading, _prior_text(prior), departures
         ),
         "protocol": _protocol_record(context, attempt.protocol_config),
     }
@@ -3448,7 +3462,8 @@ def _established_row(
             context, attempt.bases, attempt.page_renders, autopsia=autopsia
         )
         + list(testimonium_references.values())
-        + [attachment_view["reference"], prior["reference"]]
+        + [attachment_view["reference"]]
+        + ([prior["reference"]] if prior else [])
         + engine_call_inputs(context, result.get("engine_call")),
     }
 
@@ -3553,8 +3568,9 @@ class _Pass:
     @property
     def calls_per_act(self) -> int:
         return (
-            2
+            1
             + self.audit_policy["round_cap"]
+            + bool(self.context.draft_fed)
             + bool(self.context.nuda_per_mille)
             + bool(self.context.perlector_instrument_per_mille)
         )
@@ -4213,7 +4229,7 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
         final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
     )
     payload["self_revision"] = self_revision_for_view(
-        payload["dossier"]["prior_draft_view"], final_text, row["prior"]["text"], departures
+        payload["dossier"]["prior_draft_view"], final_text, _prior_text(row["prior"]), departures
     )
     payload["truncation"] = _audited_truncation(
         pass_b=payload["truncation"],
@@ -4258,7 +4274,7 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
             "", dissent_testimonia(row["testimonia"], row["attachment_view"])
         )
         payload["self_revision"] = self_revision_for_view(
-            payload["dossier"]["prior_draft_view"], "", row["prior"]["text"], departures
+            payload["dossier"]["prior_draft_view"], "", _prior_text(row["prior"]), departures
         )
     return reproof_truncation
 

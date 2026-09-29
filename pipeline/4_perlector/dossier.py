@@ -316,8 +316,6 @@ def build_dossier(
     page_renders: list[dict[str, Any]],
     witness_context: dict[str, dict[str, str]],
     act_attachment: dict[str, Any] | None = None,
-    prior_draft: dict[str, Any] | None = None,
-    prior_draft_view: str | None = None,
 ) -> dict[str, Any]:
     """Assemble one act's dossier. Deterministic: the same evidence in any order
     produces identical bytes, and nothing in the result may express a
@@ -464,13 +462,6 @@ def build_dossier(
             "comparison_views": relabeled_views,
             "edge_deltas": relabeled_deltas,
         }
-    if prior_draft is not None:
-        if prior_draft_view not in {"fed", "withheld"}:
-            raise SchemaRefusal("a prior draft requires a named fed or withheld view")
-        dossier["prior_draft"] = prior_draft
-        dossier["prior_draft_view"] = prior_draft_view
-    elif prior_draft_view is not None:
-        raise SchemaRefusal("a prior-draft view cannot exist without its referenced draft")
     # Swept before the digest is taken: a preference-bearing field sealed into
     # the digest is already in the record by the time anyone could object. This
     # is the guard that keeps a witness preference out of the dossier, so it

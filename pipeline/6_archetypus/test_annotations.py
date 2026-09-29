@@ -914,12 +914,14 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
 
     source = "a" * 64
     text = "established text"
+    prior_ref = {"relative_path": "4_perlector/artifacts/lectio-prior/x.json", "sha256": "d" * 64}
     # Wire-legal and un-normalised: no `witness_evidence` key at all.
     wire_note = {"kind": "illegible", "start": 5, "end": 5}
     payload = {
         "text": text,
         "lectio_kind": lectio_kind,
-        "dossier": {"logical_act_id": "pac_0123456789abcdef", "prior_draft_view": view},
+        "dossier": {"logical_act_id": "pac_0123456789abcdef", "prior_draft_view": view}
+        | ({"prior_draft": {"reference": prior_ref, "text": text}} if draft_fed else {}),
         "protocol": {"draft_fed": draft_fed},
         "basis": {"regions": [_REGION]},
         "provenance": {"chair": "perlector", "revision": "fixture"},
@@ -932,7 +934,7 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(
         },
         "self_revision": [],
     }
-    perlectio = {"outcome": "read", "payload": payload}
+    perlectio = {"outcome": "read", "payload": payload, "inputs": [prior_ref]}
     perlectio_ref = {
         "relative_path": "4_perlector/artifacts/perlectio/joint.json",
         "sha256": archetypus.digest_of(perlectio),

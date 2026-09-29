@@ -2046,6 +2046,7 @@ def _real_bindings(
         nuda_approval_ref=nuda_approval_ref,
         perlector_instrument_per_mille=perlector_instrument_per_mille,
         perlector_instrument_approval_ref=perlector_instrument_approval_ref,
+        draft_fed=draft_fed,
     )
     _, alignment_config_sha256 = load_alignment_limits(alignment_config_path)
     _decoding_policy, decoding_config_sha256 = load_decoding_policy(decoding_config_path)

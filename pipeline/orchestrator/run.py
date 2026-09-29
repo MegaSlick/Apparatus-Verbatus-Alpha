@@ -689,8 +689,8 @@ def main() -> int:
         "--draft-fed",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="feed the Pass-A draft to Pass B; the default withholds it "
-        "(--no-draft-fed), as ruled by the project lead through B5a "
+        help="run Pass A and feed its draft to Pass B; the default reads no Pass A "
+        "(--no-draft-fed), because a fed draft anchors the reader "
         "(config/README.md, R5a toggle register)",
     )
     parser.add_argument(
