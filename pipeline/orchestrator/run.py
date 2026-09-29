@@ -140,6 +140,7 @@ GPU_QUERY = (
 GPU_SAMPLE_INTERVAL_SECONDS = 5.0
 GPU_SAMPLES_KEPT = 720
 GPU_BUSY_PERCENT = 95
+GPU_SAMPLER_JOIN_SECONDS = 30
 
 
 class GpuSampler:
@@ -151,12 +152,21 @@ class GpuSampler:
     and busy fraction cover every read; only the stored list is capped. A read
     with no utilisation is counted in `failed_reads` and never becomes a zero:
     with no successful read the result is `None` plus the reason. The sampler
-    never raises into the stage. `run` and `interval` are injectable for tests.
+    never raises into the stage. A thread still alive after the join timeout is
+    abandoned and its partial statistics are never published. `run`, `interval`
+    and `join_timeout` are injectable for tests.
     """
 
-    def __init__(self, run=subprocess.run, interval: float = GPU_SAMPLE_INTERVAL_SECONDS):
+    def __init__(
+        self,
+        run=subprocess.run,
+        interval: float = GPU_SAMPLE_INTERVAL_SECONDS,
+        join_timeout: float = GPU_SAMPLER_JOIN_SECONDS,
+    ):
         self._run = run
         self._interval = interval
+        self._join_timeout = join_timeout
+        self._abandoned = False
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="gpu-sampler", daemon=True)
         self._started = False
@@ -179,7 +189,8 @@ class GpuSampler:
     def __exit__(self, *exc) -> None:
         self._stop.set()
         if self._started:
-            self._thread.join(timeout=30)
+            self._thread.join(timeout=self._join_timeout)
+            self._abandoned = self._thread.is_alive()
 
     def _loop(self) -> None:
         while True:
@@ -239,6 +250,8 @@ class GpuSampler:
     def result(self) -> tuple[dict[str, object] | None, str | None]:
         """The journal's `gpu_utilization` and, when it is `None`, why."""
 
+        if self._abandoned:
+            return None, f"the GPU sampler did not stop within {self._join_timeout:g} s"
         if not self._count:
             return None, self._reason or "the stage ended before the first read"
         return {

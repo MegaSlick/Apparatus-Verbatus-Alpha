@@ -141,3 +141,28 @@ def test_a_thread_that_cannot_start_leaves_the_stage_running_and_says_so(monkeyp
 
     result, reason = sampler.result()
     assert ran and result is None and "sampling could not start" in reason
+
+
+def test_a_sampler_thread_that_outlives_the_join_is_abandoned_not_published():
+    release = threading.Event()
+    calls = []
+
+    def hung(command, **_):
+        calls.append(command)
+        if len(calls) == 1:
+            return _ok("50, 1\n")
+        release.wait(10)  # bounded, so a failing test cannot hang
+        return _ok("50, 1\n")
+
+    try:
+        with GpuSampler(run=hung, interval=0.001, join_timeout=0.05) as sampler:
+            deadline = time.monotonic() + 10
+            while len(calls) < 2:
+                assert time.monotonic() < deadline, "the sampler thread stopped reading"
+                time.sleep(0.001)
+        result, reason = sampler.result()
+    finally:
+        release.set()
+        sampler._thread.join(timeout=10)
+
+    assert result is None and "did not stop within" in reason

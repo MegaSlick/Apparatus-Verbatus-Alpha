@@ -27,6 +27,7 @@ from common.background import round_half_up_bp
 
 ROOT: Final = Path(__file__).resolve().parents[2]
 DEFAULT_FLOORS: Final = (50, 200, 400, 640)
+EXIT_NO_USABLE_ACTS: Final = 3
 PERCENTILES: Final = (("min", 0.0), ("p0.5", 0.5), ("p1", 1.0), ("p5", 5.0), ("median", 50.0))
 
 
@@ -89,7 +90,11 @@ def main(argv: list[str]) -> int:
     with open(argv[0], encoding="utf-8") as handle:
         pages = [json.loads(line) for line in handle if line.strip()]
     floors = tuple(int(value) for value in argv[1:]) or DEFAULT_FLOORS
-    print(report(densities(pages, padding), floors))
+    found = densities(pages, padding)
+    if not found["bare"]:
+        print("no usable acts: every act has empty text or a non-positive box", file=sys.stderr)
+        return EXIT_NO_USABLE_ACTS
+    print(report(found, floors))
     return 0
 
 
