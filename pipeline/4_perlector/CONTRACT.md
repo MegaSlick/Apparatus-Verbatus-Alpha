@@ -929,11 +929,16 @@ that may not go on the wire, which is a defect in this code rather than an accou
 run, and a traceback naming the construction site is worth more there than a named exit.
 Pinned by `::test_a_non_200_from_the_engine_stops_the_pass_in_this_stage_s_exit_vocabulary`.
 
-**`max_tokens` is not sent, and that is a decision.** No output bound is sealed
-anywhere, and this section does not invent one. vLLM bounds generation by
-`max_model_len`, so an engine `"length"` then honestly means the context itself was
-exhausted rather than that the harness cut the reading short. A sealed output bound
-belongs with the variance-experiment section, which will need one too.
+**`max_tokens` is sent, from the sealed decoding policy.** `perlector_generation` holds
+one cap for every reading pass, so the passes stay one condition, and one for the
+audit re-proof, which answers in JSON. The value sent is the smaller of the cap and the
+context the admitted prompt leaves, and it rides `generation_sent` on the retained call
+record; the cap itself is visible through the decoding digest. A reply that reaches it
+comes back as an engine `"length"`, which the truncation classifier holds as a visible
+failure of the act; nothing re-asks. A cut re-proof usually fails to assemble first and
+is published as a failed Perlectio. The cap sits far above any honest reading and stops
+a reply that has begun to loop from filling the context. Admission still reserves only
+the act's or the dense page's measured answer, so the cap refuses no act that fits.
 
 **Proved end to end.** `pipeline/test_live_reading_seam_e2e.py` reads a tree the
 Attestatores wrote through three *live* witness chairs — every record on it

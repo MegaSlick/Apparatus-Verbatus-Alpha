@@ -83,7 +83,7 @@ from common.cross_capture_autopsia import (  # noqa: E402
     over_capacity_reason,
     validate_autopsia,
 )
-from common.decoding import load_decoding_policy  # noqa: E402
+from common.decoding import load_decoding_policy, perlector_max_tokens  # noqa: E402
 from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
@@ -1699,10 +1699,8 @@ def _start_live_reader(run: "_Pass") -> None:
         client=run.service.client,
         chair=run.chair,
         protocol_config=run.protocol_config,
-        # No sealed output bound: vLLM bounds generation by `max_model_len`, so an
-        # engine `"length"` means the context was exhausted, not that the harness cut
-        # the reading.
-        max_tokens=None,
+        max_tokens=run.reading_max_tokens,
+        reproof_max_tokens=run.reproof_max_tokens,
     )
     run.reader, run.receipt_ref = reader, dict(run.service.client.handle.receipt_reference)
 
@@ -3531,6 +3529,9 @@ class _Pass:
     witness_context_table: Any
     protocol_config: dict[str, Any]
     protocol_sha256: str
+    # The sealed output bounds of a reading and of an audit re-proof.
+    reading_max_tokens: int
+    reproof_max_tokens: int
     nuda_approval: ApprovalRecordBinding | None
     instrument_approval: ApprovalRecordBinding | None
     audit_policy: dict[str, Any]
@@ -3573,6 +3574,7 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
     context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)
     decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
+    reading_max_tokens, reproof_max_tokens = perlector_max_tokens(decoding_policy)
     chair = perlector_chair(context)
     serving_mode = perlector_serving_mode(context, args, chair)
     reader = fixture_reader_for(context, chair, serving_mode)
@@ -3622,6 +3624,8 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         witness_context_table=witness_context_table,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
+        reading_max_tokens=reading_max_tokens,
+        reproof_max_tokens=reproof_max_tokens,
         nuda_approval=nuda_approval,
         instrument_approval=instrument_approval,
         audit_policy=audit_policy,

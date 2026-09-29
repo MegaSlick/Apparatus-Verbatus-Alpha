@@ -608,6 +608,47 @@ def test_an_engine_length_publishes_a_held_truncation_and_never_a_reading(
     assert exit_code == 0
 
 
+def test_a_reply_that_reaches_its_bound_holds_the_act_and_is_never_asked_again(
+    live_run, tmp_path, monkeypatch
+):
+    """The sealed output bound stops a runaway, and a stop is a hold, not a re-run.
+
+    Distinct bounds are sealed so each request shows which one it was sent
+    under: a reading gets the reading bound, a re-proof its own.
+    """
+    root, _catalogue = live_run
+    reading_bound, reproof_bound = 100, 200
+    monkeypatch.setattr(
+        perlector, "perlector_max_tokens", lambda _policy: (reading_bound, reproof_bound)
+    )
+    endpoint, _exit = _run_perlector(
+        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="length")
+    )
+
+    def is_reproof(request: dict[str, Any]) -> bool:
+        return any(
+            "zero-based Python Unicode code-point offsets" in part.get("text", "")
+            for part in request["messages"][0]["content"]
+        )
+
+    reproofs = [request for request in endpoint.requests if is_reproof(request)]
+    readings_sent = [request for request in endpoint.requests if not is_reproof(request)]
+    assert reproofs and readings_sent
+    assert {request["max_tokens"] for request in reproofs} == {reproof_bound}
+    assert {request["max_tokens"] for request in readings_sent} == {reading_bound}
+    readings = _published_readings(root)
+    assert readings
+    assert all(record["outcome"] == "truncated" for record in readings)
+    # Pass A, Pass B and the one re-proof each ask once; the stop re-asks nothing.
+    assert len(endpoint.requests) == 3 * len(readings)
+    retained_bounds = {
+        json.loads(path.read_bytes())["generation_sent"]["max_tokens"]
+        for path in (root / "r" / "4_perlector" / "blobs" / "sha256").glob("*")
+        if b'"generation_sent"' in path.read_bytes()
+    }
+    assert retained_bounds == {reading_bound, reproof_bound}
+
+
 def test_an_unreported_stop_reason_holds_the_reading_as_unknown(live_run, tmp_path, monkeypatch):
     """An engine that reported nothing is never `complete` (`truncation.py`).
 

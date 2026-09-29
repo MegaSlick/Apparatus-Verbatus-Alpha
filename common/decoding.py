@@ -11,6 +11,7 @@ from common.contracts.errors import ContractError
 from common.sealed_config import read_sealed_toml
 
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
+_PERLECTOR_BOUNDS = ("reading_max_tokens", "reproof_max_tokens")
 _LOAD_RECOVERY = (
     " No run or stage artifact was written. Restore or correct the decoding file and retry"
 )
@@ -43,15 +44,16 @@ def _validate_decoding_policy(policy: Any) -> None:
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")
     schema = policy.get("schema")
-    if isinstance(schema, str) and schema in {"decoding.v1", "decoding.v2"}:
+    if isinstance(schema, str) and schema in {"decoding.v1", "decoding.v2", "decoding.v3"}:
         raise ContractError(f"sealed under {schema}, which this build no longer reads; re-run")
-    if schema != "decoding.v3":
+    if schema != "decoding.v4":
         raise ContractError("decoding configuration has an unsupported schema")
     expected_sections = {
         "schema",
         "reading_of_record",
         "variance_experiment",
         "structure",
+        "perlector_generation",
         "chandra_native_inference",
     }
     if set(policy) != expected_sections:
@@ -78,6 +80,19 @@ def _validate_decoding_policy(policy: Any) -> None:
         raise ContractError(
             "decoding structure recovery must declare the supported seed schedule and "
             "an integer maximum in 1..3"
+        )
+    generation = policy["perlector_generation"]
+    if (
+        not isinstance(generation, dict)
+        or set(generation) != set(_PERLECTOR_BOUNDS)
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 1
+            for value in generation.values()
+        )
+    ):
+        raise ContractError(
+            "decoding perlector_generation must declare positive integer output bounds "
+            "for a reading and for a re-proof"
         )
     try:
         validate_policy_record(policy["chandra_native_inference"])
@@ -117,3 +132,10 @@ def structure_recovery_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
         "max_attempts": structure["recovery_max_attempts"],
         "seed_schedule": structure["recovery_seed_schedule"],
     }
+
+
+def perlector_max_tokens(policy: Mapping[str, Any]) -> tuple[int, int]:
+    """Return the sealed output bounds of a Perlector reading and of its re-proof."""
+    _validate_decoding_policy(policy)
+    generation = policy["perlector_generation"]
+    return generation["reading_max_tokens"], generation["reproof_max_tokens"]
