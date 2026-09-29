@@ -37,8 +37,9 @@ A check admitting on a lower bound would admit exactly the requests it should
 refuse: a dossier carrying five witnesses' full act texts, or a pass-B prompt
 with reproof instruments appended, would pass it and then be answered with the
 HTTP 400 the check exists to prevent. ``perlector_prompt_bound`` is the
-upper bound this reader admits on -- one token per UTF-8 byte of the text,
-over the measured chat-template overhead -- and it is sealed against ``prompts.py``'s own module
+measured upper bound this reader admits on -- the maximum tokens-per-character
+ratio over 168 rendered prompts, with a stated margin, over the measured
+chat-template overhead -- and it is sealed against ``prompts.py``'s own module
 digest, so editing the
 prompt builder expires the measurement rather than leaving a stale rate in
 force. The floor is still computed, and is recorded on the capacity record
@@ -347,13 +348,14 @@ class VLLMReader:
         # Admitted on the measured upper bound, with the measured floor recorded
         # beside it: a request is never let through on a number that says only
         # what it costs *at least*.
-        # A fed prior draft is a reply this reader capped at `max_tokens`, so it
-        # is charged at most that (`perlector_prompt_bound`).
+        # A fed prior draft is a model reply that may have looped, so it is
+        # charged its bytes, or the reply cap where there is one
+        # (`perlector_prompt_bound`).
         prior = dossier["prior_draft"]["text"] if dossier.get("prior_draft_view") == "fed" else ""
         prompt_bound, bound_basis = perlector_prompt_bound(
             text,
             template_digest=prompts.BUILDER_SHA256,
-            capped_spans=[(prior, self._max_tokens)] if prior and self._max_tokens else (),
+            capped_spans=[(prior, self._max_tokens)] if prior else (),
         )
         prompt_floor, floor_basis = perlector_prompt_tokens(text)
         region_sizes = image_sizes(region_images)

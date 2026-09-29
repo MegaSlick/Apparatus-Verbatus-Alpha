@@ -533,6 +533,23 @@ def scripted_prompt_too_long(
     return ScriptedAnswer(status=400, body=json.dumps(payload).encode())
 
 
+def scripted_input_too_long(*, max_model_len: int, input_tokens: int) -> ScriptedAnswer:
+    """The refusal vLLM 0.27.1 gave a real Perlector act whose prompt overran the row.
+
+    Observed on the 2026-09-27 run (a 34,741-token request against a 32,768
+    row): an HTTP 400 whose body is the nested envelope
+    ``{"error": {"message": ..., "type": "BadRequestError", "param": null,
+    "code": 400}}``.  ``scripted_prompt_too_long`` scripts the older flat
+    envelope; both are refused by name and retained, never parsed.
+    """
+
+    message = (
+        f"Input length ({input_tokens}) exceeds model's maximum context length ({max_model_len})."
+    )
+    payload = {"error": {"message": message, "type": "BadRequestError", "param": None, "code": 400}}
+    return ScriptedAnswer(status=400, body=json.dumps(payload, separators=(",", ":")).encode())
+
+
 def scripted_structure_cut_off(
     acts: Sequence[tuple[Mapping[str, int], str] | tuple[Mapping[str, int], str, str]],
     page_w: int,

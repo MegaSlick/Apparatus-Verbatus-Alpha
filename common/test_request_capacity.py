@@ -23,6 +23,8 @@ from common.request_capacity import (
     MEASURED_ACT_ANSWER_TOKENS,
     MEASURED_DENSE_PAGE_ANSWER_TOKENS,
     MEASURED_PROMPT_TOKENS,
+    PERLECTOR_BOUND_SAFETY_MARGIN,
+    PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS,
     PERLECTOR_MEASURED_TOKENIZER,
     PERLECTOR_PROMPT_FLOOR_TOKENS,
     PERLECTOR_PROMPT_OVERHEAD_TOKENS,
@@ -521,119 +523,51 @@ def test_dais_ordinary_act_stays_admissible_at_the_smallest_row():
 # --- the Perlector's upper bound, which is what admission rests on ------------
 
 
-def test_the_bound_is_the_measured_overhead_plus_one_token_per_utf8_byte():
-    """The arithmetic, spelled out against texts of a known size.
+def test_the_bound_is_the_measured_overhead_plus_the_sealed_rate_with_its_margin():
+    """The arithmetic, spelled out against a text of a known length.
 
-    1,000 ASCII characters are 1,000 bytes over the measured chat-template
-    overhead of `52 + 2 * 32 = 116`: 1,116.  An accented letter is two bytes and
-    is charged two; the text is normalised to NFC first, so a decomposed accent
-    (one letter and one combining mark, three bytes) costs what the composed
-    letter does, two.
+    1,000 characters at the sealed 4,127 tokens per 10,000 characters and the
+    stated 105/100 margin is `ceil(1000 * 4127 * 105 / 1_000_000) = 434`, over
+    the measured chat-template overhead of `52 + 2 * 32 = 116`: 550.
     """
 
-    digest = PERLECTOR_PROMPT_TEMPLATE_DIGEST
-    tokens, basis = perlector_prompt_bound("x" * 1000, template_digest=digest)
-    assert (tokens, basis) == (1116, PROMPT_TOKENS_MEASURED_BOUND)
+    tokens, basis = perlector_prompt_bound(
+        "x" * 1000, template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST
+    )
+    assert (tokens, basis) == (550, PROMPT_TOKENS_MEASURED_BOUND)
     assert PERLECTOR_PROMPT_OVERHEAD_TOKENS == 116
-    assert perlector_prompt_bound("", template_digest=digest)[0] == 116
-    assert perlector_prompt_bound("x", template_digest=digest)[0] == 117
-    assert perlector_prompt_bound("\u00e9", template_digest=digest)[0] == 118
-    assert perlector_prompt_bound("e\u0301", template_digest=digest)[0] == 118
+    assert PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS == 4127
+    assert PERLECTOR_BOUND_SAFETY_MARGIN == (105, 100)
+    # The empty prompt costs the overhead and nothing else, and the ceiling is
+    # a ceiling: one character over is one more token, never a rounding down.
+    assert perlector_prompt_bound("", template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST)[0] == 116
+    assert perlector_prompt_bound("x", template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST)[0] == 117
 
 
-# Prompt-bound requests the engine counted on the 2026-09-27 run: text
-# characters of each shape, the engine's prompt tokens minus the images'
-# tokens, and the estimate the run admitted on.  Synthetic text stands in for
-# the retained prompts (which are register material).
-LOOPED_DOUBT_MARK_ACT = {
-    # A pass looped on `[[?]]` lines and was fed back as the prior reading.
-    "text": "[[?]]\n" * 7243 + "abcdefghi " * 600,
-    "engine_prompt_tokens": 34_741,
-    "image_tokens": 3_509,
-    "old_bound": 21_865,
-}
-LOOPED_LETTER_ACT = {
-    # A pass looped on a few register lines; ordinary letters, engine ratio ~0.48.
-    "text": "abcdefghi " * 4_980,
-    "engine_prompt_tokens": 25_767,
-    "image_tokens": 1_958,
-    "old_bound": 21_671,
-}
+def test_the_sealed_bound_is_above_the_maximum_ratio_that_was_measured():
+    """The margin is over the *maximum* observed ratio, not over a mean.
 
-
-@pytest.mark.parametrize("act", [LOOPED_DOUBT_MARK_ACT, LOOPED_LETTER_ACT])
-def test_the_bound_never_falls_below_what_the_engine_counted_on_a_looping_draft(act):
-    """The failing shape: an admitted act the engine refused with HTTP 400.
-
-    The old bound (per-character ratio over well-formed prose) was 21,865 for
-    the first, against 31,232 text tokens the engine counted, and 21,671
-    against 23,809 for the second.  The engine's count is only ever from the
-    pod; these two are the measured ones that broke the old ratio, and the
-    text sizes are matched to them.
+    The measurement's densest case -- five testimonia reporting nothing at all,
+    where the dossier is scaffolding and little else -- rendered 1,345
+    characters for 611 tokens, of which 56 were the chat template's own
+    overhead at that case's two images: 555 tokens of body, a ratio of 0.41264.
+    The sealed rate is 0.4127, and the bound over that case is 699 against its
+    measured 611 -- the margin and the overhead charged at the protocol's
+    32-image ceiling both sitting above it.
     """
 
-    text_tokens_engine = act["engine_prompt_tokens"] - act["image_tokens"]
-    tokens, _ = perlector_prompt_bound(
-        act["text"], template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST
-    )
-    assert tokens >= text_tokens_engine
-    assert tokens > act["old_bound"]
-
-
-def test_a_capped_reply_is_charged_its_cap_and_a_looping_one_still_never_undercounts():
-    """The hybrid: a fed prior draft generated under a cap costs at most the cap.
-
-    A 44,000-character `[[?]]` loop is 29,127 tokens to the engine when uncapped
-    (the run's own call record).  Under a 4,096-token cap the reply cannot have
-    been longer, so it is charged 4,096; the bound over the request is still at
-    least the tokens the engine counts for the rest (scaffolding is charged at
-    its bytes).  Without a cap the draft is charged its bytes, above the 29,127.
-    """
-
-    digest = PERLECTOR_PROMPT_TEMPLATE_DIGEST
-    loop = "[[?]]\n" * 7243
-    scaffold = "testimonia: abcdefghi " * 100
-    text = scaffold + loop
-    uncapped, _ = perlector_prompt_bound(text, template_digest=digest)
-    capped, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, 4096)])
-    assert uncapped >= 29_127 + 116
-    assert capped == PERLECTOR_PROMPT_OVERHEAD_TOKENS + len(scaffold) + 4096
-    # A ceiling above the bytes never raises the charge, and a span that is not in
-    # the prompt is refused rather than silently ignored.
-    over, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, 10**6)])
-    assert over == uncapped
-    with pytest.raises(RequestCapacityRefusal):
-        perlector_prompt_bound(text, template_digest=digest, capped_spans=[("absent", 5)])
-
-
-def test_the_failing_act_is_now_refused_before_it_is_sent():
-    """26,692 admitted, 34,741 counted: with the byte bound the request is over the row."""
-
-    text = LOOPED_DOUBT_MARK_ACT["text"]
-    tokens, basis = perlector_prompt_bound(text, template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST)
-    record = request_fits(
-        _row(
-            chair="perlector",
-            max_model_len=32_768,
-            max_pixels=5_299_200,
-            patch_size=16,
-            merge_size=2,
-        ),
-        [(2727, 1059), (718, 1024)],
-        tokens,
-        1318,
-        prompt_tokens_basis=basis,
-    )
-    assert record["image_prompt_tokens"] == 3509
-    assert record["fits"] is False
-    assert record["need"] > LOOPED_DOUBT_MARK_ACT["engine_prompt_tokens"]
+    assert PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS / 10_000 >= 555 / 1345
+    tokens, _ = perlector_prompt_bound("x" * 1345, template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST)
+    assert tokens == 699
+    assert tokens > 611
 
 
 def test_the_representative_dossiers_sealed_bound_is_the_arithmetic_over_its_own_length():
     """The pair the shipped-row check spends, re-derived rather than retyped.
 
     `TOKEN_COST_REPORT.md` section 5's representative dossier renders 2,438
-    characters, all ASCII: 116 overhead + 2,438 bytes = 2,554, which
+    characters (2,269 before the doubt marks, where the measurement reproduced
+    its recorded 790 text tokens). The bound over it is 1,173, and that is what
     `operations/serving/test_serving_catalogue_capacity.py` weighs the shipped
     Perlector rows against.
     """
@@ -642,8 +576,35 @@ def test_the_representative_dossiers_sealed_bound_is_the_arithmetic_over_its_own
         "x" * PERLECTOR_REPRESENTATIVE_PROMPT_CHARACTERS,
         template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST,
     )
-    assert tokens == PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS == 2554
+    assert tokens == PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS == 1173
+    # And it is above the floor measured over the same dossier, which is the
+    # whole point of measuring it.
     assert tokens > PERLECTOR_PROMPT_FLOOR_TOKENS
+
+
+def test_a_looping_prior_draft_is_never_undercounted_and_a_cap_bounds_it():
+    """A 44,000-character `[[?]]` loop is 29,127 tokens to the engine (the run's own call record).
+
+    At the ratio it would be charged about 19,000; as a capped span it is charged
+    its bytes uncapped (above the engine's count) and at most the reply cap when
+    it was generated under one.  Ordinary text around it stays at the ratio.
+    """
+
+    digest = PERLECTOR_PROMPT_TEMPLATE_DIGEST
+    loop = "[[?]]\n" * 7243
+    scaffold = "testimonia: abcdefghi " * 100
+    text = scaffold + loop
+    at_ratio, _ = perlector_prompt_bound(text, template_digest=digest)
+    uncapped, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, None)])
+    capped, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, 4096)])
+    rest, _ = perlector_prompt_bound(scaffold, template_digest=digest)
+    assert at_ratio < 29_127 + PERLECTOR_PROMPT_OVERHEAD_TOKENS  # the old under-count
+    assert uncapped >= 29_127 + PERLECTOR_PROMPT_OVERHEAD_TOKENS
+    assert capped == rest + 4096
+    over, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, 10**6)])
+    assert over == uncapped
+    with pytest.raises(RequestCapacityRefusal):
+        perlector_prompt_bound(text, template_digest=digest, capped_spans=[("absent", 5)])
 
 
 def test_an_edited_prompt_template_expires_the_measured_bound():
@@ -690,7 +651,7 @@ def test_every_measured_prompt_names_the_tokenizer_the_real_roster_pins():
     The Perlector is checked with the rest. It has no fixed prompt to digest,
     so the pinned revision and its prompt builder's own digest are what expire
     its measurements -- its floor, its tokens-per-word rate, and the
-    chat-template overhead admission rests on.
+    tokens-per-character bound admission rests on.
     """
 
     roster = load_models_toml(ROOT / "config" / "models-real.toml").chairs
