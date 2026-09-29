@@ -1031,6 +1031,54 @@ def test_a_real_dossier_the_floor_admits_and_the_bound_refuses_is_refused(
     assert admitted_by_the_floor["fits"] is True
 
 
+def test_the_neighbour_clues_are_charged_their_bytes_on_top_of_the_measured_rate(
+    tmp_path: Path,
+) -> None:
+    """The measured rate predates the neighbour block, so the block is charged per byte.
+
+    One token per UTF-8 byte is more than a byte-level tokenizer can spend, so the
+    block is over-charged until the rate is re-measured over the new prompt, never
+    under; the rest of the prompt stays at the measured rate.
+    """
+
+    client, endpoint, _blobs, chair = _built(tmp_path, max_pixels=1806336, max_model_len=4096)
+    region_image = _image_bytes(b"REGION", width=2480, height=584)
+    page_image = _image_bytes(b"PAGE", width=2480, height=3508)
+    dossier = _dossier_with_testimonia(
+        region_image=region_image, page_image=page_image, witnesses=3, acts=1
+    )
+    witnesses = [
+        {**row, "outcome": "read", "reported_basis": "own-report", "shown": "whole"}
+        for row in dossier["testimonia"]
+    ]
+    dossier["neighbours"] = {
+        "preceding": {
+            "act_id": "act_p",
+            "act_key": "a0",
+            "same_page": True,
+            "witnesses": witnesses,
+        },
+        "following": None,
+    }
+    text = prompts.build_prompt(chair.serving_recipe, chair.role, dossier, None)
+    block = prompts.neighbour_block(dossier)
+    assert block and block in text
+    with client:
+        with pytest.raises(RequestCapacityRefusal) as error:
+            _reader(client, chair).read(
+                dossier,
+                pass_kind="perlectio",
+                delivered_pixels=_delivered_pixels(
+                    region_image=region_image, page_image=page_image
+                ),
+            )
+    rest, _ = perlector_prompt_bound(
+        text.replace(block, "", 1), template_digest=prompts.BUILDER_SHA256
+    )
+    assert error.value.capacity["prompt_tokens"] == rest + len(block.encode("utf-8"))
+    assert endpoint.requests == []
+
+
 def test_the_same_dossier_is_admitted_where_its_bound_really_fits(tmp_path: Path) -> None:
     """Not a refusal that fires on everything: one more token of context admits it."""
 

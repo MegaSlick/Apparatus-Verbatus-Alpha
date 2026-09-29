@@ -26,6 +26,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 perlector = load_stage("4_perlector")
 dossier = perlector.dossier_module
+# The run's sealed page-render bound, as a pass reads it.
+EDGE = perlector.protocol.load(ROOT / "config" / "perlector_protocol.toml")[0]["page_context"][
+    "maximum_edge"
+]
 
 
 class _Context:
@@ -133,6 +137,7 @@ def test_a_page_render_blob_is_reproducible_by_the_projects_own_encoder(evidence
                 for region in regions
                 if region["transform"]["source_page_id"] == page_id
             ),
+            maximum_edge=EDGE,
         )
         for page_id in sorted(page_ids)
     ]
@@ -537,6 +542,7 @@ def test_build_page_render_records_its_whole_transform_not_only_a_factor(evidenc
         context,
         source_page_id=regions[0]["transform"]["source_page_id"],
         source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
+        maximum_edge=EDGE,
     )
     assert render["transform"] == {
         "operation": "downscale-for-page-context",
@@ -545,7 +551,7 @@ def test_build_page_render_records_its_whole_transform_not_only_a_factor(evidenc
         # record is that nothing was resampled -- not a decorative resize
         # reported as a downscale.
         "target_dimensions": {"w": 200, "h": 260},
-        "maximum_edge": dossier.PAGE_CONTEXT_MAX_EDGE,
+        "maximum_edge": EDGE,
         "resampler": "identity",
     }
     assert render["source"]["sha256"]
@@ -558,11 +564,11 @@ def test_a_page_past_the_bound_is_actually_downscaled_to_it():
     the full-resolution page would satisfy every other test in this file."""
     big = BytesIO()
     Image.new("L", (4000, 3000), color=200).save(big, format="PNG")
-    rendered, transform = dossier._downscale_page(big.getvalue(), maximum_edge=1024)
+    rendered, transform = dossier._downscale_page(big.getvalue(), maximum_edge=EDGE)
     assert transform["source_dimensions"] == {"w": 4000, "h": 3000}
-    assert transform["target_dimensions"] == {"w": 1024, "h": 768}
+    assert transform["target_dimensions"] == {"w": EDGE, "h": EDGE * 3 // 4}
     assert transform["resampler"] == "pillow-lanczos"
-    assert dimensions(rendered) == (1024, 768)
+    assert dimensions(rendered) == (EDGE, EDGE * 3 // 4)
 
 
 def test_build_page_render_is_reused_byte_identically_on_a_repeat_call(evidence):
@@ -571,11 +577,13 @@ def test_build_page_render_is_reused_byte_identically_on_a_repeat_call(evidence)
         context,
         source_page_id=regions[0]["transform"]["source_page_id"],
         source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
+        maximum_edge=EDGE,
     )
     second = dossier.build_page_render(
         context,
         source_page_id=regions[0]["transform"]["source_page_id"],
         source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
+        maximum_edge=EDGE,
     )
     assert first == second
 
@@ -646,4 +654,5 @@ def test_a_page_render_refuses_page_bytes_swapped_after_the_artifact_check(evide
             context,
             source_page_id=page_id,
             source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
+            maximum_edge=EDGE,
         )

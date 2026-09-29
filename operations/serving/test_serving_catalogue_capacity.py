@@ -37,6 +37,13 @@ if str(_ATTESTATORES_DIR) not in sys.path:
 
 import churro  # noqa: E402
 
+_PERLECTOR_DIR = Path(__file__).resolve().parents[2] / "pipeline" / "4_perlector"
+if str(_PERLECTOR_DIR) not in sys.path:
+    sys.path.insert(0, str(_PERLECTOR_DIR))
+
+import prompts  # noqa: E402
+import protocol  # noqa: E402
+
 MIN_PIXELS = 3136
 TIER_MAX_PIXELS = {
     "generic-24gb": 1_806_336,
@@ -361,3 +368,70 @@ def test_no_shipped_row_serves_below_its_tiers_stated_vram_floor():
             f"({need_gib} GiB of {_TIER_VRAM_GIB[row.tier]})"
         )
     assert checked == len(_STATED_VRAM_NEED_GIB), "a stated VRAM floor went unchecked"
+
+
+# A 300-dpi letter leaf, the RecordGold page size the page-render bound is set for.
+LETTER_300DPI = (2550, 3300)
+_REGISTER_PROSE = (
+    "L'an mil sept cent quarante et un, le douzième jour de février, a été baptisée "
+    "par nous soussigné prêtre curé de cette paroisse Marie Anne, fille légitime de "
+)
+
+
+def _rendered(page, edge):
+    """A page as `dossier.build_page_render` renders it under a long-edge bound."""
+    width, height = page
+    scale = min(1, edge / max(width, height))
+    return (round(width * scale), round(height * scale))
+
+
+def _worst_neighbour_block(sealed):
+    """Two neighbours, each with every roster witness reporting a full capped reading."""
+    cap = sealed["neighbours"]["characters_per_row"]
+    reading = (_REGISTER_PROSE * (cap // len(_REGISTER_PROSE) + 1))[:cap]
+    witnesses = [
+        {"witness_label": chair, "reported": reading, "shown": "tail"}
+        for chair in ("attestator_1", "attestator_2", "attestator_3")
+    ]
+    entry = {"act_key": "neighbour-act", "same_page": False, "witnesses": witnesses}
+    return prompts.neighbour_block({"neighbours": {"preceding": entry, "following": entry}}, sealed)
+
+
+def test_legible_page_renders_fit_an_act_over_a_page_turn_with_neighbour_clues():
+    """The page-render bound, weighed against the row it must fit.
+
+    Both renders stay inside the row's max_pixels, so the chair sees exactly the
+    rendered pixels. An act running over a page turn whose crops are both whole
+    pages, with the fullest neighbour clues the sealed cap allows charged one token
+    per byte, fits the 27B row; the same act over three pages does not, and the
+    live reader refuses it before sending, visibly, rather than drop a page.
+    """
+
+    sealed = protocol.load(REPO_ROOT / "config" / "perlector_protocol.toml")[0]
+    edge = sealed["page_context"]["maximum_edge"]
+    (row,) = [row for row in _shipped_rows() if row.chair == "perlector"]
+    render = _rendered(LETTER_300DPI, edge)
+    for page in (LETTER_300DPI, A4_300DPI):
+        width, height = _rendered(page, edge)
+        assert width * height <= row.max_pixels
+    block = _worst_neighbour_block(sealed)
+    prompt = PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS + len(block.encode("utf-8"))
+    answer = dense_page_answer_budget("perlector")
+
+    over_a_page_turn = request_fits(
+        row, [LETTER_300DPI, LETTER_300DPI, render, render], prompt, answer
+    )
+    assert [entry["image_prompt_tokens"] for entry in over_a_page_turn["images"]] == [
+        5103,
+        5103,
+        4960,
+        4960,
+    ]
+    assert over_a_page_turn["fits"] is True, over_a_page_turn["reason"]
+    assert (over_a_page_turn["need"], over_a_page_turn["headroom"]) == (
+        20126 + prompt + answer,
+        row.max_model_len - 20126 - prompt - answer,
+    )
+
+    over_three_pages = request_fits(row, [LETTER_300DPI] * 3 + [render] * 3, prompt, answer)
+    assert over_three_pages["fits"] is False

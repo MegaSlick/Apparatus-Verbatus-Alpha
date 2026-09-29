@@ -269,6 +269,8 @@ page_renders  = [{source_page_id, source_page_ordinal, source, image_path,
 testimonia    = [{witness_label, model_name, resolved_provenance,
                    training_domain, outcome, reported, reported_basis,
                    presented, observed, edge_deltas, unpresented}, ...]
+neighbours    = {preceding: null | neighbour, following: null | neighbour}
+                # primed dossiers only; see "Neighbour clues" below
 dossier_digest
 ```
 
@@ -291,17 +293,51 @@ as its name, so model name, provenance, and domain all leave together. The pseud
 reversible map: reversal is recomputing the same deterministic digest over the
 public roster in `run.json["witness_chairs"]`.
 
-**Page renders.** One layout-context render per distinct page an act's regions
-touch, stored content-addressed under this stage's own blob store. The long edge
-is capped at `dossier.PAGE_CONTEXT_MAX_EDGE` (1024) rather than divided by a
-fixed factor: a divisor is not a bound, and halving a 6000-pixel archival scan
-hands the reader the page again rather than an overview of it. `transform`
+**Page renders.** One whole-page render per distinct page an act's regions
+touch, stored content-addressed under this stage's own blob store, large enough
+that the page's ink is legible to the reader and not only its layout. The long
+edge is capped at the run's sealed `config/perlector_protocol.toml`
+`[page_context] maximum_edge` (2,560) rather than divided by a fixed factor: a
+divisor is not a bound. 2,560 keeps a 300-DPI letter or A4 page inside the 27B
+Perlector row's `max_pixels`, so the chair sees exactly the rendered pixels, and
+an act running over a page turn with whole-page crops still fits the row with
+its neighbour clues (arithmetic in the toml, pinned by
+`operations/serving/test_serving_catalogue_capacity.py`). An act over three or
+more pages can exceed the row; the live reader refuses it before sending and the
+act is published failed with the capacity record, never read with a page
+dropped or downscaled to fit. `transform`
 records `{operation, source_dimensions, target_dimensions, maximum_edge,
 resampler}` and `source` names the sealed page it came from, so the render is
 reproducible from the Exemplar plus the record (ARCHITECTURE invariant 3) by
 someone who does not also have this module. A page already inside the bound
 records `resampler: "identity"` rather than reporting a resize that did not
 happen.
+
+**Neighbour clues.** A primed dossier names the acts just before and just after
+this one in the Designator's `expected_acts` sequence, across page breaks, and
+null at either end. Each neighbour is `{act_id, act_key, same_page,
+witnesses}`, where `same_page` says whether it touches a page this act's
+regions touch, and each witness row is `{witness_label, outcome, reported,
+reported_basis, shown, testimonium_ref}` for every configured witness, built
+through the same `dossier.witness_rows` path, regime labels and page-witness
+slices as the act's own testimonia. `reported` is cut to the sealed
+`[neighbours] characters_per_row`: a preceding act's tail, a following act's
+head, with `shown` = `whole`, `tail`, `head`, or null where the witness
+reported no text. A Designator-held neighbour carries no witness rows.
+
+They are clues only. They come solely from sealed Attestatores records, never
+from another act's Perlectio, so an act's dossier and prompt are the same at any
+reading width and whether or not its siblings have been read
+(`test_neighbour_clues.py`). They never enter `basis.testimonia`, `dissent`, a
+gap's `witness_evidence`, Pass C's inputs, or the envelope's direct inputs
+(`testimonium_ref` inside the sealed dossier names them). Unprimed arms (Lectio
+nuda, `lectio-prior`) carry none. The prompt renders them after the testimonia
+under `neighbouring_acts:`, followed by the sealed neighbour fragment: context
+only, transcribe only this act's ink, never copy a neighbour's text, and where
+this act's ink runs past its crop stop at the edge and write `[[?]]`. That mark
+becomes a zero-width `trailing` gap, a visible signal for a later recrop. The
+live reader charges the neighbour block one token per UTF-8 byte, because the
+measured tokens-per-character rate predates it.
 
 **Training-domain context.** `config/witness_context.toml`, a new
 Perlector-owned declaration (not part of `common/chairs`/`ChairIdentity`),

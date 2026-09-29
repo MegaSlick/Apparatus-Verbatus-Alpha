@@ -2415,8 +2415,9 @@ def test_concurrent_calls_publish_exactly_the_bytes_a_serial_pass_publishes(
 def test_one_failed_call_in_a_batch_fails_only_its_own_act(
     batching_chained_run, tmp_path, monkeypatch
 ):
-    # The fixture's first act, by its witnesses' text; no other act's request carries it.
-    marker = "SYNTHETIC ACT ONE"
+    # The fixture's first act, by the prompt's own act line: its witnesses' text also
+    # reaches the second act's request, as that act's neighbour clue.
+    marker = "act: a1"
     serial_root, _ = _run_batching(
         batching_chained_run,
         tmp_path,
@@ -2477,7 +2478,7 @@ def test_a_refusal_mid_batch_still_publishes_every_act_already_sent(
     _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, resume=True)
     resumed = endpoints[-1]
     assert resumed.bodies, "the unread act was not read on resume"
-    assert not [body for body in resumed.bodies if b"SYNTHETIC ACT ONE" in body]
+    assert not [body for body in resumed.bodies if ACT_ONE in body]
     assert sorted(record["outcome"] for record in _perlectiones(root).values()) == [
         "read",
         "read",
@@ -2580,7 +2581,9 @@ def test_a_refused_job_source_still_finishes_every_job_already_sent():
 
 # --- resume never asks again about a reply it has on record -------------------
 
-ACT_ONE, ACT_TWO = b"SYNTHETIC ACT ONE", b"SYNTHETIC ACT TWO"
+# Each act by its prompt's own act line; a witness's text also reaches the other
+# act's request as a neighbour clue.
+ACT_ONE, ACT_TWO = b"act: a1", b"act: a2"
 
 
 def _main_pass_bodies(endpoint: _ContentEndpoint, act: bytes) -> list[bytes]:

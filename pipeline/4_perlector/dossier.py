@@ -24,20 +24,13 @@ from common.chairs.models import ChairIdentity
 from common.chandra_native_retry import named_trace_summary
 from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.stages import ATTESTATORES
 from common.exemplar_boundary import read_sealed_page
 from common.imaging import crop_png, dimensions, encode_grayscale_png_deterministic
 from common.native_witness import REPORTED_BOUNDS_SOURCES
 from common.stage import WITNESS_READING_OUTCOMES
 from common.witness_context import read_witness_context_declaration
 from common.witness_regime import NAMED, REGIMES, witness_label
-
-# A fixed bound, not configuration: the dossier's job is to hand the reader a
-# genuine layout overview, not a second full-resolution copy of the page. A
-# *bound* rather than a divisor because a divisor is not a bound -- halving a
-# 6000-pixel archival scan still hands the reader a 3000-pixel image, which is
-# not page context, it is the page again at some cost. Capping the long edge
-# gives every page the same kind of overview whatever it was scanned at.
-PAGE_CONTEXT_MAX_EDGE: Final = 1024
 
 # Fragments, not exact names, because the field that reintroduces a preference
 # will be called `trust_score` or `witness_priority` rather than `trust`. The
@@ -132,13 +125,21 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
         }
 
 
-def build_page_render(context, *, source_page_id: str, source_page_ordinal: int) -> dict[str, Any]:
-    """The downscaled page render for one act's page, with its transform recorded
+def build_page_render(
+    context, *, source_page_id: str, source_page_ordinal: int, maximum_edge: int
+) -> dict[str, Any]:
+    """The page render for one act's page, with its transform recorded
     (ARCHITECTURE invariant 3: the exact image shown is reproducible from the
-    Exemplar plus the recorded transforms)."""
+    Exemplar plus the recorded transforms).
+
+    `maximum_edge` is the sealed `[page_context]` bound of the run's Perlector
+    protocol: a long edge large enough that the page's ink is legible to the
+    reader, not only its layout. A bound rather than a divisor, so every page
+    gets the same kind of render whatever it was scanned at.
+    """
     page, page_bytes = read_sealed_page(context.tree, source_page_id)
     try:
-        downscaled, transform = _downscale_page(page_bytes, maximum_edge=PAGE_CONTEXT_MAX_EDGE)
+        downscaled, transform = _downscale_page(page_bytes, maximum_edge=maximum_edge)
     except (OSError, ValueError, Image.DecompressionBombError) as error:
         raise SchemaRefusal(
             "a sealed Exemplar page could not be rendered as Perlector page context"
@@ -305,6 +306,131 @@ def witnessed_region_ids(testimonia: list[dict], regions: list[dict[str, Any]]) 
     return witnessed
 
 
+def witness_rows(
+    context,
+    *,
+    testimonia: list[dict[str, Any]],
+    regime: str,
+    witness_context: dict[str, dict[str, str]],
+    act_attachment: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """One act's witness rows, labelled under the regime, with page witnesses'
+    act slices filled in from the attachment; and the relabelled attachment.
+
+    The one path every witness reading takes into a dossier, whether it is the
+    act's own testimony or a neighbouring act's.
+    """
+    testimonia_rows = sorted(
+        (
+            _testimonium_entry(
+                record,
+                witness_context=witness_context,
+                witness_context_path=context.witness_context_config_path,
+                regime=regime,
+                run_id=context.tree.run_id,
+                config_digest=context.config_digest,
+            )
+            for record in testimonia
+        ),
+        key=lambda row: row["witness_label"],
+    )
+    if act_attachment is None:
+        return testimonia_rows, None
+    # `act_attachment["comparison_views"]` is keyed by real chair name
+    # upstream (`pipeline/4_perlector/run.py::act_attachment_view`) so the
+    # Perlector's own dissent machinery can match it back to a chair's
+    # Testimonium. That real name is exactly what blinding exists to
+    # withhold from the dossier -- the one object every reader actually
+    # sees -- so it is relabeled here through the same `witness_label`
+    # every other dossier identity already goes through, never carried
+    # verbatim into what gets shown.
+    views = act_attachment.get("comparison_views")
+    if not isinstance(views, dict):
+        raise SchemaRefusal(
+            "an act attachment reached the dossier with no comparison_views mapping; "
+            "a dossier may not be built from an attachment whose views are absent"
+        )
+    relabeled_views: dict[str, str] = {}
+    relabeled_deltas: dict[str, list[dict[str, Any]]] = {}
+    for chair, text in views.items():
+        label = witness_label(
+            chair,
+            regime=regime,
+            run_id=context.tree.run_id,
+            config_digest=context.config_digest,
+        )
+        # `witness_label` does not guarantee uniqueness; a collision here
+        # would silently overwrite one chair's comparison view with
+        # another's -- evidence lost behind a well-formed dossier.
+        if label in relabeled_views:
+            raise SchemaRefusal(
+                f"two comparison views relabel to the same witness label {label!r}; "
+                "a colliding pseudonym would silently replace one chair's view"
+            )
+        relabeled_views[label] = text
+    # No `{}` default: an absent key would have been read as "no chair's
+    # ink sat outside the sealed proposal", which is a measurement, and
+    # nothing measured it. The refusal below says "with no edge-deltas
+    # mapping" and could not fire for the case that wording describes.
+    deltas = act_attachment.get("edge_deltas")
+    if not isinstance(deltas, dict):
+        raise SchemaRefusal(
+            "an act attachment reached the dossier with no edge-deltas mapping. "
+            "The dossier cannot account for the witness geometry it was meant to carry. "
+            "Rebuild the attachment view with one list for every contributing chair."
+        )
+    for chair, rows in deltas.items():
+        label = witness_label(
+            chair,
+            regime=regime,
+            run_id=context.tree.run_id,
+            config_digest=context.config_digest,
+        )
+        if not isinstance(rows, list):
+            raise SchemaRefusal(
+                "an act attachment edge-deltas entry is not a list. "
+                "The chair's geometry evidence cannot be carried in the dossier. "
+                "Rebuild that entry as the ordered list derived from sealed proposals."
+            )
+        if label in relabeled_deltas:
+            raise SchemaRefusal(
+                f"two edge-deltas entries relabel to the same witness label {label!r}; "
+                "a colliding pseudonym would silently replace one chair's geometry. "
+                "The dossier would lose witness evidence under a valid-looking label. "
+                "Choose a collision-free witness label derivation and rebuild the dossier."
+            )
+        relabeled_deltas[label] = copy.deepcopy(rows)
+    # The absent-mapping refusal above, applied one chair at a time. A
+    # `.get(label, [])` here restored the same false clean for any witness
+    # the mapping does not name: the dossier would state that this chair's
+    # ink was compared against the sealed proposal and sat entirely inside
+    # it, when nothing measured it, and no reader could tell the two apart.
+    # `reported` has no such spelling -- a chair with no comparison view
+    # keeps `reported_basis: "none"`, which is an honest absence.
+    missing = sorted(
+        row["witness_label"]
+        for row in testimonia_rows
+        if row["witness_label"] not in relabeled_deltas
+    )
+    if missing:
+        raise SchemaRefusal(
+            f"an act attachment names no edge-deltas entry for witness(es) {missing}. "
+            "Their geometry would be recorded as measured and clean when nothing measured it. "
+            "Rebuild the attachment view with one list for every contributing chair."
+        )
+    for row in testimonia_rows:
+        label = row["witness_label"]
+        if label in relabeled_views:
+            row["reported"] = relabeled_views[label]
+            row["reported_basis"] = "page-slice"
+        row["edge_deltas"] = relabeled_deltas[label]
+    return testimonia_rows, {
+        **act_attachment,
+        "comparison_views": relabeled_views,
+        "edge_deltas": relabeled_deltas,
+    }
+
+
 def build_dossier(
     context,
     *,
@@ -316,6 +442,7 @@ def build_dossier(
     page_renders: list[dict[str, Any]],
     witness_context: dict[str, dict[str, str]],
     act_attachment: dict[str, Any] | None = None,
+    neighbours: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble one act's dossier. Deterministic: the same evidence in any order
     produces identical bytes, and nothing in the result may express a
@@ -346,19 +473,12 @@ def build_dossier(
         key=lambda row: row["region_id"],
     )
     page_render_rows = sorted(page_renders, key=lambda row: row["source_page_id"])
-    testimonia_rows = sorted(
-        (
-            _testimonium_entry(
-                record,
-                witness_context=witness_context,
-                witness_context_path=context.witness_context_config_path,
-                regime=regime,
-                run_id=context.tree.run_id,
-                config_digest=context.config_digest,
-            )
-            for record in testimonia
-        ),
-        key=lambda row: row["witness_label"],
+    testimonia_rows, attachment = witness_rows(
+        context,
+        testimonia=testimonia,
+        regime=regime,
+        witness_context=witness_context,
+        act_attachment=act_attachment,
     )
     dossier = {
         "act_id": act_id,
@@ -368,100 +488,12 @@ def build_dossier(
         "page_renders": page_render_rows,
         "testimonia": testimonia_rows,
     }
-    if act_attachment is not None:
-        # `act_attachment["comparison_views"]` is keyed by real chair name
-        # upstream (`pipeline/4_perlector/run.py::act_attachment_view`) so the
-        # Perlector's own dissent machinery can match it back to a chair's
-        # Testimonium. That real name is exactly what blinding exists to
-        # withhold from the dossier -- the one object every reader actually
-        # sees -- so it is relabeled here through the same `witness_label`
-        # every other dossier identity already goes through, never carried
-        # verbatim into what gets shown.
-        views = act_attachment.get("comparison_views")
-        if not isinstance(views, dict):
-            raise SchemaRefusal(
-                "an act attachment reached the dossier with no comparison_views mapping; "
-                "a dossier may not be built from an attachment whose views are absent"
-            )
-        relabeled_views: dict[str, str] = {}
-        relabeled_deltas: dict[str, list[dict[str, Any]]] = {}
-        for chair, text in views.items():
-            label = witness_label(
-                chair,
-                regime=regime,
-                run_id=context.tree.run_id,
-                config_digest=context.config_digest,
-            )
-            # `witness_label` does not guarantee uniqueness; a collision here
-            # would silently overwrite one chair's comparison view with
-            # another's -- evidence lost behind a well-formed dossier.
-            if label in relabeled_views:
-                raise SchemaRefusal(
-                    f"two comparison views relabel to the same witness label {label!r}; "
-                    "a colliding pseudonym would silently replace one chair's view"
-                )
-            relabeled_views[label] = text
-        # No `{}` default: an absent key would have been read as "no chair's
-        # ink sat outside the sealed proposal", which is a measurement, and
-        # nothing measured it. The refusal below says "with no edge-deltas
-        # mapping" and could not fire for the case that wording describes.
-        deltas = act_attachment.get("edge_deltas")
-        if not isinstance(deltas, dict):
-            raise SchemaRefusal(
-                "an act attachment reached the dossier with no edge-deltas mapping. "
-                "The dossier cannot account for the witness geometry it was meant to carry. "
-                "Rebuild the attachment view with one list for every contributing chair."
-            )
-        for chair, rows in deltas.items():
-            label = witness_label(
-                chair,
-                regime=regime,
-                run_id=context.tree.run_id,
-                config_digest=context.config_digest,
-            )
-            if not isinstance(rows, list):
-                raise SchemaRefusal(
-                    "an act attachment edge-deltas entry is not a list. "
-                    "The chair's geometry evidence cannot be carried in the dossier. "
-                    "Rebuild that entry as the ordered list derived from sealed proposals."
-                )
-            if label in relabeled_deltas:
-                raise SchemaRefusal(
-                    f"two edge-deltas entries relabel to the same witness label {label!r}; "
-                    "a colliding pseudonym would silently replace one chair's geometry. "
-                    "The dossier would lose witness evidence under a valid-looking label. "
-                    "Choose a collision-free witness label derivation and rebuild the dossier."
-                )
-            relabeled_deltas[label] = copy.deepcopy(rows)
-        # The absent-mapping refusal above, applied one chair at a time. A
-        # `.get(label, [])` here restored the same false clean for any witness
-        # the mapping does not name: the dossier would state that this chair's
-        # ink was compared against the sealed proposal and sat entirely inside
-        # it, when nothing measured it, and no reader could tell the two apart.
-        # `reported` has no such spelling -- a chair with no comparison view
-        # keeps `reported_basis: "none"`, which is an honest absence.
-        missing = sorted(
-            row["witness_label"]
-            for row in testimonia_rows
-            if row["witness_label"] not in relabeled_deltas
-        )
-        if missing:
-            raise SchemaRefusal(
-                f"an act attachment names no edge-deltas entry for witness(es) {missing}. "
-                "Their geometry would be recorded as measured and clean when nothing measured it. "
-                "Rebuild the attachment view with one list for every contributing chair."
-            )
-        for row in testimonia_rows:
-            label = row["witness_label"]
-            if label in relabeled_views:
-                row["reported"] = relabeled_views[label]
-                row["reported_basis"] = "page-slice"
-            row["edge_deltas"] = relabeled_deltas[label]
-        dossier["act_attachment"] = {
-            **act_attachment,
-            "comparison_views": relabeled_views,
-            "edge_deltas": relabeled_deltas,
-        }
+    if attachment is not None:
+        dossier["act_attachment"] = attachment
+    # Neighbouring acts are witness clues too, so a dossier shown no testimony
+    # (Lectio nuda, `lectio-prior`) is shown none of theirs either.
+    if neighbours is not None and testimonia:
+        dossier["neighbours"] = neighbours
     # Swept before the digest is taken: a preference-bearing field sealed into
     # the digest is already in the record by the time anyone could object. This
     # is the guard that keeps a witness preference out of the dossier, so it
@@ -469,6 +501,90 @@ def build_dossier(
     assert_no_order_bearing_field(dossier)
     dossier["dossier_digest"] = digest_of(dossier)
     return dossier
+
+
+# The two neighbours an act's dossier names, in the Designator's own act
+# sequence. A preceding act is shown the end of each reading and a following act
+# its beginning, because the boundary with this act is where they touch it.
+PRECEDING: Final = "preceding"
+FOLLOWING: Final = "following"
+
+
+def neighbour_witnesses(
+    context,
+    *,
+    testimonia: list[dict[str, Any]],
+    regime: str,
+    witness_context: dict[str, dict[str, str]],
+    act_attachment: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """A neighbouring act's witness readings, uncut, as clues for another act.
+
+    Built through `witness_rows`, the path the act's own testimony takes, so
+    every witness appears under the same regime label with the same text it
+    would have in its own act's dossier -- all of them, never one chair's.
+    Only sealed Attestatores records feed it, never another act's reading, so
+    an act's dossier is the same whichever acts were read before or beside it.
+    """
+    rows, _ = witness_rows(
+        context,
+        testimonia=testimonia,
+        regime=regime,
+        witness_context=witness_context,
+        act_attachment=act_attachment,
+    )
+    references = {
+        witness_label(
+            record["payload"]["chair"],
+            regime=regime,
+            run_id=context.tree.run_id,
+            config_digest=context.config_digest,
+        ): context.artifact_ref(ATTESTATORES, "testimonium", record["artifact_id"])
+        for record in testimonia
+    }
+    return [
+        {
+            "witness_label": row["witness_label"],
+            "outcome": row["outcome"],
+            "reported": row["reported"],
+            "reported_basis": row["reported_basis"],
+            "testimonium_ref": references[row["witness_label"]],
+        }
+        for row in rows
+    ]
+
+
+def neighbour_entry(
+    act: dict[str, Any],
+    *,
+    side: str,
+    same_page: bool,
+    witnesses: list[dict[str, Any]],
+    characters_per_row: int,
+) -> dict[str, Any]:
+    """One neighbour as its dossier shows it, each reading cut to the sealed cap.
+
+    `shown` says which part of a reading is carried: `whole`, the `tail` of a
+    preceding act or the `head` of a following one, or null where the witness
+    reported no text.
+    """
+    rows = []
+    for witness in witnesses:
+        reported, shown = witness["reported"], None
+        if reported is not None:
+            if len(reported) <= characters_per_row:
+                shown = "whole"
+            elif side == PRECEDING:
+                reported, shown = reported[-characters_per_row:], "tail"
+            else:
+                reported, shown = reported[:characters_per_row], "head"
+        rows.append({**witness, "reported": reported, "shown": shown})
+    return {
+        "act_id": act["act_id"],
+        "act_key": act["act_key"],
+        "same_page": same_page,
+        "witnesses": rows,
+    }
 
 
 # One walk position, as a crumb and its parent. `None` is the root's parent.

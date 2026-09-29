@@ -35,3 +35,29 @@ sample_count = 4572
 statistic = "characters per page-equivalent. Padded and clamped: minimum 78, 0.5th percentile 759, 1st 901, 5th 1,293, median 2,610. Padded, unclamped: minimum 78, 0.5th 727, 1st 849, 5th 1,219, median 2,494. Bare boxes: minimum 122, 0.5th 1,146, 1st 1,337, 5th 1,921, median 3,926. The floor is set under the 0.5th percentile of the padded regions, where the flag rate on honest acts is 0.13%. Clamping shrinks regions at page edges, so it raises density and lowers false positives, and it makes an act cut off at an edge read denser and so less likely to be caught"
 calibrated_for_this_corpus = false
 caveat = "MEASURED ON RECORDGOLD, NOT ON THE QUEBEC REGISTERS THIS INSTRUMENT SERVES; hence not claimed calibrated for this corpus. The honest acts it flags are very short acts (minimum 9 characters) in regions padded past them; those hold visibly as unknown for a reviewer, never as complete. It is one of three computed signals and never decides alone: one suspicious signal under a clean engine stop is unknown and holds; the engine's own length stop is authoritative whatever this says. It catches a reading that stops after a line or less of a four-line act crop; a full 76-character line cut from such a crop reads 634, which is inside the honest range (0.5th percentile 727 to 759), so both cannot hold and this floor gives up the second. Re-measure against the Quebec registers' own gold before relying on the floor there. pipeline/4_perlector/test_truncation.py pins the cut-off reading this floor catches, the honest density it must not flag, and the legibility gate below a 72-DPI letter page"
+
+# Neighbour clues (`pipeline/4_perlector/dossier.py::neighbour_entry`): each
+# witness reading of the acts just before and after an act, cut to this many
+# characters -- the end of the preceding act, the start of the following one.
+# 800 characters is about ten register lines, enough to show the formula and
+# names running up to the boundary while keeping a three-witness pair of
+# neighbours under ~5,000 characters of prompt. The fragment is pinned in
+# `protocol.py`; a different wording is refused.
+[neighbours]
+characters_per_row = 800
+fragment = "The neighbouring acts are the acts written just before and just after this one, as the witnesses read them; (tail) marks only the end of a reading and (head) only its beginning. They are context only: names, dates and formulas recur from act to act, and the boundary between two acts is where readings most often go wrong. Transcribe only this act's own ink and never copy a neighbour's text into it. Where this act's ink continues past the edge of its crop, stop at the edge and write [[?]] there."
+
+# The long edge of the whole-page render shown beside an act's crop
+# (`dossier.build_page_render`), sized so the page's ink is legible, not only
+# its layout. 2,560 keeps a 300-DPI letter leaf (2,550x3,300 -> 1,978x2,560,
+# 5.06 MP) and A4 (1,810x2,560) inside the 27B Perlector row's max_pixels
+# (5,299,200), so the chair sees exactly the rendered pixels: 4,960 image
+# tokens for a letter page at 1,024 px per token. The row (max_model_len
+# 32,768) then holds an act running over a page turn with whole-page crops on
+# both pages: 2 x 5,175 (crops at max_pixels) + 2 x 4,960 (renders) + the
+# prompt with neighbour clues charged one token per byte (~7,000) + the
+# dense-page answer 1,318 = ~28,500. An act spanning three or more pages can
+# exceed the row; the live reader then refuses it before sending and the act is
+# published failed with the arithmetic, never read with a page left out.
+[page_context]
+maximum_edge = 2560

@@ -2048,8 +2048,8 @@ def with_engine_call(payload: dict, result: dict, fields: frozenset) -> frozense
     return fields | {"engine_call"}
 
 
-def _page_renders_for(context, bases: list[dict]) -> list[dict]:
-    """One downscaled page render per distinct page an act's regions touch.
+def _page_renders_for(context, bases: list[dict], *, maximum_edge: int) -> list[dict]:
+    """One page render per distinct page an act's regions touch.
 
     A continuation act spans two pages; nuda and the primed pass see both,
     because sight is never what nuda withholds.
@@ -2062,6 +2062,7 @@ def _page_renders_for(context, bases: list[dict]) -> list[dict]:
                 context,
                 source_page_id=page_id,
                 source_page_ordinal=basis["source_page_ordinal"],
+                maximum_edge=maximum_edge,
             )
     return list(by_page.values())
 
@@ -2511,7 +2512,7 @@ _DOSSIER_FIELDS: Final = frozenset(
 )
 # Logical identity and atomic presentation travel together or not at all.
 _DOSSIER_SHAPES: Final = tuple(
-    _DOSSIER_FIELDS | variant | cross_capture
+    _DOSSIER_FIELDS | variant | clues | cross_capture
     for variant in (
         frozenset(),
         {"act_attachment"},
@@ -2520,6 +2521,7 @@ _DOSSIER_SHAPES: Final = tuple(
         {"prior_draft", "prior_draft_view"},
         {"act_attachment", "prior_draft", "prior_draft_view"},
     )
+    for clues in (frozenset(), {"neighbours"})
     for cross_capture in (frozenset(), {"logical_act_id", "cross_capture_autopsia"})
 )
 
@@ -2612,6 +2614,10 @@ def validate_reading_payload(
             raise SchemaRefusal(
                 "an unprimed reading's dossier cannot carry witness-derived act attachment metadata"
             )
+    if is_unprimed and "neighbours" in reading_dossier:
+        raise SchemaRefusal(
+            "an unprimed reading's dossier cannot carry the neighbouring acts' witness readings"
+        )
     _validate_dossier_testimonia(
         reading_dossier,
         basis,
@@ -2774,6 +2780,7 @@ def _validate_reading_prompt(
         protocol_config = {
             "page_shared_prefix_policy": protocol.PAGE_SHARED_PREFIX_POLICY,
             "pass_b_fragment": "",
+            "neighbours": {"fragment": ""},
         }
     if protocol_sha256 is None:
         protocol_sha256 = "unsealed-test"
@@ -3894,6 +3901,9 @@ class _Pass:
     # The main-pass results of acts a live resume found sealed: the page flags are
     # computed over every act's semi-final, as the uninterrupted pass computed them.
     sealed_semi_finals: list[dict[str, Any]] = field(default_factory=list)
+    # Each act's witness readings and pages as a neighbour clue, built once on the
+    # main thread and shared by the two acts it neighbours.
+    neighbour_clues: dict[str, tuple[set[str], list[dict[str, Any]]]] = field(default_factory=dict)
 
     @property
     def calls_per_act(self) -> int:
@@ -4193,7 +4203,11 @@ def _prepare_act(run: _Pass, act: dict[str, Any]):
         reported_unrouted=run.reported_unrouted,
     )
     region_pixels = _region_pixels(bases)
-    page_renders = _page_renders_for(context, bases)
+    page_renders = _page_renders_for(
+        context,
+        bases,
+        maximum_edge=run.protocol_config[protocol.PAGE_CONTEXT_TABLE]["maximum_edge"],
+    )
     page_pixels = _page_pixels(page_renders)
     smallest_page_pixels = _smallest_page_pixels(page_renders)
 
@@ -4247,6 +4261,7 @@ def _prepare_act(run: _Pass, act: dict[str, Any]):
         page_renders=page_renders,
         witness_context=run.witness_context_table,
         act_attachment=attachment_view,
+        neighbours=_neighbours(run, act, pages={basis["source_page_id"] for basis in bases}),
     )
     nuda_sampled, control_sampled = _logical_sampling_decisions(context, logical_act_id)
     attempt = _Attempt(
@@ -5039,6 +5054,67 @@ def _witnessed_act(
     for basis in bases:
         basis["witness_covered"] = basis["region_id"] in witnessed
     return bases, testimonia, attachment_view
+
+
+def _neighbour_clue(run: _Pass, act: dict[str, Any]) -> tuple[set[str], list[dict[str, Any]]]:
+    """One act's pages and uncut witness readings, as a clue for the acts beside it.
+
+    Read from the sealed Attestatores records through the path the act's own dossier
+    takes, never from its Perlectio: a reading depends on no other act's reading, so
+    parallel calls and a narrowed `--act` pass build the same dossier. A held act was
+    shown to no witness, so it is named with no readings.
+    """
+    act_id = act["act_id"]
+    if act_id not in run.neighbour_clues:
+        if act["outcome"] == "held":
+            run.neighbour_clues[act_id] = ({act["page_id"]}, [])
+        else:
+            regions, proposal_regions = act_regions(run.context, act_id)
+            bases, testimonia, attachment_view = _witnessed_act(
+                run.context,
+                act,
+                regions,
+                proposal_regions,
+                all_proposal_regions=run.all_proposal_regions,
+                reported_unrouted=run.reported_unrouted,
+            )
+            run.neighbour_clues[act_id] = (
+                {basis["source_page_id"] for basis in bases},
+                dossier_module.neighbour_witnesses(
+                    run.context,
+                    testimonia=testimonia,
+                    regime=run.context.witness_context,
+                    witness_context=run.witness_context_table,
+                    act_attachment=attachment_view,
+                ),
+            )
+    return run.neighbour_clues[act_id]
+
+
+def _neighbours(run: _Pass, act: dict[str, Any], *, pages: set[str]) -> dict[str, Any]:
+    """The acts before and after this one in the Designator's sequence, across page
+    breaks, each with every witness's reading cut to the sealed cap; null at either
+    end of the run."""
+    position = run.declared_order[act["act_id"]]
+    cap = run.protocol_config[protocol.NEIGHBOURS_TABLE]["characters_per_row"]
+    entries: dict[str, Any] = {}
+    for side, index in (
+        (dossier_module.PRECEDING, position - 1),
+        (dossier_module.FOLLOWING, position + 1),
+    ):
+        if not 0 <= index < len(run.expected):
+            entries[side] = None
+            continue
+        neighbour = run.expected[index]
+        neighbour_pages, witnesses = _neighbour_clue(run, neighbour)
+        entries[side] = dossier_module.neighbour_entry(
+            neighbour,
+            side=side,
+            same_page=bool(neighbour_pages & pages),
+            witnesses=witnesses,
+            characters_per_row=cap,
+        )
+    return entries
 
 
 def _next_attempt(context, act_id: str, regions: list[dict]) -> int:

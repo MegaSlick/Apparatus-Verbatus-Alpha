@@ -352,10 +352,18 @@ class VLLMReader:
         # charged its bytes, or the reply cap where there is one
         # (`perlector_prompt_bound`).
         prior = dossier["prior_draft"]["text"] if dossier.get("prior_draft_view") == "fed" else ""
+        # The neighbour clues postdate the measured rate, so they are charged their
+        # bytes, which no byte-level tokenizer exceeds.
+        neighbours = prompts.neighbour_block(dossier, self._protocol_config)
         prompt_bound, bound_basis = perlector_prompt_bound(
             text,
             template_digest=prompts.BUILDER_SHA256,
-            capped_spans=[(prior, self._max_tokens)] if prior else (),
+            # The block first: a prior draft could repeat a neighbour's reading, and
+            # taking it out of the block would leave the block unfound.
+            capped_spans=[
+                *([(neighbours, None)] if neighbours else ()),
+                *([(prior, self._max_tokens)] if prior else ()),
+            ],
         )
         prompt_floor, floor_basis = perlector_prompt_tokens(text)
         region_sizes = image_sizes(region_images)
