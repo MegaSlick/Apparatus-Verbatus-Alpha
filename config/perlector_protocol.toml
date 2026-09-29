@@ -45,19 +45,20 @@ caveat = "MEASURED ON RECORDGOLD, NOT ON THE QUEBEC REGISTERS THIS INSTRUMENT SE
 # `protocol.py`; a different wording is refused.
 [neighbours]
 characters_per_row = 800
-fragment = "The neighbouring acts are the acts written just before and just after this one, as the witnesses read them; (tail) marks only the end of a reading and (head) only its beginning. They are context only: names, dates and formulas recur from act to act, and the boundary between two acts is where readings most often go wrong. Transcribe only this act's own ink and never copy a neighbour's text into it. Where this act's ink continues past the edge of its crop, stop at the edge and write [[?]] there."
+fragment = "The neighbouring acts are the acts written just before and just after this one, as the witnesses read them; (tail) marks only the end of a reading and (head) only its beginning. They are context only: names, dates and formulas recur from act to act, and the boundary between two acts is where readings most often go wrong. Transcribe only this act's own ink and never copy a neighbour's text into it."
 
-# The long edge of the whole-page render shown beside an act's crop
-# (`dossier.build_page_render`), sized so the page's ink is legible, not only
-# its layout. 2,560 keeps a 300-DPI letter leaf (2,550x3,300 -> 1,978x2,560,
-# 5.06 MP) and A4 (1,810x2,560) inside the 27B Perlector row's max_pixels
-# (5,299,200), so the chair sees exactly the rendered pixels: 4,960 image
-# tokens for a letter page at 1,024 px per token. The row (max_model_len
-# 32,768) then holds an act running over a page turn with whole-page crops on
-# both pages: 2 x 5,175 (crops at max_pixels) + 2 x 4,960 (renders) + the
-# prompt with neighbour clues charged one token per byte (~7,000) + the
-# dense-page answer 1,318 = ~28,500. An act spanning three or more pages can
-# exceed the row; the live reader then refuses it before sending and the act is
-# published failed with the arithmetic, never read with a page left out.
+# The whole-page render shown beside an act's crops (`dossier.build_page_render`).
+# maximum_edge makes the page's ink legible, not only its layout: 2,560 keeps a
+# 300-DPI letter leaf (2,550x3,300 -> 1,978x2,560, 5.06 MP) and A4 inside the 27B
+# Perlector row's max_pixels (5,299,200), so the chair sees exactly the rendered
+# pixels (4,960 image tokens for the letter page). A page the act's own crops
+# cover whole already reaches the reader at full resolution, so it is rendered
+# at covered_page_edge, a layout-only size, and costs about 800 tokens
+# instead. Every RecordGold gold act fits the row (max_model_len 32,768) under
+# this rule with neighbour clues, as it did at 1,024
+# (`operations/corpus/perlector_request_fit.py`); the shapes that do not are
+# pinned in `operations/serving/test_serving_catalogue_capacity.py`, and the
+# live reader refuses them before sending, never dropping or shrinking a page.
 [page_context]
 maximum_edge = 2560
+covered_page_edge = 1024

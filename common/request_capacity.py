@@ -516,14 +516,10 @@ PERLECTOR_BOUND_SAFETY_MARGIN: Final = (105, 100)
 PERLECTOR_PROMPT_OVERHEAD_TOKENS: Final = 52 + 2 * 32
 PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS: Final = 32
 # `prompts.py`'s module digest (`builder_sha256`): editing the builder expires
-# the measured ratio.  Re-pinned without re-measuring when the builder gained the
-# neighbouring-acts block: every part the ratio was measured over renders the same
-# bytes, and the block itself is charged one token per UTF-8 byte by the live
-# reader (`capped_spans`), which a byte-level tokenizer cannot exceed.  The rate
-# over the new prompt must still be re-measured with the pinned tokenizer on a
-# host that has it; until then the block is over-charged, never under.
+# the measured ratio.  The neighbouring-acts block is outside the ratio: the live
+# reader charges it one token per UTF-8 byte (`capped_spans`).
 PERLECTOR_PROMPT_TEMPLATE_DIGEST: Final = (
-    "2f26f080878acf1358211ce3c9ae519fac22a39d8743027b9f7bd8575819c1f9"
+    "987a416780e8275c4ab92bb81a2c39bdc60d83b846446280b4ed4f980326258a"
 )
 # The representative dossier's size and bound, for weighing the shipped rows
 # against what is admitted on; a test re-derives the bound from the size.

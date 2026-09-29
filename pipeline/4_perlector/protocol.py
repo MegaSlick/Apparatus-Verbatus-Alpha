@@ -31,8 +31,7 @@ NEIGHBOUR_FRAGMENT: Final = (
     "the witnesses read them; (tail) marks only the end of a reading and (head) only its "
     "beginning. They are context only: names, dates and formulas recur from act to act, "
     "and the boundary between two acts is where readings most often go wrong. Transcribe "
-    "only this act's own ink and never copy a neighbour's text into it. Where this act's "
-    "ink continues past the edge of its crop, stop at the edge and write [[?]] there."
+    "only this act's own ink and never copy a neighbour's text into it."
 )
 NEIGHBOURS_TABLE: Final = "neighbours"
 PAGE_CONTEXT_TABLE: Final = "page_context"
@@ -168,13 +167,13 @@ def _validate_small_tables(record: dict[str, Any]) -> None:
     page_context = record[PAGE_CONTEXT_TABLE]
     if (
         not isinstance(page_context, dict)
-        or set(page_context) != {"maximum_edge"}
-        or not _plain_int(page_context["maximum_edge"])
-        or page_context["maximum_edge"] <= 0
+        or set(page_context) != {"maximum_edge", "covered_page_edge"}
+        or not all(_plain_int(page_context[key]) and page_context[key] > 0 for key in page_context)
+        or page_context["covered_page_edge"] > page_context["maximum_edge"]
     ):
         raise ContractError(
-            f"the Perlector protocol declaration's [{PAGE_CONTEXT_TABLE}] is not "
-            "exactly a positive integer maximum_edge"
+            f"the Perlector protocol declaration's [{PAGE_CONTEXT_TABLE}] is not exactly a "
+            "positive integer maximum_edge and a covered_page_edge no larger than it"
         )
 
 

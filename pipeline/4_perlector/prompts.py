@@ -48,7 +48,12 @@ def _neighbour_lines(dossier: dict[str, Any], protocol_config: dict[str, Any]) -
             continue
         where = "same page" if entry["same_page"] else "another page"
         lines.append(f"  {side}: {entry['act_key']} ({where})")
+        if entry["unavailable"] is not None:
+            lines.append("    witness readings unavailable")
         for witness in entry["witnesses"]:
+            if witness["reported"] is None:
+                lines.append(f"    - {witness['witness_label']}: no reading")
+                continue
             part = f" ({witness['shown']})" if witness["shown"] in ("head", "tail") else ""
             lines.append(f"    - {witness['witness_label']}: {witness['reported']!r}{part}")
     lines.append(protocol_config["neighbours"]["fragment"])
@@ -58,8 +63,8 @@ def _neighbour_lines(dossier: dict[str, Any], protocol_config: dict[str, Any]) -
 def neighbour_block(dossier: dict[str, Any], protocol_config: dict[str, Any] | None = None) -> str:
     """The neighbour lines exactly as they sit in the rendered prompt, or "".
 
-    The live reader charges this span per byte (`perlector_prompt_bound`): the
-    measured tokens-per-character rate was taken before the block existed.
+    The live reader charges this span one token per UTF-8 byte
+    (`perlector_prompt_bound`), a bound no byte-level tokenizer exceeds.
     """
     return "\n".join(_neighbour_lines(dossier, protocol_config or _DEFAULT_PROTOCOL))
 
@@ -112,7 +117,9 @@ def _fake_perlector_v0(
 # parses.
 TRANSCRIPTION_INSTRUCTION: Final = (
     "Transcribe the ink exactly as it is written on the page. Do not modernize spelling, "
-    "expand abbreviations, or correct the scribe. Read through to the end of the act. "
+    "expand abbreviations, or correct the scribe. Read this act's ink through to its end "
+    "within the act's crop; where the act's ink continues past the edge of the crop, stop "
+    "at the edge and write [[?]] there. "
     "Where ink cannot be read, write [[?]] in its place. Where a reading is uncertain, "
     "write it as [[reading]], or as [[reading|other|other]] to add other possible readings."
 )

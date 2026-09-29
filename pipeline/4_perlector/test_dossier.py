@@ -27,9 +27,10 @@ ROOT = Path(__file__).resolve().parents[2]
 perlector = load_stage("4_perlector")
 dossier = perlector.dossier_module
 # The run's sealed page-render bound, as a pass reads it.
-EDGE = perlector.protocol.load(ROOT / "config" / "perlector_protocol.toml")[0]["page_context"][
-    "maximum_edge"
+PAGE_CONTEXT = perlector.protocol.load(ROOT / "config" / "perlector_protocol.toml")[0][
+    "page_context"
 ]
+EDGE = PAGE_CONTEXT["maximum_edge"]
 
 
 class _Context:
@@ -137,7 +138,8 @@ def test_a_page_render_blob_is_reproducible_by_the_projects_own_encoder(evidence
                 for region in regions
                 if region["transform"]["source_page_id"] == page_id
             ),
-            maximum_edge=EDGE,
+            page_context=PAGE_CONTEXT,
+            crop_bounds=[],
         )
         for page_id in sorted(page_ids)
     ]
@@ -542,7 +544,8 @@ def test_build_page_render_records_its_whole_transform_not_only_a_factor(evidenc
         context,
         source_page_id=regions[0]["transform"]["source_page_id"],
         source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
-        maximum_edge=EDGE,
+        page_context=PAGE_CONTEXT,
+        crop_bounds=[],
     )
     assert render["transform"] == {
         "operation": "downscale-for-page-context",
@@ -556,6 +559,27 @@ def test_build_page_render_records_its_whole_transform_not_only_a_factor(evidenc
     }
     assert render["source"]["sha256"]
     assert context.tree.read_bytes(render["image_path"])
+
+
+def test_a_page_the_acts_crops_cover_whole_is_rendered_as_layout_only(evidence):
+    """Its crops already show every pixel at full resolution, so the page render is
+    layout-sized and says why; a page the crops do not cover stays legible."""
+    context, act_id, act_key, regions, testimonia = evidence
+    page = {
+        "source_page_id": regions[0]["transform"]["source_page_id"],
+        "source_page_ordinal": regions[0]["transform"]["source_page_ordinal"],
+    }
+    halves = [{"x": 0, "y": 0, "w": 200, "h": 130}, {"x": 0, "y": 130, "w": 200, "h": 130}]
+    covered = dossier.build_page_render(
+        context, **page, page_context=PAGE_CONTEXT, crop_bounds=halves
+    )
+    partial = dossier.build_page_render(
+        context, **page, page_context=PAGE_CONTEXT, crop_bounds=halves[:1]
+    )
+    assert covered["reason"] == dossier.COVERED_BY_CROP
+    assert covered["transform"]["maximum_edge"] == PAGE_CONTEXT["covered_page_edge"]
+    assert partial["reason"] == dossier.LEGIBLE_INK
+    assert partial["transform"]["maximum_edge"] == EDGE
 
 
 def test_a_page_past_the_bound_is_actually_downscaled_to_it():
@@ -577,13 +601,15 @@ def test_build_page_render_is_reused_byte_identically_on_a_repeat_call(evidence)
         context,
         source_page_id=regions[0]["transform"]["source_page_id"],
         source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
-        maximum_edge=EDGE,
+        page_context=PAGE_CONTEXT,
+        crop_bounds=[],
     )
     second = dossier.build_page_render(
         context,
         source_page_id=regions[0]["transform"]["source_page_id"],
         source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
-        maximum_edge=EDGE,
+        page_context=PAGE_CONTEXT,
+        crop_bounds=[],
     )
     assert first == second
 
@@ -654,5 +680,6 @@ def test_a_page_render_refuses_page_bytes_swapped_after_the_artifact_check(evide
             context,
             source_page_id=page_id,
             source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
-            maximum_edge=EDGE,
+            page_context=PAGE_CONTEXT,
+            crop_bounds=[],
         )

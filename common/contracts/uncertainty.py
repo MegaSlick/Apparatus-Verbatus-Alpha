@@ -19,6 +19,19 @@ CONFIDENCE_LEVELS: Final = frozenset({"low", "medium", "high"})
 GAP_POSITIONS: Final = frozenset({"leading", "internal", "trailing", "whole-act"})
 # Teklia/DAI-CReTDHI-RecordGold-ATR's two uncertainty markers (MIT licence).
 UNCERTAINTY_TOKENS: Final = ("[UNCERTAIN]", "[CROSSED_OUT]")
+# What may follow a trailing gap: a reader that stops at its crop's edge writes the
+# mark and may still close the line or the sentence after it.
+_TRAILING_TAIL: Final = frozenset(".,;:!?)]}»›\"'’”")
+
+
+def is_trailing_offset(text: str, offset: int) -> bool:
+    """Whether a gap at `offset` ends the reading: past its start, and followed only by
+    whitespace or closing punctuation."""
+    return 0 < offset and all(
+        character.isspace() or character in _TRAILING_TAIL for character in text[offset:]
+    )
+
+
 _GAP_EVIDENCE_FIELDS = frozenset({"chair", "testimonium_id", "reference", "variant"})
 _SOURCE_REVISION_FIELDS = frozenset({"reading_span", "testimonium_span"})
 
@@ -153,8 +166,11 @@ def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
             )
         if position == "leading" and gap["start"] != 0:
             raise SchemaRefusal(f"gaps[{index}] is declared leading but does not start at 0")
-        if position == "trailing" and gap["end"] != len(text):
-            raise SchemaRefusal(f"gaps[{index}] is declared trailing but does not end at len(text)")
+        if position == "trailing" and not is_trailing_offset(text, gap["end"]):
+            raise SchemaRefusal(
+                f"gaps[{index}] is declared trailing but text follows it other than whitespace "
+                "or closing punctuation"
+            )
         if position == "internal" and not 0 < gap["start"] < len(text):
             raise SchemaRefusal(
                 f"gaps[{index}] is declared internal but is not strictly inside the text"

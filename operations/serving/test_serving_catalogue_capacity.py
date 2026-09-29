@@ -37,13 +37,6 @@ if str(_ATTESTATORES_DIR) not in sys.path:
 
 import churro  # noqa: E402
 
-_PERLECTOR_DIR = Path(__file__).resolve().parents[2] / "pipeline" / "4_perlector"
-if str(_PERLECTOR_DIR) not in sys.path:
-    sys.path.insert(0, str(_PERLECTOR_DIR))
-
-import prompts  # noqa: E402
-import protocol  # noqa: E402
-
 MIN_PIXELS = 3136
 TIER_MAX_PIXELS = {
     "generic-24gb": 1_806_336,
@@ -370,68 +363,83 @@ def test_no_shipped_row_serves_below_its_tiers_stated_vram_floor():
     assert checked == len(_STATED_VRAM_NEED_GIB), "a stated VRAM floor went unchecked"
 
 
-# A 300-dpi letter leaf, the RecordGold page size the page-render bound is set for.
-LETTER_300DPI = (2550, 3300)
-_REGISTER_PROSE = (
+# --- the Perlector's page render against the row, shape by shape ------------------
+
+from operations.corpus import perlector_request_fit as fit  # noqa: E402
+
+LETTER = (2550, 3300)
+WHOLE = (0, 0, 2550, 3300)
+TOP, BOTTOM = (0, 0, 2550, 1700), (0, 1600, 2550, 1700)
+_PROSE = (
     "L'an mil sept cent quarante et un, le douzième jour de février, a été baptisée "
     "par nous soussigné prêtre curé de cette paroisse Marie Anne, fille légitime de "
 )
+# Two pages of register text per witness (twice the longest gold act, 2,972
+# characters), a full neighbour cap, and a fed prior draft longer than the reading
+# cap, so it is charged the cap.
+DENSE = (_PROSE * 60)[:5944]
+NEIGHBOUR = [(_PROSE * 10)[:800]] * 3
+PRIOR = (_PROSE * 60)[:6000]
+
+# (pages as (size, crops), prior) -> (need under the sealed rule, fits; need with
+# every page at the old 1,024 edge, fits). Needs are pinned so a prompt or render
+# change that moves them is seen here.
+SHAPES = {
+    "over a page turn, whole-page crops": (
+        [(LETTER, [WHOLE]), (LETTER, [WHOLE])],
+        None,
+        (29064, True),
+        (29064, True),
+    ),
+    "dense over a page turn, half-page crops, fed prior": (
+        [(LETTER, [BOTTOM]), (LETTER, [TOP])],
+        PRIOR,
+        (38732, False),
+        (31514, True),
+    ),
+    "dense over a page turn, a whole-page recovery crop, fed prior": (
+        [(LETTER, [BOTTOM]), (LETTER, [TOP, WHOLE])],
+        PRIOR,
+        (40777, False),
+        (36617, False),
+    ),
+    "three pages, whole-page crops": (
+        [(LETTER, [WHOLE])] * 3,
+        None,
+        (34967, False),
+        (34967, False),
+    ),
+}
 
 
-def _rendered(page, edge):
-    """A page as `dossier.build_page_render` renders it under a long-edge bound."""
-    width, height = page
-    scale = min(1, edge / max(width, height))
-    return (round(width * scale), round(height * scale))
+@pytest.mark.parametrize("name", SHAPES)
+def test_each_pinned_request_shape_against_the_row_under_both_page_renders(name):
+    """What the sealed `[page_context]` rule costs, shape by shape, against the old render.
 
-
-def _worst_neighbour_block(sealed):
-    """Two neighbours, each with every roster witness reporting a full capped reading."""
-    cap = sealed["neighbours"]["characters_per_row"]
-    reading = (_REGISTER_PROSE * (cap // len(_REGISTER_PROSE) + 1))[:cap]
-    witnesses = [
-        {"witness_label": chair, "reported": reading, "shown": "tail"}
-        for chair in ("attestator_1", "attestator_2", "attestator_3")
-    ]
-    entry = {"act_key": "neighbour-act", "same_page": False, "witnesses": witnesses}
-    return prompts.neighbour_block({"neighbours": {"preceding": entry, "following": entry}}, sealed)
-
-
-def test_legible_page_renders_fit_an_act_over_a_page_turn_with_neighbour_clues():
-    """The page-render bound, weighed against the row it must fit.
-
-    Both renders stay inside the row's max_pixels, so the chair sees exactly the
-    rendered pixels. An act running over a page turn whose crops are both whole
-    pages, with the fullest neighbour clues the sealed cap allows charged one token
-    per byte, fits the 27B row; the same act over three pages does not, and the
-    live reader refuses it before sending, visibly, rather than drop a page.
+    A page the act's crops cover whole is rendered at the layout edge, so an act over
+    a page turn with whole-page crops costs what it did. The dense two-page act with
+    half-page crops and a fed prior draft is the one shape here that the legible
+    render newly refuses: it fits at 1,024 and not at 2,560. Every gold act fits
+    under both (`operations/corpus/perlector_request_fit.py`).
     """
+    pages, prior, sealed_rule, old = SHAPES[name]
+    row, sealed = fit.perlector_row(), fit.sealed_protocol()
+    arguments = dict(
+        pages=pages,
+        witness_texts=[DENSE] * 3,
+        neighbours=(NEIGHBOUR, NEIGHBOUR),
+        prior_text=prior,
+    )
+    now = fit.request_record(row, sealed, edge=None, **arguments)
+    before = fit.request_record(row, sealed, edge=fit.OLD_EDGE, **arguments)
+    assert (now["need"], now["fits"]) == sealed_rule
+    assert (before["need"], before["fits"]) == old
+    assert row.max_model_len == 32768
 
-    sealed = protocol.load(REPO_ROOT / "config" / "perlector_protocol.toml")[0]
-    edge = sealed["page_context"]["maximum_edge"]
-    (row,) = [row for row in _shipped_rows() if row.chair == "perlector"]
-    render = _rendered(LETTER_300DPI, edge)
-    for page in (LETTER_300DPI, A4_300DPI):
-        width, height = _rendered(page, edge)
+
+def test_a_legible_render_stays_inside_the_rows_pixel_bound():
+    """So the chair sees exactly the rendered pixels, on a letter leaf and on A4."""
+    row, sealed = fit.perlector_row(), fit.sealed_protocol()
+    for page in (LETTER, A4_300DPI):
+        width, height = fit._rendered(page, sealed["page_context"]["maximum_edge"])
         assert width * height <= row.max_pixels
-    block = _worst_neighbour_block(sealed)
-    prompt = PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS + len(block.encode("utf-8"))
-    answer = dense_page_answer_budget("perlector")
-
-    over_a_page_turn = request_fits(
-        row, [LETTER_300DPI, LETTER_300DPI, render, render], prompt, answer
-    )
-    assert [entry["image_prompt_tokens"] for entry in over_a_page_turn["images"]] == [
-        5103,
-        5103,
-        4960,
-        4960,
-    ]
-    assert over_a_page_turn["fits"] is True, over_a_page_turn["reason"]
-    assert (over_a_page_turn["need"], over_a_page_turn["headroom"]) == (
-        20126 + prompt + answer,
-        row.max_model_len - 20126 - prompt - answer,
-    )
-
-    over_three_pages = request_fits(row, [LETTER_300DPI] * 3 + [render] * 3, prompt, answer)
-    assert over_three_pages["fits"] is False

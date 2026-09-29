@@ -9,6 +9,7 @@ see none; and an act's dossier does not depend on any other act's reading.
 
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import sys
@@ -17,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
 from conftest import load_stage, programs_through, run_stage, stage_artifacts
@@ -138,7 +139,11 @@ def test_neighbours_cross_page_breaks_and_are_null_at_either_end():
         declared_order={act["act_id"]: index for index, act in enumerate(expected)},
         protocol_config=_sealed_protocol(),
         # a3 continues onto p3; a2 sits on p1 alone.
-        neighbour_clues={"a1": ({"p1"}, []), "a2": ({"p1"}, []), "a3": ({"p2", "p3"}, [])},
+        neighbour_clues={
+            "a1": ({"p1"}, [], None),
+            "a2": ({"p1"}, [], None),
+            "a3": ({"p2", "p3"}, [], None),
+        },
     )
     first = perlector._neighbours(run, expected[0], pages={"p1"})
     last = perlector._neighbours(run, expected[2], pages={"p2", "p3"})
@@ -156,7 +161,7 @@ def test_the_cap_and_the_page_render_bound_are_sealed_and_the_fragment_is_pinned
     sealed = _sealed_protocol()
     assert sealed["neighbours"]["characters_per_row"] == 800
     assert sealed["neighbours"]["fragment"] == protocol.NEIGHBOUR_FRAGMENT
-    assert sealed["page_context"] == {"maximum_edge": 2560}
+    assert sealed["page_context"] == {"maximum_edge": 2560, "covered_page_edge": 1024}
     shipped = PROTOCOL.read_text(encoding="utf-8")
     for edited, refusal in (
         (shipped.replace("characters_per_row = 800", "characters_per_row = 0"), "neighbours"),
@@ -175,13 +180,86 @@ def test_an_unprimed_arm_is_shown_no_neighbour_reading():
     assert "neighbours" not in combined._unprimed(primed)
 
 
-def test_ink_past_the_crop_marked_at_the_end_is_a_trailing_gap():
-    """What the fragment asks for: a zero-width gap at the end, visible, carrying no text."""
-    text, assessment = annotations.read_doubt_marks("le vingt deux du mois [[?]]")
-    assert text == "le vingt deux du mois "
-    assert assessment["gaps"] == [
-        {"position": "trailing", "start": len(text), "end": len(text), "witness_evidence": []}
-    ]
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "le vingt deux du mois [[?]]",
+        "le vingt deux du mois [[?]]\n",
+        "le vingt deux du mois [[?]].",
+        "le vingt deux du mois [[?]] ;»\n",
+    ],
+)
+def test_ink_past_the_crop_marked_at_the_end_is_a_trailing_gap(raw):
+    """What the instruction asks for: a zero-width gap at the end, visible, carrying no
+    text, even when the reader closes the line or the sentence after the mark."""
+    text, assessment = annotations.read_doubt_marks(raw)
+    gaps = [{"position": "trailing", "start": 22, "end": 22, "witness_evidence": []}]
+    assert assessment["gaps"] == gaps
+    annotations.validate_annotations(
+        {"text": text, "uncertain_spans": [], "gaps": gaps}, outcome="read"
+    )
+
+
+def test_a_mark_followed_by_more_words_stays_internal():
+    _text, assessment = annotations.read_doubt_marks("le vingt [[?]] du mois")
+    assert assessment["gaps"][0]["position"] == "internal"
+
+
+def test_every_arm_is_told_to_stop_at_the_crop_edge_and_only_primed_arms_get_clues():
+    """The crop-edge rule lives in the transcription instruction every arm is sent; the
+    neighbour fragment speaks only about the clues."""
+    assert "stop at the edge and write [[?]]" in prompts.TRANSCRIPTION_INSTRUCTION
+    assert "[[?]]" not in protocol.NEIGHBOUR_FRAGMENT
+    unprimed = {"witness_regime": "named", "act_key": "a1", "testimonia": []}
+    rendered = prompts.build_prompt("unproven-real-perlector", "perlector", unprimed, None)
+    assert prompts.TRANSCRIPTION_INSTRUCTION in rendered
+    assert "neighbouring_acts" not in rendered
+
+
+def test_a_witness_with_no_reading_and_a_withheld_clue_render_as_words():
+    witness = {"witness_label": "w1", "reported": None, "shown": None}
+    preceding = {"act_key": "a0", "same_page": True, "witnesses": [witness], "unavailable": None}
+    following = {
+        "act_key": "a2",
+        "same_page": False,
+        "witnesses": [],
+        "unavailable": "the Designator held this act; no witness read it",
+    }
+    dossier = {"neighbours": {"preceding": preceding, "following": following}}
+    block = prompts.neighbour_block(dossier, _sealed_protocol())
+    assert "    - w1: no reading" in block and "None" not in block
+    assert "  following: a2 (another page)\n    witness readings unavailable" in block
+
+
+def test_a_neighbours_defective_witness_records_withhold_its_clue_and_say_why(monkeypatch):
+    """The act beside it is still read; the clue is withheld with the reason, not dropped."""
+    act = {"act_id": "a2", "act_key": "k2", "page_id": "p1", "outcome": "proposed"}
+    run = SimpleNamespace(neighbour_clues={}, context=None)
+
+    def broken(context, act_id):
+        raise SchemaRefusal("a tampered region")
+
+    monkeypatch.setattr(perlector, "act_regions", broken)
+    pages, witnesses, unavailable = perlector._neighbour_clue(run, act)
+    assert (pages, witnesses) == ({"p1"}, [])
+    assert "SchemaRefusal: a tampered region" in unavailable
+    held = {**act, "act_id": "a3", "outcome": "held"}
+    assert perlector._neighbour_clue(run, held)[2].startswith("the Designator held")
+
+
+def test_neighbour_clues_are_refused_where_the_act_has_no_witnesses():
+    with pytest.raises(SchemaRefusal, match="no testimonia"):
+        dossier_module.build_dossier(
+            SimpleNamespace(witness_context_config_path="x"),
+            act_id="a1",
+            act_key="k1",
+            regions=[],
+            testimonia=[],
+            regime="named",
+            page_renders=[],
+            witness_context={},
+            neighbours={"preceding": None, "following": None},
+        )
 
 
 # --- a whole run: clues reach the prompt and nothing else -----------------------
@@ -212,11 +290,23 @@ def test_a_neighbours_reading_reaches_only_the_neighbour_clues(fed_run):
     neighbour_refs = [
         row["testimonium_ref"] for row in payload["dossier"]["neighbours"]["following"]["witnesses"]
     ]
-    assert not [ref for ref in neighbour_refs if ref in reading["inputs"]]
+    # Lineage: the reading's inputs name what it was shown, and the dossier's
+    # neighbour rows name them as clues, never as its witness basis.
+    assert neighbour_refs and all(ref in reading["inputs"] for ref in neighbour_refs)
+    assert neighbour_refs == perlector.neighbour_testimonium_refs(payload["dossier"])
     assert not [row for row in payload["basis"]["testimonia"] if row["reference"] in neighbour_refs]
+    # No consumer takes them as a1's evidence: its review and established record
+    # name none of them.
+    for stage, kind in (("recensor", "review"), ("archetypus", "archetypus")):
+        records = stage_artifacts(fed_run, stage, kind, reading["subject_id"])
+        assert records
+        for ref in neighbour_refs:
+            assert ref["relative_path"] not in json.dumps(records)
     # Pass C's frozen inputs for a1 never see it either.
     for kind in ("audit-draft", "audit-finding"):
-        assert SENTINEL not in json.dumps(_by_act(fed_run, kind)["a1"]["payload"])
+        record = _by_act(fed_run, kind)["a1"]
+        assert SENTINEL not in json.dumps(record["payload"])
+        assert not [ref for ref in neighbour_refs if ref in record["inputs"]]
     # In the prompt it sits inside the neighbour block and nowhere else.
     config = _sealed_protocol()
     rendered = prompts.build_prompt(
@@ -234,7 +324,7 @@ def test_the_blind_pass_carries_no_neighbour_text(fed_run):
     assert SENTINEL not in json.dumps(prior["payload"])
 
 
-def _dossiers_built(monkeypatch, root: Path, *args: str) -> dict[str, dict]:
+def _dossiers_built(monkeypatch, root: Path, *args: str, refused: bool = False) -> dict[str, dict]:
     """Run the Perlector in process over a run tree and keep every dossier it built.
 
     Kept at build time because a narrowed pass with no sibling reading stops later,
@@ -265,10 +355,11 @@ def _dossiers_built(monkeypatch, root: Path, *args: str) -> dict[str, dict]:
                 *args,
             ],
         )
-        try:
-            perlector.main()
-        except Exception:  # noqa: BLE001 -- the narrowed pass's Pass-C refusal
-            pass
+        if refused:
+            with pytest.raises(FatalAccounting, match="has no Perlectio"):
+                perlector.main()
+        else:
+            assert perlector.main() == 0
     return built
 
 
@@ -287,7 +378,9 @@ def test_an_acts_dossier_does_not_depend_on_its_siblings_readings(tmp_path, monk
     # A second pass over the same tree rebuilds every dossier with a1's reading sealed.
     assert set(_by_act(RunTree(tmp_path / "whole", "r"), "perlectio")) == {"a1", "a2"}
     again = _dossiers_built(monkeypatch, tmp_path / "whole")
-    alone = _dossiers_built(monkeypatch, tmp_path / "alone", "--act", whole["a2"]["act_id"])
+    alone = _dossiers_built(
+        monkeypatch, tmp_path / "alone", "--act", whole["a2"]["act_id"], refused=True
+    )
     assert set(alone) == {"a2"}
     assert not stage_artifacts(RunTree(tmp_path / "alone", "r"), PERLECTOR, "perlectio")
     assert alone["a2"]["neighbours"]["preceding"]["act_key"] == "a1"
@@ -298,3 +391,43 @@ def test_an_acts_dossier_does_not_depend_on_its_siblings_readings(tmp_path, monk
     }
     assert len(rendered) == 1
     assert whole["a2"] == again["a2"] == alone["a2"]
+
+
+# --- the published neighbour shape is closed ------------------------------------
+
+
+def _published(fed_run) -> dict:
+    return _by_act(fed_run, "perlectio")["a1"]
+
+
+def _refused_with(fed_run, change, match: str) -> None:
+    dossier = copy.deepcopy(_published(fed_run)["payload"]["dossier"])
+    change(dossier["neighbours"])
+    with pytest.raises(SchemaRefusal, match=match):
+        perlector._validate_neighbours(dossier)
+
+
+def test_a_neighbour_naming_this_act_is_refused(fed_run):
+    own = _published(fed_run)["payload"]["dossier"]["act_id"]
+    _refused_with(
+        fed_run, lambda neighbours: neighbours["following"].update(act_id=own), "its own act"
+    )
+
+
+def test_a_neighbour_with_an_extra_field_is_refused(fed_run):
+    _refused_with(
+        fed_run, lambda neighbours: neighbours["following"].update(extra=1), "closed shape"
+    )
+
+
+def test_a_neighbour_ref_outside_the_attestatores_testimonia_is_refused(fed_run):
+    def repoint(neighbours):
+        neighbours["following"]["witnesses"][0]["testimonium_ref"]["relative_path"] = (
+            "4_perlector/artifacts/perlectio/x.json"
+        )
+
+    _refused_with(fed_run, repoint, "sealed Attestatores Testimonium")
+
+
+def test_the_published_neighbours_pass_their_own_validation(fed_run):
+    perlector._validate_neighbours(_published(fed_run)["payload"]["dossier"])

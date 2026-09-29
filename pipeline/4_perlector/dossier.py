@@ -125,21 +125,68 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
         }
 
 
-def build_page_render(
-    context, *, source_page_id: str, source_page_ordinal: int, maximum_edge: int
-) -> dict[str, Any]:
-    """The page render for one act's page, with its transform recorded
-    (ARCHITECTURE invariant 3: the exact image shown is reproducible from the
-    Exemplar plus the recorded transforms).
+# Why a page render has the size it has: the page's ink made legible, or a
+# layout-sized render of a page the act's own full-resolution crops already
+# show whole.
+LEGIBLE_INK: Final = "legible-ink"
+COVERED_BY_CROP: Final = "covered-by-crop"
 
-    `maximum_edge` is the sealed `[page_context]` bound of the run's Perlector
-    protocol: a long edge large enough that the page's ink is legible to the
-    reader, not only its layout. A bound rather than a divisor, so every page
-    gets the same kind of render whatever it was scanned at.
+
+def union_area(rectangles: list[tuple[int, int, int, int]]) -> int:
+    """The area covered by at least one `(x0, y0, x1, y1)` rectangle, by coordinate
+    compression. Exact in integers; quadratic in the handful of regions one act carries.
+    """
+    xs = sorted({x for rectangle in rectangles for x in (rectangle[0], rectangle[2])})
+    ys = sorted({y for rectangle in rectangles for y in (rectangle[1], rectangle[3])})
+    area = 0
+    for x0, x1 in zip(xs, xs[1:], strict=False):
+        for y0, y1 in zip(ys, ys[1:], strict=False):
+            if any(
+                left <= x0 and x1 <= right and top <= y0 and y1 <= bottom
+                for left, top, right, bottom in rectangles
+            ):
+                area += (x1 - x0) * (y1 - y0)
+    return area
+
+
+def build_page_render(
+    context,
+    *,
+    source_page_id: str,
+    source_page_ordinal: int,
+    page_context: dict[str, int],
+    crop_bounds: list[dict[str, int]],
+) -> dict[str, Any]:
+    """The page render for one act's page, with its transform and its reason
+    recorded (ARCHITECTURE invariant 3: the exact image shown is reproducible
+    from the Exemplar plus the recorded transforms).
+
+    `page_context` is the run's sealed `[page_context]` table. A page is
+    rendered at `maximum_edge`, large enough that its ink is legible, unless the
+    act's own crops on it (`crop_bounds`, sealed-page coordinates) cover the
+    whole page: those crops already carry every pixel at full resolution, so the
+    page is rendered at `covered_page_edge` as layout only, and a second
+    full-resolution copy does not crowd the act out of the served row.
     """
     page, page_bytes = read_sealed_page(context.tree, source_page_id)
+    width, height = dimensions(page_bytes)
+    covered = (
+        union_area(
+            [
+                (
+                    max(0, bounds["x"]),
+                    max(0, bounds["y"]),
+                    min(width, bounds["x"] + bounds["w"]),
+                    min(height, bounds["y"] + bounds["h"]),
+                )
+                for bounds in crop_bounds
+            ]
+        )
+        == width * height
+    )
+    edge = page_context["covered_page_edge"] if covered else page_context["maximum_edge"]
     try:
-        downscaled, transform = _downscale_page(page_bytes, maximum_edge=maximum_edge)
+        downscaled, transform = _downscale_page(page_bytes, maximum_edge=edge)
     except (OSError, ValueError, Image.DecompressionBombError) as error:
         raise SchemaRefusal(
             "a sealed Exemplar page could not be rendered as Perlector page context"
@@ -157,6 +204,7 @@ def build_page_render(
         "image_path": published["relative_path"],
         "image_sha256": published["sha256"],
         "transform": transform,
+        "reason": COVERED_BY_CROP if covered else LEGIBLE_INK,
     }
 
 
@@ -490,9 +538,14 @@ def build_dossier(
     }
     if attachment is not None:
         dossier["act_attachment"] = attachment
-    # Neighbouring acts are witness clues too, so a dossier shown no testimony
-    # (Lectio nuda, `lectio-prior`) is shown none of theirs either.
-    if neighbours is not None and testimonia:
+    if neighbours is not None:
+        # Neighbouring acts are witness clues: a dossier shown no testimony of its
+        # own is shown none of theirs, and the caller decides that, not this build.
+        if not testimonia:
+            raise SchemaRefusal(
+                "neighbour clues reached a dossier that carries no testimonia; witness "
+                "clues about other acts cannot stand where this act's witnesses are absent"
+            )
         dossier["neighbours"] = neighbours
     # Swept before the digest is taken: a preference-bearing field sealed into
     # the digest is already in the record by the time anyone could object. This
@@ -561,12 +614,14 @@ def neighbour_entry(
     same_page: bool,
     witnesses: list[dict[str, Any]],
     characters_per_row: int,
+    unavailable: str | None = None,
 ) -> dict[str, Any]:
     """One neighbour as its dossier shows it, each reading cut to the sealed cap.
 
     `shown` says which part of a reading is carried: `whole`, the `tail` of a
     preceding act or the `head` of a following one, or null where the witness
-    reported no text.
+    reported no text. `unavailable` is why no witness reading is carried at
+    all (a held act, or witness records that did not validate), else null.
     """
     rows = []
     for witness in witnesses:
@@ -584,6 +639,7 @@ def neighbour_entry(
         "act_key": act["act_key"],
         "same_page": same_page,
         "witnesses": rows,
+        "unavailable": unavailable,
     }
 
 

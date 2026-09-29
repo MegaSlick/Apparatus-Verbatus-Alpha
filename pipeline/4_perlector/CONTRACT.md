@@ -182,9 +182,12 @@ provenance
 consumers actually read (`common/stage.py::reading_basis_regions` walks
 `basis.regions`). Nothing here may ever remove or repurpose it.
 
-The envelope's direct inputs bind every full-resolution crop, every downscaled
-page-context render and its sealed source page, and every Testimonium reference.
-The dossier is therefore not the sole claim that the reader saw its page context.
+The envelope's direct inputs bind every full-resolution crop, every page render
+and its sealed source page, and every Testimonium reference. The dossier is
+therefore not the sole claim that the reader saw its page context. An established
+Perlectio's inputs also bind the neighbouring acts' Testimonia it was shown as
+clues; `dossier.neighbours` names each of them as a clue, and `basis.testimonia`
+alone names this act's own witnesses (see "Neighbour clues").
 
 **Two named limits of the doubt report, stated rather than implied.**
 
@@ -294,50 +297,76 @@ reversible map: reversal is recomputing the same deterministic digest over the
 public roster in `run.json["witness_chairs"]`.
 
 **Page renders.** One whole-page render per distinct page an act's regions
-touch, stored content-addressed under this stage's own blob store, large enough
-that the page's ink is legible to the reader and not only its layout. The long
-edge is capped at the run's sealed `config/perlector_protocol.toml`
-`[page_context] maximum_edge` (2,560) rather than divided by a fixed factor: a
-divisor is not a bound. 2,560 keeps a 300-DPI letter or A4 page inside the 27B
-Perlector row's `max_pixels`, so the chair sees exactly the rendered pixels, and
-an act running over a page turn with whole-page crops still fits the row with
-its neighbour clues (arithmetic in the toml, pinned by
-`operations/serving/test_serving_catalogue_capacity.py`). An act over three or
-more pages can exceed the row; the live reader refuses it before sending and the
-act is published failed with the capacity record, never read with a page
-dropped or downscaled to fit. `transform`
-records `{operation, source_dimensions, target_dimensions, maximum_edge,
-resampler}` and `source` names the sealed page it came from, so the render is
-reproducible from the Exemplar plus the record (ARCHITECTURE invariant 3) by
-someone who does not also have this module. A page already inside the bound
-records `resampler: "identity"` rather than reporting a resize that did not
-happen.
+touch, stored content-addressed under this stage's own blob store, sized by the
+run's sealed `config/perlector_protocol.toml` `[page_context]` rule and recorded
+with its `reason`. A page is rendered with its long edge capped at
+`maximum_edge` (2,560), `reason: "legible-ink"`, so its ink is legible to the
+reader and not only its layout; 2,560 keeps a 300-DPI letter or A4 page inside
+the 27B Perlector row's `max_pixels`, so the chair sees exactly the rendered
+pixels. A page the act's own crops cover whole (their union is the page, as for
+a continuation act's whole-page crops) already reaches the reader at full
+resolution through those crops, so it is rendered at `covered_page_edge`
+(1,024), `reason: "covered-by-crop"`, as layout only. The edge is a bound, not a
+divisor. `transform` records `{operation, source_dimensions, target_dimensions,
+maximum_edge, resampler}` and `source` names the sealed page it came from, so
+the render is reproducible from the Exemplar plus the record (ARCHITECTURE
+invariant 3) by someone who does not also have this module. A page already
+inside the bound records `resampler: "identity"` rather than reporting a resize
+that did not happen.
+
+Every one of the 4,572 RecordGold gold acts, each on one page, fits the row
+under this rule with its neighbour clues, as it did at 1,024
+(`operations/corpus/perlector_request_fit.py`). The shapes the row does not hold
+are pinned in `operations/serving/test_serving_catalogue_capacity.py`: an act
+over three pages even with whole-page crops, a dense act over a page turn with a
+whole-page recovery crop and a fed prior draft (both refused at 1,024 too), and
+one shape the legible render newly refuses -- a dense act over a page turn with
+half-page crops, three witnesses reporting two pages of text each and a fed prior
+draft charged at the reading cap, which needs 31,514 tokens at 1,024 and 38,732
+at 2,560 against 32,768. The live reader refuses each before sending; the act is
+published failed with the capacity record, never read with a page dropped or
+downscaled to fit.
 
 **Neighbour clues.** A primed dossier names the acts just before and just after
 this one in the Designator's `expected_acts` sequence, across page breaks, and
 null at either end. Each neighbour is `{act_id, act_key, same_page,
-witnesses}`, where `same_page` says whether it touches a page this act's
-regions touch, and each witness row is `{witness_label, outcome, reported,
+witnesses, unavailable}`, where `same_page` says whether it touches a page this
+act's regions touch, and each witness row is `{witness_label, outcome, reported,
 reported_basis, shown, testimonium_ref}` for every configured witness, built
 through the same `dossier.witness_rows` path, regime labels and page-witness
 slices as the act's own testimonia. `reported` is cut to the sealed
 `[neighbours] characters_per_row`: a preceding act's tail, a following act's
 head, with `shown` = `whole`, `tail`, `head`, or null where the witness
-reported no text. A Designator-held neighbour carries no witness rows.
+reported no text. A neighbour whose readings cannot be carried -- the Designator
+held it, or its sealed regions or witness records do not validate -- carries no
+witness rows and says why in `unavailable`; its defect is its own act's to
+answer for when that act is read, and this act is still read. Building a clue
+prints nothing: a neighbour's unrouted observations are reported when it is
+read. The Perlector validates the closed shape before publication, refuses a
+neighbour that is this act, and requires every `testimonium_ref` to name a
+sealed Attestatores Testimonium.
 
 They are clues only. They come solely from sealed Attestatores records, never
 from another act's Perlectio, so an act's dossier and prompt are the same at any
 reading width and whether or not its siblings have been read
 (`test_neighbour_clues.py`). They never enter `basis.testimonia`, `dissent`, a
-gap's `witness_evidence`, Pass C's inputs, or the envelope's direct inputs
-(`testimonium_ref` inside the sealed dossier names them). Unprimed arms (Lectio
-nuda, `lectio-prior`) carry none. The prompt renders them after the testimonia
-under `neighbouring_acts:`, followed by the sealed neighbour fragment: context
-only, transcribe only this act's ink, never copy a neighbour's text, and where
-this act's ink runs past its crop stop at the edge and write `[[?]]`. That mark
-becomes a zero-width `trailing` gap, a visible signal for a later recrop. The
-live reader charges the neighbour block one token per UTF-8 byte, because the
-measured tokens-per-character rate predates it.
+gap's `witness_evidence`, or Pass C's draft and finding; they join only the
+established Perlectio's envelope inputs, as lineage, and no consumer reads them
+as this act's evidence. Unprimed arms (Lectio nuda, `lectio-prior`) carry none.
+The prompt renders them after the testimonia under `neighbouring_acts:` (a
+witness with no text as "no reading", a withheld clue as "witness readings
+unavailable"), followed by the sealed neighbour fragment: context only,
+transcribe only this act's ink, never copy a neighbour's text. The live reader
+charges the neighbour block one token per UTF-8 byte.
+
+**Ink past the crop.** The pinned transcription instruction, sent to every arm,
+asks the reader to read the act's ink through to its end within the crop and,
+where the ink continues past the crop's edge, to stop there and write `[[?]]`.
+That mark becomes a zero-width `trailing` gap -- a mark followed only by
+whitespace or closing punctuation still ends the reading -- so the act is
+established `partial` and the export is partial (`pipeline/7_armarium/
+armarium_export.py`, a delivered act with a recorded gap). Nothing yet consumes
+the gap to recrop: a recrop from a trailing gap is not built.
 
 **Training-domain context.** `config/witness_context.toml`, a new
 Perlector-owned declaration (not part of `common/chairs`/`ChairIdentity`),
