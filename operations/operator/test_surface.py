@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import errno
 import hashlib
 import json
@@ -2450,6 +2451,22 @@ def _recording_surface(
 def _argv_value(command: list[str], flag: str) -> str:
     assert flag in command, f"{flag} never reached the child's argv"
     return command[command.index(flag) + 1]
+
+
+@pytest.mark.parametrize("blind_read", ["off", "fed", "saved"])
+def test_the_blind_read_setting_reaches_the_orchestrator_and_the_run_receipt(
+    tmp_path: Path, blind_read: str
+) -> None:
+    surface, observed = _recording_surface(tmp_path)
+
+    with contextlib.suppress(OperatorError):
+        surface.run(run_id="blind-read-run", blind_read=blind_read)
+
+    command, _cwd = observed[0]
+    if blind_read == "off":
+        assert "--blind-read" not in command
+    else:
+        assert _argv_value(command, "--blind-read") == blind_read
 
 
 def test_real_ingress_paths_are_made_absolute_against_the_operators_own_cwd(

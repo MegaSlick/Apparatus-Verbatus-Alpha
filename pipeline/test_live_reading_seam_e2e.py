@@ -421,7 +421,8 @@ def stage_argv(run_root: Path, catalogue: Path, *, placement_tier: str | None) -
         str(config / "perlector_protocol.toml"),
         "--perlector-audit-config",
         str(config / "perlector_audit.toml"),
-        "--no-draft-fed",
+        "--blind-read",
+        "off",
     ]
     return argv
 

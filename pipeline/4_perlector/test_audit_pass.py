@@ -795,7 +795,7 @@ def test_fixture_produces_each_audit_kind_and_records_unchanged_reproof(tmp_path
 
 
 def test_changed_reproof_with_fed_draft_recomputes_self_revision(tmp_path):
-    result = _run(tmp_path / "runs", "--draft-fed", scenario="audit-change")
+    result = _run(tmp_path / "runs", "--blind-read", "fed", scenario="audit-change")
     assert result.returncode == 0, result.stderr
     tree = RunTree(tmp_path / "runs", "r")
     changed = next(

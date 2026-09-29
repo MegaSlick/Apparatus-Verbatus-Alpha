@@ -75,7 +75,9 @@ from common.contracts.identities import artifact_id, perlector_attempt_id  # noq
 from common.contracts.identities import attempt_id as derived_attempt_id  # noqa: E402
 from common.contracts.outcomes import ATTACHMENT_BASES, page_attachment_basis  # noqa: E402
 from common.contracts.prior_draft import (  # noqa: E402
+    BLIND_READ_MODES,
     kind_for_view,
+    refuse_removed_draft_fed,
     self_revision_for_view,
     validate_establishing_view,
 )
@@ -101,6 +103,7 @@ from common.native_witness import (  # noqa: E402
 )
 from common.perlector_failure import (  # noqa: E402
     PRE_PERLECTIO_ARTIFACTS,
+    validate_failed_payload,
     validate_failed_perlectio,
 )
 from common.physical_act_partition import CROSS_CAPTURE_READ_NOT_BUILT  # noqa: E402
@@ -2554,10 +2557,11 @@ def validate_reading_payload(
     dossier_module.assert_no_order_bearing_field(dossier_body)
     _validate_cross_capture_dossier(reading_dossier, inputs=inputs)
     protocol_record = payload.get("protocol")
+    refuse_removed_draft_fed(protocol_record, "a Perlector reading")
     if protocol_record is not None and (
         not isinstance(protocol_record, dict)
-        or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "draft_fed"}
-        or not isinstance(protocol_record["draft_fed"], bool)
+        or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "blind_read"}
+        or protocol_record["blind_read"] not in BLIND_READ_MODES
     ):
         raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
     _validate_lectio_kind(payload, reading_dossier)
@@ -3463,7 +3467,7 @@ def _protocol_record(context, protocol_config: dict[str, Any]) -> dict[str, Any]
     return {
         "selection_rule": protocol_config["selection_rule"],
         "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
-        "draft_fed": context.draft_fed,
+        "blind_read": context.blind_read,
     }
 
 
@@ -3545,6 +3549,37 @@ def _publish_lectio_prior(
         "reference": context.artifact_ref(PERLECTOR, "lectio-prior", prior_artifact_id),
         "text": payload["text"],
     }
+
+
+def _publish_lectio_prior_failure(context, attempt: _Attempt, error: Exception) -> None:
+    """Keep a failed saved-mode Pass A as its own failed `lectio-prior`, never as a Perlectio.
+
+    A contract or schema defect (no failure fact) is not an instrument failure and stays fatal.
+    """
+    failure = _failure_record(error, phase="establishing")
+    if failure is None:
+        raise error
+    payload = {
+        "act_key": attempt.act_key,
+        "attempt_ordinal": attempt.ordinal,
+        "reason": f"saved blind read {failure['kind']} failure: {failure['code']}",
+        "failure": failure,
+        "provenance": attempt.provenance(context),
+    }
+    validate_failed_payload(payload)
+    evidence = [
+        dict(failure[name])
+        for name in ("raw_response_ref", "call_record_ref", "receipt_ref")
+        if failure[name] is not None
+    ]
+    context.publish(
+        kind="lectio-prior",
+        subject_id=attempt.act_id,
+        outcome="failed",
+        attempt=perlector_attempt_id(attempt.act_id, "lectio-prior", attempt.ordinal),
+        inputs=_distinct_inputs(evidence),
+        payload=payload,
+    )
 
 
 def _publish_primed_without_prior(
@@ -3836,7 +3871,7 @@ class _Pass:
         return (
             1
             + self.audit_policy["round_cap"]
-            + bool(self.context.draft_fed)
+            + (self.context.blind_read != "off")
             + bool(self.context.nuda_per_mille)
             + bool(self.context.perlector_instrument_per_mille)
         )
@@ -3858,7 +3893,7 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         default=None,
         help="reader calls a live pass keeps in flight at once, so the engine can batch "
         "them; capped by the served row's max_num_seqs, which is also the default. "
-        "A draft-fed or fixture pass reads one act at a time",
+        "A blind-read (fed or saved) or fixture pass reads one act at a time",
     )
     args = parser.parse_args()
     context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)
@@ -3943,10 +3978,11 @@ def _reading_concurrency(context, args, chair, serving_mode: str) -> int:
     """How many reader calls may be in flight at once.
 
     Only a live engine batches, and never beyond its served row's `max_num_seqs`. A
-    draft-fed pass stays serial: Pass A must be published before the establishing call
-    that cites it, and publishing happens on the main thread only.
+    blind-read pass (`fed` or `saved`) stays serial: Pass A, or its failure, is published
+    inline before the establishing call (`fed` cites it), and publishing happens on the
+    main thread only.
     """
-    if serving_mode != "live" or context.draft_fed:
+    if serving_mode != "live" or context.blind_read != "off":
         return 1
     bound = (
         bound_serving_recipes(context, args.serving_recipes_config)
@@ -4226,13 +4262,14 @@ def _call_act(run: _Pass, prepared: _PreparedAct) -> dict[str, Any] | Exception:
             protocol_config=run.protocol_config,
             nuda_sampled=prepared.nuda_sampled,
             control_sampled=prepared.control_sampled,
-            draft_fed=run.context.draft_fed,
+            blind_read=run.context.blind_read,
             # Runs before the establishing arm, which embeds the prior reference it
-            # returns. Only a serial pass, calling inline on the main thread, may publish.
-            publish_prior=(
-                partial(_publish_lectio_prior, run.context, prepared.attempt)
-                if run.concurrency == 1
-                else None
+            # returns. Pass A is only run serially (`_reading_concurrency`), so this
+            # always publishes inline on the main thread.
+            publish_prior=partial(_publish_lectio_prior, run.context, prepared.attempt),
+            saved_prior_failures=_ACT_LOCAL_READING_FAILURES,
+            record_prior_failure=partial(
+                _publish_lectio_prior_failure, run.context, prepared.attempt
             ),
         )
     except _ACT_LOCAL_READING_FAILURES as error:

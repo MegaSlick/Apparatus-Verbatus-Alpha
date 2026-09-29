@@ -222,11 +222,28 @@ def chained_run(tmp_path_factory) -> tuple[Path, Path]:
 
 @pytest.fixture(scope="module")
 def fed_chained_run(tmp_path_factory) -> tuple[Path, Path]:
-    """The same chain sealed with `--draft-fed`, the only run that makes a Pass A."""
+    """The same chain sealed with `--blind-read fed`, which makes a Pass A that the reading is shown."""
     base = tmp_path_factory.mktemp("live-perlector-fed")
     catalogue = _live_catalogue(base)
     root = base / "runs"
-    _chain_through_attestatores(root, catalogue, extra=("--draft-fed",))
+    _chain_through_attestatores(
+        root,
+        catalogue,
+        extra=(
+            "--blind-read",
+            "fed",
+        ),
+    )
+    return root, catalogue
+
+
+@pytest.fixture(scope="module")
+def saved_chained_run(tmp_path_factory) -> tuple[Path, Path]:
+    """The same chain sealed with `--blind-read saved`."""
+    base = tmp_path_factory.mktemp("live-perlector-saved")
+    catalogue = _live_catalogue(base)
+    root = base / "runs"
+    _chain_through_attestatores(root, catalogue, extra=("--blind-read", "saved"))
     return root, catalogue
 
 
@@ -657,7 +674,7 @@ def test_a_reply_that_reaches_its_bound_holds_the_act_and_is_never_asked_again(
     readings = _published_readings(root)
     assert readings
     assert all(record["outcome"] == "truncated" for record in readings)
-    # Pass B and the one re-proof each ask once (Pass A runs only under --draft-fed);
+    # Pass B and the one re-proof each ask once (Pass A runs only when --blind-read is fed or saved);
     # the stop re-asks nothing.
     assert len(endpoint.requests) == 2 * len(readings)
     retained_bounds = {
@@ -872,8 +889,15 @@ def test_a_live_pass_refuses_to_resume_an_act_it_left_half_read(
     request, tmp_path, monkeypatch, kind
 ):
     """One reading comes from one serving session: an interrupted act is never finished."""
-    # Pass A exists only in a draft-fed run.
-    fed = ("--draft-fed",) if kind == "lectio-prior" else ()
+    # Pass A exists only in a fed or saved run; the half-read refusal is exercised on fed.
+    fed = (
+        (
+            "--blind-read",
+            "fed",
+        )
+        if kind == "lectio-prior"
+        else ()
+    )
     template, catalogue = request.getfixturevalue("fed_chained_run" if fed else "chained_run")
     live_run = (tmp_path / "runs", catalogue)
     shutil.copytree(template, live_run[0])
@@ -948,6 +972,62 @@ def test_a_non_200_from_the_engine_becomes_a_retained_act_failure_and_continues(
     retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
     assert any(b"maximum context length" in body for body in retained), (
         "the refusing body was not retained"
+    )
+
+
+def _first_pass_a_is_refused(run_kind, mode, request, tmp_path, monkeypatch):
+    template, catalogue = request.getfixturevalue(run_kind)
+    root = tmp_path / "runs"
+    shutil.copytree(template, root)
+    refusal = scripted_prompt_too_long(
+        max_model_len=2048, requested_tokens=4125, prompt_tokens=3909, completion_tokens=216
+    )
+    _endpoint, exit_code = _run_perlector(
+        (root, catalogue),
+        tmp_path,
+        monkeypatch,
+        refusal,
+        ScriptedAnswer(content=READING, finish_reason="stop"),
+        extra_args=("--blind-read", mode),
+    )
+    return root, exit_code
+
+
+def test_a_failed_saved_blind_read_is_kept_and_costs_no_production_reading(
+    request, tmp_path, monkeypatch
+):
+    root, exit_code = _first_pass_a_is_refused(
+        "saved_chained_run", "saved", request, tmp_path, monkeypatch
+    )
+
+    assert exit_code == 0
+    readings = _published_readings(root)
+    assert readings and all(record["outcome"] != "failed" for record in readings)
+    failed = [
+        json.loads(path.read_text(encoding="utf-8")) for path in _artifacts(root, "lectio-prior")
+    ]
+    failed = [record for record in failed if record["outcome"] == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["payload"]["failure"]["code"] == "CHAIR_RESPONSE_HTTP_ERROR"
+    for field in ("raw_response_ref", "call_record_ref", "receipt_ref"):
+        assert failed[0]["payload"]["failure"][field] in failed[0]["inputs"]
+    by_act = _perlectiones(root)
+    assert all(
+        "prior_draft" not in record["payload"]["dossier"] and record["outcome"] != "failed"
+        for record in by_act.values()
+    )
+
+
+def test_a_failed_fed_blind_read_still_fails_its_act(request, tmp_path, monkeypatch):
+    root, exit_code = _first_pass_a_is_refused(
+        "fed_chained_run", "fed", request, tmp_path, monkeypatch
+    )
+
+    assert exit_code == 0
+    assert any(record["outcome"] == "failed" for record in _published_readings(root))
+    assert not any(
+        json.loads(path.read_text(encoding="utf-8"))["outcome"] == "failed"
+        for path in _artifacts(root, "lectio-prior")
     )
 
 
@@ -2402,14 +2482,15 @@ def test_a_refusal_mid_batch_still_publishes_every_act_already_sent(
     ]
 
 
-def test_a_draft_fed_or_fixture_pass_reads_one_act_at_a_time():
-    """Pass A is published before the call that cites it, so a fed pass never overlaps."""
+@pytest.mark.parametrize("mode", ["fed", "saved"])
+def test_a_blind_read_or_fixture_pass_reads_one_act_at_a_time(mode):
+    """Pass A, or its failure, is published inline before the establishing call."""
     args = SimpleNamespace(perlector_concurrency=4)
-    fed = SimpleNamespace(draft_fed=True)
-    withheld = SimpleNamespace(draft_fed=False)
-    # Neither consults the catalogue: a fed or fixture pass has no bound to look up.
-    assert perlector._reading_concurrency(fed, args, None, "live") == 1
-    assert perlector._reading_concurrency(withheld, args, None, "fixture") == 1
+    blind = SimpleNamespace(blind_read=mode)
+    off = SimpleNamespace(blind_read="off")
+    # Neither consults the catalogue: a blind-read or fixture pass has no bound to look up.
+    assert perlector._reading_concurrency(blind, args, None, "live") == 1
+    assert perlector._reading_concurrency(off, args, None, "fixture") == 1
 
 
 def test_the_window_finishes_in_order_within_its_bound():

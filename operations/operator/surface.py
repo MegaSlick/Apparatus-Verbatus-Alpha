@@ -1211,6 +1211,7 @@ class OperatorSurface:
         models_config: str | Path | None = None,
         serving_recipes_config: str | Path | None = None,
         witness_context_config: str | Path | None = None,
+        blind_read: str = "off",
     ) -> RunOutcome:
         if submission_folder is None:
             for flag, value in (
@@ -1280,6 +1281,7 @@ class OperatorSurface:
                 data_gate_policy=data_gate_policy,
             ),
             *roster_argv,
+            *(["--blind-read", blind_read] if blind_read != "off" else []),
         ]
         command = [
             sys.executable,
@@ -1307,6 +1309,7 @@ class OperatorSurface:
             "run_id": run_id,
             "scenario": scenario,
             "fixture": fixture,
+            "blind_read": blind_read,
             "started_at": started_at,
             "argv": list(command),
             "repository_commit": commit,

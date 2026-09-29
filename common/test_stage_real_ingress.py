@@ -50,6 +50,7 @@ from common.contracts.errors import (
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import attempt_id
 from common.contracts.identities import page_id as derive_page_id
+from common.contracts.prior_draft import BLIND_READ_MODES
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, INK_MAP
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH
 from common.fixture_identity import page_identity
@@ -1086,7 +1087,7 @@ def test_run_policy_digest_moves_with_each_of_its_eight_fields():
         nuda_approval_ref="",
         perlector_instrument_per_mille=0,
         perlector_instrument_approval_ref="",
-        draft_fed=True,
+        blind_read="fed",
         mechanics_qualification=False,
     )
     moved = {
@@ -1096,19 +1097,20 @@ def test_run_policy_digest_moves_with_each_of_its_eight_fields():
         "nuda_approval_ref": "lectio-nuda-sampling-design.v1",
         "perlector_instrument_per_mille": 1,
         "perlector_instrument_approval_ref": "perlector-prior-draft-instrument-design.v1",
-        "draft_fed": False,
+        "blind_read": "saved",
         # A run created ordinarily must not resume under the mechanics flag and
         # pass the reuse check, mixing ordinary and mechanics-only artefacts in
         # one tree.
         "mechanics_qualification": True,
     }
     assert real_run_policy_digest(**base) == real_run_policy_digest(**base)
+    assert len({real_run_policy_digest(**{**base, "blind_read": m}) for m in BLIND_READ_MODES}) == 3
     for field, value in moved.items():
         assert real_run_policy_digest(**{**base, field: value}) != real_run_policy_digest(**base), (
             field
         )
-    with pytest.raises(ContractError, match="draft_fed must be a bool"):
-        real_run_policy_digest(**{**base, "draft_fed": 1})
+    with pytest.raises(ContractError, match="blind_read must be one of"):
+        real_run_policy_digest(**{**base, "blind_read": True})
     with pytest.raises(ContractError, match="mechanics_qualification must be a bool"):
         real_run_policy_digest(**{**base, "mechanics_qualification": 1})
 

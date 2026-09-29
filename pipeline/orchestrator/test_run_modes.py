@@ -98,7 +98,7 @@ def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
     args.scenario = "happy"
     args.models_config = str(tmp_path / "models.toml")
     args.store_root = tmp_path / "store"
-    args.draft_fed = False
+    args.blind_read = "off"
     commands = []
     monkeypatch.setattr(
         orchestrator.subprocess,

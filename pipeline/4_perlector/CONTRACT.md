@@ -196,7 +196,8 @@ text. The grammar carries no level of doubt, so every marked span is `low`. A
 `[[` or `]]` that is not a closed mark, or a mark whose reading is `?`, publishes the
 raw answer unchanged under `malformed`. Gap marks over an answer that is otherwise
 blank add nothing: the `no-readable-text` outcome's whole-act gap already says it.
-By default there is no Pass A; `--draft-fed` opts in to Pass A and to Pass B seeing its clean text. When the
+By default there is no Pass A; `--blind-read fed` opts in to Pass A and to Pass B seeing its
+clean text (`--blind-read saved` makes Pass A but never shows it to Pass B). When the
 draft is fed, `self_revision` offsets index it: `reading_span` in the final text,
 `testimonium_span` in the draft. When it is withheld, `self_revision` is not measured. Pass A's marks stay on its own
 record. Truncation is measured on the clean text. The re-proof answers in JSON and
@@ -548,14 +549,18 @@ ever have recorded for a real reading.
 
 ## R5a prior-draft protocol
 
-Pass A, the image-only draft, runs only under `--draft-fed`. Then every readable act
+`--blind-read` sets the Pass A blind read: `off` (default), `fed` or `saved`. Pass A, the
+image-only draft, runs under `fed` and `saved`. Then every readable act
 emits a `kind="lectio-prior"` draft under the `lectio-prior` attempt operation. It sees
 the images and no Testimonia; it is not Lectio nuda and cannot establish text. By
-default (withheld) no Pass A is read: the reader sees the image and every witness
-in one call, and the act makes no `lectio-prior` record. The production
+default (`off`) no Pass A is read: the reader sees the image and every witness
+in one call, and the act makes no `lectio-prior` record. Under `saved` the draft is
+made and kept as a training witness: the `lectio-prior` record's `protocol.blind_read` reads
+`saved`, it is found under stage `4_perlector`, kind `lectio-prior`, it is never exported as a
+reading, and no establishing reading, dossier or input references it. The production
 `kind="perlectio"` is `lectio_kind="primed-with-prior"` only when the draft was fed
 and then carries equality-only `self_revision` spans against it and the Pass-A
-reference. When the draft was withheld, it is `lectio_kind="primed-draft-withheld"`
+reference. When the draft was withheld (`off` or `saved`), it is `lectio_kind="primed-draft-withheld"`
 with an empty `self_revision` and no prior reference. Both production kinds can
 establish text; the kind records what the reader saw.
 
@@ -575,10 +580,11 @@ production hard-failure cap. Its approval reference is likewise an envelope
 input and is digest-checked whenever the control artifact is read.
 
 The Pass-B dossier records whether the draft was `fed` or `withheld`. A fed dossier
-carries a digest-checked reference to the Pass-A draft; a withheld dossier carries no
-`prior_draft` at all, and one that does is refused. The `--draft-fed` default is
-withheld because a fed draft anchors the reader; feeding remains an explicit toggle
-and is the only way to run Pass A.
+carries a digest-checked reference to the Pass-A draft; a withheld dossier (under `off` or
+`saved`) carries no `prior_draft` at all, and one that does is refused. The withheld dossier
+of a `saved` run is the one an `off` run builds. The `--blind-read` default is `off` because a
+fed draft anchors the reader; `blind_read` is sealed in the run's policy digest and in every
+reading's `protocol` record, and Pass A counts in `calls_per_act` under `fed` and `saved`.
 
 **Four reading kinds, three conditions.** `lectio-nuda` and `lectio-prior` are
 built from identical dossier arguments — page context, no Testimonia, no prior
@@ -586,27 +592,32 @@ draft — so for one act they carry the same `dossier_digest` and the same
 `rendered_sha256`. That is correct (they *are* the same condition) and it is
 pinned by a test, because it is not visible from the kind names.
 
-What each contrast measures depends on the mode. In a **fed** run (`--draft-fed`),
+What each contrast measures depends on the mode. In a **fed** run (`--blind-read fed`),
 nuda against lectio-prior measures sampling variance; lectio-prior (or nuda) against
 the sampled control measures witness dependence, because the control sees witnesses
 and no draft; the control against the production Perlectio measures anchoring on the
-draft. In a **withheld** run there is no lectio-prior and, because the control would
-be byte-identical to production, no control either (`--perlector-instrument-per-mille`
-is refused without `--draft-fed`). The approval-gated sampled Lectio nuda is then the
-only unprimed reading, and nuda against the production Perlectio measures witness
-dependence.
+draft. In an **off** run there is no lectio-prior. In a **saved** run the lectio-prior is
+an unprimed reading too, kept as a training witness and never shown to the production
+reading, so nuda against it still measures sampling variance. In both, the control would
+be byte-identical to production, so there is none (`--perlector-instrument-per-mille`
+is refused unless `--blind-read fed`). In an off run the approval-gated sampled Lectio
+nuda is the only unprimed reading, and nuda against the production Perlectio measures
+witness dependence.
 
-**One thing about nuda did change, and it is not in the list above.**
-`common/hard_failure.py`'s `PERLECTOR_INSTRUMENT_KINDS` covers `lectio-nuda`
-as well as the two new kinds, so a failed Lectio nuda no longer spends the
-ruled production hard-failure cap; before this it did, because the
-policy is written per (stage, outcome) and nuda is a Perlector artifact. That
-is the right disposition — the cap is a circuit breaker on the production
-reading path, and an instrument arm tripping it would halt a run over a
-measurement nothing downstream consumes — and the failures stay visible in the
-tally's `instrument_by_kind` and on the orchestrator's checkpoint line. It is
-recorded here rather than left to be rediscovered, because it is a change to
-the meaning of a ruled threshold.
+Under `saved`, a Pass A that fails on an engine, chair-response, transport or capacity
+failure never costs the production reading: it is retained as its own failed record of
+kind `lectio-prior` (the failed-Perlectio payload shape, with its call evidence as
+inputs) and the establishing reading goes on, withheld as usual. Under `fed` a Pass A
+failure fails the act as the production reading would, because the reading depends on it.
+A contract or schema defect is fatal in every mode.
+
+**Instrument arms and the hard-failure cap.**
+`common/hard_failure.py`'s `PERLECTOR_INSTRUMENT_KINDS` covers `lectio-nuda`,
+`lectio-prior` and `primed-without-prior`, so a failed instrument arm does not spend
+the ruled production hard-failure cap. The cap is a circuit breaker on the production
+reading path; an instrument arm must not halt a run over a measurement nothing
+downstream consumes. Such failures stay visible in the tally's `instrument_by_kind`
+and on the orchestrator's checkpoint line.
 
 ## R5b Pass-C audit, and the request the reader actually receives
 
@@ -989,8 +1000,9 @@ without its record. An interrupt stops waiting at once so the chair can be shut 
 first finishes every act whose reply has already arrived, even behind an earlier call
 still out, since a record's bytes do not depend on the order it was written in. A
 `reader-sent` record is written when its call leaves, so in a batch it precedes an
-earlier act's records. Pass-C re-proofs share the same window. A draft-fed or fixture
-pass reads one act at a time. The deadline is checked before each act is prepared,
+earlier act's records. Pass-C re-proofs share the same window. A blind-read (`fed` or
+`saved`) or fixture pass reads one act at a time: Pass A, or its failure, is published
+inline before the establishing call. The deadline is checked before each act is prepared,
 against the serial estimate, which stays conservative for batched calls. A batched reply
 at temperature 0 can differ from an unbatched one in low-order bits; each record holds
 the reply its call received, and each `reader-sent` record carries the width its call

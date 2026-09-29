@@ -60,6 +60,7 @@ from common.contracts.outcomes import (
 from common.contracts.outcomes import (
     WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES,
 )
+from common.contracts.prior_draft import BLIND_READ_MODES
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
     CHAIR_CALL_RECORD_FIELDS_V1,
@@ -506,8 +507,8 @@ class StageContext:
         return self.args.perlector_instrument_approval_ref
 
     @property
-    def draft_fed(self) -> bool:
-        return self.args.draft_fed
+    def blind_read(self) -> str:
+        return self.args.blind_read
 
     @property
     def perlector_protocol_config_path(self) -> str:
@@ -1379,10 +1380,12 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         help="the sealed Perlector Pass-C audit declaration",
     )
     parser.add_argument(
-        "--draft-fed",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="run Pass A and feed its draft to Pass B (default: no Pass A)",
+        "--blind-read",
+        choices=BLIND_READ_MODES,
+        default="off",
+        help="the Perlector's image-only blind read (Pass A): off makes none (default); fed "
+        "feeds it to the establishing reading as a prior; saved keeps it as a training "
+        "witness the establishing reading never sees",
     )
     parser.add_argument("--formats-config", default=str(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH))
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
@@ -1475,7 +1478,7 @@ def validate_witness_context_bindings(
     nuda_approval_ref: str,
     perlector_instrument_per_mille: int,
     perlector_instrument_approval_ref: str,
-    draft_fed: bool = False,
+    blind_read: str = "off",
 ) -> str:
     """Refuse a bad witness-context binding before a run tree exists, on every path.
 
@@ -1511,11 +1514,11 @@ def validate_witness_context_bindings(
             f"{PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r} in "
             "--perlector-instrument-approval-ref; an arbitrary string is not an approval record"
         )
-    if perlector_instrument_per_mille and not draft_fed:
+    if perlector_instrument_per_mille and blind_read != "fed":
         # Without Pass A the control sees exactly what production sees, so it
         # would measure nothing.
         raise ContractError(
-            "a Perlector prior-draft control needs --draft-fed: without Pass A the "
+            "a Perlector prior-draft control needs --blind-read fed: without Pass A the "
             "control is identical to the production reading"
         )
     validation = validate_witness_context_configuration(
@@ -1543,7 +1546,7 @@ def real_run_policy_digest(
     nuda_approval_ref: str,
     perlector_instrument_per_mille: int,
     perlector_instrument_approval_ref: str,
-    draft_fed: bool,
+    blind_read: str,
     mechanics_qualification: bool = False,
 ) -> str:
     """The digest a real run seals its run-level reading knobs under.
@@ -1552,8 +1555,8 @@ def real_run_policy_digest(
     knobs need their own seal or a resume could change them unchecked.  Called
     at creation and at every stage open, so both sides hash the same set.
     """
-    if not isinstance(draft_fed, bool):
-        raise ContractError(f"draft_fed must be a bool, got {draft_fed!r}")
+    if blind_read not in BLIND_READ_MODES:
+        raise ContractError(f"blind_read must be one of {BLIND_READ_MODES}, got {blind_read!r}")
     if not isinstance(mechanics_qualification, bool):
         raise ContractError(
             f"mechanics_qualification must be a bool, got {mechanics_qualification!r}"
@@ -1566,7 +1569,7 @@ def real_run_policy_digest(
             "nuda_approval_ref": nuda_approval_ref,
             "perlector_instrument_per_mille": perlector_instrument_per_mille,
             "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
-            "draft_fed": draft_fed,
+            "blind_read": blind_read,
             # Sealed so a run cannot mix ordinary and mechanics-only artefacts.
             "mechanics_qualification": mechanics_qualification,
         }
@@ -1596,7 +1599,7 @@ def run_config_bindings(
     perlector_instrument_approval_ref: str = "",
     perlector_protocol_config_path: str | Path = DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     perlector_audit_config_path: str | Path = DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
-    draft_fed: bool = False,
+    blind_read: str = "off",
     mechanics_qualification: bool = False,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -1670,7 +1673,7 @@ def run_config_bindings(
         nuda_approval_ref=nuda_approval_ref,
         perlector_instrument_per_mille=perlector_instrument_per_mille,
         perlector_instrument_approval_ref=perlector_instrument_approval_ref,
-        draft_fed=draft_fed,
+        blind_read=blind_read,
     )
     return {
         "witness_chairs": list(models.witness_chairs),
@@ -1702,7 +1705,7 @@ def run_config_bindings(
                 "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
                 "perlector_protocol_config_sha256": perlector_protocol_config_digest,
                 "perlector_audit_config_sha256": perlector_audit_config_digest,
-                "draft_fed": draft_fed,
+                "blind_read": blind_read,
                 "mechanics_qualification": mechanics_qualification,
                 "serving_config_inputs": serving_config_inputs,
             }
@@ -1754,7 +1757,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
         nuda_approval_ref=args.nuda_approval_ref,
         perlector_instrument_per_mille=args.perlector_instrument_per_mille,
         perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
-        draft_fed=args.draft_fed,
+        blind_read=args.blind_read,
     )
     _, alignment_config_digest = load_alignment_limits(args.alignment_config)
     _corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
@@ -1814,7 +1817,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
                 nuda_approval_ref=args.nuda_approval_ref,
                 perlector_instrument_per_mille=args.perlector_instrument_per_mille,
                 perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
-                draft_fed=args.draft_fed,
+                blind_read=args.blind_read,
                 mechanics_qualification=getattr(args, "mechanics_qualification", False),
             ),
         },
@@ -3842,7 +3845,7 @@ def open_context(
         perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
-        draft_fed=args.draft_fed,
+        blind_read=args.blind_read,
         mechanics_qualification=getattr(args, "mechanics_qualification", False),
         serving_recipes_config_path=args.serving_recipes_config,
         decoding_config_path=args.decoding_config,

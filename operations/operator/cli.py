@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Final, Sequence
 
 from common.checkout import missing_checkout_resources
+from common.contracts.prior_draft import BLIND_READ_MODES
 from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
 from operations.pod.launch import launch_evidence_keys, launch_evidence_prefixes, launch_run_id
@@ -578,6 +579,14 @@ def build_parser() -> PlainParser:
         "--models-config and --serving-recipes-config",
     )
 
+    run.add_argument(
+        "--blind-read",
+        choices=BLIND_READ_MODES,
+        default="off",
+        help="the Perlector's blind read, sealed into the run: off (default), fed to the "
+        "establishing reading, or saved as a training witness it never sees",
+    )
+
     fetch_run = verbs.add_parser(
         "fetch-run",
         help="bring one run tree back from the network volume, every object digest-checked",
@@ -869,6 +878,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 models_config=args.models_config,
                 serving_recipes_config=args.serving_recipes_config,
                 witness_context_config=args.witness_context_config,
+                blind_read=args.blind_read,
             )
         elif args.verb == "fetch-run":
             derived = _derived_evidence_keys(args.launch_receipt, volume, args.run_id)

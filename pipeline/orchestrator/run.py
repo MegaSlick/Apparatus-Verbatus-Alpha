@@ -48,6 +48,7 @@ from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH  # noqa: E402
 from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
+from common.contracts.prior_draft import BLIND_READ_MODES  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP, RECENSOR  # noqa: E402
 from common.credentials import looks_like_credential_env  # noqa: E402
 from common.hard_failure import (  # noqa: E402
@@ -441,7 +442,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
             ("--perlector-audit-config", args.perlector_audit_config),
         )
     )
-    command.append("--draft-fed" if args.draft_fed else "--no-draft-fed")
+    command += ["--blind-read", args.blind_read]
     if program == STAGE_PROGRAMS["perlector"]:
         # A scheduling choice, not run configuration: unsealed, so a resume may change it.
         command += _argv(
@@ -721,11 +722,12 @@ def main() -> int:
         "run's config digest",
     )
     parser.add_argument(
-        "--draft-fed",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="run Pass A and feed its draft to Pass B; the default reads no Pass A "
-        "(--no-draft-fed), because a fed draft anchors the reader "
+        "--blind-read",
+        choices=BLIND_READ_MODES,
+        default="off",
+        help="the Perlector's image-only blind read (Pass A): off makes none (default); fed "
+        "feeds it to the establishing reading, which it can anchor; saved keeps it as a "
+        "training witness the establishing reading never sees "
         "(config/README.md, R5a toggle register)",
     )
     parser.add_argument(
