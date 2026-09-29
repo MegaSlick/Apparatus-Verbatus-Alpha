@@ -13,7 +13,6 @@ import pytest
 import truncation
 
 from common.contracts.errors import ContractError
-from common.perlector_audit import LEGIBLE_PAGE_PIXELS
 
 ROOT = Path(__file__).resolve().parents[2]
 # The sealed `[truncation]` table every verdict below is judged under, read
@@ -21,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # calibration pins at the end of this module speak about by name.
 POLICY = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0][protocol.TRUNCATION_TABLE]
 FLOOR = POLICY[truncation.LENGTH_FLOOR_FIELD]
+GATE = POLICY[truncation.LEGIBLE_PAGE_FIELD]
 
 # This repository's own fixture geometry (proof/synthetic_pages.py, build_fixture.py):
 # a 200x260 page, an act crop of 160x80, and the 34-character reading declared
@@ -30,27 +30,34 @@ FIXTURE_PAGE = 200 * 260
 FIXTURE_REGION = 160 * 80
 FIXTURE_TEXT = "SYNTHETIC ACT ONE alpha beta gamma"
 
-# A photographed 300-DPI letter leaf and a single line band cut from it, the
-# geometry the pre-launch review measured the retired constant against (F082):
+# A photographed 300-DPI letter leaf and a single line band cut from it:
 # 2,550x104 is one line at a 104 px pitch, doubled from the 52 px at 150 DPI
 # `config/pdf_render.toml` records measuring -- that file states no 300-DPI
 # pitch of its own.
 LEAF_PAGE = 2550 * 3300
 LINE_BAND = 2550 * 104
-# A realistic character count for one dense register line.
 # A reading long enough to be clean over a tenth of a leaf.
 LEAF_CLEAN_TEXT = "Jean Baptiste fils de Pierre et de Marie Anne " * 20
+# A realistic character count for one dense register line.
 LINE_TEXT = "L'an mil sept cent quarante deux le douze de may a este baptise Jean fils de"
 assert 60 <= len(LINE_TEXT) <= 90
 
 
-def classify(text, *, region_pixels=FIXTURE_REGION, page_pixels=FIXTURE_PAGE, stop_reason=None):
+def classify(
+    text,
+    *,
+    region_pixels=FIXTURE_REGION,
+    page_pixels=FIXTURE_PAGE,
+    stop_reason=None,
+    smallest_page_pixels=None,
+):
     return truncation.classify(
         text,
         region_pixels=region_pixels,
         page_pixels=page_pixels,
         truncation_policy=POLICY,
         stop_reason=stop_reason,
+        smallest_page_pixels=smallest_page_pixels,
     )
 
 
@@ -66,7 +73,7 @@ def test_a_clean_short_reading_whose_engine_reported_stop_is_complete():
     assert record["signals"] == {
         "stop_reason_declared": "stop",
         "unclosed_structure": False,
-        "length_suspicious": False,
+        "length_suspicious": None,
         "ends_abruptly": False,
     }
     # What the length signal was judged from travels on the record -- every term
@@ -75,8 +82,11 @@ def test_a_clean_short_reading_whose_engine_reported_stop_is_complete():
     assert record["measure"] == {
         "region_pixels": 1000,
         "page_pixels": FIXTURE_PAGE,
+        "smallest_page_pixels": FIXTURE_PAGE,
         "characters": len("alpha beta gamma."),
         "length_floor_characters_per_page": FLOOR,
+        "legible_page_pixels": GATE,
+        "length_judged": False,
     }
 
 
@@ -199,15 +209,53 @@ def test_a_tiny_reading_under_a_whole_page_is_length_suspicious():
     assert length_suspicious("x", LEAF_PAGE, page_pixels=LEAF_PAGE) is True
 
 
-def test_a_page_too_small_to_hold_legible_lines_is_not_judged_for_length():
+def test_a_page_too_small_to_hold_legible_lines_is_recorded_as_not_judged():
     """The fixture's 200x260 page cannot carry the 32 lines the floor's density
-    describes, so a short reading there is not short of anything."""
-    assert length_suspicious("x", FIXTURE_PAGE) is False
-    assert (
-        length_suspicious("x", LEGIBLE_PAGE_PIXELS - 1, page_pixels=LEGIBLE_PAGE_PIXELS - 1)
-        is False
-    )
-    assert length_suspicious("x", LEGIBLE_PAGE_PIXELS, page_pixels=LEGIBLE_PAGE_PIXELS) is True
+    describes, so a short reading there is not short of anything: the length is
+    not judged, and the record says so rather than calling it clean."""
+    record = classify("x", stop_reason="stop")
+    assert record["signals"]["length_suspicious"] is None
+    assert record["measure"]["length_judged"] is False
+    assert record["classification"] == truncation.COMPLETE
+
+
+def test_a_not_judged_length_votes_neither_way():
+    """With the length unjudged the verdict comes from the other two signals: both
+    suspicious is truncated, one is unknown, and neither is diluted by the length."""
+    both = classify("unclosed (mid-", stop_reason="stop")
+    assert both["signals"]["length_suspicious"] is None
+    assert both["classification"] == truncation.TRUNCATED
+    one = classify("cut off mid-", stop_reason="stop")
+    assert one["classification"] == truncation.UNKNOWN
+
+
+def test_the_gate_is_judged_on_the_smallest_page_an_act_spans():
+    """A large page summed with a sub-legible one must not hide it."""
+    args = {"region_pixels": GATE, "page_pixels": LEAF_PAGE + GATE - 1}
+    small = classify("x", smallest_page_pixels=GATE - 1, stop_reason="stop", **args)
+    assert small["measure"]["length_judged"] is False
+    assert small["signals"]["length_suspicious"] is None
+    at_gate = classify("x", smallest_page_pixels=GATE, stop_reason="stop", **args)
+    assert at_gate["measure"]["length_judged"] is True
+    assert at_gate["signals"]["length_suspicious"] is True
+
+
+def test_the_shipped_gate_judges_a_72_dpi_letter_page_and_not_the_fixture():
+    """Raising the gate past a 72-DPI letter PDF would silence the signal on real
+    scans; it must stay under 612x792 and over the 200x260 fixture page."""
+    assert FIXTURE_PAGE < GATE <= 612 * 792
+    letter = classify("x", region_pixels=612 * 792, page_pixels=612 * 792, stop_reason="stop")
+    assert letter["measure"]["length_judged"] is True
+
+
+def test_an_honest_act_at_the_calibrated_median_low_tail_is_not_flagged():
+    """The 0.5th percentile of honest RecordGold acts over padded regions reads 727
+    characters per page-equivalent (unclamped); a floor above that flags honest
+    acts. 720 is just under it."""
+    region = LEAF_PAGE // 10
+    at_the_tail = "a" * 72
+    assert 72 * LEAF_PAGE // region == 720
+    assert length_suspicious(at_the_tail, region, page_pixels=LEAF_PAGE) is False
 
 
 def test_all_three_computed_signals_agreeing_suspicious_is_truncated_not_unknown():
@@ -228,11 +276,8 @@ def test_a_split_vote_among_computed_signals_holds_as_unknown_never_complete():
     text = "unclosed (parenthetical but otherwise a normal length reading here"
     record = classify(text, region_pixels=1000, stop_reason="stop")
     votes = sum(
-        (
-            record["signals"]["unclosed_structure"],
-            record["signals"]["length_suspicious"],
-            record["signals"]["ends_abruptly"],
-        )
+        record["signals"][name] is True
+        for name in ("unclosed_structure", "length_suspicious", "ends_abruptly")
     )
     assert votes in (1, 2)
     assert record["classification"] == truncation.UNKNOWN
@@ -250,12 +295,11 @@ def test_holds_as_failure_refuses_an_undeclared_classification():
 
 
 # --------------------------------------------------------------------------
-# Scale. The length signal held every real act until 2026-09-14 (pre-launch
-# review, F082): its floor was an absolute 2,000 pixels per character set to
-# clear the 200x260 fixture, and a photographed leaf has far more pixels per
-# character than a fixture page, not fewer. The tests below are the ones that
-# would have caught that: the instrument is exercised at photographed scale,
-# and the verdict is pinned invariant across the scales this pipeline meets.
+# Scale. The length signal must ask the same question at every scale: a
+# photographed leaf has far more pixels per character than a fixture page, so an
+# absolute pixels-per-character ratio would hold every ordinary act. The tests
+# below exercise the instrument at photographed scale and pin the verdict
+# invariant across the scales this pipeline meets.
 
 
 def test_a_complete_line_band_from_a_photographed_leaf_is_complete():
@@ -294,7 +338,7 @@ def test_the_verdict_is_invariant_under_uniform_rescaling(scale):
     verdict, suspicious or clean, must be the same one at every scale; an
     absolute pixels-per-character constant inverts here."""
     base_page = 800 * 1040
-    assert base_page >= LEGIBLE_PAGE_PIXELS
+    assert base_page >= GATE
     base_region = base_page // 8
     for text in (LEAF_CLEAN_TEXT, "Jea", ""):
         at_base = length_suspicious(text, base_region, page_pixels=base_page)
@@ -315,7 +359,7 @@ def test_a_real_act_crop_cut_off_after_one_line_must_not_be_complete():
 
 def test_half_a_line_cut_from_a_four_line_crop_is_caught_too():
     """The floor catches a reading of a line or less; a whole 76-character line of
-    the same crop reads 633 and is not caught (the floor's caveat says why)."""
+    the same crop reads 634 and is not caught (the floor's caveat says why)."""
     record = classify(
         LINE_TEXT[:30], region_pixels=ACT_CROP, page_pixels=LEAF_PAGE, stop_reason="stop"
     )
@@ -463,7 +507,7 @@ def test_the_shared_validator_binds_the_floor_to_the_one_this_run_sealed():
         "x",
         region_pixels=LEAF_PAGE,
         page_pixels=LEAF_PAGE,
-        truncation_policy={truncation.LENGTH_FLOOR_FIELD: 1},
+        truncation_policy={**POLICY, truncation.LENGTH_FLOOR_FIELD: 1},
         stop_reason="stop",
     )
     # Internally consistent, and complete: exactly what makes the floor
@@ -505,6 +549,34 @@ def _protocol_with(replacement: str, tmp_path: Path) -> Path:
 def test_the_sealed_table_refuses_a_floor_that_switches_the_signal_off(tmp_path):
     with pytest.raises(ContractError, match="floor of zero never fires"):
         protocol.load(_protocol_with("length_floor_characters_per_page = 0", tmp_path))
+
+
+def test_the_sealed_table_refuses_a_gate_that_judges_every_page(tmp_path):
+    shipped = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
+    edited = shipped.replace("legible_page_pixels = 100000", "legible_page_pixels = 0")
+    assert edited != shipped
+    path = tmp_path / "perlector_protocol.toml"
+    path.write_text(edited, encoding="utf-8")
+    with pytest.raises(ContractError, match="legible_page_pixels is not a positive integer"):
+        protocol.load(path)
+
+
+def test_the_shared_validator_takes_a_not_judged_length_from_the_records_own_gate():
+    """A not-judged length is `null` and re-derived from the smallest page and the
+    record's own gate; writing it as a clean `false`, or raising the gate to hide
+    a suspicious length, is refused."""
+    from common.contracts.errors import SchemaRefusal
+    from common.perlector_audit import validate_truncation_record
+
+    record = classify("x", stop_reason="stop")
+    assert validate_truncation_record(record, label="x", legible_page_pixels=GATE) == record
+    as_clean = {**record, "signals": {**record["signals"], "length_suspicious": False}}
+    with pytest.raises(SchemaRefusal, match="make it None"):
+        validate_truncation_record(as_clean, label="x")
+    leaf = classify("x", region_pixels=LEAF_PAGE, page_pixels=LEAF_PAGE, stop_reason="stop")
+    hidden = {**leaf, "measure": {**leaf["measure"], "legible_page_pixels": LEAF_PAGE + 1}}
+    with pytest.raises(SchemaRefusal, match="judged under legible page size"):
+        validate_truncation_record(hidden, label="x", legible_page_pixels=GATE)
 
 
 def test_the_sealed_table_refuses_a_calibration_claim_without_a_sample(tmp_path):

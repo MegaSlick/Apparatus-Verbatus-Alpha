@@ -389,22 +389,30 @@ it is re-pinned: an interpreter upgrade is a digest event.
 
 ```text
 {classification: "complete" | "truncated" | "unknown",
- signals: {stop_reason_declared, unclosed_structure, length_suspicious, ends_abruptly},
- measure: {region_pixels, page_pixels, characters, length_floor_characters_per_page}}
+ signals: {stop_reason_declared, unclosed_structure, length_suspicious | null, ends_abruptly},
+ measure: {region_pixels, page_pixels, smallest_page_pixels, characters,
+           length_floor_characters_per_page, legible_page_pixels, length_judged}}
 ```
 
 `measure` is what the length signal was judged from, and it is closed:
 `common/perlector_audit.py::validate_truncation_record` refuses a record
 without it. The region's page-space area (the union of an act's crops per page,
-summed over the pages it spans), the sealed area of those pages, the reading's
-character count, and the floor from the run's own sealed
+summed over the pages it spans), the sealed area of those pages, the area of
+the smallest single page the act spans, the reading's character count, and the
+floor and legible page size from the run's own sealed
 `config/perlector_protocol.toml` `[truncation]` table — every term of
-`characters * page_pixels < floor * region_pixels`, so a reader holding the
+`characters * page_pixels < floor * region_pixels`, judged only when
+`smallest_page_pixels >= legible_page_pixels`, so a reader holding the
 record and nothing else re-derives `length_suspicious` instead of trusting it
 (configuration protects reproducibility going forward, the record
 protects the past). The shared validator does re-derive it, and refuses a record
 whose signal disagrees with its own geometry; where the caller also holds the
-reading the record was measured over it binds `characters` to that text as well.
+reading the record was measured over it binds `characters` to that text as well,
+and where it holds the sealed table it binds the floor and the legible size.
+When the smallest page is under the legible size, `length_judged` is false and
+`length_suspicious` is `null`: the length was not consulted, and it counts
+neither as a clean nor as a suspicious vote — the verdict comes from the other
+signals.
 The floor is dimensionless on purpose — an absolute pixels-per-character ratio
 held every ordinary 300-DPI act as truncated while clearing this repository's
 fixture pages — and it is sealed rather than a module

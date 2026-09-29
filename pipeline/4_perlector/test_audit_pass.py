@@ -291,16 +291,26 @@ def _export(tree: RunTree) -> dict:
 
 # The fixture's own page area, and the sealed `[truncation]` table the
 # instrument judges under, read the way the stage reads it. The hand-built
-# records below are judged against a page ten times their region so the length
-# signal stays clean: these tests are about the audit's reconciliation of a
-# record, and were written when 18,612 / 16 = 1,163 px/char cleared the retired
-# 2,000 px/char floor -- a clean length signal is what they assume.
+# records below sit on the 200x260 fixture page, under the sealed legible size,
+# so their length is not judged: these tests are about the audit's
+# reconciliation of a record, not about the length signal.
 _TRUNCATION_POLICY = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0]["truncation"]
 _TEST_REGION_PIXELS = 18612
-_TEST_PAGE_PIXELS = _TEST_REGION_PIXELS * 10
+_TEST_PAGE_PIXELS = 200 * 260
 # The sealed floor every measure below was judged under. It travels on the
 # record since 2026-09-14, so a fixture that omits it is not a closed record.
 _FLOOR = _TRUNCATION_POLICY[protocol.LENGTH_FLOOR_FIELD]
+_GATE = _TRUNCATION_POLICY[protocol.LEGIBLE_PAGE_FIELD]
+
+
+def _gate_terms(page_pixels):
+    """The measure terms that say whether a page of this size has its length judged."""
+    return {
+        "smallest_page_pixels": page_pixels,
+        "legible_page_pixels": _GATE,
+        "length_judged": page_pixels >= _GATE,
+    }
+
 
 # The truncation instrument's record of a call that ran to completion over a
 # clean text; what a well-formed v2 finding carries for a completed re-proof.
@@ -309,7 +319,7 @@ _COMPLETE_TRUNCATION = {
     "signals": {
         "stop_reason_declared": "stop",
         "unclosed_structure": False,
-        "length_suspicious": False,
+        "length_suspicious": None,
         "ends_abruptly": False,
     },
     "measure": {
@@ -317,6 +327,7 @@ _COMPLETE_TRUNCATION = {
         "page_pixels": _TEST_PAGE_PIXELS,
         "characters": len("alpha beta gamma"),
         "length_floor_characters_per_page": _FLOOR,
+        **_gate_terms(_TEST_PAGE_PIXELS),
     },
 }
 # The same instrument over a re-proof its engine cut off: the text signals are
@@ -328,6 +339,7 @@ _FIXTURE_A1_MEASURE = {
     "page_pixels": 52_000,
     "characters": 34,
     "length_floor_characters_per_page": _FLOOR,
+    **_gate_terms(52_000),
 }
 # Fixture act a2 in the continuation scenario: 40 characters over its two padded
 # crops on two 200x260 pages, region and page area each summed over both.
@@ -336,6 +348,7 @@ _FIXTURE_A2_CONTINUATION_MEASURE = {
     "page_pixels": 104_000,
     "characters": 40,
     "length_floor_characters_per_page": _FLOOR,
+    **_gate_terms(52_000),
 }
 _CUT_OFF_TRUNCATION = {
     "classification": "truncated",
@@ -1267,7 +1280,7 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
         "signals": {
             "stop_reason_declared": "stop",
             "unclosed_structure": False,
-            "length_suspicious": False,
+            "length_suspicious": None,
             "ends_abruptly": False,
         },
         "measure": dict(_COMPLETE_TRUNCATION["measure"]),
@@ -2213,6 +2226,7 @@ _FINDING_MEASURE = {
     "page_pixels": 52_000,
     "characters": len(_FINDING_TEXT),
     "length_floor_characters_per_page": _FLOOR,
+    **_gate_terms(52_000),
 }
 
 
@@ -2395,6 +2409,7 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
             **_COMPLETE_TRUNCATION["measure"],
             "region_pixels": 2550 * 3300,
             "page_pixels": 2550 * 3300,
+            **_gate_terms(2550 * 3300),
         },
     }
     assert validate_truncation_record(three, label="x")["classification"] == "truncated"
@@ -2727,6 +2742,7 @@ def test_a_whitespace_reproof_publishes_empty_text_with_its_own_measure():
         },
         "region_pixels": 160 * 10,
         "page_pixels": 200 * 260,
+        "smallest_page_pixels": 200 * 260,
         "fields": frozenset(),
         "testimonia": [],
         "attachment_view": {"comparison_views": {}},
@@ -2771,3 +2787,14 @@ def test_the_validator_that_refused_the_unmeasured_emptying_still_does():
         )
         == emptied
     )
+
+
+def test_the_smallest_page_an_act_spans_is_not_the_summed_area():
+    perlector = load_stage("4_perlector")
+
+    def render(w, h):
+        return {"transform": {"source_dimensions": {"w": w, "h": h}}}
+
+    renders = [render(2550, 3300), render(200, 260)]
+    assert perlector._page_pixels(renders) == 2550 * 3300 + 200 * 260
+    assert perlector._smallest_page_pixels(renders) == 200 * 260

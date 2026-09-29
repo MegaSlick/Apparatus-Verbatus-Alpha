@@ -1918,6 +1918,19 @@ def _page_pixels(page_renders: list[dict]) -> int:
     )
 
 
+def _smallest_page_pixels(page_renders: list[dict]) -> int:
+    """The area of the smallest single page an act's regions were cut from.
+
+    What the truncation legibility gate is judged on: a summed area would let one
+    sub-legible page hide behind a large one.
+    """
+    return min(
+        render["transform"]["source_dimensions"]["w"]
+        * render["transform"]["source_dimensions"]["h"]
+        for render in page_renders
+    )
+
+
 def _reading_image_inputs(
     context,
     bases: list[dict],
@@ -2723,10 +2736,12 @@ def _reconciled_truncation(*, declared_failure: str | None, truncation_record: d
     return truncation_record
 
 
-def _sealed_length_floor(protocol_config: dict[str, Any] | None) -> int | None:
-    """This run's sealed truncation floor, or `None` when no sealed protocol reached this pass.
+def _sealed_length_floor(
+    protocol_config: dict[str, Any] | None, field: str = protocol.LENGTH_FLOOR_FIELD
+) -> int | None:
+    """One of this run's sealed truncation terms, or `None` when no sealed protocol reached this pass.
 
-    Never a guessed default: a re-proof is held to the floor this run sealed or to none.
+    Never a guessed default: a re-proof is held to the floor and gate this run sealed or to none.
     """
 
     if not isinstance(protocol_config, dict):
@@ -2734,7 +2749,7 @@ def _sealed_length_floor(protocol_config: dict[str, Any] | None) -> int | None:
     table = protocol_config.get(protocol.TRUNCATION_TABLE)
     if not isinstance(table, dict):
         return None
-    floor = table.get(protocol.LENGTH_FLOOR_FIELD)
+    floor = table.get(field)
     return floor if isinstance(floor, int) and not isinstance(floor, bool) else None
 
 
@@ -2747,6 +2762,7 @@ def _audited_truncation(
     page_pixels: int,
     truncation_policy: dict,
     stop_reason: str | None,
+    smallest_page_pixels: int | None = None,
     measured: dict | None = None,
 ) -> dict:
     """The truncation instrument, re-measured over an audit-changed reading.
@@ -2766,6 +2782,7 @@ def _audited_truncation(
             text,
             region_pixels=region_pixels,
             page_pixels=page_pixels,
+            smallest_page_pixels=smallest_page_pixels,
             truncation_policy=truncation_policy,
             stop_reason=stop_reason,
         ),
@@ -2947,6 +2964,7 @@ def _sealed_sibling_semi_finals(
             reading,
             act_id,
             length_floor_characters_per_page=_sealed_length_floor(protocol_config),
+            legible_page_pixels=_sealed_length_floor(protocol_config, protocol.LEGIBLE_PAGE_FIELD),
         )
         draft_payload = chain["draft"]["payload"]
         finding_payload = chain["finding"]["payload"]
@@ -3097,6 +3115,7 @@ def _row_truncation(
         text,
         region_pixels=row["region_pixels"],
         page_pixels=row["page_pixels"],
+        smallest_page_pixels=row["smallest_page_pixels"],
         truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
         stop_reason=stop_reason,
     )
@@ -3123,6 +3142,7 @@ class _Attempt:
     page_renders: list[dict]
     region_pixels: int
     page_pixels: int
+    smallest_page_pixels: int
     protocol_config: dict[str, Any]
     protocol_sha256: str
     receipt_ref: dict[str, str] | None
@@ -3135,6 +3155,7 @@ class _Attempt:
             text,
             region_pixels=self.region_pixels,
             page_pixels=self.page_pixels,
+            smallest_page_pixels=self.smallest_page_pixels,
             truncation_policy=self.protocol_config[protocol.TRUNCATION_TABLE],
             stop_reason=stop_reason,
         )
@@ -3441,6 +3462,7 @@ def _established_row(
         # sealed artifacts.
         "region_pixels": attempt.region_pixels,
         "page_pixels": attempt.page_pixels,
+        "smallest_page_pixels": attempt.smallest_page_pixels,
         "declared_failure": declared_failure,
         "testimonia": testimonia,
         "attachment_view": attachment_view,
@@ -3752,6 +3774,7 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
     region_pixels = _region_pixels(bases)
     page_renders = _page_renders_for(context, bases)
     page_pixels = _page_pixels(page_renders)
+    smallest_page_pixels = _smallest_page_pixels(page_renders)
 
     # Resolved before any reader call so an absent member cannot become a partial
     # presentation.
@@ -3813,6 +3836,7 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
         page_renders=page_renders,
         region_pixels=region_pixels,
         page_pixels=page_pixels,
+        smallest_page_pixels=smallest_page_pixels,
         protocol_config=run.protocol_config,
         protocol_sha256=run.protocol_sha256,
         receipt_ref=run.receipt_ref,
@@ -4017,6 +4041,7 @@ def _publish_audited_reading(
         {"payload": payload, "inputs": reading_inputs},
         act_id,
         length_floor_characters_per_page=_sealed_length_floor(run.protocol_config),
+        legible_page_pixels=_sealed_length_floor(run.protocol_config, protocol.LEGIBLE_PAGE_FIELD),
     )
     validate_reading_payload(
         payload,
@@ -4216,6 +4241,7 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
         text=final_text,
         region_pixels=row["region_pixels"],
         page_pixels=row["page_pixels"],
+        smallest_page_pixels=row["smallest_page_pixels"],
         truncation_policy=run.protocol_config[protocol.TRUNCATION_TABLE],
         stop_reason=reply["stop_reason"],
         measured=reproof_truncation,
