@@ -35,11 +35,15 @@ def invoke(
 
 
 def run_through_recensor(
-    root: Path, run_id: str, scenario: str = "happy", *, draft_fed: bool = False
+    root: Path, run_id: str, scenario: str = "happy", *, blind_read: str = "off"
 ) -> None:
-    """`draft_fed` seals the run with Pass A, whose reference a fed reading carries."""
+    """`blind_read` seals the run with Pass A, whose reference a fed reading carries."""
     for program in programs_through("recensor"):
         result = invoke(
-            root, run_id, scenario, program, **({"draft_fed": True} if draft_fed else {})
+            root,
+            run_id,
+            scenario,
+            program,
+            **({"blind_read": blind_read} if blind_read != "off" else {}),
         )
         assert result.returncode in (0, 3), f"{program}: {result.stderr}"

@@ -1,6 +1,6 @@
 # Perlector
 
-R5a adds the prior-draft protocol: `lectio-prior` (Pass A, only under `--draft-fed`),
+R5a adds the prior-draft protocol: `lectio-prior` (Pass A, under `--blind-read fed` or `saved`),
 optional `primed-without-prior` control (also only when fed), and the production
 Perlectio. They are separate
 artifact kinds and attempt operations. Nuda remains its own un-fed instrument.

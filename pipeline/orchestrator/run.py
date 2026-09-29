@@ -48,6 +48,7 @@ from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH  # noqa: E402
 from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
+from common.contracts.prior_draft import BLIND_READ_MODES  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP, RECENSOR  # noqa: E402
 from common.credentials import looks_like_credential_env  # noqa: E402
 from common.hard_failure import (  # noqa: E402
@@ -441,7 +442,13 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
             ("--perlector-audit-config", args.perlector_audit_config),
         )
     )
-    command.append("--draft-fed" if args.draft_fed else "--no-draft-fed")
+    command += ["--blind-read", args.blind_read]
+    if program == STAGE_PROGRAMS["perlector"]:
+        # A scheduling choice, not run configuration: unsealed, so a resume may change it.
+        command += _argv(
+            (("--perlector-concurrency", getattr(args, "perlector_concurrency", None)),),
+            omit_unset=True,
+        )
     command += _argv((f"--{key.replace('_', '-')}", value) for key, value in extra.items())
 
     # Streams are inherited, not buffered: stage output is unbounded, and a
@@ -481,6 +488,13 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED):
         raise ContractError(f"{program} exited {completed.returncode}")
     return completed.returncode
+
+
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise ValueError(f"{value!r} is not a positive count")
+    return number
 
 
 def _stamp() -> str:
@@ -550,6 +564,15 @@ def _record_stage_timing(
         # the same as zero or as a pass.
         "gpu_utilization": gpu_utilization[0],
         "gpu_utilization_reason": gpu_utilization[1],
+        # What the Perlector was asked to keep in flight; `None` is its served row's
+        # `max_num_seqs`. The width it used follows from this, the sealed row and the
+        # sealed draft setting, and the stage prints it. A scheduling choice, so
+        # journaled rather than sealed; each record holds the reply its call received.
+        "perlector_concurrency": (
+            getattr(args, "perlector_concurrency", None)
+            if program == STAGE_PROGRAMS["perlector"]
+            else None
+        ),
     }
     try:
         # Inside the try: this runs from a `finally`, and a refusal here would
@@ -699,15 +722,23 @@ def main() -> int:
         "run's config digest",
     )
     parser.add_argument(
-        "--draft-fed",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="run Pass A and feed its draft to Pass B; the default reads no Pass A "
-        "(--no-draft-fed), because a fed draft anchors the reader "
+        "--blind-read",
+        choices=BLIND_READ_MODES,
+        default="off",
+        help="the Perlector's image-only blind read (Pass A): off makes none (default); fed "
+        "feeds it to the establishing reading, which it can anchor; saved keeps it as a "
+        "training witness the establishing reading never sees "
         "(config/README.md, R5a toggle register)",
     )
     parser.add_argument(
         "--perlector-audit-config", default=str(DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH)
+    )
+    parser.add_argument(
+        "--perlector-concurrency",
+        type=_positive_int,
+        default=None,
+        help="Perlector reader calls kept in flight at once on a live chair; absent means "
+        "the served row's max_num_seqs, and 1 reads one act at a time",
     )
     parser.add_argument(
         "--pdf-render-config",

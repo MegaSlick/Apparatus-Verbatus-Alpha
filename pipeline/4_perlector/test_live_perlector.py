@@ -21,6 +21,8 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
@@ -60,7 +62,7 @@ from operations.serving.fakes import (
     ScriptedAnswer,
     scripted_prompt_too_long,
 )
-from operations.serving.http import EndpointUnavailable
+from operations.serving.http import EndpointUnavailable, HttpResponse
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
@@ -94,7 +96,7 @@ def _toml_value(value: Any) -> str:
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _live_row(identity) -> dict[str, Any]:
+def _live_row(identity, *, max_num_seqs: int = 1) -> dict[str, Any]:
     """One `kind = "vllm"` row for the fixture roster's own Perlector chair.
 
     `preflight_state = "proven"` with the two real digests, because the manager
@@ -124,7 +126,7 @@ def _live_row(identity) -> dict[str, Any]:
         # real catalogue: raise the context, never shrink what the chair is
         # shown.
         "max_model_len": 16384,
-        "max_num_seqs": 1,
+        "max_num_seqs": max_num_seqs,
         "max_num_batched_tokens": 512,
         "gpu_memory_utilization": "0.58",
         "min_pixels": 3136,
@@ -155,7 +157,7 @@ def _live_row(identity) -> dict[str, Any]:
     return row
 
 
-def _live_catalogue(destination: Path) -> Path:
+def _live_catalogue(destination: Path, *, max_num_seqs: int = 1) -> Path:
     """The committed fixture catalogue with its Perlector rows made live.
 
     Every other chair keeps its fixture row, so this is exactly the shape
@@ -171,7 +173,7 @@ def _live_catalogue(destination: Path) -> Path:
         "head plus one live Perlector row, so that trailing profile would be "
         "dropped from the rebuilt catalogue"
     )
-    row = _live_row(_perlector_identity())
+    row = _live_row(_perlector_identity(), max_num_seqs=max_num_seqs)
     body = "\n".join(f"{key} = {_toml_value(value)}" for key, value in row.items())
     path = destination / "serving_recipes_live_perlector.toml"
     path.write_text(f"{head}[[profiles]]\n{body}\n", encoding="utf-8")
@@ -220,11 +222,28 @@ def chained_run(tmp_path_factory) -> tuple[Path, Path]:
 
 @pytest.fixture(scope="module")
 def fed_chained_run(tmp_path_factory) -> tuple[Path, Path]:
-    """The same chain sealed with `--draft-fed`, the only run that makes a Pass A."""
+    """The same chain sealed with `--blind-read fed`, which makes a Pass A that the reading is shown."""
     base = tmp_path_factory.mktemp("live-perlector-fed")
     catalogue = _live_catalogue(base)
     root = base / "runs"
-    _chain_through_attestatores(root, catalogue, extra=("--draft-fed",))
+    _chain_through_attestatores(
+        root,
+        catalogue,
+        extra=(
+            "--blind-read",
+            "fed",
+        ),
+    )
+    return root, catalogue
+
+
+@pytest.fixture(scope="module")
+def saved_chained_run(tmp_path_factory) -> tuple[Path, Path]:
+    """The same chain sealed with `--blind-read saved`."""
+    base = tmp_path_factory.mktemp("live-perlector-saved")
+    catalogue = _live_catalogue(base)
+    root = base / "runs"
+    _chain_through_attestatores(root, catalogue, extra=("--blind-read", "saved"))
     return root, catalogue
 
 
@@ -279,7 +298,9 @@ class _TreeBlobs:
         return self._tree.resolve(self._tree.blob_path(PERLECTOR, sha256)).exists()
 
 
-def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lock: Path):
+def _serving_factory(
+    endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lock: Path, *, now=None
+):
     """The `(context, chair, tier) -> ChairClient` seam `main` injects against.
 
     Deliberately close to `stage_chair_client`: the same manager, the
@@ -302,6 +323,7 @@ def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lo
             log_root=log_root,
             package_inspector=FakePackages({"vllm": "0.test"}),
             residency_lease=FileResidencyLease(lock),
+            now=now,
         )
         return ChairClient(
             manager=manager,
@@ -652,7 +674,7 @@ def test_a_reply_that_reaches_its_bound_holds_the_act_and_is_never_asked_again(
     readings = _published_readings(root)
     assert readings
     assert all(record["outcome"] == "truncated" for record in readings)
-    # Pass B and the one re-proof each ask once (Pass A runs only under --draft-fed);
+    # Pass B and the one re-proof each ask once (Pass A runs only when --blind-read is fed or saved);
     # the stop re-asks nothing.
     assert len(endpoint.requests) == 2 * len(readings)
     retained_bounds = {
@@ -867,8 +889,15 @@ def test_a_live_pass_refuses_to_resume_an_act_it_left_half_read(
     request, tmp_path, monkeypatch, kind
 ):
     """One reading comes from one serving session: an interrupted act is never finished."""
-    # Pass A exists only in a draft-fed run.
-    fed = ("--draft-fed",) if kind == "lectio-prior" else ()
+    # Pass A exists only in a fed or saved run; the half-read refusal is exercised on fed.
+    fed = (
+        (
+            "--blind-read",
+            "fed",
+        )
+        if kind == "lectio-prior"
+        else ()
+    )
     template, catalogue = request.getfixturevalue("fed_chained_run" if fed else "chained_run")
     live_run = (tmp_path / "runs", catalogue)
     shutil.copytree(template, live_run[0])
@@ -943,6 +972,62 @@ def test_a_non_200_from_the_engine_becomes_a_retained_act_failure_and_continues(
     retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
     assert any(b"maximum context length" in body for body in retained), (
         "the refusing body was not retained"
+    )
+
+
+def _first_pass_a_is_refused(run_kind, mode, request, tmp_path, monkeypatch):
+    template, catalogue = request.getfixturevalue(run_kind)
+    root = tmp_path / "runs"
+    shutil.copytree(template, root)
+    refusal = scripted_prompt_too_long(
+        max_model_len=2048, requested_tokens=4125, prompt_tokens=3909, completion_tokens=216
+    )
+    _endpoint, exit_code = _run_perlector(
+        (root, catalogue),
+        tmp_path,
+        monkeypatch,
+        refusal,
+        ScriptedAnswer(content=READING, finish_reason="stop"),
+        extra_args=("--blind-read", mode),
+    )
+    return root, exit_code
+
+
+def test_a_failed_saved_blind_read_is_kept_and_costs_no_production_reading(
+    request, tmp_path, monkeypatch
+):
+    root, exit_code = _first_pass_a_is_refused(
+        "saved_chained_run", "saved", request, tmp_path, monkeypatch
+    )
+
+    assert exit_code == 0
+    readings = _published_readings(root)
+    assert readings and all(record["outcome"] != "failed" for record in readings)
+    failed = [
+        json.loads(path.read_text(encoding="utf-8")) for path in _artifacts(root, "lectio-prior")
+    ]
+    failed = [record for record in failed if record["outcome"] == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["payload"]["failure"]["code"] == "CHAIR_RESPONSE_HTTP_ERROR"
+    for field in ("raw_response_ref", "call_record_ref", "receipt_ref"):
+        assert failed[0]["payload"]["failure"][field] in failed[0]["inputs"]
+    by_act = _perlectiones(root)
+    assert all(
+        "prior_draft" not in record["payload"]["dossier"] and record["outcome"] != "failed"
+        for record in by_act.values()
+    )
+
+
+def test_a_failed_fed_blind_read_still_fails_its_act(request, tmp_path, monkeypatch):
+    root, exit_code = _first_pass_a_is_refused(
+        "fed_chained_run", "fed", request, tmp_path, monkeypatch
+    )
+
+    assert exit_code == 0
+    assert any(record["outcome"] == "failed" for record in _published_readings(root))
+    assert not any(
+        json.loads(path.read_text(encoding="utf-8"))["outcome"] == "failed"
+        for path in _artifacts(root, "lectio-prior")
     )
 
 
@@ -2123,3 +2208,824 @@ def test_a_page_witness_still_takes_its_anchored_slice_not_a_bracket_strip():
         testimonia, {"comparison_views": {"attestator_3": "ACT ONE text"}}
     )
     assert rows[0]["payload"]["comparison_reported"] == "ACT ONE text"
+
+
+# --- concurrent reader calls ---------------------------------------------------
+
+BATCH = 2  # the fixture has two acts, so a row bound of two is the most it can reach
+
+
+@pytest.fixture(scope="module")
+def batching_chained_run(tmp_path_factory) -> tuple[Path, Path]:
+    """The same chain sealed under a live Perlector row whose `max_num_seqs` is `BATCH`."""
+    base = tmp_path_factory.mktemp("live-perlector-batching")
+    catalogue = _live_catalogue(base, max_num_seqs=BATCH)
+    root = base / "runs"
+    _chain_through_attestatores(root, catalogue)
+    return root, catalogue
+
+
+class _ContentEndpoint(FakeEndpoint):
+    """Answers each reading by its content, never by arrival order, and counts overlap.
+
+    Every reading is held briefly so calls sent together are in flight together. A
+    request carrying `fail_marker` gets a transport failure, whenever it arrives.
+    """
+
+    def __init__(self, *, fail_marker: str | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._lock = threading.Lock()
+        self._fail_marker = fail_marker
+        self._in_flight = 0
+        self._reproofs_in_flight = 0
+        self.most_in_flight = 0
+        self.most_reproofs_in_flight = 0
+        self.bodies: list[bytes] = []
+
+    def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
+        if method != "POST" or body is None or not self._readiness_probe_answered:
+            return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
+        reproof = _unchanged_reproof_response(body)
+        with self._lock:
+            self.bodies.append(body)
+            self._in_flight += 1
+            self._reproofs_in_flight += reproof is not None
+            self.most_in_flight = max(self.most_in_flight, self._in_flight)
+            self.most_reproofs_in_flight = max(
+                self.most_reproofs_in_flight, self._reproofs_in_flight
+            )
+        try:
+            time.sleep(0.3)
+            if self._fail_marker is not None and self._fail_marker.encode() in body:
+                raise EndpointUnavailable("simulated transport failure for one act")
+            content = reproof if reproof is not None else READING
+            answer = {
+                "model": self.served_model_id,
+                "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+            }
+            return HttpResponse(200, json.dumps(answer).encode())
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+                self._reproofs_in_flight -= reproof is not None
+
+
+def _run_batching(
+    template: tuple[Path, Path],
+    tmp_path: Path,
+    name: str,
+    monkeypatch,
+    *extra_args: str,
+    fail_marker: str | None = None,
+    resume: bool = False,
+    endpoint: _ContentEndpoint | None = None,
+    started: datetime = datetime(2026, 1, 1, tzinfo=timezone.utc),
+) -> tuple[Path, _ContentEndpoint]:
+    """Run the stage on a fresh copy of `template` named `name`.
+
+    Runs in one test share the serving log root, lock and a fixed clock: the launch
+    argv names the log root, and a receipt's `started_at` is a serving moment. Those
+    are the only inputs that differ between two otherwise identical passes, and
+    every record cites the receipt and the launch audit. A different `started` gives a
+    pass a serving session, and a receipt, of its own.
+    """
+    source, catalogue = template
+    root = tmp_path / name / "runs"
+    if not resume:
+        shutil.copytree(source, root)
+    endpoint = endpoint or _ContentEndpoint(
+        served_model_id=SERVED_MODEL_ID, fail_marker=fail_marker
+    )
+    factory = _serving_factory(
+        endpoint,
+        catalogue,
+        tmp_path / "logs",
+        tmp_path / "pod-gpu.lock",
+        now=lambda: started,
+    )
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--serving-recipes-config",
+            str(catalogue),
+            "--placement-tier",
+            TIER,
+            *extra_args,
+        ],
+    )
+    assert perlector.main(serving_factory=factory) == 0
+    return root, endpoint
+
+
+def _stage_bytes(root: Path) -> dict[str, bytes]:
+    """Every file of the Perlector's sealed inventory: artifacts, blobs and manifest."""
+    stage = root / "r" / "4_perlector"
+    return {
+        str(path.relative_to(stage)): path.read_bytes()
+        for path in sorted(stage.rglob("*"))
+        if path.is_file() and SERVING_LOGS_DIR not in path.relative_to(stage).parts
+    }
+
+
+def _without_width(root: Path) -> dict[str, Any]:
+    """The Perlector's inventory with its window width taken out.
+
+    The width is the one fact a batched pass records differently: each `reader-sent`
+    record carries it, and every later record of the act binds that record by digest.
+    Everything else must be identical: the blobs, and every record apart from the
+    digests that bind it to those records. The seal and manifest only digest the rest.
+    """
+
+    def digests_out(value: Any) -> Any:
+        if isinstance(value, list):
+            return [digests_out(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        return {
+            key: digests_out(item)
+            for key, item in value.items()
+            if key not in {"self_hash", "finding_digest", "request_digest"}
+            and not (key == "sha256" and "relative_path" in value)
+        }
+
+    view: dict[str, Any] = {}
+    for path, data in _stage_bytes(root).items():
+        if path.startswith("blobs/"):
+            view[path] = data
+        elif path.startswith("artifacts/") and "/stage-seal/" not in path:
+            record = json.loads(data)
+            if record["kind"] == perlector.SENT_KIND:
+                del record["payload"]["concurrency"]
+            view[path] = digests_out(record)
+    return view
+
+
+def _widths(root: Path) -> set[int]:
+    return {
+        json.loads(path.read_text(encoding="utf-8"))["payload"]["concurrency"]
+        for path in _artifacts(root, perlector.SENT_KIND)
+    }
+
+
+def test_concurrent_calls_publish_exactly_the_bytes_a_serial_pass_publishes(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    writes: list[tuple[str, str]] = []
+    publish = RunTree.publish_artifact
+
+    def recording(tree, envelope):
+        writes.append((envelope["kind"], envelope["subject_id"]))
+        return publish(tree, envelope)
+
+    monkeypatch.setattr(RunTree, "publish_artifact", recording)
+    serial_root, serial = _run_batching(
+        batching_chained_run, tmp_path, "serial", monkeypatch, "--perlector-concurrency", "1"
+    )
+    serial_writes, writes[:] = writes[:], []
+    batched_root, batched = _run_batching(
+        batching_chained_run, tmp_path, "batched", monkeypatch, "--perlector-concurrency", "5"
+    )
+
+    assert serial.most_in_flight == 1
+    # Asked for more than the row's bound, the pass is capped at it, and reaches it.
+    assert batched.most_in_flight == BATCH
+    # Every record is written in the order the serial pass wrote it; a send is recorded
+    # as its call leaves, which in a batch is before the earlier act's record.
+    assert [write for write in writes if write[0] != perlector.SENT_KIND] == [
+        write for write in serial_writes if write[0] != perlector.SENT_KIND
+    ]
+    # Both acts were due a re-proof, and those were batched too.
+    assert batched.most_reproofs_in_flight == BATCH
+    # Each act's request carries only sealed inputs, never another act's reading, so
+    # every request is byte-identical whichever act was in flight beside it.
+    assert sorted(batched.bodies) == sorted(serial.bodies)
+    assert (batched_root / "r" / "4_perlector" / "manifest.json").exists()
+    assert _without_width(batched_root) == _without_width(serial_root)
+    # The width each call was sent under is on the record.
+    assert (_widths(serial_root), _widths(batched_root)) == ({1}, {BATCH})
+
+
+def test_one_failed_call_in_a_batch_fails_only_its_own_act(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    # The fixture's first act, by its witnesses' text; no other act's request carries it.
+    marker = "SYNTHETIC ACT ONE"
+    serial_root, _ = _run_batching(
+        batching_chained_run,
+        tmp_path,
+        "serial",
+        monkeypatch,
+        "--perlector-concurrency",
+        "1",
+        fail_marker=marker,
+    )
+    batched_root, batched = _run_batching(
+        batching_chained_run, tmp_path, "batched", monkeypatch, fail_marker=marker
+    )
+
+    assert batched.most_in_flight == BATCH
+    outcomes = sorted(record["outcome"] for record in _perlectiones(batched_root).values())
+    assert len(outcomes) == 2 and outcomes.count("failed") == 1, outcomes
+    assert _without_width(batched_root) == _without_width(serial_root)
+
+
+def test_a_refusal_mid_batch_still_publishes_every_act_already_sent(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    """The deadline refuses the second act's re-proof while the first act's is in flight.
+
+    The first act's reply is still published as its Perlectio, so a resumed pass never
+    asks the chair about it again.
+    """
+    checks = 0
+    refuse = perlector._refuse_past_deadline
+    endpoints: list[_ContentEndpoint] = []
+
+    def refuse_the_second_reproof(deadline, seconds_needed, what):
+        nonlocal checks
+        if what == "the next re-proof call":
+            checks += 1
+            if checks == 2:
+                raise ContractError("simulated deadline")
+        refuse(deadline, seconds_needed, what)
+
+    original_init = _ContentEndpoint.__init__
+
+    def recording_init(self, **kwargs):
+        original_init(self, **kwargs)
+        endpoints.append(self)
+
+    monkeypatch.setattr(_ContentEndpoint, "__init__", recording_init)
+    with monkeypatch.context() as patch:
+        patch.setattr(perlector, "_refuse_past_deadline", refuse_the_second_reproof)
+        with pytest.raises(ContractError, match="simulated deadline"):
+            _run_batching(batching_chained_run, tmp_path, "run", monkeypatch)
+    root = tmp_path / "run" / "runs"
+    assert checks == 2
+    read = {
+        record["payload"]["act_key"]: record["outcome"] for record in _perlectiones(root).values()
+    }
+    assert read == {"a1": "read"}, read
+
+    _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, resume=True)
+    resumed = endpoints[-1]
+    assert resumed.bodies, "the unread act was not read on resume"
+    assert not [body for body in resumed.bodies if b"SYNTHETIC ACT ONE" in body]
+    assert sorted(record["outcome"] for record in _perlectiones(root).values()) == [
+        "read",
+        "read",
+    ]
+
+
+@pytest.mark.parametrize("mode", ["fed", "saved"])
+def test_a_blind_read_or_fixture_pass_reads_one_act_at_a_time(mode):
+    """Pass A, or its failure, is published inline before the establishing call."""
+    args = SimpleNamespace(perlector_concurrency=4)
+    blind = SimpleNamespace(blind_read=mode)
+    off = SimpleNamespace(blind_read="off")
+    # Neither consults the catalogue: a blind-read or fixture pass has no bound to look up.
+    assert perlector._reading_concurrency(blind, args, None, "live") == 1
+    assert perlector._reading_concurrency(off, args, None, "fixture") == 1
+
+
+def test_the_window_finishes_in_order_within_its_bound():
+    lock = threading.Lock()
+    in_flight = most = 0
+    finished: list[int] = []
+
+    def call(index: int) -> int:
+        nonlocal in_flight, most
+        with lock:
+            in_flight += 1
+            most = max(most, in_flight)
+        time.sleep(0.05 * (5 - index))  # later jobs finish first
+        with lock:
+            in_flight -= 1
+        return index
+
+    jobs = ((partial(call, index), finished.append) for index in range(5))
+    perlector._in_order_window(3, jobs)
+    assert finished == [0, 1, 2, 3, 4]
+    assert most == 3
+
+
+def test_the_window_never_holds_more_than_width_unfinished_jobs():
+    unfinished = most = 0
+    order: list[str] = []
+
+    def jobs():
+        nonlocal unfinished, most
+        for index in range(6):
+            unfinished += 1
+            most = max(most, unfinished)
+            call = None if index % 3 == 0 else partial(time.sleep, 0.02)
+            yield call, partial(finish, str(index))
+
+    def finish(name: str, _result) -> None:
+        nonlocal unfinished
+        unfinished -= 1
+        order.append(name)
+
+    perlector._in_order_window(2, jobs())
+    assert most == 2
+    assert order == [str(index) for index in range(6)]
+
+
+def test_a_call_that_raises_re_raises_at_its_place_after_every_sent_job_is_finished():
+    """Nothing is lost: earlier and later sent jobs are still finished, in order."""
+    finished: list[int] = []
+    started: list[int] = []
+
+    def call(index: int) -> int:
+        started.append(index)
+        time.sleep(0.02)
+        if index == 1:
+            raise RuntimeError("not act-local")
+        if index == 2:
+            raise ValueError("a second failure")
+        return index
+
+    def jobs():
+        for index in range(5):
+            yield partial(call, index), finished.append
+
+    with pytest.raises(RuntimeError, match="not act-local") as raised:
+        perlector._in_order_window(3, jobs())
+    # Job 1's failure stops the drawing; job 0 finished before it, and every job
+    # already sent after it was finished too rather than dropped.
+    assert finished == [0] + [index for index in sorted(started) if index > 2]
+    assert any("a second failure" in note for note in raised.value.__notes__)
+    assert 2 in started
+
+
+def test_a_refused_job_source_still_finishes_every_job_already_sent():
+    finished: list[int] = []
+
+    def jobs():
+        yield partial(time.sleep, 0.05), lambda _r: finished.append(0)
+        yield partial(time.sleep, 0.01), lambda _r: finished.append(1)
+        raise ContractError("refused while preparing the third")
+
+    with pytest.raises(ContractError, match="third"):
+        perlector._in_order_window(3, jobs())
+    assert finished == [0, 1]
+
+
+# --- resume never asks again about a reply it has on record -------------------
+
+ACT_ONE, ACT_TWO = b"SYNTHETIC ACT ONE", b"SYNTHETIC ACT TWO"
+
+
+def _main_pass_bodies(endpoint: _ContentEndpoint, act: bytes) -> list[bytes]:
+    """The reading requests about one act, leaving out its Pass-C re-proof."""
+    return [
+        body
+        for body in endpoint.bodies
+        if act in body and _unchanged_reproof_response(body) is None
+    ]
+
+
+def _stop_after_the_first_semi_final(monkeypatch, *, wait: float = 0.0) -> None:
+    """Interrupt the pass the moment act one's main-pass result is on record.
+
+    `wait` lets a call already in flight answer first, as it would when an operator's
+    Ctrl-C lands a moment after the engine replied.
+    """
+    _stop_after_the_first(monkeypatch, perlector.SEMI_FINAL_KIND, wait=wait)
+
+
+def _stop_after_the_first(monkeypatch, kind: str, *, wait: float = 0.0) -> None:
+    real_publish = StageContext.publish
+    struck = False
+
+    def publish_then_interrupt(self, **kwargs):
+        nonlocal struck
+        result = real_publish(self, **kwargs)
+        if kwargs["kind"] == kind and not struck:
+            struck = True
+            time.sleep(wait)
+            raise KeyboardInterrupt
+        return result
+
+    monkeypatch.setattr(StageContext, "publish", publish_then_interrupt)
+
+
+def _stop_before_the_second_act(monkeypatch) -> None:
+    """The reading deadline refuses the second act, after the first was sent."""
+    refuse = perlector._refuse_past_deadline
+    checks = 0
+
+    def refuse_the_second_act(deadline, seconds_needed, what):
+        nonlocal checks
+        if what.startswith("reading the"):
+            checks += 1
+            if checks == 2:
+                raise ContractError("simulated deadline")
+        refuse(deadline, seconds_needed, what)
+
+    monkeypatch.setattr(perlector, "_refuse_past_deadline", refuse_the_second_act)
+
+
+def _join_reader_threads() -> None:
+    """Wait for any reader call an interrupt left running to come back and be retained."""
+    for thread in threading.enumerate():
+        if thread.name.startswith("ThreadPoolExecutor"):
+            thread.join()
+
+
+@pytest.mark.parametrize("stop", ["interrupt", "deadline"])
+@pytest.mark.parametrize("width", ["1", "2"])
+def test_a_resume_adopts_every_main_pass_reply_on_record_and_asks_nothing_again(
+    batching_chained_run, tmp_path, monkeypatch, width, stop
+):
+    """Stopped after act one's main-pass reply, the resumed tree is the uninterrupted one.
+
+    Act one is never asked again: its reading is adopted from its `semi-final`, and only
+    its re-proof, which no earlier session sent, goes to the chair. At width two act
+    two's reply arrives before the interrupt is handled and is recorded too.
+    """
+    concurrency = ("--perlector-concurrency", width)
+    whole_root, _whole = _run_batching(
+        batching_chained_run, tmp_path, "whole", monkeypatch, *concurrency
+    )
+
+    with monkeypatch.context() as patch:
+        if stop == "interrupt":
+            _stop_after_the_first_semi_final(patch, wait=0.6 if width == "2" else 0.0)
+            expected = KeyboardInterrupt
+        else:
+            _stop_before_the_second_act(patch)
+            expected = ContractError
+        with pytest.raises(expected):
+            _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, *concurrency)
+    _join_reader_threads()
+    root = tmp_path / "run" / "runs"
+    assert _perlectiones(root) == {}
+    adopted = len(_artifacts(root, perlector.SEMI_FINAL_KIND))
+    assert adopted == (2 if (stop, width) == ("interrupt", "2") else 1)
+
+    _root, resumed = _run_batching(
+        batching_chained_run, tmp_path, "run", monkeypatch, *concurrency, resume=True
+    )
+    assert _main_pass_bodies(resumed, ACT_ONE) == []
+    assert len(_main_pass_bodies(resumed, ACT_TWO)) == 2 - adopted
+    assert _stage_bytes(root) == _stage_bytes(whole_root)
+
+
+def _act_two_reading(body: bytes) -> bool:
+    return ACT_TWO in body and _unchanged_reproof_response(body) is None
+
+
+def _act_two_reproof(body: bytes) -> bool:
+    return ACT_TWO in body and _unchanged_reproof_response(body) is not None
+
+
+class _HeldEndpoint(_ContentEndpoint):
+    """Holds the first request `holds` picks until released, then answers or drops it."""
+
+    def __init__(self, *, answer: bool, holds=_act_two_reading, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.release = threading.Event()
+        self._answer = answer
+        self._holds = holds
+        self._held = False
+
+    def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
+        if body is not None and self._holds(body) and not self._held:
+            self._held = True
+            self.release.wait(10)
+            if not self._answer:
+                raise EndpointUnavailable("the connection dropped with the call in flight")
+            # A real engine's reply carries its own completion id, so a late one never
+            # shares its bytes with a reply already on record.
+            response = super().request(method, url, body=body, timeout_seconds=timeout_seconds)
+            answer = json.loads(response.body)
+            answer["id"] = "chatcmpl-late"
+            return HttpResponse(response.status, json.dumps(answer).encode())
+        return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
+
+
+def _interrupt_with_act_two_in_flight(
+    batching_chained_run,
+    tmp_path,
+    monkeypatch,
+    *,
+    answer: bool,
+    holds=_act_two_reading,
+    stop_after: str = perlector.SEMI_FINAL_KIND,
+    before_release=None,
+) -> Path:
+    """Interrupt once act one's `stop_after` record is written, with act two's call held.
+
+    The held call is released only after the pass has stopped, so its answer, or its
+    dropped connection, arrives when nothing is recording any more. `before_release`
+    patches what the late call does next, for as long as it runs.
+    """
+    endpoint = _HeldEndpoint(answer=answer, holds=holds, served_model_id=SERVED_MODEL_ID)
+    with monkeypatch.context() as patch:
+        _stop_after_the_first(patch, stop_after)
+        with pytest.raises(KeyboardInterrupt):
+            _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, endpoint=endpoint)
+        if before_release is not None:
+            before_release(patch)
+        endpoint.release.set()
+        _join_reader_threads()
+    return tmp_path / "run" / "runs"
+
+
+def _sends(root: Path, act_id: str) -> list[dict[str, Any]]:
+    records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in _artifacts(root, perlector.SENT_KIND)
+    ]
+    return sorted(
+        (record for record in records if record["subject_id"] == act_id),
+        key=lambda record: (record["payload"]["pass"], record["payload"]["send"]),
+    )
+
+
+def test_a_call_interrupted_in_flight_is_sent_again_and_the_second_send_names_the_first(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    root = _interrupt_with_act_two_in_flight(
+        batching_chained_run, tmp_path, monkeypatch, answer=False
+    )
+    before = _stage_bytes(root)
+
+    _root, resumed = _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, resume=True)
+    assert _main_pass_bodies(resumed, ACT_ONE) == []
+    assert len(_main_pass_bodies(resumed, ACT_TWO)) == 1
+    # Nothing the interrupted session wrote was rewritten.
+    after = _stage_bytes(root)
+    assert all(after[path] == data for path, data in before.items() if "manifest" not in path)
+    readings = _perlectiones(root)
+    assert sorted(record["outcome"] for record in readings.values()) == ["read", "read"]
+    act_two = next(
+        act_id for act_id, record in readings.items() if record["payload"]["act_key"] == "a2"
+    )
+    reading_sends = [
+        record for record in _sends(root, act_two) if record["payload"]["pass"] == "reading"
+    ]
+    assert [record["payload"]["send"] for record in reading_sends] == [1, 2]
+
+    def names(record: dict[str, Any], named: dict[str, Any]) -> bool:
+        return any(
+            reference["relative_path"].endswith(f"/{named['artifact_id']}.json")
+            for reference in record["inputs"]
+        )
+
+    # The second send names the first, and the act's semi-final names both.
+    assert names(reading_sends[1], reading_sends[0])
+    semi_final = next(
+        record
+        for record in (
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in _artifacts(root, perlector.SEMI_FINAL_KIND)
+        )
+        if record["subject_id"] == act_two
+    )
+    assert all(names(semi_final, send) for send in reading_sends)
+
+
+def test_a_reply_retained_but_named_by_no_record_refuses_the_resume(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    """The reply came back after the pass had stopped recording: asking again would
+    read the act twice, so the pass refuses before its chair starts."""
+    root = _interrupt_with_act_two_in_flight(
+        batching_chained_run, tmp_path, monkeypatch, answer=True
+    )
+    before = _stage_bytes(root)
+    endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID)
+    with pytest.raises(ContractError, match="no record names"):
+        _run_batching(
+            batching_chained_run, tmp_path, "run", monkeypatch, resume=True, endpoint=endpoint
+        )
+    assert endpoint.bodies == []
+    assert _stage_bytes(root) == before
+
+
+def _records(root: Path, kind: str) -> dict[str, list[dict[str, Any]]]:
+    """Every record of one kind on disk, by the act key it is about."""
+    by_act: dict[str, list[dict[str, Any]]] = {}
+    for path in _artifacts(root, kind):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        by_act.setdefault(record["payload"]["act_key"], []).append(record)
+    return by_act
+
+
+def test_a_reply_retained_before_its_call_record_refuses_the_resume(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    """The client keeps a reply's raw bytes before the call record that names them.
+
+    A pass stopped between the two leaves a reply no call record names. It still counts:
+    the resume refuses rather than send act two again.
+    """
+    this_module = sys.modules[__name__]
+    retain = this_module.retain_chair_bytes
+
+    def die_before_the_call_record(patch) -> None:
+        def retain_raw_only(context, data: bytes):
+            if b'"schema":"chair-call-record' in data:
+                raise RuntimeError("the process died before the call record was retained")
+            return retain(context, data)
+
+        patch.setattr(this_module, "retain_chair_bytes", retain_raw_only)
+
+    root = _interrupt_with_act_two_in_flight(
+        batching_chained_run,
+        tmp_path,
+        monkeypatch,
+        answer=True,
+        before_release=die_before_the_call_record,
+    )
+    before = _stage_bytes(root)
+    endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID)
+    with pytest.raises(ContractError, match="no record names"):
+        _run_batching(
+            batching_chained_run, tmp_path, "run", monkeypatch, resume=True, endpoint=endpoint
+        )
+    assert endpoint.bodies == []
+    assert _stage_bytes(root) == before
+
+
+@pytest.mark.parametrize("answer", [False, True])
+def test_a_reproof_interrupted_in_flight_is_sent_again_only_if_no_reply_came_back(
+    batching_chained_run, tmp_path, monkeypatch, answer
+):
+    """Act two's re-proof is out when the pass stops, after act one is sealed.
+
+    Act two's Pass-B call record carries the same session and images as that re-proof
+    send, and is bound by its semi-final, so it answers nothing: a dropped re-proof is
+    sent again as the second re-proof send. A re-proof that did answer refuses the resume.
+    """
+    root = _interrupt_with_act_two_in_flight(
+        batching_chained_run,
+        tmp_path,
+        monkeypatch,
+        answer=answer,
+        holds=_act_two_reproof,
+        stop_after="perlectio",
+    )
+    assert sorted(record["payload"]["act_key"] for record in _perlectiones(root).values()) == ["a1"]
+    endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID)
+    if answer:
+        with pytest.raises(ContractError, match="no record names"):
+            _run_batching(
+                batching_chained_run, tmp_path, "run", monkeypatch, resume=True, endpoint=endpoint
+            )
+        assert endpoint.bodies == []
+        return
+    _run_batching(
+        batching_chained_run, tmp_path, "run", monkeypatch, resume=True, endpoint=endpoint
+    )
+    assert _main_pass_bodies(endpoint, ACT_ONE) == _main_pass_bodies(endpoint, ACT_TWO) == []
+    assert [body for body in endpoint.bodies if _act_two_reproof(body)] == endpoint.bodies
+    assert len(endpoint.bodies) == 1
+    reproof_sends = [
+        record["payload"]["send"]
+        for record in _records(root, perlector.SENT_KIND)["a2"]
+        if record["payload"]["pass"] == "audit-reproof"
+    ]
+    assert sorted(reproof_sends) == [1, 2]
+    assert sorted(record["outcome"] for record in _perlectiones(root).values()) == ["read", "read"]
+
+
+def test_a_semi_final_made_from_other_evidence_is_refused_not_adopted(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    """A witness record the resumed act no longer resolves to the one its reading cited.
+
+    Simulated by resolving no Testimonium references in the resumed pass: the inputs the
+    act's semi-final binds are then not the inputs the act has, so it is refused, and
+    nothing is asked.
+    """
+    with monkeypatch.context() as patch:
+        _stop_after_the_first_semi_final(patch)
+        with pytest.raises(KeyboardInterrupt):
+            _run_batching(
+                batching_chained_run, tmp_path, "run", monkeypatch, "--perlector-concurrency", "1"
+            )
+    root = tmp_path / "run" / "runs"
+    before = _stage_bytes(root)
+    monkeypatch.setattr(perlector, "_testimonium_references", lambda _context, _testimonia: {})
+    endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID)
+    with pytest.raises(ContractError, match="made from other evidence"):
+        _run_batching(
+            batching_chained_run,
+            tmp_path,
+            "run",
+            monkeypatch,
+            "--perlector-concurrency",
+            "1",
+            resume=True,
+            endpoint=endpoint,
+        )
+    assert endpoint.bodies == []
+    assert _stage_bytes(root) == before
+
+
+def test_each_record_names_the_session_that_made_it_after_a_resume(
+    batching_chained_run, tmp_path, monkeypatch
+):
+    """Two serving sessions, two receipts, and each record names the one it came from.
+
+    Act one's main pass is read by session one and adopted; everything asked after the
+    interruption, act two's reading and both re-proofs, names session two. A re-proof
+    send carries the image digests of the call it announced, in the same order.
+    """
+    with monkeypatch.context() as patch:
+        _stop_after_the_first_semi_final(patch)
+        with pytest.raises(KeyboardInterrupt):
+            _run_batching(
+                batching_chained_run, tmp_path, "run", monkeypatch, "--perlector-concurrency", "1"
+            )
+    _root, _endpoint = _run_batching(
+        batching_chained_run,
+        tmp_path,
+        "run",
+        monkeypatch,
+        "--perlector-concurrency",
+        "1",
+        resume=True,
+        started=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    root = tmp_path / "run" / "runs"
+    sends = _records(root, perlector.SENT_KIND)
+    receipt = {
+        (act, record["payload"]["pass"]): record["payload"]["receipt_ref"]
+        for act, records in sends.items()
+        for record in records
+    }
+    first, second = receipt[("a1", "reading")], receipt[("a2", "reading")]
+    assert first != second
+    assert receipt[("a1", "audit-reproof")] == receipt[("a2", "audit-reproof")] == second
+    semi_finals = _records(root, perlector.SEMI_FINAL_KIND)
+    readings = {record["payload"]["act_key"]: record for record in _perlectiones(root).values()}
+    for act, session in (("a1", first), ("a2", second)):
+        assert semi_finals[act][0]["payload"]["provenance"]["receipt_ref"] == session
+        # The Perlectio's provenance is Pass B's session, whichever session re-proofed it.
+        assert readings[act]["payload"]["provenance"]["receipt_ref"] == session
+    tree = RunTree(root, "r")
+    for act, records in sends.items():
+        for send in records:
+            if send["payload"]["pass"] != "audit-reproof":
+                continue
+            finding = next(
+                record
+                for record in _records(root, "audit-finding")[act]
+                if record["subject_id"] == send["subject_id"]
+            )
+            call_ref = finding["payload"]["reproof_call"]["call_record_ref"]
+            call = json.loads(tree.read_bytes(call_ref["relative_path"]))
+            assert call["receipt_ref"] == second
+            assert call["image_sha256s"] == send["payload"]["image_sha256s"]
+
+
+def test_a_reply_another_record_binds_answers_no_send():
+    """Two acts with byte-identical crops share an attribution key.
+
+    A reply that some record binds is on record, whichever act that record is about, so
+    it never refuses the other act's unanswered send; an unbound one does.
+    """
+    receipt = {"relative_path": "receipts/r.json", "sha256": "0" * 64}
+    images = ["1" * 64]
+    call = {
+        "schema": sorted(perlector.CHAIR_CALL_RECORD_SCHEMAS)[0],
+        "receipt_ref": receipt,
+        "image_sha256s": images,
+        "raw_response_ref": {"relative_path": "4_perlector/blobs/raw", "sha256": "2" * 64},
+    }
+    blobs = {"call": json.dumps(call).encode(), "raw": b"engine bytes"}
+
+    def context(bound: list[str]):
+        record = {"inputs": [{"relative_path": path} for path in bound]}
+        tree = SimpleNamespace(
+            build_manifest=lambda _stage: {
+                "artifacts": [{"kind": "semi-final", "artifact_id": "b"}],
+                "blobs": list(blobs),
+            },
+            read_artifact=lambda _stage, _kind, _identifier: record,
+            blob_path=lambda _stage, name: f"4_perlector/blobs/{name}",
+            read_bytes=lambda path: blobs[path.rsplit("/", 1)[1]],
+        )
+        return SimpleNamespace(tree=tree)
+
+    send = [{"payload": {"receipt_ref": receipt, "image_sha256s": images}}]
+    paths = ["4_perlector/blobs/call", "4_perlector/blobs/raw"]
+    calls, unattributed = perlector._unrecorded_replies(context(paths))
+    assert (calls, unattributed) == ([], False)
+    assert not perlector._answers_a_send(calls, send)
+    calls, unattributed = perlector._unrecorded_replies(context([]))
+    assert not unattributed and perlector._answers_a_send(calls, send)
+    # Raw bytes with no call record naming them cannot be attributed to any act.
+    del blobs["call"]
+    assert perlector._unrecorded_replies(context([])) == ([], True)

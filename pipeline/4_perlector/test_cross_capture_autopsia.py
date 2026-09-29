@@ -159,7 +159,7 @@ def test_clustered_logical_passes_make_one_establishing_call_and_no_capture_loca
         protocol_config={"max_images": 6},
         nuda_sampled=True,
         control_sampled=True,
-        draft_fed=True,
+        blind_read="fed",
     )
     assert set(output) == {"lectio-prior", "lectio-nuda", "primed-without-prior", "perlectio"}
     assert [call[1] for call in reader.calls] == [
@@ -196,7 +196,7 @@ def test_a_withheld_run_makes_no_pass_a_and_no_prior_draft():
         protocol_config={"max_images": 6},
         nuda_sampled=False,
         control_sampled=False,
-        draft_fed=False,
+        blind_read="off",
         publish_prior=lambda *_: pytest.fail("a withheld run publishes no lectio-prior"),
     )
     assert [call[1] for call in reader.calls] == ["perlectio"]
@@ -209,6 +209,102 @@ def test_a_withheld_run_makes_no_pass_a_and_no_prior_draft():
     assert output["perlectio"]["dossier"] == reader_dossier
 
 
+def test_a_saved_run_makes_pass_a_and_publishes_it_but_shows_the_establishing_call_none():
+    reader = RecordingReader()
+    published = []
+    body = {"testimonia": []}
+    output = run_logical_passes(
+        reader,
+        autopsia=autopsia(),
+        dossier={**body, "dossier_digest": digest_of(body)},
+        read_bytes=READ_BYTES,
+        protocol_config={"max_images": 6},
+        nuda_sampled=False,
+        control_sampled=False,
+        blind_read="saved",
+        publish_prior=lambda dossier, result: published.append(result) or {"text": "x"},
+    )
+    assert [call[1] for call in reader.calls] == ["lectio-prior", "perlectio"]
+    assert len(published) == 1 and "lectio-prior" in output
+    establishing = reader.calls[1][0]
+    assert establishing["prior_draft_view"] == "withheld"
+    assert "prior_draft" not in establishing
+    assert "prior_draft_view" not in reader.calls[0][0]
+
+
+class PassAFailsReader(RecordingReader):
+    def read(self, dossier, *, pass_kind, delivered_pixels):
+        if pass_kind == "lectio-prior":
+            raise RuntimeError("blind read failed")
+        return super().read(dossier, pass_kind=pass_kind, delivered_pixels=delivered_pixels)
+
+
+def test_a_failed_saved_pass_a_is_recorded_and_the_establishing_call_still_reads():
+    reader, failures = PassAFailsReader(), []
+    output = run_logical_passes(
+        reader,
+        autopsia=autopsia(),
+        dossier={"testimonia": []},
+        read_bytes=READ_BYTES,
+        protocol_config={"max_images": 6},
+        nuda_sampled=False,
+        control_sampled=False,
+        blind_read="saved",
+        saved_prior_failures=(RuntimeError,),
+        record_prior_failure=failures.append,
+    )
+    assert len(failures) == 1
+    assert "lectio-prior" not in output and "perlectio" in output
+    assert output["perlectio"]["dossier"]["prior_draft_view"] == "withheld"
+
+
+def test_a_saved_pass_a_failure_with_no_recorder_still_raises():
+    with pytest.raises(RuntimeError):
+        run_logical_passes(
+            PassAFailsReader(),
+            autopsia=autopsia(),
+            dossier={"testimonia": []},
+            read_bytes=READ_BYTES,
+            protocol_config={"max_images": 6},
+            nuda_sampled=False,
+            control_sampled=False,
+            blind_read="saved",
+            saved_prior_failures=(RuntimeError,),
+        )
+
+
+def test_a_saved_pass_a_failure_not_on_the_list_still_raises():
+    with pytest.raises(RuntimeError):
+        run_logical_passes(
+            PassAFailsReader(),
+            autopsia=autopsia(),
+            dossier={"testimonia": []},
+            read_bytes=READ_BYTES,
+            protocol_config={"max_images": 6},
+            nuda_sampled=False,
+            control_sampled=False,
+            blind_read="saved",
+            saved_prior_failures=(KeyError,),
+            record_prior_failure=lambda error: pytest.fail("an unlisted failure is not recorded"),
+        )
+
+
+def test_a_failed_fed_pass_a_still_raises():
+    with pytest.raises(RuntimeError):
+        run_logical_passes(
+            PassAFailsReader(),
+            autopsia=autopsia(),
+            dossier={"testimonia": []},
+            read_bytes=READ_BYTES,
+            protocol_config={"max_images": 6},
+            nuda_sampled=False,
+            control_sampled=False,
+            blind_read="fed",
+            saved_prior_failures=(RuntimeError,),
+            record_prior_failure=lambda error: pytest.fail("fed keeps a Pass A failure fatal"),
+        )
+
+
 def test_a_withheld_run_with_a_sampled_nuda_reads_only_nuda_and_the_establishing_call():
     reader = RecordingReader()
     run_logical_passes(
@@ -219,17 +315,20 @@ def test_a_withheld_run_with_a_sampled_nuda_reads_only_nuda_and_the_establishing
         protocol_config={"max_images": 6},
         nuda_sampled=True,
         control_sampled=False,
-        draft_fed=False,
+        blind_read="off",
     )
     assert [call[1] for call in reader.calls] == ["lectio-nuda", "perlectio"]
 
 
 @pytest.mark.parametrize("round_cap", [0, 1, 2])
-@pytest.mark.parametrize("control", [0, 500])
+@pytest.mark.parametrize(
+    ("blind_read", "control"),
+    # A control without a fed prior is refused at run creation, so it is never planned.
+    [("off", 0), ("saved", 0), ("fed", 0), ("fed", 500)],
+)
 @pytest.mark.parametrize("nuda", [0, 500])
-@pytest.mark.parametrize("draft_fed", [False, True])
 def test_the_planned_calls_per_act_are_the_calls_the_passes_make(
-    draft_fed, nuda, control, round_cap
+    blind_read, nuda, control, round_cap
 ):
     """The reading deadline plans from `calls_per_act`; it must match what is read."""
     reader = RecordingReader()
@@ -241,11 +340,11 @@ def test_the_planned_calls_per_act_are_the_calls_the_passes_make(
         protocol_config={"max_images": 6},
         nuda_sampled=bool(nuda),
         control_sampled=bool(control),
-        draft_fed=draft_fed,
+        blind_read=blind_read,
     )
     planned = SimpleNamespace(
         context=SimpleNamespace(
-            draft_fed=draft_fed, nuda_per_mille=nuda, perlector_instrument_per_mille=control
+            blind_read=blind_read, nuda_per_mille=nuda, perlector_instrument_per_mille=control
         ),
         audit_policy={"round_cap": round_cap},
     )
@@ -410,7 +509,7 @@ def test_the_unprimed_arms_carry_no_witness_derived_region_coverage():
         protocol_config={"max_images": 6},
         nuda_sampled=True,
         control_sampled=True,
-        draft_fed=True,
+        blind_read="fed",
     )
     for arm in ("lectio-prior", "lectio-nuda"):
         seen = output[arm]["dossier"]

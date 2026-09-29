@@ -611,7 +611,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
                 "cross_capture_autopsia": autopsia,
                 "prior_draft_view": "withheld",
             },
-            "protocol": {"draft_fed": False},
+            "protocol": {"blind_read": "off"},
             "basis": {"regions": regions},
             "provenance": {"chair": "perlector", "revision": "fixture"},
             "reader_invocation_ref": _ref(
@@ -940,7 +940,7 @@ def _reading_inputs(
                 "cross_capture_autopsia": autopsia,
                 "prior_draft_view": "withheld",
             },
-            "protocol": {"draft_fed": False},
+            "protocol": {"blind_read": "off"},
             "basis": {"regions": _joint_basis_regions(fixture, autopsia)},
             "provenance": {"chair": "perlector", "revision": "fixture"},
             "reader_invocation_ref": _ref(
@@ -1613,7 +1613,7 @@ def test_the_logical_path_holds_the_prior_draft_to_its_fed_or_withheld_view(tmp_
         payload = {
             **base,
             "lectio_kind": "primed-with-prior",
-            "protocol": {"draft_fed": True},
+            "protocol": {"blind_read": "fed"},
             "dossier": {**dossier, "prior_draft_view": "fed"},
         }
         message = "not a digest-checked direct input"

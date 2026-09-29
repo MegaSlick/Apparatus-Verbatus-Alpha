@@ -47,11 +47,18 @@ design that would close the case are in `pipeline/3_attestatores/CONTRACT.md`.
 
 | Knob | Default | Who changes it | What retires it |
 |---|---|---|---|
-| `--draft-fed` | off, so no Pass A is read and Pass B sees image and witnesses; a fed draft anchors the reader | the project lead through B5a | a recorded B5a decision replacing the withheld default |
+| `--blind-read` | `off`, so no Pass A is read and Pass B sees image and witnesses; `fed` feeds the blind read to Pass B as a prior (it anchors the reader); `saved` makes it and keeps it as a training witness Pass B never sees | the project lead through B5a | a recorded B5a decision replacing the `off` default |
 | `--perlector-instrument-per-mille` | 0 | the project lead, with `--perlector-instrument-approval-ref` | a replacement approved instrument design |
 | Perlector protocol selection-rule name | `digest-threshold-over-frame-page-seed-act.v1` | ordinary engineering with recorded evidence | a replacement rule recorded with its coverage evidence |
 | Perlector protocol Pass-B fragment | the neutral form sealed in `perlector_protocol.toml` | **not a knob** — pinned to `protocol.PASS_B_FRAGMENT`; rewording is a reviewed two-file change | a B5a prompt-framing ablation the project lead records, which retires the pin rather than edits around it |
 | Perlector transcription instruction (`unproven-real-perlector`) | the pinned wording, with its `[[?]]` / `[[reading\|other]]` doubt marks, in `pipeline/4_perlector/prompts.py::TRANSCRIPTION_INSTRUCTION` | **not a knob** — pinned in code and sealed into every real Perlectio's prompt evidence; rewording is a reviewed two-file change, the same rule as the Pass-B fragment | a B5a prompt-framing ablation the project lead records, which retires the pin |
+
+`--blind-read` is a run flag, sealed into the run's policy digest and each reading's
+protocol record, not a key in `perlector_protocol.toml` (whose exact bytes are sealed
+into every run). `off` makes no image-only Pass A. `fed` makes it and feeds its clean
+text to the establishing reading as a prior. `saved` makes it and keeps it as a
+`lectio-prior` training witness that the establishing reading never sees; the
+establishing dossier is the one `off` builds.
 
 The Pass-B fragment sits in `perlector_protocol.toml` so its exact text seals
 into every run, not so a run may choose them. It is pinned in code because a

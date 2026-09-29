@@ -196,7 +196,8 @@ text. The grammar carries no level of doubt, so every marked span is `low`. A
 `[[` or `]]` that is not a closed mark, or a mark whose reading is `?`, publishes the
 raw answer unchanged under `malformed`. Gap marks over an answer that is otherwise
 blank add nothing: the `no-readable-text` outcome's whole-act gap already says it.
-By default there is no Pass A; `--draft-fed` opts in to Pass A and to Pass B seeing its clean text. When the
+By default there is no Pass A; `--blind-read fed` opts in to Pass A and to Pass B seeing its
+clean text (`--blind-read saved` makes Pass A but never shows it to Pass B). When the
 draft is fed, `self_revision` offsets index it: `reading_span` in the final text,
 `testimonium_span` in the draft. When it is withheld, `self_revision` is not measured. Pass A's marks stay on its own
 record. Truncation is measured on the clean text. The re-proof answers in JSON and
@@ -548,14 +549,18 @@ ever have recorded for a real reading.
 
 ## R5a prior-draft protocol
 
-Pass A, the image-only draft, runs only under `--draft-fed`. Then every readable act
+`--blind-read` sets the Pass A blind read: `off` (default), `fed` or `saved`. Pass A, the
+image-only draft, runs under `fed` and `saved`. Then every readable act
 emits a `kind="lectio-prior"` draft under the `lectio-prior` attempt operation. It sees
 the images and no Testimonia; it is not Lectio nuda and cannot establish text. By
-default (withheld) no Pass A is read: the reader sees the image and every witness
-in one call, and the act makes no `lectio-prior` record. The production
+default (`off`) no Pass A is read: the reader sees the image and every witness
+in one call, and the act makes no `lectio-prior` record. Under `saved` the draft is
+made and kept as a training witness: the `lectio-prior` record's `protocol.blind_read` reads
+`saved`, it is found under stage `4_perlector`, kind `lectio-prior`, it is never exported as a
+reading, and no establishing reading, dossier or input references it. The production
 `kind="perlectio"` is `lectio_kind="primed-with-prior"` only when the draft was fed
 and then carries equality-only `self_revision` spans against it and the Pass-A
-reference. When the draft was withheld, it is `lectio_kind="primed-draft-withheld"`
+reference. When the draft was withheld (`off` or `saved`), it is `lectio_kind="primed-draft-withheld"`
 with an empty `self_revision` and no prior reference. Both production kinds can
 establish text; the kind records what the reader saw.
 
@@ -575,10 +580,11 @@ production hard-failure cap. Its approval reference is likewise an envelope
 input and is digest-checked whenever the control artifact is read.
 
 The Pass-B dossier records whether the draft was `fed` or `withheld`. A fed dossier
-carries a digest-checked reference to the Pass-A draft; a withheld dossier carries no
-`prior_draft` at all, and one that does is refused. The `--draft-fed` default is
-withheld because a fed draft anchors the reader; feeding remains an explicit toggle
-and is the only way to run Pass A.
+carries a digest-checked reference to the Pass-A draft; a withheld dossier (under `off` or
+`saved`) carries no `prior_draft` at all, and one that does is refused. The withheld dossier
+of a `saved` run is the one an `off` run builds. The `--blind-read` default is `off` because a
+fed draft anchors the reader; `blind_read` is sealed in the run's policy digest and in every
+reading's `protocol` record, and Pass A counts in `calls_per_act` under `fed` and `saved`.
 
 **Four reading kinds, three conditions.** `lectio-nuda` and `lectio-prior` are
 built from identical dossier arguments — page context, no Testimonia, no prior
@@ -586,27 +592,32 @@ draft — so for one act they carry the same `dossier_digest` and the same
 `rendered_sha256`. That is correct (they *are* the same condition) and it is
 pinned by a test, because it is not visible from the kind names.
 
-What each contrast measures depends on the mode. In a **fed** run (`--draft-fed`),
+What each contrast measures depends on the mode. In a **fed** run (`--blind-read fed`),
 nuda against lectio-prior measures sampling variance; lectio-prior (or nuda) against
 the sampled control measures witness dependence, because the control sees witnesses
 and no draft; the control against the production Perlectio measures anchoring on the
-draft. In a **withheld** run there is no lectio-prior and, because the control would
-be byte-identical to production, no control either (`--perlector-instrument-per-mille`
-is refused without `--draft-fed`). The approval-gated sampled Lectio nuda is then the
-only unprimed reading, and nuda against the production Perlectio measures witness
-dependence.
+draft. In an **off** run there is no lectio-prior. In a **saved** run the lectio-prior is
+an unprimed reading too, kept as a training witness and never shown to the production
+reading, so nuda against it still measures sampling variance. In both, the control would
+be byte-identical to production, so there is none (`--perlector-instrument-per-mille`
+is refused unless `--blind-read fed`). In an off run the approval-gated sampled Lectio
+nuda is the only unprimed reading, and nuda against the production Perlectio measures
+witness dependence.
 
-**One thing about nuda did change, and it is not in the list above.**
-`common/hard_failure.py`'s `PERLECTOR_INSTRUMENT_KINDS` covers `lectio-nuda`
-as well as the two new kinds, so a failed Lectio nuda no longer spends the
-ruled production hard-failure cap; before this it did, because the
-policy is written per (stage, outcome) and nuda is a Perlector artifact. That
-is the right disposition — the cap is a circuit breaker on the production
-reading path, and an instrument arm tripping it would halt a run over a
-measurement nothing downstream consumes — and the failures stay visible in the
-tally's `instrument_by_kind` and on the orchestrator's checkpoint line. It is
-recorded here rather than left to be rediscovered, because it is a change to
-the meaning of a ruled threshold.
+Under `saved`, a Pass A that fails on an engine, chair-response, transport or capacity
+failure never costs the production reading: it is retained as its own failed record of
+kind `lectio-prior` (the failed-Perlectio payload shape, with its call evidence as
+inputs) and the establishing reading goes on, withheld as usual. Under `fed` a Pass A
+failure fails the act as the production reading would, because the reading depends on it.
+A contract or schema defect is fatal in every mode.
+
+**Instrument arms and the hard-failure cap.**
+`common/hard_failure.py`'s `PERLECTOR_INSTRUMENT_KINDS` covers `lectio-nuda`,
+`lectio-prior` and `primed-without-prior`, so a failed instrument arm does not spend
+the ruled production hard-failure cap. The cap is a circuit breaker on the production
+reading path; an instrument arm must not halt a run over a measurement nothing
+downstream consumes. Such failures stay visible in the tally's `instrument_by_kind`
+and on the orchestrator's checkpoint line.
 
 ## R5b Pass-C audit, and the request the reader actually receives
 
@@ -905,17 +916,83 @@ reuses them (`_next_attempt`'s docstring); a live chair cannot promise that, and
 store refuses the collision. Skipped acts are counted apart from `read`, because this
 invocation did not read them.
 
-**Live resume is all-or-nothing per act.** An attempt publishes up to five artifacts
-before its Perlectio (`lectio-prior`, `lectio-nuda`, `primed-without-prior`,
-`audit-draft`, `audit-finding`). Finishing such an act in a second serving session would
-pair two engines' answers in one reading, so before any chair starts
-`_acts_left_to_read` refuses the pass if any act holds those artifacts without a
-Perlectio. The interrupted attempt's artifacts stay as its evidence; those pages are read
-in a new run. A per-act failure the pass can name (`_ACT_LOCAL_READING_FAILURES`)
-publishes a failed Perlectio and is not half-read; that includes a request the
-capacity check refuses before sending (`request-capacity`), which could otherwise
-strand an act whose Pass A fitted and whose Pass B did not. Pinned by
-`test_live_perlector.py::test_a_live_pass_refuses_to_resume_an_act_it_left_half_read`.
+**Live resume never asks again about a reply it received.** A live pass keeps two
+records that exist for resume, beside everything else it publishes:
+
+```text
+kind="reader-sent"  {schema: "perlector-reader-sent.v1", act_key, attempt_ordinal,
+                     pass, send, receipt_ref, concurrency, image_sha256s}
+kind="semi-final"   the act's Pass-B payload: the Perlectio field set without `audit`
+```
+
+A `reader-sent` record is published on the main thread before an act's calls leave:
+`pass` is `reading` for the main pass (Pass A, the sampled arms and Pass B, sent as one
+job) and `audit-reproof` for its re-proof. `send` numbers the sends of one pass of one
+attempt from 1, and a later send binds the earlier ones as inputs, so a call re-sent
+after an interruption is on the record, never silent. `receipt_ref` names the serving
+session that sent it (also bound as an input), `concurrency` the width of the window it
+was sent in (below), and `image_sha256s` the images every call about the act carries, in
+the order sent. The outcome is `read`, as on the audit records: the envelope's closed
+vocabulary has no word for a request.
+
+The `semi-final` is published, in act order, as soon as the act's main-pass calls
+return, after its sampled arms, at `perlegere:<ordinal>`, with the outcome Pass B
+resolved. It binds the act's reading inputs and every `reading` send; the audit draft,
+the Perlectio and a re-proof failure then bind the `semi-final` in turn, so every
+reading reaches its sends through its own inputs. A failed Perlectio after it must bind
+it and must be the re-proof's (`common/perlector_failure.py`). Both records are live-only:
+a fixture resume republishes identical bytes, so the fixture tree is unchanged.
+
+Before any chair starts, `_acts_left_to_read` sorts every act that has no Perlectio:
+
+- with a `semi-final` and no audit artifact, it is **adopted**: `_adopted_row` rebuilds
+  its audit row from the record without a call, after re-deriving the record's inputs
+  from the act's current evidence and refusing any difference. Only its re-proof, if
+  due, is sent. An adopted re-proof sent in a later session names that session's
+  receipt on its own call record; the Perlectio's `provenance` stays Pass B's, and a
+  re-proof failure carries the failing session's provenance and binds the `semi-final`
+  that carries Pass B's;
+- with nothing, it is untouched and read;
+- with `reader-sent` records and no reply on record, the call was in flight when the
+  pass stopped. It is sent again, as the next `send`, only if no retained reply could be
+  its answer. The client retains a reply's raw bytes first and then the call record that
+  names them, so a reply is looked for in both forms (`_unrecorded_replies`): a call
+  record that carries a reply (`raw_response_ref` set) and that no record of this stage
+  binds, from one of those sends' sessions and for the act's images, refuses the act;
+  and any stage blob that is not a call record, not a reply a call record names, not
+  serving evidence, not a page render (a PNG; a chat reply is never an image) and not an
+  input of some record is a reply nobody can attribute, and
+  refuses every act with an unanswered send. A reply some record binds, of this act or
+  of another act with the same crops, is on record and refuses nothing;
+- with sampled arms but no `semi-final`, or with an audit draft or finding but no
+  Perlectio, a reply was received and only partly recorded; the pass refuses. That
+  includes a `saved` or `fed` blind read stopped during its Pass B: its `lectio-prior`
+  is already published, and those pages are read in a new run.
+
+An adopted `semi-final` must also have been made under this run's `config_digest` and
+reading protocol (the blind-read setting included), and name exactly the act's current
+region basis; the run policy itself is compared with the sealed run when the stage
+opens. A refused act's records stay as that attempt's evidence and its pages are read in
+a new run. The page flags of Pass C are computed over every act's semi-final, as in an
+uninterrupted pass: the semi-finals of acts this pass found sealed are read back from
+their records and validated, and a sealed live reading with no `semi-final` is refused
+as `FatalAccounting`, because its page's flags could not be computed over every act. A per-act failure the pass can name (`_ACT_LOCAL_READING_FAILURES`)
+publishes a failed Perlectio and is not half-read; that includes a request the capacity
+check refuses before sending (`request-capacity`), and a transport failure such as the
+pod going away. Pinned in `test_live_perlector.py` by
+`test_a_resume_adopts_every_main_pass_reply_on_record_and_asks_nothing_again` (stopped
+by an interrupt or by the deadline, at widths 1 and 2, the resumed tree is byte-identical
+to the uninterrupted one),
+`test_a_call_interrupted_in_flight_is_sent_again_and_the_second_send_names_the_first`,
+`test_a_reply_retained_but_named_by_no_record_refuses_the_resume`,
+`test_a_reply_retained_before_its_call_record_refuses_the_resume`,
+`test_a_reproof_interrupted_in_flight_is_sent_again_only_if_no_reply_came_back`,
+`test_a_reply_another_record_binds_answers_no_send`,
+`test_a_semi_final_made_from_other_evidence_is_refused_not_adopted`,
+`test_each_record_names_the_session_that_made_it_after_a_resume` and
+`test_a_live_pass_refuses_to_resume_an_act_it_left_half_read`, and downstream by
+`pipeline/test_live_reading_seam_e2e.py::`
+`test_a_pass_stopped_mid_reading_resumes_without_asking_again_and_the_tail_accepts_it`.
 
 **The reading deadline.** `--reading-deadline <UTC ISO time>` makes a live pass refuse to
 start when the chair's `startup_timeout_seconds` plus every call left
@@ -923,9 +1000,40 @@ start when the chair's `startup_timeout_seconds` plus every call left
 + the audit round cap + one per instrument arm enabled for the run, at
 `PLANNED_SECONDS_PER_CALL`) would run past it. It also refuses to begin
 another act, or another re-proof, when the calls left would. It stops between calls,
-never inside one; the acts it has read stay half-read, so the run ends there with every
-artifact retained (see the resume rule above). Pinned by
+never inside one; every act already sent is finished and its `semi-final` published, so
+a resumed pass adopts them (see above). Pinned by
 `::test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_starts`.
+
+**Concurrent calls.** A live pass keeps up to `--perlector-concurrency` acts unfinished
+at once (default and ceiling: the served row's `max_num_seqs`), so the engine can batch
+their reader calls; the orchestrator forwards the flag and journals it, it is not sealed,
+and the stage prints the width it used. Each act is prepared on the main thread, and every
+record is written there strictly in act order, exactly as a serial pass writes it: not-run
+records, arms, audit drafts, findings and Perlectiones alike. Only the calls overlap, and
+no act's request carries another act's reading. A failed call is that act's failed
+Perlectio alone. If preparing an act, a call or a publication raises, every act already
+sent is still finished in order before the error stops the pass, so no reply is left
+without its record. An interrupt stops waiting at once so the chair can be shut down; it
+first finishes every act whose reply has already arrived, even behind an earlier call
+still out, since a record's bytes do not depend on the order it was written in. A
+`reader-sent` record is written when its call leaves, so in a batch it precedes an
+earlier act's records. Pass-C re-proofs share the same window. A blind-read (`fed` or
+`saved`) or fixture pass reads one act at a time: Pass A, or its failure, is published
+inline before the establishing call. The deadline is checked before each act is prepared,
+against the serial estimate, which stays conservative for batched calls. Because the check
+runs before an act is prepared, up to `width` calls may already be in flight when it fires;
+they are finished, not cut off (the finish-sent-acts rule above). Work past the deadline is
+therefore at most those calls, which overlap: about the slowest one (40 s on the planning
+estimate, `PLANNED_SECONDS_PER_CALL`), and never longer than one request's hard limit,
+`request_timeout_seconds` in the serving recipe (600 s on the real rows). That time is
+billed. A batched reply
+at temperature 0 can differ from an unbatched one in low-order bits; each record holds
+the reply its call received, and each `reader-sent` record carries the width its call
+was sent under as `concurrency`, so two runs' readings can be told apart from the tree
+alone. It is the window's width, the most calls this pass kept in flight; the batch the
+engine actually decoded a call in was at most that. It sits on the send rather than in
+`provenance` because provenance names one serving session while an adopted act's
+re-proof may run in another; each send names its own session and width.
 
 **One live-resume limit remains, named rather than hidden.** Every re-invocation of a live
 pass starts and stops the service, so an `--act` recovery loop pays a full model load per
@@ -933,10 +1041,10 @@ act (`pipeline/orchestrator/run.py`'s per-act dispatch). Serving policy permits 
 outlives one stage, but no cross-process handle exists; that is the next serving item.
 
 **A response refusal exits in this stage's own vocabulary.** `ChairResponseRefusal` is a
-`ServingError`, which is a `RuntimeError` and not a `ContractError`, so `run_stage` never
-saw it: vLLM's 400 explaining a context overflow — the likeliest first answer from a real
-card — produced a Python traceback and exit 1 rather than a named refusal and `EXIT_FATAL`.
-`main` now translates it at the stage boundary and nowhere earlier: `ChairClient` still
+`ServingError`, which is a `RuntimeError` and not a `ContractError`, so `run_stage` does
+not catch it: vLLM's 400 explaining a context overflow — the likeliest first answer from a real
+card — would otherwise end in a Python traceback and exit 1 rather than a named refusal and
+`EXIT_FATAL`. `main` translates it at the stage boundary and nowhere earlier: `ChairClient` still
 retains before it refuses, `live_reader` keeps its posture, and the refusal's code and the
 engine's own sentence travel verbatim into the message the stage exits on. The clause takes
 the whole class, so the wrong-model refusal raised before any parse arrives the same way —

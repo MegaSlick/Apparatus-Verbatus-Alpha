@@ -14,6 +14,7 @@ controls and un-fed instruments are distinct artifact kinds and cannot
 establish by a relabel.
 """
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -55,7 +56,7 @@ _repoint_review = reseal_chain.repoint_review
 
 
 def _orchestrate(
-    root: Path, run_id: str, scenario: str, *, draft_fed: bool = False
+    root: Path, run_id: str, scenario: str, *, blind_read: str = "off"
 ) -> subprocess.CompletedProcess:
     """A whole run, recovery drain included, for the one test that needs a
     second reading attempt to exist before it can forge anything."""
@@ -71,7 +72,7 @@ def _orchestrate(
             run_id,
             "--run-root",
             str(root),
-            *(("--draft-fed",) if draft_fed else ()),
+            *(("--blind-read", blind_read) if blind_read != "off" else ()),
         ],
         cwd=ROOT,
         capture_output=True,
@@ -157,11 +158,11 @@ _reseal_reading = reseal_chain.reseal_reviewed_reading
 
 def _archetypus_after(tmp_path: Path, mutate, *, fed: bool = False) -> subprocess.CompletedProcess:
     root = tmp_path / "runs"
-    run_through_recensor(root, "r", draft_fed=fed)
+    run_through_recensor(root, "r", blind_read="fed" if fed else "off")
     tree = RunTree(root, "r")
     _reseal_reading(tree, accepted_review(tree), mutate)
     return invoke(
-        root, "r", "happy", "pipeline/6_archetypus/run.py", **({"draft_fed": True} if fed else {})
+        root, "r", "happy", "pipeline/6_archetypus/run.py", **({"blind_read": "fed"} if fed else {})
     )
 
 
@@ -200,7 +201,9 @@ def test_fed_kind_cannot_relabel_a_withheld_reading(tmp_path):
 
 
 def test_withheld_kind_cannot_contradict_its_protocol_record(tmp_path):
-    result = _archetypus_after(tmp_path, lambda payload: payload["protocol"].update(draft_fed=True))
+    result = _archetypus_after(
+        tmp_path, lambda payload: payload["protocol"].update(blind_read="fed")
+    )
     assert result.returncode == 2, result.stderr
     assert "contrary to its prior-draft protocol" in result.stderr
 
@@ -228,6 +231,31 @@ def test_withheld_claim_carrying_a_prior_reference_cannot_establish(tmp_path):
     assert "must be re-read" in result.stderr
 
 
+def test_a_withheld_reading_listing_a_lectio_prior_among_its_inputs_cannot_establish(tmp_path):
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r", blind_read="saved")
+    tree = RunTree(root, "r")
+    prior = next(
+        entry
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "lectio-prior"
+    )
+    path = f"4_perlector/artifacts/lectio-prior/{prior['artifact_id']}.json"
+    prior_ref = {
+        "relative_path": path,
+        "sha256": hashlib.sha256(tree.resolve(path).read_bytes()).hexdigest(),
+    }
+    _reseal_reading(
+        tree,
+        accepted_review(tree),
+        lambda payload: None,
+        lambda reading: reading["inputs"].append(prior_ref),
+    )
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py", blind_read="saved")
+    assert result.returncode == 2, result.stderr
+    assert "lists a lectio-prior among its inputs" in result.stderr
+
+
 def test_a_withheld_claim_carrying_an_empty_prior_key_cannot_establish(tmp_path):
     """Key presence decides, as in the producer, not the value under it."""
     result = _archetypus_after(
@@ -248,10 +276,29 @@ def test_a_withheld_run_establishes_with_no_lectio_prior_on_disk(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+def test_a_saved_run_establishes_beside_its_lectio_prior_without_citing_it(tmp_path):
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r", blind_read="saved")
+    tree = RunTree(root, "r")
+    assert any(
+        entry["kind"] == "lectio-prior" for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+    )
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py", blind_read="saved")
+    assert result.returncode == 0, result.stderr
+    reading = json.loads(
+        tree.resolve(accepted_review(tree)["payload"]["perlectio_ref"]["relative_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert reading["payload"]["protocol"]["blind_read"] == "saved"
+    assert "prior_draft" not in reading["payload"]["dossier"]
+    assert not any("lectio-prior" in ref["relative_path"] for ref in reading["inputs"])
+
+
 def test_a_fed_run_establishes_and_references_its_lectio_prior(tmp_path):
     root = tmp_path / "runs"
-    run_through_recensor(root, "r", draft_fed=True)
-    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py", draft_fed=True)
+    run_through_recensor(root, "r", blind_read="fed")
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py", blind_read="fed")
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
     reading = json.loads(
@@ -465,7 +512,7 @@ def test_a_prior_draft_from_another_reading_attempt_cannot_establish(tmp_path):
     root = tmp_path / "runs"
     # The orchestrator, not the raw stage sequence: `review`'s second attempt
     # only exists after the recovery drain, and that drain is the orchestrator's.
-    orchestrated = _orchestrate(root, "r", "review", draft_fed=True)
+    orchestrated = _orchestrate(root, "r", "review", blind_read="fed")
     assert orchestrated.returncode == EXIT_HELD, orchestrated.stderr
     tree = RunTree(root, "r")
     # The orchestrator already established this act honestly. Clear that record
@@ -519,7 +566,7 @@ def test_a_prior_draft_from_another_reading_attempt_cannot_establish(tmp_path):
         },
     )
 
-    result = invoke(root, "r", "review", "pipeline/6_archetypus/run.py", draft_fed=True)
+    result = invoke(root, "r", "review", "pipeline/6_archetypus/run.py", blind_read="fed")
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "cites a prior draft from reading attempt 1, not its own 2" in result.stderr
@@ -533,7 +580,7 @@ def test_a_prior_draft_with_no_attempt_ordinal_cannot_bind(tmp_path):
     to be an integer by name rather than compared as whatever it is.
     """
     root = tmp_path / "runs"
-    orchestrated = _orchestrate(root, "r", "review", draft_fed=True)
+    orchestrated = _orchestrate(root, "r", "review", blind_read="fed")
     assert orchestrated.returncode == EXIT_HELD, orchestrated.stderr
     tree = RunTree(root, "r")
     for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]:
@@ -620,7 +667,7 @@ def test_a_prior_draft_with_no_attempt_ordinal_cannot_bind(tmp_path):
         },
     )
 
-    result = invoke(root, "r", "review", "pipeline/6_archetypus/run.py", draft_fed=True)
+    result = invoke(root, "r", "review", "pipeline/6_archetypus/run.py", blind_read="fed")
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert f"act {act_id} carries a lectio-prior payload with no integer attempt ordinal" in (

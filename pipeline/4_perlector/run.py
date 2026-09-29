@@ -22,7 +22,9 @@ import json
 import os
 import stat
 import sys
+from collections import deque
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
@@ -70,21 +72,30 @@ from common.contracts.errors import (  # noqa: E402
     SchemaRefusal,
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
+from common.contracts.identities import attempt_id as derived_attempt_id  # noqa: E402
 from common.contracts.outcomes import ATTACHMENT_BASES, page_attachment_basis  # noqa: E402
 from common.contracts.prior_draft import (  # noqa: E402
+    BLIND_READ_MODES,
     kind_for_view,
+    refuse_removed_draft_fed,
     self_revision_for_view,
     validate_establishing_view,
+)
+from common.contracts.serving import (  # noqa: E402
+    CHAIR_CALL_RECORD_SCHEMAS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.corpus_register import refuse_capture_preference  # noqa: E402
 from common.cross_capture_autopsia import (  # noqa: E402
     atomic_delivered_pixels,
     over_capacity_reason,
+    presented_image_sha256s,
     validate_autopsia,
 )
 from common.decoding import load_decoding_policy, perlector_max_tokens  # noqa: E402
 from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_lineage  # noqa: E402
+from common.image_sniff import PNG_SIGNATURE  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
@@ -97,6 +108,7 @@ from common.native_witness import (  # noqa: E402
 )
 from common.perlector_failure import (  # noqa: E402
     PRE_PERLECTIO_ARTIFACTS,
+    validate_failed_payload,
     validate_failed_perlectio,
 )
 from common.physical_act_partition import CROSS_CAPTURE_READ_NOT_BUILT  # noqa: E402
@@ -1743,6 +1755,16 @@ def _reading_already_sealed(context, act_id: str, ordinal: int, *, act_key: str)
     reading = context.tree.read_artifact(PERLECTOR, "perlectio", identifier)
     if reading["outcome"] == "failed" and "failure" in reading["payload"]:
         validate_failed_perlectio(context, reading, act_id, expected_act_key=act_key)
+    elif (
+        reading["outcome"] not in ("failed", "not-run")
+        and _semi_final_record(context, act_id, ordinal) is None
+    ):
+        # Only live passes skip sealed acts, and every live reading has its semi-final;
+        # without it the page flags a resume computes would miss this act.
+        raise FatalAccounting(
+            f"act {act_key!r} has a live Perlectio but no semi-final, so a resumed audit "
+            "cannot compute its page's flags over every act; read this page in a new run"
+        )
     return True
 
 
@@ -1763,35 +1785,233 @@ def _published_arm_refs(context, act_id: str, ordinal: int) -> list[dict[str, st
     ]
 
 
-# The slowest live call observed (441 answer tokens beside ~6,500 prompt tokens, 80 GB
-# card, 2026-09-22) took about 33 s; the mean of fifteen was 12 s.
+# Above the slowest measured live call: about 33 s for 441 answer tokens beside ~6,500
+# prompt tokens on an 80 GB card, against a mean of 12 s.
 PLANNED_SECONDS_PER_CALL: Final = 40
 
 
-def _acts_left_to_read(context, wanted: list[dict[str, Any]]) -> int:
-    """Count the acts a live pass still has to read, refusing any it left half-read.
+# A live pass records each act's main-pass result as a `semi-final` the moment it is
+# published, and every send of a reader call as a `reader-sent` record before the call
+# leaves, so a resumed pass can tell a received reply from a call that never answered.
+SEMI_FINAL_KIND: Final = "semi-final"
+SENT_KIND: Final = "reader-sent"
+SENT_SCHEMA: Final = "perlector-reader-sent.v1"
+_SENT_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "act_key",
+        "attempt_ordinal",
+        "pass",
+        "send",
+        "receipt_ref",
+        "concurrency",
+        "image_sha256s",
+    }
+)
+READING_PASS: Final = "reading"
+REPROOF_PASS: Final = "audit-reproof"
 
-    Live resume is all-or-nothing per act: an act is either sealed or untouched. An
-    interrupted attempt's artifacts cannot be finished by a second serving session
-    without pairing two engines' answers in one reading, so it refuses before any
-    chair starts, and those artifacts stay as that attempt's evidence.
+
+def _semi_final_id(act_id: str, ordinal: int) -> str:
+    return _attempt_artifact_id(act_id, SEMI_FINAL_KIND, "perlegere", ordinal)
+
+
+def _semi_final_record(context, act_id: str, ordinal: int) -> dict[str, Any] | None:
+    identifier = _semi_final_id(act_id, ordinal)
+    if not context.tree.has_artifact(PERLECTOR, SEMI_FINAL_KIND, identifier):
+        return None
+    return context.tree.read_artifact(PERLECTOR, SEMI_FINAL_KIND, identifier)
+
+
+def _sent_id(act_id: str, ordinal: int, pass_name: str, send: int) -> str:
+    return artifact_id(
+        PERLECTOR,
+        SENT_KIND,
+        act_id,
+        derived_attempt_id(act_id, f"{pass_name}-sent:{ordinal}", send),
+    )
+
+
+def _validate_sent(payload: Any, *, act_key: str, ordinal: int, pass_name: str, send: int) -> None:
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != _SENT_FIELDS
+        or payload["schema"] != SENT_SCHEMA
+        or (payload["act_key"], payload["attempt_ordinal"], payload["pass"], payload["send"])
+        != (act_key, ordinal, pass_name, send)
+        or not isinstance(payload["receipt_ref"], dict)
+        or type(payload["concurrency"]) is not int
+        or payload["concurrency"] < 1
+        or not isinstance(payload["image_sha256s"], list)
+        or not all(isinstance(value, str) for value in payload["image_sha256s"])
+    ):
+        raise SchemaRefusal(f"a reader-sent record for act {act_key!r} is not its closed schema")
+
+
+def _sent_records(
+    context, act_id: str, act_key: str, ordinal: int, pass_name: str
+) -> list[dict[str, Any]]:
+    """Every send of one pass of this attempt, numbered 1..N, in order."""
+    records: list[dict[str, Any]] = []
+    while True:
+        identifier = _sent_id(act_id, ordinal, pass_name, len(records) + 1)
+        if not context.tree.has_artifact(PERLECTOR, SENT_KIND, identifier):
+            return records
+        record = context.tree.read_artifact(PERLECTOR, SENT_KIND, identifier)
+        _validate_sent(
+            record["payload"],
+            act_key=act_key,
+            ordinal=ordinal,
+            pass_name=pass_name,
+            send=len(records) + 1,
+        )
+        records.append(record)
+
+
+def _sent_refs(context, act_id: str, act_key: str, ordinal: int, pass_name: str):
+    return [
+        context.artifact_ref(PERLECTOR, SENT_KIND, record["artifact_id"])
+        for record in _sent_records(context, act_id, act_key, ordinal, pass_name)
+    ]
+
+
+def _publish_sent(
+    run: "_Pass", act_id: str, act_key: str, ordinal: int, pass_name: str, autopsia: dict
+) -> None:
+    """Record, before it leaves, that this pass of the act is being sent, and under what.
+
+    A second send names the first, so a call re-sent after an interruption is visible.
+    `concurrency` is the width of the window the call was sent in: how many reader calls
+    this pass kept in flight at most, which bounds the batch the engine decoded it in.
     """
-    left, half_read = 0, []
+    earlier = _sent_refs(run.context, act_id, act_key, ordinal, pass_name)
+    send = len(earlier) + 1
+    run.context.publish(
+        kind=SENT_KIND,
+        subject_id=act_id,
+        outcome="read",
+        attempt=derived_attempt_id(act_id, f"{pass_name}-sent:{ordinal}", send),
+        inputs=earlier + [dict(run.receipt_ref)],
+        payload={
+            "schema": SENT_SCHEMA,
+            "act_key": act_key,
+            "attempt_ordinal": ordinal,
+            "pass": pass_name,
+            "send": send,
+            "receipt_ref": dict(run.receipt_ref),
+            "concurrency": run.concurrency,
+            "image_sha256s": presented_image_sha256s(autopsia),
+        },
+    )
+
+
+# Blobs the serving manager keeps in a stage's own store beside the chair's calls.
+_SERVING_BLOB_SCHEMAS: Final = frozenset({"serving-launch-audit.v1", "serving-evidence.v1"})
+
+
+def _json_object(data: bytes) -> dict[str, Any] | None:
+    try:
+        value = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _unrecorded_replies(context) -> tuple[list[dict[str, Any]], bool]:
+    """Every retained reply no record of this stage binds, as far as it can be attributed.
+
+    Returns the unbound call records that carry a reply, and whether any retained blob is
+    a reply that cannot be attributed at all. The client retains a reply's raw bytes
+    before the call record that names them, so a pass stopped between the two leaves
+    bytes no call record names: every blob that is not a call record, a reply one names,
+    serving evidence, a page render, or an input of some record is counted as such a
+    reply.
+    """
+    manifest = context.tree.build_manifest(PERLECTOR)
+    bound = {
+        reference["relative_path"]
+        for entry in manifest["artifacts"]
+        for reference in context.tree.read_artifact(PERLECTOR, entry["kind"], entry["artifact_id"])[
+            "inputs"
+        ]
+    }
+    calls, named, others = [], set(), []
+    for name in manifest["blobs"]:
+        path = context.tree.blob_path(PERLECTOR, name)
+        data = context.tree.read_bytes(path)
+        if data.startswith(PNG_SIGNATURE):
+            # A page render this stage cut for a reader call; a chat endpoint's reply is
+            # never an image.
+            continue
+        record = _json_object(data)
+        schema = record.get("schema") if record is not None else None
+        if schema in CHAIR_CALL_RECORD_SCHEMAS or schema == CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA:
+            reply = record.get("raw_response_ref")
+            if reply is not None:
+                named.add(reply["relative_path"])
+                if path not in bound:
+                    calls.append(record)
+        elif schema not in _SERVING_BLOB_SCHEMAS:
+            others.append(path)
+    unattributed = any(path not in bound and path not in named for path in others)
+    return calls, unattributed
+
+
+def _answers_a_send(calls: list[dict[str, Any]], markers: list[dict[str, Any]]) -> bool:
+    """Whether an unbound reply came from one of these sends' sessions, about these images."""
+    sent = [
+        (record["payload"]["receipt_ref"], record["payload"]["image_sha256s"]) for record in markers
+    ]
+    return any((call.get("receipt_ref"), call.get("image_sha256s")) in sent for call in calls)
+
+
+def _acts_left_to_read(context, wanted: list[dict[str, Any]]) -> int:
+    """Count the acts a live pass still has to read, refusing any it cannot resume.
+
+    An act with a Perlectio is sealed. An act with a `semi-final` has its main-pass reply
+    on record and is adopted, never asked again; only its re-proof, if due, is still to
+    send. Any other act must be untouched, or hold only sends whose replies never
+    arrived: those are sent again, and the new send names the old. The pass refuses
+    before any chair starts if an act holds records of a reply its resume cannot adopt
+    (published between two records of one act, or retained but named by no record),
+    because asking again would read it twice; those records stay as its evidence.
+    """
+    left, half_read, unrecorded = 0, [], []
+    replies = None
     for act in wanted:
         if act["outcome"] == "held":
             continue
-        act_id = act["act_id"]
+        act_id, act_key = act["act_id"], act["act_key"]
         ordinal = _next_attempt(context, act_id, act_regions(context, act_id)[0])
-        if _reading_already_sealed(context, act_id, ordinal, act_key=act["act_key"]):
+        if _reading_already_sealed(context, act_id, ordinal, act_key=act_key):
             continue
-        if any(_present_arms(context, act_id, ordinal)):
-            half_read.append(act["act_key"])
-        left += 1
+        present = {kind for kind, _identifier in _present_arms(context, act_id, ordinal)}
+        adopted = _semi_final_record(context, act_id, ordinal) is not None
+        if present & {"audit-draft", "audit-finding"} or (present and not adopted):
+            half_read.append(act_key)
+            continue
+        pass_name = REPROOF_PASS if adopted else READING_PASS
+        markers = _sent_records(context, act_id, act_key, ordinal, pass_name)
+        if markers:
+            replies = _unrecorded_replies(context) if replies is None else replies
+            calls, unattributed = replies
+            if unattributed or _answers_a_send(calls, markers):
+                unrecorded.append(act_key)
+                continue
+        left += not adopted
     if half_read:
         raise ContractError(
             f"acts {half_read} hold artifacts from an interrupted live attempt and no "
-            "Perlectio; a live pass resumes only from sealed or untouched acts. Read these "
-            "pages in a new run; the interrupted attempt's artifacts remain its evidence"
+            "Perlectio; a live pass resumes only from sealed, adoptable or untouched acts. "
+            "Read these pages in a new run; the interrupted attempt's artifacts remain its "
+            "evidence"
+        )
+    if unrecorded:
+        raise ContractError(
+            f"acts {unrecorded} were sent in an interrupted live attempt, and a reply is "
+            "retained that no record names and that may be theirs; asking again would read "
+            "them twice. Read these pages in a new run; the retained replies remain that "
+            "attempt's evidence"
         )
     return left
 
@@ -2366,10 +2586,11 @@ def validate_reading_payload(
     dossier_module.assert_no_order_bearing_field(dossier_body)
     _validate_cross_capture_dossier(reading_dossier, inputs=inputs)
     protocol_record = payload.get("protocol")
+    refuse_removed_draft_fed(protocol_record, "a Perlector reading")
     if protocol_record is not None and (
         not isinstance(protocol_record, dict)
-        or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "draft_fed"}
-        or not isinstance(protocol_record["draft_fed"], bool)
+        or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "blind_read"}
+        or protocol_record["blind_read"] not in BLIND_READ_MODES
     ):
         raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
     _validate_lectio_kind(payload, reading_dossier)
@@ -3075,15 +3296,20 @@ def _page_flags(
     return audit.flags_once_per_page(frozen)
 
 
-def _publish_audit_draft(
+def _audit_draft(
     context,
     row: dict[str, Any],
     flags: list[dict[str, Any]],
     *,
     round_cap: int,
     policy_record: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, str]]:
-    """Freeze the Pass-B semi-final and its page flags before any re-proof."""
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
+    """Freeze the Pass-B semi-final and its page flags before any re-proof.
+
+    Returns the draft payload, its publication and the reference it will have once
+    published. The re-proof request binds that reference before the call, and the
+    draft itself is published in act order afterwards, beside its finding.
+    """
     payload = row["payload"]
     draft_payload = {
         "act_key": row["act"]["act_key"],
@@ -3098,15 +3324,31 @@ def _publish_audit_draft(
         ),
     }
     audit.validate_draft(draft_payload)
-    draft = context.publish(
-        kind="audit-draft",
-        subject_id=row["act_id"],
-        outcome="read",
-        attempt=perlector_attempt_id(row["act_id"], "perlegere", payload["attempt_ordinal"]),
-        inputs=row["inputs"],
-        payload=draft_payload,
-    )
-    return draft_payload, context.input_ref(draft.relative_path)
+    publication = {
+        "kind": "audit-draft",
+        "subject_id": row["act_id"],
+        "outcome": "read",
+        "attempt": perlector_attempt_id(row["act_id"], "perlegere", payload["attempt_ordinal"]),
+        "inputs": row["inputs"],
+        "payload": draft_payload,
+    }
+    envelope = context.envelope(**publication)
+    reference = {
+        "relative_path": context.tree.artifact_path(
+            PERLECTOR, "audit-draft", envelope["artifact_id"]
+        ),
+        "sha256": digest_bytes(canonical_bytes(envelope)),
+    }
+    return draft_payload, publication, reference
+
+
+def _publish_audit_draft(context, publication: dict[str, Any], reference: dict[str, str]) -> None:
+    published = context.publish(**publication)
+    if context.input_ref(published.relative_path) != reference:
+        raise SchemaRefusal(
+            f"the audit draft at {published.relative_path} is not the draft its re-proof "
+            f"request bound ({reference!r})"
+        )
 
 
 def _cap_exhausted_spans(flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3254,7 +3496,7 @@ def _protocol_record(context, protocol_config: dict[str, Any]) -> dict[str, Any]
     return {
         "selection_rule": protocol_config["selection_rule"],
         "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
-        "draft_fed": context.draft_fed,
+        "blind_read": context.blind_read,
     }
 
 
@@ -3336,6 +3578,37 @@ def _publish_lectio_prior(
         "reference": context.artifact_ref(PERLECTOR, "lectio-prior", prior_artifact_id),
         "text": payload["text"],
     }
+
+
+def _publish_lectio_prior_failure(context, attempt: _Attempt, error: Exception) -> None:
+    """Keep a failed saved-mode Pass A as its own failed `lectio-prior`, never as a Perlectio.
+
+    A contract or schema defect (no failure fact) is not an instrument failure and stays fatal.
+    """
+    failure = _failure_record(error, phase="establishing")
+    if failure is None:
+        raise error
+    payload = {
+        "act_key": attempt.act_key,
+        "attempt_ordinal": attempt.ordinal,
+        "reason": f"saved blind read {failure['kind']} failure: {failure['code']}",
+        "failure": failure,
+        "provenance": attempt.provenance(context),
+    }
+    validate_failed_payload(payload)
+    evidence = [
+        dict(failure[name])
+        for name in ("raw_response_ref", "call_record_ref", "receipt_ref")
+        if failure[name] is not None
+    ]
+    context.publish(
+        kind="lectio-prior",
+        subject_id=attempt.act_id,
+        outcome="failed",
+        attempt=perlector_attempt_id(attempt.act_id, "lectio-prior", attempt.ordinal),
+        inputs=_distinct_inputs(evidence),
+        payload=payload,
+    )
 
 
 def _publish_primed_without_prior(
@@ -3459,15 +3732,46 @@ def _established_row(
         ),
         "protocol": _protocol_record(context, attempt.protocol_config),
     }
+    # The call the published text came from; the audit loop re-points it at the
+    # re-proof's call when that text is published.
+    with_engine_call(payload, result, _PERLECTIO_FIELDS)
+    return _pending_row(
+        context,
+        attempt,
+        act,
+        payload,
+        outcome,
+        order=order,
+        declared_failure=declared_failure,
+        testimonia=testimonia,
+        attachment_view=attachment_view,
+        autopsia=autopsia,
+    )
+
+
+def _pending_row(
+    context,
+    attempt: _Attempt,
+    act: dict[str, Any],
+    payload: dict[str, Any],
+    outcome: str,
+    *,
+    order: int,
+    declared_failure: str | None,
+    testimonia: list[dict],
+    attachment_view: dict[str, Any],
+    autopsia: dict[str, Any],
+) -> dict[str, Any]:
+    """The Pass-B payload with everything the audit pass needs to finish it."""
+    prior = payload["dossier"].get("prior_draft")
+    engine_call = payload.get("engine_call")
     return {
         "act": act,
         "act_id": attempt.act_id,
         "order": order,
         "bases": attempt.bases,
         "payload": payload,
-        # The call the published text came from; the audit loop re-points it at the
-        # re-proof's call when that text is published.
-        "fields": with_engine_call(payload, result, _PERLECTIO_FIELDS),
+        "fields": _PERLECTIO_FIELDS | ({"engine_call"} if engine_call is not None else set()),
         "outcome": outcome,
         # Areas, not decoded pixels: holding every act's images until the audit loop would
         # risk an OOM kill before any Perlectio publishes. A re-proof rebuilds its pixels
@@ -3483,10 +3787,10 @@ def _established_row(
         "inputs": _reading_image_inputs(
             context, attempt.bases, attempt.page_renders, autopsia=autopsia
         )
-        + list(testimonium_references.values())
+        + list(_testimonium_references(context, testimonia).values())
         + [attachment_view["reference"]]
         + ([prior["reference"]] if prior else [])
-        + engine_call_inputs(context, result.get("engine_call")),
+        + engine_call_inputs(context, engine_call),
     }
 
 
@@ -3533,11 +3837,10 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     """One Perlector pass: every requested act read once and published once."""
     run = _open_pass(registry_factory, serving_factory, service)
     _refuse_a_live_start_past_the_deadline(run)
-    pending = []
-    for act in run.wanted:
-        row = _read_act(run, act)
-        if row is not None:
-            pending.append(row)
+    # The effective width, for the transcript: the journal holds only what was asked.
+    print(f"perlector: up to {run.concurrency} reader calls in flight", file=sys.stderr)
+    rows = _in_order_window(run.concurrency, (_reading_job(run, act) for act in run.wanted))
+    pending = [row for row in rows if row is not None]
     _publish_audited_readings(run, pending)
     # Every requested act was read, resumed or acknowledged, or the pass refused.
     if not run.wanted:
@@ -3586,13 +3889,18 @@ class _Pass:
     reported_unrouted: set[tuple[str, int]] = field(default_factory=set)
     receipt_ref: dict[str, str] | None = None
     unread: int = 0
+    # Reader calls in flight at once; see `_reading_concurrency`.
+    concurrency: int = 1
+    # The main-pass results of acts a live resume found sealed: the page flags are
+    # computed over every act's semi-final, as the uninterrupted pass computed them.
+    sealed_semi_finals: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def calls_per_act(self) -> int:
         return (
             1
             + self.audit_policy["round_cap"]
-            + bool(self.context.draft_fed)
+            + (self.context.blind_read != "off")
             + bool(self.context.nuda_per_mille)
             + bool(self.context.perlector_instrument_per_mille)
         )
@@ -3607,6 +3915,14 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         default=None,
         help="UTC time by which a live pass must finish reading; it refuses to start, or "
         "to read another act, when the planned calls would run past it",
+    )
+    parser.add_argument(
+        "--perlector-concurrency",
+        type=_positive_int,
+        default=None,
+        help="reader calls a live pass keeps in flight at once, so the engine can batch "
+        "them; capped by the served row's max_num_seqs, which is also the default. "
+        "A blind-read (fed or saved) or fixture pass reads one act at a time",
     )
     args = parser.parse_args()
     context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)
@@ -3676,7 +3992,33 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         holds=holds,
         max_images=max_images,
         all_proposal_regions=sealed_proposal_regions(context),
+        concurrency=_reading_concurrency(context, args, chair, serving_mode),
     )
+
+
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise ValueError(f"{value!r} is not a positive count")
+    return number
+
+
+def _reading_concurrency(context, args, chair, serving_mode: str) -> int:
+    """How many reader calls may be in flight at once.
+
+    Only a live engine batches, and never beyond its served row's `max_num_seqs`. A
+    blind-read pass (`fed` or `saved`) stays serial: Pass A, or its failure, is published
+    inline before the establishing call (`fed` cites it), and publishing happens on the
+    main thread only.
+    """
+    if serving_mode != "live" or context.blind_read != "off":
+        return 1
+    bound = (
+        bound_serving_recipes(context, args.serving_recipes_config)
+        .for_identity(chair, args.placement_tier)
+        .max_num_seqs
+    )
+    return min(args.perlector_concurrency or bound, bound)
 
 
 def _sampling_approval(
@@ -3708,13 +4050,59 @@ def _refuse_a_live_start_past_the_deadline(run: _Pass) -> None:
     )
 
 
-def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
-    """Read one act up to Pass B, returning its row for the audit; else publish why not."""
+@dataclass(frozen=True)
+class _PreparedAct:
+    """Everything one act's reader calls and their publication need, resolved in order."""
+
+    act: dict[str, Any]
+    attempt: _Attempt
+    declared_failure: str | None
+    testimonia: list[dict]
+    attachment_view: dict[str, Any]
+    autopsia: dict[str, Any]
+    dossier: dict[str, Any]
+    nuda_sampled: bool
+    control_sampled: bool
+    # A live resume's retained `semi-final` for this act, adopted instead of asking again.
+    adopted: dict[str, Any] | None = None
+
+
+def _reading_job(run: _Pass, act: dict[str, Any]):
+    """Prepare one act on the main thread; return its reader call and in-order finish.
+
+    An act with no call has no call: its finish publishes its not-run record, if any, or
+    adopts its retained main-pass result. A live call is recorded as sent before it leaves.
+    """
+    prepared = _prepare_act(run, act)
+    if not isinstance(prepared, _PreparedAct):
+        return None, partial(_publish_without_reading, prepared)
+    if prepared.adopted is not None:
+        return None, partial(_adopted_row, run, prepared)
+    attempt = prepared.attempt
+    if run.serving_mode == "live":
+        _publish_sent(
+            run, attempt.act_id, attempt.act_key, attempt.ordinal, READING_PASS, prepared.autopsia
+        )
+    return partial(_call_act, run, prepared), partial(_publish_act, run, prepared)
+
+
+def _publish_without_reading(publication, _result: None) -> None:
+    if publication is not None:
+        publication()
+
+
+def _prepare_act(run: _Pass, act: dict[str, Any]):
+    """Resolve one act up to its reader call, or to the not-run record it will publish.
+
+    Returns the prepared act, the deferred not-run publication, or `None` for an act
+    already sealed.
+    """
     context, act_id, act_key = run.context, act["act_id"], act["act_key"]
     if act["outcome"] == "held":
         # Reading part of an act would deliver a truncation as output; acknowledged
         # explicitly, never skipped, so no unit goes unaccounted.
-        _publish_not_run(
+        return partial(
+            _publish_not_run,
             run,
             act,
             1,
@@ -3725,11 +4113,11 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
                 "truncation delivered as an output"
             ),
         )
-        return None
 
     if act_id in run.holds:
         # Derived, not fixed: an act re-asked after a recrop gets its next ordinal.
-        _publish_not_run(
+        return partial(
+            _publish_not_run,
             run,
             act,
             _next_attempt(context, act_id, act_regions(context, act_id)[0]),
@@ -3746,7 +4134,6 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
                 "partition_finding": run.holds[act_id],
             },
         )
-        return None
 
     # One region read answers both the attempt ordinal and the crops read, so
     # `_next_attempt` refuses an unplaceable origin before any immutable Perlectio exists.
@@ -3755,7 +4142,8 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(run.chair, AbsentChair):
         # An explicit record of the absence: producing nothing would leave the Recensor
         # to infer a gap it cannot see.
-        _publish_not_run(
+        return partial(
+            _publish_not_run,
             run,
             act,
             ordinal,
@@ -3764,14 +4152,27 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
             basis={"regions": [], "testimonia": []},
             dissent=[],
         )
-        return None
 
     if run.serving_mode == "live" and _reading_already_sealed(
         context, act_id, ordinal, act_key=act_key
     ):
         # Never asked again: a second live reading would differ and the store refuses
         # it. Not counted in `unread`: `_acts_left_to_read` already excluded it.
+        semi_final = _semi_final_record(context, act_id, ordinal)
+        if semi_final is not None:
+            _validate_semi_final(run, semi_final)
+            run.sealed_semi_finals.extend(
+                audit_semi_finals_for_pages(
+                    act_id=act_id,
+                    order=run.declared_order[act_id],
+                    text=semi_final["payload"]["text"],
+                    bases=semi_final["payload"]["basis"]["regions"],
+                    dossier=semi_final["payload"]["dossier"],
+                )
+            )
         return None
+    # Its main-pass reply is on record, so it is adopted and never asked again.
+    adopted = _semi_final_record(context, act_id, ordinal) if run.serving_mode == "live" else None
 
     # A declared engine outcome stands in for a real engine's report, so it is valid
     # only when no engine answers.
@@ -3811,7 +4212,9 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
     # the transport chunk its views.
     capacity_finding = over_capacity_reason(autopsia, run.max_images)
     if capacity_finding is not None:
-        _publish_not_run(
+        run.unread -= 1
+        return partial(
+            _publish_not_run,
             run,
             act,
             ordinal,
@@ -3823,17 +4226,16 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
             logical_act_id=logical_act_id,
             cross_capture_autopsia=autopsia,
         )
-        run.unread -= 1
-        return None
 
-    _refuse_past_deadline(
-        run.args.reading_deadline,
-        run.unread * run.calls_per_act * PLANNED_SECONDS_PER_CALL,
-        f"reading the {run.unread} acts left",
-    )
-    run.unread -= 1
-    if run.reader is None:
-        _start_live_reader(run)
+    if adopted is None:
+        _refuse_past_deadline(
+            run.args.reading_deadline,
+            run.unread * run.calls_per_act * PLANNED_SECONDS_PER_CALL,
+            f"reading the {run.unread} acts left",
+        )
+        run.unread -= 1
+        if run.reader is None:
+            _start_live_reader(run)
 
     base_dossier = dossier_module.build_dossier(
         context,
@@ -3861,38 +4263,77 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
         protocol_sha256=run.protocol_sha256,
         receipt_ref=run.receipt_ref,
     )
+    return _PreparedAct(
+        act=act,
+        attempt=attempt,
+        declared_failure=declared_failure,
+        testimonia=testimonia,
+        attachment_view=attachment_view,
+        autopsia=autopsia,
+        dossier=base_dossier,
+        nuda_sampled=nuda_sampled,
+        control_sampled=control_sampled,
+        adopted=adopted,
+    )
+
+
+def _call_act(run: _Pass, prepared: _PreparedAct) -> dict[str, Any] | Exception:
+    """Every reader call of one act, safe on a worker thread: it publishes nothing.
+
+    An act-local failure is returned, not raised, so it becomes this act's own
+    failed Perlectio and never touches another act.
+    """
     try:
-        passes = combined.run_logical_passes(
+        return combined.run_logical_passes(
             run.reader,
-            autopsia=autopsia,
-            dossier=base_dossier,
-            read_bytes=context.tree.read_bytes,
+            autopsia=prepared.autopsia,
+            dossier=prepared.dossier,
+            read_bytes=run.context.tree.read_bytes,
             protocol_config=run.protocol_config,
-            nuda_sampled=nuda_sampled,
-            control_sampled=control_sampled,
-            draft_fed=context.draft_fed,
-            # Runs before the establishing arm, which embeds the prior reference it returns.
-            publish_prior=partial(_publish_lectio_prior, context, attempt),
+            nuda_sampled=prepared.nuda_sampled,
+            control_sampled=prepared.control_sampled,
+            blind_read=run.context.blind_read,
+            # Runs before the establishing arm, which embeds the prior reference it
+            # returns. Pass A is only run serially (`_reading_concurrency`), so this
+            # always publishes inline on the main thread.
+            publish_prior=partial(_publish_lectio_prior, run.context, prepared.attempt),
+            saved_prior_failures=_ACT_LOCAL_READING_FAILURES,
+            record_prior_failure=partial(
+                _publish_lectio_prior_failure, run.context, prepared.attempt
+            ),
         )
     except _ACT_LOCAL_READING_FAILURES as error:
-        failure = _failure_record(error, phase="establishing")
-        assert failure is not None  # narrowed by the exception tuple above
+        return error
+
+
+def _publish_act(
+    run: _Pass, prepared: _PreparedAct, passes: dict[str, Any] | Exception
+) -> dict[str, Any] | None:
+    """Publish one act's arms, or its failure, and return its row for the audit."""
+    context, attempt, act = run.context, prepared.attempt, prepared.act
+    testimonia, attachment_view = prepared.testimonia, prepared.attachment_view
+    if isinstance(passes, Exception):
+        failure = _failure_record(passes, phase="establishing")
+        assert failure is not None  # `_call_act` returns only act-local failures
         _publish_reading_failure(
             context,
-            act_id=act_id,
-            act_key=act_key,
-            ordinal=ordinal,
-            inputs=_reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
+            act_id=attempt.act_id,
+            act_key=attempt.act_key,
+            ordinal=attempt.ordinal,
+            inputs=_reading_image_inputs(
+                context, attempt.bases, attempt.page_renders, autopsia=prepared.autopsia
+            )
             + list(_testimonium_references(context, testimonia).values())
             + [attachment_view["reference"]]
-            + _published_arm_refs(context, act_id, ordinal),
+            + _published_arm_refs(context, attempt.act_id, attempt.ordinal)
+            + _live_sent_refs(run, attempt.act_id, attempt.act_key, attempt.ordinal, READING_PASS),
             failure=failure,
             reason=f"live Perlector {failure['kind']} failure: {failure['code']}",
             provenance=attempt.provenance(context),
         )
         return None
 
-    if nuda_sampled:
+    if prepared.nuda_sampled:
         _publish_lectio_nuda(
             context,
             attempt,
@@ -3900,7 +4341,7 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
             passes["lectio-nuda"]["result"],
             run.nuda_approval,
         )
-    if control_sampled:
+    if prepared.control_sampled:
         _publish_primed_without_prior(
             context,
             attempt,
@@ -3910,17 +4351,187 @@ def _read_act(run: _Pass, act: dict[str, Any]) -> dict[str, Any] | None:
             attachment_view=attachment_view,
             approval_ref=run.instrument_approval,
         )
-    return _established_row(
+    row = _established_row(
         context,
         attempt,
         act,
         passes["perlectio"],
-        order=run.declared_order[act_id],
-        declared_failure=declared_failure,
+        order=run.declared_order[attempt.act_id],
+        declared_failure=prepared.declared_failure,
         testimonia=testimonia,
         attachment_view=attachment_view,
-        autopsia=autopsia,
+        autopsia=prepared.autopsia,
     )
+    if run.serving_mode == "live":
+        _publish_semi_final(run, row)
+    return row
+
+
+def _live_sent_refs(run: _Pass, act_id: str, act_key: str, ordinal: int, pass_name: str):
+    if run.serving_mode != "live":
+        return []
+    return _sent_refs(run.context, act_id, act_key, ordinal, pass_name)
+
+
+def _publish_semi_final(run: _Pass, row: dict[str, Any]) -> None:
+    """Put a live act's main-pass result on record, and bind it into every later record.
+
+    Published as soon as the act's calls return, so a pass that stops before its audit
+    leaves nothing a resume would have to ask for again. It names every send it answers.
+    """
+    context, payload, act_id = run.context, row["payload"], row["act_id"]
+    inputs = row["inputs"] + _sent_refs(
+        context, act_id, payload["act_key"], payload["attempt_ordinal"], READING_PASS
+    )
+    fields = row["fields"] - {"audit"}
+    validate_reading_payload(
+        payload,
+        outcome=row["outcome"],
+        fields=fields,
+        run_id=context.tree.run_id,
+        config_digest=context.config_digest,
+        protocol_config=run.protocol_config,
+        protocol_sha256=run.protocol_sha256,
+        inputs=inputs,
+    )
+    published = context.publish(
+        kind=SEMI_FINAL_KIND,
+        subject_id=act_id,
+        outcome=row["outcome"],
+        attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
+        inputs=inputs,
+        payload=payload,
+    )
+    row["inputs"].append(context.input_ref(published.relative_path))
+
+
+def _validate_semi_final(run: _Pass, record: dict[str, Any]) -> None:
+    """Refuse a semi-final read back that this run could not have written.
+
+    Its payload is checked as the reading it is, and it must have been made under this
+    run's sealed configuration and reading protocol, blind-read setting included.
+    """
+    context, payload = run.context, record["payload"]
+    if record["config_digest"] != context.config_digest or payload.get("protocol") != (
+        _protocol_record(context, run.protocol_config)
+    ):
+        raise ContractError(
+            f"act {payload.get('act_key')!r}'s semi-final was made under another "
+            "configuration or reading protocol than this run's; read this page in a new run"
+        )
+    validate_reading_payload(
+        payload,
+        outcome=record["outcome"],
+        fields=(_PERLECTIO_FIELDS - {"audit"})
+        | ({"engine_call"} if "engine_call" in payload else set()),
+        run_id=context.tree.run_id,
+        config_digest=context.config_digest,
+        protocol_config=run.protocol_config,
+        protocol_sha256=run.protocol_sha256,
+        inputs=record["inputs"],
+    )
+
+
+def _adopted_row(run: _Pass, prepared: _PreparedAct, _result: None) -> dict[str, Any]:
+    """Rebuild an act's audit row from its retained semi-final, asking nothing.
+
+    The record must have been made from exactly the evidence this act has now: its inputs
+    are re-derived here and must match, so a changed crop or witness is refused rather
+    than paired with a reading of something else.
+    """
+    context, attempt, record = run.context, prepared.attempt, prepared.adopted
+    payload = record["payload"]
+    row = _pending_row(
+        context,
+        attempt,
+        prepared.act,
+        payload,
+        record["outcome"],
+        order=run.declared_order[attempt.act_id],
+        declared_failure=prepared.declared_failure,
+        testimonia=prepared.testimonia,
+        attachment_view=prepared.attachment_view,
+        autopsia=prepared.autopsia,
+    )
+    expected = row["inputs"] + _sent_refs(
+        context, attempt.act_id, attempt.act_key, attempt.ordinal, READING_PASS
+    )
+    if (
+        sorted(map(_input_order, expected)) != sorted(map(_input_order, record["inputs"]))
+        or payload["basis"]["regions"] != attempt.bases
+    ):
+        raise ContractError(
+            f"act {attempt.act_key!r}'s retained semi-final was made from other evidence "
+            "than the act has now; it is not adopted and the act is not asked again. Read "
+            "this page in a new run"
+        )
+    _validate_semi_final(run, record)
+    row["inputs"].append(context.artifact_ref(PERLECTOR, SEMI_FINAL_KIND, record["artifact_id"]))
+    return row
+
+
+def _in_order_window(width: int, jobs) -> list[Any]:
+    """Run jobs' calls with at most `width` jobs unfinished; finish every job in order here.
+
+    A job is `(call, finish)`, and `call` is `None` for a job that only publishes. Jobs
+    are drawn lazily, so the next is prepared, and its deadline checked, only once fewer
+    than `width` are unfinished. `finish` runs on this thread, strictly in job order,
+    with what `call` returned (`None` without a call), so records are published in the
+    order a serial pass publishes them. Width 1 calls inline, with no thread.
+
+    Every job drawn is finished: if drawing a job, a call or a finish raises, the jobs
+    already drawn are still finished in order, so no reply is left without its record,
+    and then the first error re-raises with any later ones attached as notes. An
+    interrupt stops waiting at once, so the chair can be stopped: it first finishes
+    every job whose reply has already arrived, and leaves the calls still out
+    unfinished. A reply that arrived is recorded even when an earlier call is still
+    out; a record's bytes do not depend on the order it was written in.
+    """
+    finished: list[Any] = []
+    if width == 1:
+        for call, finish in jobs:
+            finished.append(finish(call() if call is not None else None))
+        return finished
+    pool = ThreadPoolExecutor(max_workers=width)
+    window: deque = deque()
+
+    def finish_first() -> None:
+        future, finish = window.popleft()
+        finished.append(finish(future.result() if future is not None else None))
+
+    error: Exception | None = None
+    try:
+        try:
+            for call, finish in jobs:
+                window.append((pool.submit(call) if call is not None else None, finish))
+                while window and (len(window) == width or window[0][0] is None):
+                    finish_first()
+        except Exception as raised:
+            error = raised
+        while window:
+            try:
+                finish_first()
+            except Exception as raised:
+                if error is None:
+                    error = raised
+                else:
+                    error.add_note(f"a later act also failed: {type(raised).__name__}: {raised}")
+    except BaseException as interrupt:
+        for future, finish in window:
+            if future is not None and (
+                not future.done() or future.cancelled() or future.exception() is not None
+            ):
+                continue
+            try:
+                finish(future.result() if future is not None else None)
+            except Exception as raised:
+                interrupt.add_note(f"an arrived reply was not recorded: {raised}")
+        raise
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    if error is not None:
+        raise error
+    return finished
 
 
 def _publish_audited_readings(run: _Pass, pending: list[dict[str, Any]]) -> None:
@@ -3939,7 +4550,7 @@ def _publish_audited_readings(run: _Pass, pending: list[dict[str, Any]]) -> None
             bases=row["bases"],
             dossier=row["payload"]["dossier"],
         )
-    ]
+    ] + run.sealed_semi_finals
     page_flags = _page_flags(
         run.context,
         semi_finals,
@@ -3949,8 +4560,10 @@ def _publish_audited_readings(run: _Pass, pending: list[dict[str, Any]]) -> None
         protocol_sha256=run.protocol_sha256,
     )
     policy_record = audit.policy_record(run.audit_policy, run.audit_sha256)
-    for row in pending:
-        _publish_audited_reading(run, row, page_flags[row["act_id"]], policy_record)
+    _in_order_window(
+        run.concurrency,
+        (_audit_job(run, row, page_flags[row["act_id"]], policy_record) for row in pending),
+    )
 
 
 @dataclass(frozen=True)
@@ -3967,15 +4580,61 @@ class _Reproof:
     inputs: list[dict[str, str]]
 
 
-def _publish_audited_reading(
+def _audit_job(
     run: _Pass, row: dict[str, Any], flags: list[dict[str, Any]], policy_record: dict[str, Any]
-) -> None:
-    """Freeze the semi-final, re-proof its flags when due, then publish finding and Perlectio."""
-    context, payload, act_id = run.context, row["payload"], row["act_id"]
+):
+    """Freeze the semi-final and return the act's re-proof call, if due, and its finish."""
     round_cap = run.audit_policy["round_cap"]
-    draft_payload, draft_ref = _publish_audit_draft(
-        context, row, flags, round_cap=round_cap, policy_record=policy_record
+    draft_payload, draft_publication, draft_ref = _audit_draft(
+        run.context, row, flags, round_cap=round_cap, policy_record=policy_record
     )
+    finish = partial(
+        _publish_audited_reading,
+        run,
+        row,
+        flags,
+        policy_record,
+        draft_payload,
+        draft_publication,
+        draft_ref,
+    )
+    if not audit.reproof_delivery_due(flags, round_cap):
+        return None, partial(finish, None)
+    request = _reproof_request(run, row, flags, draft_ref)
+    _refuse_past_deadline(
+        run.args.reading_deadline, PLANNED_SECONDS_PER_CALL, "the next re-proof call"
+    )
+    if run.serving_mode == "live":
+        # A resume whose every act was adopted starts its chair here, at the first call.
+        if run.reader is None:
+            _start_live_reader(run)
+        payload = row["payload"]
+        _publish_sent(
+            run,
+            row["act_id"],
+            payload["act_key"],
+            payload["attempt_ordinal"],
+            REPROOF_PASS,
+            row["autopsia"],
+        )
+    return partial(_send_reproof, run, row, request), partial(finish, request)
+
+
+def _publish_audited_reading(
+    run: _Pass,
+    row: dict[str, Any],
+    flags: list[dict[str, Any]],
+    policy_record: dict[str, Any],
+    draft_payload: dict[str, Any],
+    draft_publication: dict[str, Any],
+    draft_ref: dict[str, str],
+    request: dict[str, Any] | None,
+    reply: dict[str, Any] | Exception | None,
+) -> None:
+    """Publish the draft, adopt a delivered re-proof if one was due, then finding and Perlectio."""
+    context, payload, act_id = run.context, row["payload"], row["act_id"]
+    _publish_audit_draft(context, draft_publication, draft_ref)
+    round_cap = run.audit_policy["round_cap"]
     # The one function `validate_chain` and `audit_request` also use, so the sealed,
     # delivered and recomputed plans are one computation.
     reproofs = audit.reproof_plan(
@@ -3984,8 +4643,8 @@ def _publish_audited_reading(
     reproof: _Reproof | None = None
     reproof_truncation: dict[str, Any] | None = None
     changes: list[dict[str, Any]] = []
-    if audit.reproof_delivery_due(flags, round_cap):
-        reproof = _delivered_reproof(run, row, flags, draft_ref)
+    if request is not None:
+        reproof = _delivered_reproof(run, row, draft_ref, request, reply)
         if reproof is None:
             return
         reproof_truncation = _adopt_reproof_text(run, row, reproof)
@@ -4104,20 +4763,11 @@ def _audited_reading_inputs(
     )
 
 
-def _delivered_reproof(
+def _reproof_request(
     run: _Pass, row: dict[str, Any], flags: list[dict[str, Any]], draft_ref: dict[str, str]
-) -> _Reproof | None:
-    """Ask the chair to re-proof the flagged spans; `None` once a failure is published instead."""
-    context, payload = run.context, row["payload"]
-    base_prompt_record = copy.deepcopy(payload["prompt"])
-    base_prompt_text = prompts.build_prompt(
-        run.chair.serving_recipe, run.chair.role, payload["dossier"], run.protocol_config
-    )
-    # One reader call per act and round over the complete atomic presentation; a
-    # flagged-page subset would be a capture-local call.
-    pixels = atomic_delivered_pixels(
-        row["autopsia"], read_bytes=context.tree.read_bytes, max_images=run.max_images
-    )
+) -> dict[str, Any]:
+    """The audit request asking the chair to re-proof this act's flagged spans."""
+    payload = row["payload"]
     # The request carries the frozen semi-final its locations index into, bound by the
     # published draft's digest; the dossier goes through untouched so its
     # `dossier_digest` still covers it.
@@ -4129,28 +4779,58 @@ def _delivered_reproof(
         flags=flags,
         policy_schema=run.audit_policy["schema"],
     )
-    request_digest = audit.audit_digest(request)
     # Enforced by the producer so it binds whichever reader sits in the chair.
     validate_audit_delivery(payload["dossier"], pass_kind="audit-reproof", audit_request=request)
-    _refuse_past_deadline(
-        run.args.reading_deadline, PLANNED_SECONDS_PER_CALL, "the next re-proof call"
+    return request
+
+
+def _send_reproof(
+    run: _Pass, row: dict[str, Any], request: dict[str, Any]
+) -> dict[str, Any] | Exception:
+    """The one re-proof call, safe on a worker thread: it publishes nothing.
+
+    An act-local failure is returned, not raised, so only this act records it.
+    """
+    # One reader call per act and round over the complete atomic presentation; a
+    # flagged-page subset would be a capture-local call.
+    pixels = atomic_delivered_pixels(
+        row["autopsia"], read_bytes=run.context.tree.read_bytes, max_images=run.max_images
     )
     try:
-        reply = run.reader.read(
-            payload["dossier"],
+        return run.reader.read(
+            row["payload"]["dossier"],
             pass_kind="audit-reproof",
             delivered_pixels=pixels,
             audit_request=copy.deepcopy(request),
         )
     except _ACT_LOCAL_READING_FAILURES as error:
-        failure = _failure_record(error, phase="audit-reproof")
+        return error
+
+
+def _delivered_reproof(
+    run: _Pass,
+    row: dict[str, Any],
+    draft_ref: dict[str, str],
+    request: dict[str, Any],
+    reply: dict[str, Any] | Exception,
+) -> _Reproof | None:
+    """Assemble a delivered re-proof; `None` once a failure is published instead."""
+    context, payload = run.context, row["payload"]
+    base_prompt_record = copy.deepcopy(payload["prompt"])
+    base_prompt_text = prompts.build_prompt(
+        run.chair.serving_recipe, run.chair.role, payload["dossier"], run.protocol_config
+    )
+    request_digest = audit.audit_digest(request)
+    if isinstance(reply, Exception):
+        failure = _failure_record(reply, phase="audit-reproof")
         assert failure is not None
         _publish_reproof_failure(
             run,
             row,
             inputs=row["inputs"]
             + [draft_ref]
-            + _published_arm_refs(context, row["act_id"], payload["attempt_ordinal"]),
+            + _published_arm_refs(context, row["act_id"], payload["attempt_ordinal"])
+            + _reproof_sent_refs(run, row),
             failure=failure,
             reason=f"live Perlector {failure['kind']} failure during audit re-proof: {failure['code']}",
         )
@@ -4177,7 +4857,8 @@ def _delivered_reproof(
             inputs=row["inputs"]
             + [draft_ref]
             + engine_call_inputs(context, reply.get("engine_call"))
-            + _published_arm_refs(context, row["act_id"], payload["attempt_ordinal"]),
+            + _published_arm_refs(context, row["act_id"], payload["attempt_ordinal"])
+            + _reproof_sent_refs(run, row),
             failure=_failure_from_engine_call(context, reply.get("engine_call"), detail=str(error)),
             reason="the delivered audit re-proof response could not be assembled safely",
         )
@@ -4188,7 +4869,14 @@ def _delivered_reproof(
         text=text,
         edits=edits,
         call_record=call_record,
-        inputs=engine_call_inputs(context, reply.get("engine_call")),
+        inputs=engine_call_inputs(context, reply.get("engine_call")) + _reproof_sent_refs(run, row),
+    )
+
+
+def _reproof_sent_refs(run: _Pass, row: dict[str, Any]) -> list[dict[str, str]]:
+    payload = row["payload"]
+    return _live_sent_refs(
+        run, row["act_id"], payload["act_key"], payload["attempt_ordinal"], REPROOF_PASS
     )
 
 
@@ -4209,7 +4897,11 @@ def _publish_reproof_failure(
         inputs=inputs,
         failure=failure,
         reason=reason,
-        provenance=payload["provenance"],
+        # The session whose call failed: after a resume it is not the one that read Pass B,
+        # whose own provenance stays on the semi-final this record binds.
+        provenance=provenance_for(
+            run.context, run.chair, attempted=True, receipt_ref=run.receipt_ref
+        ),
     )
 
 

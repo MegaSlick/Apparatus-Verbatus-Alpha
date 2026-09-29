@@ -64,8 +64,9 @@ of uncertain quality, always kept and never final; it names its model and revisi
 (primed) or not.
 
 **Lectio nuda** — a sampled unprimed baseline, separate from the Pass-A draft
-(*lectio-prior*), which runs only under `--draft-fed`; both see the same inputs and
-measure sampling variance.
+(*lectio-prior*), which runs only under `--blind-read fed` or `saved` (under `saved`
+it is kept as a training witness and never shown to the establishing reading); both
+see the same inputs and measure sampling variance.
 
 **Perlectio** — what the Perlector returns: the reading, what it was based on, and where
 it departed from every witness (its dissent).
