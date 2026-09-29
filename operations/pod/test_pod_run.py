@@ -143,7 +143,7 @@ class RecordedRunner:
                 "".join(
                     json.dumps(
                         {
-                            "schema": "stage-timing-journal.v2",
+                            "schema": "stage-timing-journal.v3",
                             "run_id": self.journal_run_id,
                             "run_root": argv[argv.index("--run-root") + 1],
                         }
@@ -2292,7 +2292,7 @@ def test_real_timing_writer_and_reader_audit_mixed_and_damaged_lines(tmp_path: P
     write()
     args.run_root = run_root
     with journal.open("ab") as handle:
-        handle.write(b'{"schema":"stage-timing-journal.v2"')
+        handle.write(b'{"schema":"stage-timing-journal.v3"')
     write()  # Repairs the torn tail before appending the next complete line.
 
     plan = object.__new__(pod_run.RunPlan)

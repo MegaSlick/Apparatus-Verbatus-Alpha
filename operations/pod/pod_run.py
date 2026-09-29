@@ -895,7 +895,7 @@ def _records_at_close(
                             continue  # A later append can leave a torn line in the middle.
                         if (
                             not isinstance(record, dict)
-                            or record.get("schema") != "stage-timing-journal.v2"
+                            or record.get("schema") != "stage-timing-journal.v3"
                         ):
                             unreadable_lines += 1
                             continue

@@ -3753,7 +3753,7 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tm
     )
 
     entries = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
-    assert all(entry["schema"] == "stage-timing-journal.v2" for entry in entries)
+    assert all(entry["schema"] == "stage-timing-journal.v3" for entry in entries)
     assert all(entry["run_id"] == "r" for entry in entries)
     stages = [entry["stage"] for entry in entries]
     # Every program the automatic sequence invokes, the Door and the Exemplar
@@ -3767,6 +3767,8 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tm
         assert entry["started_at"].endswith("Z") and entry["finished_at"].endswith("Z")
         assert entry["repository_commit"] == COMMIT
         assert entry["repository_commit_detail"] is None
+        # Every entry carries the GPU reading or the reason there is none.
+        assert (entry["gpu_utilization"] is None) == bool(entry["gpu_utilization_reason"])
 
 
 def test_a_short_revision_is_refused_on_a_run_that_does_not_start_at_the_door(tmp_path):
