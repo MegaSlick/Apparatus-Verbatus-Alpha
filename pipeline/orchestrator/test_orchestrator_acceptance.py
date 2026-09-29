@@ -3782,6 +3782,8 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(
         assert gpu["sample_count"] >= 1 and gpu["mean"] == 97 and gpu["max"] == 97
         assert gpu["busy_fraction_over_95"] == 1.0
         assert gpu["samples"][0]["memory_used_mib"] == 1234
+        # Unset: the Perlector keeps its served row's bound; no other stage has one.
+        assert entry["perlector_concurrency"] is None
 
 
 def test_a_short_revision_is_refused_on_a_run_that_does_not_start_at_the_door(tmp_path):

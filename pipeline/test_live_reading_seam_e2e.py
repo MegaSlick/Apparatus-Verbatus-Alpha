@@ -98,7 +98,7 @@ from common.decoding import load_decoding_policy  # noqa: E402
 from common.native_witness import reported_geometry_overlaps  # noqa: E402
 from common.perlector_audit import RESPONSE_SCHEMA as AUDIT_RESPONSE_SCHEMA  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
-from common.stage import EXIT_COMPLETE, EXIT_HELD, verify_final_seal  # noqa: E402
+from common.stage import EXIT_COMPLETE, EXIT_HELD, StageContext, verify_final_seal  # noqa: E402
 from operations.serving.assembly import retain_chair_bytes  # noqa: E402
 from operations.serving.client import ChairClient  # noqa: E402
 from operations.serving.config import (  # noqa: E402
@@ -1524,6 +1524,71 @@ def test_an_engine_prompt_too_long_400_is_a_retained_failed_perlectio_held_downs
 
 
 # ============================ the fixture path, unmoved =======================
+
+
+class _StoppedMidPass(Exception):
+    """A pass that dies the moment its first main-pass result is on record."""
+
+
+def test_a_pass_stopped_mid_reading_resumes_without_asking_again_and_the_tail_accepts_it(
+    witnessed, designated, tmp_path, monkeypatch
+):
+    """A resumed live Perlector tree is one the Recensor, Archetypus and Armarium accept.
+
+    The first pass stops once act one's `semi-final` is written; the second adopts every
+    main-pass result on record, asks the chair only for what was never sent, and the
+    tail carries the run to a delivered export as it does an uninterrupted one.
+    """
+    run_root = tmp_path / "runs"
+    shutil.copytree(witnessed.run_root, run_root)
+    publish = StageContext.publish
+
+    def publish_then_stop(self, **kwargs):
+        result = publish(self, **kwargs)
+        if kwargs["kind"] == perlector.SEMI_FINAL_KIND:
+            raise _StoppedMidPass
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(StageContext, "publish", publish_then_stop)
+        with pytest.raises(_StoppedMidPass):
+            run_in_process(
+                perlector,
+                run_root,
+                designated.catalogue,
+                placement_tier=TIER,
+                serving_factory=ReaderWorld(
+                    designated.catalogue, tmp_path / "first", finish_reason="stop"
+                ).factory,
+            )
+    stage = run_root / RUN_ID / "4_perlector" / "artifacts"
+    adopted = len(list((stage / perlector.SEMI_FINAL_KIND).glob("*.json")))
+    assert adopted and published_readings(run_root) == []
+
+    reader = ReaderWorld(designated.catalogue, tmp_path / "second", finish_reason="stop")
+    assert (
+        run_in_process(
+            perlector,
+            run_root,
+            designated.catalogue,
+            placement_tier=TIER,
+            serving_factory=reader.factory,
+        )
+        == EXIT_COMPLETE
+    )
+    main_pass = [
+        request
+        for request in reader.endpoint.requests
+        if _unchanged_reproof_response(json.dumps(request).encode()) is None
+    ]
+    assert len(main_pass) == 2 - adopted
+    assert {
+        program: invoke_stage(program, run_root, designated.catalogue, placement_tier=TIER)
+        for program in TAIL_FROM_RECENSOR
+    } == dict.fromkeys(TAIL_FROM_RECENSOR, EXIT_COMPLETE)
+    export = verify_final_seal(RunTree(run_root, RUN_ID))
+    assert export["outcome"] == ArmariumCategory.DELIVERED.value
+    assert sorted(item["act_key"] for item in export["payload"]["delivered"]) == ["a1", "a2"]
 
 
 def test_the_identical_driver_in_fixture_mode_reproduces_the_orchestrated_tree(tmp_path):

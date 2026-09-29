@@ -378,4 +378,17 @@ def validate_failed_perlectio(
         raise SchemaRefusal("an audit-reproof failure cannot follow a completed audit finding")
     if failure["phase"] == "establishing" and existing & {"audit-draft", "audit-finding"}:
         raise SchemaRefusal("an establishing failure claims an audit-stage artifact")
+    # A live act's main-pass result; a failure after it belongs to the re-proof and binds it.
+    semi_final = artifact_id(
+        PERLECTOR,
+        "semi-final",
+        act_id,
+        perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
+    )
+    if context.tree.has_artifact(PERLECTOR, "semi-final", semi_final):
+        _require_input(
+            envelope, context.artifact_ref(PERLECTOR, "semi-final", semi_final), "semi-final"
+        )
+        if failure["phase"] == "establishing":
+            raise SchemaRefusal("an establishing failure follows its own completed main pass")
     return payload
