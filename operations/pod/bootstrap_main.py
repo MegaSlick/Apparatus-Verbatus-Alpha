@@ -139,6 +139,7 @@ from operations.serving.smoke import (
     render_golden_page,
 )
 
+from . import boot_a_request
 from .bootstrap import (
     CONFIGURATION_RECEIPT_SCHEMA,
     BootstrapActions,
@@ -1558,6 +1559,19 @@ def prepare(
     args = build_parser().parse_flags(argv, report_path)
     plan = resolve_plan(args, environment)
     try:
+        # A plain directory at the sealed mount path would put run state and the
+        # model store on the pod's container disk instead of the network volume.
+        if str(
+            plan.volume_mount_path
+        ) == boot_a_request.BOOT_A_VOLUME_MOUNT_PATH and not os.path.ismount(
+            plan.volume_mount_path
+        ):
+            raise PlanRefusal(
+                f"--volume-mount-path {plan.volume_mount_path} is the pod's expected "
+                "network-volume mount point, but this machine does not have anything "
+                "mounted there; an unmounted local directory is not the network volume",
+                report_path=plan.report_path,
+            )
         write_probe(plan.volume_mount_path)
         scrubbed = scrub_environment(environment, keep=plan.keep_env)
         environment.clear()

@@ -331,6 +331,10 @@ class PodCreateRequest:
         ):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{label} must be a non-blank string")
+        if self.volume_id.startswith("<"):
+            raise ValueError(
+                "volume_id is an unsupplied placeholder; every run needs a network volume"
+            )
         if self.template is not None and (
             not isinstance(self.template, str) or not self.template.strip()
         ):

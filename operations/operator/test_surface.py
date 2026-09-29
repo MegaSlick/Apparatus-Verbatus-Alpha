@@ -1661,6 +1661,24 @@ def test_upload_publishes_the_manifest_only_after_every_image_verifies(tmp_path:
     assert (volume / "submission-manifest.json").read_bytes() == manifest.read_bytes()
 
 
+def test_upload_sends_only_the_sealed_pages_and_their_manifest(tmp_path: Path) -> None:
+    """Whatever else sits in the source folder never leaves the machine."""
+
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    (source / "notes-added-after-sealing.txt").write_bytes(b"private note\n")
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    surface.upload(source, sealed_manifest=manifest, target=store)
+
+    assert sorted(store.puts) == [
+        "submission-manifest.json",
+        "submission-manifest.sha256",
+        "submission/page-one.bin",
+        "submission/page-two.bin",
+    ]
+
+
 def test_upload_reuses_an_identical_published_submission_without_new_writes(
     tmp_path: Path,
 ) -> None:
