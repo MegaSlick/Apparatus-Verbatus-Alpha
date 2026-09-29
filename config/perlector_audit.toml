@@ -1,4 +1,4 @@
-# R5b Pass-C audit policy.  These bytes are sealed into every run.
+# R5b Pass-C audit policy.  Its values are sealed into every run.
 #
 # One round is the production default, and one round is all this build performs:
 # `pipeline/4_perlector/audit.py` refuses `round_cap` above 1 even with an
