@@ -136,6 +136,6 @@ def test_a_declared_truncated_reading_never_carries_a_complete_truncation_record
     assert reading["payload"]["truncation"]["signals"] == {
         "stop_reason_declared": "stop",
         "unclosed_structure": False,
-        "length_suspicious": False,
+        "length_suspicious": None,
         "ends_abruptly": False,
     }

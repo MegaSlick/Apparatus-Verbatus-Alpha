@@ -329,6 +329,7 @@ def test_fed_empty_text_reproof_retains_measured_self_revision(monkeypatch):
         "declared_failure": None,
         "region_pixels": [],
         "page_pixels": [],
+        "smallest_page_pixels": [],
     }
     monkeypatch.setattr(perlector, "_row_truncation", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(

@@ -27,9 +27,14 @@ That case is real rather than theoretical: a serving adapter can drop the
 engine's stop-reason and expose only a token count, with no way to derive a
 positive engine observation from that alone. A serving path here whose
 adapter drops the stop-reason therefore cannot produce `complete`, but it can
-still produce `truncated` when all three computed signals are suspicious;
+still produce `truncated` when every judged computed signal is suspicious;
 otherwise the result is `unknown` -- the reason the rule is written as "an
 engine observation" rather than "a stop-reason".
+
+The length signal is judged only where the act's smallest page is at least the
+sealed legible size; where it is not, it is recorded as not judged and votes
+neither way, so the verdict comes from the other two signals and the record
+says length was not consulted.
 """
 
 from __future__ import annotations
@@ -42,6 +47,7 @@ from common.perlector_audit import (
     TRUNCATION_COMPLETE,
     TRUNCATION_TRUNCATED,
     TRUNCATION_UNKNOWN,
+    length_judged,
     length_signal,
     truncation_classification,
 )
@@ -72,20 +78,25 @@ _STRUCTURE_PAIRS: Final = (("(", ")"), ("[", "]"), ("“", "”"))
 # `perlector-protocol` seal, so which floor judged a reading is in the run's
 # config_digest.
 LENGTH_FLOOR_FIELD: Final = "length_floor_characters_per_page"
+# The sealed size below which a page cannot hold the lines the floor's density
+# describes, so the length signal is not judged on it.
+LEGIBLE_PAGE_FIELD: Final = "legible_page_pixels"
 
 
 class TruncationSignals(TypedDict):
     stop_reason_declared: str | None
     unclosed_structure: bool
-    length_suspicious: bool
+    # `None` when the length was not judged: neutral, neither clean nor suspicious.
+    length_suspicious: bool | None
     ends_abruptly: bool
 
 
 class TruncationMeasure(TypedDict):
     """What the length signal was judged from, recorded so it can be re-judged.
 
-    Carries every term of the predicate -- region pixels, page pixels,
-    character count, floor -- so a consumer holding nothing but this block
+    Carries every term of the predicate -- region pixels, page pixels, the
+    smallest page the act spans, character count, floor, legibility gate --
+    so a consumer holding nothing but this block
     recomputes `length_suspicious` rather than trusting it. The floor travels
     on the record and not only in the run's config_digest because
     configuration protects reproducibility going forward while the record
@@ -96,8 +107,11 @@ class TruncationMeasure(TypedDict):
 
     region_pixels: int
     page_pixels: int
+    smallest_page_pixels: int
     characters: int
     length_floor_characters_per_page: int
+    legible_page_pixels: int
+    length_judged: bool
 
 
 class TruncationRecord(TypedDict):
@@ -188,10 +202,13 @@ def classify(
     page_pixels: int,
     truncation_policy: Mapping[str, object],
     stop_reason: str | None = None,
+    smallest_page_pixels: int | None = None,
 ) -> TruncationRecord:
     """Classify one reading attempt `complete | truncated | unknown`.
 
-    `truncation_policy` is the sealed `[truncation]` table, keyword-only with
+    `smallest_page_pixels` is the smallest single page the act spans, which the
+    legibility gate is judged on; it defaults to `page_pixels`, right for an act
+    on one page. `truncation_policy` is the sealed `[truncation]` table, keyword-only with
     no default: a caller that forgets it fails loudly rather than judging under
     a floor nobody sealed, the shape `coverage_flag`'s gates already take.
 
@@ -203,7 +220,7 @@ def classify(
 
       engine `length`                          -> truncated
       engine `stop`, three clean signals       -> complete
-      three suspicious signals                 -> truncated
+      every judged computed signal suspicious  -> truncated
       anything else, including no engine word  -> unknown, which holds
 
     A split vote is `unknown` for the reason the module docstring gives, and so
@@ -225,19 +242,35 @@ def classify(
         raise ContractError(
             f"the truncation policy's {LENGTH_FLOOR_FIELD} is not a positive integer"
         )
+    if LEGIBLE_PAGE_FIELD not in truncation_policy:
+        raise ContractError(f"the truncation policy declares no {LEGIBLE_PAGE_FIELD}")
+    legible = truncation_policy[LEGIBLE_PAGE_FIELD]
+    if not isinstance(legible, int) or isinstance(legible, bool) or legible <= 0:
+        raise ContractError(
+            f"the truncation policy's {LEGIBLE_PAGE_FIELD} is not a positive integer"
+        )
+    smallest = page_pixels if smallest_page_pixels is None else smallest_page_pixels
+    if smallest <= 0 or smallest > page_pixels:
+        raise ValueError("smallest_page_pixels must be positive and within page_pixels")
+    judged = length_judged(smallest_page_pixels=smallest, legible_page_pixels=legible)
     signals: TruncationSignals = {
         "stop_reason_declared": stop_reason,
         "unclosed_structure": has_unclosed_structure(text),
         "length_suspicious": is_length_suspicious(
             text, region_pixels, page_pixels=page_pixels, length_floor_characters_per_page=floor
-        ),
+        )
+        if judged
+        else None,
         "ends_abruptly": ends_abruptly(text),
     }
     measure: TruncationMeasure = {
         "region_pixels": region_pixels,
         "page_pixels": page_pixels,
+        "smallest_page_pixels": smallest,
         "characters": len(text),
         "length_floor_characters_per_page": floor,
+        "legible_page_pixels": legible,
+        "length_judged": judged,
     }
 
     # Refuses an unrecognised engine word by name before any decision is made;

@@ -70,8 +70,8 @@ TIER = "generic-48gb"
 SERVED_MODEL_ID = "perlector-under-test"
 # Long enough that `truncation.is_length_suspicious` never fires on this
 # fixture's regions (80 characters over 12,800 or 16,000 pixels of a 52,000-pixel
-# page is 260-325 characters per page-equivalent, against the sealed floor of 50
-# in `config/perlector_protocol.toml`): the tests below are about the engine's
+# page is 260-325 characters per page-equivalent, on a page too small for the
+# sealed floor in `config/perlector_protocol.toml` to judge): the tests below are about the engine's
 # own stop word, and a reading the length heuristic independently called
 # suspicious would prove the wrong thing.
 READING = "SYNTHETIC LIVE READING alpha beta gamma delta epsilon zeta eta theta iota kappa"
