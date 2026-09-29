@@ -43,7 +43,7 @@ from common.contracts.canonical import (  # noqa: E402
     verify_self_hash,
 )
 from common.contracts.errors import ContractError  # noqa: E402
-from common.image_sniff import sniff  # noqa: E402
+from common.image_sniff import identifies_as_image  # noqa: E402
 from operations.submit import gate, inventory  # noqa: E402
 
 DESCRIPTION = "The submit door: a local folder in, a checksummed and sealed manifest out."
@@ -56,18 +56,37 @@ REFUSAL_REPORT_SCHEMA: Final = "submission-refusal-report.v0"
 # file's content to do that, so nothing is retained; the digest is still
 # streamed and exact.
 RETAIN_NO_BYTES: Final = 0
-_OS_CLUTTER_NAMES: Final = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+_APPLEDOUBLE_MAGIC: Final = b"\x00\x05\x16\x07"
+_OS_CLUTTER_MAGIC: Final = {
+    ".DS_Store": b"\x00\x00\x00\x01Bud1",
+    "Thumbs.db": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+}
+_DESKTOP_INI_SECTIONS: Final = frozenset(
+    {"[.shellclassinfo]", "[viewstate]", "[localizedfilenames]", "[deleteoncopy]"}
+)
 
 # Every field `log()` may carry. The immutable records carry filename linkage;
 # terminal presentation carries only counts, digests, and report locations. Image
 # bytes are never terminal output.
-_LOG_FIELDS: Final = frozenset({"files", "bytes", "digest", "removed", "status"})
+_LOG_FIELDS: Final = frozenset({"files", "bytes", "digest", "removed", "status", "skipped"})
 _LOG_EVENTS: Final = frozenset({"submission sealed", "submission refused"})
 _LOG_STATUSES: Final = frozenset({"refusal-report-written"})
 
 
 class SubmitRefusal(ContractError):
     """A folder could not be walked, or the gate refused it. Nothing was written."""
+
+
+class NotPageImagesRefusal(SubmitRefusal):
+    """Files in the folder are not page images. Their names ride on `entries`, never the text."""
+
+    def __init__(self, entries: list[str]):
+        super().__init__(
+            f"{len(entries)} file(s) in the submitted folder are not page images; nothing was "
+            "sealed. Their names are in the private refusal report: move them out of the "
+            "folder, or remove them, then seal again"
+        )
+        self.entries = tuple(entries)
 
 
 class ExistingRecordRefusal(SubmitRefusal):
@@ -97,7 +116,7 @@ def log(event: str, **fields: Any) -> None:
             "log event is outside the closed operational vocabulary; arbitrary event "
             "text could carry image bytes or an unaccounted presentation claim"
         )
-    for field in ("files", "bytes", "removed"):
+    for field in ("files", "bytes", "removed", "skipped"):
         if field in fields and (
             not isinstance(fields[field], int)
             or isinstance(fields[field], bool)
@@ -114,37 +133,63 @@ def log(event: str, **fields: Any) -> None:
     print(f"{event}: {rendered}" if rendered else event)
 
 
-def _is_os_clutter(relative_path: str) -> bool:
-    """Files an operating system adds beside pages; never a page, never recorded."""
+def _is_os_clutter(relative_path: str, head: bytes) -> bool:
+    """A file an operating system adds beside pages, by its name and its own bytes.
+
+    A file that merely carries a clutter name but not the clutter's content could be
+    a page, so it is not skipped; it goes through the page check like any other.
+    """
     name = relative_path.rsplit("/", 1)[-1]
-    return name in _OS_CLUTTER_NAMES or name.startswith("._")
+    if name.startswith("._"):
+        return head.startswith(_APPLEDOUBLE_MAGIC)
+    if name == "desktop.ini":
+        return _is_desktop_ini(head)
+    magic = _OS_CLUTTER_MAGIC.get(name)
+    return magic is not None and head.startswith(magic)
 
 
-def walk_folder(source: Path) -> list[dict[str, Any]]:
-    """Every page file under `source`, sorted, hashed; OS clutter is skipped and any other
-    non-image file refuses the seal. Admission by signature only, as the pod does.
+def _is_desktop_ini(head: bytes) -> bool:
+    """Windows folder settings: a text file whose first line is an ini section header."""
+    if head.startswith(b"\xff\xfe") or head.startswith(b"\xfe\xff"):
+        text = head.decode("utf-16", errors="ignore")
+    else:
+        text = head.decode("utf-8-sig", errors="ignore")
+    first = text.lstrip().split("\n", 1)[0].strip().lower()
+    return first in _DESKTOP_INI_SECTIONS
 
-    Only each file's opening bytes are read, for the signature; none is kept. This tool writes a manifest of paths,
-    digests and sizes, and never looks at what a file holds — so `max_bytes=0` is
-    the honest request. The digest is streamed and exact whatever the file's size.
+
+def inspect_folder(source: Path) -> tuple[list[dict[str, Any]], int]:
+    """The page files under `source`, sorted and hashed, and how many clutter files were skipped.
+
+    Clutter is skipped and only counted. Any other file that is neither a named
+    image signature nor something Pillow can name refuses the seal, listing each one on
+    the exception's `entries`; an unknown file could be a page in an unexpected format,
+    so it is never dropped silently. Only each file's opening bytes are read for this;
+    the digest is streamed and exact whatever the file's size.
     """
     found = inventory.read_submission(source, max_bytes=RETAIN_NO_BYTES)
-    sources = [item for item in found if not _is_os_clutter(item.relative_path)]
-    strays = [item.relative_path for item in sources if sniff(item.head) is None]
+    sources = [item for item in found if not _is_os_clutter(item.relative_path, item.head)]
+    skipped = len(found) - len(sources)
+    strays = [item.relative_path for item in sources if not identifies_as_image(item.head)]
     if strays:
-        raise SubmitRefusal(
-            "the submitted folder holds files that are not page images; nothing was sealed. "
-            "Move these out of the folder, or remove them, then seal again: " + ", ".join(strays)
-        )
+        raise NotPageImagesRefusal(strays)
     if not sources:
         raise SubmitRefusal(
             "the submitted folder contains no files to submit; an empty folder is a loud "
             "failure, never a green submission with nothing in it"
         )
-    return [
-        {"relative_path": found.relative_path, "sha256": found.sha256, "bytes": found.size}
-        for found in sources
-    ]
+    return (
+        [
+            {"relative_path": item.relative_path, "sha256": item.sha256, "bytes": item.size}
+            for item in sources
+        ],
+        skipped,
+    )
+
+
+def walk_folder(source: Path) -> list[dict[str, Any]]:
+    """`inspect_folder`'s page entries alone."""
+    return inspect_folder(source)[0]
 
 
 def build_manifest(entries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -365,25 +410,38 @@ def submit(
     # one path and then opening another is the shape a check-then-use race lives in,
     # and the resolved values were already in hand.
     try:
-        entries = walk_folder(resolved_source)
+        entries, skipped = inspect_folder(resolved_source)
     except ContractError as error:
-        entry = getattr(error, "entry", None)
-        records = [] if entry is None else [inventory.refusal_record(entry, str(error))]
+        if isinstance(error, NotPageImagesRefusal):
+            records = [
+                inventory.refusal_record(name, "not a page image: no image signature")
+                for name in error.entries
+            ]
+        else:
+            entry = getattr(error, "entry", None)
+            records = [] if entry is None else [inventory.refusal_record(entry, str(error))]
         try:
             written_report = _write_refusal_report(report_target, records)
         except SubmitRefusal as report_error:
             raise SubmitRefusal(
                 "submission was refused and its private refusal report could not be written"
             ) from report_error
+        advice = (
+            "; move the non-image files out of the folder, or remove them, then seal again"
+            if isinstance(error, NotPageImagesRefusal)
+            else ""
+        )
         raise SubmissionRefusal(
-            f"submission refused: {len(records)} source refusal(s) recorded in private report",
+            f"submission refused: {len(records)} source refusal(s) recorded in private report"
+            + advice,
             report_path=written_report,
             refusal_count=len(records),
         ) from error
     manifest = build_manifest(entries)
     data = canonical_bytes(manifest)
     atomic_create(resolved_manifest, data)
-    log("submission sealed", files=len(entries), digest=digest_bytes(data))
+    counts = {"skipped": skipped} if skipped else {}
+    log("submission sealed", files=len(entries), digest=digest_bytes(data), **counts)
     return manifest
 
 

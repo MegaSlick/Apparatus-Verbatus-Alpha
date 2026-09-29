@@ -1,14 +1,20 @@
-"""The one byte-signature table that says which formats are page sources.
+"""The byte-signature table for page sources, and the test for "could be a page".
 
-Admission (`pipeline/1_exemplar`) and the submit door (`operations/submit`) both
-read it, so what a submission may contain cannot drift from what the pod admits.
-Signature only: it never says the bytes are a valid instance of the format.
+The Exemplar door (`pipeline/1_exemplar`) and the submit door (`operations/submit`)
+both read the signatures here. A signature match is not proof the bytes are valid;
+the door's decoder decides that. Bytes with no known signature still get a generic
+Pillow attempt at the door, so `identifies_as_image` applies the same two steps to
+an opening prefix: a named signature, else Pillow naming a format.
 """
 
 from __future__ import annotations
 
 import struct
+import warnings
+from io import BytesIO
 from typing import Final
+
+from PIL import Image
 
 PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
 JPEG_SIGNATURE: Final = b"\xff\xd8"
@@ -47,6 +53,11 @@ _HEIF_BRANDS: Final = frozenset({b"mif1", b"msf1"})
 # _iso_bmff_image_format's scan near-constant-time regardless of an
 # attacker-declared box size or the file's own length.
 _FTYP_BRAND_SCAN_CEILING: Final = 16 + 256 * 4
+
+# How much of a file's start every signature reader takes. It must cover what `sniff`
+# reads (the PDF header window and the ISO-BMFF brand scan) and enough for Pillow to
+# name a header; the tests pin the first.
+SIGNATURE_PREFIX_BYTES: Final = 4096
 
 
 def sniff(data: bytes) -> str | None:
@@ -91,3 +102,20 @@ def _iso_bmff_image_format(data: bytes) -> str | None:
     if brands & _HEIF_BRANDS:
         return "heif"
     return None
+
+
+def identifies_as_image(prefix: bytes) -> bool:
+    """Whether an opening prefix is a named format or one Pillow can name.
+
+    Mirrors what the door does with a source: a sniffed signature routes it, and
+    unknown bytes get a generic Pillow attempt rather than a refusal on sight.
+    """
+    if sniff(prefix) is not None:
+        return True
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with Image.open(BytesIO(prefix)):
+                return True
+    except Exception:
+        return False

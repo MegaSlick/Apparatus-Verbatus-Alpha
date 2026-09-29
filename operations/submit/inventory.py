@@ -37,14 +37,13 @@ from pathlib import Path
 from typing import BinaryIO, Final, Iterator, NamedTuple
 
 from common.contracts.errors import ContractError
+from common.image_sniff import SIGNATURE_PREFIX_BYTES
 
 # Hash sources in chunks. A source beyond the retention limit contributes no
 # retained data, while an aggregate read-limit breach aborts inventory before
 # a manifest is built.
 _CHUNK: Final = 1024 * 1024
 
-# The opening bytes kept per file, enough for a format signature and nothing more.
-HEAD_BYTES: Final = 2048
 
 # Bounds far above any real submission and far below what exhausts a machine:
 # a bound nobody can reach is still the difference between a named refusal and
@@ -534,8 +533,8 @@ def _read_once(descriptor: int, max_bytes: int) -> tuple[bytes | None, str, int,
     size = 0
     head = b""
     while chunk := os.read(descriptor, _CHUNK):
-        if len(head) < HEAD_BYTES:
-            head = (head + chunk)[:HEAD_BYTES]
+        if len(head) < SIGNATURE_PREFIX_BYTES:
+            head = (head + chunk)[:SIGNATURE_PREFIX_BYTES]
         digest.update(chunk)
         size += len(chunk)
         if size <= max_bytes:

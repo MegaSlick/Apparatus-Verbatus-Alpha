@@ -33,7 +33,7 @@ from .controller_armer import (
     CONTROLLER_ARMING_TIMEOUT_SECONDS,
     CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS,
 )
-from .models import SpendRefusal, require_utc
+from .models import POD_VOLUME_MOUNT_PATH, SpendRefusal, require_utc
 from .preflight import CardProfile, PlacementTable, load_placement_table
 from .spend import SpendPolicy, load_spend_policy
 
@@ -56,7 +56,7 @@ the untracked armer factory, or authorize a longer drill -- is made before the
 card is rented and not discovered on it.
 """
 
-BOOT_A_VOLUME_MOUNT_PATH = "/workspace/private"
+BOOT_A_VOLUME_MOUNT_PATH = POD_VOLUME_MOUNT_PATH
 
 _UNSUPPLIED = "<not yet supplied>"
 

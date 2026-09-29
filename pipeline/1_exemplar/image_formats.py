@@ -28,20 +28,11 @@ from typing import Any, Final, NamedTuple
 import pillow_heif
 from PIL import Image, UnidentifiedImageError
 
-from common.image_sniff import (  # noqa: F401
-    _AVIF_BRANDS,
-    _FTYP_BRAND_SCAN_CEILING,
-    _HEIC_BRANDS,
-    _HEIF_BRANDS,
+from common.image_sniff import (
     _SIGNATURES,
-    BMP_SIGNATURES,
     GIF_SIGNATURES,
     JPEG_SIGNATURE,
-    PDF_HEADER_PREFIX_BYTES,
-    PDF_SIGNATURE,
     PNG_SIGNATURE,
-    TIFF_SIGNATURES,
-    WEBP_SIGNATURE,
     sniff,
 )
 from common.imaging import imaging_library_versions, render_triage_derivative

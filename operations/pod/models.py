@@ -22,6 +22,10 @@ from common.credentials import looks_like_credential_field
 
 UTC = timezone.utc
 
+# The only mount path a pod request may name; the pod side refuses to start unless a
+# real mount sits there, so run state and the model store cannot land on container disk.
+POD_VOLUME_MOUNT_PATH = "/workspace/private"
+
 
 def run_report_paths(report: PurePosixPath) -> tuple[PurePosixPath, ...]:
     """The run report and the side files derived from its name."""
@@ -331,9 +335,14 @@ class PodCreateRequest:
         ):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{label} must be a non-blank string")
-        if self.volume_id.startswith("<"):
+        if self.volume_id.strip().startswith("<"):
             raise ValueError(
                 "volume_id is an unsupplied placeholder; every run needs a network volume"
+            )
+        if self.volume_mount_path != POD_VOLUME_MOUNT_PATH:
+            raise ValueError(
+                f"volume_mount_path must be {POD_VOLUME_MOUNT_PATH}, the one path the pod "
+                "side proves is a mounted network volume"
             )
         if self.template is not None and (
             not isinstance(self.template, str) or not self.template.strip()

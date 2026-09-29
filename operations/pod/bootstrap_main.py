@@ -139,7 +139,6 @@ from operations.serving.smoke import (
     render_golden_page,
 )
 
-from . import boot_a_request
 from .bootstrap import (
     CONFIGURATION_RECEIPT_SCHEMA,
     BootstrapActions,
@@ -154,7 +153,7 @@ from .bootstrap import (
     verify_image_contract,
 )
 from .durable import atomic_write, canonical_json, exclusive_write
-from .models import require_utc, utc_now
+from .models import POD_VOLUME_MOUNT_PATH, require_utc, utc_now
 from .preflight import (
     PlacementRefusal,
     PreflightRunner,
@@ -1561,9 +1560,7 @@ def prepare(
     try:
         # A plain directory at the sealed mount path would put run state and the
         # model store on the pod's container disk instead of the network volume.
-        if str(
-            plan.volume_mount_path
-        ) == boot_a_request.BOOT_A_VOLUME_MOUNT_PATH and not os.path.ismount(
+        if str(plan.volume_mount_path) == POD_VOLUME_MOUNT_PATH and not os.path.ismount(
             plan.volume_mount_path
         ):
             raise PlanRefusal(
