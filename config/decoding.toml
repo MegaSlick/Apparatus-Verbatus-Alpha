@@ -8,9 +8,12 @@ temperature = 0
 # Output bounds for the Perlector's replies, far above any honest reading, so a
 # reply that runs away stops as a visible truncation and holds its act rather
 # than filling the context. One value covers every reading pass so the passes
-# stay one condition; the re-proof answers in JSON and has its own.
-reading_max_tokens = 2048
-reproof_max_tokens = 2048
+# stay one condition; the re-proof answers in JSON and repeats the span it
+# corrects, so it has its own. These are the policy caps, seen through this
+# file's digest; the value sent is cut to the context the prompt leaves and is
+# recorded on each call record.
+reading_max_tokens = 4096
+reproof_max_tokens = 8192
 
 [variance_experiment]
 # A labelled experiment: every pass has its own identity; it is never a retry.

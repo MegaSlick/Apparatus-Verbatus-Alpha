@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -24,10 +25,10 @@ def test_shipped_decoding_policy_declares_a_zero_temperature_record_and_variance
     }
     assert policy["schema"] == "decoding.v4"
     assert policy["perlector_generation"] == {
-        "reading_max_tokens": 2048,
-        "reproof_max_tokens": 2048,
+        "reading_max_tokens": 4096,
+        "reproof_max_tokens": 8192,
     }
-    assert perlector_max_tokens(policy) == (2048, 2048)
+    assert perlector_max_tokens(policy) == (4096, 8192)
     assert policy["chandra_native_inference"] == recipe_record()
     assert policy["structure"] == {
         "temperature": 1,
@@ -135,7 +136,7 @@ def test_decoding_policy_parse_refusals_name_the_actual_cause(tmp_path, body, me
 
 @pytest.mark.parametrize(
     "bound",
-    ["0", "-1", "2048.0", '"2048"', "true"],
+    ["0", "-1", "4096.0", '"4096"', "true"],
     ids=["zero", "negative", "float", "str", "bool"],
 )
 @pytest.mark.parametrize("field", ["reading_max_tokens", "reproof_max_tokens"])
@@ -144,7 +145,10 @@ def test_a_perlector_output_bound_that_is_not_a_positive_integer_is_refused(
 ):
     source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
     path = tmp_path / "decoding.toml"
-    path.write_text(source.replace(f"{field} = 2048", f"{field} = {bound}", 1), encoding="utf-8")
+    path.write_text(
+        re.sub(rf"^{field} = \d+$", f"{field} = {bound}", source, count=1, flags=re.M),
+        encoding="utf-8",
+    )
 
     with pytest.raises(ContractError, match="perlector_generation must declare positive integer"):
         load_decoding_policy(path)

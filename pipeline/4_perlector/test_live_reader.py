@@ -29,7 +29,6 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.cross_capture_autopsia import atomic_delivered_pixels, build_autopsia
-from common.decoding import load_decoding_policy, perlector_max_tokens
 from common.imaging import encode_grayscale_png
 from common.perlector_audit import (
     _rebuild_chair_request_bytes,
@@ -839,30 +838,35 @@ def test_a_page_sized_crop_reserves_a_page_of_reading_not_one_acts(tmp_path: Pat
     assert [len(store) for store in blob_stores] == [0, 0]
 
 
-def test_the_reserve_is_never_below_the_max_tokens_this_reader_would_send(
-    tmp_path: Path,
-) -> None:
-    """The wire bound and the reserve cannot drift apart.
+def test_a_large_prompt_is_sent_the_room_it_leaves_not_the_cap(tmp_path: Path) -> None:
+    """The engine refuses prompt + `max_tokens` over the row, so the cap is cut to fit.
 
-    `max_tokens` is what the engine is permitted to generate. A reserve below
-    it would admit a request whose own permitted answer does not fit the row,
-    so the reserve is the larger of the two -- checked here at a bound well
-    above every measured answer budget, where the reserve is the bound itself.
+    Admission reserves only the honest answer; the sent `max_tokens` is the
+    smaller of the policy cap and the context the prompt and images leave.
     """
 
-    client, _endpoint, _blob_store, chair = _built(tmp_path, max_pixels=1806336, max_model_len=2048)
-    region_image = _image_bytes(b"REGION", width=2480, height=584)
-    page_image = _image_bytes(b"PAGE", width=2480, height=3508)
+    client, endpoint, blobs, chair = _built(tmp_path)
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
     with client:
-        with pytest.raises(RequestCapacityRefusal) as error:
-            _reader(client, chair, max_tokens=4000).read(
-                _dossier(region_image=region_image, page_image=page_image),
-                pass_kind="perlectio",
-                delivered_pixels=_delivered_pixels(
-                    region_image=region_image, page_image=page_image
-                ),
-            )
-    assert error.value.capacity["answer_budget"] == 4000
+        endpoint.script(ScriptedAnswer(content="a", finish_reason="length"))
+        result = _reader(client, chair, max_tokens=100_000).read(
+            _dossier(region_image=region_image, page_image=page_image),
+            pass_kind="perlectio",
+            delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
+        )
+    call_record = next(
+        record
+        for record in (json.loads(written) for written in blobs.written)
+        if isinstance(record, dict) and record.get("schema") == CHAIR_CALL_RECORD_SCHEMA
+    )
+    capacity = call_record["capacity"]
+    leftover = (
+        capacity["max_model_len"] - capacity["image_prompt_tokens"] - capacity["prompt_tokens"]
+    )
+    assert result["stop_reason"] == "length"
+    assert endpoint.requests[0]["max_tokens"] == leftover < 100_000
+    assert call_record["generation_sent"]["max_tokens"] == leftover
+    assert capacity["answer_budget"] == 1318
 
 
 @pytest.mark.parametrize(
@@ -1137,13 +1141,10 @@ def test_a_prompt_too_long_400_is_retained_refused_by_name_and_not_a_length_stop
 ) -> None:
     """The Perlector's own reason for caring which of the two this is.
 
-    This reader sends no `max_tokens` on purpose, so that an engine `"length"`
-    honestly means the context itself was exhausted rather than that the
-    harness cut the reading short (`truncation.py`). The cost of that honesty
-    is that a *prompt*-side overrun cannot arrive as `"length"` at all: it
-    arrives as an HTTP 400 with no choices, before generation, and
-    `EngineSignalRefusal` never runs. It must therefore surface as the client's
-    own named response refusal with the bytes retained, not as a truncated
+    A *prompt*-side overrun cannot arrive as `"length"`: it arrives as an
+    HTTP 400 with no choices, before generation, and `EngineSignalRefusal`
+    never runs. It must therefore surface as the client's own named response
+    refusal with the bytes retained, not as a truncated
     reading.
     """
 
@@ -1300,16 +1301,16 @@ def test_a_reproof_is_sent_its_own_bound_not_the_reading_bound(tmp_path: Path) -
     assert endpoint.requests[0]["max_tokens"] == REPROOF_BOUND != READING_BOUND
 
 
-def test_the_sealed_bounds_still_admit_the_largest_act_the_real_run_read() -> None:
-    """The shipped bounds cost the largest run-measured act no admission.
+def test_a_page_fallback_reading_and_reproof_are_admitted_on_the_real_row(
+    tmp_path: Path,
+) -> None:
+    """The output caps take no part in admission, so they refuse nothing.
 
-    The largest Perlector act on the 2026-09-27 real-page run needed 25,374
-    tokens of images and prompt on the 32,768 row. The sealed bounds are reserved
-    beside the measured 1,318-token dense-page answer, so that act must still fit,
-    and the row must still refuse a request whose reserve would overrun it.
+    A dense page's honest answer is reserved, against the prompt's admission
+    upper bound and the images, on the shipped 32,768 row; the reading and the
+    re-proof prompt both fit, and the room left is what the cap is cut to.
     """
-    policy, _digest = load_decoding_policy()
-    reading, reproof = perlector_max_tokens(policy)
+    _client, _endpoint, _blobs, chair = _built(tmp_path)
     row = next(
         SimpleNamespace(**profile)
         for profile in tomllib.loads(
@@ -1319,18 +1320,26 @@ def test_the_sealed_bounds_still_admit_the_largest_act_the_real_run_read() -> No
         )["profiles"]
         if profile["recipe"] == "unproven-real-perlector" and profile["tier"] == "generic-80gb-plus"
     )
-    largest_measured = 25_374
-    for bound in (reading, reproof):
-        reserved = live_reader._reserved_answer_budget(
-            "perlector",
-            profile=row,
-            region_sizes=[(2480, 3508)],
-            page_render_sizes=[],
-            max_tokens=bound,
-        )
-        assert reserved == max(dense_page_answer_budget("perlector"), bound)
-        assert request_fits(row, [], largest_measured, reserved)["fits"]
-        assert not request_fits(row, [], row.max_model_len - reserved + 1, reserved)["fits"]
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
+    dossier = _dossier(region_image=region_image, page_image=page_image)
+    reading_text = prompts.build_prompt(chair.serving_recipe, chair.role, dossier, None)
+    reproof = build_audit_request(
+        act_key=dossier["act_key"],
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/artifacts/draft.json", "sha256": "0" * 64},
+        semi_final_text="abcde fgh",
+        flags=[{"class": "repetition", "location": {"start": 0, "end": 5}}],
+    )
+    reproof_text = "\n".join([reading_text, render_reproof_instruction(reproof)])
+    images = [(2480, 3508), (2480, 3508)]
+    reserved = live_reader._reserved_answer_budget(
+        "perlector", profile=row, region_sizes=images[:1], page_render_sizes=images[1:]
+    )
+    assert reserved == dense_page_answer_budget("perlector")
+    for text in (reading_text, reproof_text):
+        bound, basis = perlector_prompt_bound(text, template_digest=prompts.BUILDER_SHA256)
+        record = request_fits(row, images, bound, reserved, prompt_tokens_basis=basis)
+        assert record["fits"]
 
 
 def test_retained_float_generation_rebuilds_exact_wire_bytes_and_exposes_tampering() -> None:

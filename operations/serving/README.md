@@ -366,7 +366,7 @@ rather than repeat a request whose engine-side completion is unknown.
 
 **Chandra native calls.** `prepare_chandra_native` / `read_chandra_native` is the one narrow
 exception, for page-scoped `attestator_1` with adapter `chandra.v1` under the exact
-`decoding.v3` recipe. Each prepared dispatch fixes one of seven declared temperature/top-p
+`decoding.v4` recipe. Each prepared dispatch fixes one of seven declared temperature/top-p
 pairs, and the stage must publish and pass a durable attempt-intent reference before the
 POST; `chandra-native-call-record.v1` binds it, so the three identical 0.8/0.95 attempts stay
 distinct. These calls send no per-request seed because the pinned upstream client sends

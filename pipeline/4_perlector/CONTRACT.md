@@ -930,12 +930,15 @@ run, and a traceback naming the construction site is worth more there than a nam
 Pinned by `::test_a_non_200_from_the_engine_stops_the_pass_in_this_stage_s_exit_vocabulary`.
 
 **`max_tokens` is sent, from the sealed decoding policy.** `perlector_generation` holds
-one bound for every reading pass, so the passes stay one condition, and one for the
-audit re-proof, which answers in JSON. A reply that reaches its bound comes back as an
-engine `"length"`, which the truncation classifier holds as a visible failure of the
-act; nothing re-asks. The bound sits far above any honest reading and stops a reply
-that has begun to loop from filling the context. The value rides `generation_sent` on
-the retained call record, and the request's reserved answer budget is never below it.
+one cap for every reading pass, so the passes stay one condition, and one for the
+audit re-proof, which answers in JSON. The value sent is the smaller of the cap and the
+context the admitted prompt leaves, and it rides `generation_sent` on the retained call
+record; the cap itself is visible through the decoding digest. A reply that reaches it
+comes back as an engine `"length"`, which the truncation classifier holds as a visible
+failure of the act; nothing re-asks. A cut re-proof usually fails to assemble first and
+is published as a failed Perlectio. The cap sits far above any honest reading and stops
+a reply that has begun to loop from filling the context. Admission still reserves only
+the act's or the dense page's measured answer, so the cap refuses no act that fits.
 
 **Proved end to end.** `pipeline/test_live_reading_seam_e2e.py` reads a tree the
 Attestatores wrote through three *live* witness chairs — every record on it

@@ -23,13 +23,12 @@ reading kind, and only a delivered re-proof instrument selects the re-proof's ow
 ``read`` computes ``common.request_capacity``'s record for the images it is
 about to carry, the prompt it just rendered, and the answer budget
 ``_reserved_answer_budget`` decides -- one act's reading ordinarily, a dense
-page's wherever the act's own crop is as expensive as a whole-page render, and
-never below the ``max_tokens`` this reader puts on the wire -- and raises
+page's wherever the act's own crop is as expensive as a whole-page render --
+and raises
 ``common.request_capacity.RequestCapacityRefusal`` -- carrying that record --
 when the row's ``max_model_len`` cannot hold them. That is a refusal rather
-than a hold because a Perlector reading has no ``failed`` shape (see
-``EngineSignalRefusal`` below): there is nothing to publish for an act nothing
-read. On the admitted path the record travels on the request and the client
+than a hold because nothing was sent and nothing read: the stage publishes the
+act as failed, naming the arithmetic. On the admitted path the record travels on the request and the client
 copies it onto the retained call record, so the arithmetic sits beside the
 reading it allowed. Nothing is ever downscaled to make a request fit.
 
@@ -92,10 +91,9 @@ class EngineSignalRefusal(ContractError):
     not recognize (neither in ``ENGINE_STOP_COMPLETE`` nor
     ``ENGINE_STOP_CUT_OFF``, nor absent), or a response
     :class:`~operations.serving.client.ChairClient` could not parse at all
-    (``parse_problem``). A Perlector reading has no ``failed`` shape today --
-    unlike a Testimonium, ``outcome="failed"`` is produced nowhere for a
-    Perlectio in ``run.py`` -- so a body that is not a reading stops the pass
-    loudly rather than minting a shape this section does not own. Nothing is
+    (``parse_problem``). The stage publishes such an act as a failed Perlectio
+    (``run.py``) rather than a reading, so a body that is not a reading never
+    becomes text. Nothing is
     lost: the raw bytes are already retained (``ChairClient.read`` retains
     before it parses), named here by ``raw_response_ref`` so the stopped act
     can be traced back to exactly the evidence that stopped it.
@@ -159,11 +157,10 @@ def _reserved_answer_budget(
     profile: Any,
     region_sizes: list[tuple[int, int]],
     page_render_sizes: list[tuple[int, int]],
-    max_tokens: int,
 ) -> int:
     """How much room this request reserves for the reading it asks for.
 
-    Three facts, and the largest of them wins.
+    Two facts, and the larger of them wins.
 
     **One act's reading** is the floor, because that is what a Perlector
     request asks for and reserving a whole page's answer for an ordinary act
@@ -184,12 +181,6 @@ def _reserved_answer_budget(
     compare against, so every region counts as page-sized there: reserving
     more can only refuse a request the row could barely have held, and
     reserving less would send one the engine answers with HTTP 400.
-
-    **The wire bound**, ``max_tokens``: the
-    engine may generate that many tokens, so a reserve below it would admit a
-    request whose own permitted answer does not fit.  Taking the maximum here
-    is what keeps the bound and the reserve from drifting apart as either
-    moves.
     """
 
     budget = act_answer_budget(role)
@@ -198,7 +189,7 @@ def _reserved_answer_budget(
     page_sized_cost = min(page_render_costs, default=0)
     if any(cost >= page_sized_cost for cost in region_costs):
         budget = max(budget, dense_page_answer_budget(role))
-    return max(budget, max_tokens)
+    return budget
 
 
 class VLLMReader:
@@ -212,10 +203,14 @@ class VLLMReader:
     selects the declared prompt builder (``prompts.build_prompt``);
     ``protocol_config`` is the sealed R5a policy that same builder renders
     through, or ``None`` to fall back to its own default. ``max_tokens`` and
-    ``reproof_max_tokens`` are the output bounds sealed in the decoding policy,
-    for a reading and for an audit re-proof: a reply that hits one comes back
-    as an engine ``"length"``, which the truncation classifier holds as a
-    visible failure of the act, never a re-run.
+    ``reproof_max_tokens`` are the output caps sealed in the decoding policy
+    (their digest is what makes the policy value visible on a run), for a
+    reading and for an audit re-proof. What goes on the wire is the smaller of
+    the cap and the context the prompt leaves, because the engine refuses a
+    request whose prompt plus ``max_tokens`` exceeds ``max_model_len``. A reply
+    that reaches it comes back as an engine ``"length"``, which the truncation
+    classifier holds as a visible failure of the act, never a re-run. The sent
+    value is on the retained call record's ``generation_sent``.
     """
 
     def __init__(
@@ -351,10 +346,10 @@ class VLLMReader:
         # Admitted on the measured upper bound, with the measured floor recorded
         # beside it: a request is never let through on a number that says only
         # what it costs *at least*.
-        # An audit re-proof answers in JSON and has its own bound; a reading's
-        # bound is one value for every reading pass. The two are told apart by
+        # An audit re-proof answers in JSON and has its own cap; a reading's
+        # cap is one value for every reading pass. The two are told apart by
         # the delivered instrument, never by the pass label.
-        max_tokens = self._max_tokens if instrument is None else self._reproof_max_tokens
+        policy_cap = self._max_tokens if instrument is None else self._reproof_max_tokens
         prompt_bound, bound_basis = perlector_prompt_bound(
             text, template_digest=prompts.BUILDER_SHA256
         )
@@ -366,14 +361,14 @@ class VLLMReader:
             region_sizes + page_render_sizes,
             prompt_bound,
             # One act's reading, a whole page's where the act's own crop is
-            # page-sized, and never less than the bound this reader would let
-            # the engine generate (`_reserved_answer_budget`).
+            # page-sized (`_reserved_answer_budget`). The policy cap is not
+            # reserved: it is far above an honest reading and would refuse acts
+            # that fit.
             _reserved_answer_budget(
                 self._chair.role,
                 profile=self._client.handle.profile,
                 region_sizes=region_sizes,
                 page_render_sizes=page_render_sizes,
-                max_tokens=max_tokens,
             ),
             # The pass label is deliberately absent from this message: this
             # module may read it in exactly two places (the closed membership
@@ -383,6 +378,14 @@ class VLLMReader:
             prompt_tokens_basis=bound_basis,
             prompt_tokens_floor=prompt_floor,
             prompt_tokens_floor_basis=floor_basis,
+        )
+
+        # The engine refuses prompt + max_tokens over `max_model_len`, so the
+        # cap is cut to what the admitted prompt leaves; a reply that then hits
+        # it is a visible length stop.
+        max_tokens = min(
+            policy_cap,
+            capacity["max_model_len"] - capacity["image_prompt_tokens"] - capacity["prompt_tokens"],
         )
 
         request = ChairRequest(
