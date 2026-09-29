@@ -11,7 +11,7 @@ set -eu
 hours=${1:?usage: pod_start_command.sh <hours> <sha>}
 sha=${2:?usage: pod_start_command.sh <hours> <sha>}
 case $sha in *[!0-9a-f]* | '') echo "pod_start_command: <sha> must be a commit hash" >&2; exit 2 ;; esac
-case $hours in *[!0-9.]* | '' | .) echo "pod_start_command: <hours> must be a number" >&2; exit 2 ;; esac
+case $hours in *[!0-9.]* | '' | . | *.*.*) echo "pod_start_command: <hours> must be a number" >&2; exit 2 ;; esac
 window=$(awk -v h="$hours" 'BEGIN { printf "%d", h * 3600 }')
 grace=${POD_BACKSTOP_GRACE:-3600}
 poll=${POD_BACKSTOP_POLL:-300}

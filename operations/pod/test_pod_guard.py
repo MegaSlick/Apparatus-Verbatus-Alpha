@@ -100,6 +100,22 @@ def test_a_gpu_that_cannot_report_counts_as_busy(pod):
     assert "approved time is up" in log_of(state)
 
 
+def test_a_failed_gpu_query_counts_as_busy(pod):
+    env, calls, state = pod
+    stub = Path(env["PATH"].split(":")[0]) / "nvidia-smi"
+    stub.write_text("#!/bin/sh\nexit 1\n")
+    run_until(["sh", str(GUARD), "0.001", "30"], env, lambda: "pod delete testpod" in lines(calls))
+    assert "approved time is up" in log_of(state)
+
+
+def test_the_start_command_refuses_a_malformed_hours_value(pod):
+    env, _, _ = pod
+    result = subprocess.run(
+        ["sh", str(START_COMMAND), "1.2.3", "0" * 40], env=env, capture_output=True
+    )
+    assert result.returncode == 2
+
+
 def test_container_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     env, calls, state = pod
     cgroup = tmp_path / "cgroup"

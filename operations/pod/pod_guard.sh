@@ -98,11 +98,14 @@ shut_down() {
   done
 }
 
-# A GPU that cannot report its use (MIG, some virtual GPUs) counts as busy.
+# A GPU that cannot report its use (MIG, some virtual GPUs, a failed or hung query) counts
+# as busy; only a pod with no nvidia-smi at all has no GPU to watch.
 gpu_busy() {
   command -v nvidia-smi >/dev/null 2>&1 || return 1
   # shellcheck disable=SC2086
-  $limit nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null |
+  reading=$($limit nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null) || return 0
+  [ -n "$reading" ] || return 0
+  printf '%s\n' "$reading" |
     awk -v floor="$busy_percent" '$1 !~ /^[0-9]+$/ || $1 + 0 >= floor { busy = 1 } END { exit !busy }'
 }
 
