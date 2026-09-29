@@ -1023,10 +1023,10 @@ inline before the establishing call. The deadline is checked before each act is 
 against the serial estimate, which stays conservative for batched calls. Because the check
 runs before an act is prepared, up to `width` calls may already be in flight when it fires;
 they are finished, not cut off (the finish-sent-acts rule above). Work past the deadline is
-therefore at most those calls: they overlap, so about the slowest one, and never more than
-`width` × `PLANNED_SECONDS_PER_CALL` (40 s) on the planning estimate. A call that runs
-longer than planned runs on until it returns or the client's own request limit ends it, and
-that time is billed. A batched reply
+therefore at most those calls, which overlap: about the slowest one (40 s on the planning
+estimate, `PLANNED_SECONDS_PER_CALL`), and never longer than one request's hard limit,
+`request_timeout_seconds` in the serving recipe (600 s on the real rows). That time is
+billed. A batched reply
 at temperature 0 can differ from an unbatched one in low-order bits; each record holds
 the reply its call received, and each `reader-sent` record carries the width its call
 was sent under as `concurrency`, so two runs' readings can be told apart from the tree
