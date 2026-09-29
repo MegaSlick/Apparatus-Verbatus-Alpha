@@ -144,6 +144,41 @@ def _workspace(tmp_path: Path) -> Workspace:
     )
 
 
+def _hold_argv(ws: Workspace) -> list[str]:
+    return [
+        "--volume-mount-path",
+        str(ws.volume),
+        "--report-path",
+        str(ws.report_path),
+        "--hold-only",
+    ]
+
+
+def test_the_sealed_mount_path_must_be_a_real_mount_not_a_plain_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _workspace(tmp_path)
+    monkeypatch.setattr(bootstrap_main, "POD_VOLUME_MOUNT_PATH", str(ws.volume))
+
+    exit_code = main(_hold_argv(ws), environ=_environ(Clock()), actions_factory=_never_called)
+
+    assert exit_code == 2
+    assert "does not have anything mounted there" in capsys.readouterr().err
+
+
+def test_the_sealed_mount_path_passes_when_a_real_mount_sits_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+    monkeypatch.setattr(bootstrap_main, "POD_VOLUME_MOUNT_PATH", str(ws.volume))
+    monkeypatch.setattr(bootstrap_main.os.path, "ismount", lambda path: str(path) == str(ws.volume))
+
+    plan, _deadline = bootstrap_main.prepare(_hold_argv(ws), _environ(clock), now=clock.now)
+
+    assert plan.hold_only is True
+
+
 def _argv(ws: Workspace, *, commit: str = "a" * 40, extra: tuple[str, ...] = ()) -> list[str]:
     return [
         "--volume-mount-path",

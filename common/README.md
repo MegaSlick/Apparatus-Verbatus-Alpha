@@ -16,6 +16,7 @@ still cross.
 | `chairs/` | a named role resolved to one pinned model artifact, verified by digest |
 | `stage.py` | argument shape, opening a run, publishing with the envelope filled in |
 | `imaging.py` | decoding and cropping, with bounds refused rather than clamped |
+| `image_sniff.py` | the one byte-signature table for page sources and the "could be a page" test the submit door and the Exemplar door share |
 | `imaging_ports.py` | the two vendor resize rules a witness's own preprocessing applies, as pure dimension arithmetic — carried third-party logic, cited to its pinned commit, with `common/test_vendor_parity.py` pinning both against the vendors' own functions. Its designed consumers are the Designator's structure chair and the Attestatores' Chandra and Churro adapters; both adapters now size their presented page through it, and the structure chair follows. The pixels still move through `imaging.py`'s sealed recipe |
 | `request_capacity.py` | whether one reading request fits the sealed serving row it would be sent to: the chair's own image-token arithmetic, the measured prompt and answer costs, and a closed record naming the headroom. Three stages ask it the same question before they send. A request is admitted on a measured constant or a measured **upper** bound and never on a floor; where a chair has both, the record carries both with their bases named |
 | `credentials.py` | one reading of "this looks like a secret": the name markers, provider prefixes and the value shape test every credential screen shares, operational and pipeline alike |

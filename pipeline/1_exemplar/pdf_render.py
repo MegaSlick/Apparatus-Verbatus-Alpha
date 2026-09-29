@@ -26,8 +26,8 @@ from image_formats import MAX_DIMENSION, MAX_PIXELS, MAX_PNG_DECODED_BYTES
 from PIL import Image
 from render_config import PdfRenderSettings
 
-PDF_SIGNATURE: Final = b"%PDF-"
-PDF_HEADER_PREFIX_BYTES: Final = 1024
+from common.image_sniff import PDF_HEADER_PREFIX_BYTES, PDF_SIGNATURE
+
 # The floor this module will not render below. A page is capped *downward* toward
 # it rather than refused for being large: a huge legitimate page captured at reduced
 # resolution is a poorly read act, and refusing it outright is a missed one. Only a

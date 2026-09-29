@@ -37,11 +37,13 @@ from pathlib import Path
 from typing import BinaryIO, Final, Iterator, NamedTuple
 
 from common.contracts.errors import ContractError
+from common.image_sniff import SIGNATURE_PREFIX_BYTES
 
 # Hash sources in chunks. A source beyond the retention limit contributes no
 # retained data, while an aggregate read-limit breach aborts inventory before
 # a manifest is built.
 _CHUNK: Final = 1024 * 1024
+
 
 # Bounds far above any real submission and far below what exhausts a machine:
 # a bound nobody can reach is still the difference between a named refusal and
@@ -69,6 +71,7 @@ class SubmittedSource(NamedTuple):
     sha256: str
     size: int
     data: bytes | None
+    head: bytes = b""
 
 
 class _OpenStreamMetadata(NamedTuple):
@@ -503,7 +506,7 @@ def _walk(
         descriptor = _open_regular_file(name, directory_descriptor, entry=relative_path)
         try:
             before = _stable_file_metadata(os.fstat(descriptor))
-            data, digest, size = _read_once(descriptor, max_bytes)
+            data, digest, size, head = _read_once(descriptor, max_bytes)
             after = _stable_file_metadata(os.fstat(descriptor))
             if after != before:
                 raise SubmissionInputError(
@@ -520,17 +523,20 @@ def _walk(
         finally:
             os.close(descriptor)
         budget.admit(size, len(data) if data is not None else 0, entry=relative_path)
-        sources.append(SubmittedSource(relative_path, digest, size, data))
+        sources.append(SubmittedSource(relative_path, digest, size, data, head))
     return sources
 
 
-def _read_once(descriptor: int, max_bytes: int) -> tuple[bytes | None, str, int]:
+def _read_once(descriptor: int, max_bytes: int) -> tuple[bytes | None, str, int, bytes]:
     digest = hashlib.sha256()
     chunks: list[bytes] = []
     size = 0
+    head = b""
     while chunk := os.read(descriptor, _CHUNK):
+        if len(head) < SIGNATURE_PREFIX_BYTES:
+            head = (head + chunk)[:SIGNATURE_PREFIX_BYTES]
         digest.update(chunk)
         size += len(chunk)
         if size <= max_bytes:
             chunks.append(chunk)
-    return (b"".join(chunks) if size <= max_bytes else None, digest.hexdigest(), size)
+    return (b"".join(chunks) if size <= max_bytes else None, digest.hexdigest(), size, head)

@@ -91,7 +91,7 @@ def make_transcript(output: str | Path) -> Path:
         state = temporary / "operator-records"
         source = temporary / "submitted-pages"
         source.mkdir()
-        (source / "page-one.bin").write_bytes(b"synthetic submission page one\n")
+        (source / "page-one.bin").write_bytes(b"\x89PNG\r\n\x1a\nsynthetic submission page one\n")
         manifest = temporary / "sealed-submission.json"
         submission = build_manifest(walk_folder(source))
         manifest.write_bytes(canonical_bytes(submission))

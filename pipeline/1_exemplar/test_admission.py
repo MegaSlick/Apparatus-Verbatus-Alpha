@@ -33,6 +33,7 @@ from synthetic_sources import (
     tiff,
 )
 
+from common import image_sniff
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 
@@ -96,7 +97,7 @@ def test_the_decoder_routes_cover_exactly_the_formats_the_door_can_detect():
     """
     assert set(POLICY) == SNIFFABLE_FORMATS
     assert POLICY == FORMAT_ROUTES
-    for name, signatures in image_formats._SIGNATURES:
+    for name, signatures in image_sniff._SIGNATURES:
         for signature in signatures:
             detected = image_formats.sniff(signature + b"\x00" * 16)
             assert detected == name

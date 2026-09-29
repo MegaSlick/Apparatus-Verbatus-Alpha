@@ -1214,7 +1214,7 @@ def test_refuses_the_pod_mount_path_when_it_is_only_a_plain_directory(
     """The one path a real launch seals must actually be mounted, not merely present."""
 
     ws = _prepared(tmp_path)
-    monkeypatch.setattr(pod_run.boot_a_request, "BOOT_A_VOLUME_MOUNT_PATH", str(ws.volume))
+    monkeypatch.setattr(pod_run.bootstrap_main, "POD_VOLUME_MOUNT_PATH", str(ws.volume))
 
     exit_code, runner = _refused(ws, _run_argv(ws))
 
