@@ -13,6 +13,7 @@ import pytest
 import truncation
 
 from common.contracts.errors import ContractError
+from common.perlector_audit import LEGIBLE_PAGE_PIXELS
 
 ROOT = Path(__file__).resolve().parents[2]
 # The sealed `[truncation]` table every verdict below is judged under, read
@@ -37,6 +38,8 @@ FIXTURE_TEXT = "SYNTHETIC ACT ONE alpha beta gamma"
 LEAF_PAGE = 2550 * 3300
 LINE_BAND = 2550 * 104
 # A realistic character count for one dense register line.
+# A reading long enough to be clean over a tenth of a leaf.
+LEAF_CLEAN_TEXT = "Jean Baptiste fils de Pierre et de Marie Anne " * 20
 LINE_TEXT = "L'an mil sept cent quarante deux le douze de may a este baptise Jean fils de"
 assert 60 <= len(LINE_TEXT) <= 90
 
@@ -191,10 +194,20 @@ def test_an_empty_reading_is_never_length_suspicious():
 
 
 def test_a_tiny_reading_under_a_whole_page_is_length_suspicious():
-    """One character for a whole page is one character per page-equivalent,
-    under any floor above one -- at fixture scale and at leaf scale alike."""
-    assert length_suspicious("x", FIXTURE_PAGE) is True
+    """One character for a whole leaf is one character per page-equivalent,
+    under any floor above one."""
     assert length_suspicious("x", LEAF_PAGE, page_pixels=LEAF_PAGE) is True
+
+
+def test_a_page_too_small_to_hold_legible_lines_is_not_judged_for_length():
+    """The fixture's 200x260 page cannot carry the 32 lines the floor's density
+    describes, so a short reading there is not short of anything."""
+    assert length_suspicious("x", FIXTURE_PAGE) is False
+    assert (
+        length_suspicious("x", LEGIBLE_PAGE_PIXELS - 1, page_pixels=LEGIBLE_PAGE_PIXELS - 1)
+        is False
+    )
+    assert length_suspicious("x", LEGIBLE_PAGE_PIXELS, page_pixels=LEGIBLE_PAGE_PIXELS) is True
 
 
 def test_all_three_computed_signals_agreeing_suspicious_is_truncated_not_unknown():
@@ -204,7 +217,7 @@ def test_all_three_computed_signals_agreeing_suspicious_is_truncated_not_unknown
     which is the direction that matters. An engine's `stop` never forces
     `complete`; it only permits it."""
     text = "unclosed (mid-"
-    record = classify(text, region_pixels=FIXTURE_PAGE, stop_reason="stop")
+    record = classify(text, region_pixels=LEAF_PAGE, page_pixels=LEAF_PAGE, stop_reason="stop")
     assert record["signals"]["unclosed_structure"] is True
     assert record["signals"]["length_suspicious"] is True
     assert record["signals"]["ends_abruptly"] is True
@@ -269,38 +282,57 @@ def test_a_complete_act_crop_from_a_photographed_leaf_is_complete():
 
 def test_a_reading_that_stopped_after_a_token_on_a_photographed_leaf_is_still_caught():
     """Scale invariance must not mean the signal never fires on real material:
-    a tenth-of-a-page crop that produced three characters is suspicious at
-    leaf scale exactly as it is at fixture scale."""
+    a tenth-of-a-page crop that produced three characters is suspicious."""
     tenth = LEAF_PAGE // 10
     assert length_suspicious("Jea", tenth, page_pixels=LEAF_PAGE) is True
-    assert length_suspicious("Jea", FIXTURE_PAGE // 10, page_pixels=FIXTURE_PAGE) is True
 
 
-@pytest.mark.parametrize("scale", [1, 4, 13, 160])
+@pytest.mark.parametrize("scale", [1, 4, 13])
 def test_the_verdict_is_invariant_under_uniform_rescaling(scale):
-    """The same crop, the same page, the same text, at 1x, 4x, 13x and 160x the
-    fixture's pixel count -- 160x is the ratio of an 8.4-megapixel leaf to the
-    52,000-pixel fixture page. Every verdict, suspicious or clean, must be the
-    same one at every scale; a fixture-calibrated constant inverts here."""
-    for text in (FIXTURE_TEXT, "Jea", ""):
-        at_fixture = length_suspicious(text, FIXTURE_REGION, page_pixels=FIXTURE_PAGE)
-        at_scale = length_suspicious(text, FIXTURE_REGION * scale, page_pixels=FIXTURE_PAGE * scale)
-        assert at_scale is at_fixture, (text, scale)
+    """The same crop, the same page, the same text, at 1x, 4x and 13x the pixel
+    count of a 0.83-megapixel leaf (13x is a 10.8-megapixel photograph). Every
+    verdict, suspicious or clean, must be the same one at every scale; an
+    absolute pixels-per-character constant inverts here."""
+    base_page = 800 * 1040
+    assert base_page >= LEGIBLE_PAGE_PIXELS
+    base_region = base_page // 8
+    for text in (LEAF_CLEAN_TEXT, "Jea", ""):
+        at_base = length_suspicious(text, base_region, page_pixels=base_page)
+        at_scale = length_suspicious(text, base_region * scale, page_pixels=base_page * scale)
+        assert at_scale is at_base, (text, scale)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="A one-line cutoff at leaf geometry is silently classified complete",
-)
+ACT_CROP = 2400 * 420  # four lines at the 104 px pitch
+
+
 def test_a_real_act_crop_cut_off_after_one_line_must_not_be_complete():
     cut_off = "L'an mil sept cent quarante deux le douze de may"[:40]
-    assert (
-        classify(cut_off, region_pixels=2400 * 420, page_pixels=LEAF_PAGE, stop_reason="stop")[
-            "classification"
-        ]
-        != truncation.COMPLETE
-    )
+    record = classify(cut_off, region_pixels=ACT_CROP, page_pixels=LEAF_PAGE, stop_reason="stop")
+    assert record["signals"]["length_suspicious"] is True
+    assert record["classification"] == truncation.UNKNOWN
+    assert truncation.holds_as_failure(record["classification"]) is True
+
+
+def test_a_full_line_cut_from_a_four_line_crop_is_caught_too():
+    """The cutoff is caught at a whole line's width, not only at the 40 characters
+    of the case above."""
+    record = classify(LINE_TEXT, region_pixels=ACT_CROP, page_pixels=LEAF_PAGE, stop_reason="stop")
+    assert record["classification"] != truncation.COMPLETE
+
+
+@pytest.mark.parametrize(
+    ("text", "region"),
+    [
+        ("Bapt. de Jean", 900 * 104),  # a marginal note, its region cut to fit
+        ("Le 3 mars, enterré Marie Roy, âgée de 60 ans, en présence de son fils.", 2550 * 104),
+        (LINE_TEXT + " " + LINE_TEXT[:50], 2550 * 208),  # a two-line burial in a two-line region
+        (LINE_TEXT, 2550 * 104 * 3),  # one line in a region holding three
+    ],
+)
+def test_a_short_complete_act_in_a_region_that_fits_it_is_not_flagged(text, region):
+    record = classify(text, region_pixels=region, page_pixels=LEAF_PAGE, stop_reason="stop")
+    assert record["signals"]["length_suspicious"] is False
+    assert record["classification"] == truncation.COMPLETE
 
 
 # --------------------------------------------------------------------------
@@ -332,9 +364,15 @@ def test_the_record_carries_the_floor_it_was_judged_under():
     2026-09-14). The Armarium's ink re-measurement row already took this
     standard for its own noise floor; this is the same one applied twice.
     """
-    record = classify("alpha beta gamma.", stop_reason="stop")
+    record = classify(
+        "alpha beta gamma.",
+        region_pixels=LEAF_PAGE // 10,
+        page_pixels=LEAF_PAGE,
+        stop_reason="stop",
+    )
     measure = record["measure"]
     assert measure["length_floor_characters_per_page"] == FLOOR
+    assert record["signals"]["length_suspicious"] is True
     assert (
         measure["characters"] * measure["page_pixels"]
         < measure["length_floor_characters_per_page"] * measure["region_pixels"]
@@ -353,7 +391,7 @@ def test_the_shared_validator_re_derives_the_length_signal_from_the_measure():
 
     # One character over a whole page is genuinely suspicious; the same record
     # claiming otherwise is refused, and so is the mirror of it.
-    suspicious = classify("x", region_pixels=FIXTURE_PAGE, stop_reason="stop")
+    suspicious = classify("x", region_pixels=LEAF_PAGE, page_pixels=LEAF_PAGE, stop_reason="stop")
     assert suspicious["signals"]["length_suspicious"] is True
     assert validate_truncation_record(suspicious, label="x") == suspicious
     lying = {
@@ -363,7 +401,9 @@ def test_the_shared_validator_re_derives_the_length_signal_from_the_measure():
     }
     with pytest.raises(SchemaRefusal, match="make it True"):
         validate_truncation_record(lying, label="x")
-    clean = classify(FIXTURE_TEXT, stop_reason="stop")
+    clean = classify(
+        LEAF_CLEAN_TEXT, region_pixels=LEAF_PAGE // 10, page_pixels=LEAF_PAGE, stop_reason="stop"
+    )
     assert clean["signals"]["length_suspicious"] is False
     overclaiming = {
         **clean,
@@ -395,7 +435,7 @@ def test_the_shared_validator_binds_the_floor_to_the_one_this_run_sealed():
 
     `length_suspicious` is recomputed from the record's own measure, so a
     record that names its own floor agrees with itself whatever that floor is:
-    under a sealed floor of 50, a re-proof record naming floor 1 derives the
+    under the sealed floor, a re-proof record naming floor 1 derives the
     signal false, classifies `complete`, and clears an audit hold the sealed
     policy would have held. The caller that holds the sealed table passes it,
     and a record judged under any other floor is refused before the signal is
@@ -406,7 +446,9 @@ def test_the_shared_validator_binds_the_floor_to_the_one_this_run_sealed():
 
     # A short reading over a whole page: suspicious under the sealed floor,
     # clean under a floor of one, which is the forgery this refuses.
-    under_the_seal = classify("x", region_pixels=FIXTURE_PAGE, stop_reason="stop")
+    under_the_seal = classify(
+        "x", region_pixels=LEAF_PAGE, page_pixels=LEAF_PAGE, stop_reason="stop"
+    )
     assert under_the_seal["signals"]["length_suspicious"] is True
     assert (
         validate_truncation_record(
@@ -417,8 +459,8 @@ def test_the_shared_validator_binds_the_floor_to_the_one_this_run_sealed():
 
     forged = truncation.classify(
         "x",
-        region_pixels=FIXTURE_PAGE,
-        page_pixels=FIXTURE_PAGE,
+        region_pixels=LEAF_PAGE,
+        page_pixels=LEAF_PAGE,
         truncation_policy={truncation.LENGTH_FLOOR_FIELD: 1},
         stop_reason="stop",
     )
@@ -451,7 +493,7 @@ def test_a_policy_with_no_floor_at_all_is_refused_by_name():
 
 def _protocol_with(replacement: str, tmp_path: Path) -> Path:
     shipped = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
-    edited = shipped.replace("length_floor_characters_per_page = 50", replacement)
+    edited = shipped.replace("length_floor_characters_per_page = 640", replacement)
     assert edited != shipped
     path = tmp_path / "perlector_protocol.toml"
     path.write_text(edited, encoding="utf-8")

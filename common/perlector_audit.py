@@ -454,15 +454,30 @@ def unresolved_state(examination: str) -> bool:
     }
 
 
+# The floor is a density per page: a page's lines times a line's characters. A page
+# too small to hold that many lines at a legible pitch has no such density to
+# fall short of (the 200x260 fixture pages fit 32 lines at 8 px each), so the
+# signal is not judged there. 32 lines at 26 px -- half the 52 px pitch
+# `config/pdf_render.toml` measures at 150 DPI, below which line text stops
+# being readable -- on a letter-shaped page is about 535,000 px; 500,000 is that,
+# rounded down.
+LEGIBLE_PAGE_PIXELS: Final = 500_000
+
+
 def length_signal(*, characters: int, region_pixels: int, page_pixels: int, floor: int) -> bool:
     """The truncation length signal, as a pure function of its four terms.
 
     The reading's characters, scaled from its region to the page's area, against
-    the sealed floor. An empty reading is never suspicious: that outcome is
+    the sealed floor, on a page large enough to hold the density the floor
+    describes. An empty reading is never suspicious: that outcome is
     `no-readable-text`, decided elsewhere. Producer and validator share this so
     the arithmetic cannot drift.
     """
-    return characters > 0 and characters * page_pixels < floor * region_pixels
+    return (
+        characters > 0
+        and page_pixels >= LEGIBLE_PAGE_PIXELS
+        and characters * page_pixels < floor * region_pixels
+    )
 
 
 def truncation_classification(signals: dict[str, Any]) -> str:

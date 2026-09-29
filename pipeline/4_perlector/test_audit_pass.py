@@ -2388,12 +2388,13 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
             "length_suspicious": True,
             "ends_abruptly": True,
         },
-        # A whole page returning sixteen characters really is length-suspicious
-        # under the sealed floor; the validator re-derives that signal from this
-        # block, so the record has to mean what its signals say.
+        # A whole 300-DPI leaf returning sixteen characters really is
+        # length-suspicious under the sealed floor; the validator re-derives that
+        # signal from this block, so the record has to mean what its signals say.
         "measure": {
             **_COMPLETE_TRUNCATION["measure"],
-            "region_pixels": _TEST_PAGE_PIXELS,
+            "region_pixels": 2550 * 3300,
+            "page_pixels": 2550 * 3300,
         },
     }
     assert validate_truncation_record(three, label="x")["classification"] == "truncated"
