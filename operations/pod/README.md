@@ -382,7 +382,8 @@ in the launch record's `balance_notification`, not refused.
 ### Per-stage boots, transfer and preflight
 
 `staged.py` runs one collection stage per independently authorized boot, then takes the pod
-down; it never adopts. Its durable records on the run volume: a **claim** keyed by the grant
+down; it never adopts. No launch or collection path calls it; its tests are its only
+caller. Its durable records on the run volume: a **claim** keyed by the grant
 reference, written before the provider is touched, so one grant cannot buy a second pod
 (a retry after a refused create records a fresh reference); an explicitly unknown **cost
 intent**, fsynced first, so a lost create response never reads as zero; a **boot record**
