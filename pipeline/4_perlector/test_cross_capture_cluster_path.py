@@ -303,7 +303,7 @@ def _not_measured_basis(
         "comparison-bounds": {
             "delivered_self_revisions_stopped": 0,
             "delivered_dissent_rows_stopped": 0,
-            "witness_alignments_unmeasured": 0,
+            "act_witness_chairs_unmeasured": 0,
             "delivered_acts": [
                 {"act_key": key, "self_revision_stopped": False, "dissent_chairs_stopped": []}
                 for key in sorted(delivered)
@@ -716,7 +716,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
         established,
         category="delivered",
         source_regions=source_regions,
-        witnesses=[{"chair": "attestator_1"}],
+        witnesses=[{"chair": "attestator_1", "dissent_stopped": False}],
     )
     with pytest.raises(SchemaRefusal, match="source regions do not equal.*no crop may vanish"):
         armarium.logical_act_projection_entry(

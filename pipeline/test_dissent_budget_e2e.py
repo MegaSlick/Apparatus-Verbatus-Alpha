@@ -117,6 +117,10 @@ def test_a_budget_stopped_self_revision_reaches_acts_jsonl_as_null(through_recen
     assert bounds["status"] == "not-measured"
     assert bounds["detail"]["delivered_self_revisions_stopped"] == len(delivered)
     assert bounds["detail"]["delivered_dissent_rows_stopped"] > 0
+    # The count is carried on the exported witness rows it is recounted from.
+    assert bounds["detail"]["delivered_dissent_rows_stopped"] == sum(
+        witness["dissent_stopped"] for row in delivered for witness in row["witnesses"]
+    )
 
 
 @pytest.mark.parametrize("stage", ["6_archetypus", "7_armarium"])

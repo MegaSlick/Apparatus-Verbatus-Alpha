@@ -1056,8 +1056,9 @@ def comparison_bounds_basis(
     """What the run's sealed comparison bounds stopped, counted from its own records.
 
     Self-revisions and dissent rows over the delivered acts, whose established
-    readings this stage re-derives; unmeasured page witness alignments over
-    every exported act's coverage record.
+    readings this stage re-derives; and, over every exported act's coverage
+    record, the chairs left unmeasured because the aligner stopped on its own
+    bound, counted once per act after the chair's pages are merged.
     """
     delivered = sorted(
         act["act_key"]
@@ -1081,7 +1082,7 @@ def comparison_bounds_basis(
     return {
         "delivered_self_revisions_stopped": sum(row["self_revision_stopped"] for row in rows),
         "delivered_dissent_rows_stopped": sum(len(row["dissent_chairs_stopped"]) for row in rows),
-        "witness_alignments_unmeasured": unmeasured,
+        "act_witness_chairs_unmeasured": unmeasured,
         "delivered_acts": rows,
     }
 
@@ -2021,6 +2022,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                         )
                     except SchemaRefusal as error:
                         raise FatalAccounting(str(error)) from error
+                    # Each witness row says whether the budget stopped its dissent, so
+                    # a verifier recounts the stops from the rows it exports.
+                    if not set(dissent_stopped) <= {witness["chair"] for witness in witnesses}:
+                        raise FatalAccounting(
+                            f"the established Perlectio of {act['act_id']} records a stopped "
+                            "dissent row for a chair outside its witness basis"
+                        )
+                    for witness in witnesses:
+                        witness["dissent_stopped"] = witness["chair"] in dissent_stopped
                     comparison_stops[act_key] = {
                         "act_key": act_key,
                         "self_revision_stopped": revision_stopped,

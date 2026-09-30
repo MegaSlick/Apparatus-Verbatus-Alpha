@@ -180,7 +180,7 @@ def _test_not_measured_basis(**overrides):
         "comparison-bounds": {
             "delivered_self_revisions_stopped": 0,
             "delivered_dissent_rows_stopped": 0,
-            "witness_alignments_unmeasured": 0,
+            "act_witness_chairs_unmeasured": 0,
             "delivered_acts": [
                 {"act_key": "one", "self_revision_stopped": False, "dissent_chairs_stopped": []}
             ],
@@ -265,7 +265,7 @@ def _comparison_bounds_for(delivered, *, unmeasured_alignments=0, dissent_stops=
     return {
         "delivered_self_revisions_stopped": sum(row["self_revision_stopped"] for row in rows),
         "delivered_dissent_rows_stopped": sum(len(row["dissent_chairs_stopped"]) for row in rows),
-        "witness_alignments_unmeasured": unmeasured_alignments,
+        "act_witness_chairs_unmeasured": unmeasured_alignments,
         "delivered_acts": rows,
     }
 
@@ -323,7 +323,7 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                         "sha256": "b" * 64,
                     }
                 ],
-                "witnesses": [{"chair": "attestator_1"}],
+                "witnesses": [{"chair": "attestator_1", "dissent_stopped": False}],
             },
             {
                 "act_id": "act-2",
@@ -2528,6 +2528,7 @@ def test_product_marks_retained_run_evidence_references_and_refuses_an_unmarked_
                 "outcome": "read",
                 "testimonium_ref": raw_reference,
                 "provenance": {"receipt_ref": raw_reference},
+                "dissent_stopped": False,
             }
         ],
     }
@@ -5608,6 +5609,7 @@ def _stopped_projection() -> ArmariumProjection:
     delivered = {
         **original.acts[0],
         "uncertainty": {**original.acts[0]["uncertainty"], "self_revisions": None},
+        "witnesses": [{"chair": "attestator_1", "dissent_stopped": True}],
     }
     acts = (delivered, *original.acts[1:])
     coverage = copy.deepcopy(original.aggregate_basis["coverage_records"])
@@ -5624,9 +5626,9 @@ def _stopped_projection() -> ArmariumProjection:
     )
 
 
-def _resealed_comparison_bounds(projection, mutate) -> bytes:
+def _resealed_comparison_bounds(projection, mutate, formats=("jsonl",)) -> bytes:
     """A package whose comparison-bounds detail `mutate` edited, resealed."""
-    formats = ArmariumFormats(("jsonl",), embed_pixels=False)
+    formats = ArmariumFormats(formats, embed_pixels=False)
     bundle = build_armarium_bundle(projection, formats, lambda _path: b"")
     members = _members(bundle.data)
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
@@ -5646,7 +5648,7 @@ def test_the_ledger_counts_every_comparison_a_sealed_bound_stopped(tmp_path):
     assert {key: value for key, value in entry["detail"].items() if key != "delivered_acts"} == {
         "delivered_self_revisions_stopped": 1,
         "delivered_dissent_rows_stopped": 1,
-        "witness_alignments_unmeasured": 1,
+        "act_witness_chairs_unmeasured": 1,
     }
     assert _entry(_block(_projection()), "comparison-bounds")["status"] == "measured"
 
@@ -5663,15 +5665,15 @@ def test_the_ledger_counts_every_comparison_a_sealed_bound_stopped(tmp_path):
                 basis["delivered_acts"][0].update(self_revision_stopped=False)
                 or basis.update(delivered_self_revisions_stopped=0)
             ),
-            "exported uncertainty layer says otherwise",
+            "uncertainty layer in the projection says otherwise",
         ),
         (
-            lambda basis: basis.update(witness_alignments_unmeasured=0),
+            lambda basis: basis.update(act_witness_chairs_unmeasured=0),
             "unmeasured shortfalls of its own coverage records",
         ),
         (
             lambda basis: basis["delivered_acts"][0].update(dissent_chairs_stopped=["intruder"]),
-            "did not export as a witness",
+            "its exported witness rows say",
         ),
         (
             lambda basis: basis.update(delivered_dissent_rows_stopped=0),
@@ -5699,7 +5701,7 @@ def test_the_producer_refuses_comparison_bounds_its_evidence_contradicts(mutate,
     ("mutate", "match"),
     [
         (
-            lambda detail: detail.update(witness_alignments_unmeasured=0),
+            lambda detail: detail.update(act_witness_chairs_unmeasured=0),
             "unmeasured shortfalls of its own coverage records",
         ),
         (
@@ -5707,13 +5709,21 @@ def test_the_producer_refuses_comparison_bounds_its_evidence_contradicts(mutate,
                 detail["delivered_acts"][0].update(self_revision_stopped=False)
                 or detail.update(delivered_self_revisions_stopped=0)
             ),
-            "exported uncertainty layer says otherwise",
+            "uncertainty layer in the acts JSONL says otherwise",
         ),
         (
             lambda detail: (
                 detail["delivered_acts"][0].update(dissent_chairs_stopped=["intruder"]) or None
             ),
-            "did not export as a witness",
+            "its exported witness rows say",
+        ),
+        (
+            lambda detail: (
+                detail["delivered_acts"][0].update(dissent_chairs_stopped=[])
+                or detail.update(delivered_dissent_rows_stopped=0)
+            ),
+            r"stopped dissent rows \[\] for act 'one', and its exported witness rows say "
+            r"\['attestator_1'\]",
         ),
     ],
 )
@@ -5723,6 +5733,25 @@ def test_the_clean_machine_verifier_recomputes_the_comparison_bounds(tmp_path, m
     with pytest.raises(SchemaRefusal, match=match):
         verify_export_bundle(
             _resealed_comparison_bounds(_stopped_projection(), mutate), tmp_path / "clean"
+        )
+
+
+def test_the_verifier_rechecks_the_self_revision_stop_without_jsonl(tmp_path):
+    """The acts database carries the uncertainty layer too, so a package without
+    `jsonl` still has its self-revision stops recomputed rather than believed."""
+    def unstop(detail):
+        detail["delivered_acts"][0]["self_revision_stopped"] = False
+        detail["delivered_self_revisions_stopped"] = 0
+
+    projection = _stopped_projection()
+    formats = ArmariumFormats(("acts-database",), embed_pixels=False)
+    verify_export_bundle(
+        build_armarium_bundle(projection, formats, lambda _path: b"").data, tmp_path / "ok"
+    )
+    with pytest.raises(SchemaRefusal, match="uncertainty layer in the acts database says"):
+        verify_export_bundle(
+            _resealed_comparison_bounds(projection, unstop, formats=("acts-database",)),
+            tmp_path / "clean",
         )
 
 
