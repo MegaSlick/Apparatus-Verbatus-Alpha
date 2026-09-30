@@ -814,7 +814,6 @@ def cut_region(
     bounds,
     ordinal,
     page_ordinal,
-    origin,
     *,
     padding: dict | None = None,
     provenance: dict | None = None,
@@ -828,7 +827,6 @@ def cut_region(
         bounds,
         ordinal,
         page_ordinal,
-        origin,
         padding=padding,
         provenance=provenance,
     )
@@ -842,7 +840,6 @@ def cut_minted_region(
     bounds,
     ordinal,
     page_ordinal,
-    origin,
     *,
     padding: dict | None = None,
     provenance: dict | None = None,
@@ -888,7 +885,7 @@ def cut_minted_region(
             "region_id": region_id(act_id, crop["transform"]),
             "act_key": act_key,
             "attempt_ordinal": ordinal,
-            "origin": origin,
+            "origin": "proposal",
             **crop,
             "raw_bounds": bounds,
             "padding": padding_record,
@@ -1677,7 +1674,6 @@ def _publish_page_fallback(
             dict(tile["bounds"]),
             index + 1,
             ordinal,
-            "proposal",
             provenance=provenance,
         )
         evidence.append(context.input_ref(region.relative_path))
@@ -1957,7 +1953,6 @@ def _cut_and_group_declared_act(
         act_bounds(act),
         1,
         page_ordinal,
-        "proposal",
         padding=padding,
         provenance=provenance,
     )
@@ -1977,7 +1972,6 @@ def _cut_and_group_declared_act(
             _bounds_of(continuation),
             2,
             far_ordinal,
-            "proposal",
             padding=padding,
             provenance=provenance,
         )
@@ -2699,7 +2693,6 @@ def _publish_live_proposals(
                 bounds,
                 1,
                 ordinal,
-                "proposal",
                 padding=padding,
                 provenance=provenance_by_page[ordinal],
             )
@@ -2970,12 +2963,12 @@ def _refuse_duplicate_proposal_bounds(context) -> None:
         seen[key] = act["key"]
 
 
-def _regions_of(context, act_id: str | None = None) -> list[dict]:
-    """Every region record cut so far, or only one act's."""
+def _regions_of(context) -> list[dict]:
+    """Every region record cut so far."""
     return [
         context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
         for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "region" and (act_id is None or entry["subject_id"] == act_id)
+        if entry["kind"] == "region"
     ]
 
 

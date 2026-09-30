@@ -312,6 +312,17 @@ def test_a_crop_carrying_payload_beside_its_pixels_is_refused(cropped):
         verify_exemplar_crop_lineage(tree, run, restated(tree, region, smuggled))
 
 
+def test_a_region_of_any_origin_but_proposal_is_refused(cropped):
+    """Only the Designator's proposal crops exist; a region naming any other
+    origin traces to no cut this pipeline makes."""
+    tree, run, region = cropped
+    other = copy.deepcopy(region)
+    other["payload"]["origin"] = "recovery"
+
+    with pytest.raises(ContractError, match="no recognized proposal origin"):
+        verify_exemplar_crop_lineage(tree, run, other)
+
+
 def test_a_crop_that_is_not_an_image_at_all_refuses_as_that(cropped):
     """Undecodable is its own fault and says so, rather than arriving as a claim
     about pixels nobody could read."""

@@ -505,9 +505,9 @@ detector answers each page with the fixture's `[[detector_record]]` rows for
 that page (`page_ordinal`, four `corners`, `score_bp`, optional `class_id`,
 optional `scenario`): a scenario that declares rows of its own reads those
 alone, and any other scenario reads the unscoped rows. The shipped fixture
-declares one record over each act's ink on each page; the committed fixture
-roster configures no record detector, so only a roster that configures one
-reads them.
+declares one record over each act's ink on each page, and the committed
+roster configures the detector on that fixture row, so every fixture run reads
+them.
 On the live path the row is checked before the structure chair starts and the
 detector is loaded only after that chair has closed, so one model is resident
 at a time; a resumed pass reuses the `secondary-provenance` it already sealed.
@@ -1313,7 +1313,7 @@ or ink no crop claimed — exits `EXIT_HELD` (3), and so does a page whose
 background could not be inferred. The exit code is the one signal an operator
 reads without opening the tree, and a 0 over a hold is a partial result wearing
 "complete". Holds are computed from the seal's own rows. `--operation` has one
-value, `initial`; any other refuses before anything is written.
+value, `initial`; any other refuses before any artifact is published.
 
 **An unmeasured page is not a held page, and the distinction is load-bearing.**
 Nothing is pulled out: no act is held, every declared act on it is still cut,
@@ -1638,8 +1638,8 @@ described above is unchanged by that substitution: it is a property of the
 adjacency rule, not of how the rule is computed.)
 
 **Conservation uses `SECONDARY_MARGIN`, not the primary proposer's threshold.**
-The secondary proposer is optional, but its declared sensitivity is still the
-most inclusive threshold this stage has. Reconciliation therefore counts the
+It is the most inclusive ink threshold this stage has. Reconciliation therefore
+counts the
 faint band that `primary_scan` does not propose and mints it as residual held
 evidence when no crop claims it, so no pixel escapes the conservation
 denominator. This closes a silent `EXIT_COMPLETE` path found by manual review; the

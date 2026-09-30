@@ -119,7 +119,7 @@ structure_pass = designator.structure_pass
 _COMMITTED_SECONDARY_HEAD = '[chairs.secondary_proposer]\nstate = "configured"\n'
 _ABSENT_SECONDARY = """[chairs.secondary_proposer]
 state = \"absent\"
-reason = \"no secondary proposer is configured for the offline walking skeleton\"
+reason = \"the live structure-chair tests run without a record detector\"
 """
 
 

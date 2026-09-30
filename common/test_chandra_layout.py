@@ -786,3 +786,12 @@ def test_to_page_bounds_floors_the_low_edges_and_reaches_the_last_page_pixel():
     assert to_page_bounds([0, 0, 500, 500], 1000, 1000) == {"x": 0, "y": 0, "w": 500, "h": 500}
     assert to_page_bounds([0, 0, 1000, 1000], 7, 11) == {"x": 0, "y": 0, "w": 7, "h": 11}
     assert to_page_bounds([1, 1, 999, 999], 7, 11) == {"x": 0, "y": 0, "w": 7, "h": 11}
+
+
+def test_the_rule_names_sealed_into_structure_records_are_pinned():
+    """Every structure record names these; a changed string would tell a stored
+    record that its arithmetic had moved when it had not."""
+    assert chandra_layout.QUANTIZATION_RULE == (
+        "structure-answer.v1.box1000-floor-low-ceil-far.sealed-page-pixels"
+    )
+    assert chandra_layout.PAGE_TEXT_RULE == "structure-answer.v1.newline-between-delivered-acts"

@@ -466,7 +466,7 @@ denominator govern what it cannot *lose*, and erring sensitive there means a
 mark the grouping pass missed still appears as a residual component rather
 than as an absence. Deriving those too would trade a
 visible over-count for a possible silent loss. Two properties follow and both are
-still pinned: the secondary scan is strictly more sensitive than the primary on
+still pinned: the conservation scan at `SECONDARY_MARGIN` is strictly more sensitive than the primary on
 every page, because 2 is below the floor and no page can invert them; and the
 cross-stage containment with the Recensor's `MINIMUM_CONTRAST_BELOW_BACKGROUND`
 stays a comparison of two source literals that

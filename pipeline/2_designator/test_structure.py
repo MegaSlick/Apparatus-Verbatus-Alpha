@@ -33,6 +33,9 @@ def paint_rect(rows: list[bytearray], x: int, y: int, w: int, h: int, value: int
             row[x + col_offset] = value
 
 
+# --- primary vs conservation sensitivity -------------------------------------
+
+
 def test_the_conservation_margin_finds_a_faint_mark_primary_scan_misses():
     width, height = 20, 20
     rows = blank_rows(width, height)
@@ -87,7 +90,7 @@ def test_primary_and_conservation_margins_agree_on_clearly_inked_marks():
     )
 
 
-# --- infer_background ---------------------------------------------------------
+# --- scan refusals -----------------------------------------------------------
 
 
 @pytest.mark.parametrize("width,height", [(0, 10), (10, 0), (-1, 10)])
@@ -184,10 +187,3 @@ def test_primary_scan_refuses_a_missing_margin_keyword():
     """
     with pytest.raises(TypeError):
         primary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND, gap_tolerance_px=3)
-
-
-# --- the row-run substitution: equality against the retired implementation ----
-#
-# The claim the substitution rests on is that the two implementations return
-# the same list: same components, bounds, pixel counts, order -- proved here
-# on every page these tests can build, not asserted once.

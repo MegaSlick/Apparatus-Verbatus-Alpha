@@ -330,7 +330,7 @@ def test_the_reference_labeller_refuses_what_the_production_one_refuses():
         label_components({(0, 0)}, gap_tolerance_px=-1)
 
 
-# --- primary vs conservation sensitivity -------------------------------------
+# --- infer_background ---------------------------------------------------------
 
 
 def test_infer_background_is_the_most_common_pixel_value():
@@ -415,6 +415,13 @@ def test_a_genuinely_blank_page_still_infers_its_paper_rather_than_being_refused
 def test_label_components_refuses_a_missing_gap_tolerance_keyword():
     with pytest.raises(TypeError):
         label_components({(0, 0)})
+
+
+# --- the row-run substitution: equality against the retired implementation ----
+#
+# The claim the substitution rests on is that the two implementations return
+# the same list: same components, bounds, pixel counts, order -- proved here
+# on every page these tests can build, not asserted once.
 
 
 def _both_labellers_agree(pixels, gap_tolerance_px: int) -> list:
