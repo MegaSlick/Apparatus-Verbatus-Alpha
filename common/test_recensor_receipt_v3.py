@@ -24,6 +24,10 @@ def _ref(name: str) -> dict[str, str]:
     return {"relative_path": f"r/4_perlector/artifacts/page-reading/{name}.json", "sha256": DIGEST}
 
 
+def _page(ordinal: int) -> dict:
+    return {"page_ordinal": ordinal, "reading_ref": _ref(f"p{ordinal}")}
+
+
 def _item(
     act_id: str,
     key: str,
@@ -60,7 +64,7 @@ def _item(
 
 def _receipt(items):
     return build_recensor_reading_receipt(
-        run_id="r", config_digest=DIGEST, page_reading_refs=[_ref("p1"), _ref("p2")], items=items
+        run_id="r", config_digest=DIGEST, page_reading_refs=[_page(1), _page(2)], items=items
     )
 
 
@@ -68,10 +72,10 @@ def test_a_v3_receipt_names_its_page_readings_and_each_units_page_disposition():
     receipt = _receipt([_item("act_b", "p1:1"), _item("act_a", "p2:1")])
     assert receipt["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
     assert receipt["scope"] == RECENSOR_READING_RECEIPT_SCOPE
-    assert [ref["relative_path"][-7:] for ref in receipt["page_reading_refs"]] == [
-        "p1.json",
-        "p2.json",
-    ]
+    assert [
+        (row["page_ordinal"], row["reading_ref"]["relative_path"][-7:])
+        for row in receipt["page_reading_refs"]
+    ] == [(1, "p1.json"), (2, "p2.json")]
     assert [item["act_id"] for item in receipt["items"]] == ["act_a", "act_b"]
     assert receipt["expected_act_count"] == 2 and "proposal_seal_ref" not in receipt
     assert receipt["recensor_status"] == "complete"
@@ -112,10 +116,20 @@ def test_a_release_reason_is_given_exactly_when_a_held_unit_is_completed(item):
         _receipt([_item("act_b", "p1:1"), item])
 
 
-def test_a_v3_receipt_counting_fewer_units_than_pages_is_refused():
-    for items in ([_item("act_a", "p1:1")], []):
+def test_a_v3_receipt_with_a_page_without_a_unit_is_refused():
+    for items in (
+        [_item("act_a", "p1:1")],
+        [_item("act_a", "p1:1"), _item("act_b", "p1:2")],
+        [],
+    ):
         with pytest.raises(SchemaRefusal, match="every sealed page is at least one unit"):
             _receipt(items)
+
+
+def test_a_v3_receipt_with_a_unit_on_a_page_it_does_not_name_is_refused():
+    items = [_item("act_a", "p1:1"), _item("act_b", "p2:1"), _item("act_c", "p3:1")]
+    with pytest.raises(SchemaRefusal, match=r"units on page\(s\) \[3\], which name no sealed"):
+        _receipt(items)
 
 
 @pytest.mark.parametrize(
@@ -126,8 +140,12 @@ def test_a_v3_receipt_counting_fewer_units_than_pages_is_refused():
         lambda r: r["items"][0].pop("release_reason"),
         lambda r: r["items"][0]["coverage"].update(page_granularity_only=0),
         lambda r: r.update(page_reading_refs=[]),
-        lambda r: r.update(page_reading_refs=[_ref("p1"), _ref("p1")]),
-        lambda r: r.update(page_reading_refs=[_ref("p1"), _ref("p2"), _ref("p3")]),
+        lambda r: r.update(page_reading_refs=[_page(1), _page(1)]),
+        lambda r: r.update(page_reading_refs=[_page(1), {**_page(2), "reading_ref": _ref("p1")}]),
+        lambda r: r.update(page_reading_refs=[_page(2), _page(1)]),
+        lambda r: r.update(page_reading_refs=[_ref("p1"), _ref("p2")]),
+        lambda r: r.update(page_reading_refs=[{**_page(1), "page_ordinal": 0}, _page(2)]),
+        lambda r: r.update(page_reading_refs=[_page(1), _page(2), _page(3)]),
         lambda r: r["items"][1].update(act_key=r["items"][0]["act_key"]),
         lambda r: r["items"][0].update(act_key="1:1"),
         lambda r: r["items"][0].update(act_key="p1:0"),
@@ -141,8 +159,12 @@ def test_a_v3_receipt_counting_fewer_units_than_pages_is_refused():
         "no-release-field",
         "act-granularity",
         "no-page",
-        "page-twice",
-        "more-pages-than-units",
+        "ordinal-twice",
+        "reading-twice",
+        "out-of-order",
+        "not-keyed",
+        "ordinal-zero",
+        "page-without-unit",
         "act-key-twice",
         "act-key-no-page",
         "act-key-zero",
