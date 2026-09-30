@@ -75,6 +75,7 @@ from common.native_witness import (  # noqa: E402
     unrouted_observations,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
+    validate_capture_text_view,
     validate_reportable_observations,
     verify_native_capture_blob,
 )
@@ -815,6 +816,9 @@ def _verify_native_capture(
             f"act {act_id} page witness {chair!r} attributes its native capture to "
             "an adapter other than that chair's configured boundary"
         )
+    # A capture read under a text view this build does not read is refused as
+    # that, with its remedy, not as a capture that differs from its bytes.
+    validate_capture_text_view(native_capture)
     try:
         verify_native_capture_blob(context.tree, native_capture)
     except ContractError as error:
