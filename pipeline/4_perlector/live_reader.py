@@ -484,8 +484,10 @@ def send_page_request(
     order; `text` is `page_prompt.build_page_prompt`'s rendered text, sent after
     them; `capacity` is the request-capacity record the request was admitted on
     (`common.request_capacity.page_request_capacity`), copied onto the retained
-    call record; `max_tokens` is the admitted output cap. The generation is the
-    one a reading sends: thinking off and the cap, nothing else.
+    call record; `max_tokens` is the admitted output cap. The caller's
+    generation is the one a reading sends, thinking off and the cap; the client
+    adds the Perlector's sealed sampling row and the serving receipt's seed, as
+    for an act reading (attempt 1, no variance arm).
 
     Returns `{content, stop_reason, finish_reason, request_sha256, engine_call}`:
     `stop_reason` is the engine's word mapped as a reading's (`"stop"`,

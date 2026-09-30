@@ -72,6 +72,7 @@ from common.contracts.identities import (
     region_id,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, INK_MAP, PERLECTOR
+from common.decoding import chair_decoding, engine_effective_sampling, recorded_sampling
 from common.exemplar_boundary import cut_exemplar_crop, read_sealed_page
 from common.imaging import dimensions
 from common.request_capacity import RequestCapacityRefusal, page_request_capacity
@@ -887,6 +888,7 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
         "feed_ref": page.feed_ref,
         "request_digest": _request_digest(page) if attempted else None,
         "engine_call": engine_call,
+        "sampling": _page_sampling(run) if receipt_ref is not None else None,
         "capacity": capacity,
         "finish_reason": finish_reason,
         "stop_reason": stop_reason,
@@ -914,6 +916,22 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
     )
 
 
+def _page_sampling(run) -> dict[str, Any]:
+    """The sealed Perlector row a live page call sends, and what the engine samples under.
+
+    `ChairClient` puts exactly this row on the wire, with the serving receipt's
+    seed; the call record the reading names is held to it
+    (`engine_call_inputs`). A page reading is sampled, so a second call would be
+    a second draw: a resumed pass adopts the sealed reading and never asks again.
+    """
+    values = chair_decoding(run.decoding_policy, run.chair.role)
+    return {
+        "chair": run.chair.role,
+        "sent": recorded_sampling(values),
+        "effective": recorded_sampling(engine_effective_sampling(values)),
+    }
+
+
 def _check_adopted(state: _PagePass, page: _Page, record: dict[str, Any]) -> None:
     """Refuse a retained page reading this run could not have made from this page's feed."""
     payload = record["payload"]
@@ -929,6 +947,15 @@ def _check_adopted(state: _PagePass, page: _Page, record: dict[str, Any]) -> Non
             "configuration than this page has now; it is not adopted and the page is not "
             "asked again. Read this page in a new run"
         )
+    if payload.get("engine_call") is not None:
+        # The retained call record is held to the sealed row it was sent under.
+        state.hooks.engine_call_inputs(state.context, payload["engine_call"], variance_arm=None)
+        if payload.get("sampling") != _page_sampling(state.run):
+            raise ContractError(
+                f"page {page.page_id}'s retained page reading names sampling other than the "
+                "sealed Perlector row; it is not adopted and the page is not asked again. "
+                "Read this page in a new run"
+            )
 
 
 # --- the answer's entries -----------------------------------------------------------

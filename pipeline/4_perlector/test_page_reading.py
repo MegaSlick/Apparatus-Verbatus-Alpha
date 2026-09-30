@@ -37,6 +37,12 @@ from test_live_perlector import (
 from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError
 from common.contracts.identities import act_bindings, region_id, verify
+from common.decoding import (
+    chair_decoding,
+    engine_effective_sampling,
+    load_decoding_policy,
+    recorded_sampling,
+)
 from common.exemplar_boundary import read_sealed_page
 from common.imaging import crop_png
 from common.page_accounting import is_inside, load_page_accounting_policy
@@ -878,6 +884,54 @@ def test_a_live_page_is_sent_once_with_its_images_first_and_recorded_with_its_ca
         assert payload["provenance"]["receipt_ref"] is not None
     assert len(_records(root, "perlectio")) == 3
     assert all(r["payload"]["engine_call"] for r in _records(root, "perlectio"))
+
+
+def test_a_live_page_is_sent_the_perlectors_sealed_row_and_names_it(
+    live_tree, tmp_path, monkeypatch
+):
+    root = live_tree.root
+    endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    policy, _digest = load_decoding_policy()
+    row = chair_decoding(policy, "perlector")
+    # Qwen's non-thinking values: the page reading samples, it is not greedy.
+    assert row["temperature"] == 0.7
+    readings = _records(root, "page-reading")
+    receipts = {
+        reading["payload"]["provenance"]["receipt_ref"]["relative_path"] for reading in readings
+    }
+    [receipt] = receipts
+    seed = json.loads((root / "r" / receipt).read_text("utf-8"))["seed"]
+    for request in _chat_requests(endpoint):
+        assert {field: request[field] for field in row} == row
+        assert request["seed"] == seed
+    for reading in readings:
+        assert reading["payload"]["sampling"] == {
+            "chair": "perlector",
+            "sent": recorded_sampling(row),
+            "effective": recorded_sampling(engine_effective_sampling(row)),
+        }
+        call = json.loads(
+            (
+                root / "r" / reading["payload"]["engine_call"]["call_record_ref"]["relative_path"]
+            ).read_text("utf-8")
+        )
+        assert call["sampling_effective"] == reading["payload"]["sampling"]["effective"]
+
+
+def test_a_resumed_pass_refuses_a_reading_that_names_other_sampling(
+    live_tree, tmp_path, monkeypatch
+):
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    original = page_run.chair_decoding
+
+    def another_row(policy, chair):
+        return {**original(policy, chair), "temperature": 0.0}
+
+    monkeypatch.setattr(page_run, "chair_decoding", another_row)
+    with pytest.raises(ContractError, match="names sampling other than the sealed Perlector row"):
+        _read_pages(live_tree, tmp_path / "again", monkeypatch)
 
 
 def test_two_pages_in_flight_publish_what_one_at_a_time_does(live_chain, tmp_path, monkeypatch):
