@@ -601,7 +601,7 @@ def _valid_coverage() -> dict:
         "unresolved_chairs": 1,
         "page_granularity_only": 0,
         "health_unrecorded": 1,
-        "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 1},
+        "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 1, "unmeasured": 0},
         "granularity_basis": INTERIM_GRANULARITY_BASIS,
     }
 
@@ -973,7 +973,12 @@ def test_a_failed_act_scoped_attempt_produces_a_real_failed_and_unaligned_shortf
     item = next(item for item in receipt["items"] if item["act_key"] == "a1")
     coverage = item["coverage"]
     assert coverage["under_witnessed"] is True
-    assert coverage["shortfalls"] == {"failed": 1, "truncated": 0, "unaligned": 1}, (
+    assert coverage["shortfalls"] == {
+        "failed": 1,
+        "truncated": 0,
+        "unaligned": 1,
+        "unmeasured": 0,
+    }, (
         f"act a1's real coverage record is {coverage!r}; attestator_3's act-scoped attempt "
         "failed for this act specifically (a non-object format_capabilities), so the "
         "receipt's shortfalls must name it real -- not the all-zero shape a call to "
@@ -994,7 +999,7 @@ def test_v2_receipt_refuses_zero_failed_shortfalls_for_a_failed_attempt(tmp_path
     assert result.returncode in (0, 3), result.stderr
     receipt = RunTree(root, "forged-shortfalls").read_recensor_partition_receipt()
     item = next(item for item in receipt["items"] if item["act_key"] == "a1")
-    item["coverage"]["shortfalls"] = {"failed": 0, "truncated": 0, "unaligned": 0}
+    item["coverage"]["shortfalls"] = {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 0}
     from common.contracts.canonical import self_hash
 
     receipt["self_hash"] = self_hash(receipt)
@@ -1121,3 +1126,44 @@ def test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_denominato
 
     with pytest.raises(FatalAccounting, match="manifest disagrees"):
         recensor.write_partition_receipt(context, context.recovery_policy)
+
+
+def test_a_v2_receipt_still_reads_with_one_unaligned_bucket_and_cannot_carry_unmeasured(
+    tmp_path,
+):
+    """v3 splits a chair the aligner stopped on out of `unaligned`. A v2 receipt,
+    written before the split, still reads with its three buckets; it may not
+    carry the fourth, which its version never defined."""
+    from common.contracts.canonical import self_hash
+    from common.contracts.errors import ReceiptVersionMismatch
+    from common.recensor_receipt import (
+        RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
+        RECENSOR_PARTITION_RECEIPT_SCHEMA_V3,
+        validate_recensor_partition_receipt,
+    )
+
+    root = tmp_path / "runs"
+    through_perlector(root, "v2-shortfalls", "happy")
+    result = invoke(root, "v2-shortfalls", "happy", "pipeline/5_recensor/run.py")
+    assert result.returncode in (0, 3), result.stderr
+    receipt = RunTree(root, "v2-shortfalls").read_recensor_partition_receipt()
+    assert receipt["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
+    assert all(
+        set(item["coverage"]["shortfalls"]) == {"failed", "truncated", "unaligned", "unmeasured"}
+        for item in receipt["items"]
+    )
+
+    def as_v2(drop_unmeasured: bool) -> dict:
+        forged = copy.deepcopy(receipt)
+        forged["schema"] = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2
+        for item in forged["items"]:
+            if drop_unmeasured:
+                item["coverage"]["shortfalls"].pop("unmeasured")
+        forged["self_hash"] = self_hash(
+            {key: value for key, value in forged.items() if key != "self_hash"}
+        )
+        return forged
+
+    validate_recensor_partition_receipt(as_v2(drop_unmeasured=True))
+    with pytest.raises(ReceiptVersionMismatch, match="unmeasured"):
+        validate_recensor_partition_receipt(as_v2(drop_unmeasured=False))

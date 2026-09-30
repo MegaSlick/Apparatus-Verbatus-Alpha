@@ -4,16 +4,31 @@ metric; a raw-string cross-check beside the normalized one; an honest
 """
 
 import ast
-import signal
-import threading
-import time
+import sys
 import unicodedata
 from pathlib import Path
 
 import dissent
 import pytest
 
+from common.alignment import (
+    DEFAULT_ALIGNMENT_CONFIG_PATH,
+    StepCountedMatcher,
+    load_dissent_limits,
+)
+from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.prior_draft import COMPARISON_STEP_LIMIT_REASON, unmeasured_comparison
+from common.contracts.stages import PERLECTOR
+from common.runtree.store import RunTree
+from conftest import load_stage, programs_through, run_stage
+
 ROOT = Path(__file__).resolve().parents[2]
+# The sealed dissent budget, loaded, never a copy of it.
+BUDGET = load_dissent_limits()[0].max_comparison_steps
+
+
+def _dissent_against(reading, testimonia):
+    return dissent.dissent_against(reading, testimonia, max_comparison_steps=BUDGET)
 
 
 def test_comparison_view_collapses_whitespace_and_reports_what_it_dropped():
@@ -62,7 +77,7 @@ def test_composing_an_accent_is_not_counted_as_a_dropped_character():
 def test_a_normalization_form_difference_alone_produces_no_dissent():
     reading = unicodedata.normalize("NFC", "baptisé le premier février")
     reported = unicodedata.normalize("NFD", reading)
-    rows = dissent.dissent_against(
+    rows = _dissent_against(
         reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
     )
     assert rows[0]["departed"] is False
@@ -79,7 +94,7 @@ def test_a_witness_that_agrees_after_whitespace_normalization_departs_only_raw()
             "payload": {"chair": "attestator_1", "reported": "alpha  beta gamma"},
         }
     ]
-    rows = dissent.dissent_against("alpha beta gamma", testimonia)
+    rows = _dissent_against("alpha beta gamma", testimonia)
     assert rows == [
         {
             "chair": "attestator_1",
@@ -102,7 +117,7 @@ def test_a_witness_that_actually_disagrees_departs_on_both_views():
     testimonia = [
         {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "alpha beta gamna"}}
     ]
-    rows = dissent.dissent_against("alpha beta gamma", testimonia)
+    rows = _dissent_against("alpha beta gamma", testimonia)
     assert rows[0]["departed"] is True
     assert rows[0]["departed_raw"] is True
 
@@ -115,7 +130,7 @@ def test_departures_locate_the_one_character_the_witness_read_differently():
     testimonia = [
         {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "alpha beta gamna"}}
     ]
-    spans = dissent.dissent_against(reading, testimonia)[0]["departures"]
+    spans = _dissent_against(reading, testimonia)[0]["departures"]
     assert spans == [
         {"reading_span": {"start": 14, "end": 15}, "testimonium_span": {"start": 14, "end": 15}}
     ]
@@ -129,7 +144,7 @@ def test_an_agreeing_witness_produces_no_departures_at_all():
     testimonia = [
         {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "alpha beta gamma"}}
     ]
-    assert dissent.dissent_against("alpha beta gamma", testimonia)[0]["departures"] == []
+    assert _dissent_against("alpha beta gamma", testimonia)[0]["departures"] == []
 
 
 def test_departures_are_an_alignment_and_expose_no_similarity_number():
@@ -139,7 +154,7 @@ def test_departures_are_an_alignment_and_expose_no_similarity_number():
     testimonia = [
         {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "entirely other"}}
     ]
-    row = dissent.dissent_against("alpha beta gamma", testimonia)[0]
+    row = _dissent_against("alpha beta gamma", testimonia)[0]
     for span in row["departures"]:
         assert set(span) == {"reading_span", "testimonium_span"}
         for bounds in span.values():
@@ -209,7 +224,7 @@ def test_a_non_reading_outcome_is_recorded_as_no_opinion_not_agreement():
     `compared: False` with its outcome as the reason, never folded into the
     agreeing set."""
     for outcome in ("failed", "dead", "not-run", "excluded"):
-        rows = dissent.dissent_against(
+        rows = _dissent_against(
             "reading", [{"outcome": outcome, "payload": {"chair": "attestator_3"}}]
         )
         assert rows == [{"chair": "attestator_3", "compared": False, "reason": outcome}]
@@ -230,7 +245,7 @@ def test_a_witness_whose_format_can_express_uncertainty_is_unknown_not_guessed()
             },
         }
     ]
-    rows = dissent.dissent_against("alpha beta gamma", testimonia)
+    rows = _dissent_against("alpha beta gamma", testimonia)
     assert rows == [
         {
             "chair": "attestator_2",
@@ -257,7 +272,7 @@ def test_a_page_witness_comparison_view_lifts_the_capability_exemption():
             },
         }
     ]
-    rows = dissent.dissent_against("alpha beta gamma", testimonia)
+    rows = _dissent_against("alpha beta gamma", testimonia)
     assert rows[0]["compared"] is True
     # The point of the exemption lift: the act-anchored `comparison_reported`
     # view is what gets diffed. Diffing the raw report ("alpha [beta|beeta]
@@ -293,7 +308,7 @@ def test_a_bracket_marker_view_lifts_the_exemption_for_an_act_scoped_chair():
             },
         }
     ]
-    rows = dissent.dissent_against("Marie Dupont", testimonia)
+    rows = _dissent_against("Marie Dupont", testimonia)
     assert rows[0]["compared"] is True
     # The bracket marker is gone, so what remains is a whitespace difference:
     # `departed` (normalized) is False while `departed_raw` still records that
@@ -303,7 +318,7 @@ def test_a_bracket_marker_view_lifts_the_exemption_for_an_act_scoped_chair():
 
     # The counterfactual: without the strip, this chair reads as dissenting
     # about eleven characters it never disagreed about.
-    raw_rows = dissent.dissent_against(
+    raw_rows = _dissent_against(
         "Marie Dupont",
         [
             {
@@ -322,22 +337,19 @@ def test_a_bracket_marker_view_lifts_the_exemption_for_an_act_scoped_chair():
     assert raw_rows[0]["departures"], raw_rows[0]
 
 
-def test_a_runaway_witness_report_is_unknown_rather_than_aligned_for_twenty_minutes():
+def test_a_runaway_witness_report_is_unknown_rather_than_aligned():
     """A witness's `reported` is a model's own output and nothing upstream bounds
-    it. `SequenceMatcher` costs the product of the two lengths, so a model stuck
-    in a repetition loop until its token cap would hold this stage for tens of
-    minutes on every act it touched. The bound is on the comparison, not the
-    text: neither string is clipped, and the chair keeps a visible row."""
+    it. A model stuck in a repetition loop until its token cap produces a pair
+    far past the pair prefilter, which refuses it before the matcher runs. The
+    bound is on the comparison, not the text: neither string is clipped, and
+    the chair keeps a visible row."""
     reading = "alpha beta gamma" * 700  # a ~11k-character act, already unrealistic
     runaway = "ab" * 60_000  # ~120k characters, a plausible 32k-token repetition loop
     assert len(reading) * len(runaway) > dissent.MAX_COMPARISON_CHARACTER_PAIRS
 
-    # D-11: no wall-clock assert here. The prefilter this test exercises rejects
-    # before `SequenceMatcher` ever runs, so timing it adds a failure mode on a
-    # loaded box without adding a guarantee -- the functional asserts below
-    # (the row survives, "unknown", "did not run") already prove the bound was
-    # taken, and would themselves fail if the prefilter stopped firing.
-    rows = dissent.dissent_against(
+    # No timing assert: the prefilter rejects before the matcher runs, and the
+    # functional asserts below would fail if it stopped firing.
+    rows = _dissent_against(
         reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": runaway}}]
     )
     assert rows[0]["chair"] == "attestator_1", "the witness must not vanish from the record"
@@ -350,48 +362,159 @@ def test_a_long_but_affordable_comparison_is_still_genuinely_aligned():
     real register entry still gets its real spans."""
     reading = "alpha beta gamma " * 200
     reported = reading[:-6] + "gamna "
-    rows = dissent.dissent_against(
+    rows = _dissent_against(
         reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
     )
     assert rows[0]["compared"] is True
     assert rows[0]["departures"], "an affordable comparison must still locate its departures"
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "SIGALRM"),
-    reason="the wall-clock backstop is a SIGALRM mechanism; where it cannot exist the "
-    "comparison runs unbounded and this test would hang for minutes to say nothing",
-)
-def test_a_scattered_difference_comparison_well_under_the_pair_bound_is_still_stopped(
-    monkeypatch,
-):
-    """`SequenceMatcher`'s cost is not the product of the two lengths -- text that
-    differs in many scattered places (exactly what a systematically-mistaken
-    witness produces) runs close to the *cube* of the length instead. Measured
-    in this chamber: a 6,800-character scattered comparison took 127 seconds
-    unbounded, while its pair count (~46M) is under
-    `MAX_COMPARISON_CHARACTER_PAIRS` (100M) -- so the pair-count prefilter alone
-    would let it run. The deadline is pinned to one second here so the test
-    asserts the *mechanism* -- the alarm interrupting a comparison the prefilter
-    admitted -- with a ~100x margin over the measured cost, rather than racing
-    the production five-second bound on whatever hardware runs the suite."""
+def _steps_to_compare(reading: str, reported: str) -> int:
+    matcher = StepCountedMatcher(reading, reported, 10**12)
+    matcher.get_opcodes()
+    return 10**12 - matcher.steps_left
+
+
+def test_a_comparison_under_the_pair_bound_stops_on_its_exact_step_count():
+    """The pair prefilter admits comparisons whose matcher work runs far past
+    the pair count, so the step budget is what stops them. It is a count: the
+    same pair is compared with exactly the steps it needs and is `unknown` with
+    one fewer, on any machine and under any load, and the row records the
+    budget it ran out of."""
     reading = "alpha beta gamma " * 400
     reported = "alpha beta gamna " * 400
-    pairs = len(reading) * len(reported)
-    assert pairs < dissent.MAX_COMPARISON_CHARACTER_PAIRS, "the pair prefilter must not catch this"
+    assert len(reading) * len(reported) < dissent.MAX_COMPARISON_CHARACTER_PAIRS
+    needed = _steps_to_compare(reading, reported)
+    testimonia = [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
 
-    monkeypatch.setattr(dissent, "MAX_COMPARISON_SECONDS", 1)
-    started = time.monotonic()
-    rows = dissent.dissent_against(
-        reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
-    )
-    elapsed = time.monotonic() - started
-    # Generous headroom on purpose: the alarm fires at one second; the margin
-    # covers a loaded CI machine, not the property under test.
-    assert elapsed < 10, "the wall-clock bound must stop the alignment"
+    rows = dissent.dissent_against(reading, testimonia, max_comparison_steps=needed)
+    assert rows[0]["compared"] is True
+
+    rows = dissent.dissent_against(reading, testimonia, max_comparison_steps=needed - 1)
     assert rows[0]["chair"] == "attestator_1", "the witness must not vanish from the record"
     assert rows[0]["compared"] == "unknown"
-    assert "did not align within" in rows[0]["reason"]
+    assert rows[0]["max_comparison_steps"] == needed - 1
+    assert f"the sealed {needed - 1}-step dissent budget" in rows[0]["reason"]
+    dissent.validate_dissent(
+        rows,
+        text=reading,
+        basis_testimonia=[{"chair": "attestator_1", "outcome": "read"}],
+    )
+
+
+def test_departures_past_the_budget_is_an_explicit_non_verdict_not_an_agreement():
+    """`self_revision` is measured by `departures`. A comparison the budget
+    stops must never read as "no revisions", which `[]` means, so it returns
+    the closed non-verdict naming the budget instead."""
+    reading, prior = "alpha beta gamma " * 50, "alpha beta gamna " * 50
+    needed = _steps_to_compare(reading, prior)
+
+    assert dissent.departures(reading, prior, needed)
+    assert dissent.departures(reading, prior, needed - 1) == unmeasured_comparison(needed - 1)
+    assert unmeasured_comparison(needed - 1) == {
+        "measured": False,
+        "reason": COMPARISON_STEP_LIMIT_REASON,
+        "max_comparison_steps": needed - 1,
+    }
+
+
+def test_a_budget_is_recorded_only_on_an_unknown_row():
+    """A compared-row budget or a malformed one is refused, so the field means
+    one thing: this comparison ran out of that many steps."""
+    basis = [{"chair": "attestator_1", "outcome": "read"}]
+    stopped = {"chair": "attestator_1", "compared": "unknown", "reason": "stopped"}
+    dissent.validate_dissent(
+        [{**stopped, "max_comparison_steps": 5}], text="", basis_testimonia=basis
+    )
+    for budget in (0, True, "5"):
+        with pytest.raises(SchemaRefusal, match="uncomputed-row schema"):
+            dissent.validate_dissent(
+                [{**stopped, "max_comparison_steps": budget}], text="", basis_testimonia=basis
+            )
+    # A row that compared, and a row for a witness that never reported, have no
+    # budget to have run out of.
+    (compared,) = _dissent_against(
+        "alpha", [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": "alpha"}}]
+    )
+    assert compared["compared"] is True
+    dissent.validate_dissent([compared], text="alpha", basis_testimonia=basis)
+    with pytest.raises(SchemaRefusal, match="closed compared-row schema"):
+        dissent.validate_dissent(
+            [{**compared, "max_comparison_steps": 5}], text="alpha", basis_testimonia=basis
+        )
+    silent = [{"chair": "attestator_1", "outcome": "failed"}]
+    unreported = {"chair": "attestator_1", "compared": False, "reason": "failed"}
+    dissent.validate_dissent([unreported], text="", basis_testimonia=silent)
+    with pytest.raises(SchemaRefusal, match="uncomputed-row schema"):
+        dissent.validate_dissent(
+            [{**unreported, "max_comparison_steps": 5}], text="", basis_testimonia=silent
+        )
+
+
+def test_the_perlector_compares_under_the_sealed_dissent_budget(tmp_path):
+    """The budget is `config/alignment.toml`'s `[dissent] max_comparison_steps`,
+    sealed with the run and passed to every comparison, with no copy of it in
+    this module to drift from the config. A run sealed with a one-step budget
+    records every non-trivial comparison as stopped on exactly that budget."""
+    assert not hasattr(dissent, "MAX_COMPARISON_STEPS")
+    shipped = DEFAULT_ALIGNMENT_CONFIG_PATH.read_text(encoding="utf-8")
+    sealed_line = f"max_comparison_steps = {BUDGET}\n"
+    assert shipped.count(sealed_line) == 1
+    config = tmp_path / "alignment.toml"
+    config.write_text(shipped.replace(sealed_line, "max_comparison_steps = 1\n"), encoding="utf-8")
+    root = tmp_path / "runs"
+    for program in programs_through("perlector"):
+        result = run_stage(root, "dissent-budget", "happy", program, alignment_config=config)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "dissent-budget")
+    rows = [
+        row
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio"
+        for row in tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])["payload"][
+            "dissent"
+        ]
+    ]
+    stopped = [row for row in rows if "max_comparison_steps" in row]
+    assert stopped, "a one-step budget stopped no comparison"
+    assert all(row["compared"] == "unknown" for row in stopped)
+    assert {row["max_comparison_steps"] for row in stopped} == {1}
+    assert not [row for row in rows if row["compared"] is True and row["departures"]]
+
+
+def test_the_perlector_refuses_a_dissent_budget_the_run_never_sealed(tmp_path, monkeypatch):
+    """The run seals the shipped `config/alignment.toml`, and the stage's binding
+    check reads that file when the pass opens. If the budget the Perlector then
+    loads differs -- the file changed between the two reads -- it must refuse,
+    not compare under a budget the run never bound. Run in process so the
+    second read alone sees the change."""
+    shipped = DEFAULT_ALIGNMENT_CONFIG_PATH.read_text(encoding="utf-8")
+    sealed_line = f"max_comparison_steps = {BUDGET}\n"
+    changed = tmp_path / "alignment.toml"
+    changed.write_text(
+        shipped.replace(sealed_line, f"max_comparison_steps = {BUDGET + 1}\n"), encoding="utf-8"
+    )
+    root = tmp_path / "runs"
+    for program in programs_through("attestatores"):
+        result = run_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    perlector = load_stage("4_perlector")
+    monkeypatch.setattr(
+        perlector, "load_dissent_limits", lambda _path: load_dissent_limits(changed)
+    )
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(ROOT / "pipeline/4_perlector/run.py"), "--run-root", str(root), "--run-id", "r"]
+        + ["--scenario", "happy"],
+    )
+
+    with pytest.raises(ContractError, match="the alignment configuration changed between"):
+        perlector.main()
+    assert not RunTree(root, "r").build_manifest(PERLECTOR)["artifacts"]
 
 
 def test_is_comparable_defaults_true_when_a_testimonium_declares_no_capabilities():
@@ -413,7 +536,7 @@ def test_dissent_never_drops_an_unknown_chair_from_the_record():
         },
         {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "alpha beta gamma"}},
     ]
-    rows = dissent.dissent_against("alpha beta gamma", testimonia)
+    rows = _dissent_against("alpha beta gamma", testimonia)
     chairs = {row["chair"] for row in rows}
     assert chairs == {"attestator_1", "attestator_2"}
     unknown_row = next(row for row in rows if row["chair"] == "attestator_1")
@@ -421,7 +544,7 @@ def test_dissent_never_drops_an_unknown_chair_from_the_record():
 
 
 def test_a_completed_structured_witness_stays_visible_but_cannot_be_compared():
-    assert dissent.dissent_against(
+    assert _dissent_against(
         "reading",
         [
             {
@@ -454,7 +577,7 @@ def test_a_completed_reading_outcome_carrying_no_text_at_all_is_unknown_not_a_re
     case because an absent payload and an object payload are different records
     reaching the same branch, and only one of them was ever exercised here.
     """
-    assert dissent.dissent_against(
+    assert _dissent_against(
         "reading", [{"outcome": "read", "payload": {"chair": "attestator_1"}}]
     ) == [
         {
@@ -480,114 +603,6 @@ def test_this_module_pins_equality_only_and_takes_no_similarity_parameter():
     )
 
 
-# --- F-X4 (R4 audit, seat 3): the comparison deadline owns its own alarm ---
-
-
-@pytest.mark.skipif(
-    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
-    reason="requires the POSIX real-time alarm this backstop is built on",
-)
-def test_the_comparison_deadline_leaves_a_callers_own_alarm_alone():
-    """`SIGALRM` is process-global. Arming unconditionally replaced a caller's
-    real-time timer and then cancelled it in `finally`, destroying a deadline
-    this module never owned -- the same defect `common/alignment.py` closed as
-    F-L3, still open in its sibling on the same call path."""
-    previous_handler = signal.getsignal(signal.SIGALRM)
-
-    def caller_handler(signum, frame):
-        pass
-
-    signal.signal(signal.SIGALRM, caller_handler)
-    signal.setitimer(signal.ITIMER_REAL, 30.0)
-    try:
-        result = dissent._aligned_within_deadline("alpha beta", "alpha beta", seconds=1)
-
-        assert result == []
-        remaining, _ = signal.getitimer(signal.ITIMER_REAL)
-        # Not merely "still running": a module that armed its own 1s timer and
-        # left it in place also leaves `remaining > 0`, while the caller's 30s
-        # deadline is gone -- and later fires an unrelated SIGALRM mid-run.
-        assert remaining > 20, "alignment replaced or cancelled a timer it did not own"
-        assert signal.getsignal(signal.SIGALRM) is caller_handler
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0.0)
-        signal.signal(signal.SIGALRM, previous_handler)
-
-
-@pytest.mark.skipif(
-    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
-    reason="requires the POSIX real-time alarm this backstop is built on",
-)
-def test_the_comparison_runs_off_the_main_thread_without_touching_signal_state():
-    """`signal.signal` raises outright from a non-main thread, so the bounded
-    comparison could not run there at all. It degrades to an unbounded run --
-    the same honest degradation the missing-SIGALRM platform already takes --
-    rather than crashing the caller."""
-    captured = {}
-
-    def work():
-        try:
-            captured["result"] = dissent._aligned_within_deadline(
-                "alpha beta", "alpha gamma", seconds=1
-            )
-        except BaseException as error:  # noqa: BLE001 - the point of the test
-            captured["error"] = error
-
-    thread = threading.Thread(target=work)
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    signal.setitimer(signal.ITIMER_REAL, 30.0)
-    try:
-        thread.start()
-        thread.join()
-
-        # The name promises "without touching signal state", so pin the state:
-        # a worker-thread path that reached the process alarm in some way that
-        # did not raise would otherwise stay green while destroying a caller's
-        # timer.
-        remaining, _ = signal.getitimer(signal.ITIMER_REAL)
-        assert remaining > 20, "the worker-thread path disturbed the main thread's timer"
-        assert signal.getsignal(signal.SIGALRM) is previous_handler
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0.0)
-        signal.signal(signal.SIGALRM, previous_handler)
-
-    assert "error" not in captured, captured.get("error")
-    assert captured["result"], "a real difference must still be reported"
-
-
-@pytest.mark.skipif(
-    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
-    reason="requires the POSIX real-time alarm this backstop is built on",
-)
-def test_the_thread_clause_alone_keeps_a_worker_from_the_process_alarm():
-    """The armed-timer case above cannot fail on the main-thread clause: with a
-    caller timer running, the `getitimer` clause already refuses to arm
-    whatever the thread check does. Here NO timer is armed, so the main-thread
-    check is the only thing standing between the worker and `signal.signal` --
-    which raises ValueError off the main thread. Delete that clause and this
-    test goes red where the other stays green."""
-    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0), (
-        "precondition: no caller timer may be armed, or the getitimer clause masks "
-        "the one this test exists to hold"
-    )
-    captured = {}
-
-    def work():
-        try:
-            captured["result"] = dissent._aligned_within_deadline(
-                "alpha beta", "alpha gamma", seconds=1
-            )
-        except BaseException as error:  # noqa: BLE001 - the point of the test
-            captured["error"] = error
-
-    thread = threading.Thread(target=work)
-    thread.start()
-    thread.join()
-
-    assert "error" not in captured, captured.get("error")
-    assert captured["result"], "a real difference must still be reported"
-
-
 # --- P2 review: the two halves of comparison_loss answer the same question ---
 
 
@@ -606,7 +621,7 @@ def test_a_decomposed_witness_report_is_not_charged_a_character_per_accent():
     decomposed = unicodedata.normalize("NFD", precomposed)
     assert precomposed != decomposed, "the fixture must actually differ at the codepoint level"
 
-    rows = dissent.dissent_against(
+    rows = _dissent_against(
         precomposed,
         [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": decomposed}}],
     )
@@ -622,7 +637,7 @@ def test_markup_and_collapsed_whitespace_stay_in_the_witness_loss_account():
     """The other direction: tags and a collapsed run are genuine removals, and
     dropping them from the account would hide what the comparison view discarded.
     """
-    rows = dissent.dissent_against(
+    rows = _dissent_against(
         "alpha beta",
         [
             {

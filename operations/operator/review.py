@@ -797,7 +797,7 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
         "gaps": payload.get("gaps"),
         # Kept as the producer's own field name, not the canonical layer's
         # `self_revisions`, to avoid a second copy of that rename free to
-        # drift from it.
+        # drift from it. A fed draft's non-verdict is carried as written.
         "self_revision": None
         if lectio_kind == "primed-draft-withheld"
         else payload.get("self_revision"),

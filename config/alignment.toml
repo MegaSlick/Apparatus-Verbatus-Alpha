@@ -1,16 +1,26 @@
-# R4 alignment limits. Its values are sealed at run creation and rechecked at
+# Alignment limits. Their values are sealed at run creation and rechecked at
 # the point of use. Values are operational bounds, never similarity thresholds.
 [limits]
 max_characters = 100000
 max_character_pairs = 100000000
-# 25 seconds, not five, and chosen from the legitimate ceiling rather than the
-# pathological one. An unaligned page witness is not comparable, so it leaves
-# the act's witness floor: a deadline that fires on real work records a slow
-# comparison as coverage that is missing. A 7,500-character page whose acts
-# repeat one formula verbatim -- what a scribe copying one form produces --
-# measures 10.1 s, already past five seconds. Twenty-five clears it with load
-# headroom. It does NOT clear everything the pair bound admits: two different
-# low-entropy chair responses at 100,000,000 pairs measure 283.9 s. That case is
-# reported as a named non-verdict, and closing it needs the matcher, not this
-# number. See pipeline/3_attestatores/CONTRACT.md.
-timeout_seconds = 25
+# The matcher's work, in steps: one witness character scanned or one anchor
+# position visited by `find_longest_match`. Counted, not timed, so the same
+# page under the same limits aligns the same way on every machine. An
+# unaligned page witness is not comparable and leaves the act's witness floor.
+# Covered, with room to spare: a page at the pair ceiling made of register acts
+# of 150 characters or more, even when every act repeats one formula verbatim
+# and the witness misreads the same word in each. Not covered: shorter units
+# repeated verbatim across the ceiling, such as 60-character index rows, which
+# stop here and are counted unmeasured, a named hold. Degenerate chair
+# responses the bounds admit (a repetition loop, two different low-entropy
+# strings) stop here too.
+max_alignment_steps = 500000000
+
+# The Perlector's dissent and self-revision comparisons: one act's reading
+# against one witness's act-length report or against the reading's own prior
+# draft, in the same steps. Sized to clear act-length text with room to spare,
+# a formula act and a noisy or unrelated witness included; a degenerate report
+# stops here. A comparison that would pass it is recorded as not measured,
+# never guessed.
+[dissent]
+max_comparison_steps = 100000000

@@ -14,6 +14,7 @@ import protocol
 import pytest
 import reader as reader_module
 
+from common.alignment import load_dissent_limits
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
@@ -823,11 +824,12 @@ def test_changed_reproof_with_fed_draft_recomputes_self_revision(tmp_path):
     # changed text would otherwise pass this end-to-end pin.
     assert final["payload"]["text"] == "SYNTHETIC ACT ONE alpha beta gamma!"
     perlector = load_stage("4_perlector")
+    budget = load_dissent_limits()[0].max_comparison_steps
     assert final["payload"]["self_revision"] == perlector.departures(
-        final["payload"]["text"], prior["payload"]["text"]
+        final["payload"]["text"], prior["payload"]["text"], budget
     )
     assert final["payload"]["self_revision"] != perlector.departures(
-        draft["payload"]["semi_final_text"], prior["payload"]["text"]
+        draft["payload"]["semi_final_text"], prior["payload"]["text"], budget
     )
     agreeing_witness = next(
         row for row in final["payload"]["dissent"] if row["chair"] == "attestator_1"
@@ -2724,7 +2726,11 @@ def test_an_unhashable_or_non_string_vocabulary_value_is_refused_by_name_not_typ
 def test_a_whitespace_reproof_publishes_empty_text_with_its_own_measure():
     perlector = load_stage("4_perlector")
     config = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0]
-    run = SimpleNamespace(protocol_config=config, context=SimpleNamespace())
+    run = SimpleNamespace(
+        protocol_config=config,
+        context=SimpleNamespace(),
+        dissent_steps=load_dissent_limits()[0].max_comparison_steps,
+    )
     row = {
         "payload": {
             "text": "abc",

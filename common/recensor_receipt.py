@@ -17,14 +17,24 @@ from common.contracts.errors import FatalAccounting, ReceiptVersionMismatch, Sch
 from common.contracts.outcomes import (
     INTERIM_GRANULARITY_BASIS,
     NATIVE_GRANULARITY_BASIS,
+    SHORTFALL_KINDS,
     WITNESS_READING_OUTCOMES,
     OutcomeClass,
     classify,
+    witness_failure_shortfall,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR
 
 RECENSOR_PARTITION_RECEIPT_SCHEMA: Final = "recensor-partition-receipt.v1"
 RECENSOR_PARTITION_RECEIPT_SCHEMA_V2: Final = "recensor-partition-receipt.v2"
+# v3 splits a chair the aligner stopped on (`unmeasured`) out of `unaligned`.
+RECENSOR_PARTITION_RECEIPT_SCHEMA_V3: Final = "recensor-partition-receipt.v3"
+# The shortfall buckets each granular version carries; v2's `unaligned` also
+# counted a chair whose alignment was never measured.
+_SHORTFALL_KEYS: Final = {
+    RECENSOR_PARTITION_RECEIPT_SCHEMA_V2: frozenset({"failed", "truncated", "unaligned"}),
+    RECENSOR_PARTITION_RECEIPT_SCHEMA_V3: frozenset(SHORTFALL_KINDS),
+}
 RECENSOR_PARTITION_RECEIPT_SCOPE: Final = "proposal-acts-and-configured-witnesses"
 _PARTITION_KEYS: Final = tuple(klass.value for klass in OutcomeClass)
 
@@ -44,7 +54,7 @@ def build_recensor_partition_receipt(
     checked_items.sort(key=lambda item: item["act_id"])
     reasons = _reasons(checked_items)
     record: dict[str, Any] = {
-        "schema": RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
+        "schema": RECENSOR_PARTITION_RECEIPT_SCHEMA_V3,
         "run_id": run_id,
         "config_digest": config_digest,
         "scope": RECENSOR_PARTITION_RECEIPT_SCOPE,
@@ -79,7 +89,7 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
         raise SchemaRefusal("Recensor partition receipt has the wrong closed schema")
     if record["schema"] not in {
         RECENSOR_PARTITION_RECEIPT_SCHEMA,
-        RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
+        *_SHORTFALL_KEYS,
     } or not verify_self_hash(record):
         raise SchemaRefusal("Recensor partition receipt has an invalid schema or self-hash")
     if (
@@ -141,7 +151,7 @@ def _witnessed_count(coverage: dict[str, Any]) -> int:
     return coverage["by_class"][OutcomeClass.COMPLETED.value]
 
 
-def _validate_item(item: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2) -> None:
+def _validate_item(item: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V3) -> None:
     required = {
         "act_id",
         "act_key",
@@ -171,18 +181,11 @@ def _validate_item(item: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA
             f"derives {expected_class!r}"
         )
     _validate_reference(item["review_ref"], "review reference")
-    _validate_coverage(
-        item["coverage"],
-        schema=schema,
-        require_complete_granularity=schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
-    )
+    _validate_coverage(item["coverage"], schema=schema)
 
 
 def _validate_coverage(
-    coverage: Any,
-    *,
-    schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
-    require_complete_granularity: bool = False,
+    coverage: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
 ) -> None:
     required = {
         "configured",
@@ -203,14 +206,15 @@ def _validate_coverage(
     present_granularity = set(coverage) & granularity_fields
     if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA and present_granularity:
         raise ReceiptVersionMismatch(
-            "receipt schema v1 cannot carry page-granularity coverage facts; use receipt version v2"
+            "receipt schema v1 cannot carry page-granularity coverage facts; use receipt "
+            f"version {RECENSOR_PARTITION_RECEIPT_SCHEMA_V3}"
         )
     allowed = required | granularity_fields
     if set(coverage) - allowed or not required <= set(coverage):
         raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
-    if require_complete_granularity and not granularity_fields <= set(coverage):
+    if schema in _SHORTFALL_KEYS and not granularity_fields <= set(coverage):
         raise SchemaRefusal(
-            "Recensor partition receipt v2 omits one or more required granularity facts"
+            f"Recensor partition receipt {schema} omits one or more required granularity facts"
         )
     for field in ("configured", "floor", "unresolved_chairs"):
         value = coverage[field]
@@ -296,15 +300,25 @@ def _validate_coverage(
             f"Recensor partition receipt's by_class {by_class} does not fall out of its own "
             f"per-outcome counts, which classify as {derived_by_class}"
         )
-    if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V2:
-        # Permissive for partial records; writers always emit all three.
-        health_unrecorded = coverage.get("health_unrecorded", 0)
-        shortfalls = coverage.get("shortfalls", {"failed": 0, "truncated": 0, "unaligned": 0})
+    if schema in _SHORTFALL_KEYS:
+        shortfall_keys = _SHORTFALL_KEYS[schema]
+        # Present: `_validate_coverage` required every granularity fact for these schemas.
+        health_unrecorded = coverage["health_unrecorded"]
+        shortfalls = coverage["shortfalls"]
         if not _is_count(health_unrecorded):
             raise SchemaRefusal("Recensor partition receipt has invalid health_unrecorded count")
         if (
+            isinstance(shortfalls, dict)
+            and "unmeasured" in shortfalls
+            and "unmeasured" not in shortfall_keys
+        ):
+            raise ReceiptVersionMismatch(
+                f"receipt schema {schema} cannot carry the unmeasured shortfall; use "
+                f"{RECENSOR_PARTITION_RECEIPT_SCHEMA_V3}"
+            )
+        if (
             not isinstance(shortfalls, dict)
-            or set(shortfalls) != {"failed", "truncated", "unaligned"}
+            or set(shortfalls) != shortfall_keys
             or not all(_is_count(value) for value in shortfalls.values())
         ):
             raise SchemaRefusal("Recensor partition receipt has malformed shortfalls")
@@ -320,7 +334,8 @@ def _validate_coverage(
             NATIVE_GRANULARITY_BASIS,
         }:
             raise SchemaRefusal(
-                "Recensor partition receipt v2 does not name an honest granularity measurement basis"
+                f"Recensor partition receipt {schema} does not name an honest granularity "
+                "measurement basis"
             )
         if shortfalls["failed"] != by_outcome.get("failed", 0):
             raise SchemaRefusal(
@@ -355,10 +370,22 @@ def _reasons(items: list[dict[str, Any]]) -> list[str]:
             measured = (
                 "act-level reads" if "page_granularity_only" in coverage else "completed chairs"
             )
-            reasons.append(
+            reason = (
                 f"act {act_id} is under-witnessed "
                 f"({_witnessed_count(coverage)} {measured} of a floor of {coverage['floor']})"
             )
+            shortfalls = coverage.get("shortfalls", {})
+            unmeasured = shortfalls.get("unmeasured", 0)
+            if unmeasured:
+                # The aligner's stop is named apart: it is not the witness falling short.
+                reason += (
+                    f"; {unmeasured} chair(s) were never compared with this act on at least "
+                    "one page because the aligner stopped on its own bound, so their coverage "
+                    "is unmeasured, not failed"
+                )
+                if witness_failure_shortfall(shortfalls):
+                    reason += "; other chairs fell short as well, a witness failure"
+            reasons.append(reason)
         if coverage["unresolved_chairs"]:
             reasons.append(
                 f"act {act_id} has {coverage['unresolved_chairs']} chair(s) with no outcome yet"

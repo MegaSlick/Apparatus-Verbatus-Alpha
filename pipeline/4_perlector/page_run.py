@@ -52,7 +52,7 @@ import page_feed
 import page_overlay
 import page_prompt
 import truncation
-from dissent import dissent_against
+from dissent import dissent_against, validate_dissent
 from live_reader import EngineSignalRefusal, send_page_request
 from throughput import planned_seconds_per_page
 
@@ -1072,7 +1072,11 @@ def _comparison_text(text: str, capabilities: Any) -> str:
 
 
 def _dissent(
-    text: str, feed: dict[str, Any], cited_ids: list[str], witnesses: list[dict[str, Any]]
+    text: str,
+    feed: dict[str, Any],
+    cited_ids: list[str],
+    witnesses: list[dict[str, Any]],
+    max_comparison_steps: int,
 ) -> list[dict[str, Any]]:
     """Where the entry's reading departed from each shown witness's cited units."""
     capabilities = {
@@ -1116,13 +1120,73 @@ def _dissent(
                     "payload": {"chair": witness["letter"], "comparison_reported": reported},
                 }
             ],
+            max_comparison_steps=max_comparison_steps,
         )
         if len(compared) != 1:
             raise ContractError(f"dissent gave {len(compared)} rows for one witness, not one")
         row = dict(compared[0])
         row.pop("chair")
         rows.append({**head, "cited_units": [unit["id"] for unit in units], **row})
+    validate_page_dissent(
+        rows, text=text, feed=feed, cited_ids=cited_ids, max_comparison_steps=max_comparison_steps
+    )
     return rows
+
+
+_PAGE_DISSENT_HEAD: Final = ("letter", "witness_label", "cited_units")
+
+
+def validate_page_dissent(
+    rows: Any,
+    *,
+    text: str,
+    feed: dict[str, Any],
+    cited_ids: list[str],
+    max_comparison_steps: int,
+) -> None:
+    """Refuse a page-path dissent record that loses a shown witness or misstates one row.
+
+    One row per shown witness, in the feed's order. A witness with no reading or
+    no unit this entry cites was not compared, and says so; every other row is
+    an act-path dissent row under the witness's letter and goes through
+    `validate_dissent`, the run's sealed budget included.
+    """
+    if not isinstance(rows, list) or len(rows) != len(feed["witnesses"]):
+        raise SchemaRefusal("a page-path dissent record does not have one row per shown witness")
+    cited = set(cited_ids)
+    for index, (row, witness) in enumerate(zip(rows, feed["witnesses"], strict=True)):
+        if not isinstance(row, dict) or any(field not in row for field in _PAGE_DISSENT_HEAD):
+            raise SchemaRefusal(f"page dissent[{index}] has no witness head")
+        if (row["letter"], row["witness_label"]) != (witness["letter"], witness["witness_label"]):
+            raise SchemaRefusal(f"page dissent[{index}] names another witness than the feed's")
+        units = [
+            unit["id"]
+            for unit in witness["units"]
+            if witness["outcome"] == page_feed.READ_OUTCOME and unit["id"] in cited
+        ]
+        if row["cited_units"] != units:
+            raise SchemaRefusal(f"page dissent[{index}] misstates the units this entry cites")
+        rest = {key: value for key, value in row.items() if key not in _PAGE_DISSENT_HEAD}
+        if not units:
+            if (
+                set(rest) != {"compared", "reason"}
+                or rest["compared"] is not False
+                or not isinstance(rest["reason"], str)
+                or not rest["reason"]
+            ):
+                raise SchemaRefusal(
+                    f"page dissent[{index}] claims a comparison for a witness it could not compare"
+                )
+            continue
+        try:
+            validate_dissent(
+                [{"chair": row["letter"], **rest}],
+                text=text,
+                basis_testimonia=[{"chair": row["letter"], "outcome": page_feed.READ_OUTCOME}],
+                max_comparison_steps=max_comparison_steps,
+            )
+        except SchemaRefusal as error:
+            raise SchemaRefusal(f"page dissent[{index}]: {error}") from error
 
 
 def _check_adopted_perlectio(record: dict[str, Any], expected: dict[str, Any], act_id: str) -> None:
@@ -1147,8 +1211,9 @@ def publish_act_records(
 
     Every record carries `page_accounting_ref` and the page's hold codes as
     `page_holds`, and is held when those or its own holds are non-empty. A
-    `perlectio` already sealed for the entry is adopted, not recomputed: its
-    dissent is bounded by time, so a second computation could differ.
+    `perlectio` already sealed for the entry is adopted, not recomputed, once
+    `_check_adopted_perlectio` finds it names the region, reading, feed and
+    accounting this page has now.
     """
     if not plans:
         return
@@ -1224,6 +1289,20 @@ def publish_act_records(
         adopted = _sealed(context, PERLECTIO_KIND, act_id, perlectio_attempt)
         if adopted is not None:
             _check_adopted_perlectio(adopted, refs, act_id)
+            try:
+                validate_page_dissent(
+                    adopted["payload"].get("dissent"),
+                    text=adopted["payload"].get("text"),
+                    feed=page.feed,
+                    cited_ids=plan["cited_ids"],
+                    max_comparison_steps=state.run.dissent_steps,
+                )
+            except SchemaRefusal as error:
+                raise ContractError(
+                    f"act {act_id}'s retained perlectio carries a dissent record this run "
+                    f"cannot stand behind ({error}); it is not adopted. Read this page in a "
+                    "new run"
+                ) from error
             continue
         reading_holds = list(plan["reading_holds"])
         outcome = HELD if reading_holds or page_holds else READ
@@ -1249,7 +1328,13 @@ def publish_act_records(
                 "uncertain_spans": assessment["uncertain_spans"],
                 "gaps": assessment["gaps"],
                 "uncertainty_assessment": assessment,
-                "dissent": _dissent(plan["text"], page.feed, plan["cited_ids"], page.witnesses),
+                "dissent": _dissent(
+                    plan["text"],
+                    page.feed,
+                    plan["cited_ids"],
+                    page.witnesses,
+                    state.run.dissent_steps,
+                ),
                 "truncation": plan["truncation"],
                 "autopsia": plan["autopsia"],
                 "continues_from_previous_page": act["continues_from_previous_page"],

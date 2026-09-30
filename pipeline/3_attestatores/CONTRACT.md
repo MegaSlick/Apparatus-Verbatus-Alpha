@@ -328,7 +328,7 @@ zero-length attach for a genuinely-empty witness, `refuse_ambiguous_act_alignmen
 for two acts one chair cannot tell apart (including any overlapping aligned
 spans that remain after block ownership, named rather than resolved).
 
-### The matcher, and why the deadline is 25 seconds
+### The matcher, and its step budget
 
 `common/alignment.py::_matching_blocks` is `difflib.SequenceMatcher(autojunk=
 False)`'s Ratcliff-Obershelp blocks -- longest common contiguous block first,
@@ -342,8 +342,8 @@ what the witness did.
 
 **RapidFuzz's Indel/LCS opcodes were tried and refused on
 measurement.** They are four orders of magnitude
-faster -- the slowest input the sealed pair bound admits, 283.9 s below, takes
-0.011 s under them -- and
+faster -- the slowest input the sealed pair bound admits, 283.9 s to finish
+under Ratcliff-Obershelp, takes 0.011 s under them -- and
 on identical or near-identical page text they return byte-for-byte the same
 blocks (26 blocks, 7,508 matched characters on a 1,200-word page fixture). But
 LCS maximizes matched characters and breaks ties towards the earliest match, so
@@ -357,67 +357,60 @@ objective is the wrong objective for attaching a reading to an anchor.
 blind, alongside the fidelity and monotonicity properties the same work
 established.
 
-The deadline is what changed. An
-unaligned page witness is not `comparable`, so it leaves the act's witness floor
--- which means a deadline short enough to fire on real work records a *slow
-comparison* as coverage that is missing. `config/alignment.toml` now
-carries 25 s rather than 5 s.
+The matcher's work is bounded by a count, not a clock. `common/alignment.py::
+StepCountedMatcher` charges each `find_longest_match` call, before it runs, one
+step per witness character in its range and one per anchor position of that
+character below the range's end -- at least the work the call does -- and stops
+at the sealed `max_alignment_steps`. Whether a page aligns is therefore a
+function of its texts and the sealed limits alone: the same page gives the same
+record on a laptop and on a loaded pod.
 
-The number is chosen from the legitimate ceiling, not from the pathological one,
-because measurement showed the pathological one cannot be cleared. Timings
-measured on a development machine, `align_to_anchor` through the shipped bounds:
+An unaligned page witness is not `comparable`, so it leaves the act's witness
+floor -- a budget small enough to run out on real work records a comparison as
+coverage that is missing. What the budget covers, exactly: a page at the pair
+ceiling (10,000 x 10,000 characters) made of register acts of 150 characters or
+more, including the costliest such page, whose acts repeat one formula verbatim
+and whose witness misreads the same word in every act, so every repeat is an
+equally long candidate match and the search revisits them all. That page needs
+243.2M steps at 150 characters, under half the sealed 500M. Varied acts,
+witnesses with scattered errors, reordered or half-read pages and asymmetric
+page shapes cost far less. `common/test_alignment.py` pins the headroom on the
+150-character page.
 
-| Input, at or near the sealed ceiling | Wall clock |
-|---|---|
-| 7,500-character page, names varying between acts | 2.0 s |
-| 7,500-character page, one act's formula repeated verbatim | **10.1 s** |
-| single-character chair response, 10,000 x 10,000 | 7.0 s |
-| genuinely random two-letter pair, 10,000 x 10,000 | 14.7 s |
-| two *different* repeated phrases, 10,000 x 10,000 | **283.9 s** |
+What it does not cover: a page at the ceiling made of shorter units repeated
+verbatim, such as index rows. A 60-character unit needs 570M steps. Such a page
+comes out `alignment-step-limit`, counted `unmeasured` and named, never a silent
+loss; the act is held only when that leaves its witness floor short. Degenerate chair responses the bounds admit -- two different
+low-entropy strings, a repetition loop against a page -- stop the same way,
+after at most the budget's work rather than however long they would take.
 
-Two of those rows are new and both matter. The fully formulaic page is the one
-that decides the number: a scribe copying one form produces exactly that text,
-and at 10.1 s it was already past the old five seconds -- so the five-second
-deadline could fire on a page that had been read perfectly well, and record it
-as an act nobody corroborated. Twenty-five seconds puts real material safely
-inside with load headroom.
+One stop at the sealed 500M costs about 45 seconds of wall time: measured at
+42.0 s (40.2 s CPU) for two different repeated phrases and 48.7 s (42.8 s CPU)
+for the 60-character unit, on a 4-core Intel Xeon virtual machine at 2.10 GHz
+with 15 GiB of memory, under Python 3.14.6, while other jobs held its load
+average between 3.5 and 6.9. The alignment is cached per page and chair, so this
+is at most once per stopped page witness.
 
-The 284-second row is the one that decides what is still open. An earlier
-measurement put the worst admissible input at 17.5 s, but its
-degenerate cases were all *self*-similar (and one of its two rows was
-accidentally the same single-character string, from a generator that rebuilt its
-`random.Random(1)` on every draw). Two different low-entropy responses are far
-worse, and 284 s is what the sealed pair ceiling actually admits. **No deadline
-value closes this case**: raising it far enough to never fire would mean
-minutes per (page, chair) on a billing pod, and lowering `max_character_pairs`
-far enough to exclude the case would refuse legitimate pages, since a real page
-at 10,000 x 10,000 already sits at the ceiling. The deadline is now honest about
-real material and remains an honest non-verdict on degenerate material; closing
-the case needs the matcher, and the matcher needs the design below.
+A spent budget is `alignment-step-limit`. The name has to say that this module
+stopped, because nothing may read it as a measurement of the witness. No
+comparison was made, so none may be claimed: the chair does not count toward the
+act's witness floor, and the Recensor holds the act only when the chairs that do
+count fall short of that floor. `common/contracts/outcomes.py::witness_coverage`
+counts the chair in its own `shortfalls["unmeasured"]` bucket, apart from
+`shortfalls["unaligned"]`, and the Recensor's hold reason names it as unmeasured,
+not failed. The same bucket takes a page stopped by the character or pair bound,
+which is equally unmeasured. The Recensor partition receipt carries the split
+from `recensor-partition-receipt.v3`; a v2 receipt still reads, with its single
+`unaligned` bucket.
 
-**What would close it, and is not built here.** Ratcliff-Obershelp first under
-the deadline; on a fired deadline, a bounded LCS pass (RapidFuzz Indel, ~10 ms
-at the ceiling) instead of returning `unaligned`, with the record disclosing
-which matcher produced the spans. Every page any fixture or real reading
-produces today is decided by Ratcliff-Obershelp exactly as now, so no verdict and
-no run-tree digest moves; only inputs that already fail get an answer instead of
-a shortfall, and the LCS tie-break flaw above lands only where no attachment was
-well defined anyway. It needs a `matcher` key on the aligned attachment record
-and a widening of the closed-set check in `pipeline/5_recensor/run.py`, which is a
-published record shape, so it is named here rather than made.
-
-One related gap is unchanged and still open:
-where `SIGALRM` cannot arm, `max_character_pairs` is the only guard, and it
-admits a 284-second comparison.
-
-A fired deadline is `alignment-deadline-exceeded`, deliberately not `timeout`.
-The name has to say that this module's own backstop gave up, because nothing may
-read it as a measurement of the witness. The Recensor holds the act rather than
-counting the chair, which is the right direction -- no comparison was made, so
-none may be claimed -- but
-`common/contracts/outcomes.py::witness_coverage` still counts it in the same
-`shortfalls["unaligned"]` bucket as a measured non-overlap. Separating the two is
-a change to a published coverage record and is not made here.
+**Not built: an LCS fallback on a spent budget.** A bounded LCS pass (RapidFuzz
+Indel) could return spans where Ratcliff-Obershelp runs out, with the record
+naming which matcher produced them. It is not built because nothing is lost
+without it: the counted budget already gives a spent budget a named reason and
+its own bucket, a page of register acts aligns under Ratcliff-Obershelp with
+room to spare, and the pages that do run out are short repeated units or
+degenerate responses, on which the LCS tie-break flaw above would decide an
+attachment that is not well defined anyway.
 
 Only acts whose primary page is this one are anchored; a continuation's tail
 has no anchor line by design. An act no reported block overlaps, or whose
@@ -780,7 +773,7 @@ with a located span.
 
 **Both halves are still asserted by name, before the aggregate.** The witness
 floor is one: `coverage/under_witnessed` false, `shortfalls`
-`{failed: 0, truncated: 0, unaligned: 0}`. The second is
+`{failed: 0, truncated: 0, unaligned: 0, unmeasured: 0}`. The second is
 `testimony_content_coverage`: the Recensor diffs each page witness's retained
 page text against the union of its attached-and-aligned spans, so an unattached
 page witness's WHOLE page text would be uncovered and the page would hold for
@@ -1579,7 +1572,7 @@ claim a page the ink does not support, or drop one the ink does.
 - unaligned: `{status, reason}`, reasons among `missing-chandra-page-anchor`,
   `act-anchor-line-not-located`, `no-overlap-with-act-anchor`,
   `no-raw-counterpart-for-aligned-span`,
-  `character-limit`, `character-pair-limit`, `alignment-deadline-exceeded`,
+  `character-limit`, `character-pair-limit`, `alignment-step-limit`,
   `no-common-anchor-text` (the aligner's own reasons pass through
   verbatim), `non-reading-page-testimonium-<outcome>` for a native page
   capture that produced no reading, `non-reading-act-attempt-<outcome>`

@@ -8,11 +8,10 @@ to which anchor characters, or records that it cannot say so.
 from __future__ import annotations
 
 import html
-import signal
-import threading
 import unicodedata
+from bisect import bisect_left
 from dataclasses import dataclass
-from difflib import SequenceMatcher
+from difflib import Match, SequenceMatcher
 from pathlib import Path
 from typing import Any, Final
 
@@ -27,64 +26,142 @@ DEFAULT_ALIGNMENT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" /
 class AlignmentLimits:
     max_characters: int
     max_character_pairs: int
-    timeout_seconds: int
+    max_alignment_steps: int
 
 
-class _TimedOut(Exception):
-    pass
+@dataclass(frozen=True)
+class DissentLimits:
+    """The Perlector's act-length comparison budget, sealed beside the page limits."""
+
+    max_comparison_steps: int
+
+
+_CONFIG_SCHEMA: Final = {
+    "limits": {"max_characters", "max_character_pairs", "max_alignment_steps"},
+    "dissent": {"max_comparison_steps"},
+}
 
 
 # The longest HTML5 named entity is `&CounterClockwiseContourIntegral;` at 33
 # characters; numeric references are shorter still. The bound matters because
 # the terminator is searched for, not assumed: without it a literal ampersand
-# in the ink ("Jean & Marie", "&c.") swallowed every character up to the next
-# semicolon anywhere later in the document -- tags included -- and handed them
-# back as "stripped" text. See `markup_text_view`.
+# in the ink ("Jean & Marie", "&c.") would swallow every character up to the
+# next semicolon anywhere later in the document, tags included. See
+# `markup_text_view`.
 _MAX_ENTITY_CHARACTERS: Final = 40
 
 
-def _alarm(signum: int, frame: Any) -> None:
-    raise _TimedOut()
-
-
 # Named so a reader of a retained record cannot mistake the instrument giving up
-# for a measurement of the witness. `timeout` alone read as a property of the
-# chair ("the witness timed out"); what actually happened is that this module's
-# own wall-clock backstop fired before it could say anything about coverage, and
-# the difference decides whether a shortfall is evidence or an absent
-# measurement.
-DEADLINE_REASON: Final = "alignment-deadline-exceeded"
+# for a measurement of the witness: this module stopped before it could say
+# anything about coverage, so the shortfall is an absent measurement, not
+# evidence about the chair.
+STEP_LIMIT_REASON: Final = "alignment-step-limit"
+# Every reason this module stops on one of its own bounds rather than on a
+# comparison: a page witness unaligned for one of these was never measured.
+UNMEASURED_REASONS: Final = frozenset(
+    {"character-limit", "character-pair-limit", STEP_LIMIT_REASON}
+)
 
 
-def _matching_blocks(witness_text: str, anchor_text: str) -> list[tuple[int, int, int]]:
+# An aligned record carrying this field was bounded by a wall clock, so whether
+# it aligned depended on the machine. It is refused by name, not as a shape error.
+_RETIRED_ALIGNED_FIELDS: Final = ("deadline_in_force",)
+# A wall-clock stop that says nothing about the witness. Counted, it would land in
+# `unaligned`, which holds only chairs short for a reason other than the aligner's
+# own bound, so it is refused by name instead.
+_RETIRED_UNALIGNED_REASONS: Final = ("alignment-deadline-exceeded",)
+
+
+def refuse_retired_alignment_record(alignment: Any, subject: str) -> None:
+    """Name a retired field or reason an alignment record still carries, so the remedy is plain."""
+    if not isinstance(alignment, dict):
+        return
+    retired = [field for field in _RETIRED_ALIGNED_FIELDS if field in alignment]
+    if retired:
+        raise SchemaRefusal(
+            f"{subject} carries the retired alignment field(s) {retired}: it was aligned "
+            "under a wall-clock deadline, not the sealed step budget, so whether it aligned "
+            "depended on the machine; re-run the Attestatores alignment under the current "
+            "contract"
+        )
+    reason = alignment.get("reason")
+    if alignment.get("status") == "unaligned" and reason in _RETIRED_UNALIGNED_REASONS:
+        raise SchemaRefusal(
+            f"{subject} carries the retired unaligned reason {reason!r}: it stopped on a "
+            "wall-clock deadline, not the sealed step budget, so it measured nothing and "
+            "cannot be counted as a comparison made; re-run the Attestatores alignment "
+            "under the current contract"
+        )
+
+
+class AlignmentStepLimit(Exception):
+    """The matcher ran out of its step budget before it finished."""
+
+
+class StepCountedMatcher(SequenceMatcher):
+    """`difflib.SequenceMatcher` without autojunk, stopped by a count of its own work.
+
+    `find_longest_match`'s inner loop is the matcher's only super-linear work.
+    Each call is charged, before it runs, one step per witness character in its
+    range plus one per anchor position of that character below the range's
+    end. The loop visits those positions and at most one more, where it stops,
+    and the one step per character covers that visit, so the charge is at least
+    the work. Running out raises `AlignmentStepLimit` before the work, and
+    whether an alignment finishes depends only on its two texts and the budget,
+    never on the machine or its load.
+
+    The linear work around the loop -- building the position index, extending a
+    match, recursing into the halves -- is not charged: it is bounded by the
+    text lengths, which the character bounds already cap. The matching itself
+    is the standard library's, unchanged.
+    """
+
+    def __init__(self, a: str, b: str, steps: int) -> None:
+        super().__init__(None, a, b, autojunk=False)
+        self.steps_left = steps
+
+    def find_longest_match(
+        self, alo: int = 0, ahi: int | None = None, blo: int = 0, bhi: int | None = None
+    ) -> Match:
+        ahi = len(self.a) if ahi is None else ahi
+        bhi = len(self.b) if bhi is None else bhi
+        # With no junk every anchor position of a character is in `b2j`, sorted.
+        positions = self.b2j
+        self.steps_left -= sum(
+            1 + bisect_left(positions.get(char, ()), bhi) for char in self.a[alo:ahi]
+        )
+        if self.steps_left < 0:
+            raise AlignmentStepLimit()
+        return super().find_longest_match(alo, ahi, blo, bhi)
+
+
+def _matching_blocks(witness_text: str, anchor_text: str, steps: int) -> list[tuple[int, int, int]]:
     """Return `(witness_start, anchor_start, size)` for every matched run.
 
     `difflib.SequenceMatcher`'s Ratcliff-Obershelp blocks, longest common
     contiguous block first then recursively to its left and right, with the
     terminating zero-size block dropped. Blocks are strictly ordered and
     non-overlapping on both sides, which is what lets a page alignment be
-    clipped to one act's anchor range.
+    clipped to one act's anchor range. Raises `AlignmentStepLimit` past `steps`.
 
     `autojunk=False` is deliberate: its heuristic treats any element in over
     1% of the sequence as junk, which in French register prose is most of the
     alphabet. This is also what makes the matcher slow on degenerate input,
-    hence the wall-clock backstop below.
+    hence the step budget.
 
-    RapidFuzz's LCS opcodes were tried and refused: they are far faster but
-    maximize matched characters, which on two acts opening with the same
-    formula can attribute a witness's second-act reading to the first act
-    instead -- a coverage-maximizing objective is the wrong one for attaching a
-    reading to an anchor. "Longest verbatim agreement wins" is the one that is
-    load-bearing here, and `common/test_alignment.py` pins that case by name.
+    Ratcliff-Obershelp rather than a longest-common-subsequence matcher: LCS
+    maximizes matched characters, which on two acts opening with the same
+    formula can attribute a witness's second-act reading to the first act. A
+    coverage-maximizing objective is the wrong one for attaching a reading to
+    an anchor; "longest verbatim agreement wins" is the load-bearing one, and
+    `common/test_alignment.py` pins that case by name.
 
     No normalization of its own: the comparison is over the codepoints
     `markup_text_view` produced, so the returned offsets index that same text.
     """
     return [
         (block.a, block.b, block.size)
-        for block in SequenceMatcher(
-            a=witness_text, b=anchor_text, autojunk=False
-        ).get_matching_blocks()
+        for block in StepCountedMatcher(witness_text, anchor_text, steps).get_matching_blocks()
         if block.size
     ]
 
@@ -102,22 +179,19 @@ def markup_text_view(raw: str) -> dict[str, Any]:
     """
     if not isinstance(raw, str):
         raise SchemaRefusal("alignment input is not text")
-    # Deliberately lexical rather than `html.parser.HTMLParser`: HTMLParser
-    # exposes source offsets only per token, not per character, so its column
-    # cannot seed an exact raw-offset map (and, run first only to catch
-    # malformed markup as a refusal, it never actually raised on any input in
-    # this module's own testing -- HTMLParser is intentionally permissive, so
-    # that pass was dead code pretending to be a validation guarantee it did
-    # not provide). Tags are omitted; entities are one visible character
-    # mapped to their opening ampersand.
+    # Lexical rather than `html.parser.HTMLParser`: HTMLParser exposes source
+    # offsets only per token, not per character, so its column cannot seed an
+    # exact raw-offset map, and it is permissive by design, so it cannot serve
+    # as a refusal of malformed markup either. Tags are omitted; entities are
+    # one visible character mapped to their opening ampersand.
     plain: list[str] = []
     offsets: list[int] = []
     in_tag = False
     # Only a `<` that actually closes is markup. An unterminated one is
     # ordinary ink ("aged < 30" at the end of a note), and treating it as an
-    # opened tag silently dropped every character after it. One index instead
-    # of a per-`<` forward scan: a `<` closes exactly when any `>` exists
-    # after it, i.e. when it sits before the last `>` of the whole input.
+    # opened tag would drop every character after it. One index instead of a
+    # per-`<` forward scan: a `<` closes exactly when any `>` exists after it,
+    # i.e. when it sits before the last `>` of the whole input.
     last_close = raw.rfind(">")
     i = 0
     while i < len(raw):
@@ -151,8 +225,8 @@ def markup_text_view(raw: str) -> dict[str, Any]:
     stripped = "".join(plain)
     composed = unicodedata.normalize("NFC", stripped)
     # NFC can change codepoint count, so indexing pre-composition offsets by a
-    # post-composition index mis-points every entry after the first merge. The
-    # map is rebuilt through composition instead: the stripped text splits
+    # post-composition index would mis-point every entry after the first merge.
+    # The map is rebuilt through composition instead: the stripped text splits
     # into clusters at combining-class-0 starters, and every composed
     # character maps to its cluster's first raw offset. Where per-cluster
     # composition cannot reproduce the composed text (e.g. Hangul jamo), the
@@ -250,137 +324,83 @@ def bracket_marker_view(raw: str) -> dict[str, Any]:
     }
 
 
+def _read_alignment_config(path: str | Path) -> tuple[dict[str, dict[str, int]], str]:
+    """The whole sealed file, closed-schema checked, so either loader refuses it alike."""
+    record, digest = read_sealed_toml(path, "alignment configuration")
+    if set(record) != set(_CONFIG_SCHEMA) or any(
+        not isinstance(record[table], dict) or set(record[table]) != keys
+        for table, keys in _CONFIG_SCHEMA.items()
+    ):
+        raise ContractError("alignment configuration has the wrong closed schema")
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value <= 0
+        for table in record.values()
+        for value in table.values()
+    ):
+        raise ContractError("alignment limits must be positive integers")
+    return record, digest
+
+
 def load_alignment_limits(
     path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
 ) -> tuple[AlignmentLimits, str]:
-    record, digest = read_sealed_toml(path, "alignment configuration")
-    if (
-        set(record) != {"limits"}
-        or not isinstance(record["limits"], dict)
-        or set(record["limits"])
-        != {
-            "max_characters",
-            "max_character_pairs",
-            "timeout_seconds",
-        }
-    ):
-        raise ContractError("alignment configuration has the wrong closed schema")
-    values = record["limits"]
-    if any(
-        not isinstance(value, int) or isinstance(value, bool) or value <= 0
-        for value in values.values()
-    ):
-        raise ContractError("alignment limits must be positive integers")
-    return AlignmentLimits(**values), digest
+    record, digest = _read_alignment_config(path)
+    return AlignmentLimits(**record["limits"]), digest
+
+
+def load_dissent_limits(
+    path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
+) -> tuple[DissentLimits, str]:
+    record, digest = _read_alignment_config(path)
+    return DissentLimits(**record["dissent"]), digest
+
+
+def sealed_dissent_budget(context) -> int:
+    """The dissent budget this run sealed, read from the configuration the stage was given."""
+    limits, digest = load_dissent_limits(context.args.alignment_config)
+    context.require_sealed_config("alignment", digest)
+    return limits.max_comparison_steps
 
 
 def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) -> dict[str, Any]:
     """Align a witness comparison view to an anchor, or explicitly `unaligned`.
 
-    The character and pair bounds always apply before the matcher runs. The
-    wall-clock deadline applies only where this call owns the process
-    real-time timer (main thread, POSIX `SIGALRM`, no timer already armed);
-    elsewhere the comparison runs unbounded under the caller's own deadline.
-    The pair bound does not refuse every pathologically slow input -- some
-    low-entropy pairs sitting exactly at `max_character_pairs` are still slow
-    -- which is what the deadline is for. No input is clipped: a limit or a
-    fired deadline produces a retained unaligned result with its reason.
+    The character and pair bounds apply before the matcher runs; the step
+    budget (`max_alignment_steps`) bounds the matcher's own work, so a
+    low-entropy pair the pair bound admits still stops. No input is clipped: a
+    limit produces a retained unaligned result with its reason, and the result
+    is a function of the two texts and the limits alone.
 
-    `deadline_in_force` is `True` only when this call actually armed the
-    SIGALRM backstop. Without it a caller cannot tell a genuinely bounded
-    alignment from one that ran unbounded and happened to finish, both of
-    which otherwise return the same `{"status": "aligned", ...}`.
-
-    A fired deadline (`DEADLINE_REASON`) is a non-verdict: this module made no
-    measurement of coverage, and it is `unaligned` rather than a partial map,
-    since publishing spans a timed-out comparison never finished would be
-    worse than saying nothing.
-
-    The deadline is sized from the legitimate ceiling, not the pathological
-    one, and does not clear the pathological one: closing that gap needs a
-    different matcher, recorded as a design question in
-    `pipeline/3_attestatores/CONTRACT.md` rather than solved here.
+    Running out of steps (`STEP_LIMIT_REASON`) is a non-verdict: this module
+    made no measurement of coverage, and it is `unaligned` rather than a
+    partial map, since publishing spans from a comparison that never finished
+    would be worse than saying nothing.
     """
     witness = markup_text_view(witness_raw)
     anchor = markup_text_view(anchor_raw)
     witness_text, anchor_text = witness["text"], anchor["text"]
     if len(witness_text) > limits.max_characters or len(anchor_text) > limits.max_characters:
-        return {
-            "status": "unaligned",
-            "reason": "character-limit",
-            "witness": witness,
-            "anchor": anchor,
-            # Refused before the matcher ever ran; no timer question arises.
-            "deadline_in_force": False,
-        }
-    if len(witness_text) * len(anchor_text) > limits.max_character_pairs:
-        return {
-            "status": "unaligned",
-            "reason": "character-pair-limit",
-            "witness": witness,
-            "anchor": anchor,
-            "deadline_in_force": False,
-        }
-    previous = None
-    alarm_armed = False
-    try:
-        if (
-            hasattr(signal, "SIGALRM")
-            and hasattr(signal, "ITIMER_REAL")
-            and threading.current_thread() is threading.main_thread()
-            and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
-        ):
-            previous = signal.signal(signal.SIGALRM, _alarm)
-            try:
-                signal.alarm(limits.timeout_seconds)
-            except BaseException:
-                signal.signal(signal.SIGALRM, previous)
-                raise
-            alarm_armed = True
-        blocks = _matching_blocks(witness_text, anchor_text)
-        # Cancelled inside the `try`, not only `finally`: an alarm firing after
-        # `_matching_blocks` returns but before `finally` runs would otherwise
-        # raise `_TimedOut` past the `except` above, propagating an internal
-        # exception from a function whose contract is to return `unaligned`
-        # instead. A firing in the remaining instructions is still caught and
-        # recorded as the deadline reason -- understating a finished alignment,
-        # the safe direction of the two possible mistakes.
-        if alarm_armed:
-            signal.alarm(0)
-    except _TimedOut:
-        return {
-            "status": "unaligned",
-            "reason": DEADLINE_REASON,
-            "witness": witness,
-            "anchor": anchor,
-            # A fired deadline is only reachable with the alarm armed; recorded
-            # explicitly rather than left implied by the reason code, so every
-            # record in this module answers the same question the same way.
-            "deadline_in_force": True,
-        }
-    finally:
-        if alarm_armed:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, previous)
-    spans = [
-        {
-            "witness": {"start": witness_start, "end": witness_start + size},
-            "anchor": {"start": anchor_start, "end": anchor_start + size},
-        }
-        for witness_start, anchor_start, size in blocks
-    ]
-    if not spans:
-        return {
-            "status": "unaligned",
-            "reason": "no-common-anchor-text",
-            "witness": witness,
-            "anchor": anchor,
-            "deadline_in_force": alarm_armed,
-        }
-    return {
-        "status": "aligned",
-        "witness": witness,
-        "anchor": anchor,
-        "spans": spans,
-        "deadline_in_force": alarm_armed,
-    }
+        reason = "character-limit"
+    elif len(witness_text) * len(anchor_text) > limits.max_character_pairs:
+        reason = "character-pair-limit"
+    else:
+        try:
+            blocks = _matching_blocks(witness_text, anchor_text, limits.max_alignment_steps)
+        except AlignmentStepLimit:
+            reason = STEP_LIMIT_REASON
+        else:
+            if blocks:
+                return {
+                    "status": "aligned",
+                    "witness": witness,
+                    "anchor": anchor,
+                    "spans": [
+                        {
+                            "witness": {"start": witness_start, "end": witness_start + size},
+                            "anchor": {"start": anchor_start, "end": anchor_start + size},
+                        }
+                        for witness_start, anchor_start, size in blocks
+                    ],
+                }
+            reason = "no-common-anchor-text"
+    return {"status": "unaligned", "reason": reason, "witness": witness, "anchor": anchor}
