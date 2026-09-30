@@ -316,7 +316,8 @@ def _toml_profile(row: dict[str, Any]) -> str:
 def write_live_catalogue(path: Path, registry) -> Path:
     """Every chair this seam can serve, live, at every tier the placement file names.
 
-    The Designator keeps its fixture rows: this module's subject is the reading
+    The Designator keeps its fixture rows, and its Surya detector with it
+    (fixture rows answer only a fixture pass): this module's subject is the reading
     seam, and a live row for `designator_structure` would start its structure
     pass instead (`pipeline/2_designator/structure_pass.py`, exercised end to end
     in `pipeline/test_structure_chair_e2e.py`). Every other configured
@@ -326,11 +327,15 @@ def write_live_catalogue(path: Path, registry) -> Path:
     rows: list[dict[str, Any]] = [
         {
             "kind": "fixture",
-            "recipe": "fake-designator-v0",
-            "chair": "designator_structure",
+            "recipe": recipe,
+            "chair": chair,
             "tier": tier,
             "description": "offline walking-skeleton fixture row",
         }
+        for chair, recipe in (
+            ("designator_structure", "fake-designator-v0"),
+            ("designator_surya", "fake-surya-v0"),
+        )
         for tier in TIERS
     ]
     for index, chair in enumerate(LIVE_CHAIRS):
@@ -447,8 +452,13 @@ def invoke_stage(program: str, run_root: Path, catalogue: Path, *, placement_tie
     return result.returncode
 
 
-def run_in_process(module, run_root: Path, catalogue: Path, *, placement_tier, serving_factory):
+def run_in_process(
+    module, run_root: Path, catalogue: Path, *, placement_tier, serving_factory, **seams
+):
     """Call one stage's own `main` here, with the serving seam injected.
+
+    `seams` are any further in-process seams that stage's `main` takes, such
+    as the Designator's `surya_runner`.
 
     `main(serving_factory=…)` is the sanctioned in-process injection point and
     is not what makes a run live: the sealed row kind decides that, and this
@@ -463,7 +473,7 @@ def run_in_process(module, run_root: Path, catalogue: Path, *, placement_tier, s
     original = sys.argv
     sys.argv = argv
     try:
-        return module.main(serving_factory=serving_factory)
+        return module.main(serving_factory=serving_factory, **seams)
     finally:
         sys.argv = original
 

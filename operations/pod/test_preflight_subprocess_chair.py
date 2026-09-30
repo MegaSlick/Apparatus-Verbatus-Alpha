@@ -7,8 +7,6 @@ through it.
 
 from __future__ import annotations
 
-import shutil
-import tomllib
 from decimal import Decimal
 from pathlib import Path
 
@@ -25,43 +23,28 @@ from operations.serving.errors import ServingConfigurationError
 
 ROOT = Path(__file__).resolve().parents[2]
 
-_ABSENT = """[chairs.designator_surya]
-state = "absent"
-reason = "no Surya detector is configured for the offline walking skeleton"
-"""
-
-
-def _roster(tmp_path: Path) -> Path:
-    config_root = tmp_path / "config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    shipped = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
-    assert _ABSENT in shipped
-    digest = tomllib.loads(shipped)["chairs"]["designator_structure"]["digest_manifest"]
-    configured = (
-        '[chairs.designator_surya]\nstate = "configured"\nsource = "local-repository"\n'
-        f'path = "designator_structure"\ndigest_manifest = "{digest}"\n'
-        'manifest = "manifests/designator_structure.json"\nserving_recipe = "surya-v0"\n'
-        'license_note = "fixture identity only; no model weights or model license apply"\n'
-    )
-    models = config_root / "models.toml"
-    models.write_text(shipped.replace(_ABSENT, configured), encoding="utf-8")
-    return models
+TIERS = ("generic-24gb", "generic-48gb", "generic-80gb-plus")
 
 
 def _catalogue(tmp_path: Path) -> Path:
-    rows = "".join(
-        f'\n[[profiles]]\nkind = "subprocess"\nrecipe = "surya-v0"\nchair = "designator_surya"\n'
-        f'tier = "{tier}"\nengine = "surya"\nenvironment = "operations/serving/surya"\n'
-        'device = "cpu"\nthreads = 2\ntimeout_seconds = 600\n'
-        'required_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }\n'
-        for tier in ("generic-24gb", "generic-48gb", "generic-80gb-plus")
+    """The shipped fixture catalogue with the Surya chair's rows as subprocess rows."""
+    shipped = (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8")
+    fixture_rows = "".join(
+        f'\n[[profiles]]\nkind = "fixture"\nrecipe = "fake-surya-v0"\nchair = "designator_surya"\n'
+        f'tier = "{tier}"\n'
+        'description = "offline walking-skeleton fixture for the Surya detector chair"\n'
+        for tier in TIERS
     )
+    subprocess_rows = "".join(
+        f'\n[[profiles]]\nkind = "subprocess"\nrecipe = "fake-surya-v0"\n'
+        f'chair = "designator_surya"\ntier = "{tier}"\nengine = "surya"\n'
+        'environment = "operations/serving/surya"\ndevice = "cpu"\nthreads = 2\n'
+        'timeout_seconds = 600\nrequired_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }\n'
+        for tier in TIERS
+    )
+    assert fixture_rows in shipped
     path = tmp_path / "serving_recipes.toml"
-    path.write_text(
-        (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8") + rows,
-        encoding="utf-8",
-    )
+    path.write_text(shipped.replace(fixture_rows, subprocess_rows), encoding="utf-8")
     return path
 
 
@@ -92,7 +75,7 @@ class Smoke:
 def _run(tmp_path: Path, checker):
     cache, smoke = Cache(), Smoke()
     runner = PreflightRunner(
-        load_models_toml(_roster(tmp_path)),
+        load_models_toml(ROOT / "config" / "models.toml"),
         load_placement_table(ROOT / "config/pod_placement.toml"),
         cache,
         smoke,

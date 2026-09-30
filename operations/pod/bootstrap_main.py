@@ -157,8 +157,10 @@ from .models import POD_VOLUME_MOUNT_PATH, require_utc, utc_now
 from .preflight import (
     PlacementRefusal,
     PreflightRunner,
+    SubprocessChecker,
     SystemGpuProbe,
     UtilizationSample,
+    check_subprocess_environment,
     load_placement_table,
 )
 from .provider_runpod import REQUESTED_GPU_COUNT
@@ -463,6 +465,8 @@ class PreflightSeams:
     # serve a chair take the same constant, so the preflight and the run it
     # precedes contend for one lease rather than two disjoint ones.
     residency_lock: Path = POD_RESIDENCY_LOCK_PATH
+    # How a subprocess chair's (Surya's) own environment is asked for its versions.
+    subprocess_checker: SubprocessChecker = check_subprocess_environment
 
 
 _FLAG_NAME = re.compile(r"--[a-z0-9-]+")
@@ -1247,6 +1251,7 @@ def _build_preflight(
             reader,
             fixture,
             serving_recipes=recipes,
+            subprocess_checker=chosen.subprocess_checker,
             selected_roles=frozenset(plan.preflight_roles)
             if plan.preflight_roles is not None
             else None,

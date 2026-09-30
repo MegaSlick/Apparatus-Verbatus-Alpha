@@ -36,7 +36,7 @@ from common.physical_act_partition import CROSS_CAPTURE_READ_NOT_BUILT
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD, verify_final_seal
 from conftest import load_stage
-from operations.serving.fakes import scripted_structure_answer
+from operations.serving.fakes import InProcessSurya, scripted_structure_answer
 from operations.submit import gate, submit
 from proof.synthetic_pages import PAGE_BREAK_PAGES, render_page
 
@@ -145,6 +145,8 @@ def test_combined_rehearsal_accounts_for_every_act_and_verifies_export(tmp_path,
             scripted_structure_answer(ACTS_BY_PAGE[ordinal], 200, 260)
             for ordinal in sorted(ACTS_BY_PAGE)
         ],
+        # The fixture declares no Surya detections for these pages.
+        surya=InProcessSurya((), ()),
     )
     witnesses = WitnessWorld(
         catalogue,
@@ -154,9 +156,12 @@ def test_combined_rehearsal_accounts_for_every_act_and_verifies_export(tmp_path,
     )
     reader = ReaderWorld(catalogue, tmp_path / "reader", finish_reason="stop")
     injected = {
-        "pipeline/2_designator/run.py": (designator, structure.factory),
-        "pipeline/3_attestatores/run.py": (attestatores, witnesses.factory),
-        "pipeline/4_perlector/run.py": (perlector, reader.factory),
+        "pipeline/2_designator/run.py": (
+            designator,
+            {"serving_factory": structure.factory, "surya_runner": structure.surya},
+        ),
+        "pipeline/3_attestatores/run.py": (attestatores, {"serving_factory": witnesses.factory}),
+        "pipeline/4_perlector/run.py": (perlector, {"serving_factory": reader.factory}),
     }
     real_subprocess_run = subprocess.run
 
@@ -164,10 +169,10 @@ def test_combined_rehearsal_accounts_for_every_act_and_verifies_export(tmp_path,
         program = str(Path(command[2]).relative_to(ROOT))
         if program not in injected:
             return real_subprocess_run(command, **kwargs)
-        module, factory = injected[program]
+        module, seams = injected[program]
         original_argv, sys.argv = sys.argv, [str(command[2]), *command[3:]]
         try:
-            return SimpleNamespace(returncode=module.main(serving_factory=factory))
+            return SimpleNamespace(returncode=module.main(**seams))
         finally:
             sys.argv = original_argv
 

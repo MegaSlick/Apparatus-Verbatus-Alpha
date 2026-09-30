@@ -290,14 +290,22 @@ def test_a_subprocess_row_resolves_to_the_subprocess_mode_and_is_never_launched(
 
 
 def test_the_surya_chair_is_in_both_rosters_and_addressed_by_stage_two():
+    """Configured on the fixture roster, with a fixture row at every tier; absent
+    on the real roster until a fetched bundle gives it a measured manifest."""
     fixture = tomllib.loads((ROOT / "config" / "models.toml").read_text(encoding="utf-8"))
     real = tomllib.loads((ROOT / "config" / "models-real.toml").read_text(encoding="utf-8"))
-    assert fixture["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "absent"
+    assert fixture["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "configured"
     assert real["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "absent"
-    # Neither catalogue carries a row for an absent chair.
-    for name in ("serving_recipes.toml", "serving_recipes_real.toml"):
-        recipes = load_serving_recipes(ROOT / "config" / name)
-        assert not [p for p in recipes.profiles if p.chair == DESIGNATOR_SURYA_CHAIR]
+    fixture_rows = [
+        p
+        for p in load_serving_recipes(ROOT / "config" / "serving_recipes.toml").profiles
+        if p.chair == DESIGNATOR_SURYA_CHAIR
+    ]
+    assert {(p.kind, p.tier) for p in fixture_rows} == {
+        ("fixture", tier) for tier in ("generic-24gb", "generic-48gb", "generic-80gb-plus")
+    }
+    real_recipes = load_serving_recipes(ROOT / "config" / "serving_recipes_real.toml")
+    assert not [p for p in real_recipes.profiles if p.chair == DESIGNATOR_SURYA_CHAIR]
     config = load_models_toml(ROOT / "config" / "models.toml")
     assert DESIGNATOR_SURYA_CHAIR not in unaddressed_chairs(config)
 
