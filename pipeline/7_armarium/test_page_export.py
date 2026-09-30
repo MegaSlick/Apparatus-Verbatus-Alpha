@@ -203,9 +203,12 @@ def test_the_page_accounting_and_what_was_not_measured_are_claimed(complete):
     accounting = claims["page_accounting"]
     assert [row["ordinal"] for row in accounting["pages"]] == [1, 2]
     assert accounting["held_pages"] == []
-    assert set(accounting["pages"][0]["rules"]) == set("abcdefghi")
-    # DAI's one record on page 1 lies inside a2's act region.
-    assert accounting["pages"][0]["rules"] == dict.fromkeys("abcdefghi", "pass")
+    assert set(accounting["pages"][0]["rules"]) == set("abcdefghij")
+    # DAI's one record on page 1 lies inside a2's act region; no page was re-asked.
+    assert accounting["pages"][0]["rules"] == {
+        **dict.fromkeys("abcdefghi", "pass"),
+        "j": "not-applicable",
+    }
     assert len(accounting["policy_sha256s"]) == 1
     entries = {entry["instrument"]: entry for entry in claims["not_measured"]["entries"]}
     assert list(entries) == list(PAGE_NOT_MEASURED_INSTRUMENTS)

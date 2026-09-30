@@ -42,5 +42,10 @@ absolute_cap = 3
 # recrop and one page-level reread; the real budget is established through alpha
 # testing, which has not happened yet. The walking skeleton needs exactly one
 # recrop to prove the loop, so that is what it is allowed.
+#
+# In a page-read run, page_level_reread bounds the Perlector's re-asks of each
+# page (common/page_reask.py): 0 turns them off, 1 lets a page whose first
+# reading left witness units, lines or detector records unaccounted for be
+# asked once more about exactly those, and more is refused by name.
 fallback_recrop = 1
 page_level_reread = 1

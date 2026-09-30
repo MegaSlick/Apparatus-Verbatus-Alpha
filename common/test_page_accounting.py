@@ -27,6 +27,8 @@ from common.residual_ink import INK_RUNS_SCHEMA
 POLICY = load_page_accounting_policy()
 WIDTH, HEIGHT = 1000, 1400
 RULE_NAMES = "abcdefghi"
+# A first reading's accounting: every rule passes, and rule (j), the re-ask's, does not apply.
+CLEAN = {**{name: "pass" for name in RULE_NAMES}, "j": "not-applicable"}
 
 _FIRST = ["Jean", "Marie", "Joseph", "Louis", "Pierre", "Marguerite", "Angélique", "François"]
 _LAST = ["Tremblay", "Gagnon", "Roy", "Côté", "Bouchard", "Gauthier", "Morin", "Lavoie"]
@@ -209,7 +211,7 @@ def statuses(record: dict) -> dict[str, str]:
 
 
 def only_hold(record: dict, rule: str, **others: str) -> None:
-    expected = {name: "pass" for name in RULE_NAMES}
+    expected = dict(CLEAN)
     expected[rule] = "hold"
     assert statuses(record) == {**expected, **others}
 
@@ -253,9 +255,9 @@ def unit_measure(record: dict, identifier: str) -> dict:
 def test_a_clean_page_passes_every_rule():
     record = account(page())
 
-    assert statuses(record) == {name: "pass" for name in RULE_NAMES}
+    assert statuses(record) == CLEAN
     assert record["holds"] == []
-    assert record["schema"] == "page-accounting.v1"
+    assert record["schema"] == "page-accounting.v2"
     assert record["policy_sha256"] == POLICY.sha256
     assert record["units"][0] == {"id": "A1", "disposition": "cited", "by": [1]}
     assert record["lines"][:3] == [
@@ -385,7 +387,7 @@ def test_a_short_unit_set_aside_with_a_reason_is_accounted_for():
 
     record = account(case)
 
-    assert statuses(record) == {name: "pass" for name in RULE_NAMES}
+    assert statuses(record) == CLEAN
     assert {"id": "C4", "disposition": "set-aside", "by": []} in record["units"]
 
 
@@ -530,7 +532,7 @@ def test_a_witness_hidden_by_the_feed_is_still_measured_against_every_reading():
 
     record = account(case)
 
-    assert statuses(record) == {name: "pass" for name in RULE_NAMES}
+    assert statuses(record) == CLEAN
     assert {"id": "C2", "disposition": "not-shown", "by": []} in record["units"]
     assert {m["id"] for m in record["rules"]["e"]["measurements"]} >= {"C1", "C2", "C3"}
 
