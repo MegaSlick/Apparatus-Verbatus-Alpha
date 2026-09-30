@@ -89,7 +89,7 @@ from common.decoding import (
     STRUCTURE_RECOVERY_SCHEDULE,
     chair_attempt_decoding,
     load_decoding_policy,
-    recorded_sampling,
+    recorded_wire_decimals,
     refuse_retired_call_record,
     structure_recovery_policy,
     variance_arm_seed,
@@ -2695,7 +2695,7 @@ def structure_attempt_decoding(
     """The decoding block a structure attempt must carry: its sealed sampling values."""
     return {
         "policy": STRUCTURE_DECODING_POLICY,
-        "sampling": recorded_sampling(
+        "sampling": recorded_wire_decimals(
             chair_attempt_decoding(policy, DESIGNATOR_CHAIR, attempt_ordinal)
         ),
         "decoding_config_sha256": decoding_config_sha256,

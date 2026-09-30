@@ -72,7 +72,7 @@ from common.contracts.identities import (
     region_id,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, INK_MAP, PERLECTOR
-from common.decoding import chair_decoding, engine_effective_sampling, recorded_sampling
+from common.decoding import chair_decoding, engine_effective_sampling, recorded_wire_decimals
 from common.exemplar_boundary import cut_exemplar_crop, read_sealed_page
 from common.imaging import dimensions
 from common.request_capacity import RequestCapacityRefusal, page_request_capacity
@@ -940,8 +940,8 @@ def _page_sampling(run) -> dict[str, Any]:
     values = chair_decoding(run.decoding_policy, run.chair.role)
     return {
         "chair": run.chair.role,
-        "sent": recorded_sampling(values),
-        "effective": recorded_sampling(engine_effective_sampling(values)),
+        "sent": recorded_wire_decimals(values),
+        "effective": recorded_wire_decimals(engine_effective_sampling(values)),
     }
 
 

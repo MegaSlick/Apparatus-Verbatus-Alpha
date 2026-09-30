@@ -36,7 +36,6 @@ from common.contracts.serving import (
     CHANDRA_NATIVE_CALL_RECORD_SCHEMA,
     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS,
     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
-    WIRE_DECIMAL_SCHEMA,
 )
 from common.decoding import (
     VARIANCE_ARMS,
@@ -44,7 +43,7 @@ from common.decoding import (
     chair_decoding,
     decoded_wire_decimals,
     engine_effective_sampling,
-    recorded_sampling,
+    recorded_wire_decimals,
     variance_arm_seed,
 )
 from common.sealed_config import table_seal
@@ -80,31 +79,6 @@ from .manager import AdapterCalibration, ServiceHandle, ServingManager
 # check below, so the comparison is between two texts rather than between two
 # Python values whose `==` is looser than the wire's.
 _JSON = {"sort_keys": True, "separators": (",", ":"), "ensure_ascii": False}
-
-
-def recorded_generation(view: Mapping[str, object]) -> dict[str, object]:
-    """The generation view in the form a call record holds it, losslessly.
-
-    A vendor's decoding value may be a float (e.g. ``top_p`` 0.001), and
-    :func:`common.contracts.canonical.canonical_bytes` refuses floats outright
-    since their JSON form is not stable enough to hash. Recorded instead is
-    the exact decimal text the wire body carries, tagged ``wire-decimal.v1``
-    so a reader can tell it from a genuinely declared string; ``read`` proves
-    on every call, via :func:`common.decoding.decoded_wire_decimals`, that this
-    is a lossless transcription rather than a rounding.
-    """
-
-    return {key: _recorded_value(item) for key, item in view.items()}
-
-
-def _recorded_value(value: object) -> object:
-    if isinstance(value, float) and not isinstance(value, bool):
-        return {"schema": WIRE_DECIMAL_SCHEMA, "decimal": json.dumps(value)}
-    if isinstance(value, Mapping):
-        return {key: _recorded_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_recorded_value(item) for item in value]
-    return value
 
 
 def _refuse_generation_that_cannot_be_recorded_as_sent(
@@ -190,7 +164,7 @@ def _sealed_capacity(value: Mapping[str, object]) -> Mapping[str, object]:
 
     try:
         detached = json.loads(canonical_bytes(thawed_json(value)))
-    except (TypeError, ValueError, RecursionError) as error:
+    except (TypeError, ValueError, RecursionError, ServingConfigurationError) as error:
         raise ChairRequestRefusal(
             "CHAIR_REQUEST_INVALID",
             "a request's capacity record cannot be written canonically, so it could not be "
@@ -385,12 +359,19 @@ class ChairClient:
         # the HTTP boundary merely because its public fields look plausible.
         self._prepared_chandra_dispatches: dict[int, ChandraNativeDispatch] = {}
         self._handle: ServiceHandle | None = None
+        # Set once an exit has asked the service to stop; a service whose stop
+        # failed is kept only so the exit can be retried, never read from.
+        self._exiting = False
 
     @property
     def handle(self) -> ServiceHandle:
         if self._handle is None:
             raise ServingConfigurationError(
                 "ChairClient has no active service; enter it as a context manager first"
+            )
+        if self._exiting:
+            raise ServingConfigurationError(
+                "ChairClient's service is being stopped; only a retried exit may use it"
             )
         return self._handle
 
@@ -443,15 +424,18 @@ class ChairClient:
                 raise receipt_error from stop_error
             raise
         self._handle = handle
+        self._exiting = False
         return self
 
     def __exit__(self, *exc: object) -> None:
         if self._handle is None:
             return
         self._prepared_chandra_dispatches.clear()
+        self._exiting = True
         # Cleared only once the stop is verified, so a failed stop can be retried.
         self._handle.stop()
         self._handle = None
+        self._exiting = False
 
     def read(self, request: ChairRequest) -> ChairResponse:
         """Issue exactly one reading request. Never retries, never re-samples.
@@ -521,8 +505,8 @@ class ChairClient:
         except ContractError as error:
             raise ChairRequestRefusal("CHAIR_REQUEST_INVALID", str(error)) from error
         sent = {**request.generation_sent, **sampling}
-        sent_record = recorded_generation(sent)
-        declared_record = recorded_generation(request.generation_declared)
+        sent_record = recorded_wire_decimals(sent)
+        declared_record = recorded_wire_decimals(request.generation_declared)
         _refuse_generation_that_cannot_be_recorded_as_sent(sent_record, sent, "generation_sent")
         _refuse_generation_that_cannot_be_recorded_as_sent(
             declared_record, request.generation_declared, "generation_declared"
@@ -541,7 +525,7 @@ class ChairClient:
             generation_declared_record=cast(Mapping[str, object], frozen_json(declared_record)),
             sampling_effective_record=cast(
                 Mapping[str, object],
-                frozen_json(recorded_sampling(engine_effective_sampling(sampling))),
+                frozen_json(recorded_wire_decimals(engine_effective_sampling(sampling))),
             ),
             body=body,
             request_sha256=digest_bytes(body),
@@ -620,8 +604,8 @@ class ChairClient:
             # Built and checked before the request leaves: a generation value
             # this client could not record as sent must stop the call, not be
             # discovered after a chair has already answered it.
-            generation_sent = recorded_generation(request.generation_sent)
-            generation_declared = recorded_generation(request.generation_declared)
+            generation_sent = recorded_wire_decimals(request.generation_sent)
+            generation_declared = recorded_wire_decimals(request.generation_declared)
             _refuse_generation_that_cannot_be_recorded_as_sent(
                 generation_sent, request.generation_sent, "generation_sent"
             )
@@ -634,8 +618,8 @@ class ChairClient:
                 **sampling,
                 "seed": actual_seed,
             }
-            actual_generation_record = recorded_generation(actual_generation_sent)
-            sampling_effective = recorded_sampling(engine_effective_sampling(sampling))
+            actual_generation_record = recorded_wire_decimals(actual_generation_sent)
+            sampling_effective = recorded_wire_decimals(engine_effective_sampling(sampling))
             body = request_body(
                 {**request.generation_sent, "messages": list(request.messages)},
                 model_id=handle.profile.served_model_id,

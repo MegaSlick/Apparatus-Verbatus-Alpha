@@ -34,7 +34,7 @@ from common.decoding import (
     chair_decoding,
     engine_effective_sampling,
     load_decoding_policy,
-    recorded_sampling,
+    recorded_wire_decimals,
     variance_arm_seed,
 )
 from common.sealed_config import table_seal
@@ -44,7 +44,6 @@ from .client import (
     ChairRequest,
     ReceiptDriftRefusal,
     ServingModeRefusal,
-    recorded_generation,
     serving_mode_for,
 )
 from .config import (
@@ -333,10 +332,10 @@ def test_each_sealed_chair_row_is_sent_exactly_and_retained(tmp_path: Path) -> N
         )
         assert {key: posted[key] for key in SAMPLING_FIELDS if key in posted} == sampling
         assert posted["seed"] == 7
-        assert record["generation_sent"] == recorded_generation(
+        assert record["generation_sent"] == recorded_wire_decimals(
             {"max_tokens": 10, **sampling, "seed": 7}
         )
-        assert record["sampling_effective"] == recorded_sampling(
+        assert record["sampling_effective"] == recorded_wire_decimals(
             engine_effective_sampling(sampling)
         )
 
@@ -415,7 +414,7 @@ def test_chandra_native_capability_is_attestator_1_only_and_omits_request_seed(
     assert record["schema"] == CHANDRA_NATIVE_CALL_RECORD_SCHEMA
     assert set(record) == CHANDRA_NATIVE_CALL_RECORD_FIELDS
     assert record["native_attempt_intent_ref"] == intent_ref
-    assert record["sampling_effective"] == recorded_sampling(expected)
+    assert record["sampling_effective"] == recorded_wire_decimals(expected)
 
 
 def test_chandra_native_dispatch_is_a_one_use_client_minted_capability(tmp_path: Path) -> None:
@@ -533,7 +532,7 @@ def test_a_structure_recovery_attempt_sends_chandras_own_retry_request(
     record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
     posted = endpoint.requests[0]
     assert (posted["temperature"], posted["top_p"], posted["seed"]) == (temperature, top_p, 7)
-    assert record["generation_sent"] == recorded_generation(
+    assert record["generation_sent"] == recorded_wire_decimals(
         {
             **chair_decoding(SHIPPED_POLICY, "designator_structure"),
             "temperature": temperature,
@@ -839,7 +838,7 @@ def test_transport_timeout_retains_the_known_request_and_explicit_response_uncer
     assert set(record) == CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS
     assert record["request_sha256"] == excinfo.value.request_sha256
     assert record["image_sha256s"] == []
-    assert record["generation_sent"] == recorded_generation(
+    assert record["generation_sent"] == recorded_wire_decimals(
         {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "seed": 7}
     )
     assert record["generation_declared"] == {}
@@ -1017,10 +1016,10 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     assert record["kind"] == "chat-completions"
     assert record["request_sha256"] == response.request_sha256
     assert record["image_sha256s"] == []
-    assert record["generation_sent"] == recorded_generation(
+    assert record["generation_sent"] == recorded_wire_decimals(
         {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "seed": 7}
     )
-    assert record["sampling_effective"] == recorded_sampling(
+    assert record["sampling_effective"] == recorded_wire_decimals(
         {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "top_p": 1.0}
     )
     assert record["generation_declared"] == {"top_k": 1}
@@ -1461,6 +1460,9 @@ def test_a_failed_stop_on_exit_can_be_retried_through_the_client(tmp_path: Path)
     endpoint.sticky_after_stop = True
     with pytest.raises(ServiceStopError):
         client.__exit__(None, None, None)
+    # A service whose stop failed is kept for the retry, never read from.
+    with pytest.raises(ServingConfigurationError, match="being stopped"):
+        _ = client.handle
 
     endpoint.sticky_after_stop = False
     client.__exit__(None, None, None)

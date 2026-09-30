@@ -29,7 +29,7 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.cross_capture_autopsia import atomic_delivered_pixels, build_autopsia
-from common.decoding import variance_arm_seed
+from common.decoding import recorded_wire_decimals, variance_arm_seed
 from common.imaging import encode_grayscale_png
 from common.perlector_audit import (
     _rebuild_chair_request_bytes,
@@ -49,7 +49,7 @@ from common.request_capacity import (
     perlector_prompt_tokens,
     request_fits,
 )
-from operations.serving.client import ChairClient, recorded_generation
+from operations.serving.client import ChairClient
 from operations.serving.config import (
     ServingConfigInputs,
     chair_preflight_identity_digest,
@@ -1309,7 +1309,7 @@ def test_max_tokens_always_rides_generation_sent(tmp_path: Path) -> None:
     )
     assert call_record["generation_declared"] == {}
     # The Perlector's sealed sampling row rides beside the bound and the seed.
-    assert call_record["generation_sent"] == recorded_generation(
+    assert call_record["generation_sent"] == recorded_wire_decimals(
         {
             "chat_template_kwargs": {"enable_thinking": False},
             "max_tokens": 256,

@@ -1054,19 +1054,30 @@ def frozen_json(value: object) -> object:
     return value
 
 
-def thawed_json(value: object) -> object:
+# How deep a frozen JSON value may nest before `thawed_json` refuses it. What it
+# thaws is assembled or parsed by this package, a handful of levels deep; the
+# bound names a pathological value instead of exhausting the stack.
+MAX_JSON_DEPTH = 64
+
+
+def thawed_json(value: object, _depth: int = 0) -> object:
     """The inverse of :func:`frozen_json`: the plain dicts and lists a JSON writer holds.
 
     ``json.dumps`` refuses a ``mappingproxy``, so a frozen record is thawed
-    before it is serialized. The recursion is not separately bounded: a caller
-    passing a value no depth-limited parse or writer has seen catches
-    ``RecursionError`` itself.
+    before it is serialized. Every level is copied, so the result shares no
+    container with its source. Each mapping and sequence level counts toward
+    :data:`MAX_JSON_DEPTH`; past it the value is refused by name.
     """
 
+    if isinstance(value, (Mapping, list, tuple)) and _depth > MAX_JSON_DEPTH:
+        raise ServingConfigurationError(
+            f"a JSON value nests deeper than {MAX_JSON_DEPTH} levels; a value that deep is "
+            "a defect in whatever assembled it, not evidence a record can carry"
+        )
     if isinstance(value, Mapping):
-        return {key: thawed_json(item) for key, item in value.items()}
+        return {key: thawed_json(item, _depth + 1) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [thawed_json(item) for item in value]
+        return [thawed_json(item, _depth + 1) for item in value]
     return value
 
 
