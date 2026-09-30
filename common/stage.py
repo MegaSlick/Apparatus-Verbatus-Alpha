@@ -2916,6 +2916,13 @@ def _page_row(
     }
 
 
+# The act-region fields that name its crop: proven by the region's lineage when
+# it is placed, and all `None` when it is not.
+_REGION_CROP_FIELDS: Final = frozenset(
+    {"region_id", "image_path", "image_sha256", "transform", "transform_digest"}
+)
+
+
 def _verify_entries(
     context,
     index: _PageReadRecords,
@@ -2971,6 +2978,10 @@ def _verify_entries(
             name for name, value in expected_region.items() if region_payload.get(name) != value
         )
         _require(
+            set(region_payload) == set(expected_region) | _REGION_CROP_FIELDS,
+            f"{entry_what} act-region carries fields other than its closed schema",
+        )
+        _require(
             not mismatched,
             f"{entry_what} act-region does not match its answer entry and page records "
             f"({', '.join(mismatched)})",
@@ -2982,16 +2993,7 @@ def _verify_entries(
         )
         if union is None:
             _require(
-                all(
-                    region_payload.get(name) is None
-                    for name in (
-                        "region_id",
-                        "image_path",
-                        "image_sha256",
-                        "transform",
-                        "transform_digest",
-                    )
-                ),
+                all(region_payload.get(name) is None for name in _REGION_CROP_FIELDS),
                 f"{entry_what} is unplaced, yet its act-region names a crop",
             )
         else:
@@ -3039,6 +3041,10 @@ def _verify_entries(
             name
             for name, value in expected_perlectio.items()
             if perlectio_payload.get(name) != value
+        )
+        _require(
+            set(perlectio_payload) == set(expected_perlectio) | {"dissent"},
+            f"{entry_what} Perlectio carries fields other than its closed schema",
         )
         _require(
             not mismatched,

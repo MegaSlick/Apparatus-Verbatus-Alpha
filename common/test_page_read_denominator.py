@@ -705,6 +705,18 @@ def test_a_forged_act_region_is_refused(happy_tree, review_tree, tmp_path, chang
 
 
 @pytest.mark.parametrize(
+    ("kind", "what"), [("act-region", "act-region"), ("perlectio", "Perlectio")]
+)
+def test_an_act_record_carrying_a_field_beyond_its_schema_is_refused(
+    happy_tree, tmp_path, kind, what
+):
+    tree = _copy(happy_tree, tmp_path)
+    _forge(tree[0], kind, 1, 1, lambda record: record["payload"].update(note="added later"))
+    with pytest.raises(FatalAccounting, match=f"{what} carries fields other than its closed"):
+        reading_acts(_context(tree))
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("holds", ["reading-incomplete"]),
