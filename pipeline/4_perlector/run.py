@@ -48,6 +48,7 @@ import truncation  # noqa: E402
 from dissent import departures, dissent_against, validate_dissent  # noqa: E402
 from live_reader import EngineSignalRefusal, VLLMReader  # noqa: E402
 from reader import FixtureReader, validate_audit_delivery  # noqa: E402
+from throughput import PLANNED_SECONDS_PER_CALL  # noqa: E402
 
 import operations.serving.errors as serving_errors  # noqa: E402
 from common.alignment import bracket_marker_view, markup_text_view  # noqa: E402
@@ -1812,11 +1813,6 @@ def _published_arm_refs(context, act_id: str, ordinal: int) -> list[dict[str, st
         context.artifact_ref(PERLECTOR, kind, identifier)
         for kind, identifier in _present_arms(context, act_id, ordinal)
     ]
-
-
-# Above the slowest measured live call: about 33 s for 441 answer tokens beside ~6,500
-# prompt tokens on an 80 GB card, against a mean of 12 s.
-PLANNED_SECONDS_PER_CALL: Final = 40
 
 
 # A live pass records each act's main-pass result as a `semi-final` the moment it is
@@ -4103,6 +4099,12 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
 
     expected = expected_acts(context)
     # An attempt nobody requested would make the attempt tally meaningless.
+    if args.act and protocol_config[protocol.READING_UNIT_FIELD] == page_run.READING_UNIT:
+        raise ContractError(
+            f"asked to read act {args.act}, but this run is sealed with reading_unit = "
+            '"page": the Perlector reads every sealed page whole and names its own acts, so '
+            "there is no Designator act to read alone; run the pass without --act"
+        )
     wanted = [act for act in expected if args.act in (None, act["act_id"])]
     if args.act and not wanted:
         raise ContractError(f"asked to read {args.act}, which the proposal seal does not name")
