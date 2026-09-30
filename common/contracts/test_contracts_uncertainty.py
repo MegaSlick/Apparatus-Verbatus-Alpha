@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import pytest
 
+from common import dissent
 from common.contracts import uncertainty as canonical_uncertainty
 from common.contracts.errors import SchemaRefusal
 from common.contracts.uncertainty import from_perlectio, utf8_round_trip, validate
-from conftest import load_stage
 
 # Every layer below carries the reader's own assessment, which the canonical
 # schema closed over (finding F2): the
@@ -34,8 +34,6 @@ _EMPTY = {
 
 
 def test_source_revision_vocabulary_matches_the_perlector_producer() -> None:
-    dissent = load_stage("4_perlector", "dissent")
-
     produced = dissent.departures("a", "b")
 
     assert len(produced) == 1
