@@ -39,7 +39,7 @@ from typing import Any, Final
 
 from common.alignment import markup_text_view
 from common.contracts.errors import SchemaRefusal
-from common.stage import WITNESS_READING_OUTCOMES
+from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 
 # `SequenceMatcher`'s alignment cost is not simply the product of the two
 # lengths: a reading and a report that differ in many scattered places --
@@ -191,7 +191,9 @@ def is_comparable(record: dict[str, Any]) -> bool:
     return isinstance(payload.get("comparison_reported"), str)
 
 
-def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
+def dissent_against(
+    reading: str, testimonia: list[dict], *, seconds: int | None = MAX_COMPARISON_SECONDS
+) -> list[dict]:
     """Where the reading departed from each witness that actually reported.
 
     Computed after the reading is fixed. A chair that failed or never ran has
@@ -202,8 +204,8 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     to a comparison view, a page witness unattached to this act and carrying no
     `comparison_reported`, a report large enough to refuse outright
     (`MAX_COMPARISON_CHARACTER_PAIRS`), and an alignment that did not finish
-    within `MAX_COMPARISON_SECONDS`. Never guessed at, and never silently dropped
-    from the record either.
+    within `seconds` (`MAX_COMPARISON_SECONDS`; `None` runs every alignment to its
+    end). Never guessed at, and never silently dropped from the record either.
     """
     reading_view = comparison_view(reading)
     rows = []
@@ -277,20 +279,13 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 }
             )
             continue
-        spans = _aligned_within_deadline(reading, reported, seconds=MAX_COMPARISON_SECONDS)
+        spans = (
+            departures(reading, reported)
+            if seconds is None
+            else _aligned_within_deadline(reading, reported, seconds=seconds)
+        )
         if spans is None:
-            rows.append(
-                {
-                    "chair": chair,
-                    "compared": "unknown",
-                    "reason": (
-                        f"a {len(reading)}-character reading against a {len(reported)}-"
-                        f"character report did not align within this module's "
-                        f"{MAX_COMPARISON_SECONDS}-second bound; neither text is clipped and "
-                        "neither is changed, the alignment simply did not run"
-                    ),
-                }
-            )
+            rows.append(unaligned_row(chair, reading, reported))
             continue
         markup_view = markup_text_view(reported)
         witness_view = comparison_view(markup_view["text"])
@@ -320,6 +315,20 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
             }
         )
     return rows
+
+
+def unaligned_row(chair: str, reading: str, reported: str) -> dict[str, Any]:
+    """The row of a comparison that did not align within `MAX_COMPARISON_SECONDS`."""
+    return {
+        "chair": chair,
+        "compared": "unknown",
+        "reason": (
+            f"a {len(reading)}-character reading against a {len(reported)}-"
+            f"character report did not align within this module's "
+            f"{MAX_COMPARISON_SECONDS}-second bound; neither text is clipped and "
+            "neither is changed, the alignment simply did not run"
+        ),
+    }
 
 
 def validate_dissent(rows: Any, *, text: str, basis_testimonia: list[dict]) -> None:

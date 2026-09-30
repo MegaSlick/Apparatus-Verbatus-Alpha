@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 import pytest
 
-from common import page_path
+from common import dissent, page_path
 from common import stage as stage_module
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.errors import ContractError, FatalAccounting, IdentityRefusal
@@ -813,6 +813,60 @@ def test_a_perlectio_departing_from_its_answer_entry_is_refused(happy_tree, tmp_
     _forge(tree[0], "perlectio", 1, 1, lambda record: record["payload"].update({field: value}))
     with pytest.raises(FatalAccounting, match=rf"Perlectio does not match .*{field}"):
         reading_acts(_context(tree))
+
+
+def _compared_row(record) -> dict:
+    return next(row for row in record["payload"]["dissent"] if row["compared"] is True)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda row: row.update(departed=not row["departed"]),
+        lambda row: row.update(
+            departures=[
+                *row["departures"],
+                {
+                    "reading_span": {"start": 0, "end": 1},
+                    "testimonium_span": {"start": 0, "end": 0},
+                },
+            ]
+        ),
+        lambda row: row.update(cited_units=["A9"]),
+        lambda row: row.update(compared="unknown"),
+    ],
+    ids=["departed", "departures", "cited-units", "not-compared-without-reason"],
+)
+def test_a_perlectio_whose_dissent_is_not_its_entrys_is_refused(happy_tree, tmp_path, change):
+    tree = _copy(happy_tree, tmp_path)
+    _forge(tree[0], "perlectio", 1, 1, lambda record: change(_compared_row(record)))
+    with pytest.raises(FatalAccounting, match="dissent is not where its reading departs"):
+        reading_acts(_context(tree))
+
+
+def test_a_dissent_row_whose_alignment_ran_out_of_time_where_it_was_sealed_is_counted(
+    happy_tree, tmp_path
+):
+    """The not-compared row a clock gave claims no comparison, so it stands as sealed."""
+    tree = _copy(happy_tree, tmp_path)
+    root = tree[0]
+    _path, perlectio = _one(root, "perlectio", 1, 1)
+    row = _compared_row(perlectio)
+    feed = _one(root, "page-feed", 1)[1]["payload"]
+    [witness] = [w for w in feed["witnesses"] if w["letter"] == row["letter"]]
+    reported = "\n".join(u["text"] for u in witness["units"] if u["id"] in row["cited_units"])
+    unaligned = dissent.unaligned_row(row["letter"], perlectio["payload"]["text"], reported)
+    unaligned.pop("chair")
+
+    def ran_out(record):
+        sealed = _compared_row(record)
+        kept = {name: sealed[name] for name in ("letter", "witness_label", "cited_units")}
+        sealed.clear()
+        sealed.update(kept, **unaligned)
+
+    _forge(root, "perlectio", 1, 1, ran_out)
+    acts = reading_acts(_context(tree))
+    assert [act["act_key"] for act in acts] == ["p1:1", "p1:2", "p2:1"]
 
 
 @pytest.mark.parametrize(

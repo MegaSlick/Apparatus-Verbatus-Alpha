@@ -980,9 +980,9 @@ def test_dissent_does_not_count_a_witness_s_own_doubt_markers_as_departure():
             "testimonium": {"payload": {"format_capabilities": capabilities}},
         }
 
-    [marked] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(True)])
+    [marked] = page_path.page_dissent("Marie  Roy", feed, ["A1"], [witness(True)])
     assert marked["compared"] is True and marked["departed"] is False
-    [plain] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(False)])
+    [plain] = page_path.page_dissent("Marie  Roy", feed, ["A1"], [witness(False)])
     assert plain["departed"] is True
 
 
@@ -1413,7 +1413,7 @@ def test_a_resumed_pass_adopts_its_sealed_measures_rather_than_measuring_again(
         raise AssertionError("a sealed measure was computed again")
 
     monkeypatch.setattr(page_run.page_accounting, "page_accounting", never)
-    monkeypatch.setattr(page_run, "dissent_against", never)
+    monkeypatch.setattr(page_path, "page_dissent", never)
     _endpoint, exit_code = _read_pages(live_tree, tmp_path / "again", monkeypatch)
     assert exit_code == 0
     assert file_bytes_snapshot(root / "r" / "4_perlector") == before
@@ -1544,7 +1544,7 @@ def test_a_pass_stopped_between_an_act_region_and_its_perlectio_resumes_the_rest
     live_tree, tmp_path, monkeypatch
 ):
     root = live_tree.root
-    original = page_run._dissent
+    original = page_path.page_dissent
     calls = []
 
     def stopped_at_the_second(*args, **kwargs):
@@ -1553,7 +1553,7 @@ def test_a_pass_stopped_between_an_act_region_and_its_perlectio_resumes_the_rest
             raise KeyboardInterrupt
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(page_run, "_dissent", stopped_at_the_second)
+    monkeypatch.setattr(page_path, "page_dissent", stopped_at_the_second)
     with pytest.raises(KeyboardInterrupt):
         _serial(live_tree, tmp_path, monkeypatch, *_answers())
     regions = [r for r in _records(root, "act-region") if r["payload"]["page_ordinal"] == 1]
@@ -1561,7 +1561,7 @@ def test_a_pass_stopped_between_an_act_region_and_its_perlectio_resumes_the_rest
     assert len(regions) == 2
     [kept_path] = (root / "r" / "4_perlector" / "artifacts" / "perlectio").glob("*.json")
     kept_bytes = kept_path.read_bytes()
-    monkeypatch.setattr(page_run, "_dissent", original)
+    monkeypatch.setattr(page_path, "page_dissent", original)
     endpoint, exit_code = _serial(live_tree, tmp_path / "again", monkeypatch, _answers()[1])
     assert exit_code == 0 and len(_chat_requests(endpoint)) == 1
     assert kept_path.read_bytes() == kept_bytes
@@ -1606,12 +1606,16 @@ def test_a_retained_page_reading_or_perlectio_from_other_inputs_is_not_adopted()
     ):
         with pytest.raises(ContractError, match="retained page reading .* not adopted"):
             page_run._check_adopted(state, page, {**reading, **changed})
-    expected = {"page_accounting_ref": {"relative_path": "a"}}
-    page_run._check_adopted_perlectio({"payload": dict(expected)}, expected, "act_1")
-    with pytest.raises(ContractError, match="retained perlectio .* not adopted"):
-        page_run._check_adopted_perlectio(
-            {"payload": {"page_accounting_ref": {"relative_path": "b"}}}, expected, "act_1"
-        )
+    expected = {"page_accounting_ref": {"relative_path": "a"}, "text": "Marie Roy"}
+    sealed = {**expected, "dissent": []}
+    page_run._check_adopted_perlectio({"payload": sealed}, expected, "act_1")
+    for changed in (
+        {"page_accounting_ref": {"relative_path": "b"}},
+        {"text": "Marie Roi"},
+        {"added": True},
+    ):
+        with pytest.raises(ContractError, match="retained perlectio .* not adopted"):
+            page_run._check_adopted_perlectio({"payload": {**sealed, **changed}}, expected, "act_1")
 
 
 def test_the_page_deadline_refusal_speaks_in_pages(live_tree, tmp_path, monkeypatch):

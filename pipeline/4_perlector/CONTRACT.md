@@ -388,7 +388,7 @@ declaration.
 [{chair, compared: "unknown", reason}, ...]              -- format not yet comparable
 ```
 
-Computed strictly after the reading is fixed (`dissent.py`), over a
+Computed strictly after the reading is fixed (`common/dissent.py`), over a
 Unicode-NFC-normalized, whitespace-collapsed comparison view of both sides —
 NFC first, so a precomposed accented character and the same character spelled
 as a base letter plus a combining mark compare equal, which matters for

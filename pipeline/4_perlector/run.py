@@ -43,7 +43,6 @@ import page_run  # noqa: E402
 import prompts  # noqa: E402
 import protocol  # noqa: E402
 import regime  # noqa: E402
-from dissent import departures, dissent_against, validate_dissent  # noqa: E402
 from live_reader import EngineSignalRefusal, VLLMReader  # noqa: E402
 from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 from throughput import PLANNED_SECONDS_PER_CALL  # noqa: E402
@@ -111,6 +110,7 @@ from common.decoding import (  # noqa: E402
     perlector_page_max_tokens,
     refuse_retired_call_record,
 )
+from common.dissent import departures, dissent_against, validate_dissent  # noqa: E402
 from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_lineage  # noqa: E402
 from common.image_sniff import PNG_SIGNATURE  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
@@ -1071,7 +1071,7 @@ def _current_testimonium_for(
         raise SchemaRefusal(
             f"act {act_id} attachment changes page-witness scope for chair {chair!r}"
         )
-    # `dissent.py` trusts the Testimonium's own `page_witness` flag and skips the
+    # `common/dissent.py` trusts the Testimonium's own `page_witness` flag and skips the
     # comparison for it, so a resealed flag could silence an act-scoped chair's
     # dissent row. Reconcile this copy against the run's declaration too.
     if chair_testimonium["payload"].get("page_witness", False) is not expected_page_witness:

@@ -42,12 +42,10 @@ are in CONTRACT.md, "Page reading".
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Callable, Final
 
-from dissent import dissent_against
 from live_reader import EngineSignalRefusal, send_page_request
 from throughput import planned_seconds_per_page
 
@@ -59,7 +57,6 @@ from common import (
     page_path,
     page_prompt,
 )
-from common.alignment import bracket_marker_view
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.envelope import read_verified
@@ -86,7 +83,6 @@ from common.page_path import (
     PAGE_READING_SCHEMA,
     PARSED,
     PERLECTIO_KIND,
-    PERLECTIO_SCHEMA,
     READ,
     READING_UNIT,
     REFUSED_CAPACITY,
@@ -577,80 +573,22 @@ def _check_adopted(state: _PagePass, page: _Page, record: dict[str, Any]) -> Non
 # --- the answer's entries -----------------------------------------------------------
 
 
-def _comparison_text(text: str, capabilities: Any) -> str:
-    """A witness's text as dissent compares it: its own doubt markers removed when it has any.
-
-    A witness whose declared format can express uncertainty writes its doubt
-    inline (DAI's `[UNCERTAIN]`, `[CROSSED_OUT]`); those characters are the
-    witness's doubt, not a reading the Perlector departed from.
-    """
-    if isinstance(capabilities, Mapping) and capabilities.get("can_express_uncertainty") is True:
-        return bracket_marker_view(text)["text"]
-    return text
-
-
-def _dissent(
-    text: str, feed: dict[str, Any], cited_ids: list[str], witnesses: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Where the entry's reading departed from each shown witness's cited units."""
-    capabilities = {
-        witness["witness_label"]: witness["testimonium"]["payload"].get("format_capabilities")
-        for witness in witnesses
-    }
-    cited = set(cited_ids)
-    rows = []
-    for witness in feed["witnesses"]:
-        head = {"letter": witness["letter"], "witness_label": witness["witness_label"]}
-        if witness["outcome"] != page_feed.READ_OUTCOME:
-            rows.append(
-                {
-                    **head,
-                    "cited_units": [],
-                    "compared": False,
-                    "reason": f"this witness's page outcome is {witness['outcome']}; it has no "
-                    "units",
-                }
-            )
-            continue
-        units = [unit for unit in witness["units"] if unit["id"] in cited]
-        if not units:
-            rows.append(
-                {
-                    **head,
-                    "cited_units": [],
-                    "compared": False,
-                    "reason": "no unit of this witness is cited by this entry",
-                }
-            )
-            continue
-        reported = _comparison_text(
-            "\n".join(unit["text"] for unit in units), capabilities[witness["witness_label"]]
-        )
-        compared = dissent_against(
-            text,
-            [
-                {
-                    "outcome": page_feed.READ_OUTCOME,
-                    "payload": {"chair": witness["letter"], "comparison_reported": reported},
-                }
-            ],
-        )
-        if len(compared) != 1:
-            raise ContractError(f"dissent gave {len(compared)} rows for one witness, not one")
-        row = dict(compared[0])
-        row.pop("chair")
-        rows.append({**head, "cited_units": [unit["id"] for unit in units], **row})
-    return rows
-
-
 def _check_adopted_perlectio(record: dict[str, Any], expected: dict[str, Any], act_id: str) -> None:
+    """Refuse a retained Perlectio other than the one this entry and its page records give.
+
+    Every field but its dissent must be `page_path.expected_perlectio`'s; the
+    dissent is adopted as sealed, since its alignments ran under a clock.
+    """
     payload = record["payload"]
-    if not isinstance(payload, dict) or any(
-        payload.get(name) != value for name, value in expected.items()
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != set(expected) | {"dissent"}
+        or any(payload[name] != value for name, value in expected.items())
     ):
         raise ContractError(
-            f"act {act_id}'s retained perlectio names another region, reading, feed or "
-            "accounting than this page has now; it is not adopted. Read this page in a new run"
+            f"act {act_id}'s retained perlectio names another region, reading, feed, "
+            "accounting or entry than this page has now; it is not adopted. Read this page in "
+            "a new run"
         )
 
 
@@ -665,8 +603,9 @@ def publish_act_records(
 
     Every record carries `page_accounting_ref` and the page's hold codes as
     `page_holds`, and is held when those or its own holds are non-empty. A
-    `perlectio` already sealed for the entry is adopted, not recomputed: its
-    dissent is bounded by time, so a second computation could differ.
+    `perlectio` already sealed for the entry is adopted when every field but
+    its dissent is the expected one: its dissent is bounded by time, so a
+    second computation could differ.
     """
     if not plans:
         return
@@ -738,44 +677,32 @@ def publish_act_records(
             "page_accounting_ref": accounting_ref,
             "feed_ref": page.feed_ref,
         }
+        expected = page_path.expected_perlectio(
+            page_id=page.page_id,
+            ordinal=page.ordinal,
+            plan=plan,
+            refs=refs,
+            page_holds=page_holds,
+            reading=payload,
+        )
         perlectio_attempt = page_path.perlectio_attempt(act_id)
         adopted = _sealed(context, PERLECTIO_KIND, act_id, perlectio_attempt)
         if adopted is not None:
-            _check_adopted_perlectio(adopted, refs, act_id)
+            _check_adopted_perlectio(adopted, expected, act_id)
             continue
-        reading_holds = list(plan["reading_holds"])
-        outcome = HELD if reading_holds or page_holds else READ
-        assessment = plan["assessment"]
         context.publish(
             kind=PERLECTIO_KIND,
             subject_id=act_id,
-            outcome=outcome,
+            outcome=HELD if plan["reading_holds"] or page_holds else READ,
             attempt=perlectio_attempt,
             inputs=page_path.distinct_refs(
                 [region_ref, reading_ref, accounting_ref, page.feed_ref, *engine_inputs]
             ),
             payload={
-                "schema": PERLECTIO_SCHEMA,
-                "page_id": page.page_id,
-                "page_ordinal": page.ordinal,
-                "reading_unit": READING_UNIT,
-                **refs,
-                "n": act["n"],
-                "kind": act["kind"],
-                "label": act.get("label"),
-                "text": plan["text"],
-                "uncertain_spans": assessment["uncertain_spans"],
-                "gaps": assessment["gaps"],
-                "uncertainty_assessment": assessment,
-                "dissent": _dissent(plan["text"], page.feed, plan["cited_ids"], page.witnesses),
-                "truncation": plan["truncation"],
-                "autopsia": plan["autopsia"],
-                "continues_from_previous_page": act["continues_from_previous_page"],
-                "continues_to_next_page": act["continues_to_next_page"],
-                "holds": reading_holds,
-                "page_holds": list(page_holds),
-                "engine_call": payload["engine_call"],
-                "provenance": payload["provenance"],
+                **expected,
+                "dissent": page_path.page_dissent(
+                    plan["text"], page.feed, plan["cited_ids"], page.witnesses
+                ),
             },
         )
 

@@ -4365,7 +4365,7 @@ def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_v
 ):
     """Capability handling stays live without blinding the reference instrument.
 
-    `pipeline/4_perlector/dissent.py::is_comparable` refuses to diff a witness
+    `common/dissent.py::is_comparable` refuses to diff a witness
     whose format can express uncertainty, because such a format may embed
     alternative-reading markup inline and diffing the markup would count as
     disagreement. It cannot touch the reading — dissent is read-only and computed

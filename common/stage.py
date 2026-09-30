@@ -2746,7 +2746,9 @@ def _verify_page_reading(
             f"{what} has no act entry to count, yet the Perlector published act records for it",
         )
         return row, [_page_row(context, ordinal, page_id, payload, codes, page_holds, refs)]
-    acts = _verify_entries(context, index, ordinal, page_id, payload, plans, refs, page_holds)
+    acts = _verify_entries(
+        context, index, ordinal, page_id, payload, plans, refs, page_holds, feed, witnesses
+    )
     return row, acts
 
 
@@ -3063,6 +3065,8 @@ def _verify_entries(
     plans: list[dict[str, Any]],
     refs: dict[str, dict[str, str]],
     page_holds: list[str],
+    feed: Mapping[str, Any],
+    witnesses: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Each entry of a read answer, proven against its act-region and its Perlectio."""
     what = f"page {ordinal} ({page_id})"
@@ -3141,33 +3145,25 @@ def _verify_entries(
             page_path.perlectio_attempt(act_id),
         )
         perlectio_payload = _payload_of(perlectio)
-        assessment = plan["assessment"]
         reading_holds = plan["reading_holds"]
-        expected_perlectio = {
-            "schema": page_path.PERLECTIO_SCHEMA,
-            "page_id": page_id,
-            "page_ordinal": ordinal,
-            "reading_unit": READING_UNIT_PAGE,
-            "act_region_ref": region_ref,
-            "page_reading_ref": refs["reading_ref"],
-            "page_accounting_ref": refs["accounting_ref"],
-            "feed_ref": feed_ref,
-            "n": n,
-            "kind": act["kind"],
-            "label": act.get("label"),
-            "text": plan["text"],
-            "uncertain_spans": assessment["uncertain_spans"],
-            "gaps": assessment["gaps"],
-            "uncertainty_assessment": assessment,
-            "truncation": plan["truncation"],
-            "autopsia": plan["autopsia"],
-            "continues_from_previous_page": act["continues_from_previous_page"],
-            "continues_to_next_page": act["continues_to_next_page"],
-            "holds": reading_holds,
-            "page_holds": page_holds,
-            "engine_call": reading.get("engine_call"),
-            "provenance": reading.get("provenance"),
-        }
+        try:
+            expected_perlectio = page_path.expected_perlectio(
+                page_id=page_id,
+                ordinal=ordinal,
+                plan=plan,
+                refs={
+                    "act_region_ref": region_ref,
+                    "page_reading_ref": refs["reading_ref"],
+                    "page_accounting_ref": refs["accounting_ref"],
+                    "feed_ref": feed_ref,
+                },
+                page_holds=page_holds,
+                reading=reading,
+            )
+        except KeyError as error:
+            raise FatalAccounting(
+                f"{entry_what} page reading carries no {error} for its Perlectio to repeat"
+            ) from error
         mismatched = sorted(
             name
             for name, value in expected_perlectio.items()
@@ -3186,6 +3182,21 @@ def _verify_entries(
             perlectio.get("outcome")
             == (page_path.HELD if reading_holds or page_holds else page_path.READ),
             f"{entry_what} Perlectio's outcome does not follow its holds",
+        )
+        try:
+            dissent_holds = page_path.dissent_holds(
+                perlectio_payload.get("dissent"),
+                plan["text"],
+                feed,
+                plan["cited_ids"],
+                witnesses,
+            )
+        except ContractError as error:
+            raise FatalAccounting(f"{entry_what} dissent cannot be computed: {error}") from error
+        _require(
+            dissent_holds,
+            f"{entry_what} Perlectio's dissent is not where its reading departs from the "
+            "witness units it cites",
         )
         hold_codes = sorted(set(reading_holds) | set(page_holds) | no_act)
         rows.append(

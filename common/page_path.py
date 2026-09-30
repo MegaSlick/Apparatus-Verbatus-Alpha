@@ -28,8 +28,9 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Any, Final
 
-from common import page_accounting, page_answer, page_render, truncation
+from common import dissent, page_accounting, page_answer, page_render, truncation
 from common import reading_annotations as annotations
+from common.alignment import bracket_marker_view
 from common.background import validate_measured_ink_map_payload
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import is_plain_int
@@ -39,7 +40,7 @@ from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import attempt_id, perlector_attempt_id
 from common.contracts.serving import reading_stop_reason
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP
-from common.page_witness_units import DAI, WITNESS_LETTERS, witness_reading
+from common.page_witness_units import DAI, READ_OUTCOME, WITNESS_LETTERS, witness_reading
 from common.residual_ink import (
     INK_NOT_MEASURABLE,
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
@@ -579,6 +580,161 @@ def feed_inputs(
                 f"the page feed names {reference!r}, but the bytes at that path differ"
             )
     return references
+
+
+# --- the Perlectio -------------------------------------------------------------------
+
+
+def _comparison_text(text: str, capabilities: Any) -> str:
+    """A witness's text as dissent compares it: its own doubt markers removed when it has any.
+
+    A witness whose declared format can express uncertainty writes its doubt
+    inline (DAI's `[UNCERTAIN]`, `[CROSSED_OUT]`); those characters are the
+    witness's doubt, not a reading the Perlector departed from.
+    """
+    if isinstance(capabilities, Mapping) and capabilities.get("can_express_uncertainty") is True:
+        return bracket_marker_view(text)["text"]
+    return text
+
+
+def _dissent_rows(
+    text: str,
+    feed: Mapping[str, Any],
+    cited_ids: list[str],
+    witnesses: list[dict[str, Any]],
+    seconds: int | None,
+) -> list[tuple[dict[str, Any], str | None]]:
+    """Each shown witness's dissent row, with the text it was compared against (or `None`)."""
+    capabilities = {
+        witness["witness_label"]: witness["testimonium"]["payload"].get("format_capabilities")
+        for witness in witnesses
+    }
+    cited = set(cited_ids)
+    rows = []
+    for witness in feed["witnesses"]:
+        head = {"letter": witness["letter"], "witness_label": witness["witness_label"]}
+        if witness["outcome"] != READ_OUTCOME:
+            reason = f"this witness's page outcome is {witness['outcome']}; it has no units"
+            rows.append(({**head, "cited_units": [], "compared": False, "reason": reason}, None))
+            continue
+        units = [unit for unit in witness["units"] if unit["id"] in cited]
+        if not units:
+            reason = "no unit of this witness is cited by this entry"
+            rows.append(({**head, "cited_units": [], "compared": False, "reason": reason}, None))
+            continue
+        reported = _comparison_text(
+            "\n".join(unit["text"] for unit in units), capabilities[witness["witness_label"]]
+        )
+        compared = dissent.dissent_against(
+            text,
+            [
+                {
+                    "outcome": READ_OUTCOME,
+                    "payload": {"chair": witness["letter"], "comparison_reported": reported},
+                }
+            ],
+            seconds=seconds,
+        )
+        if len(compared) != 1:
+            raise ContractError(f"dissent gave {len(compared)} rows for one witness, not one")
+        row = dict(compared[0])
+        row.pop("chair")
+        rows.append(({**head, "cited_units": [unit["id"] for unit in units], **row}, reported))
+    return rows
+
+
+def page_dissent(
+    text: str, feed: Mapping[str, Any], cited_ids: list[str], witnesses: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Where an entry's reading departed from each shown witness's cited units.
+
+    Each alignment runs under `dissent.MAX_COMPARISON_SECONDS`; one that does
+    not finish is recorded as not compared (`dissent.unaligned_row`).
+    """
+    return [
+        row
+        for row, _reported in _dissent_rows(
+            text, feed, cited_ids, witnesses, dissent.MAX_COMPARISON_SECONDS
+        )
+    ]
+
+
+def dissent_holds(
+    rows: Any,
+    text: str,
+    feed: Mapping[str, Any],
+    cited_ids: list[str],
+    witnesses: list[dict[str, Any]],
+) -> bool:
+    """Whether a sealed Perlectio's dissent is the one its entry and feed give.
+
+    Every row is computed again with every alignment run to its end, so the
+    check does not depend on how fast this machine is. A sealed row may
+    instead be the not-compared row of an alignment that ran out of time where
+    it was sealed: that row claims no comparison, only that none was made.
+    """
+    if not isinstance(rows, list):
+        return False
+    expected = _dissent_rows(text, feed, cited_ids, witnesses, None)
+    if len(rows) != len(expected):
+        return False
+    for sealed, (row, reported) in zip(rows, expected, strict=True):
+        if sealed == row:
+            continue
+        if row["compared"] is not True or reported is None:
+            return False
+        head = {name: row[name] for name in ("letter", "witness_label", "cited_units")}
+        unaligned = dissent.unaligned_row(row["letter"], text, reported)
+        unaligned.pop("chair")
+        if sealed != {**head, **unaligned}:
+            return False
+    return True
+
+
+def expected_perlectio(
+    *,
+    page_id: str,
+    ordinal: int,
+    plan: Mapping[str, Any],
+    refs: Mapping[str, dict[str, str]],
+    page_holds: list[str],
+    reading: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Every field of an entry's `perlectio.v2` but its dissent, from its plan and page records.
+
+    `refs` names the entry's `act_region_ref` and the page's
+    `page_reading_ref`, `page_accounting_ref` and `feed_ref`; `reading` is the
+    `page-reading` payload, whose `engine_call` and `provenance` the Perlectio
+    repeats. Stage 4 publishes this with the entry's `page_dissent`, adopts a
+    sealed Perlectio only when it holds exactly these fields, and the
+    page-read denominator requires them of every Perlectio it counts.
+    """
+    act, assessment = plan["act"], plan["assessment"]
+    return {
+        "schema": PERLECTIO_SCHEMA,
+        "page_id": page_id,
+        "page_ordinal": ordinal,
+        "reading_unit": READING_UNIT,
+        "act_region_ref": refs["act_region_ref"],
+        "page_reading_ref": refs["page_reading_ref"],
+        "page_accounting_ref": refs["page_accounting_ref"],
+        "feed_ref": refs["feed_ref"],
+        "n": act["n"],
+        "kind": act["kind"],
+        "label": act.get("label"),
+        "text": plan["text"],
+        "uncertain_spans": assessment["uncertain_spans"],
+        "gaps": assessment["gaps"],
+        "uncertainty_assessment": assessment,
+        "truncation": plan["truncation"],
+        "autopsia": plan["autopsia"],
+        "continues_from_previous_page": act["continues_from_previous_page"],
+        "continues_to_next_page": act["continues_to_next_page"],
+        "holds": list(plan["reading_holds"]),
+        "page_holds": list(page_holds),
+        "engine_call": reading["engine_call"],
+        "provenance": reading["provenance"],
+    }
 
 
 # --- the page accounting's inputs -----------------------------------------------
