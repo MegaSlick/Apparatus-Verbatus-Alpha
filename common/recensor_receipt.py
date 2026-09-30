@@ -14,7 +14,8 @@ order), every sealed page has at least one unit and every unit's page is one of
 them, and each item carries the unit's page disposition instead of a Designator
 outcome. A unit its page reading held is
 completed at the Recensor only with the reason its review released it
-(`release_reason`), and a receipt holding any held unit is never `complete`.
+(`release_reason`); so released, it is resolved. A held unit with no completed
+review keeps the receipt `partial`.
 """
 
 from __future__ import annotations
@@ -522,12 +523,12 @@ def _reasons(
     reasons: list[str] = []
     for item in items:
         act_id = item["act_id"]
-        if page_read and item["page_disposition"] == "held":
-            released = item["release_reason"]
-            reasons.append(
-                f"act {act_id} was held by its page reading"
-                + (f" and released at review: {released}" if released else "")
-            )
+        if (
+            page_read
+            and item["page_disposition"] == "held"
+            and item["partition_class"] != OutcomeClass.COMPLETED.value
+        ):
+            reasons.append(f"act {act_id} was held by its page reading and is not released")
         if item["partition_class"] != OutcomeClass.COMPLETED.value:
             reasons.append(f"act {act_id} is {item['partition_class']} at the Recensor")
         coverage = item["coverage"]

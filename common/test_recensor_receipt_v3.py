@@ -87,18 +87,20 @@ def test_a_v3_receipt_judges_the_witness_floor_on_page_reads():
     assert receipt["reasons"] == ["act act_a is under-witnessed (2 page reads of a floor of 3)"]
 
 
-def test_a_held_unit_keeps_the_receipt_partial_even_when_its_review_released_it():
+def test_a_held_unit_its_review_released_is_resolved_and_the_receipt_can_be_complete():
     released = _item(
         "act_a", "p2:blank", disposition="held", outcome="confirmed-blank", release="blank paper"
     )
     receipt = _receipt([_item("act_b", "p1:1"), released])
-    assert receipt["recensor_status"] == "partial"
-    assert receipt["reasons"] == [
-        "act act_a was held by its page reading and released at review: blank paper"
-    ]
+    assert receipt["recensor_status"] == "complete"
+    assert receipt["reasons"] == []
+
+
+def test_a_held_unit_with_no_completed_review_keeps_the_receipt_partial():
     held = _item("act_c", "p2:1", disposition="held", outcome="held-for-review")
-    reasons = _receipt([_item("act_b", "p1:1"), held])["reasons"]
-    assert reasons[0] == "act act_c was held by its page reading"
+    receipt = _receipt([_item("act_b", "p1:1"), held])
+    assert receipt["recensor_status"] == "partial"
+    assert receipt["reasons"][0] == "act act_c was held by its page reading and is not released"
 
 
 @pytest.mark.parametrize(

@@ -87,6 +87,12 @@ the classes that are), proven from its one `not-run` reading (attempt
 `page-read:1`, problem `page-not-sealed`, the Exemplar's refused page its only
 input), with no accounting or act record naming the page.
 
+The Recensor's v3 receipt (`recensor_receipt.py`) counts these units. A held
+unit whose review is completed with a named `release_reason` is resolved and
+adds no reason; a held unit with no completed review keeps the receipt
+`partial`. A run whose genuinely blank page the Recensor confirmed can
+therefore be `complete`.
+
 Nothing is trusted from the records it recomputes; each is recomputed with
 stage 4's own derivations (`page_path.py`), so the writer and the counter
 cannot read a page two ways:
