@@ -609,21 +609,7 @@ def edge_ink_from_runs(
     retained runs; only the coverage mask may change. `coverage_policy` must be
     resolved for this page's own dimensions.
     """
-    if not isinstance(evidence, dict) or evidence.get("schema") != INK_RUNS_SCHEMA:
-        raise ValueError("ink-run evidence has the wrong schema")
-    if set(evidence) != {"schema", "width", "height", "rows"}:
-        raise ValueError("ink-run evidence is not a closed record")
-    width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
-    if (
-        not is_plain_int(width)
-        or width <= 0
-        or not is_plain_int(height)
-        or height <= 0
-        or not isinstance(rows, list)
-        or len(rows) != height
-    ):
-        raise ValueError("ink-run evidence has invalid dimensions")
-
+    width, height, rows = _validated_evidence(evidence)
     band = _edge_band(width, height, coverage_policy)
     total_ink = 0
     outside_ink = 0
@@ -654,6 +640,53 @@ def edge_ink_from_runs(
         "substantial_ink_pixels": coverage_policy["substantial_ink_pixels"],
         "named_finding": "unclaimed-edge-ink",
     }
+
+
+def residual_ink_from_runs(
+    evidence: dict[str, Any], covered: list[Bounds], *, coverage_policy: CoverageAuditPolicy
+) -> dict[str, Any]:
+    """`residual_ink`'s counts and gate over retained ink runs instead of pixels.
+
+    The runs are the Ink Map's audited ink, already without the page-spanning
+    component, so `total_ink_pixels` and `outside_ink_pixels` answer the same
+    question `residual_ink` answers from the page bytes. `coverage_policy` must be
+    resolved for this page's own dimensions.
+    """
+    width, _height, rows = _validated_evidence(evidence)
+    total_ink = 0
+    outside_ink = 0
+    for y, row in enumerate(rows):
+        runs = _validated_runs(row, width)
+        merged_coverage = _row_coverage(covered, y, width)
+        for run_start, run_end in runs:
+            total_ink += run_end - run_start
+            outside_ink += _uncovered_length(run_start, run_end, merged_coverage)
+    fraction_outside, flagged = _policy_flag(total_ink, outside_ink, coverage_policy)
+    return {
+        "total_ink_pixels": total_ink,
+        "outside_ink_pixels": outside_ink,
+        "fraction_outside": fraction_outside,
+        "flagged": flagged,
+        "substantial_ink_pixels": coverage_policy["substantial_ink_pixels"],
+    }
+
+
+def _validated_evidence(evidence: Any) -> tuple[int, int, list[Any]]:
+    if not isinstance(evidence, dict) or evidence.get("schema") != INK_RUNS_SCHEMA:
+        raise ValueError("ink-run evidence has the wrong schema")
+    if set(evidence) != {"schema", "width", "height", "rows"}:
+        raise ValueError("ink-run evidence is not a closed record")
+    width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
+    if (
+        not is_plain_int(width)
+        or width <= 0
+        or not is_plain_int(height)
+        or height <= 0
+        or not isinstance(rows, list)
+        or len(rows) != height
+    ):
+        raise ValueError("ink-run evidence has invalid dimensions")
+    return width, height, rows
 
 
 def _validated_runs(row: Any, width: int) -> list[tuple[int, int]]:
