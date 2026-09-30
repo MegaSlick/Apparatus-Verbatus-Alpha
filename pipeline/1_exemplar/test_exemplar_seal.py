@@ -101,7 +101,6 @@ def real_sealed_bindings() -> dict:
     """
     from common.chairs.registry import ChairRegistry
     from common.stage import real_run_bindings, stage_parser
-    from operations.submit import gate
 
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
     args = stage_parser("real bindings").parse_args(
@@ -247,7 +246,6 @@ def build_refused_real_door_run(
 
 def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineage(tmp_path):
     """Every split part must seal independently while retaining one shared master."""
-    from common.exemplar_boundary import verify_sealed_page_pixels
 
     output = BytesIO()
     image = Image.new("RGB", (10, 4), (255, 0, 0))
@@ -1129,7 +1127,6 @@ def test_the_merged_page_verifies_at_the_pixel_boundary_for_each_row_it_cites(tm
     must cover the page's complete submitted-row set rather than assume exactly
     one Door admission.
     """
-    from common.exemplar_boundary import verify_sealed_page_pixels
 
     data = png(4, 3)
     tree, _ = build_door_run(tmp_path / "runs", files={"dup-a.png": data, "dup-b.png": data})

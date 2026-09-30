@@ -645,9 +645,8 @@ def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp
     nothing here allows. The file beside it must be unaffected: per-file, never
     per-folder.
     """
-    import struct as _struct
 
-    corrupt_tiff = b"II*\x00" + _struct.pack("<I", 0) + b"\x00" * 4
+    corrupt_tiff = b"II*\x00" + struct.pack("<I", 0) + b"\x00" * 4
     files = {"corrupt-no-ifd.tif": corrupt_tiff, "good.png": png(4, 3)}
     sources = expand_sources(
         [
@@ -1144,8 +1143,6 @@ def test_expansion_ordinals_are_stable_by_filename_and_page_index():
 
 def test_triage_producer_recipe_is_the_third_bound_document_path(tmp_path):
     """Validated recipe bytes supply the digest that the Door later binds."""
-    from operations.triage.instrument import load_config, producer_recipe
-
     data = png(4, 3)
     source_digest = digest_bytes(data)
     row = door.triage_manifest.make_row(
@@ -1180,7 +1177,7 @@ def test_triage_producer_recipe_is_the_third_bound_document_path(tmp_path):
         ),
         encoding="utf-8",
     )
-    recipe_path.write_text(json.dumps(producer_recipe(load_config())), encoding="utf-8")
+    recipe_path.write_text(json.dumps(producer_recipe(instrument_config())), encoding="utf-8")
 
     rows, clusters, digests = door.load_triage_decisions(
         manifest_path, producer_recipe_path=recipe_path

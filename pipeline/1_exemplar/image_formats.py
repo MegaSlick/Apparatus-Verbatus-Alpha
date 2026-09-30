@@ -348,7 +348,7 @@ _JPEG_ARITHMETIC_MARKERS: Final = frozenset({0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
 _JPEG_LOSSLESS_MARKERS: Final = frozenset({0xC3, 0xC7, 0xCB, 0xCF})
 
 
-def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> ImageGeometry:
+def validate_jpeg(data: bytes) -> ImageGeometry:
     """Walk marker segments to an EOI, reading geometry off SOF.
 
     Proven: SOI framing an EOI marker somewhere in the file; every marker segment's declared
@@ -366,10 +366,6 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
 
     Trailing bytes after EOI are retained: some scanners append metadata or padding,
     and the EOI still closes the image.
-
-    `expected_components` lets a caller that already knows the container's own
-    component count cross-check it; the current PDF renderer never extracts
-    embedded JPEG streams, so no caller passes it today.
     """
     if not data.startswith(JPEG_SIGNATURE):
         raise corrupt("JPEG: missing SOI")
@@ -426,11 +422,6 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
                 )
             if len(payload) != 6 + 3 * components:
                 raise corrupt("JPEG: SOF component count disagrees with its length")
-            if expected_components is not None and components != expected_components:
-                raise corrupt(
-                    f"JPEG: the frame declares {components} component(s), but the "
-                    f"container around it declares {expected_components}"
-                )
             geometry = _geometry("jpeg", width, height)
             progressive = marker in _JPEG_PROGRESSIVE_MARKERS
             arithmetic = marker in _JPEG_ARITHMETIC_MARKERS

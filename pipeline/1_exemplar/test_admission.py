@@ -113,18 +113,14 @@ def test_the_decoder_routes_cover_exactly_the_formats_the_door_can_detect():
             assert classify_detected_format(detected, POLICY) == POLICY[name]
 
 
-def test_a_reader_route_does_not_require_a_bespoke_structural_walker():
-    """A reader gap is an alarm at byte admission, never a load-time format ban.
-
-    Every sniffable raster format loads without this module owning a hand-written
-    validator for it: HEIC and WebP have no bespoke structural walker here and are
-    still routed to a decoder attempt rather than banned when the routing is read.
-    """
-    loaded = load_format_policy()
-    assert loaded["pdf"] == RENDER_PAGES
-    assert {name: action for name, action in loaded.items() if name != "pdf"} == {
-        name: ADMIT_OR_FAN_OUT for name in sorted(SNIFFABLE_FORMATS - {"pdf"})
-    }
+@pytest.mark.parametrize(("encoder", "sniffed"), [("WEBP", "webp"), ("HEIF", "heic")])
+def test_a_reader_route_does_not_require_a_bespoke_structural_walker(encoder, sniffed):
+    """HEIC and WebP have no hand-written structural walker here, and an
+    encoder-made file of each still admits through the installed decoder."""
+    data = _synthetic_decoder_image(encoder)
+    assert image_formats.sniff(data) == sniffed
+    assert sniffed not in image_formats.VALIDATORS
+    assert inspect_source(data, declared_sha256=None, policy=POLICY).outcome == "admitted"
 
 
 def test_an_unknown_magic_or_handbuilt_missing_route_gets_a_generic_raster_attempt():

@@ -409,16 +409,15 @@ def test_invalid_page_indexes_are_named_alarms(page_index):
 
 
 def test_counting_a_page_does_not_rasterise_it(monkeypatch):
-    renders = 0
+    """Counting opens the document only; PDFium never loads or renders a page."""
 
-    def unexpected_render(*args, **kwargs):
-        nonlocal renders
-        renders += 1
-        raise AssertionError("page counting reached the rasteriser")
+    def unexpected_page(*args, **kwargs):
+        raise AssertionError("page counting reached a PDFium page")
 
-    monkeypatch.setattr(pdf_render, "render_page", unexpected_render)
+    monkeypatch.setattr(pdf_render.pdfium.PdfDocument, "__getitem__", unexpected_page)
+    monkeypatch.setattr(pdf_render.pdfium.PdfDocument, "get_page", unexpected_page)
+    monkeypatch.setattr(pdf_render.pdfium.PdfPage, "render", unexpected_page)
     assert count_pages(single_gray_page_pdf()) == 1
-    assert renders == 0
 
 
 # --- A locked document is not a damaged one -------------------------------------

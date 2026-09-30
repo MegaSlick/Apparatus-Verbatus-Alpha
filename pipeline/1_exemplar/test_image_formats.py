@@ -362,15 +362,6 @@ def test_validate_jpeg_refuses_a_dht_segment_that_runs_past_its_own_length():
         )
 
 
-def test_the_container_around_an_embedded_jpeg_can_pin_its_component_count():
-    """What the PDF renderer needs to stop guessing: a page declaring one colour
-    space and embedding a JPEG with a different number of components is not the
-    image its own dictionary describes."""
-    assert validate_jpeg(jpeg(components=3), expected_components=3).width == 5
-    with pytest.raises(FormatRefusal, match="the container around it declares 1"):
-        validate_jpeg(jpeg(components=4), expected_components=1)
-
-
 # --- TIFF ------------------------------------------------------------------------
 
 
@@ -492,7 +483,7 @@ def test_a_cyclic_ifd_chain_is_still_a_named_decoder_failure():
     first = tiff()
     data = bytearray(first)
     struct.pack_into("<I", data, tiff_next_ifd_offset(first), 8)
-    with pytest.raises(FormatRefusal):
+    with pytest.raises(FormatRefusal, match="image-directory chain contains a cycle"):
         count_raster_pages(bytes(data))
 
 
@@ -889,7 +880,6 @@ def test_a_classic_tiff_past_the_retired_5000_page_cap_keeps_its_denominator():
         data.extend(b"\x00" * (stride - 6))
 
     assert count_raster_pages(bytes(data)) == pages
-    assert pages > 5_000
     assert len(data) / pages > MIN_BYTES_PER_DECLARED_TIFF_PAGE
 
 
