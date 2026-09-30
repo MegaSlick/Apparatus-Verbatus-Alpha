@@ -512,6 +512,54 @@ CHURRO_PAGE_RESPONSES = tuple(
 )
 
 
+# What Surya's two detectors report on the synthetic pages, for a run that
+# configures the Surya chair against a fixture row: a text line over every
+# 20-row band of each act's ink, and one `Text` layout block per act, in reading
+# order down the page. Page 3 carries no ink, so Surya reports nothing there.
+# Corners are whole pixels, because the sealed fixture carries no floats; the
+# right and bottom corners sit on the act's far edge, as Surya's do.
+SURYA_LINE_BAND_PX = 20
+
+
+def _surya_polygon(x0: int, y0: int, x1: int, y1: int) -> list[list[int]]:
+    return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+
+
+SURYA_LINES = tuple(
+    {
+        "page_ordinal": page["ordinal"],
+        "polygon": _surya_polygon(
+            act["bounds"]["x"],
+            act["bounds"]["y"] + band,
+            act["bounds"]["x"] + act["bounds"]["w"],
+            act["bounds"]["y"] + min(band + SURYA_LINE_BAND_PX, act["bounds"]["h"]),
+        ),
+        "confidence_bp": 9000 + 100 * act["ordinal"] + band // SURYA_LINE_BAND_PX,
+    }
+    for page in ALL_PAGES
+    for act in page["acts"]
+    for band in range(0, act["bounds"]["h"], SURYA_LINE_BAND_PX)
+)
+SURYA_BLOCKS = tuple(
+    {
+        "page_ordinal": page["ordinal"],
+        "polygon": _surya_polygon(
+            act["bounds"]["x"],
+            act["bounds"]["y"],
+            act["bounds"]["x"] + act["bounds"]["w"],
+            act["bounds"]["y"] + act["bounds"]["h"],
+        ),
+        "label": "Text",
+        "raw_label": "Text",
+        "position": position,
+        "confidence_bp": 9500 - position,
+        "count": 0,
+    }
+    for page in ALL_PAGES
+    for position, act in enumerate(sorted(page["acts"], key=lambda act: act["bounds"]["y"]))
+)
+
+
 def page_descriptor(ordinal):
     for page in ALL_PAGES:
         if page["ordinal"] == ordinal:
@@ -683,6 +731,14 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
                 continue
             value = observation[key]
             lines.append(f"{key} = {toml_string(value) if isinstance(value, str) else value}")
+
+    for row in SURYA_LINES:
+        lines += ["", "[[surya_line]]"]
+        lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
+
+    for row in SURYA_BLOCKS:
+        lines += ["", "[[surya_block]]"]
+        lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
 
     for prior in PRIOR_READINGS:
         lines += [
