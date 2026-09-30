@@ -102,8 +102,8 @@ def export_rows(
     return sorted(rows, key=lambda row: (row["unit"], row["act_keys"]))
 
 
-def maker_line(maker: Mapping[str, Any]) -> str:
-    """Who made a reconstruction, in one line."""
+def maker_text(maker: Mapping[str, Any]) -> str:
+    """Who made a reconstruction, in words."""
     if maker["kind"] == MAKER_PERSON:
         return "a person"
     identity = maker.get("resolved_identity") or {}
@@ -112,27 +112,30 @@ def maker_line(maker: Mapping[str, Any]) -> str:
     return f"model, chair {maker['chair']} ({name}@{revision})"
 
 
-def _flag_text(flag: Mapping[str, Any]) -> str:
-    reason = flag.get("reason")
-    return flag["code"] + (f" ({reason})" if reason else "")
+def _json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 def reconstruction_lines(row: Mapping[str, Any]) -> list[str]:
-    """The lines a text bundle shows for one reconstruction, never a recognised act field."""
+    """The lines a text bundle shows for one reconstruction.
+
+    Every value a model or a person wrote is one JSON line, so none can start a
+    line the act parser reads; the block ends with the whole row, so the text
+    bundle recomputes on its own.
+    """
     lines = [
-        f"reconstruction_label: {row['label']}",
-        f"reconstruction_maker: {maker_line(row['maker'])}",
+        f"reconstruction_label: {LABEL}",
+        "reconstruction_maker:",
+        _json(maker_text(row["maker"])),
     ]
     if row["flags"]:
-        lines.append(
-            "reconstruction_flags: " + "; ".join(_flag_text(flag) for flag in row["flags"])
-        )
+        lines += ["reconstruction_flags:", _json(row["flags"])]
     if row["made"]:
         lines += [
             "reconstruction_text:",
-            json.dumps(row["reconstruction_text"], ensure_ascii=False),
+            _json(row["reconstruction_text"]),
             "reconstruction_departures:",
-            json.dumps(
+            _json(
                 [
                     {
                         key: departure[key]
@@ -140,25 +143,29 @@ def reconstruction_lines(row: Mapping[str, Any]) -> list[str]:
                         if departure.get(key) is not None
                     }
                     for departure in row["departures"]
-                ],
-                ensure_ascii=False,
+                ]
             ),
         ]
     else:
-        reasons = "; ".join(f"{reason['code']}: {reason['detail']}" for reason in row["not_made"])
-        lines.append(f"reconstruction: not made: {reasons}")
-    # The whole row, so the text bundle recomputes on its own when it is the only format.
-    lines += [ROW_LINE, json.dumps(row, ensure_ascii=False, sort_keys=True)]
+        lines += ["reconstruction_not_made:", _json(row["not_made"])]
+    lines += [ROW_LINE, _json(row)]
     return lines
+
+
+def _join_heading(row: Mapping[str, Any]) -> str:
+    return f"{JOIN_SECTION_PREFIX}{' + '.join(row['act_keys'])}{JOIN_SECTION_SUFFIX}"
 
 
 def join_section(row: Mapping[str, Any]) -> list[str]:
     """A join's own text-bundle section, headed as no act is."""
     return [
-        f"{JOIN_SECTION_PREFIX}{' + '.join(row['act_keys'])}{JOIN_SECTION_SUFFIX}",
-        "reconstruction_pieces: "
-        + " + ".join(
-            f"{key} ({act_id})" for key, act_id in zip(row["act_keys"], row["act_ids"], strict=True)
+        _join_heading(row),
+        "reconstruction_pieces:",
+        _json(
+            [
+                {"act_key": key, "act_id": act_id}
+                for key, act_id in zip(row["act_keys"], row["act_ids"], strict=True)
+            ]
         ),
         *reconstruction_lines(row),
         "",
@@ -186,41 +193,88 @@ def _splice(base: str, departures: Sequence[Mapping[str, Any]]) -> str:
     return "".join(pieces)
 
 
-def verify_row(row: Any, literals: Mapping[str, tuple]) -> dict[str, Any]:
-    """One `coniector.jsonl` row, recomputed; `literals` maps each delivered act to its literal."""
+def _is_string_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _objects(value: Any, required: frozenset[str], optional: frozenset[str] = frozenset()) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(item, dict)
+        and required <= set(item) <= required | optional
+        and all(isinstance(item[key], str) for key in required | (set(item) & optional))
+        for item in value
+    )
+
+
+def _require_shape(row: Any) -> dict[str, Any]:
+    """Refuse a row that is not the closed shape, before anything reads a field of it."""
     if not isinstance(row, dict) or set(row) != ROW_FIELDS or row["schema"] != ROW_SCHEMA:
-        raise SchemaRefusal(f"a {CONIECTOR_MEMBER} row is not a {ROW_SCHEMA} row")
+        raise SchemaRefusal(f"a reconstruction row is not a {ROW_SCHEMA} row")
     if row["label"] != LABEL or row["unit"] not in ("act", "join"):
-        raise SchemaRefusal(f"a {CONIECTOR_MEMBER} row is not labelled as a reconstruction")
+        raise SchemaRefusal("a reconstruction row is not labelled as a reconstruction")
     maker = row["maker"]
     if (
         not isinstance(maker, dict)
         or set(maker) != MAKER_FIELDS
-        or maker["kind"]
-        not in (
-            MAKER_MODEL,
-            MAKER_PERSON,
-        )
+        or maker["kind"] not in (MAKER_MODEL, MAKER_PERSON)
+        or not isinstance(maker["chair"], str)
+        or not isinstance(maker["resolved_identity"], (dict, type(None)))
+        or not isinstance(maker["resolved_revision"], (dict, type(None)))
     ):
-        raise SchemaRefusal(f"a {CONIECTOR_MEMBER} row does not say who made it")
-    act_ids, pieces = row["act_ids"], row["diplomatic_raw_pieces"]
+        raise SchemaRefusal("a reconstruction row does not say who made it")
+    act_ids, keys, pieces = row["act_ids"], row["act_keys"], row["diplomatic_raw_pieces"]
     if (
-        not isinstance(act_ids, list)
-        or not isinstance(pieces, list)
-        or len(act_ids) != len(pieces)
-        or (len(act_ids) == 1) != (row["unit"] == "act")
+        not _is_string_list(act_ids)
+        or not _is_string_list(keys)
+        or not _is_string_list(pieces)
         or not act_ids
+        or not len(act_ids) == len(keys) == len(pieces)
+        or (len(act_ids) == 1) != (row["unit"] == "act")
     ):
-        raise SchemaRefusal(f"a {CONIECTOR_MEMBER} row does not name its pieces")
-    for act_id, piece in zip(act_ids, pieces, strict=True):
-        if act_id not in literals or not isinstance(piece, str):
+        raise SchemaRefusal("a reconstruction row does not name its pieces")
+    continues = row["continues"]
+    if (row["unit"] == "act" and continues is not None) or (
+        row["unit"] == "join" and not isinstance(continues, bool)
+    ):
+        raise SchemaRefusal("a reconstruction row's continuation does not fit its unit")
+    if (
+        not isinstance(row["made"], bool)
+        or not isinstance(row["departures"], list)
+        or not all(isinstance(item, dict) for item in row["departures"])
+        or not _objects(row["flags"], frozenset({"code"}), frozenset({"reason"}))
+        or not isinstance(row["not_made"], list)
+        or not all(
+            isinstance(item, dict)
+            and isinstance(item.get("code"), str)
+            and isinstance(item.get("detail"), str)
+            for item in row["not_made"]
+        )
+        or not isinstance(row["record_ref"], dict)
+    ):
+        raise SchemaRefusal("a reconstruction row's fields are not their closed shapes")
+    return row
+
+
+def verify_row(row: Any, literals: Mapping[str, tuple], keys: Mapping[str, str]) -> dict[str, Any]:
+    """One reconstruction row, recomputed.
+
+    `literals` maps each delivered act to its literal and `keys` each act to its
+    key, both read from the same format the row came from.
+    """
+    row = _require_shape(row)
+    for act_id, key, piece in zip(
+        row["act_ids"], row["act_keys"], row["diplomatic_raw_pieces"], strict=True
+    ):
+        if act_id not in literals:
             raise SchemaRefusal(f"a reconstruction stands beneath {act_id}, which is not delivered")
+        if keys.get(act_id) != key:
+            raise SchemaRefusal(f"a reconstruction names {act_id} by another act's key")
         if read_doubt_marks(piece)[0] != literals[act_id][0]:
             raise SchemaRefusal(
                 f"the reconstruction beneath {act_id} departs from a text other than its literal"
             )
-    if row["made"] is True:
-        text = _splice("\n".join(pieces), row["departures"])
+    if row["made"]:
+        text = _splice("\n".join(row["diplomatic_raw_pieces"]), row["departures"])
         clean, uncertainty = read_doubt_marks(text)
         if (
             text != row["reconstruction_raw"]
@@ -229,34 +283,58 @@ def verify_row(row: Any, literals: Mapping[str, tuple]) -> dict[str, Any]:
             or row["not_made"]
         ):
             raise SchemaRefusal("a made reconstruction is not its departures applied to its pieces")
-    elif row["made"] is False:
-        if (
-            row["reconstruction_raw"] is not None
-            or row["reconstruction_text"] is not None
-            or row["departures"]
-            or not row["not_made"]
-        ):
-            raise SchemaRefusal("a reconstruction not made carries a text or no reason")
-    else:
-        raise SchemaRefusal(f"a {CONIECTOR_MEMBER} row does not say whether it was made")
+    elif (
+        row["reconstruction_raw"] is not None
+        or row["reconstruction_text"] is not None
+        or row["reconstruction_uncertainty"] is not None
+        or row["departures"]
+        or not row["not_made"]
+    ):
+        raise SchemaRefusal("a reconstruction not made carries a text or no reason")
     return row
 
 
-def text_bundle_rows(lines: Sequence[str]) -> list[dict[str, Any]]:
-    """Each reconstruction row a text bundle carries, its readable lines held to it."""
-    rows = []
+def text_bundle_placements(
+    lines: Sequence[str],
+) -> tuple[set[str], list[tuple[str, dict[str, Any]]]]:
+    """`(acts sectioned in this file, [(place, row)])` for one text-bundle file.
+
+    A row's place is the act section it follows (`act:<act_id>`) or its own join
+    section (`join`); each block must be exactly what its row renders, so no
+    line of it says anything its row does not.
+    """
+    acts: set[str] = set()
+    placed: list[tuple[str, dict[str, Any]]] = []
+    current: str | None = None
+    join_start: int | None = None
     for index, line in enumerate(lines):
-        if line != ROW_LINE:
-            continue
-        try:
-            row = json.loads(lines[index + 1])
-        except (IndexError, ValueError) as error:
-            raise SchemaRefusal("a text-bundle reconstruction row is not JSON") from error
-        if not isinstance(row, dict) or set(row) != ROW_FIELDS:
-            raise SchemaRefusal(f"a text-bundle reconstruction row is not a {ROW_SCHEMA} row")
-        expected = reconstruction_lines(row)
-        start = index + 2 - len(expected)
-        if start < 0 or list(lines[start : index + 2]) != expected:
-            raise SchemaRefusal("a text bundle's reconstruction lines do not say what its row says")
-        rows.append(row)
-    return rows
+        if line.startswith("act-id: "):
+            current = "act:" + line.removeprefix("act-id: ")
+            acts.add(current.removeprefix("act:"))
+            join_start = None
+        elif line.startswith(JOIN_SECTION_PREFIX):
+            current, join_start = "join", index
+        elif line.startswith("## "):
+            current, join_start = None, None
+        elif line == ROW_LINE:
+            try:
+                row = _require_shape(json.loads(lines[index + 1]))
+            except (IndexError, ValueError) as error:
+                raise SchemaRefusal("a text-bundle reconstruction row is not JSON") from error
+            expected = reconstruction_lines(row)
+            start = index + 2 - len(expected)
+            if current is None or start < 0 or list(lines[start : index + 2]) != expected:
+                raise SchemaRefusal(
+                    "a text bundle's reconstruction lines do not say what its row says"
+                )
+            if current == "join":
+                section = join_section(row)
+                if (
+                    row["unit"] != "join"
+                    or list(lines[join_start : join_start + len(section)]) != section
+                ):
+                    raise SchemaRefusal("a text-bundle join section is not its row's")
+            elif row["unit"] != "act" or current != "act:" + row["act_ids"][0]:
+                raise SchemaRefusal("a reconstruction stands beneath another act's section")
+            placed.append((current, row))
+    return acts, placed

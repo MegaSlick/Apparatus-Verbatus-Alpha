@@ -203,12 +203,17 @@ projection configuration. The bundle may contain these plainly specified formats
   its label, who made it (`maker.kind`, a model chair or a person), its diplomatic
   pieces with their doubt marks, its departures, its findings as `flags`, and, when
   not made, why. In the text bundle it follows the act's own fields as
-  `reconstruction_*` lines, ending with the whole row, and a join is its own
+  `reconstruction_*` lines (every value a model or person wrote as one JSON line),
+  ending with the whole row, and a join is its own
   `## JOIN RECONSTRUCTION <keys> (not an act)` section. Flags change nothing: no
   reconstruction or flag enters the act count, the ledger, review items, the
   database, a category or the aggregate. The clean verifier re-applies every made
   row's departures to its pieces, holds each piece to its act's literal in the same
-  format, and requires both formats, when selected, to show the same rows.
+  format, and requires both formats, when selected, to show the same rows. In the
+  text bundle each row must sit beneath its own act's section (a join in its own
+  section) in every folder that sections that act. A reconstruction whose act is not
+  delivered, or a join with a piece not delivered, is not shown at all: the
+  Coniector's records in the run tree keep it.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
   act identifiers or canonical-text fields; promotion requires recorded approval
   and pipeline re-entry, never an export-time act.

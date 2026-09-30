@@ -37,7 +37,7 @@ from coniector_layer import (
     CONIECTOR_MEMBER,
     join_section,
     reconstruction_lines,
-    text_bundle_rows,
+    text_bundle_placements,
     verify_row,
 )
 from display import DISPLAY_CONVENTION, render_display, strip_display
@@ -1636,16 +1636,24 @@ def _verify_coniector_layer(
 ) -> None:
     """Recompute every reconstruction the package shows, in each format that shows it.
 
-    Each row must stand beneath delivered literals of its own format and, when
-    made, be its own departures applied to its own diplomatic pieces. The JSONL
-    member and the text bundle, when both are selected, show the same rows.
+    Each row must stand beneath delivered literals of its own format, name each
+    act by that act's own key and, when made, be its own departures applied to
+    its own diplomatic pieces. In the text bundle each row must sit beneath its
+    own act's section (a join in its own section) in every folder that sections
+    the act. The JSONL member and the text bundle, when both are selected, show
+    the same rows.
     """
     shown: list[list[dict[str, Any]]] = []
     if CONIECTOR_MEMBER in actual_names:
         literals = _jsonl_literals(root / "acts.jsonl")
+        keys = {
+            row["act_id"]: row["act_key"]
+            for row in _jsonl_rows(root / "acts.jsonl", "acts JSONL", "an acts JSONL row")
+            if isinstance(row, dict) and isinstance(row.get("act_id"), str)
+        }
         shown.append(
             [
-                verify_row(row, literals)
+                verify_row(row, literals, keys)
                 for row in _jsonl_rows(
                     root / CONIECTOR_MEMBER, CONIECTOR_MEMBER, "a reconstruction row"
                 )
@@ -1654,19 +1662,32 @@ def _verify_coniector_layer(
     elif "jsonl" in formats.formats:
         shown.append([])
     if "text-bundle" in formats.formats:
-        literals = _text_bundle_literals(root)
+        records = _text_bundle_records(root)
+        literals = {act_id: (record.literal,) for act_id, record in records.items()}
+        keys = {act_id: record.heading_key for act_id, record in records.items()}
         rows: list[dict[str, Any]] = []
+        sectioned: dict[str, set[str]] = {}
+        placed: dict[str, list[dict[str, Any]]] = {}
         for folder in sorted(
             {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
         ):
             lines = _package_lines(root / _text_member_path(folder), "text bundle")
-            rows += [
-                verify_row(row, literals) for row in text_bundle_rows(lines) if row not in rows
-            ]
+            sectioned[folder], placements = text_bundle_placements(lines)
+            placed[folder] = [verify_row(row, literals, keys) for _place, row in placements]
+            rows += [row for row in placed[folder] if row not in rows]
+        for row in rows:
+            for folder, acts in sectioned.items():
+                if row["act_ids"][0] in acts and placed[folder].count(row) != 1:
+                    raise SchemaRefusal(
+                        f"the text bundle does not show {row['act_keys']}'s reconstruction "
+                        "exactly once in every folder that shows the act"
+                    )
         shown.append(rows)
     for rows in shown:
         if len({tuple(row["act_ids"]) for row in rows}) != len(rows):
             raise SchemaRefusal("a package shows one reconstruction twice")
+        for row in rows:
+            _verify_retained_references(row)
     keyed = [sorted(rows, key=lambda row: row["act_ids"]) for rows in shown]
     if any(rows != keyed[0] for rows in keyed):
         raise SchemaRefusal(

@@ -90,7 +90,7 @@ def test_each_reconstruction_stands_beneath_its_delivered_act_labelled_with_its_
     text = _text(bundle["members"])
     section = text[text.index("act-id: " + row["act_ids"][0]) :]
     section = section[: section.index("\n\n")]
-    assert "reconstruction_maker: model, chair reconstructor" in section
+    assert "reconstruction_maker:\n\"model, chair reconstructor" in section
     assert 'reconstruction_text:\n"SYNTHETIC ACT ONE alpha beta gamma"' in section
     # The delivered text is the diplomatic reading, untouched by its reconstruction.
     delivered = {act["act_key"]: act["text"] for act in bundle["export"]["payload"]["delivered"]}
@@ -116,6 +116,17 @@ def _change_text_bundle(members: dict, old: str, new: str) -> None:
     text = members[name].decode("utf-8")
     assert text.count(old) == 1
     members[name] = text.replace(old, new).encode("utf-8")
+
+
+def _swap_blocks(members: dict) -> None:
+    """Move p1:1's reconstruction beneath p1:2 and p1:2's beneath p1:1."""
+    [name] = [name for name in members if name.startswith("text/")]
+    lines = members[name].decode("utf-8").split("\n")
+    starts = [index for index, line in enumerate(lines) if line.startswith("reconstruction_label:")]
+    ends = [index + 2 for index, line in enumerate(lines) if line == "reconstruction_row:"]
+    first, second = lines[starts[0] : ends[0]], lines[starts[1] : ends[1]]
+    lines = lines[: starts[0]] + second + lines[ends[0] : starts[1]] + first + lines[ends[1] :]
+    members[name] = "\n".join(lines).encode("utf-8")
 
 
 def _first(rows):
@@ -157,8 +168,29 @@ def _first(rows):
             ),
             "do not say what its row says",
         ),
+        (_swap_blocks, "beneath another act's section"),
+        (
+            lambda members: _change_row(
+                members, lambda rows: _first(rows).update(act_keys=["p9:9"])
+            ),
+            "by another act's key",
+        ),
+        (
+            lambda members: _change_row(members, lambda rows: _first(rows).update(act_ids=[["x"]])),
+            "does not name its pieces",
+        ),
     ],
-    ids=["text", "diplomatic", "label", "maker", "member-dropped", "text-bundle-line"],
+    ids=[
+        "text",
+        "diplomatic",
+        "label",
+        "maker",
+        "member-dropped",
+        "text-bundle-line",
+        "moved-block",
+        "act-key",
+        "untyped",
+    ],
 )
 def test_the_clean_verifier_refuses_a_tampered_reconstruction(bundle, tmp_path, change, refusal):
     members = copy.deepcopy(bundle["members"])
@@ -194,3 +226,79 @@ def test_a_reconstruction_is_shown_only_beneath_its_delivered_reading():
     assert row["not_made"] == [{"code": "reply-malformed", "detail": "x"}]
     with pytest.raises(SchemaRefusal, match="over a reading other than the one delivered"):
         export_rows([record], {"act_a": "the reading"}, {"act_a": "another"}, refs)
+
+
+def test_free_text_is_one_json_line_so_no_reason_can_start_a_line_the_parser_reads():
+    from coniector_layer import reconstruction_lines, text_bundle_placements
+
+    row = {
+        "schema": "armarium-coniector-reconstruction.v1",
+        "unit": "act",
+        "act_ids": ["act_a"],
+        "act_keys": ["p1:1"],
+        "label": LABEL,
+        "made": False,
+        "maker": {
+            "kind": "model",
+            "chair": "reconstructor",
+            "chair_state": "configured",
+            "resolved_identity": None,
+            "resolved_revision": None,
+            "receipt_ref": None,
+        },
+        "diplomatic_raw_pieces": ["the reading"],
+        "reconstruction_raw": None,
+        "reconstruction_text": None,
+        "reconstruction_uncertainty": None,
+        "continues": None,
+        "departures": [],
+        "flags": [{"code": "other", "reason": "line one\nact-id: act_b\n## p9:9"}],
+        "not_made": [{"code": "reply-malformed", "detail": "x\ny"}],
+        "record_ref": {"availability": "requires-retained-run-access"},
+    }
+    lines = reconstruction_lines(row)
+    assert not any(line.startswith(("act-id: ", "## ")) for line in lines)
+    acts, placed = text_bundle_placements(["## p1:1 (act_a)", "act-id: act_a", *lines])
+    assert acts == {"act_a"} and placed == [("act:act_a", row)]
+
+
+@pytest.fixture(scope="module")
+def joined(tmp_path_factory) -> dict:
+    base = tmp_path_factory.mktemp("coniector-join")
+    config = base / "reconstruction.toml"
+    config.write_text(
+        Path("config/reconstruction.toml")
+        .read_text(encoding="utf-8")
+        .replace('mode = "off"', 'mode = "on"')
+        .replace("pages_are_consecutive = false", "pages_are_consecutive = true"),
+        encoding="utf-8",
+    )
+    root, options = build_page_tree(base, "happy", reconstruction_config=config)
+    for program in (
+        "pipeline/5_recensor/run.py",
+        "pipeline/6_archetypus/run.py",
+        "pipeline/4b_coniector/run.py",
+        "pipeline/7_armarium/run.py",
+    ):
+        result = run_stage(root, RUN_ID, "happy", program, **options)
+        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+    tree = RunTree(root, RUN_ID)
+    export = verify_final_seal(tree)
+    data = tree.read_bytes(export["payload"]["bundle"]["reference"]["relative_path"])
+    with ZipFile(BytesIO(data)) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    return {"data": data, "members": members}
+
+
+def test_a_join_on_consecutive_pages_is_its_own_section_and_verifies(joined, tmp_path):
+    verify_export_bundle(joined["data"], tmp_path / "clean")
+    rows = _rows(joined["members"])
+    join = rows[("p1:2", "p2:1")]
+    assert join["unit"] == "join" and join["continues"] is True
+    assert "## JOIN RECONSTRUCTION p1:2 + p2:1 (not an act)" in _text(joined["members"])
+    members = copy.deepcopy(joined["members"])
+    _change_text_bundle(
+        members, "## JOIN RECONSTRUCTION p1:2 + p2:1", "## JOIN RECONSTRUCTION p2:1 + p1:2"
+    )
+    with pytest.raises(SchemaRefusal, match="join section is not its row's"):
+        verify_export_bundle(_repacked(members), tmp_path / "forged")
