@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import types
 from pathlib import Path
 
 import pytest
@@ -588,6 +589,48 @@ def test_a_detector_score_enters_its_record_and_proposal_rounded_half_to_even(
     [record] = _records(context, designator, "detector-record")
     assert record["payload"]["score_bp"] == 2
     assert record["payload"]["raw_proposal"]["score_bp"] == 2
+
+
+def test_a_retried_fixture_pass_reuses_the_in_process_detector_s_sealed_receipt(
+    tmp_path, monkeypatch
+):
+    """Each in-process load starts at its own time, so a retry that wrote a fresh
+    receipt would change the sealed secondary provenance; it reuses the sealed one."""
+    import dataclasses
+    import itertools
+
+    designator = load_stage("2_designator")
+    root = tmp_path / "runs"
+    extra = _configured(tmp_path)
+    context = _prepared_context(designator, root, extra, "secondary retry test")
+    loads = itertools.count()
+
+    def load(identity, _profile, _root):
+        detector = designator.fixture_record_detector(
+            [], identity, designator.fixture_serving_details(identity)
+        )
+        started = f"2026-01-01T00:00:{next(loads):02d}Z"
+        return dataclasses.replace(
+            detector,
+            run_facts={**detector.run_facts, "engine": "ultralytics"},
+            serving_details=dataclasses.replace(detector.serving_details, started_at=started),
+        )
+
+    monkeypatch.setattr(designator, "_record_detector_mode", lambda *_a, **_k: "in-process")
+    monkeypatch.setattr(designator, "load_ultralytics_record_detector", load)
+    monkeypatch.setattr(
+        designator,
+        "bound_serving_recipes",
+        lambda *_args: types.SimpleNamespace(for_identity=lambda *_a: None),
+    )
+    first, _detector = designator.secondary_provenance(context)
+    designator._publish_secondary_provenance(context, first)
+    context.finish()
+
+    retry = _designator_context(designator, root, extra, "secondary retry test")
+    again, _detector = designator.secondary_provenance(retry)
+    assert next(loads) == 2
+    assert again == first == _published_secondary_provenance(designator, retry)
 
 
 def test_detector_records_alone_never_hold_the_designator(tmp_path):

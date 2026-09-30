@@ -522,7 +522,12 @@ def secondary_provenance(context) -> tuple[dict, RecordDetector | None]:
     resolved = _resolved_secondary(context)
     if isinstance(resolved, AbsentChair):
         return _absent_chair_record(context, resolved), None
-    return _open_record_detector(context, resolved, fixture_allowed=True)
+    return _open_record_detector(
+        context,
+        resolved,
+        fixture_allowed=True,
+        published=_published_secondary_provenance(context),
+    )
 
 
 def _resolved_secondary(context) -> ChairIdentity | AbsentChair:
