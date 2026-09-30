@@ -1269,7 +1269,7 @@ def test_a_watchdog_timeout_with_no_sign_of_loading_says_connection_refused(
     manager, _, http, launcher, _, publisher = reader_manager(
         tmp_path,
         chair=chair,
-        log_tail="INFO 09-14 11:02:01 [api_server.py:1] vLLM API server version 0.27.1\n",
+        log_tail="INFO 09-14 11:02:01 [api_server.py:1] vLLM API server version 0.30.0\n",
     )
     _never_answering(manager, launcher, http)
 
@@ -1279,7 +1279,7 @@ def test_a_watchdog_timeout_with_no_sign_of_loading_says_connection_refused(
     message = str(excinfo.value)
     assert "connection refused, not still loading" in message
     assert "raising startup_timeout_seconds is unlikely to help" in message
-    assert "vLLM API server version 0.27.1" in message
+    assert "vLLM API server version 0.30.0" in message
     assert publisher.calls == []
 
 
