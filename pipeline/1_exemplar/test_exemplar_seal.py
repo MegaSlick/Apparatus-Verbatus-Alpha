@@ -369,17 +369,17 @@ def test_a_noop_derivative_and_its_master_share_one_content_address(tmp_path):
 def test_a_derivative_naming_a_master_other_than_its_submitted_row_refuses(tmp_path):
     """The parent-frame back-link must name the master this row actually submitted.
 
-    That comparison sat unpinned: replacing it with `False` left 427 tests green.
-    Its siblings in the same conjunction hide it under the obvious forgeries —
-    editing `source["sha256"]` trips the earlier Door-admission comparison, and
+    Its siblings in the same conjunction hide this comparison under the obvious
+    forgeries — editing `source["sha256"]` trips the earlier Door-admission comparison, and
     editing the back-link's digest alone trips the sibling `stored_at` check with
     the very same message. So the forgery here is made *internally consistent*:
     the back-link names another digest and the blob path that digest would have,
     leaving the submitted row the only thing it disagrees with.
 
     The admission is re-sealed rather than edited in place, and the page's own
-    input reference is re-pointed at the forged bytes, because `_read_checked`
-    holds the admission to the digest the page recorded for it.
+    input reference is re-pointed at the forged bytes, because
+    `common.exemplar_boundary.verify_sealed_page_pixels` reads the admission through
+    `read_verified`, holding it to the digest the page recorded for it.
     """
     master = encode_image_deterministic(Image.new("L", (4, 3), 37))
     digest = digest_bytes(master)
@@ -539,9 +539,9 @@ def test_the_run_carries_exactly_one_corpus_seal_naming_every_page(tmp_path):
 
 
 def test_a_sealed_page_is_named_by_the_digest_that_was_actually_admitted(tmp_path):
-    """Audit Q12's defect was a truncated hash of the *path*. Identity binds the
-    immutable source digest and whole-image transform — and the digest of the bytes
-    the door admitted, not the submission ordinal or what anybody declared."""
+    """Identity binds the immutable source digest and whole-image transform — the
+    digest of the bytes the door admitted, never a hash of the path, the submission
+    ordinal or what anybody declared."""
     tree, files = build_door_run(tmp_path / "runs")
     assert run_exemplar(tmp_path / "runs").returncode == 0
 
@@ -675,11 +675,10 @@ def test_an_admitted_blob_whose_bytes_changed_refuses(tmp_path, rebind_stage_sea
 def test_an_admitted_blob_that_is_gone_refuses_by_name_rather_than_crashing(
     tmp_path, rebind_stage_seal
 ):
-    """The *deleted* blob, beside the *changed* one above. It escaped as a
-    FileNotFoundError traceback and CPython's exit 1, where `common/stage.py` says
-    an exit code carries cause and reserves 2 for a named contract failure. A
-    stage that dies by traceback has still failed loudly — but it has told the
-    orchestrator "something went wrong" instead of "this run does not reconcile"."""
+    """The *deleted* blob, beside the *changed* one above, is a named contract
+    failure with exit 2, never a FileNotFoundError traceback and CPython's exit 1:
+    `common/stage.py` makes the exit code carry the cause, so the orchestrator is
+    told "this run does not reconcile" rather than "something went wrong"."""
     tree, _ = build_door_run(tmp_path / "runs")
     admission = tree.read_artifact(DOOR, "admission", artifact_id(DOOR, "admission", "source-1"))
     tree.resolve(admission["payload"]["stored_at"]).unlink()
@@ -1016,9 +1015,8 @@ def test_a_malformed_render_origin_in_a_sealed_page_is_a_named_refusal(tmp_path)
     )
     page["payload"]["rendered_from"] = {"container_page_index": 0}
 
-    # The surviving validator (`_validate_rendered_origin`) is the stricter of the
-    # two that met at this merge -- it type-checks every render field rather than
-    # only closing the key set -- and it names the refusal in its own words.
+    # `_validate_rendered_origin` type-checks every render field rather than only
+    # closing the key set, and names the refusal in its own words.
     with pytest.raises(ContractError, match="complete rendered-container origin"):
         verify_sealed_page_pixels(tree, run, source, page)
 

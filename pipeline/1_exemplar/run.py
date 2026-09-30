@@ -90,9 +90,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     admitted_by_page: dict[str, list[tuple[int, dict, dict[str, str], dict[str, str]]]] = {}
     for ordinal, admission, admission_ref, blob_ref in admissions:
         if admission["outcome"] == "refused":
-            # The refusal is carried forward as this stage's own outcome so the
-            # page is accounted for here too. A unit that simply stopped being
-            # mentioned would be invariant #10's imbalance.
+            # The refusal is carried forward as this stage's own outcome so every
+            # submitted ordinal has a page outcome here too.
             result = context.publish(
                 kind="page",
                 subject_id=admission["subject_id"],

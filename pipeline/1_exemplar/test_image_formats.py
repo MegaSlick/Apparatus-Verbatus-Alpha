@@ -490,12 +490,9 @@ def test_a_cyclic_ifd_chain_is_still_a_named_decoder_failure():
 def test_a_classic_tiff_naming_no_image_directory_is_corrupt_not_silently_empty():
     """A first-IFD offset of 0 is damage, not an empty container of zero pages.
 
-    `validate_tiff` already refuses this exact header shape as CORRUPT. Before this
-    test, `_validate_classic_tiff_page_chain`'s `while offset:` loop disagreed: it
-    returned a page count of 0 for the identical bytes, which routed the source to
-    zero fanned ordinals -- admitted nowhere, refused nowhere, and absent from the
-    run's own source manifest. A page count of zero must never be how a real file
-    goes unaccounted for.
+    `validate_tiff` refuses this exact header shape as CORRUPT, and the page-chain
+    count must agree: a count of 0 would fan the source out to zero ordinals,
+    admitted nowhere and refused nowhere.
     """
     data = b"II*\x00" + struct.pack("<I", 0) + b"\x00" * 4
     with pytest.raises(FormatRefusal, match="the header names no image directory"):
@@ -534,10 +531,10 @@ def test_an_apng_cannot_declare_more_frames_than_its_bytes_could_hold():
     """A frame count read out of a header is a loop bound somebody else wrote.
 
     APNG takes its count straight from the `acTL` chunk, so unlike the TIFF chain it
-    does not scale with file size at all: measured before this floor existed, a
-    125-byte APNG declaring a million frames was counted as a million pages and
-    `expand_sources` fanned it out. The classic-TIFF walk returns before this check,
-    so this is the bound for every container that walk never sees.
+    does not scale with file size at all: without this floor a 125-byte APNG
+    declaring a million frames would fan out to a million ordinals. The classic-TIFF
+    walk returns before this check, so this is the bound for every container that
+    walk never sees.
     """
 
     def chunk(kind, payload):
@@ -638,22 +635,17 @@ def _two_frame_gif() -> bytes:
 
 
 def test_no_complete_gif_prefix_is_admitted_after_its_header():
-    """The whole-Door crash, one byte along from where it was closed.
+    """Every strict prefix of a two-frame GIF is a named corruption alarm.
 
-    A previous round widened this module's catch set to the classes Pillow had been
-    seen to raise; the next narrowed it by removing `KeyError`, `IndexError` and
-    `AttributeError`, reasoning that the guarded block also held project-owned
-    routing and geometry code and a programming defect must not be relabelled as a
-    corrupt image. The reasoning was right and its premise was false: Pillow raises
-    `IndexError` on ordinary malformed input. Cut this GIF inside its second image
-    descriptor and `n_frames` fails at `GifImagePlugin._seek` with a bare
-    `IndexError` — which escaped `decode_raster`, escaped `expand_sources`, and took
-    down every other source in the submission before any admission could be written.
+    Pillow raises bare `IndexError` on ordinary malformed input: cut this GIF inside
+    its second image descriptor and `n_frames` fails at `GifImagePlugin._seek`. That
+    must come back as a `corrupt` verdict for this source, never an exception that
+    stops every other source in the submission.
 
-    Sweeping every truncation rather than pinning the one offset is deliberate:
-    Pillow admits some strict prefixes as a one-frame GIF. The container trailer and
-    block walk now make every prefix that still names GIF a named corruption alarm,
-    instead of an immutable Exemplar page that silently lost its later frame."""
+    Every truncation is swept rather than one offset, because Pillow admits some
+    strict prefixes as a one-frame GIF; the container trailer and block walk make
+    each of them a corruption alarm instead of a page that silently lost its later
+    frame."""
     data = _two_frame_gif()
     for cut in range(len(image_sniff.GIF_SIGNATURES[0]), len(data)):
         with pytest.raises(FormatRefusal) as caught:
@@ -860,7 +852,7 @@ def _tiff_tag_value_offset(data: bytes, tag: int) -> int:
     raise AssertionError(f"the synthetic TIFF carries no tag {tag}")
 
 
-def test_a_classic_tiff_past_the_retired_5000_page_cap_keeps_its_denominator():
+def test_a_classic_tiff_page_count_is_its_directory_chain_with_no_page_cap():
     """The document declares the page count; a project policy number does not.
 
     The directories are spaced rather than packed: chaining them the minimum six
@@ -897,10 +889,9 @@ def test_bigtiff_leaves_its_page_count_to_the_decoder():
 
 # --- what a sealed page can carry, and what reads it back ------------------------
 #
-# An outside review of `common/imaging.py` named helper-level defects and said
-# plainly that it could not show an admitted source reaching them. These two
-# tests are that missing half, and they belong beside the door because the door
-# is what decides the answer.
+# These tests take an admitted source through to the `common/imaging.py` reader
+# that later stages use, so they show the reader's handling on a page the door
+# actually seals.
 
 
 def test_a_16bit_tiff_seals_samples_a_grayscale_read_does_not_clip():

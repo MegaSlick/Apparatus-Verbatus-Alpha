@@ -273,8 +273,7 @@ def _exercised() -> dict[RefusalReason, str]:
 
 
 def test_every_refusal_reason_in_the_closed_set_is_exercised():
-    """An unused member would be an untested refusal path, which is exactly the gap
-    invariant #3 exists to close. Asserted rather than trusted."""
+    """Every closed-set refusal reason has a path that produces it."""
     exercised = _exercised()
     assert set(exercised) == set(RefusalReason)
     for code, text in exercised.items():

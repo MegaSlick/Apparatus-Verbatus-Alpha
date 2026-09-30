@@ -99,8 +99,8 @@ def _sealed_binding_digests() -> dict[str, str]:
 
     Read exactly as the door reads them, from one read each, so a test never seals
     a name under bytes nothing parsed. Kept in one helper because the argument list
-    is the shape the fixture path's `run_config_bindings` has to match: the F-S5
-    defect was one map growing an entry the other did not.
+    is the shape the fixture path's `run_config_bindings` has to match, so one map
+    cannot grow an entry the other lacks.
     """
     return {
         "pdf_render_config_sha256": door.render_config.load_pdf_render_binding(
@@ -739,11 +739,8 @@ def test_every_decoder_reported_animation_frame_fans_out_once(tmp_path):
 # `tiff_lzw` and `tiff_adobe_deflate` are what real flatbed and archival scanning
 # software writes by default; `packbits` is the baseline TIFF 6.0 compression; and
 # `group4` is CCITT fax, which is what microfilm and bitonal register scans arrive
-# as. This is the gap one lane left open and named as the thing it was least sure
-# about — every page still got an ordinal there, but only an uncompressed directory
-# actually rendered, so a compressed page reached the Exemplar as a named alarm and
-# not as pixels. It is closed by using a decoder that reads these codecs rather than
-# by hand-writing four decompressors.
+# as. Every one of them must fan out to real pixels, through a decoder that reads
+# these codecs.
 TIFF_COMPRESSIONS = ["tiff_lzw", "tiff_adobe_deflate", "packbits", "group4"]
 
 
@@ -3083,9 +3080,7 @@ def test_an_oversized_source_is_named_too_large_without_ever_being_read(tmp_path
     assert payload["declared_path"] == "enormous.tif"
 
 
-def test_a_stream_backed_pdf_is_not_refused_by_the_retired_bytes_allocation_cap(
-    tmp_path, monkeypatch
-):
+def test_a_stream_backed_pdf_is_exempt_from_the_raster_bytes_cap(tmp_path, monkeypatch):
     """The source stays a stream for both its digest and PDFium open, never bytes.
 
     The cap is monkeypatched below this tiny synthetic PDF rather than allocating a
@@ -3318,19 +3313,15 @@ def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(t
 
 
 def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypatch):
-    """F-S5 (audit finding): `_real_bindings`'s `sealed_config_digests` must name
-    `designator-padding` exactly as `run_config_bindings` (the fixture path) does,
-    not only `corpus-frame-shard`.
+    """`_real_bindings`'s `sealed_config_digests` names every point-of-use digest
+    exactly as `run_config_bindings` (the fixture path) does.
 
-    Before this audit's fix, `_real_bindings` returned
-    `sealed_config_digests = {"corpus-frame-shard": ...}` only. The padding
-    config's bytes were already folded into the overall `config_digest`, but the
-    NAMED point-of-use-recheck entry was missing -- so a real Designator run
-    reaching `context.require_sealed_config("designator-padding", ...)`
-    (`pipeline/2_designator/run.py`) over real ingress would refuse every time
-    with "this context sealed no digest for the designator-padding configuration",
-    the day R2 lands a real structure pass. The fixture and real paths must expose
-    the same `sealed_config_digests` shape.
+    Folding a config's bytes into `config_digest` is not enough: a real Designator
+    run reaching `context.require_sealed_config("designator-padding", ...)`
+    (`pipeline/2_designator/run.py`) needs the named entry, or it refuses every
+    time with "this context sealed no digest for the designator-padding
+    configuration". The fixture and real paths must expose the same
+    `sealed_config_digests` shape.
     """
 
     models = _fixture_models()
@@ -3360,19 +3351,19 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     assert sealed.get("designator-padding") == padding_digest, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'designator-padding' entry bound to the exact digest passed in; the fixture "
-        "path's run_config_bindings() already seals this name (F-S5)"
+        "path's run_config_bindings() already seals this name"
     )
     assert sealed.get("designator-geometry") == geometry_digest, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'designator-geometry' entry bound to the exact digest passed in; the Designator's "
         "point-of-use recheck (pipeline/2_designator/run.py) requires this name on every "
-        "run, so a real run without it refuses unconditionally (same class as F-S5)"
+        "run, so a real run without it refuses unconditionally"
     )
     assert sealed.get("designator-grouping") == grouping_digest, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'designator-grouping' entry bound to the exact digest passed in; the structure "
         "pass resolves its thresholds from these bytes one step before the crop, so a "
-        "real run without the name refuses unconditionally (same class as F-S5)"
+        "real run without the name refuses unconditionally"
     )
     assert "corpus-frame-shard" in sealed, (
         "the pre-existing corpus-frame-shard entry must survive, not be replaced"
@@ -3382,7 +3373,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     # storage-root gate ran under the data-handling policy it loaded, and the
     # Designator recovery pass and the orchestrator's dispatch both work from the
     # recovery budget. A real run whose door sealed none of them would refuse at
-    # the point of use with "sealed no digest" -- the F-S5 shape again.
+    # the point of use with "sealed no digest".
     assert sealed.get("pdf-render") == supplied["pdf_render_config_sha256"], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'pdf-render' entry bound to the digest of the bytes the settings were parsed "
@@ -3743,9 +3734,9 @@ def test_the_fixture_run_authority_records_every_digest_its_stages_will_ask_for(
     """The run names the policies it sealed, under the names points of use ask for.
 
     The map in `run.json` and the one `run_config_bindings` computes are the same
-    map. F-S5 was the two drifting apart on the real route; recording it makes that
-    drift a refusal at `open_context` rather than a "sealed no digest" surprise at
-    whichever stage reached the point of use first.
+    map; recording it makes any drift between them a refusal at `open_context`
+    rather than a "sealed no digest" surprise at whichever stage reached the point
+    of use first.
     """
     from common.chairs.registry import ChairRegistry
     from common.stage import load_fixture, run_config_bindings

@@ -12,9 +12,8 @@ an unbounded inflate or iteration over a file-declared number is a loop counter 
 attacker controls. The limits below are admission policy — a source past one of
 them is refused outright, never partially inspected.
 
-Door-private (`pipeline/1_exemplar/`): nothing outside this stage imports it, so
-this stage is the only caller — a raster page can still be decoded, and checked,
-more than once, as `render_raster_page` does.
+Door-private: only `pipeline/1_exemplar/` imports it, which
+`test_import_boundaries.py` pins.
 """
 
 import struct
@@ -314,10 +313,8 @@ def _is_png_chunk_type(kind: bytes) -> bool:
     """Four ASCII letters, with PNG's reserved bit clear.
 
     Byte 3's case is the *reserved* bit, and the specification requires it to be
-    uppercase in this version of the format. Checking only "four letters" accepted a
-    chunk typed `abcd` — a name no conforming encoder can emit — as an ordinary
-    ancillary chunk to be skipped, which is a claim of "genuine, uncorrupted
-    instance" this module makes and was not performing.
+    uppercase in this version of the format, so a chunk typed `abcd` is one no
+    conforming encoder can emit, not an ancillary chunk to skip.
     """
     if len(kind) != 4 or not all(65 <= byte <= 90 or 97 <= byte <= 122 for byte in kind):
         return False
@@ -981,7 +978,7 @@ VALIDATORS: Final = {
 # Derived from what this module can actually do, never hand-copied: the table
 # sniff() walks (WebP included, by its RIFF/WEBP prefix), plus HEIC/HEIF/AVIF,
 # whose detection is a brand check rather than a signature prefix. admission.py
-# re-exports it for its policy-coverage check.
+# derives its route table from it.
 SNIFFABLE_FORMATS: Final = frozenset(
     {name for name, _ in _SIGNATURES} | {"heic", "heif", "avif", "webp"}
 )

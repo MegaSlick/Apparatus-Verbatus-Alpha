@@ -1435,8 +1435,8 @@ def require_no_duplicate_sources(duplicate_report: Report | None) -> None:
     page per submitted row, so the run would read one page where two were submitted.
 
     The whole submission is refused, never one file, and there is no override
-    flag: dropping a copy is an exclusion, which is the project lead's decision,
-    and the bytes cannot tell a page shot twice from one scan exported twice.
+    flag: the bytes cannot tell a page shot twice from one scan exported twice, so
+    the Door refuses rather than choosing which copy to drop.
 
     The error names ordinals only, since `run_stage` prints it to stderr and the
     data-handling policy keeps paths out of logs; the duplicate report sealed
