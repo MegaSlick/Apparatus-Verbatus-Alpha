@@ -495,15 +495,20 @@ def witness_coverage(
     reading on it.
 
     `under_witnessed` is chairs reaching a completed-class outcome below the
-    configured floor. Spec 07: three chairs is the floor, the machinery tolerates
-    fewer so one dead witness never kills a run, and a run below the floor is
-    recorded as under-witnessed in the Recensor receipt and the export manifest,
-    visibly, every time.
+    configured floor. Three chairs is the floor, the machinery tolerates fewer so
+    one dead witness never kills a run, and a run below the floor is recorded as
+    under-witnessed in the Recensor receipt and the export manifest, visibly,
+    every time.
 
     A chair that is not attached with comparable text is one shortfall, in one of
     two buckets. `unmeasured`: its fact says the aligner stopped on one of its own
     bounds (`alignment_unmeasured`), so nobody knows whether it covered the act.
-    `unaligned`: the comparison was made, or never needed, and it did not cover.
+    `unaligned`: every other such chair. Its reading was compared and did not
+    cover the act; or it was compared but could not be placed in this act alone
+    (overlapping another act's span, or no raw counterpart for the aligned span);
+    or there was no act anchor to compare it against (no Chandra page anchor, the
+    act's anchor line not located, a continuation page); or there was nothing to
+    compare (a non-reading outcome, an unattached chair, a report that is not text).
     """
     if configured_floor < 0:
         raise FatalAccounting(f"configured witness floor {configured_floor} is negative")

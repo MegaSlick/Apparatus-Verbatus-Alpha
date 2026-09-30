@@ -17,7 +17,7 @@ never supplies characters.
 
 import copy
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -28,7 +28,7 @@ from common.act_visibility_geometry import (  # noqa: E402
 )
 from common.alignment import (  # noqa: E402
     UNMEASURED_REASONS,
-    refuse_retired_alignment_fields,
+    refuse_retired_alignment_record,
 )
 from common.background import (  # noqa: E402
     BackgroundInferenceRefusal,
@@ -670,10 +670,13 @@ def act_attachment_facts(
                     "across its pages; one act attempt cannot have two health records; "
                     "restore the attempt's single recorded health"
                 )
-            # Merge whole page rows; OR-ing flags would invent an unseen combination.
+            # Merge whole page rows: OR-ing `attached` and `comparable` separately
+            # would invent a pair no page recorded.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
-            # A page never compared leaves the chair unmeasured unless another page counts.
+            # `alignment_unmeasured` is not one of that pair. It is read only when the
+            # merged row has no comparable text, and then any page the aligner stopped
+            # on is a page never compared, so it is OR-ed across pages.
             merged["alignment_unmeasured"] = (
                 previous["alignment_unmeasured"] or fact["alignment_unmeasured"]
             )
@@ -866,13 +869,13 @@ def _require_alignment_shape(act_id: str, chair: str, alignment: dict) -> None:
     An attached record missing its geometry or `anchor_basis` must not count, and an
     unaligned record needs a reason.
     """
+    try:
+        refuse_retired_alignment_record(
+            alignment, f"act {act_id} page witness {chair!r}'s alignment record"
+        )
+    except SchemaRefusal as error:
+        raise FatalAccounting(str(error)) from error
     if alignment["status"] == "aligned":
-        try:
-            refuse_retired_alignment_fields(
-                alignment, f"act {act_id} page witness {chair!r}'s aligned record"
-            )
-        except SchemaRefusal as error:
-            raise FatalAccounting(str(error)) from error
         if (
             set(alignment) != _ALIGNED_KEYS
             or not isinstance(alignment["anchor_basis"], str)
@@ -1051,6 +1054,22 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
     Callable before anything is published, so an ambiguity found at a later act never
     leaves a partial set of reviews for a retry to mistake for history.
     """
+    return _chair_coverage_and_facts(context, act_id, floor)[0]
+
+
+def alignment_unmeasured_chairs(attachments: dict[str, dict]) -> list[str]:
+    """The chairs short of the floor only because the aligner stopped on its own bound."""
+    return sorted(
+        chair
+        for chair, fact in attachments.items()
+        if fact["alignment_unmeasured"] and not (fact["attached"] and fact["comparable"])
+    )
+
+
+def _chair_coverage_and_facts(
+    context, act_id: str, floor: int
+) -> tuple[dict[str, object], dict[str, dict]]:
+    """`validate_chair_coverage`, with the per-chair attachment facts it counted."""
     current_attempts = chair_current_attempts(context, act_id)
     outcomes = chair_outcomes(current_attempts)
     sealed = set(context.witness_chairs)
@@ -1123,7 +1142,7 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             "single-component witness floor; the two must agree while every logical act "
             "is one capture"
         )
-    return coverage
+    return coverage, attachments
 
 
 def preflight_witness_denominator(context, floor: int) -> None:
@@ -2778,6 +2797,7 @@ def review_route_from_findings(
     audit_reproof_truncation: dict | None = None,
     assessment_malformed: bool = False,
     assessment_problem: str | None = None,
+    unmeasured_chairs: Sequence[str] = (),
 ) -> tuple[str, str] | None:
     """Compose every independent review cause in stable priority order.
 
@@ -2866,9 +2886,19 @@ def review_route_from_findings(
             reason = f"{reason} ({assessment_problem})"
         reasons.append(reason)
     if under_witnessed:
-        reasons.append(
-            "the configured act-level witness floor is not met; a witness failure is not coverage"
-        )
+        if unmeasured_chairs:
+            # The aligner's stop is named apart: it is not the witness falling short.
+            reasons.append(
+                "the configured act-level witness floor is not met; chair(s) "
+                f"{sorted(unmeasured_chairs)} were never compared with this act because the "
+                "aligner stopped on its own bound, so their coverage is unmeasured, not "
+                "failed, and an unmeasured chair is not coverage"
+            )
+        else:
+            reasons.append(
+                "the configured act-level witness floor is not met; a witness failure is not "
+                "coverage"
+            )
     if unreconciled:
         reasons.append("the act did not reconcile and needs a human")
     if not reasons:
@@ -3475,7 +3505,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     for act in expected_acts(context):
         act_id, act_key = act["act_id"], act["act_key"]
 
-        coverage = validate_chair_coverage(context, act_id, floor)
+        coverage, attachment_facts = _chair_coverage_and_facts(context, act_id, floor)
         content_coverage = testimony_content_for_page(content_findings, act["page_ordinal"])
         geometry_coverage = geometry_coverage_for(geometry_inputs, act["page_ordinal"])
 
@@ -3565,6 +3595,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             audit_reproof_truncation=audit_facts.get("reproof_truncation"),
             assessment_malformed=(assessment_record or {}).get("state") == "malformed",
             assessment_problem=(assessment_record or {}).get("problem"),
+            unmeasured_chairs=alignment_unmeasured_chairs(attachment_facts),
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])

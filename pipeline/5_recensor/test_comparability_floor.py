@@ -38,8 +38,10 @@ from pathlib import Path
 
 import pytest
 
+from common.alignment import STEP_LIMIT_REASON, UNMEASURED_REASONS
 from common.contracts.errors import FatalAccounting
 from common.contracts.stages import ATTESTATORES, RECENSOR
+from common.recensor_receipt import _reasons as receipt_reasons
 from common.runtree.store import RunTree
 from conftest import load_stage
 
@@ -275,19 +277,40 @@ def test_an_aligned_record_carrying_the_retired_deadline_field_is_refused_by_nam
         recensor.act_attachment_facts(context, act["act_id"], current)
 
 
-def test_a_spent_alignment_budget_is_unmeasured_not_a_measured_shortfall(
+def test_an_unaligned_record_carrying_the_retired_deadline_reason_is_refused_by_name(
     context_and_act, monkeypatch
 ):
-    """The aligner stopping on its step budget measured nothing, so the chair
-    lands in `unmeasured`, apart from `unaligned`, a comparison made and found
-    not to cover. It still leaves the floor: no comparison may be claimed."""
+    """A wall-clock stop measured nothing, but read as an ordinary unaligned
+    reason it would land in `unaligned`, the bucket of comparisons made. The
+    Recensor names the retired reason instead of counting the chair from it."""
     recensor, context, act, _tree = context_and_act
 
-    def spend_budget(row):
-        row["alignment"] = {"status": "unaligned", "reason": "alignment-step-limit"}
+    def stopped_on_the_clock(row):
+        row["alignment"] = {"status": "unaligned", "reason": "alignment-deadline-exceeded"}
         row["comparable"] = False
 
-    _rewrite_page_alignment(context, monkeypatch, act["act_id"], spend_budget)
+    _rewrite_page_alignment(context, monkeypatch, act["act_id"], stopped_on_the_clock)
+
+    current = recensor.chair_current_attempts(context, act["act_id"])
+    with pytest.raises(FatalAccounting, match="retired unaligned reason 'alignment-deadline"):
+        recensor.act_attachment_facts(context, act["act_id"], current)
+
+
+@pytest.mark.parametrize("reason", sorted(UNMEASURED_REASONS))
+def test_an_aligner_stop_is_unmeasured_not_a_measured_shortfall(
+    context_and_act, monkeypatch, reason
+):
+    """The aligner stopping on any of its own bounds measured nothing, so the
+    chair lands in `unmeasured`, apart from `unaligned`, a comparison made and
+    found not to cover. It still leaves the floor: no comparison may be claimed.
+    Both hold reasons name it as unmeasured, never as a witness failure."""
+    recensor, context, act, _tree = context_and_act
+
+    def stop(row):
+        row["alignment"] = {"status": "unaligned", "reason": reason}
+        row["comparable"] = False
+
+    _rewrite_page_alignment(context, monkeypatch, act["act_id"], stop)
 
     current = recensor.chair_current_attempts(context, act["act_id"])
     outcomes = recensor.chair_outcomes(current)
@@ -298,6 +321,87 @@ def test_a_spent_alignment_budget_is_unmeasured_not_a_measured_shortfall(
     coverage = recensor.witness_coverage(outcomes, context.witness_floor, attachments=facts)
     assert coverage["under_witnessed"] is True
     assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 1}
+
+    assert recensor.alignment_unmeasured_chairs(facts) == [PAGE_CHAIR]
+    _outcome, route = recensor.review_route_from_findings(
+        testimony_shortfall=False,
+        audit_unresolved=False,
+        under_witnessed=coverage["under_witnessed"],
+        unmeasured_chairs=recensor.alignment_unmeasured_chairs(facts),
+    )
+    assert f"chair(s) ['{PAGE_CHAIR}'] were never compared with this act" in route
+    assert "unmeasured, not failed" in route
+    assert "a witness failure" not in route
+
+    (receipt_reason,) = receipt_reasons(
+        [{"act_id": act["act_id"], "partition_class": "completed", "coverage": coverage}]
+    )
+    assert "is under-witnessed" in receipt_reason
+    assert "1 chair(s) were never compared with this act" in receipt_reason
+    assert "unmeasured, not failed" in receipt_reason
+
+
+def _page_witness_pages(context, act_id):
+    """The page ordinals of the page witness's attachment rows, in record order."""
+    (attachment,) = [
+        context.tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "act-attachment" and entry["subject_id"] == act_id
+    ]
+    return [
+        row["page_ordinal"]
+        for row in attachment["payload"]["attachments"]
+        if row["chair"] == PAGE_CHAIR
+    ]
+
+
+def test_a_two_page_act_stays_unmeasured_whichever_page_row_comes_first(
+    context_and_act, monkeypatch
+):
+    """The fixture's act that runs onto a second page has two page rows per
+    page witness: its primary page, aligned here, and a continuation page, never
+    aligned. With the primary page stopped on the step budget, the merged chair
+    is unmeasured in either row order: the continuation row does not overwrite
+    it, and a merged attached-and-comparable pair is never invented."""
+    recensor, context, _act, _tree = context_and_act
+    act = next(
+        act
+        for act in recensor.expected_acts(context)
+        if len(_page_witness_pages(context, act["act_id"])) == 2
+    )
+
+    def spend_budget_and_reverse(row):
+        row["alignment"] = {"status": "unaligned", "reason": STEP_LIMIT_REASON}
+        row["comparable"] = False
+
+    for reverse in (False, True):
+        _rewrite_page_alignment(context, monkeypatch, act["act_id"], spend_budget_and_reverse)
+        if reverse:
+            rewritten = context.tree.read_artifact
+
+            def reordered(stage, kind, artifact_id, _read=rewritten):
+                record = _read(stage, kind, artifact_id)
+                if (
+                    stage == ATTESTATORES
+                    and kind == "act-attachment"
+                    and record["subject_id"] == act["act_id"]
+                ):
+                    record["payload"]["attachments"].reverse()
+                return record
+
+            monkeypatch.setattr(context.tree, "read_artifact", reordered)
+        pages = _page_witness_pages(context, act["act_id"])
+        assert pages == ([2, 1] if reverse else [1, 2])
+
+        current = recensor.chair_current_attempts(context, act["act_id"])
+        outcomes = recensor.chair_outcomes(current)
+        facts = recensor.act_attachment_facts(context, act["act_id"], current)
+        assert facts[PAGE_CHAIR]["alignment_unmeasured"] is True
+        assert (facts[PAGE_CHAIR]["attached"], facts[PAGE_CHAIR]["comparable"]) != (True, True)
+        coverage = recensor.witness_coverage(outcomes, context.witness_floor, attachments=facts)
+        assert coverage["shortfalls"]["unmeasured"] == 1
+        assert coverage["shortfalls"]["unaligned"] == 0
+        monkeypatch.undo()
 
 
 def test_a_measured_non_overlap_stays_unaligned(context_and_act, monkeypatch):

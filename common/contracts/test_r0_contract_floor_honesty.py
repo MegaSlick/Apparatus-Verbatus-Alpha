@@ -100,7 +100,13 @@ def test_coverage_schema_has_room_for_a_page_granularity_only_contribution():
     # naming just one of the three granularity fields -- exactly the gap F-S4
     # closes. This test's own assertion (a new field is accepted, not refused)
     # is unchanged; only its previously-inconsistent input is corrected.
-    coverage = _base_coverage(page_granularity_only=1, under_witnessed=True)
+    coverage = _base_coverage(
+        page_granularity_only=1,
+        under_witnessed=True,
+        health_unrecorded=0,
+        shortfalls={"failed": 0, "truncated": 0, "unaligned": 1, "unmeasured": 0},
+        granularity_basis=outcomes.NATIVE_GRANULARITY_BASIS,
+    )
     try:
         _validate_coverage(coverage)
     except SchemaRefusal as error:
@@ -292,5 +298,15 @@ def test_an_under_witnessed_act_cannot_claim_otherwise_by_omitting_two_of_three_
     actually met the floor, so the act IS under-witnessed, and the record is lying.
     """
     coverage = _base_coverage(page_granularity_only=1, under_witnessed=False)
-    with pytest.raises(SchemaRefusal, match="under_witnessed"):
+    # A granular receipt omitting any granularity fact is refused outright now.
+    with pytest.raises(SchemaRefusal, match="omits one or more required granularity facts"):
         _validate_coverage(coverage)
+    # And with every fact present, the lie itself is refused by name.
+    complete = {
+        **coverage,
+        "health_unrecorded": 0,
+        "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 1, "unmeasured": 0},
+        "granularity_basis": outcomes.NATIVE_GRANULARITY_BASIS,
+    }
+    with pytest.raises(SchemaRefusal, match="under_witnessed"):
+        _validate_coverage(complete)

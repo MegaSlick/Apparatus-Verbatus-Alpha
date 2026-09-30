@@ -110,12 +110,21 @@ missing configured chair, an unsealed extra chair, or a duplicate ordinal is a
 fatal accounting error; it is never resolved by sort order. Completed coverage is
 `read` plus `genuinely-empty`, while failed and not-run outcomes remain visible
 shortfalls.
-A chair not attached with comparable text is a shortfall in one of two buckets:
-`unmeasured` when its page alignment stopped on one of the aligner's own bounds
-(`character-limit`, `character-pair-limit`, `alignment-step-limit`), so nobody
-knows whether it covered the act, and `unaligned` when a comparison was made, or
-never needed, and did not cover. Either leaves the floor. The partition receipt
-carries the split from `recensor-partition-receipt.v3`.
+A chair not attached with comparable text is a shortfall in one of two buckets.
+`unmeasured` holds a chair whose page alignment stopped on one of the aligner's
+own bounds (`character-limit`, `character-pair-limit`, `alignment-step-limit`),
+so nobody knows whether it covered the act. `unaligned` holds every other such
+chair: a reading compared that did not cover the act (`no-common-anchor-text`,
+`no-overlap-with-act-anchor`); a comparison that could not be placed in this act
+alone (`ambiguous-overlapping-act-alignment`,
+`no-raw-counterpart-for-aligned-span`); a reading with no act anchor to compare
+against (`missing-chandra-page-anchor`, `act-anchor-line-not-located`,
+`continuation-page-no-act-anchor`); and a chair with nothing to compare (a
+non-reading outcome, an unattached chair, a report that is not text). Either
+bucket leaves the floor. The partition receipt carries the split from
+`recensor-partition-receipt.v3`. An alignment record carrying the retired
+`alignment-deadline-exceeded` reason or `deadline_in_force` field is refused by
+name, never counted in either bucket.
 
 The act-attachment mirror is checked against those exact current records before
 the witness floor is counted. For a page witness, geometry against the sealed

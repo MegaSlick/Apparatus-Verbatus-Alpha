@@ -180,18 +180,11 @@ def _validate_item(item: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA
             f"derives {expected_class!r}"
         )
     _validate_reference(item["review_ref"], "review reference")
-    _validate_coverage(
-        item["coverage"],
-        schema=schema,
-        require_complete_granularity=schema in _SHORTFALL_KEYS,
-    )
+    _validate_coverage(item["coverage"], schema=schema)
 
 
 def _validate_coverage(
-    coverage: Any,
-    *,
-    schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V3,
-    require_complete_granularity: bool = False,
+    coverage: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
 ) -> None:
     required = {
         "configured",
@@ -218,7 +211,7 @@ def _validate_coverage(
     allowed = required | granularity_fields
     if set(coverage) - allowed or not required <= set(coverage):
         raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
-    if require_complete_granularity and not granularity_fields <= set(coverage):
+    if schema in _SHORTFALL_KEYS and not granularity_fields <= set(coverage):
         raise SchemaRefusal(
             f"Recensor partition receipt {schema} omits one or more required granularity facts"
         )
@@ -308,9 +301,9 @@ def _validate_coverage(
         )
     if schema in _SHORTFALL_KEYS:
         shortfall_keys = _SHORTFALL_KEYS[schema]
-        # Permissive for partial records; writers always emit every granularity fact.
-        health_unrecorded = coverage.get("health_unrecorded", 0)
-        shortfalls = coverage.get("shortfalls", dict.fromkeys(shortfall_keys, 0))
+        # Present: `_validate_coverage` required every granularity fact for these schemas.
+        health_unrecorded = coverage["health_unrecorded"]
+        shortfalls = coverage["shortfalls"]
         if not _is_count(health_unrecorded):
             raise SchemaRefusal("Recensor partition receipt has invalid health_unrecorded count")
         if (
@@ -376,10 +369,19 @@ def _reasons(items: list[dict[str, Any]]) -> list[str]:
             measured = (
                 "act-level reads" if "page_granularity_only" in coverage else "completed chairs"
             )
-            reasons.append(
+            reason = (
                 f"act {act_id} is under-witnessed "
                 f"({_witnessed_count(coverage)} {measured} of a floor of {coverage['floor']})"
             )
+            unmeasured = coverage.get("shortfalls", {}).get("unmeasured", 0)
+            if unmeasured:
+                # The aligner's stop is named apart: it is not the witness falling short.
+                reason += (
+                    f"; {unmeasured} chair(s) were never compared with this act because the "
+                    "aligner stopped on its own bound, so their coverage is unmeasured, not "
+                    "failed"
+                )
+            reasons.append(reason)
         if coverage["unresolved_chairs"]:
             reasons.append(
                 f"act {act_id} has {coverage['unresolved_chairs']} chair(s) with no outcome yet"

@@ -55,7 +55,7 @@ from common.alignment import (  # noqa: E402
     bracket_marker_view,
     load_dissent_limits,
     markup_text_view,
-    refuse_retired_alignment_fields,
+    refuse_retired_alignment_record,
 )
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -1327,12 +1327,12 @@ def _page_comparison_view(
     """The act's slice of an attached, aligned page reading, once its alignment is proven."""
     chair, span, alignment = attachment["chair"], attachment["span"], attachment["alignment"]
     aligned = isinstance(alignment, dict) and alignment.get("status") == "aligned"
+    refuse_retired_alignment_record(
+        alignment, f"act {act_id} page witness {chair!r}'s alignment record"
+    )
     view = None
     if attachment["attached"]:
         if aligned:
-            refuse_retired_alignment_fields(
-                alignment, f"act {act_id} page witness {chair!r}'s aligned record"
-            )
             if (
                 set(alignment)
                 != {

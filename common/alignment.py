@@ -67,10 +67,14 @@ UNMEASURED_REASONS: Final = frozenset(
 # one was aligned under a wall-clock bound, so whether it aligned depended on
 # the machine; it is refused by name rather than as a generic shape error.
 _RETIRED_ALIGNED_FIELDS: Final = ("deadline_in_force",)
+# Unaligned reasons no current aligner writes. A wall-clock stop said nothing
+# about the witness, and read today it would land in `unaligned`, the bucket of
+# comparisons made, so it is refused by name rather than counted there.
+_RETIRED_UNALIGNED_REASONS: Final = ("alignment-deadline-exceeded",)
 
 
-def refuse_retired_alignment_fields(alignment: Any, subject: str) -> None:
-    """Name a retired field an aligned record still carries, so the remedy is plain."""
+def refuse_retired_alignment_record(alignment: Any, subject: str) -> None:
+    """Name a retired field or reason an alignment record still carries, so the remedy is plain."""
     if not isinstance(alignment, dict):
         return
     retired = [field for field in _RETIRED_ALIGNED_FIELDS if field in alignment]
@@ -80,6 +84,14 @@ def refuse_retired_alignment_fields(alignment: Any, subject: str) -> None:
             "under a wall-clock deadline, not the sealed step budget, so whether it aligned "
             "depended on the machine; re-run the Attestatores alignment under the current "
             "contract"
+        )
+    reason = alignment.get("reason")
+    if alignment.get("status") == "unaligned" and reason in _RETIRED_UNALIGNED_REASONS:
+        raise SchemaRefusal(
+            f"{subject} carries the retired unaligned reason {reason!r}: it stopped on a "
+            "wall-clock deadline, not the sealed step budget, so it measured nothing and "
+            "cannot be counted as a comparison made; re-run the Attestatores alignment "
+            "under the current contract"
         )
 
 
