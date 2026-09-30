@@ -250,3 +250,24 @@ def test_nesting_is_counted_by_its_own_limit_and_never_inside_a_string():
     assert _codes(page_answer.parse_page_answer(at_limit)[2]) == ["not-object"]
     quoted = _with(lambda a: a["acts"][0].update(text="[" * 1_000 + '\\"{'))
     assert page_answer.parse_page_answer(quoted)[0] == "parsed"
+
+
+@pytest.mark.parametrize(
+    ("raw", "code"),
+    [
+        (None, "not-text"),
+        ("```\n[]\n```", "fenced-answer"),
+        ('{"a": 1, "a": 2}', "duplicate-key"),
+        ("[" * 65 + "]" * 65, "too-deep"),
+        ('["\\udc00"]', "lone-surrogate"),
+        ("[] []", "content-outside-object"),
+    ],
+)
+def test_the_shared_decoder_refuses_what_the_page_grammar_refuses(raw, code):
+    value, problems = page_answer.decode_json_reply(raw)
+    assert value is None and [problem["code"] for problem in problems] == [code]
+    assert page_answer.parse_page_answer(raw)[2] == problems
+
+
+def test_the_shared_decoder_returns_any_one_bare_json_value():
+    assert page_answer.decode_json_reply(' [1, {"a": null}] \n') == ([1, {"a": None}], [])
