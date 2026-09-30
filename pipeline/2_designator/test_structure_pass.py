@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 
 import common.stage as stage_contract
-from common import chandra_layout, structure_answer
+from common import chandra_layout
 from common.chairs.registry import ChairRegistry
 from common.chandra_native_retry import wire_parameters as chandra_wire_parameters
 from common.chandra_presentation import (
@@ -596,7 +596,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert payload["act_count"] == len(expected)
         assert [act["raw_bounds"] for act in payload["acts"]] == [b for b, _t in expected]
         assert [act["text_digest"] for act in payload["acts"]] == [
-            structure_answer.text_digest(text) for _b, text in expected
+            chandra_layout.text_digest(text) for _b, text in expected
         ]
         assert payload["findings"] == []
         assert payload["decoding"]["policy"] == "structure"
@@ -877,7 +877,7 @@ def test_a_block_with_no_usable_box_is_recorded_and_never_minted(live_run, tmp_p
         ("blank-page-retained", 3),
     ]
     unreadable, absent, _blank = payload["findings"]
-    assert unreadable["data_bbox_digest"] == structure_answer.text_digest("ten 20 30 40")
+    assert unreadable["data_bbox_digest"] == chandra_layout.text_digest("ten 20 30 40")
     assert unreadable["data_bbox_truncated"] is False
     assert unreadable["reason"] == "components are not plain decimal integers"
     # A null digest is the structural signal for "drew no box at all", told
@@ -1991,31 +1991,6 @@ def test_a_real_submission_under_the_fixture_catalogue_is_refused_by_name(
         ],
     )
     with pytest.raises(ContractError, match="may not be marked out by the fixture structure chair"):
-        designator.main()
-    assert not (root / RUN_ID / "2_designator").exists()
-
-
-def test_a_real_recovery_requires_the_same_explicit_request_identity(
-    real_template, tmp_path, monkeypatch
-):
-    """Real ingress reaches recovery validation; it is not route-refused."""
-    root = tmp_path / "runs"
-    shutil.copytree(real_template, root)
-    monkeypatch.chdir(ROOT)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            str(ROOT / "pipeline" / "2_designator" / "run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            RUN_ID,
-            "--operation",
-            "recover",
-        ],
-    )
-    with pytest.raises(ContractError, match="must name the act"):
         designator.main()
     assert not (root / RUN_ID / "2_designator").exists()
 

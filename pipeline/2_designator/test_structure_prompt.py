@@ -1,7 +1,7 @@
 """Covers `structure_prompt.py` (sealed prompt text and digest, that the text
 is Chandra's own carried bytes rather than a copy, and the no-preference
 check) and the page-pixel conversion equality between
-`common/structure_answer.py::to_page_bounds` and
+`common/chandra_layout.py::to_page_bounds` and
 `geometry_layer.chandra_layout`'s own arithmetic.
 """
 
@@ -16,8 +16,8 @@ from geometry_layer import RESPONSE_BLOB_PREFIX, chandra_layout
 from structure_prompt import STRUCTURE_PROMPT_VERSION, messages, prompt_sha256
 
 from common import chandra_layout as layout_grammar
+from common.chandra_layout import to_page_bounds
 from common.contracts.errors import SchemaRefusal
-from common.structure_answer import to_page_bounds
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
 RESPONSE = {"relative_path": RESPONSE_BLOB_PREFIX + "b" * 64, "sha256": "b" * 64}
@@ -113,7 +113,7 @@ def test_every_label_the_reader_can_publish_is_a_label_the_prompt_offered():
 
 
 # ---------------------------------------------------------------------------
-# Conversion equality: common/structure_answer.py::to_page_bounds against
+# Conversion equality: common/chandra_layout.py::to_page_bounds against
 # geometry_layer.chandra_layout's own arithmetic.
 # ---------------------------------------------------------------------------
 
