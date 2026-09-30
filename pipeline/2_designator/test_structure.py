@@ -215,11 +215,10 @@ def test_zero_gap_tolerance_still_connects_diagonal_neighbours():
 
 
 def test_two_components_sharing_a_top_left_origin_still_sort_deterministically():
-    """`label_components` sorts by (top, left) only, a component's own origin,
-    not its full bounding box. Two disjoint components (a lone pixel and a
-    diagonal staircase) can tie on that origin; without a tiebreak beyond
-    (y, x), their order would fall back to dict-iteration order -- a function
-    of Python's pixel-tuple hashing, not a documented property.
+    """Two disjoint components (a lone pixel and a diagonal staircase) can tie
+    on their (top, left) origin. `label_components` breaks the tie on each
+    component's smallest pixel, so the order never falls back to
+    dict-iteration order -- a function of Python's pixel-tuple hashing.
     """
     pixels = {(0, 0), (0, 3), (1, 2), (2, 1), (3, 0)}
     components = label_components(pixels, gap_tolerance_px=0)
@@ -239,7 +238,7 @@ def test_two_components_sharing_a_top_left_origin_still_sort_deterministically()
         assert label_components(reordered, gap_tolerance_px=0) == components
 
 
-def test_components_sharing_an_origin_neither_inks_are_ordered_by_their_smallest_pixel():
+def test_components_sharing_an_origin_that_neither_inks_are_ordered_by_their_smallest_pixel():
     """The tie-break reads each component's smallest `(x, y)` pixel, rows included.
 
     Neither component inks its shared origin `(0, 0)`, and their last rows
