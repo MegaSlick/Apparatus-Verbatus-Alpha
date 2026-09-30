@@ -47,8 +47,10 @@ from typing import Any
 from contract import (
     CHECKPOINT_SETTINGS,
     OUTPUT_SETTINGS,
+    PAGE_MODES,
     PAGE_SCHEMA,
     BundleRefusal,
+    found_settings_file,
     read_bundle,
     reading_order,
 )
@@ -67,12 +69,14 @@ def _versions() -> dict[str, str]:
 
 
 def _settings_environment(bundle_root: Path, bundle: dict[str, Any], threads: int) -> dict:
-    """The environment Surya's settings read at import: CPU, fixed threads, no network."""
-    for name in (*OUTPUT_SETTINGS, *CHECKPOINT_SETTINGS.values()):
-        if name in os.environ:
-            raise RunRefusal(f"{name} is set in the environment; Surya's own default is used")
+    """The environment Surya's settings read at import: CPU, fixed threads, no network.
+
+    Surya's settings read the environment ignoring case, so a variable is refused
+    whatever its case when it names a setting that must hold Surya's default, or
+    names in another case a setting the runner sets here.
+    """
     order = bundle["checkpoints"]["order"]["path"]
-    return {
+    chosen = {
         "TORCH_DEVICE": "cpu",
         "FAST_DETECTOR_DEVICE": "cpu",
         "FAST_LAYOUT_NUM_THREADS": str(threads),
@@ -83,6 +87,15 @@ def _settings_environment(bundle_root: Path, bundle: dict[str, Any], threads: in
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
     }
+    defaults = {name.upper() for name in (*OUTPUT_SETTINGS, *CHECKPOINT_SETTINGS.values())}
+    for name in os.environ:
+        if name.upper() in defaults:
+            raise RunRefusal(f"{name} is set in the environment; Surya's own default is used")
+        if name.upper() in chosen and name not in chosen:
+            raise RunRefusal(
+                f"{name} is set in the environment beside the runner's own {name.upper()}"
+            )
+    return chosen
 
 
 def _checked_settings(settings: Any, defaults: dict[str, Any]) -> dict[str, str]:
@@ -104,9 +117,23 @@ def _checked_settings(settings: Any, defaults: dict[str, Any]) -> dict[str, str]
 def _checked_env_file(settings_class: Any) -> None:
     """Surya's settings read a `local.env` found above its package; the run records
     only settings it can see, so a found file is refused rather than read."""
-    found = settings_class.model_config.get("env_file")
+    found = found_settings_file(settings_class)
     if found:
         raise RunRefusal(f"Surya found a settings file at {found}; remove it, then run again")
+
+
+def _checked_page_modes(pages: list[Path], image_module: Any) -> None:
+    """Refuse by name, before any model loads, a page Surya's own loader would
+    clip: one whose mode is not in `PAGE_MODES`. Reads each page's header only."""
+    for ordinal, path in enumerate(pages, start=1):
+        with image_module.open(path) as image:
+            mode = image.mode
+        if mode not in PAGE_MODES:
+            raise RunRefusal(
+                f"page {ordinal} ({path.name}) is in mode {mode!r}, which Surya's own "
+                '`convert("RGB")` would clip to 8 bits; Surya reads pages in modes '
+                f"{sorted(PAGE_MODES)}"
+            )
 
 
 def _require_order_head(engine: Any) -> None:
@@ -164,6 +191,7 @@ def run(bundle_root: Path, threads: int, output_dir: Path, pages: list[Path]) ->
     from surya.settings import Settings, settings
 
     _checked_env_file(Settings)
+    _checked_page_modes(pages, Image)
     defaults = {name: field.default for name, field in Settings.model_fields.items()}
     effective = _checked_settings(settings, defaults)
     _checked_checkpoints(bundle, defaults)
@@ -204,7 +232,7 @@ def run(bundle_root: Path, threads: int, output_dir: Path, pages: list[Path]) ->
     detections = _observed(engine.model)
     documents = []
     for ordinal, path in enumerate(pages, start=1):
-        # Surya's own image loader for a page image.
+        # Mirrors Surya's own `load_image` for a page image.
         image = Image.open(path).convert("RGB")
         (lines,) = detector([image])
         detections.clear()

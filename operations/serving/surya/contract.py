@@ -46,6 +46,12 @@ OUTPUT_SETTINGS = (
     "FAST_LAYOUT_CONTAINMENT_THRESHOLD",
     "FAST_LAYOUT_USE_ORDER",
 )
+# The page modes whose `convert("RGB")`, the whole of Surya's own image loader,
+# has one 8-bit reading: the modes the project's own replay of a vendor's RGB
+# conversion accepts (`common.imaging.convert_png_to_rgb`). Any other mode, a
+# 16-bit scan for one, would be clipped to 8 bits unrecorded, so the runner
+# refuses it by name.
+PAGE_MODES = frozenset({"1", "L", "LA", "P", "RGB", "RGBA"})
 
 BUNDLE_FILE = "surya-bundle.json"
 BUNDLE_SCHEMA = "verbatus-surya-bundle.v1"
@@ -70,6 +76,15 @@ _READ_CHUNK = 1 << 20
 
 class BundleRefusal(RuntimeError):
     """A bundle that is missing, malformed, or no longer matches its own lock."""
+
+
+def found_settings_file(settings_class: Any) -> str | None:
+    """The `local.env` Surya's settings found above its package, if any.
+
+    Surya's settings read such a file wherever one sits, so a process that
+    records or relies on Surya's defaults refuses to run when one was found.
+    """
+    return settings_class.model_config.get("env_file") or None
 
 
 def reading_order(detections: int, feature_map: bool, max_boxes: int) -> tuple[str, str | None]:

@@ -642,6 +642,86 @@ def test_the_runner_refuses_a_surya_setting_set_in_its_environment(tmp_path, mon
     assert environment["HF_HUB_OFFLINE"] == "1"
 
 
+@pytest.mark.parametrize(
+    "name", ["detector_text_threshold", "Fast_Layout_Use_Order", "detector_model_checkpoint"]
+)
+def test_the_runner_refuses_a_surya_setting_in_any_case(tmp_path, monkeypatch, name):
+    """Surya's settings read the environment ignoring case."""
+    runner = _runner_module()
+    monkeypatch.setenv(name, "0.2")
+    with pytest.raises(runner.RunRefusal, match=f"{name} is set"):
+        runner._settings_environment(tmp_path, _bundle(tmp_path), 2)
+
+
+def test_the_runner_refuses_a_setting_it_sets_given_in_another_case(tmp_path, monkeypatch):
+    runner = _runner_module()
+    monkeypatch.setenv("torch_device", "cuda")
+    with pytest.raises(runner.RunRefusal, match="torch_device is set .* own TORCH_DEVICE"):
+        runner._settings_environment(tmp_path, _bundle(tmp_path), 2)
+
+
+def _page(path: Path, mode: str) -> Path:
+    from PIL import Image
+
+    Image.new(mode, (8, 4)).save(path)
+    return path
+
+
+def test_the_runner_refuses_a_page_surya_s_loader_would_clip(tmp_path):
+    from PIL import Image
+
+    runner = _runner_module()
+    pages = [_page(tmp_path / "grey.png", "L"), _page(tmp_path / "colour.png", "RGB")]
+    runner._checked_page_modes(pages, Image)
+    deep = _page(tmp_path / "deep.png", "I;16")
+    with Image.open(deep) as image:
+        assert image.mode not in contract.PAGE_MODES
+    with pytest.raises(runner.RunRefusal, match=r"page 3 \(deep.png\) is in mode 'I;16'"):
+        runner._checked_page_modes([*pages, deep], Image)
+
+
+def test_surya_reads_pages_in_the_modes_the_project_replays_an_rgb_conversion_for():
+    from common.imaging import PNG_CROP_MODES
+
+    assert contract.PAGE_MODES == PNG_CROP_MODES
+
+
+def test_the_prefetch_refuses_a_settings_file_surya_found_before_it_downloads(
+    tmp_path, monkeypatch
+):
+    """Surya's downloader reads its host from the settings a `local.env` could set."""
+    import types
+
+    def never(*args, **kwargs):
+        raise AssertionError("nothing is downloaded")
+
+    class Settings:
+        model_config = {"env_file": "/srv/local.env"}
+        model_fields: dict = {}
+
+    fakes = {
+        "huggingface_hub": types.SimpleNamespace(snapshot_download=never),
+        "surya": types.ModuleType("surya"),
+        "surya.common": types.ModuleType("surya.common"),
+        "surya.common.s3": types.SimpleNamespace(download_directory=never),
+        "surya.settings": types.SimpleNamespace(Settings=Settings),
+    }
+    for name, module in fakes.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    sys.path.insert(0, str(SURYA_ENV))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "surya_prefetch_under_test", SURYA_ENV / "prefetch.py"
+        )
+        prefetch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(prefetch)
+    finally:
+        sys.path.remove(str(SURYA_ENV))
+    with pytest.raises(SystemExit, match="settings file at /srv/local.env"):
+        prefetch.fetch(tmp_path / "bundle")
+    assert not (tmp_path / "bundle").exists()
+
+
 def test_the_runner_refuses_a_setting_that_is_not_surya_s_default():
     runner = _runner_module()
     defaults = {name: 0.5 for name in contract.OUTPUT_SETTINGS}

@@ -76,6 +76,7 @@ def _qualification_fixture(
     smoke_receipts = []
     cache_receipts = []
     placements = []
+    subprocess_receipts = []
     for role, identity in sorted(models.chairs.items()):
         if not isinstance(identity, ChairIdentity):
             continue
@@ -102,6 +103,19 @@ def _qualification_fixture(
                     "state": kind,
                 }
             )
+            if kind == "subprocess":
+                # Its own runner read the golden page once, in its own environment.
+                subprocess_receipts.append(
+                    {
+                        "chair": role,
+                        "environment": next(
+                            row["environment"]
+                            for row in profile_rows
+                            if row["chair"] == role and row["tier"] == PROVEN_TIER
+                        ),
+                        "versions": {"surya_ocr": "0.22.1", "torch": "2.14.0"},
+                    }
+                )
             continue
         served_model_id = next(
             row["served_model_id"]
@@ -212,6 +226,7 @@ def _qualification_fixture(
         "cache_receipts": cache_receipts,
         "placements": placements,
         "smoke_receipts": smoke_receipts,
+        "subprocess_receipts": subprocess_receipts,
     }
     wrapper = {
         "schema": "pod-bootstrap-result.v1",
@@ -409,6 +424,21 @@ def test_an_in_process_chair_must_be_placed_in_process(tmp_path: Path) -> None:
             placement["state"] = "planned"
     paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
     with pytest.raises(QualificationRefusal, match="'secondary_proposer' was not planned"):
+        _qualify(paths)
+
+
+def test_a_subprocess_chair_needs_its_runner_s_receipt(tmp_path: Path) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    preflight = wrapper["bootstrap"]["receipts"]["preflight"]
+    (receipt,) = preflight["subprocess_receipts"]
+    assert receipt["chair"] == SURYA_CHAIR
+    receipt["environment"] = "operations/serving/elsewhere"
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="does not name its row's environment"):
+        _qualify(paths)
+    preflight["subprocess_receipts"] = []
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="run as subprocesses"):
         _qualify(paths)
 
 

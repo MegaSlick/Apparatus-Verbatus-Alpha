@@ -32,6 +32,7 @@ from contract import (
     LAYOUT_REPOSITORY_REVISION,
     bundle_bytes,
     bundle_record,
+    found_settings_file,
     read_bundle,
 )
 
@@ -51,6 +52,11 @@ def fetch(out: Path) -> dict:
     from surya.common.s3 import download_directory
     from surya.settings import Settings
 
+    # Surya's downloader reads its host from Surya's settings, which a found
+    # `local.env` could set.
+    found = found_settings_file(Settings)
+    if found:
+        raise SystemExit(f"Surya found a settings file at {found}; remove it, then fetch again")
     defaults = {name: field.default for name, field in Settings.model_fields.items()}
     detection = defaults["DETECTOR_MODEL_CHECKPOINT"]
     layout_repo, layout_sub = _hub_reference(defaults["FAST_LAYOUT_MODEL_CHECKPOINT"])

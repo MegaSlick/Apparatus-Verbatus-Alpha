@@ -1116,8 +1116,7 @@ def _place_local_chair(
         raise BootstrapStepFailure(
             BootstrapStep.CHAIR_CACHE,
             f"chair {identity.role} is bound at {target}, which is a link or not a directory",
-            "Remove what is at that path, so the verified bundle can be placed there, then "
-            "resume.",
+            "Remove what is at that path, so the verified bundle can be placed there, then resume.",
         )
     if target.is_dir():
         try:
