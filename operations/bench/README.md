@@ -1,6 +1,8 @@
-# R7b bench runners
+# Bench runners
 
-`scale.py` is the only bench here: a model-free RunTree cardinality exercise.
+`scale.py` is the only bench here: a model-free RunTree cardinality exercise. It
+measures the time, disk bytes and inodes of creating, resuming and exporting ten
+synthetic RunTrees of 1,000 pages each, so storage cost is known apart from inference.
 No bench-cell definitions or runners exist yet; B0 and B0.5 will require a
 separately authorized live-pod session.
 
