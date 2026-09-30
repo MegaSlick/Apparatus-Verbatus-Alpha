@@ -1,8 +1,9 @@
-# Reconstruction: the labelled, unconfirmed layer beneath each diplomatic reading
-# (common/reconstruction.py). The Perlector returns departures from the sealed
-# diplomatic text; these bounds decide which departures code applies and which
-# hold the act. Closed: every key below is required and no other is read. Every
-# value is a starting value, to be measured on the proof run.
+# Reconstruction: the labelled, unconfirmed layer the Coniector makes beneath each
+# diplomatic reading (common/reconstruction.py). The Coniector returns departures
+# from the sealed diplomatic text; these bounds decide which departures code
+# applies, and past them the act's reconstruction is not made. Closed: every key
+# below is required and no other is read. Every value is a starting value, to be
+# measured on the proof run.
 
 # Most departures one act or one join may carry.
 max_departures_per_act = 5
@@ -17,12 +18,5 @@ max_departure_characters = 40
 max_changed_share_bp = 1500
 changed_floor_characters = 16
 
-# Most cites one departure's basis may name.
-max_basis_cites = 6
-
-# Longest a departure's reason may be, in characters.
+# Longest a departure's optional reason may be, in characters.
 max_reason_characters = 160
-
-# Whether every departure must cite at least one other act's reading (an entry
-# key other than its own), rather than witness text or its own act alone.
-require_other_entry_basis = true

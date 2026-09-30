@@ -3,24 +3,29 @@
     state, answer, problems = parse_reconstruction_answer(raw_text, call)
 
 `call` is one call of `common.reconstruction.reconstruction_plan`,
-`{page_ordinal, subjects, chains}`. The grammar:
+`{page_ordinal, subjects, chains, context}`. The grammar:
 
-    {"acts":  [{"act": "p3:2", "departures": [...]}, ...],
+    {"acts":  [{"act": "p3:2",
+                "findings": [{"code": "out-of-sequence", "reason": "..."}, ...],
+                "departures": [...]}, ...],
      "joins": [{"acts": ["p3:9", "p4:1"], "continues": true, "departures": [...]}, ...]}
 
 * the reply is one bare JSON value, decoded as the page answer's is
   (`common.page_answer.decode_json_reply`); anything else is `malformed`;
 * the object's keys are exactly `acts` and `joins`, both lists; each `acts` item
-  is exactly `{act, departures}` and each join exactly `{acts, continues,
-  departures}`, `continues` a boolean and `departures` a list;
+  is exactly `{act, findings, departures}` and each join exactly `{acts,
+  continues, departures}`, `continues` a boolean and `findings` and `departures`
+  lists;
+* a finding is `{code}` or `{code, reason}`, its code one of `FINDING_CODES` and
+  its reason a string;
 * the `act` values are the call's subjects and the join `acts` lists its
-  chains, each in the plan's order.
+  chains, each in the plan's order, so `joins` is `[]` when no chain is planned.
 
 A reply that decodes but breaks any of these is `answer-invalid`. The answer is
-never repaired: a failed answer holds no act, and the reconstruction is simply
-not made. What each departure says is checked where it is applied
-(`common.reconstruction.apply_departures`), so one bad departure holds only its
-own act.
+never repaired: a failed answer leaves the page's reconstructions not made and
+the diplomatic readings stand. What each departure says is checked where it is
+applied (`common.reconstruction.apply_departures`), so one bad departure leaves
+only its own act's reconstruction not made.
 """
 
 from __future__ import annotations
@@ -37,13 +42,29 @@ MALFORMED: Final = "malformed"
 ANSWER_INVALID: Final = "answer-invalid"
 PARSE_STATES: Final = frozenset({PARSED, MALFORMED, ANSWER_INVALID})
 
+FINDING_CODES: Final = frozenset(
+    {"cut-at-page-break", "incomplete", "out-of-sequence", "inconsistent", "other"}
+)
+
 _TOP_FIELDS: Final = frozenset({"acts", "joins"})
-_ACT_FIELDS: Final = frozenset({"act", "departures"})
+_ACT_FIELDS: Final = frozenset({"act", "findings", "departures"})
 _JOIN_FIELDS: Final = frozenset({"acts", "continues", "departures"})
+_FINDING_REQUIRED: Final = frozenset({"code"})
+_FINDING_OPTIONAL: Final = frozenset({"reason"})
 
 
 def _problem(code: str, detail: str) -> dict[str, str]:
     return {"code": code, "detail": detail}
+
+
+def _is_finding(finding: Any) -> bool:
+    return (
+        isinstance(finding, dict)
+        and _FINDING_REQUIRED <= set(finding) <= _FINDING_REQUIRED | _FINDING_OPTIONAL
+        and isinstance(finding["code"], str)
+        and finding["code"] in FINDING_CODES
+        and isinstance(finding.get("reason", ""), str)
+    )
 
 
 def _answer_problems(answer: Any, call: Mapping[str, Any]) -> list[dict[str, str]]:
@@ -58,10 +79,22 @@ def _answer_problems(answer: Any, call: Mapping[str, Any]) -> list[dict[str, str
         if (
             not isinstance(item, dict)
             or set(item) != _ACT_FIELDS
+            or not isinstance(item["findings"], list)
             or not isinstance(item["departures"], list)
         ):
             problems.append(
-                _problem("act-invalid", f"acts[{index}] is not {{act, departures: [...]}}")
+                _problem(
+                    "act-invalid",
+                    f"acts[{index}] is not {{act, findings: [...], departures: [...]}}",
+                )
+            )
+        elif not all(_is_finding(finding) for finding in item["findings"]):
+            problems.append(
+                _problem(
+                    "finding-invalid",
+                    f"acts[{index}] has a finding that is not {{code, reason?}} with a code "
+                    f"in {sorted(FINDING_CODES)}",
+                )
             )
     for index, item in enumerate(joins):
         if (
