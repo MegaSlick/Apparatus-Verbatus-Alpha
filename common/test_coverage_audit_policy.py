@@ -278,3 +278,18 @@ def test_a_provenance_block_claiming_calibration_without_samples_is_refused(tmp_
 
     with pytest.raises(ContractError, match="sample_count is zero"):
         load_coverage_audit_config(path)
+
+
+def test_the_background_loader_refuses_a_policy_whose_block_lost_its_provenance(tmp_path):
+    """The Ink Map publishes under `[grouping.background]` before the Designator reads it.
+
+    So the loader it calls asks where those numbers came from, as the
+    coverage-audit loader above does for its own blocks.
+    """
+    from common.background import load_background_config
+
+    path = tmp_path / "no-background-provenance.toml"
+    path.write_text(_sealed_toml_without("[grouping.background.provenance]"), encoding="utf-8")
+
+    with pytest.raises(ContractError, match=r"grouping\.background\.provenance"):
+        load_background_config(path)

@@ -17,7 +17,7 @@ An earlier build pass wired the coverage route straight to
 x 0..10 / y 200..240) is a measured, empirical proof this was live: the
 fixture's underlying page pixels there are entirely background -- zero ink --
 confirmed directly against `proof/synthetic_pages.py` (`common.residual_ink.
-ink_runs`); yet the unconfirmed route spent a real fallback-recrop, and with
+ink_map_page`); yet the unconfirmed route spent a real fallback-recrop, and with
 the allowance at zero, held a real act, on that empty box alone. This file now
 proves the corrected boundary: the same witness-alone stimulus asks for
 nothing, in the same shape, whatever the recovery budget is, while the raw
@@ -190,22 +190,22 @@ def test_an_unclaimed_observation_alone_spends_nothing_without_ink_confirmation(
     # the retained boxes. A regression that started flagging real ink there
     # would falsify this control and must not be read as this test passing.
     from common.background import load_background_config, resolve_background_policy
-    from common.imaging import dimensions
+    from common.imaging import grayscale_rows
     from common.residual_ink import (
-        ink_runs,
+        ink_map_page,
         load_coverage_audit_config,
         resolve_coverage_audit_policy,
     )
     from proof.synthetic_pages import page_bytes
 
-    page = page_bytes(1)
-    evidence = ink_runs(
-        page,
-        background_policy=resolve_background_policy(load_background_config(), *dimensions(page)),
-        coverage_policy=resolve_coverage_audit_policy(
-            load_coverage_audit_config(), *dimensions(page)
-        ),
-    )
+    width, height, rows = grayscale_rows(page_bytes(1))
+    evidence = ink_map_page(
+        width,
+        height,
+        rows,
+        background_policy=resolve_background_policy(load_background_config(), width, height),
+        coverage_policy=resolve_coverage_audit_policy(load_coverage_audit_config(), width, height),
+    )["edge_findings"]
     for bounds in observed_bounds:
         x0, x1 = bounds["x"], bounds["x"] + bounds["w"]
         ink_here = sum(

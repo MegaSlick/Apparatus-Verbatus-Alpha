@@ -105,7 +105,7 @@ def _point_scalable(image: Image.Image) -> Image.Image:
     return image
 
 
-class _UnsettledReadingPolicy(ValueError):
+class UnsettledReadingPolicy(ValueError):
     """A page this module can decode and has no settled way to read as grey.
 
     Its own `ValueError` subclass so paths that re-word a decode failure can
@@ -114,11 +114,11 @@ class _UnsettledReadingPolicy(ValueError):
     """
 
 
-class _UndefinedSampleRange(_UnsettledReadingPolicy):
+class _UndefinedSampleRange(UnsettledReadingPolicy):
     """A mode whose samples declare no range, so no 8-bit reading of it is honest."""
 
 
-class _UnreadableTransparency(_UnsettledReadingPolicy):
+class _UnreadableTransparency(UnsettledReadingPolicy):
     """A page that declares transparency, which no grey value can stand for."""
 
 
@@ -169,7 +169,7 @@ def _refuse_unreadable_palette_alpha(image: Image.Image) -> None:
         if offset >= len(entries):
             # An index the palette does not describe reads through
             # `convert("L")` as 0 -- ink invented from an undefined byte.
-            raise _UnsettledReadingPolicy(
+            raise UnsettledReadingPolicy(
                 f"a sealed page draws with palette entry {index}, which its own palette of "
                 f"{len(entries) // stride} entries does not describe, so there is no sample "
                 "to read there and no settled policy for reading one that is not there"
@@ -830,7 +830,7 @@ def grayscale_rows(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
             grayscale = _grayscale_samples(image)
             width, height = grayscale.width, grayscale.height
             data = grayscale.tobytes()
-    except _UnsettledReadingPolicy:
+    except UnsettledReadingPolicy:
         raise  # not "not a decodable image": this is a policy refusal, not damage
     except (*_DECODE_FAILURES, ValueError) as error:
         raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error

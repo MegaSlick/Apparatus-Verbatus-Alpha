@@ -26,12 +26,9 @@ from common.residual_ink import (
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
     MINIMUM_FRACTION_OUTSIDE_BP_FIELD,
     MINIMUM_INK_PIXELS_FIELD,
-    edge_ink,
     edge_ink_from_runs,
-    ink_runs,
-    ink_runs_from_rows,
+    ink_map_page,
     load_coverage_audit_config,
-    page_residual_ink,
     page_spanning_components,
     residual_ink,
     residual_ink_from_runs,
@@ -73,16 +70,6 @@ def _measure(width, height, rows, covered):
         width,
         height,
         rows,
-        covered,
-        background_policy=_policy(width, height),
-        coverage_policy=_coverage(width, height),
-    )
-
-
-def _measure_page(image_bytes, covered):
-    width, height = dimensions(image_bytes)
-    return page_residual_ink(
-        image_bytes,
         covered,
         background_policy=_policy(width, height),
         coverage_policy=_coverage(width, height),
@@ -442,20 +429,6 @@ def test_overlapping_and_clipped_bounds_cover_exactly_their_union():
     assert ink - union  # the case would prove nothing if everything were covered
 
 
-def test_page_residual_ink_decodes_before_measuring():
-    rows = canvas(10, 10)
-    paint(rows, 0, 0, 6, 6)
-    encoded = encode_grayscale_png(10, 10, rows)
-    result = _measure_page(encoded, [])
-    assert result["outside_ink_pixels"] == 36
-    assert result["flagged"] is True
-
-
-def test_page_residual_ink_refuses_undecodable_bytes():
-    with pytest.raises(ValueError):
-        _measure_page(b"not a page", [])
-
-
 def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink():
     """The map's early edge observation is not a hold after the crop re-measure.
 
@@ -468,11 +441,11 @@ def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink
     """
     for page in PAGES:
         image = page_bytes(page["ordinal"])
-        initial = edge_ink(
+        initial = ink_map_page(
             *grayscale_rows(image),
             background_policy=_policy(*dimensions(image)),
             coverage_policy=_coverage(*dimensions(image)),
-        )
+        )["edge"]
         assert initial["outside_ink_pixels"] == 0
         assert initial["flagged"] is False
 
@@ -484,13 +457,15 @@ def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink
     image = encode_grayscale_png(600, 600, rows)
     audit = _coverage(600, 600)
     assert audit["edge_band_px"] == 6
-    initial = edge_ink(
+    initial = ink_map_page(
         *grayscale_rows(image), background_policy=_policy(600, 600), coverage_policy=audit
-    )
+    )["edge"]
     assert initial["outside_ink_pixels"] == 2400
     assert initial["flagged"] is True
 
-    runs = ink_runs(image, background_policy=_policy(600, 600), coverage_policy=audit)
+    runs = ink_map_page(
+        *grayscale_rows(image), background_policy=_policy(600, 600), coverage_policy=audit
+    )["edge_findings"]
     unclaimed = edge_ink_from_runs(runs, [], coverage_policy=audit)
     assert unclaimed["outside_ink_pixels"] == initial["outside_ink_pixels"]
     assert unclaimed["flagged"] is True
@@ -511,7 +486,7 @@ def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink
 def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, height):
     """One instrument, not two that disagree about what an edge is.
 
-    `edge_ink` floors its band at 1 so the smallest legal image still has
+    The Ink Map's edge finding floors its band at 1 so the smallest legal image still has
     an edge. `edge_ink_from_runs` dropped that floor and computed 0, skipping
     the perimeter measurement entirely. The Ink Map then flagged such a page
     and the Armarium re-measured it clean, and
@@ -527,17 +502,17 @@ def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, 
         paint(rows, 0, 0, 3, 1)
     image = encode_grayscale_png(width, height, rows)
 
-    initial = edge_ink(
+    initial = ink_map_page(
         *grayscale_rows(image),
         background_policy=_policy(*dimensions(image)),
         coverage_policy=_coverage(*dimensions(image)),
-    )
+    )["edge"]
     remeasured = edge_ink_from_runs(
-        ink_runs(
-            image,
+        ink_map_page(
+            *grayscale_rows(image),
             background_policy=_policy(*dimensions(image)),
             coverage_policy=_coverage(*dimensions(image)),
-        ),
+        )["edge_findings"],
         [],
         coverage_policy=_coverage(*dimensions(image)),
     )
@@ -559,7 +534,7 @@ def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
     interval `(width - band, width)` become the identical `(0, 1)` on every
     middle row -- each middle-row pixel then priced twice into
     `outside_ink_pixels` while `total_ink_pixels` counts it once, a page-space
-    account `edge_ink` never produces. Only a middle row proves it: rows
+    account the Ink Map's edge finding never produces. Only a middle row proves it: rows
     inside the band already take the single full-width interval either way.
     """
     width, height = 1, 100
@@ -568,17 +543,17 @@ def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
         paint(rows, 0, y, width, 1)
     image = encode_grayscale_png(width, height, rows)
 
-    initial = edge_ink(
+    initial = ink_map_page(
         *grayscale_rows(image),
         background_policy=_policy(*dimensions(image)),
         coverage_policy=_coverage(*dimensions(image)),
-    )
+    )["edge"]
     remeasured = edge_ink_from_runs(
-        ink_runs(
-            image,
+        ink_map_page(
+            *grayscale_rows(image),
             background_policy=_policy(*dimensions(image)),
             coverage_policy=_coverage(*dimensions(image)),
-        ),
+        )["edge_findings"],
         [],
         coverage_policy=_coverage(*dimensions(image)),
     )
@@ -614,13 +589,13 @@ def test_residual_ink_from_runs_agrees_with_the_pixel_measure():
             pixels = _measure(width, height, [bytearray(row) for row in rows], covered)
         except BackgroundInferenceRefusal:
             continue
-        runs = ink_runs_from_rows(
+        runs = ink_map_page(
             width,
             height,
             [bytearray(row) for row in rows],
             background_policy=_policy(width, height),
             coverage_policy=_coverage(width, height),
-        )
+        )["edge_findings"]
         from_runs = residual_ink_from_runs(runs, covered, coverage_policy=_coverage(width, height))
         for field in ("total_ink_pixels", "outside_ink_pixels", "flagged", "fraction_outside"):
             assert from_runs[field] == pixels[field], f"case {case}: {field}"

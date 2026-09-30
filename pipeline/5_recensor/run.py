@@ -69,7 +69,7 @@ from common.cross_capture_coverage import (  # noqa: E402
     validate_cross_capture_coverage,
 )
 from common.exemplar_boundary import sealed_page_bytes, verify_sealed_page_pixels  # noqa: E402
-from common.imaging import grayscale_rows  # noqa: E402
+from common.imaging import dimensions, grayscale_rows  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
     unrouted_observations,
@@ -1423,6 +1423,21 @@ def sealed_page_images(context) -> dict[int, dict]:
     return pages
 
 
+def sealed_page_dimensions(context, sealed_pages: dict[int, dict]) -> dict[int, tuple[int, int]]:
+    """Each sealed page's `(width, height)`, read from the pixel bytes this stage verified."""
+    return {
+        ordinal: dimensions(
+            sealed_page_bytes(
+                context.tree,
+                page,
+                what=f"the ink-map binding (page {ordinal})",
+                refusal=FatalAccounting,
+            )
+        )
+        for ordinal, page in sorted(sealed_pages.items())
+    }
+
+
 def capture_digest_by_page(sealed_pages: dict[int, dict]) -> dict[int, str]:
     """The capture identity every cross-capture consumer means, by page ordinal.
 
@@ -1542,12 +1557,14 @@ def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dic
     }
 
 
-def ink_map_by_page(context) -> dict[int, dict | None]:
+def ink_map_by_page(context, page_dimensions: dict[int, tuple[int, int]]) -> dict[int, dict | None]:
     """Read the sealed page-space evidence without re-decoding page pixels.
 
     A page the Ink Map published as `ink-not-measurable` maps to `None`: it is
     in the census and it has no retained runs, because the shared background
     inference refused its paper value and no threshold was ever cut.
+    `page_dimensions` is each sealed page's own `(width, height)`
+    (`sealed_page_dimensions`), which a page's retained runs must span.
     """
     coverage_config = None
     maps: dict[int, dict | None] = {}
@@ -1589,9 +1606,13 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
                 "bind its retained runs to a current Ink Map measurement. Restore the sealed "
                 "Ink Map artifact or restart the run before rerunning the Recensor."
             )
+        if coverage_config is None:
+            coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
         try:
             measured = validate_measured_ink_map_payload(
-                payload, audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
+                payload,
+                audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND,
+                ink_margin_bp=coverage_config["ink_margin_bp"],
             )
             context.require_sealed_config(
                 "designator-grouping", measured["background_config_sha256"]
@@ -1604,10 +1625,8 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
         try:
             if not isinstance(evidence, dict):
                 raise ContractError("the measured payload has no ink-run evidence object")
-            if coverage_config is None:
-                coverage_config = load_coverage_audit_config(
-                    context.args.designator_grouping_config
-                )
+            if ordinal not in page_dimensions:
+                raise ContractError("the measured ink map names a page the Exemplar did not seal")
             if coverage_config["config_sha256"] != measured["background_config_sha256"]:
                 raise ContractError(
                     "the background and coverage instruments did not read the same sealed bytes"
@@ -1618,6 +1637,7 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
                 coverage_policy=resolve_coverage_audit_policy(
                     coverage_config, evidence.get("width"), evidence.get("height")
                 ),
+                expected_dimensions=page_dimensions[ordinal],
             )
             measured_outcome = "unclaimed-edge-ink" if initial_measure["flagged"] else "mapped"
             if record.get("outcome") != measured_outcome:
@@ -1685,7 +1705,7 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
                     "Ink Map artifact or restart the run before rerunning the Recensor."
                 )
             start, length = run
-            # Ordered and disjoint, as `ink_runs` writes them; overlapping runs would
+            # Ordered and disjoint, as the Ink Map writes them; overlapping runs would
             # count ink twice.
             if start < previous_end or length <= 0 or start + length > width:
                 raise FatalAccounting(
@@ -3443,7 +3463,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     page_findings = page_coverage_findings(context, sealed_pages)
     geometry_inputs = geometry_coverage_inputs(context)
     content_findings = testimony_content_findings(context)
-    ink_maps = ink_map_by_page(context)
+    ink_maps = ink_map_by_page(
+        context, sealed_page_dimensions(context, sealed_pages or sealed_page_images(context))
+    )
     coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     minimum_ink_pixels = coverage_config["coverage_audit"]["minimum_ink_pixels"]

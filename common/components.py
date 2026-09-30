@@ -1,26 +1,20 @@
-"""Connected-component labelling over an ink pixel set, shared by three readers.
+"""Connected-component labelling over an ink pixel set, shared by the Designator and the audit.
 
-This is the Designator's own labeller, moved to `common/` because a second
-stage needs it: `common/residual_ink.py`'s outside-coverage audit has to name
-this page's page-spanning component (the one the Designator withholds from
-detected grouping while keeping its pixels in conservation), so it does not
-report that pixel population as ordinary outside-coverage ink.
+Connectivity is Chebyshev: two ink pixels join when at most `gap_tolerance_px`
+blank pixels separate them in any direction, so diagonal neighbours join even
+at a tolerance of zero. Components come back in one total order: origin
+`(top, left)`, and among components sharing an origin, their smallest `(x, y)`
+ink pixel. `pipeline/2_designator/_test_support.label_components_reference`
+is the per-pixel oracle both properties are tested against.
 
-The audit re-derives that component rather than reading the Designator's
-record: it labels the same page at the same derived margin under the same
-sealed `gap_tolerance_px` and `page_spanning_area_bp`, so it reaches the
-identical component from the identical bytes without trusting the stage it
-audits. What stays the audit's
-own is the contrast it *counts* ink at, which is the half of the instrument
-that makes it a second opinion rather than a restatement -- measured on 44 real
-pages, using the audit's own looser ink set for the margin instead merges the
-writing into the page-spanning component and hides outside-coverage ink on 41
-of the 44.
+`common/residual_ink.py` labels the page itself, at the Designator's derived
+margin under the same sealed `gap_tolerance_px` and `page_spanning_area_bp`,
+so the page-spanning component it removes from the audit is the one the
+Designator withholds from grouping, found from the same bytes without reading
+the stage it audits.
 """
 
-import heapq
-from functools import cmp_to_key
-from typing import Iterator, TypedDict
+from typing import TypedDict
 
 from common.contracts.errors import ContractError
 from common.imaging import Bounds
@@ -89,18 +83,14 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     than a rectangle. `scan_ink_components` labels every ink pixel through
     here.
 
-    A row-run substitution over the retired per-pixel union-find
-    (kept in `pipeline/2_designator/_test_support.py` as this one's oracle), made on
-    measurement: the per-pixel version cost `ink_pixels x radius^2` dictionary
-    operations, measured at 383 s and 2.17 GB for one photographed page at the
-    sealed `gap_tolerance_px = 3`. Real ink is horizontally contiguous, so a
-    page of millions of pixels is a few hundred thousand runs, turning the
-    per-pixel neighbourhood probe into an interval overlap test.
-
-    The contract is unchanged and proved, not asserted: same components, same
-    bounds, same `gap_tolerance_px` semantics, and the same total order (origin
-    `(top, left)`, ties broken by sorted `(x, y)` ink), with `test_structure.py`
-    comparing the two implementations directly on every page shape.
+    Labels row runs rather than pixels: a per-pixel union-find costs
+    `ink_pixels x radius^2` dictionary operations (383 s and 2.17 GB for one
+    photographed page at the sealed `gap_tolerance_px = 3`), while real ink is
+    horizontally contiguous, so a page of millions of pixels is a few hundred
+    thousand runs and the neighbourhood probe becomes an interval overlap test.
+    `test_structure.py` compares the result with the per-pixel oracle in
+    `pipeline/2_designator/_test_support.py`: same components, same bounds and
+    the same total order.
     """
     return [
         component
@@ -163,10 +153,10 @@ def label_component_runs(
     radius = gap_tolerance_px + 1
     for y in sorted(indices_by_row):
         current = indices_by_row[y]
-        # Same scanline: two maximal runs are separated by at least one blank
-        # pixel, and they join when that blank gap is within tolerance. `x1` is
-        # half-open, so the blank distance between them is `x0 - x1 + 1` and
-        # the legacy Chebyshev test `distance <= radius` is `x0 - x1 <= gap`.
+        # Same scanline: two maximal runs are separated by `x0 - x1` blank
+        # pixels (`x1` is half-open), so the Chebyshev distance between their
+        # facing ink pixels is `x0 - x1 + 1`, and `distance <= radius` is
+        # `x0 - x1 <= gap`.
         for position in range(len(current) - 1):
             left, right = current[position], current[position + 1]
             if run_x0[right] - run_x1[left] <= gap_tolerance_px:
@@ -216,38 +206,16 @@ def label_component_runs(
         )
 
     # Origin alone is not a total order: two components can share (top, left).
-    # The retired implementation broke the tie on sorted (x, y) ink;
-    # reproduced here without materialising pixels via a heap merge of runs.
-    def origin(entry: tuple[Component, list[int]]) -> tuple[int, int]:
-        return (entry[0]["bounds"]["y"], entry[0]["bounds"]["x"])
+    # Their smallest (x, y) ink pixels break the tie, and always do, because
+    # two components never share a pixel. A run's first pixel is the smallest
+    # on its own row, so a component's smallest pixel is the least run start.
+    def order(entry: tuple[Component, list[int]]) -> tuple[int, int, int, int]:
+        component, group = entry
+        first_x, first_y = min((run_x0[index], run_y[index]) for index in group)
+        return (component["bounds"]["y"], component["bounds"]["x"], first_x, first_y)
 
-    def pixel_stream(group: list[int]) -> Iterator[tuple[int, int]]:
-        return heapq.merge(
-            *(((x, run_y[index]) for x in range(run_x0[index], run_x1[index])) for index in group)
-        )
-
-    def compare_ink(left: tuple[Component, list[int]], right: tuple[Component, list[int]]) -> int:
-        for left_pixel, right_pixel in zip(
-            pixel_stream(left[1]), pixel_stream(right[1]), strict=False
-        ):
-            if left_pixel != right_pixel:
-                return -1 if left_pixel < right_pixel else 1
-        return left[0]["pixel_count"] - right[0]["pixel_count"]
-
-    entries.sort(key=origin)
-    ordered: list[tuple[Component, list[tuple[int, int, int]]]] = []
-    span_start = 0
-    for index in range(1, len(entries) + 1):
-        if index == len(entries) or origin(entries[index]) != origin(entries[span_start]):
-            span = entries[span_start:index]
-            if len(span) > 1:
-                span.sort(key=cmp_to_key(compare_ink))
-            ordered.extend(
-                (
-                    component,
-                    [(run_y[member], run_x0[member], run_x1[member]) for member in group],
-                )
-                for component, group in span
-            )
-            span_start = index
-    return ordered
+    entries.sort(key=order)
+    return [
+        (component, [(run_y[member], run_x0[member], run_x1[member]) for member in group])
+        for component, group in entries
+    ]
