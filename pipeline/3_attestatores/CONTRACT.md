@@ -1427,9 +1427,10 @@ arrives. A unit refused for capacity before it is sent is a `failed` unit with
 no capture. The page record is sealed only once every unit on the page has
 been answered, so a pass interrupted inside a page asks that page's units
 again, and a page record already sealed is resumed and never asked again. A
-page the detector found nothing on is sealed `not-run` without a request, with
-reason "DAI's own record detector found no record on this page, so DAI was
-shown nothing here".
+page with no unit is sealed `not-run` without a request, with reason "DAI's own
+record detector found no record on this page, so DAI was shown nothing here",
+or, when the census counts records none of which enclosed a crop, a reason
+naming that count.
 
 **The page record.** One `page-testimonium` per page, in the closed page shape
 plus two fields. `presentations` lists every image the chair was shown, in

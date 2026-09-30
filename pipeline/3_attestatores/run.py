@@ -4088,10 +4088,9 @@ def _prepared_detector_pages(
     """Each page's DAI units, with every page that needs no request settled first.
 
     A page record sealed by an interrupted pass is resumed, never asked again,
-    and a page the detector found no record on is sealed `not-run` without a
-    request. Both then feed their act views like any answered page.
+    and a page with no record crop is sealed `not-run` without a request. Both then feed their act views like any answered page.
     """
-    units_by_page = detector_units_by_page(context)
+    units_by_page, detections_by_page = detector_units_by_page(context)
     sealed = _sealed_page_testimonia(context, ordinal)
     for chair in detector_chairs:
         resolved = context.registry.resolve(chair)
@@ -4118,6 +4117,7 @@ def _prepared_detector_pages(
                         served=[],
                         receipt_ref=None,
                         page_ids=page_ids,
+                        detection_count=detections_by_page[page_ordinal],
                     ),
                     None,
                 )
@@ -4461,6 +4461,16 @@ NO_DETECTOR_RECORD_REASON: Final = (
 )
 
 
+def no_detector_unit_reason(detection_count: int) -> str:
+    """Why a page's DAI record is `not-run`: no record found, or none that enclosed a crop."""
+    if detection_count == 0:
+        return NO_DETECTOR_RECORD_REASON
+    return (
+        f"DAI's own record detector found {detection_count} record(s) on this page and none "
+        "enclosed a crop, so DAI was shown nothing here"
+    )
+
+
 def reads_detector_records(resolved: Any) -> bool:
     """Whether this chair reads its page one detector record at a time."""
     return (
@@ -4496,12 +4506,15 @@ def _verify_detector_region(context, region: dict[str, Any]) -> None:
     )
 
 
-def detector_units_by_page(context) -> dict[int, list[dict[str, Any]]]:
-    """Each sealed page's record crops, in the detector's own order.
+def detector_units_by_page(
+    context,
+) -> tuple[dict[int, list[dict[str, Any]]], dict[int, int]]:
+    """Each sealed page's record crops, in the detector's own order, and its census count.
 
     Read from the Designator's per-page census, so a page the detector found
     nothing on has no units and a missing record refuses by name. A record whose
-    box encloses no crop is kept by the Designator and is not a unit.
+    box encloses no crop is kept by the Designator and is not a unit, but it is
+    counted.
     """
     kinds = (DETECTOR_PAGE_KIND, DETECTOR_RECORD_KIND, DETECTOR_REGION_KIND)
     by_kind: dict[str, dict[str, dict[str, Any]]] = {kind: {} for kind in kinds}
@@ -4515,6 +4528,7 @@ def detector_units_by_page(context) -> dict[int, list[dict[str, Any]]]:
                 )
             by_kind[entry["kind"]][record["subject_id"]] = record
     units: dict[int, list[dict[str, Any]]] = {}
+    detections: dict[int, int] = {}
     for page in by_kind[DETECTOR_PAGE_KIND].values():
         payload = page["payload"]
         ordinal = payload["page_ordinal"]
@@ -4547,7 +4561,8 @@ def detector_units_by_page(context) -> dict[int, list[dict[str, Any]]]:
             _verify_detector_region(context, region)
             page_units.append(region)
         units[ordinal] = page_units
-    return units
+        detections[ordinal] = payload["detection_count"]
+    return units, detections
 
 
 def _record_owner(
@@ -4656,8 +4671,14 @@ def publish_detector_page_testimonium(
     served: list[tuple[dict[str, Any], dict[str, Any], Attempt]],
     receipt_ref: dict[str, str] | None,
     page_ids: dict[int, str] | None = None,
+    detection_count: int = 0,
 ) -> Attempt:
-    """Seal one DAI page record over every unit it read; return the page attempt."""
+    """Seal one DAI page record over every unit it read; return the page attempt.
+
+    A page with no unit is sealed `not-run`; ``detection_count`` is its census
+    count, which says whether the detector found nothing or found records that
+    enclosed no crop.
+    """
     # First, so a bad roster or a chair the run did not seal page-scoped refuses
     # before any record is built.
     page_witness_chairs = declared_page_witness_chairs(context)
@@ -4678,7 +4699,7 @@ def publish_detector_page_testimonium(
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
     capabilities = _declared_format_capabilities(adapter)
     if not served:
-        outcome, reason = "not-run", NO_DETECTOR_RECORD_REASON
+        outcome, reason = "not-run", no_detector_unit_reason(detection_count)
         attempt = Attempt(
             outcome=outcome,
             native_payload=None,
