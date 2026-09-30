@@ -13,10 +13,10 @@ The knobs. One question per planned file, each answerable without reading code.
 | `spend.toml` | the project lead's pod-plus-attached-volume money caps; both paid paths refuse it unless configured, and configuring it is not permission to launch |
 | `pod_placement.toml` | planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
 | `serving_recipes.toml` | the fixture-only default serving catalogue; it stays untouched unless `--serving-recipes-config` selects another file |
-| `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles plus explicit non-launchable rows where no honest engine exists; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
+| `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles, the CPU rows of the two detectors the Designator runs itself (DAI's record detector in-process, Surya as a subprocess), and explicit non-launchable rows where no honest engine exists; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
 | `formats.toml` | which Armarium product projections are written and whether verified pixels are embedded |
 | `perlector_protocol.toml` | the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name; and, since 2026-09-14, `[truncation]`, the truncation instrument's length floor in characters per page-equivalent |
-| `alignment.toml` | sealed character, pair, and wall-clock ceilings for witness-to-Chandra alignment |
+| `alignment.toml` | sealed character, pair, and matcher-step ceilings for witness-to-Chandra alignment, and the step budget of the Perlector's dissent and self-revision comparisons |
 | `corpus_frame.toml` | R0's sealed shard boundary: how many pages one bounded failure and accounting unit may hold |
 | `designator_geometry.toml` | the sealed tiling and crop-policy geometry the Designator's proposal adapters are built against |
 | `designator_grouping.toml` | which marks the Designator joins into one act, and how many residual components one page may enumerate before the page itself is held |
@@ -30,18 +30,23 @@ The knobs. One question per planned file, each answerable without reading code.
 
 | Knob | Default | Who changes it | What retires it |
 |---|---|---|---|
-| alignment character/pair/deadline limits | 100,000 / 100,000,000 / 25 seconds | ordinary engineering with recorded measurement | a replacement bounded aligner with recorded benchmark evidence |
+| alignment character/pair/step limits | 100,000 / 100,000,000 / 500,000,000 steps | ordinary engineering with recorded measurement | a replacement bounded aligner with recorded benchmark evidence |
+| dissent comparison step budget | 100,000,000 steps | ordinary engineering with recorded measurement | a replacement bounded comparison with recorded benchmark evidence |
 
-The deadline is sized from the legitimate ceiling, not the pathological one.
-An unaligned page witness is not `comparable`, so it leaves the act's witness
-floor: a deadline that fires on real work records a slow comparison as coverage
-that is missing. A 7,500-character page whose acts repeat one formula verbatim
-measures 10.1 seconds, already past the five this used to carry. Twenty-five
-clears it with load headroom, and does not pretend to clear everything the pair
-ceiling admits -- two different low-entropy chair responses there measure 283.9
-seconds, a case no deadline value closes. A faster matcher was tried and refused
-because it attached witness text to the wrong act. Both measurements and the
-design that would close the case are in `pipeline/3_attestatores/CONTRACT.md`.
+The step budgets count the matcher's work instead of timing it, so whether a
+page aligns, or a dissent or self-revision comparison finishes, depends only on
+its texts and the sealed limits, never on the machine. An unaligned page
+witness is not `comparable`, so it leaves the act's witness floor. The page
+budget clears, with room to spare, a page at the pair ceiling made of register
+acts of 150 characters or more, even when every act repeats one formula
+verbatim and the witness misreads the same word in each;
+`common/test_alignment.py` pins that headroom. Shorter units repeated verbatim
+across the ceiling, such as 60-character index rows, are not covered: they stop
+on the budget and are counted unmeasured, a named hold. Degenerate chair
+responses stop on it too. The dissent budget, `[dissent]` in the same file, is sized the same
+way for act-length text; a comparison past it is recorded as not measured. A
+faster matcher was tried and refused because it attached witness text to the
+wrong act; see `pipeline/3_attestatores/CONTRACT.md`.
 
 ## R5a toggle register
 
@@ -207,6 +212,11 @@ and could not be pinned by it from anywhere else:
 - `manifests/` — one digest-manifest artifact per configured chair: the sorted
   `{path, sha256, size}` rows whose canonical bytes a chair's `digest_manifest`
   names.
+- `real-models/` — where `models-real.toml` binds its local-repository chair,
+  Surya's weight bundle. Never committed: a pod's CHAIR_CACHE step copies the
+  bundle in from the model store, verified against
+  `manifests/surya2-detection.json`, the bundle's measured manifest
+  (`operations/serving/surya/README.md`).
 - `model-fixtures/` — the tiny local-repository snapshots the offline walking
   skeleton resolves. **These are not models.** They stand in for a model
   repository exactly as `proof/fixtures/synthetic-two-page-v0/*.png` stand in for

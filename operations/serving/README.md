@@ -19,6 +19,13 @@ than on a rented GPU.
 
 - A `kind = "fixture"` row is the walking skeleton's stand-in and is refused *by that name*
   before any lease, probe or process.
+- An `in-process` row (DAI's record detector) and a `subprocess` row (Surya) are never
+  launched: their stage runs them on the CPU, and the manager refuses to start one.
+  Surya runs in its own locked environment through `surya_detector.py`, which checks
+  every page document it writes against a closed shape; its weight bundle reaches the
+  pod through the model store, whose launch-time fetch runs Surya's own prefetch
+  (`surya_detector.SuryaBundleFetcher`) and accepts only the pinned manifest
+  (`surya/README.md`). Qualification emits no candidate for either kind.
 - A `vllm` row carries `preflight_state`, and anything but `proven` refuses at launch.
   There is no default: a row without the field refuses at parse time. `proven` is a
   reviewer's declaration in a reviewed file, not a measurement this package can make, just

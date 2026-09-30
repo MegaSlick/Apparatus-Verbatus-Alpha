@@ -149,7 +149,8 @@ class ScheduledStage:
 # Attestatores' own call, never handed down from the Designator's reading.
 # `secondary_proposer` is DAI's own record detector: the Designator runs it
 # in-process on the CPU once its structure chair has closed, so it shares the
-# Designator's pod and never the card.
+# Designator's pod and never the card. `designator_surya` does the same in its
+# own environment, as a subprocess, once the structure chair has closed.
 COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
     ScheduledStage("ingest-to-volume", False),
     ScheduledStage(
@@ -160,6 +161,7 @@ COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
             ScheduledChair(
                 "secondary_proposer", "DAI's record detector, in-process on the CPU after Chandra"
             ),
+            ScheduledChair("designator_surya", "Surya, a subprocess on the CPU after Chandra"),
         ),
     ),
     ScheduledStage(

@@ -90,8 +90,14 @@ def test_coverage_schema_has_room_for_a_page_granularity_only_contribution():
     # under_witnessed=True is the internally consistent value: with 3 completed
     # chairs and 1 of them page-granularity-only, only 2 act-level reads meet the
     # floor of 3, so the act IS under-witnessed, and `_validate_coverage`
-    # rederives that even for a record naming one granularity field.
-    coverage = _base_coverage(page_granularity_only=1, under_witnessed=True)
+    # rederives that from the record's complete granularity facts.
+    coverage = _base_coverage(
+        page_granularity_only=1,
+        under_witnessed=True,
+        health_unrecorded=0,
+        shortfalls={"failed": 0, "truncated": 0, "unaligned": 1, "unmeasured": 0},
+        granularity_basis=outcomes.NATIVE_GRANULARITY_BASIS,
+    )
     try:
         _validate_coverage(coverage)
     except SchemaRefusal as error:
@@ -129,6 +135,7 @@ def test_health_unrecorded_is_counted_and_is_not_a_shortfall():
             "failed": 0,
             "truncated": 0,
             "unaligned": 0,
+            "unmeasured": 0,
         }
     )
     assert unrecorded["under_witnessed"] is healthy["under_witnessed"] is False
@@ -167,9 +174,19 @@ def test_an_unaligned_shortfall_is_counted_from_attachment_and_span_evidence():
     )
     uncovered_span = _coverage(chair_2=_fact(comparable=False))
 
-    assert aligned["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0}
-    assert unattached["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 1}
-    assert uncovered_span["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 1}
+    assert aligned["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 0}
+    assert unattached["shortfalls"] == {
+        "failed": 0,
+        "truncated": 0,
+        "unaligned": 1,
+        "unmeasured": 0,
+    }
+    assert uncovered_span["shortfalls"] == {
+        "failed": 0,
+        "truncated": 0,
+        "unaligned": 1,
+        "unmeasured": 0,
+    }
     # The shortfall lives in the coverage accounting, not in the vocabulary: the
     # chairs are still three ordinary `read` outcomes.
     for coverage in (aligned, unattached, uncovered_span):
@@ -206,7 +223,9 @@ def test_a_health_unrecorded_count_beyond_the_configured_chairs_is_refused():
 
 def test_a_negative_unaligned_shortfall_is_refused():
     """A shortfall class carries a count, and a count is never negative."""
-    coverage = _base_coverage(shortfalls={"failed": 0, "truncated": 0, "unaligned": -1})
+    coverage = _base_coverage(
+        shortfalls={"failed": 0, "truncated": 0, "unaligned": -1, "unmeasured": 0}
+    )
     with pytest.raises(SchemaRefusal):
         _validate_coverage(coverage)
 
@@ -256,11 +275,21 @@ def test_an_under_witnessed_act_is_refused_when_granularity_fields_are_omitted()
 
     The real writer (`witness_coverage()`) always emits all three granularity
     fields together, but a hand-built or tampered record may name only one or
-    two, and the rederivation must not depend on which it names. This record
-    claims `under_witnessed=False` with 3 completed chairs, a floor of 3, and 1 of
+    two; such a record is refused outright, and with every field present the
+    rederivation refuses the lie by name. This record claims `under_witnessed=False` with 3 completed chairs, a floor of 3, and 1 of
     them page-granularity-only: only 2 act-level reads actually met the floor, so
     the act IS under-witnessed, and the record is lying.
     """
     coverage = _base_coverage(page_granularity_only=1, under_witnessed=False)
-    with pytest.raises(SchemaRefusal, match="under_witnessed"):
+    # A granular receipt omitting any granularity fact is refused outright.
+    with pytest.raises(SchemaRefusal, match="omits one or more required granularity facts"):
         _validate_coverage(coverage)
+    # And with every fact present, the lie itself is refused by name.
+    complete = {
+        **coverage,
+        "health_unrecorded": 0,
+        "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 1, "unmeasured": 0},
+        "granularity_basis": outcomes.NATIVE_GRANULARITY_BASIS,
+    }
+    with pytest.raises(SchemaRefusal, match="under_witnessed"):
+        _validate_coverage(complete)

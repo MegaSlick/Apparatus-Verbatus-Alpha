@@ -82,15 +82,23 @@ The durable host model store is intentionally outside this repository. Its
 caller-supplied root contains canonical `download_record.json`, `records/`,
 `hf/`, `local/`, `manifests/`, and `staging/`; `model_store.py` verifies existing
 bytes, and its explicit `materialize_real_roster` workflow is the only
-acquisition writer. It receives an injected fetcher at pod boot; the network
-adapter is isolated in `registry.py`.
+acquisition writer. It receives two injected fetchers at pod boot: one for each
+Hub repository at its revision, whose network adapter is isolated in
+`registry.py`, and one for each local-repository artifact, which writes the
+whole tree (Surya's bundle, through `operations/serving/surya_detector.py`).
+A local-repository artifact has no revision to fetch at, so
+`REQUIRED_ARTIFACTS` names its pinned manifest digest and licence file; a fetch
+that measures any other manifest is refused before anything is published, and
+the artifact stays `pending-fetch`.
 Each canonical record version is immutable at
 `records/<sha256>.json`; `download_record.json` is an atomically moved copy
 to the active version, so a pending artifact can later become present without
 erasing its earlier state. A present artifact cannot return to pending: missing
 bytes after acquisition remain visibly fetched-and-lost and fail verification.
-`model_root` in `config/models.toml` remains local-repository only and relative
-to that file.
+`model_root` in a roster remains local-repository only and relative to that
+file. On a pod the CHAIR_CACHE step copies each local-repository chair's verified
+store snapshot there (`config/real-models/` for the real roster, never committed),
+checked against the roster's manifest before it replaces anything.
 
 The store is shared with the future pod, and the two sides key their directories
 differently: a store directory is per **artifact** (chandra-ocr-2 fills two

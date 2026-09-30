@@ -1214,7 +1214,12 @@ def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_se
         # DAI by its presented region, Churro by the anchor line another chair's
         # response located. No shortfall of any kind.
         assert coverage["by_outcome"] == {"read": 3}
-        assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0}
+        assert coverage["shortfalls"] == {
+            "failed": 0,
+            "truncated": 0,
+            "unaligned": 0,
+            "unmeasured": 0,
+        }
 
 
 def test_a_geometry_free_page_witness_attaches_is_comparable_and_meets_the_floor(live_seam):

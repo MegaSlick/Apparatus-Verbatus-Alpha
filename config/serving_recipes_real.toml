@@ -155,6 +155,10 @@
 # `iou_bp` and `max_det` are Ultralytics' own predict defaults for this
 # checkpoint (imgsz from the checkpoint's own training arguments), written out
 # so the sealed catalogue says what the detector was asked with; none is tuned.
+# Surya is run `kind = "subprocess"` by the Designator in its own locked
+# environment (operations/serving/surya), on the CPU, once the structure chair
+# has closed. Its thread count and time allowances are planning values, not
+# measurements of a pod.
 # The common stage parser seals the selected catalogue's content, so using
 # this catalogue cannot silently share a run authority with the fixture-only
 # catalogue.
@@ -684,3 +688,42 @@ conf_bp = 2500
 iou_bp = 7000
 max_det = 300
 required_packages = { ultralytics = "8.4.14", torch = "2.13.0" }
+
+[[profiles]]
+kind = "subprocess"
+recipe = "unproven-real-surya"
+chair = "designator_surya"
+tier = "generic-24gb"
+engine = "surya"
+environment = "operations/serving/surya"
+device = "cpu"
+threads = 8
+startup_timeout_seconds = 600
+seconds_per_page = 60
+required_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }
+
+[[profiles]]
+kind = "subprocess"
+recipe = "unproven-real-surya"
+chair = "designator_surya"
+tier = "generic-48gb"
+engine = "surya"
+environment = "operations/serving/surya"
+device = "cpu"
+threads = 8
+startup_timeout_seconds = 600
+seconds_per_page = 60
+required_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }
+
+[[profiles]]
+kind = "subprocess"
+recipe = "unproven-real-surya"
+chair = "designator_surya"
+tier = "generic-80gb-plus"
+engine = "surya"
+environment = "operations/serving/surya"
+device = "cpu"
+threads = 8
+startup_timeout_seconds = 600
+seconds_per_page = 60
+required_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }

@@ -34,8 +34,9 @@ from test_live_perlector import (
     _TreeBlobs,
 )
 
+from common.alignment import load_dissent_limits
 from common.contracts.canonical import digest_bytes, digest_of
-from common.contracts.errors import ContractError, FatalAccounting
+from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import act_bindings, region_id, verify
 from common.decoding import (
     chair_decoding,
@@ -53,6 +54,7 @@ from operations.serving.config import profile_preflight_digest
 from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
 
 ROOT = Path(__file__).resolve().parents[2]
+BUDGET = load_dissent_limits()[0].max_comparison_steps
 PERLECTOR_PROGRAM = "pipeline/4_perlector/run.py"
 CHAIN = programs_through("attestatores")
 FIXTURE = tomllib.loads((ROOT / "proof" / "skeleton_fixture.toml").read_text(encoding="utf-8"))
@@ -1013,10 +1015,88 @@ def test_dissent_does_not_count_a_witness_s_own_doubt_markers_as_departure():
             "testimonium": {"payload": {"format_capabilities": capabilities}},
         }
 
-    [marked] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(True)])
+    [marked] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(True)], BUDGET)
     assert marked["compared"] is True and marked["departed"] is False
-    [plain] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(False)])
+    [plain] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(False)], BUDGET)
     assert plain["departed"] is True
+
+
+def _three_witness_feed() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A shown witness the entry cites, one it does not, and one that did not read."""
+    feed = {
+        "witnesses": [
+            {
+                "letter": "A",
+                "witness_label": "dai",
+                "outcome": "read",
+                "units": [{"id": "A1", "text": "Marie Roy"}],
+            },
+            {
+                "letter": "B",
+                "witness_label": "churro",
+                "outcome": "read",
+                "units": [{"id": "B1", "text": "Jean Roy"}],
+            },
+            {"letter": "C", "witness_label": "surya", "outcome": "failed", "units": []},
+        ]
+    }
+    witnesses = [
+        {"witness_label": label, "testimonium": {"payload": {}}}
+        for label in ("dai", "churro", "surya")
+    ]
+    return feed, witnesses
+
+
+def test_page_path_dissent_goes_through_the_act_path_validator():
+    """A page-path row is an act-path dissent row under a witness letter, with
+    the witness head and cited units beside it, so it is refused on the same
+    terms: a lost or relabelled witness, misstated units, a comparison claimed
+    for a witness with nothing to compare, a compared row carrying a budget,
+    and a stopped row naming a budget the run never sealed."""
+    feed, witnesses = _three_witness_feed()
+    rows = page_run._dissent("Marie  Roy", feed, ["A1"], witnesses, BUDGET)
+    assert [row["compared"] for row in rows] == [True, False, False]
+
+    def refused(forged, match, budget=BUDGET):
+        with pytest.raises(SchemaRefusal, match=match):
+            page_run.validate_page_dissent(
+                forged, text="Marie  Roy", feed=feed, cited_ids=["A1"], max_comparison_steps=budget
+            )
+
+    page_run.validate_page_dissent(
+        rows, text="Marie  Roy", feed=feed, cited_ids=["A1"], max_comparison_steps=BUDGET
+    )
+    refused(rows[:2], "one row per shown witness")
+    refused([{**rows[0], "letter": "B"}, *rows[1:]], "another witness than the feed's")
+    refused([{**rows[0], "cited_units": []}, *rows[1:]], "misstates the units")
+    refused(
+        [rows[0], {**rows[0], **rows[1], "compared": True}, rows[2]],
+        "claims a comparison for a witness",
+    )
+    refused([rows[0], {**rows[1], "cited_units": ["B1"]}, rows[2]], "misstates the units")
+    refused(
+        [rows[0], {**rows[1], "compared": "unknown"}, rows[2]], "claims a comparison for a witness"
+    )
+    refused([{**rows[0], "max_comparison_steps": BUDGET}, *rows[1:]], "closed compared-row schema")
+
+    stopped = page_run._dissent("Marie  Roy", feed, ["A1"], witnesses, 1)
+    assert stopped[0]["compared"] == "unknown" and stopped[0]["max_comparison_steps"] == 1
+    page_run.validate_page_dissent(
+        stopped, text="Marie  Roy", feed=feed, cited_ids=["A1"], max_comparison_steps=1
+    )
+    refused(stopped, "records a 1-step dissent budget, but this run sealed")
+
+
+def test_the_page_path_refuses_to_publish_dissent_its_own_validator_refuses(monkeypatch):
+    """The producer checks what it built before it is published."""
+    feed, witnesses = _three_witness_feed()
+
+    def drops_a_witness(text, testimonia, *, max_comparison_steps):
+        return [{"chair": "A", "compared": True}]
+
+    monkeypatch.setattr(page_run, "dissent_against", drops_a_witness)
+    with pytest.raises(SchemaRefusal, match="page dissent\\[0\\]"):
+        page_run._dissent("Marie  Roy", feed, ["A1"], witnesses, BUDGET)
 
 
 # --- live serving, against the fakes ------------------------------------------------
@@ -1450,6 +1530,26 @@ def test_a_resumed_pass_adopts_its_sealed_measures_rather_than_measuring_again(
     _endpoint, exit_code = _read_pages(live_tree, tmp_path / "again", monkeypatch)
     assert exit_code == 0
     assert file_bytes_snapshot(root / "r" / "4_perlector") == before
+
+
+def test_a_resumed_pass_refuses_a_sealed_perlectio_with_invalid_dissent(
+    live_tree, tmp_path, monkeypatch
+):
+    """A sealed reading whose dissent loses a shown witness is not adopted on resume."""
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    original = page_run._sealed
+
+    def one_witness_lost(context, kind, subject, attempt):
+        record = original(context, kind, subject, attempt)
+        if record is not None and kind == page_run.PERLECTIO_KIND:
+            record = json.loads(json.dumps(record))
+            record["payload"]["dissent"] = record["payload"]["dissent"][:-1]
+        return record
+
+    monkeypatch.setattr(page_run, "_sealed", one_witness_lost)
+    with pytest.raises(ContractError, match="cannot stand behind .*one row per shown witness"):
+        _read_pages(live_tree, tmp_path / "again", monkeypatch)
 
 
 def test_a_page_sent_but_never_answered_is_sent_again_naming_the_first_send(

@@ -479,6 +479,15 @@ def derive_record_text_status(text: Any, annotations: Any, uncertainty: Any) -> 
 # --- Witness coverage: outcomes aggregate into counts, never into text ----------
 
 
+# Why a configured chair did not count toward an act's witness floor, one count each.
+SHORTFALL_KINDS: Final = ("failed", "truncated", "unaligned", "unmeasured")
+
+
+def witness_failure_shortfall(shortfalls: Mapping[str, int]) -> bool:
+    """Whether a chair fell short for a reason other than the aligner stopping on its bound."""
+    return any(shortfalls.get(kind, 0) for kind in SHORTFALL_KINDS if kind != "unmeasured")
+
+
 def witness_coverage(
     chair_outcomes: Mapping[str, str],
     configured_floor: int,
@@ -492,10 +501,20 @@ def witness_coverage(
     reading on it.
 
     `under_witnessed` is chairs reaching a completed-class outcome below the
-    configured floor. Three chairs is the floor; the machinery tolerates
-    fewer so one dead witness never kills a run, and a run below the floor is
-    recorded as under-witnessed in the Recensor receipt and the export manifest,
-    visibly, every time.
+    configured floor. Three chairs is the floor; the machinery tolerates fewer so
+    one dead witness never kills a run, and a run below the floor is recorded as
+    under-witnessed in the Recensor receipt and the export manifest, visibly,
+    every time.
+
+    A chair that is not attached with comparable text is one shortfall, in one of
+    two buckets. `unmeasured`: its fact says the aligner stopped on one of its own
+    bounds (`alignment_unmeasured`), so nobody knows whether it covered the act.
+    `unaligned`: every other such chair. Its reading was compared and did not
+    cover the act; or it was compared but could not be placed in this act alone
+    (overlapping another act's span, or no raw counterpart for the aligned span);
+    or there was no act anchor to compare it against (no Chandra page anchor, the
+    act's anchor line not located, a continuation page); or there was nothing to
+    compare (a non-reading outcome, an unattached chair, a report that is not text).
     """
     if configured_floor < 0:
         raise FatalAccounting(f"configured witness floor {configured_floor} is negative")
@@ -509,7 +528,7 @@ def witness_coverage(
         by_class[klass.value] += 1
     attached_chairs: set[str] = set()
     health_unrecorded = 0
-    shortfalls = {"failed": 0, "truncated": 0, "unaligned": 0}
+    shortfalls = dict.fromkeys(SHORTFALL_KINDS, 0)
     # Whether act-granularity facts were supplied decides the arithmetic; the
     # native basis is claimed only when every fact names the basis that decided it.
     native_evidence = attachments is not None
@@ -548,10 +567,15 @@ def witness_coverage(
                 raise FatalAccounting(
                     f"act attachment fact for {chair!r} has invalid truncated state"
                 )
+            unmeasured = fact.get("alignment_unmeasured", False)
+            if not isinstance(unmeasured, bool):
+                raise FatalAccounting(
+                    f"act attachment fact for {chair!r} has invalid alignment_unmeasured state"
+                )
             if outcome == "failed":
                 shortfalls["failed"] += 1
             if not fact["attached"] or not fact["comparable"]:
-                shortfalls["unaligned"] += 1
+                shortfalls["unmeasured" if unmeasured else "unaligned"] += 1
             elif outcome in WITNESS_READING_OUTCOMES and truncated is not True:
                 attached_chairs.add(chair)
     else:

@@ -2,13 +2,16 @@
 
 Run in this directory's own environment, on a machine that may reach Datalab's
 model host and the Hugging Face Hub (the pod, never a laptop holding register
-material):
+material). The pod's model store runs it at launch
+(`operations/serving/surya_detector.py::SuryaBundleFetcher`) and accepts the
+bundle only if its measured manifest is the pinned one; by hand:
 
     operations/serving/surya/.venv/bin/python operations/serving/surya/prefetch.py \
-        --out <volume>/store/staging/surya2-detection
+        --out <bundle>
 
 after `uv sync --locked --project operations/serving/surya` has built that
-environment.
+environment. `--check` in place of `--out` runs the imports and the settings
+check the fetch starts with, and fetches nothing.
 
 The detection checkpoint comes from Surya's own downloader, the layout and
 reading-order checkpoints from the Hub at the pinned commit
@@ -30,6 +33,7 @@ from contract import (
     LAYOUT_REPOSITORY_REVISION,
     bundle_bytes,
     bundle_record,
+    found_settings_file,
     read_bundle,
 )
 
@@ -44,20 +48,39 @@ def _hub_reference(source: str) -> tuple[str, str]:
     return "/".join(parts[:2]), "/".join(parts[2:])
 
 
-def fetch(out: Path) -> dict:
-    from huggingface_hub import snapshot_download
-    from surya.common.s3 import download_directory
+def _defaults() -> dict:
+    """Surya's default settings, refused when a found `local.env` could override them.
+
+    Imports everything the fetch uses, so a broken environment fails here.
+    """
+    import huggingface_hub  # noqa: F401
+    import surya.common.s3  # noqa: F401
     from surya.settings import Settings
 
+    # Surya's downloader reads its host from Surya's settings, which a found
+    # `local.env` could set.
+    found = found_settings_file(Settings)
+    if found:
+        raise SystemExit(f"Surya found a settings file at {found}; remove it, then fetch again")
     defaults = {name: field.default for name, field in Settings.model_fields.items()}
-    detection = defaults["DETECTOR_MODEL_CHECKPOINT"]
     layout_repo, layout_sub = _hub_reference(defaults["FAST_LAYOUT_MODEL_CHECKPOINT"])
-    order_repo, order_sub = _hub_reference(defaults["FAST_ORDER_MODEL_CHECKPOINT"])
+    order_repo, _ = _hub_reference(defaults["FAST_ORDER_MODEL_CHECKPOINT"])
     if order_repo != layout_repo or layout_sub:
         raise SystemExit(
             "Surya's layout and reading-order checkpoints no longer share one repository "
             "root; this fetch lays out one Hub snapshot and must be revised first"
         )
+    return defaults
+
+
+def fetch(out: Path) -> dict:
+    from huggingface_hub import snapshot_download
+    from surya.common.s3 import download_directory
+
+    defaults = _defaults()
+    detection = defaults["DETECTOR_MODEL_CHECKPOINT"]
+    layout_repo, _ = _hub_reference(defaults["FAST_LAYOUT_MODEL_CHECKPOINT"])
+    _, order_sub = _hub_reference(defaults["FAST_ORDER_MODEL_CHECKPOINT"])
     if out.exists():
         raise SystemExit(f"{out} already exists; a bundle is fetched once and never overwritten")
     staging = out.with_name(out.name + ".partial")
@@ -103,8 +126,17 @@ def fetch(out: Path) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out", type=Path, required=True, help="the bundle directory to create")
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--out", type=Path, help="the bundle directory to create")
+    action.add_argument(
+        "--check",
+        action="store_true",
+        help="import what the fetch uses and check Surya's settings; fetch nothing",
+    )
     args = parser.parse_args(argv)
+    if args.check:
+        _defaults()
+        return 0
     record = fetch(args.out.resolve())
     layout = record["checkpoints"]["layout"]
     print(

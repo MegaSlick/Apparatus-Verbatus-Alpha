@@ -2,9 +2,11 @@
 
 These run only where `operations/serving/surya/.venv` has been synced
 (`uv sync --locked --project operations/serving/surya`); CI never syncs it, so
-there they skip. The weights are Surya's own architectures with seeded random
-values (`surya/standin_bundle.py`): what is checked is the path from sealed
-page bytes to checked page documents, not what Surya finds on a page.
+there they skip, and they are the gate run on a synced machine before a pod
+runs Surya (`operations/serving/surya/README.md`). The weights are Surya's own
+architectures with seeded random values (`surya/standin_bundle.py`): what is
+checked is the path from sealed page bytes to checked page documents, and the
+state the runner leaves torch and the models in, not what Surya finds on a page.
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ from common.chairs.config import load_models_toml
 from common.imaging import dimensions
 from operations.serving.config import parse_serving_recipes
 from operations.serving.surya_detector import (
+    BUNDLE_ARTIFACT,
+    SuryaBundleFetcher,
     SuryaRunFailure,
     contract,
     parse_page_document,
@@ -202,3 +206,141 @@ def test_a_bundle_whose_order_head_does_not_load_is_refused(tmp_path):
             _identity(),
             manifest_rows=_manifest(broken),
         )
+
+
+def _drive(driver: str, bundle: Path, output: Path, page: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            str(SURYA_PYTHON),
+            "-c",
+            driver.format(environment=str(SURYA_ENV)),
+            "--weights",
+            str(bundle),
+            "--threads",
+            str(_profile().threads),
+            "--output-dir",
+            str(output),
+            str(page),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        env={},
+        check=False,
+    )
+
+
+# Run in Surya's environment: the runner, keeping the layout engine it builds,
+# then the state the run left torch and the models in, as one JSON line.
+_STATE_DRIVER = """
+import json
+import sys
+sys.path.insert(0, {environment!r})
+import runner
+
+engines = []
+checked_settings = runner._checked_settings
+
+
+def keeping_the_engine(settings, defaults):
+    from surya.fast_layout.server import LayoutEngine
+    build = LayoutEngine.__init__
+
+    def keeping(self, *args, **kwargs):
+        build(self, *args, **kwargs)
+        engines.append(self)
+
+    LayoutEngine.__init__ = keeping
+    return checked_settings(settings, defaults)
+
+
+runner._checked_settings = keeping_the_engine
+code = runner.main(sys.argv[1:])
+import torch
+
+(engine,) = engines
+layout = engine.model.model.model
+order = engine._order.model
+print(json.dumps({{
+    "code": code,
+    "deterministic": torch.are_deterministic_algorithms_enabled(),
+    "threads": torch.get_num_threads(),
+    "interop_threads": torch.get_num_interop_threads(),
+    "layout_training": any(module.training for module in layout.modules()),
+    "order_training": any(module.training for module in order.modules()),
+}}))
+"""
+
+
+def test_the_runner_leaves_torch_deterministic_at_the_row_s_threads_with_models_in_eval(
+    bundle, tmp_path
+):
+    result = _drive(_STATE_DRIVER, bundle, tmp_path / "out", PAGES / "page-1.png")
+    assert result.returncode == 0, result.stderr[-2000:]
+    state = json.loads(result.stdout.strip().splitlines()[-1])
+    assert state == {
+        "code": 0,
+        "deterministic": True,
+        "threads": _profile().threads,
+        "interop_threads": 1,
+        "layout_training": False,
+        "order_training": False,
+    }
+
+
+# Run in Surya's environment: the runner with every socket connection and every
+# Hub download refused. The Hub functions are replaced once Surya is imported,
+# after the runner has set its own environment, wherever a module holds them.
+_OFFLINE_DRIVER = """
+import socket
+import sys
+sys.path.insert(0, {environment!r})
+
+
+def refused(*args, **kwargs):
+    raise OSError("the network is refused under test")
+
+
+socket.socket.connect = refused
+socket.socket.connect_ex = refused
+socket.create_connection = refused
+import runner
+
+checked_settings = runner._checked_settings
+
+
+def offline(settings, defaults):
+    import huggingface_hub
+
+    downloads = {{huggingface_hub.snapshot_download, huggingface_hub.hf_hub_download}}
+    for module in list(sys.modules.values()):
+        for name in ("snapshot_download", "hf_hub_download"):
+            try:
+                if getattr(module, name, None) in downloads:
+                    setattr(module, name, refused)
+            except Exception:
+                pass
+    return checked_settings(settings, defaults)
+
+
+runner._checked_settings = offline
+sys.exit(runner.main(sys.argv[1:]))
+"""
+
+
+def test_the_runner_reads_a_page_with_the_network_refused(bundle, tmp_path):
+    output = tmp_path / "out"
+    page = PAGES / "page-1.png"
+    result = _drive(_OFFLINE_DRIVER, bundle, output, page)
+    assert result.returncode == 0, result.stderr[-2000:]
+    width, height = dimensions(page.read_bytes())
+    parsed = parse_page_document(
+        (output / "page-1.json").read_bytes(), width=width, height=height, input_ordinal=1
+    )
+    assert parsed.document["layout"]["bboxes"]
+
+
+def test_the_bundle_fetcher_s_check_passes_in_the_synced_environment():
+    """The check the model store runs before any download imports what the
+    prefetch fetches with and finds no Surya settings file, fetching nothing."""
+    SuryaBundleFetcher("operations/serving/surya").check(BUNDLE_ARTIFACT)

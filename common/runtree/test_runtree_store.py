@@ -157,7 +157,7 @@ def make_recensor_partition_receipt():
                     "unresolved_chairs": 0,
                     "page_granularity_only": 0,
                     "health_unrecorded": 0,
-                    "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0},
+                    "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 0},
                     "granularity_basis": INTERIM_GRANULARITY_BASIS,
                 },
             }

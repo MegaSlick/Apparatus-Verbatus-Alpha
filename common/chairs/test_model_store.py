@@ -4,7 +4,6 @@ import copy
 import hashlib
 import json
 import os
-import re
 import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -16,18 +15,21 @@ import pytest
 from common.chairs import model_store
 from common.chairs.config import load_models_toml, parse_models_config
 from common.chairs.errors import DigestMismatchRefusal, DiskSpaceRefusal
-from common.chairs.manifests import build_manifest, write_manifest
+from common.chairs.manifests import build_manifest, read_manifest, write_manifest
 from common.chairs.model_store import (
     DAI_PROMPT_CITATION,
+    LICENCE_FILE_NAMES,
     REQUIRED_ARTIFACTS,
     STORE_SCHEMA,
     SURYA_OCR_2_REFUSAL,
+    SYNTHETIC_LICENCE_SNAPSHOTS,
     UNDECLARED_LICENCE_SNAPSHOT,
     UNTEXTED_LICENCE_SNAPSHOT,
     StoreRoleFetcher,
     derived_inventory,
     load_download_record,
     materialize_real_roster,
+    pending_local_artifacts,
     promote_verified_snapshot,
     verify_store,
     write_download_record,
@@ -49,10 +51,29 @@ def _store(tmp_path):
             / requirement.artifact
         )
         root.mkdir(parents=True)
+        carried = []
+        if requirement.source == "local-repository":
+            # The miniature bundle `_fake_bundle_pin` pins.
+            _write_fake_bundle(root)
+            manifest_path = tmp_path / "manifests" / f"{requirement.artifact}.json"
+            measured = build_manifest(root)
+            artifacts[requirement.artifact] = {
+                "artifact": requirement.artifact,
+                "state": "present",
+                "source": requirement.source,
+                "repo": None,
+                "revision": None,
+                "snapshot": root.relative_to(tmp_path).as_posix(),
+                "manifest": manifest_path.relative_to(tmp_path).as_posix(),
+                "digest_manifest": write_manifest(measured, manifest_path),
+                "license": requirement.license_file,
+                "carried": [],
+                "required_files": [row.path for row in measured.rows],
+            }
+            continue
         (root / "config.json").write_text('{"fixture":true}', encoding="utf-8")
         (root / "LICENSE").write_text(f"license for {requirement.artifact}\n", encoding="utf-8")
         (root / "model.safetensors").write_bytes(f"weights for {requirement.artifact}\n".encode())
-        carried = []
         if requirement.artifact == "dai-recordgold-atr":
             for name in ("system.txt", "query.txt"):
                 (root / name).write_text(f"{name} fixture\n", encoding="utf-8")
@@ -229,10 +250,7 @@ def test_download_record_update_preserves_both_immutable_versions(tmp_path):
     pending_digest = write_download_record(pending, tmp_path)
     present = next(item for item in complete["artifacts"] if item["artifact"] == "surya2-detection")
     snapshot = tmp_path / present["snapshot"]
-    snapshot.mkdir(parents=True)
-    (snapshot / "config.json").write_text('{"fixture":true}', encoding="utf-8")
-    (snapshot / "LICENSE").write_text("license for surya2-detection\n", encoding="utf-8")
-    (snapshot / "model.safetensors").write_bytes(b"weights for surya2-detection\n")
+    _write_fake_bundle(snapshot)
     assert (
         write_manifest(build_manifest(snapshot), tmp_path / present["manifest"])
         == present["digest_manifest"]
@@ -381,7 +399,7 @@ def test_v1_active_record_refuses_writers_before_publication(tmp_path):
     assert set((tmp_path / "records").iterdir()) == archives
 
     with pytest.raises(DigestMismatchRefusal, match="move or remove the old download_record.json"):
-        materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
     assert active.read_bytes() == old
     assert set((tmp_path / "records").iterdir()) == archives
 
@@ -428,7 +446,7 @@ def test_materializer_refuses_a_staging_root_symlink_before_fetching_outside_sto
     (store / "staging").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(DigestMismatchRefusal, match="escapes configured root"):
-        materialize_real_roster(store, _FakeMaterializationFetcher())
+        materialize_real_roster(store, _FakeMaterializationFetcher(), _FakeBundleFetcher())
 
     assert sorted(outside.iterdir()) == []
 
@@ -446,7 +464,7 @@ def test_materializer_refuses_a_fetcher_that_replaces_its_staging_directory(tmp_
             destination.symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(DigestMismatchRefusal, match="replaced the materialization destination"):
-        materialize_real_roster(store, _ReplacesDestination())
+        materialize_real_roster(store, _ReplacesDestination(), _FakeBundleFetcher())
 
     assert not (outside / UNTEXTED_LICENCE_SNAPSHOT).exists()
     assert sorted((store / "staging").iterdir()) == []
@@ -464,7 +482,7 @@ def test_materializer_preserves_fetch_failure_when_cleanup_fails(tmp_path, monke
     monkeypatch.setattr(model_store.shutil, "rmtree", refuse_cleanup)
 
     with pytest.raises(RuntimeError, match="fetch transport failed"):
-        materialize_real_roster(tmp_path, _FailsAfterWriting())
+        materialize_real_roster(tmp_path, _FailsAfterWriting(), _FakeBundleFetcher())
 
 
 @pytest.mark.hostile_local
@@ -492,7 +510,7 @@ def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_pat
     monkeypatch.setattr(model_store, "read_limited_bytes", refuse_external_read)
 
     with pytest.raises(DigestMismatchRefusal, match="symlink"):
-        materialize_real_roster(tmp_path, _SymlinkedShardIndex())
+        materialize_real_roster(tmp_path, _SymlinkedShardIndex(), _FakeBundleFetcher())
 
 
 @pytest.mark.hostile_local
@@ -507,7 +525,7 @@ def test_materializer_refuses_a_hard_link_to_bytes_owned_outside_staging(tmp_pat
             os.link(outside, destination / "model.safetensors")
 
     with pytest.raises(DigestMismatchRefusal, match="hard-linked file"):
-        materialize_real_roster(store, _HardLinksExternalBytes())
+        materialize_real_roster(store, _HardLinksExternalBytes(), _FakeBundleFetcher())
 
     assert outside.read_bytes() == b"not repository evidence"
     assert outside.stat().st_nlink == 1
@@ -847,6 +865,51 @@ def test_real_roster_and_materialization_inventory_name_the_same_pinned_reposito
     assert observed == expected
 
 
+class _FakeBundleFetcher:
+    """Surya's bundle in miniature: a lock, the layout licence and one payload."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.checked: list[str] = []
+
+    def check(self, artifact: str) -> None:
+        self.checked.append(artifact)
+
+    def fetch(self, artifact: str, destination: Path) -> None:
+        self.calls.append(artifact)
+        _write_fake_bundle(destination)
+
+
+def _write_fake_bundle(destination: Path) -> None:
+    (destination / "surya_layout2").mkdir(parents=True)
+    (destination / "surya_layout2" / "LICENSE").write_text("layout licence\n", encoding="utf-8")
+    (destination / "surya_layout2" / "README.md").write_text(
+        "---\nlicense: openrail\nlicense_link: LICENSE\n---\n", encoding="utf-8"
+    )
+    (destination / "surya_layout2" / "rfdetr_layout.pth").write_bytes(b"layout weights\n")
+    (destination / "surya-bundle.json").write_text('{"fixture": true}\n', encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _fake_bundle_pin(tmp_path_factory):
+    """Pin Surya's requirement to the miniature bundle, as the real one is pinned
+    to the measured manifest of the real bundle. Its own patch, so a test that
+    undoes its `monkeypatch` keeps this pin."""
+    bundle = tmp_path_factory.mktemp("fake-bundle") / "snapshot"
+    _write_fake_bundle(bundle)
+    pin = digest_bytes(canonical_bytes(build_manifest(bundle).to_record()))
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            model_store,
+            "REQUIRED_ARTIFACTS",
+            tuple(
+                replace(item, digest_manifest=pin) if item.source == "local-repository" else item
+                for item in model_store.REQUIRED_ARTIFACTS
+            ),
+        )
+        yield
+
+
 class _FakeMaterializationFetcher:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -872,15 +935,17 @@ class _FakeMaterializationFetcher:
 
 def test_pod_materializer_fetches_each_real_pin_once_and_records_measured_evidence(tmp_path):
     fetcher = _FakeMaterializationFetcher()
+    bundles = _FakeBundleFetcher()
 
-    receipt = materialize_real_roster(tmp_path, fetcher)
+    receipt = materialize_real_roster(tmp_path, fetcher, bundles)
 
     expected = {
         (item.repo, item.revision) for item in REQUIRED_ARTIFACTS if item.source == "huggingface"
     }
     assert sorted(fetcher.calls) == sorted(expected)
+    assert bundles.calls == ["surya2-detection"]
     assert {row["artifact"] for row in receipt["artifacts"]} == {
-        item.artifact for item in REQUIRED_ARTIFACTS if item.source == "huggingface"
+        item.artifact for item in REQUIRED_ARTIFACTS
     }
     assert all(len(row["digest_manifest"]) == 64 for row in receipt["artifacts"])
     record = load_download_record(tmp_path)
@@ -891,16 +956,196 @@ def test_pod_materializer_fetches_each_real_pin_once_and_records_measured_eviden
         .read_text(encoding="utf-8")
         .startswith("No licence file and no licence declaration were present")
     )
-    assert receipt["complete"] is False  # Surya remains an explicit non-real-roster pending item.
+    surya = next(item for item in record["artifacts"] if item["artifact"] == "surya2-detection")
+    assert (surya["state"], surya["snapshot"], surya["repo"], surya["revision"]) == (
+        "present",
+        "local/surya2-detection",
+        None,
+        None,
+    )
+    assert surya["license"] == "surya_layout2/LICENSE"
+    assert surya["required_files"] == [
+        "surya-bundle.json",
+        "surya_layout2/LICENSE",
+        "surya_layout2/README.md",
+        "surya_layout2/rfdetr_layout.pth",
+    ]
+    pinned = next(
+        item for item in model_store.REQUIRED_ARTIFACTS if item.artifact == "surya2-detection"
+    )
+    assert surya["digest_manifest"] == pinned.digest_manifest
+    assert receipt["complete"] is True
     assert receipt["real_roster_complete"] is True
+    assert list((tmp_path / "staging").iterdir()) == []
+
+
+def test_a_bundle_that_measures_other_than_its_pin_is_refused_before_it_is_promoted(tmp_path):
+    class _Drifted(_FakeBundleFetcher):
+        def fetch(self, artifact: str, destination: Path) -> None:
+            super().fetch(artifact, destination)
+            (destination / "surya_layout2" / "rfdetr_layout.pth").write_bytes(b"changed\n")
+
+    with pytest.raises(DigestMismatchRefusal, match="a new pin is a reviewed change"):
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _Drifted())
+
+    record = load_download_record(tmp_path)
+    surya = next(item for item in record["artifacts"] if item["artifact"] == "surya2-detection")
+    assert surya["state"] == "pending-fetch"
+    assert not (tmp_path / "local" / "surya2-detection").exists()
+    assert not (tmp_path / "manifests" / "surya2-detection.json").exists()
+    assert list((tmp_path / "staging").iterdir()) == []
+    # Nothing was published, so a later fetch of the pinned bytes completes the store.
+    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
+    assert receipt["complete"] is True
+
+
+def test_a_bundle_without_its_licence_text_is_refused(tmp_path):
+    class _NoLicence(_FakeBundleFetcher):
+        def fetch(self, artifact: str, destination: Path) -> None:
+            super().fetch(artifact, destination)
+            (destination / "surya_layout2" / "LICENSE").unlink()
+
+    with pytest.raises(DigestMismatchRefusal, match="no licence text"):
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _NoLicence())
+
+
+def test_a_store_that_recorded_surya_pending_is_completed_by_the_next_launch(tmp_path):
+    """A store that names the bundle pending-fetch is completed by the next launch,
+    which fetches nothing else again."""
+    fetcher = _FakeMaterializationFetcher()
+
+    class _Unreachable(_FakeBundleFetcher):
+        def fetch(self, artifact: str, destination: Path) -> None:
+            raise OSError("model host unreachable")
+
+    with pytest.raises(OSError, match="unreachable"):
+        materialize_real_roster(tmp_path, fetcher, _Unreachable())
+    record = load_download_record(tmp_path)
+    surya = next(item for item in record["artifacts"] if item["artifact"] == "surya2-detection")
+    assert surya["state"] == "pending-fetch"
+    bundles = _FakeBundleFetcher()
+
+    receipt = materialize_real_roster(tmp_path, fetcher, bundles)
+
+    # Each Hub pin fetched once over both launches, the bundle once.
+    assert sorted(fetcher.calls) == sorted(set(fetcher.calls))
+    assert bundles.calls == ["surya2-detection"]
+    assert receipt["real_roster_complete"] is True
+
+
+def test_a_bundle_whose_card_declares_another_licence_is_refused(tmp_path):
+    class _Relicensed(_FakeBundleFetcher):
+        def fetch(self, artifact: str, destination: Path) -> None:
+            super().fetch(artifact, destination)
+            (destination / "surya_layout2" / "README.md").write_text(
+                "---\nlicense: mit\n---\n", encoding="utf-8"
+            )
+
+    with pytest.raises(DigestMismatchRefusal, match="declares 'mit'.*expects 'openrail'"):
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _Relicensed())
+    assert not (tmp_path / "manifests" / "surya2-detection.json").exists()
+
+
+def test_a_bundle_fetcher_that_cannot_run_is_refused_before_anything_downloads(tmp_path):
+    class _NoEnvironment(_FakeBundleFetcher):
+        def check(self, artifact: str) -> None:
+            raise RuntimeError(f"no environment to fetch {artifact}")
+
+    fetcher = _FakeMaterializationFetcher()
+    with pytest.raises(RuntimeError, match="no environment to fetch surya2-detection"):
+        materialize_real_roster(tmp_path, fetcher, _NoEnvironment())
+    assert fetcher.calls == []
+
+
+def test_a_bundle_that_fails_to_fetch_leaves_the_hub_fetcher_uncalled(tmp_path):
+    class _Unreachable(_FakeBundleFetcher):
+        def fetch(self, artifact: str, destination: Path) -> None:
+            raise OSError("model host unreachable")
+
+    fetcher = _FakeMaterializationFetcher()
+    with pytest.raises(OSError, match="model host unreachable"):
+        materialize_real_roster(tmp_path, fetcher, _Unreachable())
+    assert fetcher.calls == []
+
+
+def test_a_complete_store_does_not_ask_the_bundle_fetcher_to_run(tmp_path):
+    materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
+    bundles = _FakeBundleFetcher()
+
+    materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), bundles)
+
+    assert (bundles.checked, bundles.calls) == ([], [])
+
+
+def test_pending_local_artifacts_names_what_the_next_launch_would_fetch(tmp_path):
+    assert pending_local_artifacts(tmp_path / "no-store-yet") == ("surya2-detection",)
+
+    class _Unreachable(_FakeBundleFetcher):
+        def fetch(self, artifact: str, destination: Path) -> None:
+            raise OSError("model host unreachable")
+
+    with pytest.raises(OSError):
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _Unreachable())
+    assert pending_local_artifacts(tmp_path) == ("surya2-detection",)
+    materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
+    assert pending_local_artifacts(tmp_path) == ()
+
+
+def test_a_present_bundle_at_another_pin_is_refused_by_name(tmp_path, monkeypatch):
+    """A store that fetched the bundle at an earlier pin is not complete under a new one."""
+    materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
+    monkeypatch.setattr(
+        model_store,
+        "REQUIRED_ARTIFACTS",
+        tuple(
+            replace(item, digest_manifest="1" * 64) if item.source == "local-repository" else item
+            for item in model_store.REQUIRED_ARTIFACTS
+        ),
+    )
+
+    for check in (verify_store, pending_local_artifacts):
+        with pytest.raises(DigestMismatchRefusal, match="surya2-detection.*fresh store"):
+            check(tmp_path)
+    bundles = _FakeBundleFetcher()
+    with pytest.raises(DigestMismatchRefusal, match="not the pinned 1111"):
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), bundles)
+    assert bundles.calls == []
+
+
+def test_a_store_written_before_surya_joined_the_roster_is_upgraded_then_fetched(
+    tmp_path, monkeypatch
+):
+    earlier = tuple(
+        item for item in model_store.REQUIRED_ARTIFACTS if item.chair != "designator_surya"
+    )
+    fetcher = _FakeMaterializationFetcher()
+    with monkeypatch.context() as patch:
+        patch.setattr(model_store, "REQUIRED_ARTIFACTS", earlier)
+        materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
+    earlier_bytes = (tmp_path / "download_record.json").read_bytes()
+    assert "surya2-detection" not in earlier_bytes.decode("utf-8")
+    calls = list(fetcher.calls)
+    bundles = _FakeBundleFetcher()
+
+    receipt = materialize_real_roster(tmp_path, fetcher, bundles)
+
+    assert fetcher.calls == calls
+    assert bundles.calls == ["surya2-detection"]
+    assert receipt["real_roster_complete"] is True
+    versions = [json.loads(path.read_bytes()) for path in (tmp_path / "records").glob("*.json")]
+    assert any(
+        {item["artifact"]: item["state"] for item in version["artifacts"]}.get("surya2-detection")
+        == "pending-fetch"
+        for version in versions
+    )
 
 
 def test_pod_materializer_reuses_verified_present_snapshots_without_refetching(tmp_path):
     fetcher = _FakeMaterializationFetcher()
-    materialize_real_roster(tmp_path, fetcher)
+    materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
     calls = list(fetcher.calls)
 
-    materialize_real_roster(tmp_path, fetcher)
+    materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
 
     assert fetcher.calls == calls
 
@@ -916,16 +1161,18 @@ def test_materializer_joins_a_loaded_record_to_the_roster_before_indexing_it(tmp
     (tmp_path / "records" / f"{digest_bytes(payload)}.json").write_bytes(payload)
 
     with pytest.raises(DigestMismatchRefusal, match="required artifact 'churro-3B' is absent"):
-        materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
 
 
 def _materialized_before_the_detector_joined(tmp_path, monkeypatch):
     """A real store written while the roster did not yet require the record detector."""
-    earlier = tuple(item for item in REQUIRED_ARTIFACTS if item.chair != "secondary_proposer")
+    earlier = tuple(
+        item for item in model_store.REQUIRED_ARTIFACTS if item.chair != "secondary_proposer"
+    )
     fetcher = _FakeMaterializationFetcher()
     with monkeypatch.context() as patch:
         patch.setattr(model_store, "REQUIRED_ARTIFACTS", earlier)
-        materialize_real_roster(tmp_path, fetcher)
+        materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
     return fetcher
 
 
@@ -938,7 +1185,7 @@ def test_a_store_written_before_an_artifact_joined_the_roster_is_upgraded_then_f
         load_download_record(tmp_path)
     calls = list(fetcher.calls)
 
-    receipt = materialize_real_roster(tmp_path, fetcher)
+    receipt = materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
 
     detector = next(item for item in REQUIRED_ARTIFACTS if item.chair == "secondary_proposer")
     assert fetcher.calls == [*calls, (detector.repo, detector.revision)]
@@ -969,7 +1216,7 @@ def test_an_older_store_whose_entries_left_the_roster_is_not_upgraded(tmp_path, 
     calls = list(fetcher.calls)
 
     with pytest.raises(DigestMismatchRefusal, match="diverges from roster policy"):
-        materialize_real_roster(tmp_path, fetcher)
+        materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
     assert fetcher.calls == calls
     assert (tmp_path / "download_record.json").read_bytes() == payload
 
@@ -979,7 +1226,7 @@ def test_materializer_clears_leftover_staging_before_fetch(tmp_path):
     staging.mkdir()
     (staging / ".abandoned.fetch-leftover").mkdir()
 
-    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
 
     assert receipt["unattributed_staging_entries"] == []
     assert list(staging.iterdir()) == []
@@ -994,7 +1241,9 @@ def test_materializer_waits_for_store_lock_before_sweeping_staging(tmp_path):
 
     def second_writer():
         started.set()
-        return materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+        return materialize_real_roster(
+            tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher()
+        )
 
     with ThreadPoolExecutor(max_workers=1) as workers:
         with model_store._materialization_lock(tmp_path):
@@ -1031,7 +1280,7 @@ def test_materializer_names_store_lock_setup_failure(tmp_path, monkeypatch, stag
         else:
             patch.setattr(model_store.fcntl, "flock", denied)
         with pytest.raises(DigestMismatchRefusal, match=message) as caught:
-            materialize_real_roster(root, _FakeMaterializationFetcher())
+            materialize_real_roster(root, _FakeMaterializationFetcher(), _FakeBundleFetcher())
 
     assert str(root) in str(caught.value)
     assert isinstance(caught.value.__cause__, OSError)
@@ -1048,7 +1297,7 @@ def test_materializer_refuses_store_lock_after_bounded_wait(tmp_path, monkeypatc
     monkeypatch.setattr(model_store, "MATERIALIZATION_LOCK_TIMEOUT_SECONDS", 0)
 
     with pytest.raises(DigestMismatchRefusal, match="timed out acquiring") as caught:
-        materialize_real_roster(root, _FakeMaterializationFetcher())
+        materialize_real_roster(root, _FakeMaterializationFetcher(), _FakeBundleFetcher())
 
     assert str(root) in str(caught.value)
     assert isinstance(caught.value.__cause__, BlockingIOError)
@@ -1067,11 +1316,11 @@ def test_materializer_clears_staging_left_after_failed_cleanup_on_next_fetch(tmp
 
     monkeypatch.setattr(model_store.shutil, "rmtree", refuse_cleanup)
     with pytest.raises(RuntimeError, match="fetch transport failed"):
-        materialize_real_roster(tmp_path, FailingFetcher())
+        materialize_real_roster(tmp_path, FailingFetcher(), _FakeBundleFetcher())
     assert list((tmp_path / "staging").iterdir())
 
     monkeypatch.setattr(model_store.shutil, "rmtree", real_rmtree)
-    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
     assert receipt["unattributed_staging_entries"] == []
     assert list((tmp_path / "staging").iterdir()) == []
 
@@ -1080,18 +1329,16 @@ def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_p
     """A populated boot re-verifies once because each call hashes the whole store."""
 
     fetcher = _FakeMaterializationFetcher()
-    materialize_real_roster(tmp_path, fetcher)
-    present = {item["artifact"] for item in load_download_record(tmp_path)["artifacts"]} - {
-        "surya2-detection"
-    }
-    assert len(present) == 5
+    materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
+    present = {item["artifact"] for item in load_download_record(tmp_path)["artifacts"]}
+    assert len(present) == 6
 
     calls = []
     real = model_store.verify_store
     monkeypatch.setattr(
         model_store, "verify_store", lambda root: (calls.append(root), real(root))[1]
     )
-    receipt = materialize_real_roster(tmp_path, fetcher)
+    receipt = materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
 
     assert len(calls) == 1
     assert {row["artifact"] for row in receipt["artifacts"]} == present
@@ -1103,7 +1350,7 @@ def test_materializer_receipt_digest_names_the_record_whole_store_verification_c
     """A concurrent valid active-record update cannot relabel verified evidence."""
 
     fetcher = _FakeMaterializationFetcher()
-    materialize_real_roster(tmp_path, fetcher)
+    materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
     verify = model_store.verify_store
     observed: dict[str, str] = {}
 
@@ -1111,14 +1358,14 @@ def test_materializer_receipt_digest_names_the_record_whole_store_verification_c
         inventory = verify(root)
         observed["verified"] = inventory["download_record_sha256"]
         replacement = load_download_record(root)
-        pending = next(i for i in replacement["artifacts"] if i["state"] == "pending-fetch")
-        pending["reason"] += " (re-read)"
+        # Every artifact is present, so the valid change is the entries' order.
+        replacement["artifacts"].reverse()
         observed["advanced"] = write_download_record(replacement, root)
         return inventory
 
     monkeypatch.setattr(model_store, "verify_store", verify_then_advance_active_record)
 
-    receipt = materialize_real_roster(tmp_path, fetcher)
+    receipt = materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
 
     assert observed["verified"] != observed["advanced"]
     assert receipt["download_record_sha256"] == observed["verified"]
@@ -1148,7 +1395,7 @@ def _die_on_call(monkeypatch, name, ordinal):
         (
             "_promote_materialized_snapshot",
             2,
-            ["manifests/dai-recordgold-atr.json"],
+            ["manifests/chandra-ocr-2.json"],
         ),
         # Between moving the first artifact's snapshot into place and recording
         # it present — the second record write, the first being the all-pending
@@ -1156,7 +1403,7 @@ def _die_on_call(monkeypatch, name, ordinal):
         (
             "write_download_record",
             2,
-            ["hf/chandra-ocr-2", "manifests/chandra-ocr-2.json"],
+            ["local/surya2-detection", "manifests/surya2-detection.json"],
         ),
     ],
 )
@@ -1167,7 +1414,7 @@ def test_a_boot_killed_mid_materialization_resumes_without_hand_repair(
 
     _die_on_call(monkeypatch, killed_at, ordinal)
     with pytest.raises(KeyboardInterrupt):
-        materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
     monkeypatch.undo()
 
     with pytest.raises(DigestMismatchRefusal) as refusal:
@@ -1176,10 +1423,10 @@ def test_a_boot_killed_mid_materialization_resumes_without_hand_repair(
     # Interrupts outside `Exception` must still release their staging.
     assert sorted((tmp_path / "staging").iterdir()) == []
 
-    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
 
     assert {row["artifact"] for row in receipt["artifacts"]} == {
-        item.artifact for item in REQUIRED_ARTIFACTS if item.source == "huggingface"
+        item.artifact for item in REQUIRED_ARTIFACTS
     }
     assert receipt["unattributed_staging_entries"] == []
     verify_store(tmp_path)
@@ -1201,11 +1448,11 @@ def test_a_resumed_boot_still_refuses_bytes_that_differ_from_the_first_fetch(tmp
 
     _die_on_call(monkeypatch, "_promote_materialized_snapshot", 2)
     with pytest.raises(KeyboardInterrupt):
-        materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
     monkeypatch.undo()
 
     with pytest.raises(DigestMismatchRefusal, match="already exists with different bytes"):
-        materialize_real_roster(tmp_path, _Drifted())
+        materialize_real_roster(tmp_path, _Drifted(), _FakeBundleFetcher())
 
 
 def test_a_repository_that_ships_no_licence_file_may_still_have_declared_one(tmp_path):
@@ -1216,7 +1463,7 @@ def test_a_repository_that_ships_no_licence_file_may_still_have_declared_one(tmp
             super().fetch(repo, revision, destination)
             (destination / "LICENSE").unlink(missing_ok=True)
 
-    materialize_real_roster(tmp_path, _NoLicenceFiles())
+    materialize_real_roster(tmp_path, _NoLicenceFiles(), _FakeBundleFetcher())
 
     record = load_download_record(tmp_path)
     stored = {item["artifact"]: item for item in record["artifacts"]}
@@ -1404,7 +1651,7 @@ def test_a_fetch_that_stops_short_of_its_shard_index_is_refused_not_measured(tmp
     fetcher = _ShardedFetcher(drop="model-00002-of-00002.safetensors")
 
     with pytest.raises(DigestMismatchRefusal, match="the fetch is incomplete"):
-        materialize_real_roster(tmp_path, fetcher)
+        materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
 
     assert not (tmp_path / "hf").exists()
     assert sorted((tmp_path / "staging").iterdir()) == []
@@ -1443,7 +1690,7 @@ def test_shard_index_refuses_parent_traversal_inside_the_named_taxonomy(tmp_path
 def test_a_complete_sharded_fetch_keeps_reconciling_after_the_boot_that_made_it(tmp_path):
     """The index and its shards are required files, so the check outlives the fetch."""
 
-    materialize_real_roster(tmp_path, _ShardedFetcher())
+    materialize_real_roster(tmp_path, _ShardedFetcher(), _FakeBundleFetcher())
 
     record = load_download_record(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -1455,36 +1702,49 @@ def test_a_complete_sharded_fetch_keeps_reconciling_after_the_boot_that_made_it(
         verify_store(tmp_path)
 
 
-def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
-    """A licence note is the project lead's acceptance, and a copy of it is not
-    a paraphrase.
+def test_each_real_licence_note_agrees_with_the_licence_evidence_its_manifest_seals():
+    """A chair's licence note and the licence evidence its measured manifest seals
+    are one fact.
 
-    `config/models.toml` holds the drafted real roster commented out, one
-    `license_note` per row recording what that repository licenses and that it
-    was accepted under the research track.
-    `config/models-real.toml` is that roster made selectable, so its notes must
-    be those notes and not a session's rewording of them.
+    The manifest in `config/manifests` is the measurement of the fetched bytes:
+    it seals exactly one piece of licence evidence per chair, the licence text a
+    repository carries, the text a bundle names, or the observation a fetch
+    writes when a repository declares a licence without text or declares none.
+    A note says no licence is declared exactly where the manifest seals that
+    observation.
     """
 
-    drafted = _commented_licence_notes(ROOT / "config" / "models.toml")
     real = load_models_toml(ROOT / "config" / "models-real.toml")
-    carried = {
-        role: identity.license_note
+    requirements = {item.chair: item for item in REQUIRED_ARTIFACTS}
+    configured = {
+        role: identity
         for role, identity in real.chairs.items()
         if isinstance(identity, ChairIdentity)
     }
-
-    # `_commented_licence_notes` reads a fixed comment shape. When a reflowed or
-    # reindented block stops parsing, this names the roles it lost, instead of a
-    # bare `KeyError` further down that never reaches the comparison below.
-    unparsed = sorted(set(carried) - set(drafted))
-    assert not unparsed, (
-        f"no commented `license_note` was parsed for {unparsed}; the drafted roster in "
-        "config/models.toml no longer matches the comment shape this test reads, so the "
-        "notes were not compared"
-    )
-    assert carried == {role: drafted[role] for role in carried}
-    assert len(carried) == 6
+    assert set(configured) == set(requirements)
+    for role, identity in configured.items():
+        requirement = requirements[role]
+        rows = {
+            row.path: row
+            for row in read_manifest(
+                ROOT / "config" / identity.manifest,
+                expected_digest=identity.digest_manifest,
+                chair=role,
+            ).rows
+        }
+        if requirement.license_file is not None:
+            evidence = {requirement.license_file} & set(rows)
+        else:
+            evidence = {
+                path
+                for path in rows
+                if path.lower() in LICENCE_FILE_NAMES or path in SYNTHETIC_LICENCE_SNAPSHOTS
+            }
+        assert len(evidence) == 1, (role, evidence)
+        (licence,) = evidence
+        assert rows[licence].size > 0, role
+        declares_nothing = "no licence declared" in identity.license_note.lower()
+        assert declares_nothing == (licence == UNDECLARED_LICENCE_SNAPSHOT), role
 
 
 def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothing():
@@ -1503,22 +1763,6 @@ def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothin
         note = real.chairs[requirement.chair].license_note.lower()
         declares_nothing = "no licence declared" in note
         assert declares_nothing == (requirement.license_declaration is None), requirement.chair
-
-
-def _commented_licence_notes(path: Path) -> dict[str, str]:
-    """The `license_note` of each chair in a roster that is commented out."""
-
-    notes: dict[str, str] = {}
-    role = None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        chair = re.fullmatch(r"# \[chairs\.(\w+)\]", line)
-        if chair:
-            role = chair.group(1)
-            continue
-        note = re.fullmatch(r'# license_note = "(.*)"', line)
-        if note and role is not None:
-            notes[role] = note.group(1)
-    return notes
 
 
 def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(
@@ -1822,7 +2066,7 @@ def test_a_fetcher_that_leaves_client_state_behind_is_refused_not_measured(tmp_p
             (cache / "model.safetensors.metadata").write_text("commit\netag\n1787288876.2\n")
 
     with pytest.raises(DigestMismatchRefusal, match="client bookkeeping"):
-        materialize_real_roster(tmp_path, _LeavesClientState())
+        materialize_real_roster(tmp_path, _LeavesClientState(), _FakeBundleFetcher())
     assert not (tmp_path / "hf").exists()
 
 
@@ -1834,11 +2078,11 @@ def test_repository_owned_cache_path_is_manifested_not_deleted_or_called_client_
             cache.mkdir()
             (cache / "repository-owned.json").write_text("pinned bytes", encoding="utf-8")
 
-    materialize_real_roster(tmp_path, _RepositoryCacheFile())
+    materialize_real_roster(tmp_path, _RepositoryCacheFile(), _FakeBundleFetcher())
 
     record = load_download_record(tmp_path)
     for entry in record["artifacts"]:
-        if entry["state"] != "present":
+        if entry["source"] != "huggingface":
             continue
         assert (tmp_path / entry["snapshot"] / ".cache/repository-owned.json").is_file()
 

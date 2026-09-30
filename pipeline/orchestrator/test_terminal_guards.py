@@ -60,7 +60,11 @@ def _accepted_review() -> dict:
         # that omitted the continuation restatement would be a review no
         # producer can emit, and the export reads it unconditionally.
         "payload": {
-            "coverage": {"under_witnessed": False, "unresolved_chairs": 0},
+            "coverage": {
+                "under_witnessed": False,
+                "unresolved_chairs": 0,
+                "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 0},
+            },
             "testimony_content_coverage": {
                 "by_chair": None,
                 "shortfall": None,
@@ -108,6 +112,7 @@ class _RecordingContext:
             designator_geometry_config=config / "designator_geometry.toml",
             designator_grouping_config=config / "designator_grouping.toml",
             perlector_protocol_config=config / "perlector_protocol.toml",
+            alignment_config=config / "alignment.toml",
         )
         self.perlector_audit_config_path = config / "perlector_audit.toml"
         # Mirror the real context's named point-of-use seals.  The terminal
@@ -128,6 +133,7 @@ class _RecordingContext:
             "perlector-protocol": read_sealed_toml(self.args.perlector_protocol_config, "config")[
                 1
             ],
+            "alignment": read_sealed_toml(self.args.alignment_config, "config")[1],
         }
 
         # Build the mapped page with the same policies, measures, and canonical

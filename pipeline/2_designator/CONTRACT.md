@@ -659,13 +659,18 @@ fixture row declared for a page the Exemplar refused is left out, since the
 door already records that loss by name; a fixture row for any other page that
 is not sealed is refused by name.
 The fixture roster configures the chair against fixture rows; the real roster
-records it absent until Surya's weight bundle has been fetched and its digest
-manifest measured (`operations/serving/surya/README.md`, "On the pod").
+configures it as a local repository, Surya's locked weight bundle pinned by its
+measured digest manifest, with a `subprocess` row at every tier. The pod's model
+store fetches the bundle at launch and places it where the roster binds it
+(`operations/serving/surya/README.md`, "On the pod").
 
 **What runs.** Surya's own `DetectionPredictor.local()` for text lines and the
 `LayoutEngine.run_batch` call its fast-layout server makes (rf-detr layout and
 the learned reading-order head), each on the whole sealed page, one page per
-call, as Surya's own image loader opens it. Surya chunks a tall page itself
+call, as Surya's own image loader opens it (`convert("RGB")`). A page in a mode
+that conversion would clip to 8 bits (a 16-bit scan, for one) is refused by
+name before any model loads; the modes read are those the project replays a
+vendor's RGB conversion for. Surya chunks a tall page itself
 (`DETECTOR_IMAGE_CHUNK_HEIGHT`); nothing here tiles or rescales a page.
 Surya's output-shaping settings must hold Surya's defaults, no `local.env`
 settings file may sit where Surya would read it, and the reading-order head
@@ -679,8 +684,10 @@ detector returned no feature map for the head to read. Surya only logs either
 fallback. The detections are kept either way, and each page records which
 ordering its block positions come from: `reading_order` is `surya-order-head`
 or `raster-fallback`, and `reading_order_reason` says why a page fell back, or
-is null. A page with no detection, or one, is `surya-order-head`: Surya's head
-path returns its trivial order.
+is null. A page with no detection is always `surya-order-head`, since there is
+nothing to order. A page with one detection is `surya-order-head` when the
+layout detector returned a feature map, the head's trivial order, and
+`raster-fallback` when it did not.
 
 **Determinism.** CPU only, a fixed torch thread count, one interop thread,
 `torch.use_deterministic_algorithms(True)`, models in eval mode, batch size one
@@ -741,7 +748,10 @@ corners is floored to the pixel it falls in and clamped to the page, giving
 touches. Surya's float corners stay in the retained document.
 `confidence_quantization` is `confidence-round-half-even-bp.v1`: the confidence
 in basis points, rounded half to even from its shortest decimal form, or null
-where Surya gives none.
+where Surya gives none. A text line's confidence is relative within its page:
+Surya divides each line's peak heatmap score by the highest on that page, so
+the page's strongest line reads 1 and a value compares lines on one page only.
+A layout block's confidence is the detector's own class score.
 
 The runner's page document (`verbatus-surya-page.v1`) is checked against a
 closed shape by `operations/serving/surya_detector.py` before anything reads

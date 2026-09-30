@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from common.alignment import markup_text_view
+from common.alignment import load_dissent_limits, markup_text_view
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
@@ -344,6 +344,7 @@ def test_dissent_compares_a_genuinely_empty_witness():
                 "payload": {"chair": "attestator_3", "reported": ""},
             }
         ],
+        max_comparison_steps=load_dissent_limits()[0].max_comparison_steps,
     )
 
     assert rows == [

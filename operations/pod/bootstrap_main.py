@@ -11,7 +11,9 @@ correct immediate close for pod_timer to act on.
 Composition is deliberately **tracked**: every pinned input this process needs
 is an explicit flag, except the placement table, which is always the checkout's
 own ``config/pod_placement.toml`` because that is the table the stages seal.
-``CHAIR_CACHE`` records the role source plan without copying model bytes.
+``CHAIR_CACHE`` records the role source plan of each Hugging Face chair without
+copying its bytes, and copies each local-repository chair's verified bundle
+from the store to where the roster binds it.
 
 **What ``PREFLIGHT`` measures, and through what.**  The chair-cache half is
 :class:`RegistryChairCacheVerifier`: ``ChairRegistry.ensure`` over the plan's
@@ -93,6 +95,7 @@ import math
 import os
 import re
 import secrets
+import shutil
 import stat
 import sys
 import time
@@ -102,8 +105,10 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 
 from common.chairs.config import parse_models_config
-from common.chairs.model_store import StoreRoleFetcher
-from common.chairs.models import ChairIdentity, DigestManifest, ServingReceipt
+from common.chairs.errors import ChairRefusal
+from common.chairs.manifests import verify_snapshot
+from common.chairs.model_store import StoreRoleFetcher, pending_local_artifacts
+from common.chairs.models import ChairIdentity, DigestManifest, ModelsConfig, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
     ChairRegistry,
@@ -140,9 +145,11 @@ from operations.serving.smoke import (
     fresh_page_witness,
     render_golden_page,
 )
+from operations.serving.surya_detector import SuryaBundleFetcher
 
 from .bootstrap import (
     CONFIGURATION_RECEIPT_SCHEMA,
+    SURYA_ENVIRONMENT,
     BootstrapActions,
     BootstrapJournal,
     Bootstrapper,
@@ -1052,10 +1059,18 @@ def _build_transfer(plan: Plan) -> Callable[[], dict[str, object]]:
     return _transfer
 
 
+def _bundle_fetcher() -> SuryaBundleFetcher:
+    """The model store's fetcher for every local-repository artifact: Surya's own
+    prefetch, run in the environment UV_ENVIRONMENT syncs whenever the store
+    still lacks a bundle (``_store_environments``)."""
+    return SuryaBundleFetcher(SURYA_ENVIRONMENT)
+
+
 def _build_model_store(plan: Plan) -> ModelStoreBootstrapAction:
     return ModelStoreBootstrapAction(
         plan.store_root,  # type: ignore[arg-type]
         HuggingFaceMaterializationFetcher.from_huggingface_hub(),
+        _bundle_fetcher(),
     )
 
 
@@ -1072,9 +1087,61 @@ def _build_cache(plan: Plan) -> dict[str, object]:
             chairs.append(
                 {"chair": role, "state": "source-planned", "snapshot": source["snapshot"]}
             )
+        elif isinstance(identity, ChairIdentity):
+            chairs.append(_place_local_chair(registry, fetcher, identity))
         else:
             chairs.append({"chair": role, "state": "not-cached"})
     return {"chairs": chairs, "cache_root": str(plan.cache_root)}
+
+
+def _place_local_chair(
+    registry: ChairRegistry, fetcher: StoreRoleFetcher, identity: ChairIdentity
+) -> dict[str, object]:
+    """Copy a local-repository chair's verified store bundle to where the roster binds it.
+
+    The roster binds such a chair under its ``model_root``, beside the roster on
+    container-local disk; the store holds it on the volume. A copy already there
+    that verifies against the roster's manifest is kept. Otherwise every file the
+    manifest names is copied from the verified store snapshot into a fresh
+    sibling, which takes the chair's place only once it verifies, so the path the
+    roster names holds a verified bundle or nothing.
+    """
+    config = registry.config
+    if config.model_root is None or config.source_path is None or identity.path is None:
+        raise BootstrapStepFailure(
+            BootstrapStep.CHAIR_CACHE,
+            f"chair {identity.role} is a local repository with no model_root to place it in",
+            "Name model_root in the roster the pod runs with, then resume.",
+        )
+    model_root = config.source_path.parent / config.model_root
+    target = model_root / identity.path
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        raise BootstrapStepFailure(
+            BootstrapStep.CHAIR_CACHE,
+            f"chair {identity.role} is bound at {target}, which is a link or not a directory",
+            "Remove what is at that path, so the verified bundle can be placed there, then resume.",
+        )
+    if target.is_dir():
+        try:
+            snapshot = registry.ensure(identity)
+        except ChairRefusal:
+            shutil.rmtree(target)
+        else:
+            return {"chair": identity.role, "state": "local-verified", "root": str(snapshot.root)}
+    source = fetcher.plan(identity)
+    model_root.mkdir(parents=True, exist_ok=True)
+    staged = model_root / f".{identity.path}.placing"
+    shutil.rmtree(staged, ignore_errors=True)
+    staged.mkdir()
+    try:
+        manifest = registry.manifest(identity)
+        fetcher.fetch(identity, staged, tuple(row.path for row in manifest.rows))
+        verify_snapshot(identity, staged, manifest)
+        os.replace(staged, target)
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
+    registry.ensure(identity)
+    return {"chair": identity.role, "state": "local-placed", "snapshot": source["snapshot"]}
 
 
 PREFLIGHT_DTYPE = "bfloat16"
@@ -1315,9 +1382,6 @@ class _LazyChairCache:
     and verifies the retained-store source plan; built eagerly, a
     CHAIR_CACHE receipt would attest to whatever ``models.toml`` happened to be
     on disk at container start, not to the commit the journal names.
-    The transfer and model-store actions are already lazy this
-    way (``materialize_model_store=lambda: ...``); this closes the one that
-    was not.
     """
 
     def __init__(self, plan: Plan) -> None:
@@ -1453,26 +1517,66 @@ def _read_configuration_source(path: Path, label: str, repository: Path) -> byte
 
 
 def _subprocess_environments(plan: Plan) -> frozenset[str]:
+    """The subprocess environments this pod syncs: each one a chair its selected
+    stages run is served from, and the bundle fetcher's whenever the model store
+    still lacks a bundle. Read after CONFIGURATION has validated the roster and
+    the catalogue, so a pod syncs Surya's environment only when something runs in it."""
+
+    return _stage_environments(plan) | _store_environments(plan)
+
+
+def _store_environments(plan: Plan) -> frozenset[str]:
+    """The bundle fetcher's environment, when MODEL_STORE will fetch a local bundle."""
+
+    if plan.store_root is None:
+        return frozenset()
+    try:
+        pending = pending_local_artifacts(plan.store_root)
+    except ChairRefusal as error:
+        raise BootstrapStepFailure(
+            BootstrapStep.UV_ENVIRONMENT,
+            f"the model store at {plan.store_root} cannot say what it still needs: {error}",
+            "Repair the model store or start a fresh one on the volume, then resume.",
+        ) from error
+    return frozenset({_bundle_fetcher().environment}) if pending else frozenset()
+
+
+def _checked_out_roster(plan: Plan) -> ModelsConfig:
+    """The selected roster, read from inside the checked-out repository."""
+
+    return parse_models_config(
+        parse_sealed_toml(
+            _read_configuration_source(plan.models_config, "model roster", plan.repository),  # type: ignore[arg-type]
+            f"model roster {plan.models_config}",
+        )[0],
+        source_path=plan.models_config,
+    )
+
+
+def _stage_environments(plan: Plan) -> frozenset[str]:
     """The environments the checked-out catalogue's subprocess rows run in, for
-    the chairs the checked-out roster configures; read after CONFIGURATION has
-    validated both, so a pod syncs Surya's environment only when it will run."""
+    the chairs the roster configures and this pod's preflight selects: every
+    chair, unless a stage selection named fewer."""
 
     if plan.repository is None or plan.models_config is None:
         return frozenset()
     if plan.serving_recipes_config is None:
         return frozenset()
-    models = parse_models_config(
-        parse_sealed_toml(
-            _read_configuration_source(plan.models_config, "model roster", plan.repository),
-            f"model roster {plan.models_config}",
-        )[0],
-        source_path=plan.models_config,
+    models = _checked_out_roster(plan)
+    raw, digest = parse_sealed_toml(
+        _read_configuration_source(
+            plan.serving_recipes_config, "serving catalogue", plan.repository
+        ),
+        "serving catalogue",
     )
-    recipes = load_serving_recipes(plan.serving_recipes_config)
+    recipes = parse_serving_recipes(
+        raw, source_path=plan.serving_recipes_config, source_sha256=digest
+    )
+    selected = plan.preflight_roles
     configured = {
         (identity.serving_recipe, role)
         for role, identity in models.chairs.items()
-        if isinstance(identity, ChairIdentity)
+        if isinstance(identity, ChairIdentity) and (selected is None or role in selected)
     }
     return frozenset(
         profile.environment
@@ -1481,11 +1585,39 @@ def _subprocess_environments(plan: Plan) -> frozenset[str]:
     )
 
 
+def _local_bundles(plan: Plan) -> dict[Path, int]:
+    """Where CHAIR_CACHE copies each local-repository chair the roster configures,
+    and the bytes its pinned manifest names, so the container-disk check counts them."""
+
+    if plan.repository is None or plan.models_config is None:
+        return {}
+    models = _checked_out_roster(plan)
+    if models.model_root is None:
+        return {}
+    registry = ChairRegistry(models)
+    model_root = plan.models_config.parent / models.model_root
+    try:
+        return {
+            model_root / identity.path: sum(row.size for row in registry.manifest(identity).rows)
+            for identity in models.chairs.values()
+            if isinstance(identity, ChairIdentity)
+            and identity.source == "local-repository"
+            and identity.path is not None
+        }
+    except ChairRefusal as error:
+        raise BootstrapStepFailure(
+            BootstrapStep.UV_ENVIRONMENT,
+            f"a local-repository chair's pinned manifest could not be read: {error}",
+            "Restore the pinned checkout's manifests, then resume.",
+        ) from error
+
+
 def build_actions(plan: Plan) -> BootstrapActions:
     """The real composition; check image facts at REPOSITORY before paid setup."""
 
     return SubprocessBootstrapActions(
         subprocess_environments=lambda: _subprocess_environments(plan),
+        local_bundles=lambda: _local_bundles(plan),
         repository=plan.repository,  # type: ignore[arg-type]
         configuration=_build_configuration_validation(plan),
         transfer=_build_transfer(plan),

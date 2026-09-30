@@ -834,15 +834,12 @@ def test_granularity_identity_is_executable_for_interim_and_native_bases():
     )
     for basis in (outcomes.INTERIM_GRANULARITY_BASIS, outcomes.NATIVE_GRANULARITY_BASIS):
         candidate = {**coverage, "granularity_basis": basis}
-        _validate_coverage(candidate, require_complete_granularity=True)
+        _validate_coverage(candidate)
     # Widening the accepted set from one basis to two must not widen it to any
     # string: an unnamed basis would let a receipt claim a measurement nothing
     # in this pipeline performs.
     with pytest.raises(SchemaRefusal, match="honest granularity measurement basis"):
-        _validate_coverage(
-            {**coverage, "granularity_basis": "invented-basis"},
-            require_complete_granularity=True,
-        )
+        _validate_coverage({**coverage, "granularity_basis": "invented-basis"})
 
 
 def test_an_attached_but_incomparable_witness_is_page_only_and_cannot_meet_the_floor():
