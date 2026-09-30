@@ -405,6 +405,7 @@ class StageContext:
         "serving_config_inputs",
         "_recovery_policy",
         "sealed",
+        "page_read_denominator",
     )
 
     def __init__(
@@ -445,6 +446,11 @@ class StageContext:
         # `config/recovery.toml` could see a rewrite the run never bound.
         self._recovery_policy = dict(recovery_policy) if recovery_policy is not None else None
         self.sealed = False
+        # A page-read run's verified denominator, once a pass has asked for it:
+        # its records are sealed before the pass runs, so it is verified once.
+        self.page_read_denominator: (
+            tuple[dict[int, dict[str, Any]], list[dict[str, Any]]] | None
+        ) = None
 
     @property
     def fixture(self) -> dict[str, Any]:
@@ -2408,17 +2414,13 @@ def reading_acts(context) -> list[dict[str, Any]]:
     return _page_read_denominator(context)[1]
 
 
-# A stage pass may ask for its denominator more than once; its records are
-# sealed before it runs, so it is verified once per context.
-_LAST_DENOMINATOR: list[tuple[Any, tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]]] = []
-
-
 def _page_read_denominator(
     context,
 ) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
-    if not (_LAST_DENOMINATOR and _LAST_DENOMINATOR[0][0] is context):
-        _LAST_DENOMINATOR[:] = [(context, _verify_page_read_denominator(context))]
-    return copy.deepcopy(_LAST_DENOMINATOR[0][1])
+    """The run's page-read denominator, verified once per context; each caller gets a copy."""
+    if context.page_read_denominator is None:
+        context.page_read_denominator = _verify_page_read_denominator(context)
+    return copy.deepcopy(context.page_read_denominator)
 
 
 def _refuse_page_records_in_an_act_read_tree(tree: RunTree) -> None:
