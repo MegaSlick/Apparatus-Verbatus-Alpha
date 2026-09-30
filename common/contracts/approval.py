@@ -10,7 +10,7 @@ Naming the target's hash means a changed target needs a new approval; an approva
 that named only the action would keep approving after the target changed.
 
 Two schemas share this family. `approval-record.v0` carries every action except
-`review`, and `advance` and `exclusion` go on writing it. `approval-record.v1` is an
+`review`. `approval-record.v1` is an
 operator review decision about one held unit or page of a run: action `review`, a
 closed `review` block naming the run, scope, page, decision and finding, and a
 `target_version_hash` that is the review's basis digest

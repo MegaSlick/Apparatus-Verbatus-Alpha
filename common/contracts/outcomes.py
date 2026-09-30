@@ -739,49 +739,49 @@ def _attached_reading_count(act: str, record: Mapping[str, Any]) -> int:
     raise FatalAccounting(f"act {act} coverage names unknown granularity basis {basis!r}")
 
 
-REVIEW_CLEARANCE_FIELDS: Final = frozenset({"scope", "subject", "decision", "cleared"})
+REVIEW_CLEARANCE_FIELDS: Final = frozenset({"scope", "subject", "page", "decision", "cleared"})
+# The decisions that clear a hold, by scope.
+_CLEARING_DECISIONS: Final = {"unit": ("release", "exclude"), "page": ("no-missed-act",)}
 
 
-def _clearance_key(row: Any) -> tuple[str, str]:
-    if not isinstance(row, Mapping) or set(row) != REVIEW_CLEARANCE_FIELDS:
-        raise FatalAccounting(
-            f"a review clearance is not the closed {sorted(REVIEW_CLEARANCE_FIELDS)} row"
-        )
-    return (str(row["scope"]), repr(row["subject"]))
-
-
-def _clearance_reason(
-    row: Mapping[str, Any],
+def _clearance_reasons(
+    rows: Sequence[Mapping[str, Any]],
     act_categories: Mapping[str, ArmariumCategory],
     page_census: Mapping[int, Mapping[str, Any]],
-) -> str:
-    """The reason one operator clearance keeps the run partial."""
-    scope, subject, decision, cleared = (
-        row["scope"],
-        row["subject"],
-        row["decision"],
-        row["cleared"],
-    )
-    if scope == "unit" and isinstance(subject, str) and subject in act_categories:
-        what = f"act {subject}"
-    elif scope == "page" and is_plain_int(subject) and subject in page_census:
-        what = f"page {subject}"
-    else:
-        raise FatalAccounting(
-            f"a review clearance names {scope!r} {subject!r}, not a counted act or a census page"
+) -> list[str]:
+    """The reason each operator clearance keeps the run partial, one per cleared subject."""
+    named: dict[tuple[str, str], str] = {}
+    for row in rows:
+        if not isinstance(row, Mapping) or set(row) != REVIEW_CLEARANCE_FIELDS:
+            raise FatalAccounting(
+                f"a review clearance is not the closed {sorted(REVIEW_CLEARANCE_FIELDS)} row"
+            )
+        scope, subject, page = row["scope"], row["subject"], row["page"]
+        decision, cleared = row["decision"], row["cleared"]
+        if not is_plain_int(page) or page not in page_census:
+            raise FatalAccounting(f"a review clearance names page {page!r}, not a census page")
+        if scope == "unit" and type(subject) is str and subject:
+            what = f"act {subject}" if subject in act_categories else f"reading {subject}"
+            what += f" on page {page}"
+        elif scope == "page" and subject == page:
+            what = f"page {page}"
+        else:
+            raise FatalAccounting(f"a review clearance names {scope!r} {subject!r} on page {page}")
+        if decision not in _CLEARING_DECISIONS[scope] or not (
+            isinstance(cleared, list) and all(type(code) is str and code for code in cleared)
+        ):
+            raise FatalAccounting(
+                f"the review clearance of {what} names no clearing decision or no codes"
+            )
+        key = (scope, repr(subject))
+        if key in named:
+            raise FatalAccounting(f"{what} is named by more than one review clearance")
+        codes = ", ".join(sorted(cleared)) or "no machine hold"
+        named[key] = (
+            f"{what} was cleared by an operator review decision ({decision}), clearing "
+            f"{codes}; a person's decision, not a machine check"
         )
-    if (
-        type(decision) is not str
-        or not decision
-        or not isinstance(cleared, list)
-        or not all(type(code) is str and code for code in cleared)
-    ):
-        raise FatalAccounting(f"the review clearance of {what} names no decision or codes")
-    codes = ", ".join(sorted(cleared)) or "no machine hold"
-    return (
-        f"{what} was cleared by an operator review decision ({decision}), clearing {codes}; "
-        "a person's decision, not a machine check"
-    )
+    return [named[key] for key in sorted(named)]
 
 
 def run_aggregate(
@@ -798,6 +798,7 @@ def run_aggregate(
     other_categories_by_page: Mapping[int, Sequence[str]] | None = None,
     unpaired_continuations: Sequence[tuple[str, str]] = (),
     review_clearances: Sequence[Mapping[str, Any]] = (),
+    review_page_holds: Mapping[int, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -838,14 +839,18 @@ def run_aggregate(
     `unpaired_continuations` row `(act, flag)` is a delivered act
     whose continuation flag no link pairs, which keeps the run partial.
 
-    Each `review_clearances` row `{scope, subject, decision, cleared}` is a hold
-    an operator review decision cleared: a unit (`scope` "unit", `subject` a
-    counted act) or a page (`scope` "page", `subject` a census ordinal). A
-    person's decision is not a machine check, so every clearance is a reason
-    and a run whose every hold was cleared stays partial.
+    Each `review_clearances` row `{scope, subject, page, decision, cleared}` is
+    a hold an operator review decision cleared: a unit (`scope` "unit",
+    `subject` its key, an act or another reading) or a page (`scope` "page",
+    `subject` its ordinal), on census page `page`. A person's decision is not a
+    machine check, so every clearance is a reason and a run whose every hold
+    was cleared stays partial. `review_page_holds` maps each page still held
+    after review to its codes; it holds even when every unit on it was
+    excluded.
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
+    review_page_holds = review_page_holds or {}
 
     # An empty population reconciles vacuously, not actually.
     if not act_categories and not (page_census or {}):
@@ -923,10 +928,17 @@ def run_aggregate(
             )
         reasons.append(UNPAIRED_CONTINUATION_REASON.format(act=act, says=_CONTINUATION_SAYS[flag]))
 
-    reasons.extend(
-        _clearance_reason(row, act_categories, page_census or {})
-        for row in sorted(review_clearances, key=_clearance_key)
-    )
+    reasons.extend(_clearance_reasons(review_clearances, act_categories, page_census or {}))
+    for ordinal in sorted(review_page_holds):
+        codes = review_page_holds[ordinal]
+        if ordinal not in (page_census or {}) or not codes:
+            raise FatalAccounting(
+                f"a review page hold names page {ordinal!r} and codes {codes!r}, not a held "
+                "census page"
+            )
+        reasons.append(
+            f"page {ordinal} is held after operator review by {', '.join(sorted(codes))}"
+        )
 
     for act in sorted(act_categories):
         category = act_categories[act]

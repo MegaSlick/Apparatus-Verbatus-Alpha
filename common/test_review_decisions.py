@@ -31,6 +31,7 @@ from common.review_decisions import (
     basis_digest,
     classify_holds,
     current_basis,
+    held_pages,
     review_decision,
 )
 from common.stage import NO_ACT_ON_PAGE_HOLD, PAGE_BLANK_HOLD, PAGE_UNREAD_HOLD
@@ -39,13 +40,13 @@ from conftest import load_stage
 RUN = "run-1"
 
 
-def payload(act_key, ordinal, hold_codes, *, unit_class="reading"):
+def payload(act_key, ordinal, hold_codes, *, unit_class="reading", kind="act"):
     """A page-review payload in the Recensor's closed shape; only a few fields matter here."""
     fields = {name: None for name in PAGE_REVIEW_FIELDS}
     fields.update(
         act_key=act_key,
         unit_class=unit_class,
-        kind="act",
+        kind=kind,
         page_ordinal=ordinal,
         reason="held: " + ", ".join(hold_codes) if hold_codes else "read and witnessed",
         hold_codes=sorted(hold_codes),
@@ -71,7 +72,7 @@ def unit(act_id, page_id, ordinal, hold_codes, *, unit_holds=(), page_holds=(), 
 
 def derived_review():
     """Page 1: two entries, one with its own hold, both under the page's unread line.
-    Page 2: one accepted entry. Page 3: a page no reading covered."""
+    Page 2: one accepted entry. Page 3: a page never read."""
     return {
         "run_id": RUN,
         "units": [
@@ -79,8 +80,8 @@ def derived_review():
                 "a1",
                 "page-1",
                 1,
-                ["no-autopsia", "unread-line"],
-                unit_holds=["no-autopsia"],
+                ["doubt-marks-malformed", "unread-line"],
+                unit_holds=["doubt-marks-malformed"],
                 page_holds=["unread-line"],
             ),
             unit("a2", "page-1", 1, ["unread-line"], page_holds=["unread-line"]),
@@ -123,13 +124,13 @@ def decide(derived, scope, subject, name, *, finding=None, page_id=None, basis=N
 
 def test_an_entrys_own_holds_are_unit_scope_and_its_pages_are_page_scope():
     scopes = classify_holds(
-        ["no-autopsia", "unread-line", "residual-ink", "continuation-off-page-edge"],
+        ["reading-incomplete", "unread-line", "residual-ink", "continuation-off-page-edge"],
         unit_class="reading",
-        unit_holds=["no-autopsia"],
+        unit_holds=["reading-incomplete"],
         page_holds=["unread-line"],
     )
     assert scopes == {
-        "unit": ["continuation-off-page-edge", "no-autopsia"],
+        "unit": ["continuation-off-page-edge", "reading-incomplete"],
         "page": ["residual-ink", "unread-line"],
     }
 
@@ -193,7 +194,7 @@ def test_a_page_basis_changes_when_any_unit_on_it_changes_or_one_is_added():
 
 def test_a_page_hold_is_the_union_of_its_units_page_holds():
     derived = derived_review()
-    derived["units"][1] = unit("a2", "page-1", 1, [])
+    derived["units"][1] = unit("a2", "page-1", 1, [], page_holds=["unread-line"])
     assert current_basis(derived)["pages"]["page-1"]["page_codes"] == ["unread-line"]
 
 
@@ -254,10 +255,11 @@ def test_no_missed_act_on_an_unread_page_is_refused():
         review_decision(decide(derived, "page", "page-3", "no-missed-act"), current_basis(derived))
 
 
-def test_no_missed_act_on_a_page_with_no_page_hold_is_refused():
+def test_no_missed_act_on_a_page_with_no_page_hold_clears_nothing_and_is_still_named():
     derived = derived_review()
-    with pytest.raises(ApprovalRefusal, match="no page hold to clear"):
-        review_decision(decide(derived, "page", "page-2", "no-missed-act"), current_basis(derived))
+    result = apply_decisions(derived, [decide(derived, "page", "page-2", "no-missed-act")])
+    assert result["units"]["b1"]["outcome"] == "accepted"
+    assert [(row["subject_id"], row["cleared"]) for row in result["clearances"]] == [("page-2", [])]
 
 
 def test_a_decision_about_a_unit_no_longer_counted_is_stale():
@@ -287,7 +289,10 @@ def test_releasing_every_entry_does_not_clear_the_page_hold():
     a1 = result["units"]["a1"]
     assert a1["outcome"] == "held-for-review"
     assert a1["payload"]["hold_codes"] == ["unread-line"]
-    assert a1["payload"][REVIEW_FIELD]["cleared"] == {"unit": ["no-autopsia"], "page": []}
+    assert a1["payload"][REVIEW_FIELD]["cleared"] == {
+        "unit": ["doubt-marks-malformed"],
+        "page": [],
+    }
     assert "still held by unread-line" in a1["payload"]["reason"]
     assert result["pages"]["page-1"]["hold_codes"] == ["unread-line"]
 
@@ -305,7 +310,7 @@ def test_a_release_and_no_missed_act_accept_the_unit_and_name_both_clearances():
     assert result["pages"]["page-1"]["hold_codes"] == []
     assert [(row["scope"], row["subject_id"], row["cleared"]) for row in result["clearances"]] == [
         ("page", "page-1", ["unread-line"]),
-        ("unit", "a1", ["no-autopsia"]),
+        ("unit", "a1", ["doubt-marks-malformed"]),
     ]
     # The untouched page keeps its bytes.
     assert result["units"]["b1"]["payload"] == derived["units"][2]["payload"]
@@ -329,7 +334,9 @@ def test_a_run_whose_every_hold_was_cleared_stays_partial_naming_each_clearance(
         act_pages={"a1": [1], "a2": [1], "b1": [2]},
         act_text_status={act_id: "established" for act_id in acts},
         review_clearances=aggregate_clearances(result, unit_key="act_id"),
+        review_page_holds=held_pages(result),
     )
+    assert held_pages(result) == {}
     assert aggregate["status"] == "partial"
     assert len(aggregate["reasons"]) == 2
     assert all("operator review decision" in reason for reason in aggregate["reasons"])
@@ -355,7 +362,9 @@ def test_an_exclusion_is_approval_bound_and_leaves_the_page_hold_on_the_page():
     result = apply_decisions(derived, [decide(derived, "unit", "a2", "exclude")])
     a2 = result["units"]["a2"]
     assert a2["outcome"] == "excluded"
-    assert a2["payload"]["hold_codes"] == []
+    assert a2["payload"]["hold_codes"] == ["unread-line"]
+    assert a2["payload"][REVIEW_FIELD]["cleared"] == {"unit": [], "page": []}
+    assert "its page stays held by unread-line" in a2["payload"]["reason"]
     assert classify(RECENSOR, "excluded") is OutcomeClass.COMPLETED
     assert terminal_category(RECENSOR, "excluded") is ArmariumCategory.EXCLUDED_WITH_APPROVAL
     assert result["pages"]["page-1"]["hold_codes"] == ["unread-line"]
@@ -401,16 +410,25 @@ def test_no_missed_act_confirms_a_blank_page():
     assert result["units"]["p4"]["outcome"] == "confirmed-blank"
 
 
-def test_disagreeing_current_decisions_about_one_subject_are_refused():
+def test_disagreeing_current_decisions_are_kept_unapplied_and_hold_their_subject():
     derived = derived_review()
-    with pytest.raises(ApprovalRefusal, match="disagree"):
-        apply_decisions(
-            derived,
-            [
-                decide(derived, "unit", "a1", "release"),
-                decide(derived, "unit", "a1", "hold", finding="text-misread"),
-            ],
-        )
+    result = apply_decisions(
+        derived,
+        [
+            decide(derived, "unit", "a1", "release"),
+            decide(derived, "unit", "a1", "hold", finding="text-misread"),
+        ],
+    )
+    a1 = result["units"]["a1"]
+    assert a1["outcome"] == "held-for-review"
+    assert a1["payload"]["hold_codes"] == [
+        "doubt-marks-malformed",
+        "review-conflict",
+        "unread-line",
+    ]
+    assert result["applied"] == [] and result["clearances"] == []
+    assert [s["decision"] for s in result["conflicting"]] == ["hold", "release"]
+    assert "disagree" in a1["payload"]["reason"]
 
 
 def test_holds_with_different_findings_agree_and_both_are_kept():
@@ -514,3 +532,219 @@ def test_a_decision_whose_page_is_gone_is_returned_unkept():
     derived["units"] = [u for u in derived["units"] if u["page_id"] != "page-2"]
     result = apply_decisions(derived, [record])
     assert [s["subject_id"] for s in result["unkept"]] == ["b1"]
+
+
+# --- scope as stage 4 and the page accounting set it ---------------------------------------
+
+
+def test_every_hold_stage_4_and_the_page_accounting_set_lands_in_its_scope():
+    from common import page_path
+    from common.page_accounting import HOLD_CODES
+
+    entry_codes = {
+        page_path.DOUBT_MARKS_MALFORMED,
+        page_path.READING_INCOMPLETE,
+        page_path.ENTRY_NO_READABLE_TEXT,
+    }
+    scopes = classify_holds(
+        sorted(entry_codes | {page_path.NO_AUTOPSIA} | HOLD_CODES),
+        unit_class="reading",
+        unit_holds=sorted(entry_codes | {page_path.NO_AUTOPSIA}),
+        page_holds=sorted(HOLD_CODES),
+    )
+    assert set(scopes["unit"]) == entry_codes
+    assert set(scopes["page"]) == HOLD_CODES | {page_path.NO_AUTOPSIA}
+
+
+def test_a_page_read_without_its_image_is_not_released_entry_by_entry():
+    derived = {
+        "run_id": RUN,
+        "units": [
+            unit("a1", "page-1", 1, ["no-autopsia"], unit_holds=["no-autopsia"]),
+        ],
+    }
+    result = apply_decisions(derived, [decide(derived, "unit", "a1", "hold", finding="other")])
+    assert current_basis(derived)["units"]["a1"]["page_codes"] == ["no-autopsia"]
+    with pytest.raises(ApprovalRefusal, match="no hold of its own"):
+        apply_decisions(derived, [decide(derived, "unit", "a1", "release")])
+    assert "no-autopsia" in result["units"]["a1"]["payload"]["hold_codes"]
+
+
+def test_units_of_one_page_naming_different_page_accounting_holds_are_refused():
+    derived = derived_review()
+    derived["units"][1]["page_holds"] = ["unread-line", "unread-ink"]
+    with pytest.raises(FatalAccounting, match="different page accounting holds"):
+        current_basis(derived)
+
+
+def test_a_code_both_scopes_hold_stays_held_after_a_release_alone():
+    derived = {
+        "run_id": RUN,
+        "units": [
+            unit(
+                "a1",
+                "page-1",
+                1,
+                ["duplicate-region"],
+                unit_holds=["duplicate-region"],
+                page_holds=["duplicate-region"],
+            )
+        ],
+    }
+    result = apply_decisions(derived, [decide(derived, "unit", "a1", "release")])
+    assert result["units"]["a1"]["payload"]["hold_codes"] == ["duplicate-region"]
+    both = apply_decisions(
+        derived,
+        [
+            decide(derived, "unit", "a1", "release"),
+            decide(derived, "page", "page-1", "no-missed-act"),
+        ],
+    )
+    assert both["units"]["a1"]["outcome"] == "accepted"
+
+
+def test_no_missed_act_alone_leaves_a_unit_held_by_its_own_holds():
+    derived = derived_review()
+    result = apply_decisions(derived, [decide(derived, "page", "page-1", "no-missed-act")])
+    assert result["units"]["a1"]["payload"]["hold_codes"] == ["doubt-marks-malformed"]
+    assert result["units"]["a2"]["outcome"] == "accepted"
+
+
+# --- exclusion and the page ---------------------------------------------------------------
+
+
+def test_an_exclusion_on_a_page_with_a_missed_act_keeps_the_sign_on_the_unit_and_page():
+    derived = derived_review()
+    result = apply_decisions(
+        derived,
+        [
+            decide(derived, "unit", "a1", "exclude"),
+            decide(derived, "unit", "a2", "exclude"),
+            decide(derived, "page", "page-1", "missed-act"),
+        ],
+    )
+    for act_id in ("a1", "a2"):
+        excluded = result["units"][act_id]
+        assert excluded["outcome"] == "excluded"
+        assert "review-missed-act" in excluded["payload"]["hold_codes"]
+        assert "holds it" not in excluded["payload"]["reason"]
+        assert "its page stays held by" in excluded["payload"]["reason"]
+    # Every act excluded: the page is also held as one with no act.
+    assert held_pages(result)[1] == [NO_ACT_ON_PAGE_HOLD, "review-missed-act", "unread-line"]
+    assert [(r["subject_id"], r["cleared"]) for r in result["clearances"]] == [
+        ("a1", ["doubt-marks-malformed"]),
+        ("a2", []),
+    ]
+
+
+def test_excluding_every_act_on_a_page_holds_its_other_entries_until_no_missed_act():
+    derived = {
+        "run_id": RUN,
+        "units": [
+            unit("a1", "page-1", 1, []),
+            unit("o2", "page-1", 1, [], kind="other"),
+        ],
+    }
+    excluded = [decide(derived, "unit", "a1", "exclude")]
+    result = apply_decisions(derived, excluded)
+    assert result["units"]["a1"]["payload"]["hold_codes"] == []
+    assert result["units"]["o2"]["outcome"] == "held-for-review"
+    assert result["units"]["o2"]["payload"]["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
+    assert held_pages(result) == {1: [NO_ACT_ON_PAGE_HOLD]}
+
+    confirmed = apply_decisions(
+        derived, excluded + [decide(derived, "page", "page-1", "no-missed-act")]
+    )
+    assert confirmed["units"]["o2"]["outcome"] == "accepted"
+    assert held_pages(confirmed) == {}
+    assert [(r["scope"], r["cleared"]) for r in confirmed["clearances"]] == [
+        ("page", [NO_ACT_ON_PAGE_HOLD]),
+        ("unit", []),
+    ]
+
+
+def test_a_cleared_other_reading_is_named_by_key_in_the_run_aggregate():
+    derived = {
+        "run_id": RUN,
+        "units": [
+            unit("a1", "page-1", 1, []),
+            unit(
+                "o2",
+                "page-1",
+                1,
+                ["doubt-marks-malformed"],
+                unit_holds=["doubt-marks-malformed"],
+                kind="other",
+            ),
+        ],
+    }
+    result = apply_decisions(derived, [decide(derived, "unit", "o2", "release")])
+    aggregate = run_aggregate(
+        {"p1:a1": ArmariumCategory.DELIVERED},
+        {"p1:a1": {"under_witnessed": False, "unresolved_chairs": 0}},
+        {1: {"outcome": "sealed"}},
+        act_pages={"p1:a1": [1]},
+        act_text_status={"p1:a1": "established"},
+        review_clearances=aggregate_clearances(result, unit_key="act_key"),
+        review_page_holds=held_pages(result),
+    )
+    assert aggregate["reasons"] == [
+        "reading p1:o2 on page 1 was cleared by an operator review decision (release), "
+        "clearing doubt-marks-malformed; a person's decision, not a machine check"
+    ]
+
+
+# --- citing and binding the decision set -------------------------------------------------
+
+
+def test_a_summary_names_the_digest_the_run_tree_stores_the_record_under():
+    from common.contracts.canonical import digest_bytes
+
+    derived = derived_review()
+    record = decide(derived, "unit", "a1", "release")
+    summary = review_decision(record, current_basis(derived))
+    assert summary["record_sha256"] == digest_bytes(canonical_bytes(record))
+
+
+def test_the_result_names_the_decision_set_it_applied():
+    derived = derived_review()
+    one = [decide(derived, "unit", "a1", "release")]
+    two = one + [decide(derived, "unit", "b1", "hold", finding="other")]
+    assert (
+        apply_decisions(derived, one)["decisions_digest"]
+        == apply_decisions(derived, one + one)["decisions_digest"]
+    )
+    assert (
+        apply_decisions(derived, one)["decisions_digest"]
+        != apply_decisions(derived, two)["decisions_digest"]
+    )
+
+
+# --- more staleness ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("name", "finding"), [("missed-act", None), ("hold", "other")])
+def test_a_stale_holding_page_decision_adds_no_hold(name, finding):
+    derived = derived_review()
+    record = decide(derived, "page", "page-1", name, finding=finding)
+    changed = copy.deepcopy(derived)
+    changed["units"][1]["payload"]["coverage"]["floor"] = 3
+    result = apply_decisions(changed, [record])
+    assert [s["stale_because"] for s in result["stale"]] == [BASIS_CHANGED]
+    assert result["pages"]["page-1"]["hold_codes"] == ["unread-line"]
+    assert not any(
+        code.startswith("review-")
+        for u in result["units"].values()
+        for code in u["payload"]["hold_codes"]
+    )
+
+
+def test_a_page_decision_whose_page_is_gone_is_returned_unkept():
+    derived = derived_review()
+    record = decide(derived, "page", "page-3", "re-shoot")
+    derived["units"] = [u for u in derived["units"] if u["page_id"] != "page-3"]
+    result = apply_decisions(derived, [record])
+    assert [(s["subject_id"], s["stale_because"]) for s in result["unkept"]] == [
+        ("page-3", SUBJECT_ABSENT)
+    ]
+    assert result["requests"] == []

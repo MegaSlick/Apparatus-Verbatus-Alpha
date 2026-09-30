@@ -1411,10 +1411,10 @@ def test_a_recensor_exclusion_is_completed_only_with_its_approval() -> None:
     assert terminal_category(RECENSOR, "excluded") is ArmariumCategory.EXCLUDED_WITH_APPROVAL
     with pytest.raises(ApprovalRefusal, match="no approval-record reference"):
         require_approval(RECENSOR, "excluded", None)
-    require_approval(RECENSOR, "excluded", "receipts/" + "a" * 64 + ".json")
+    require_approval(RECENSOR, "excluded", "receipts/sha256/" + "a" * 64 + ".json")
 
 
-def _cleared_run(clearances: list[dict]) -> dict:
+def _cleared_run(clearances: list[dict], page_holds: dict | None = None) -> dict:
     return run_aggregate(
         {"a1": ArmariumCategory.DELIVERED},
         {"a1": {"under_witnessed": False, "unresolved_chairs": 0}},
@@ -1422,6 +1422,7 @@ def _cleared_run(clearances: list[dict]) -> dict:
         act_pages={"a1": [1]},
         act_text_status={"a1": "established"},
         review_clearances=clearances,
+        review_page_holds=page_holds,
     )
 
 
@@ -1430,34 +1431,68 @@ def test_a_run_whose_every_hold_was_cleared_stays_partial_and_names_each_clearan
     aggregate = _cleared_run(
         [
             {
+                "scope": "unit",
+                "subject": "o2",
+                "page": 1,
+                "decision": "exclude",
+                "cleared": [],
+            },
+            {
                 "scope": "page",
                 "subject": 1,
+                "page": 1,
                 "decision": "no-missed-act",
                 "cleared": ["unread-line"],
             },
-            {"scope": "unit", "subject": "a1", "decision": "release", "cleared": ["no-autopsia"]},
+            {
+                "scope": "unit",
+                "subject": "a1",
+                "page": 1,
+                "decision": "release",
+                "cleared": ["doubt-marks-malformed"],
+            },
         ]
     )
     assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == [
         "page 1 was cleared by an operator review decision (no-missed-act), clearing "
         "unread-line; a person's decision, not a machine check",
-        "act a1 was cleared by an operator review decision (release), clearing no-autopsia; "
-        "a person's decision, not a machine check",
+        "act a1 on page 1 was cleared by an operator review decision (release), clearing "
+        "doubt-marks-malformed; a person's decision, not a machine check",
+        "reading o2 on page 1 was cleared by an operator review decision (exclude), clearing "
+        "no machine hold; a person's decision, not a machine check",
     ]
 
 
+def test_a_page_still_held_after_review_keeps_the_run_partial() -> None:
+    aggregate = _cleared_run([], {1: ["review-missed-act"]})
+    assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == ["page 1 is held after operator review by review-missed-act"]
+    for holds in ({2: ["review-missed-act"]}, {1: []}):
+        with pytest.raises(FatalAccounting, match="not a held census page"):
+            _cleared_run([], holds)
+
+
+def _row(**overrides) -> dict:
+    row = {"scope": "unit", "subject": "a1", "page": 1, "decision": "release", "cleared": []}
+    row.update(overrides)
+    return row
+
+
 @pytest.mark.parametrize(
-    "row",
+    "rows",
     [
-        {"scope": "unit", "subject": "a2", "decision": "release", "cleared": []},
-        {"scope": "page", "subject": 2, "decision": "no-missed-act", "cleared": []},
-        {"scope": "page", "subject": "1", "decision": "no-missed-act", "cleared": []},
-        {"scope": "unit", "subject": "a1", "decision": "", "cleared": []},
-        {"scope": "unit", "subject": "a1", "decision": "release", "cleared": "x"},
-        {"scope": "unit", "subject": "a1", "decision": "release"},
+        [_row(page=2)],
+        [_row(subject="")],
+        [_row(scope="page", subject=2, decision="no-missed-act")],
+        [_row(scope="page", subject="1", decision="no-missed-act")],
+        [_row(decision="hold")],
+        [_row(decision="no-missed-act")],
+        [_row(cleared="x")],
+        [{key: value for key, value in _row().items() if key != "page"}],
+        [_row(), _row(decision="exclude")],
     ],
 )
-def test_a_clearance_of_nothing_the_run_counts_is_fatal(row: dict) -> None:
+def test_a_malformed_or_repeated_clearance_is_fatal(rows: list[dict]) -> None:
     with pytest.raises(FatalAccounting):
-        _cleared_run([row])
+        _cleared_run(rows)

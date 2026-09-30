@@ -16,9 +16,10 @@ it before any decision:
 
 `payload` is `review_of`'s payload (no `attempt_ordinal`, no `operator_review`),
 `unit_holds` the unit's own holds as its Perlectio records them and
-`page_holds` its page accounting's holds.
+`page_holds` its page accounting's holds (the Perlectio's `holds` and
+`page_holds` fields, as sealed).
 
-The API the later units use:
+The API:
 
 - `basis_digest(payload)`: what a unit decision binds to, the sha256 of the
   machine's payload. It is recomputed every pass, so a decision stays bound
@@ -32,18 +33,23 @@ The API the later units use:
   holds; what the operator CLI shows and binds a new decision to.
 - `review_decision(record, basis)`: one decision checked against the current
   basis: `current`, `stale` (with why), or refused when it could never apply.
+  Its summary names the record by self-hash and by `record_sha256`, the digest
+  the run tree stores it under, so an exclusion can cite its approval.
 - `apply_decisions(derived, decisions)`: the review with every current
   decision applied, deterministically. It returns each unit's outcome and
   payload (a unit no decision names keeps the machine's, byte for byte), each
-  page's remaining holds, the applied and stale decisions, the `clearances`
+  page's remaining holds (`held_pages`), the applied, stale and conflicting
+  decisions, a `decisions_digest` over the set it was given, the `clearances`
   the run aggregate names (`aggregate_clearances`), and the `requests` for a
   re-ask or re-shoot the driver acts on. A stale decision is kept inside the
   review of every unit it concerns, never applied; one whose page is gone is
-  returned in `unkept` for the caller to record.
+  returned in `unkept` for the caller to record. Disagreeing current decisions
+  about one subject are kept as conflicting and hold it; none is applied.
 
 Decisions: a unit is released (its own holds cleared), excluded as not an act,
-held with a finding, or re-asked. A page is found to have no missed act (its
-page-scope holds cleared), to have a missed act, re-asked, re-shot, or held with
+held with a finding, or re-asked; an excluded unit's page keeps its page
+holds, and a page whose every act is excluded is held as one with no act. A
+page is found to have no missed act (its page-scope holds cleared), to have a missed act, re-asked, re-shot, or held with
 a finding. Correcting text, splitting, merging and clearing a continuation link
 are not decisions; each is a `hold` finding and the unit stays held.
 """
@@ -60,8 +66,9 @@ from common.contracts.approval import (
     UNIT_SCOPE,
     validate_approval_record,
 )
-from common.contracts.canonical import digest_of, is_plain_int
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_plain_int
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
+from common.page_path import NO_AUTOPSIA
 from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_CLASS,
@@ -97,6 +104,17 @@ RECENSOR_PAGE_CODES: Final = frozenset(
     }
 )
 ROW_PAGE_CODES: Final = frozenset({PAGE_UNREAD_HOLD, PAGE_BLANK_HOLD, NO_ACT_ON_PAGE_HOLD})
+# Holds stage 4 puts on every entry of a page for a fact about the whole page:
+# read without its image, the page may hold acts no entry lists.
+PAGE_WIDE_ENTRY_CODES: Final = frozenset({NO_AUTOPSIA})
+
+CURRENT: Final = "current"
+STALE: Final = "stale"
+# Current decisions about one subject that disagree: kept, never applied.
+CONFLICTING: Final = "conflicting"
+CONFLICT: Final = "conflict"
+BASIS_CHANGED: Final = "basis-changed"
+SUBJECT_ABSENT: Final = "subject-absent"
 
 # The hold code each holding decision adds, by scope.
 ADDED_CODES: Final = {
@@ -106,16 +124,14 @@ ADDED_CODES: Final = {
     (PAGE_SCOPE, "re-ask"): "review-page-reask",
     (PAGE_SCOPE, "re-shoot"): "review-reshoot",
     (PAGE_SCOPE, "hold"): "review-page-hold",
+    (UNIT_SCOPE, CONFLICT): "review-conflict",
+    (PAGE_SCOPE, CONFLICT): "review-page-conflict",
 }
 CLEARING: Final = frozenset({(UNIT_SCOPE, "release"), (UNIT_SCOPE, "exclude")}) | {
     (PAGE_SCOPE, "no-missed-act")
 }
 REQUESTS: Final = frozenset({"re-ask", "re-shoot"})
 
-CURRENT: Final = "current"
-STALE: Final = "stale"
-BASIS_CHANGED: Final = "basis-changed"
-SUBJECT_ABSENT: Final = "subject-absent"
 
 _UNIT_FIELDS: Final = frozenset(
     {"act_id", "page_id", "outcome", "payload", "unit_holds", "page_holds"}
@@ -153,18 +169,22 @@ def classify_holds(
 
     A page-level row's codes are all page scope. On an entry, a code is unit
     scope when the entry's own reading holds it or the Recensor measures it per
-    entry, and page scope when the page accounting holds it or the Recensor
-    measures it per page; a code both hold is in both, and needs both a unit
-    and a page decision to clear. A code in neither is refused, since a hold
+    entry, and page scope when the page accounting holds it, the Recensor
+    measures it per page, or stage 4 holds every entry for a fact about the
+    whole page; a code both hold is in both, and needs both a unit and a page
+    decision to clear. `unit_holds` and `page_holds` are the unit's Perlectio
+    `holds` and `page_holds` fields, as sealed. A code in neither is refused, since a hold
     of unknown scope could be cleared by the wrong decision.
     """
     codes = set(hold_codes)
+    if type(unit_class) is not str:
+        raise FatalAccounting(f"a review names unit class {unit_class!r}")
     if unit_class in PAGE_ROW_CLASSES:
         return {"unit": [], "page": sorted(codes)}
     if unit_class not in READING_CLASSES:
         raise FatalAccounting(f"a review names unit class {unit_class!r}")
-    unit = codes & (set(unit_holds) | RECENSOR_UNIT_CODES)
-    page = codes & (set(page_holds) | RECENSOR_PAGE_CODES | ROW_PAGE_CODES)
+    unit = codes & (set(unit_holds) | RECENSOR_UNIT_CODES) - PAGE_WIDE_ENTRY_CODES
+    page = codes & (set(page_holds) | RECENSOR_PAGE_CODES | ROW_PAGE_CODES | PAGE_WIDE_ENTRY_CODES)
     if unknown := sorted(codes - unit - page):
         raise FatalAccounting(
             f"hold code(s) {unknown} are neither the entry's own nor its page's, so no "
@@ -177,9 +197,10 @@ def current_basis(derived: Mapping[str, Any]) -> dict[str, Any]:
     """Every unit and page of a derived review, with its basis digest and scoped holds.
 
     `{"run_id", "units": {act_id: {page_id, page_ordinal, act_key, unit_class,
-    outcome, basis_digest, unit_codes, page_codes}}, "pages": {page_id:
-    {page_ordinal, basis_digest, units, page_codes}}}`. A page's codes are the
-    union of its units' page-scope codes.
+    kind, page_holds, outcome, basis_digest, unit_codes, page_codes}}, "pages":
+    {page_id: {page_ordinal, page_holds, basis_digest, units, act_units,
+    page_codes}}}`. A page's codes are the union of its units' page-scope
+    codes; its units must name the same page accounting holds.
     """
     run_id = derived.get("run_id") if isinstance(derived, Mapping) else None
     units_in = derived.get("units") if isinstance(derived, Mapping) else None
@@ -196,11 +217,24 @@ def current_basis(derived: Mapping[str, Any]) -> dict[str, Any]:
         entry = units[act_id]
         page = pages.setdefault(
             entry["page_id"],
-            {"page_ordinal": entry["page_ordinal"], "units": [], "page_codes": []},
+            {
+                "page_ordinal": entry["page_ordinal"],
+                "page_holds": entry["page_holds"],
+                "units": [],
+                "act_units": [],
+                "page_codes": [],
+            },
         )
         if page["page_ordinal"] != entry["page_ordinal"]:
             raise FatalAccounting(f"page {entry['page_id']!r} is named with two ordinals")
+        # One page accounting holds every entry of a page alike.
+        if page["page_holds"] != entry["page_holds"]:
+            raise FatalAccounting(
+                f"the units of page {entry['page_id']!r} name different page accounting holds"
+            )
         page["units"].append(act_id)
+        if entry["kind"] == "act" and entry["unit_class"] in READING_CLASSES:
+            page["act_units"].append(act_id)
         page["page_codes"] = sorted(set(page["page_codes"]) | set(entry["page_codes"]))
     for page_id, page in pages.items():
         page["basis_digest"] = page_basis_digest(
@@ -250,6 +284,8 @@ def _unit_basis(unit: Any) -> dict[str, Any]:
         "unit_class": payload["unit_class"],
         "outcome": outcome,
         "basis_digest": basis_digest(payload),
+        "kind": payload.get("kind"),
+        "page_holds": sorted(set(unit["page_holds"])),
         "unit_codes": scopes["unit"],
         "page_codes": scopes["page"],
     }
@@ -276,8 +312,7 @@ def review_decision(record: Any, basis: Mapping[str, Any]) -> dict[str, Any]:
     `subject-absent` or `basis-changed`. A decision that is not a sound
     approval-record.v1 review, names another run, or that its bound subject
     does not allow (a unit decision about a page-level row, a release with no
-    unit hold to clear, no missed act on a page with no page hold or an unread
-    page) is refused.
+    unit hold to clear, no missed act on an unread page) is refused.
     """
     record = validate_approval_record(record)
     if record["action"] != REVIEW_ACTION:
@@ -290,6 +325,8 @@ def review_decision(record: Any, basis: Mapping[str, Any]) -> dict[str, Any]:
     scope, subject, page_id = review["scope"], record["subject_ids"][0], review["page_id"]
     summary = {
         "decision_hash": record["self_hash"],
+        # The digest the run tree stores the record under, for citing it.
+        "record_sha256": digest_bytes(canonical_bytes(record)),
         "scope": scope,
         "subject_id": subject,
         "page_id": page_id,
@@ -322,8 +359,6 @@ def _require_allowed(summary: Mapping[str, Any], found: Mapping[str, Any]) -> No
         if summary["decision"] == "release" and not found["unit_codes"]:
             raise ApprovalRefusal(f"a {what}: the unit has no hold of its own to release")
     elif summary["decision"] == "no-missed-act":
-        if not found["page_codes"]:
-            raise ApprovalRefusal(f"a {what}: the page has no page hold to clear")
         if PAGE_UNREAD_HOLD in found["page_codes"]:
             raise ApprovalRefusal(
                 f"a {what}: the page was never read, so nothing shows whether an act is on it"
@@ -337,16 +372,19 @@ def apply_decisions(derived: Mapping[str, Any], decisions: Sequence[Any]) -> dic
     """The derived review with every current decision applied, and every stale one kept.
 
     Deterministic in the decision set: order and repeats do not matter, since
-    a record is known by its self-hash. Two current decisions about one
-    subject that decide differently are refused rather than chosen between.
+    a record is known by its self-hash. Current decisions about one subject
+    that decide differently are never chosen between: none is applied, each is
+    kept as `conflicting`, and the subject is held until they agree.
     """
     basis = current_basis(derived)
     by_hash: dict[str, dict[str, Any]] = {}
     for record in decisions:
         summary = review_decision(record, basis)
         by_hash[summary["decision_hash"]] = summary
-    summaries = sorted(by_hash.values(), key=_summary_key)
-    kinds = _current_kind_by_subject(summaries)
+    kinds = _current_kind_by_subject(by_hash.values())
+    summaries = sorted(
+        (_with_conflict(summary, kinds) for summary in by_hash.values()), key=_summary_key
+    )
 
     pages = {
         page_id: _page_result(page_id, page, summaries, kinds)
@@ -354,16 +392,20 @@ def apply_decisions(derived: Mapping[str, Any], decisions: Sequence[Any]) -> dic
     }
     units_in = {unit["act_id"]: unit for unit in derived["units"]}
     units = {
-        act_id: _unit_result(act_id, units_in[act_id], entry, pages[entry["page_id"]], summaries)
+        act_id: _unit_result(
+            act_id, units_in[act_id], entry, pages[entry["page_id"]], summaries, kinds
+        )
         for act_id, entry in sorted(basis["units"].items())
     }
     applied = [summary for summary in summaries if summary["state"] == CURRENT]
     stale = [summary for summary in summaries if summary["state"] == STALE]
     return {
+        "decisions_digest": digest_of(sorted(s["record_sha256"] for s in summaries)),
         "units": units,
         "pages": pages,
         "applied": applied,
         "stale": stale,
+        "conflicting": [s for s in summaries if s["state"] == CONFLICTING],
         "unkept": [summary for summary in stale if summary["page_id"] not in basis["pages"]],
         "clearances": _clearances(basis, units, pages, applied),
         "requests": _requests(basis, applied),
@@ -379,20 +421,20 @@ def _summary_key(summary: Mapping[str, Any]) -> tuple[str, ...]:
     )
 
 
-def _current_kind_by_subject(summaries: list[dict[str, Any]]) -> dict[tuple[str, str], str]:
-    """The one decision each subject's current decisions make; differing ones are refused."""
+def _current_kind_by_subject(summaries: Iterable[dict[str, Any]]) -> dict[tuple[str, str], str]:
+    """The one decision each subject's current decisions make, or `conflict` when they differ."""
     kinds: dict[tuple[str, str], set[str]] = {}
     for summary in summaries:
         if summary["state"] == CURRENT:
             key = (summary["scope"], summary["subject_id"])
             kinds.setdefault(key, set()).add(summary["decision"])
-    for (scope, subject), found in kinds.items():
-        if len(found) > 1:
-            raise ApprovalRefusal(
-                f"{scope} {subject!r} has current decisions {sorted(found)}, which disagree; "
-                "one must go before the review can apply either"
-            )
-    return {key: next(iter(found)) for key, found in kinds.items()}
+    return {key: next(iter(found)) if len(found) == 1 else CONFLICT for key, found in kinds.items()}
+
+
+def _with_conflict(summary: dict[str, Any], kinds: Mapping[tuple[str, str], str]) -> dict[str, Any]:
+    if summary["state"] == CURRENT and kinds[(summary["scope"], summary["subject_id"])] == CONFLICT:
+        return {**summary, "state": CONFLICTING}
+    return summary
 
 
 def _concerns_page(summary: Mapping[str, Any], page_id: str, units: Iterable[str]) -> bool:
@@ -408,16 +450,28 @@ def _page_result(
     summaries: list[dict[str, Any]],
     kinds: Mapping[tuple[str, str], str],
 ) -> dict[str, Any]:
+    """A page's holds after review: its page-scope codes, less what was cleared, plus added ones.
+
+    A page whose every `act` entry an operator excluded holds its other
+    entries as the machine does a page with no act, until a no-missed-act
+    decision confirms none of them is one.
+    """
     kind = kinds.get((PAGE_SCOPE, page_id))
-    cleared = list(page["page_codes"]) if kind == "no-missed-act" else []
+    codes = set(page["page_codes"])
+    acts = page["act_units"]
+    if acts and all(kinds.get((UNIT_SCOPE, act_id)) == "exclude" for act_id in acts):
+        codes.add(NO_ACT_ON_PAGE_HOLD)
+    cleared = sorted(codes) if kind == "no-missed-act" else []
     added = [ADDED_CODES[(PAGE_SCOPE, kind)]] if (PAGE_SCOPE, kind) in ADDED_CODES else []
+    hold_codes = sorted((codes - set(cleared)) | set(added))
     return {
         "page_ordinal": page["page_ordinal"],
         "basis_digest": page["basis_digest"],
         "decision": kind,
-        "hold_codes": sorted((set(page["page_codes"]) - set(cleared)) | set(added)),
+        "hold_codes": hold_codes,
         "cleared": cleared,
         "added": added,
+        "raised": sorted(set(hold_codes) - set(page["page_codes"])),
         "decisions": [s for s in summaries if _concerns_page(s, page_id, page["units"])],
     }
 
@@ -428,33 +482,33 @@ def _unit_result(
     entry: Mapping[str, Any],
     page: Mapping[str, Any],
     summaries: list[dict[str, Any]],
+    kinds: Mapping[tuple[str, str], str],
 ) -> dict[str, Any]:
     own = [s for s in summaries if s["scope"] == UNIT_SCOPE and s["subject_id"] == act_id]
     touching = sorted(own + page["decisions"], key=_summary_key)
     machine = copy.deepcopy(dict(unit["payload"]))
-    if not touching:
+    if not touching and not page["raised"]:
         return {"outcome": unit["outcome"], "payload": machine}
-    current = [s for s in own if s["state"] == CURRENT]
-    kind = current[0]["decision"] if current else None
+    kind = kinds.get((UNIT_SCOPE, act_id))
     cleared_unit = list(entry["unit_codes"]) if (UNIT_SCOPE, kind) in CLEARING else []
     cleared_page = sorted(set(entry["page_codes"]) & set(page["cleared"]))
     added = sorted(
         ([ADDED_CODES[(UNIT_SCOPE, kind)]] if (UNIT_SCOPE, kind) in ADDED_CODES else [])
         + page["added"]
     )
+    # The page's holds this unit carries: its own page-scope codes, less what a
+    # page decision cleared, and any the review raised on the page.
+    page_held = (set(entry["page_codes"]) - set(page["cleared"])) | set(page["raised"])
     if kind == "exclude":
-        outcome, hold_codes = EXCLUDED, []
+        page_held -= {NO_ACT_ON_PAGE_HOLD}
+    hold_codes = sorted((set(entry["unit_codes"]) - set(cleared_unit)) | page_held | set(added))
+    if kind == "exclude":
+        outcome = EXCLUDED
     else:
-        hold_codes = sorted(
-            (set(entry["unit_codes"]) - set(cleared_unit))
-            | (set(entry["page_codes"]) - set(cleared_page))
-            | set(added)
-        )
         outcome = _derived_outcome(hold_codes, entry["unit_class"])
     findings = sorted(
         {s["finding"] for s in touching if s["state"] == CURRENT and s["finding"] is not None}
     )
-    stale = [s for s in touching if s["state"] == STALE]
     block = {
         "basis_digest": entry["basis_digest"],
         "page_basis_digest": page["basis_digest"],
@@ -474,7 +528,8 @@ def _unit_result(
         cleared_page=cleared_page,
         added=added,
         findings=findings,
-        stale=len(stale),
+        stale=sum(s["state"] == STALE for s in touching),
+        conflicting=sum(s["state"] == CONFLICTING for s in touching),
         still=sorted(set(hold_codes) - set(added)),
     )
     return {
@@ -493,6 +548,7 @@ def _reason(
     added: list[str],
     findings: list[str],
     stale: int,
+    conflicting: int,
     still: list[str],
 ) -> str:
     """A reviewed unit's reason: what the review did, then what the machine found."""
@@ -506,7 +562,12 @@ def _reason(
             f"operator review found no missed act on page {ordinal}, clearing "
             f"{', '.join(cleared_page)}"
         )
-    if added:
+    if conflicting:
+        parts.append(
+            f"{conflicting} current operator decision(s) disagree, so none is applied and it "
+            "is held until they agree"
+        )
+    if added and kind != "exclude":
         parts.append(
             f"operator review holds it ({', '.join(added)})"
             + (f" with finding(s) {', '.join(findings)}" if findings else "")
@@ -516,8 +577,12 @@ def _reason(
             f"{stale} operator decision(s) are stale, bound to facts that have since changed, "
             "and are kept without being applied"
         )
-    if still and kind != "exclude":
+    if kind == "exclude" and (still or added):
+        parts.append(f"its page stays held by {', '.join(sorted(set(still) | set(added)))}")
+    elif still:
         parts.append(f"still held by {', '.join(still)}")
+    if not parts:
+        parts.append(f"operator review decided about page {ordinal}")
     return "; ".join(parts) + f" (the machine's review: {machine_reason})"
 
 
@@ -582,18 +647,32 @@ def _requests(basis: Mapping[str, Any], applied: list[dict[str, Any]]) -> list[d
 def aggregate_clearances(result: Mapping[str, Any], *, unit_key: str) -> list[dict[str, Any]]:
     """`apply_decisions`' clearances as `run_aggregate`'s `review_clearances` rows.
 
-    `unit_key` names what the aggregate counts a unit by, `act_id` or `act_key`;
-    a page is named by its ordinal.
+    `unit_key` names what the aggregate calls a unit, `act_id` or `act_key`;
+    every row names its page by ordinal, and a page row is its ordinal.
     """
     if unit_key not in ("act_id", "act_key"):
-        raise FatalAccounting(f"a unit is counted by act_id or act_key, not {unit_key!r}")
+        raise FatalAccounting(f"a unit is named by act_id or act_key, not {unit_key!r}")
     field = "subject_id" if unit_key == "act_id" else "act_key"
     return [
         {
             "scope": row["scope"],
             "subject": row[field] if row["scope"] == UNIT_SCOPE else row["page_ordinal"],
+            "page": row["page_ordinal"],
             "decision": row["decision"],
             "cleared": list(row["cleared"]),
         }
         for row in result["clearances"]
     ]
+
+
+def held_pages(result: Mapping[str, Any]) -> dict[int, list[str]]:
+    """Each page still held after review, by ordinal, with its page-scope hold codes.
+
+    `run_aggregate`'s `review_page_holds`: a page hold stands even when every
+    unit on the page was excluded, so it is reported by page, not only by unit.
+    """
+    return {
+        page["page_ordinal"]: list(page["hold_codes"])
+        for page in result["pages"].values()
+        if page["hold_codes"]
+    }
