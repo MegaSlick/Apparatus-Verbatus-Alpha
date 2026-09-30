@@ -7,7 +7,6 @@ capture, so it can never affect generation or alter the captured bytes.
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Iterable
 from contextlib import contextmanager
 from itertools import groupby
@@ -29,38 +28,17 @@ from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 from operations.serving.preflight import assert_generation_config_key_coverage
 
 DAI_MAX_WIDTH_PX = 1_500
-# A width-only ceiling misses a narrow, tall crop whose total pixel count
-# still exceeds what a served row admits; the engine then resizes it again
-# internally, silently contradicting whatever transform this schema recorded.
-# `DAI_MAX_TOTAL_PIXELS` closes that: min(max_pixels) over every DAI row in
-# `config/serving_recipes_real.toml`, pinned against that file by
-# `test_feeding.py::test_dai_total_pixel_ceiling_is_the_smallest_shipped_rows_max_pixels`.
-#
-# It is the smallest across tiers, not the tier this run serves under,
-# because `dai_dimensions` must stay a pure function of the crop's own
-# pixels -- `witness_adapters._dai_present`, `validate_adapter_presentation`
-# and `publish_attempt` all re-derive the same crop with no served row in
-# hand. The cost: a crop close to the width ceiling on a larger tier is cut
-# down to what the smallest tier needs, even where its own row could hold
-# more.
-#
-# Both ceilings carry their provenance into the record they seal: the width
-# ceiling is the model card itself (Training/Parameters: "Image width: 1500
-# pixels (max)"), the total-pixel ceiling is the shipped serving catalogue.
-DAI_MAX_TOTAL_PIXELS = 2_359_296
+# The width ceiling is the model card itself (Training/Parameters: "Image width:
+# 1500 pixels (max)"). No total-pixel ceiling is ours to invent: the vendor's
+# own processor admits up to 12,845,056 pixels, and the serving row carries
+# that (`config/serving_recipes_real.toml`), so a tall crop is either read at
+# its own size or refused by `request_capacity` -- never shrunk a second time.
 DAI_LIMIT_SOURCES = {
     "max_width_px": (
         "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR model card, "
         "Training/Parameters: 'Image width: 1500 pixels (max)' "
         "(https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR "
         "@ e371095d4ffe585f31f4974462931ddbac61ff64)"
-    ),
-    "max_total_pixels": (
-        "config/serving_recipes_real.toml: the smallest max_pixels shipped for "
-        "the dai.v1 (attestator_2) row across every tier -- 2,359,296, the same "
-        "at every tier since the per-tier pixel ladder was retired -- the floor every deployed tier's engine "
-        "actually admits, so a client-side crop within it is never re-resized "
-        "by any of them"
     ),
 }
 SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
@@ -107,7 +85,7 @@ DAI_FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
 def churro_generation() -> dict[str, int]:
     """Churro's declared answer bound, retained as evidence, not the wire value.
 
-    20,000 tokens, read from ``request_capacity.DECLARED_ANSWER_BOUND_TOKENS``
+    25,000 tokens (the vendor's own `DEFAULT_OCR_MAX_TOKENS`), read from ``request_capacity.DECLARED_ANSWER_BOUND_TOKENS``
     so this chair's bound cannot drift from the number the bound seam applies.
     What actually goes out is ``min(this, max_model_len - image - prompt)``
     through ``live_witness.generation_bound_sent``.
@@ -133,13 +111,12 @@ def chandra_generation() -> dict[str, int]:
 
 
 def churro_wire_decoding() -> dict[str, float]:
-    """Churro's own shipped ``repetition_penalty``, because the engine drops it.
+    """Churro's own shipped ``repetition_penalty``, sent explicitly as well.
 
-    Every serving row pins ``generation_config = "vllm"``, so vLLM ignores the
-    model's file and falls back to its own default of 1.0; the model's
-    publisher ships 1.05, and the CHURRO paper documents this model entering
-    degeneration loops without it. Declining a vendor's own mitigation by
-    accident is what this sends back explicitly. At ``temperature = 0`` the
+    Churro's rows are ``generation_config = "auto"``, so vLLM already reads the
+    model's own 1.05; it is sent on the wire too so the request stands on its
+    own evidence rather than on an engine default nobody observed. The CHURRO
+    paper documents this model entering degeneration loops without it. At ``temperature = 0`` the
     penalty is applied before the greedy argmax, so determinism is untouched.
 
     Not folded into :func:`churro_generation`, whose canonical writer refuses
@@ -366,15 +343,14 @@ def dai_model_view(
 
 
 def _dai_image_limits() -> dict[str, Any]:
-    """The sealed statement of DAI's executable image ceilings.
+    """The sealed statement of DAI's executable image ceiling.
 
-    No height ceiling: nothing states one, and the total-pixel ceiling already
-    bounds height indirectly for any width this rule can produce.
+    Width only: the model card states no height or area ceiling, and the
+    serving row's own `max_pixels` and `request_capacity` bound the rest.
     """
     return {
-        "schema": "dai-image-limits.v4",
+        "schema": "dai-image-limits.v5",
         "max_width_px": DAI_MAX_WIDTH_PX,
-        "max_total_pixels": DAI_MAX_TOTAL_PIXELS,
         "sources": dict(DAI_LIMIT_SOURCES),
     }
 
@@ -473,19 +449,12 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
 
 
 def dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
-    """Largest aspect-preserving view within DAI's two sealed ceilings.
+    """Largest aspect-preserving view within DAI's width ceiling.
 
-    Two floor-rounded, aspect-preserving passes: first the width ceiling
-    (`DAI_MAX_WIDTH_PX`), skipped if already under it; then, only if the
-    result still carries more total pixels than `DAI_MAX_TOTAL_PIXELS`, a
-    second scale-down against that ceiling -- since a narrow, tall crop can
-    trip the pixel ceiling while passing the width one. This function stays a
-    pure function of the crop's own pixels rather than reaching for the row
-    that will actually serve the request (see `DAI_MAX_TOTAL_PIXELS`'s own
-    comment); a view within it still fits every shipped tier's `max_pixels`.
-
-    Public because `witness_adapters`' presentation writer and read-back
-    validator both have to reach exactly this rule.
+    One floor-rounded, aspect-preserving pass against `DAI_MAX_WIDTH_PX`,
+    skipped if the crop is already under it. Public because `witness_adapters`'
+    presentation writer and read-back validator both have to reach exactly
+    this rule.
     """
     if (
         not isinstance(width_px, int)
@@ -497,15 +466,8 @@ def dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
     ):
         raise SchemaRefusal("DAI source dimensions must be positive integers")
     if width_px <= DAI_MAX_WIDTH_PX:
-        target_width, target_height = width_px, height_px
-    else:
-        target_width = DAI_MAX_WIDTH_PX
-        target_height = max(1, height_px * target_width // width_px)
-    if target_width * target_height > DAI_MAX_TOTAL_PIXELS:
-        beta = math.sqrt((target_width * target_height) / DAI_MAX_TOTAL_PIXELS)
-        target_width = max(1, math.floor(target_width / beta))
-        target_height = max(1, math.floor(target_height / beta))
-    return target_width, target_height
+        return width_px, height_px
+    return DAI_MAX_WIDTH_PX, max(1, height_px * DAI_MAX_WIDTH_PX // width_px)
 
 
 def _record_post_hoc_repetition(

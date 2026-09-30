@@ -81,6 +81,7 @@ from common.contracts.serving import (
 from common.imaging import dimensions
 from common.native_witness import native_parse_refusal
 from common.request_capacity import (
+    DECLARED_ANSWER_BOUND_TOKENS,
     act_answer_budget,
     dense_page_answer_budget,
     refuse_unless_it_fits,
@@ -236,6 +237,9 @@ def request_capacity_or_refuse(
     answer budget is that chair's own measured response at the scope it was
     asked at: a page chair reserves a dense page's answer, an act chair one
     act's answer, since reserving a page's would refuse ordinary act crops.
+    Churro is the exception: its whole vendor answer bound is reserved, so a
+    row that cannot hold it refuses the page rather than letting the engine
+    stop the answer short of what the vendor's own pipeline allows.
 
     Never a silent downscale: the alternative is showing the model fewer
     pixels than the render config argues are needed to read the ink, which is
@@ -250,11 +254,12 @@ def request_capacity_or_refuse(
             f"{sorted(_ADAPTER_CHAIRS)}"
         )
     budget = dense_page_answer_budget if scope == "page" else act_answer_budget
+    answer = DECLARED_ANSWER_BOUND_TOKENS[chair] if adapter_name == "churro.v1" else budget(chair)
     return refuse_unless_it_fits(
         profile,
         [dimensions(image) for image in image_bytes_list],
         sealed_prompt_tokens(chair, *_prompt_texts(prompt)),
-        budget(chair),
+        answer,
         what=what,
     )
 
@@ -395,10 +400,10 @@ def page_chair_request(
 
     ``profile`` is the sealed serving row this chair runs under. What may be
     sent (`generation_bound_sent`) and whether the request fits
-    (`request_capacity_or_refuse`) are two separate questions: at every row in
-    the shipped real catalogue, both page chairs' declared bounds fit within
-    what the row leaves, so neither sends a ``max_tokens`` today -- a fact
-    about the catalogue, not the adapter.
+    (`request_capacity_or_refuse`) are two separate questions: Churro's
+    declared bound is reserved in full, so it sends its ``max_tokens`` on every
+    row it is admitted to; Chandra's 12,384 exceeds what its 24/48 GB rows
+    leave, so there it sends none -- a fact about the catalogue, not the adapter.
     """
 
     presented = adapter.present(context, dict(presentation))

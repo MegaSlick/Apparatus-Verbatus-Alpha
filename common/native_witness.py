@@ -130,10 +130,9 @@ CHANDRA_SCALE_MAX_PIXELS: Final = 3072 * 2048
 CHURRO_MAX_IMAGE_DIM_PX: Final = CHURRO_MAX_INLINE_IMAGE_DIM
 
 # Churro's declared output bound, recorded on every request; what goes on the
-# wire is `request_capacity.sendable_max_tokens`.  Sources: the CHURRO paper,
-# section B.2, and the `--max-new-tokens` default of
-# `churro_transformers_infer.py` at `stanford-oval/churro @
-# 2db3d9f5489cf12fbbe7384dd7f1b97b5f6f298b`.
+# wire is `request_capacity.sendable_max_tokens`.  Source: the vendor's
+# `DEFAULT_OCR_MAX_TOKENS = 25_000` (`src/churro_ocr/providers/specs.py:77` at `stanford-oval/Churro` tag
+# v0.3.0, 4abb173); the CHURRO paper, section B.2, gives the reason for its size.
 # (`utils/llm/models.py::COMPLETION_TOKENS_FOR_STANDARD_MODELS` in the same
 # vendor repository is a context length, not a generation bound.)
 CHURRO_OUTPUT_TOKENS: Final = DECLARED_ANSWER_BOUND_TOKENS["attestator_3"]

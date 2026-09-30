@@ -23,8 +23,28 @@ PASS_B_FRAGMENT: Final = (
     "This is a prior reading. It may be correct, incomplete, or wrong. Independently reread "
     "the image, preserve what the ink supports, and change only what the image justifies."
 )
+# What the reader is told about the neighbouring acts' readings, pinned like the
+# Pass-B fragment: wording that invited copying across the boundary would make
+# the neighbours a source of text rather than clues.
+NEIGHBOUR_FRAGMENT: Final = (
+    "The neighbouring acts are the acts written just before and just after this one, as "
+    "the witnesses read them; (tail) marks only the end of a reading and (head) only its "
+    "beginning. They are context only: names, dates and formulas recur from act to act, "
+    "and the boundary between two acts is where readings most often go wrong. Transcribe "
+    "only this act's own ink and never copy a neighbour's text into it."
+)
+NEIGHBOURS_TABLE: Final = "neighbours"
+PAGE_CONTEXT_TABLE: Final = "page_context"
 _FIELDS: Final = frozenset(
-    {"selection_rule", "page_shared_prefix_policy", "pass_b_fragment", "max_images", "truncation"}
+    {
+        "selection_rule",
+        "page_shared_prefix_policy",
+        "pass_b_fragment",
+        "max_images",
+        "truncation",
+        NEIGHBOURS_TABLE,
+        PAGE_CONTEXT_TABLE,
+    }
 )
 _STRING_FIELDS: Final = frozenset(
     {"selection_rule", "page_shared_prefix_policy", "pass_b_fragment"}
@@ -126,12 +146,44 @@ def validate_truncation_table(table: Any) -> dict[str, Any]:
     }
 
 
+def _validate_small_tables(record: dict[str, Any]) -> None:
+    """The `[neighbours]` and `[page_context]` tables: closed, positive, pinned."""
+    neighbours = record[NEIGHBOURS_TABLE]
+    if (
+        not isinstance(neighbours, dict)
+        or set(neighbours) != {"characters_per_row", "fragment"}
+        or not _plain_int(neighbours["characters_per_row"])
+        or neighbours["characters_per_row"] <= 0
+    ):
+        raise ContractError(
+            f"the Perlector protocol declaration's [{NEIGHBOURS_TABLE}] is not "
+            "exactly a positive integer characters_per_row and the fragment"
+        )
+    if neighbours["fragment"] != NEIGHBOUR_FRAGMENT:
+        raise ContractError(
+            "the neighbour fragment is not the declared form; what this pipeline says to a "
+            "reader about the neighbouring acts is not a free-text configuration field"
+        )
+    page_context = record[PAGE_CONTEXT_TABLE]
+    if (
+        not isinstance(page_context, dict)
+        or set(page_context) != {"maximum_edge", "covered_page_edge"}
+        or not all(_plain_int(page_context[key]) and page_context[key] > 0 for key in page_context)
+        or page_context["covered_page_edge"] > page_context["maximum_edge"]
+    ):
+        raise ContractError(
+            f"the Perlector protocol declaration's [{PAGE_CONTEXT_TABLE}] is not exactly a "
+            "positive integer maximum_edge and a covered_page_edge no larger than it"
+        )
+
+
 def load(path: str | Path) -> tuple[dict[str, Any], str]:
     """Read the policy a Perlector pass will use, with its seal."""
     record, digest = read_sealed_toml(path, "Perlector protocol declaration")
     if set(record) != _FIELDS or not all(isinstance(record[key], str) for key in _STRING_FIELDS):
         raise ContractError("the Perlector protocol declaration is not its closed schema")
     record[TRUNCATION_TABLE] = validate_truncation_table(record[TRUNCATION_TABLE])
+    _validate_small_tables(record)
     if (
         not isinstance(record["max_images"], int)
         or isinstance(record["max_images"], bool)

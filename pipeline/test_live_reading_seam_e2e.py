@@ -242,33 +242,26 @@ def _vllm_row(*, recipe: str, chair: str, tier: str, port: int) -> dict[str, Any
         # measured upper bound, and this run's four-image Perlector request
         # costs 2,080 by it.
         #
-        # Churro's row moved for the same reason at a different seam. Its prompt
-        # and answer are sealed constants rather than a floor: the chair is
-        # asked in the vendor's own registry-resolved system string, re-measured
-        # at 27, and reserves U14's re-measured dense-page answer over the
-        # vendor's own `HistoricalDocument` grammar, 1,905 (not the retired
-        # 1,631 JSON contract), which is 1,933 with this fixture's one image
-        # token -- still under 2,048, with 115 tokens to spare. The shipped
-        # catalogue states 8,192 for this chair at every tier regardless, so
-        # the stand-in states it too -- the row moves, never the arithmetic
-        # and never the pixels, to mirror the real catalogue rather than to
-        # escape an overrun that never happened here.
+        # Churro reserves its vendor's whole answer bound, 25,000
+        # (`DECLARED_ANSWER_BOUND_TOKENS`), beside its 27-token system string
+        # and the image, so no row shorter than that can admit a page. The
+        # shipped catalogue states 32,768 for this chair at every tier, so the
+        # stand-in states it too -- the row moves, never the arithmetic and
+        # never the pixels.
         #
         # Chandra's row moved next, for the same reason once more: the chair is
         # asked in its vendor's own `OCR_LAYOUT_PROMPT` rather than this
         # repository's retired instruction, re-measured at 593 against 256, so
         # its need is 1 + 593 + 1,645 = 2,239 (U14's re-measured answer, shared
         # with `designator_structure`) where the row left 2,048. The shipped
-        # catalogue states 18,000 for it (U15) at every tier -- not 8,192, the
-        # value Churro's row shares with it before U15's per-chair geometry
-        # split them apart. DAI keeps 2,048: its act crop needs 1 + 84 + 230
-        # and fits with room to spare, and raising a row nothing refuses would
+        # catalogue states 18,000 for it (U15) at every tier. DAI keeps 2,048:
+        # its act crop needs 1 + 84 + 230 and fits with room to spare, and raising a row nothing refuses would
         # remove the one chair this stand-in still proves the arithmetic
         # against.
         "max_model_len": {
             "perlector": 16384,
             "attestator_1": 18000,
-            "attestator_3": 8192,
+            "attestator_3": 32768,
         }.get(chair, 2048),
         "max_num_seqs": 1,
         "max_num_batched_tokens": 256,

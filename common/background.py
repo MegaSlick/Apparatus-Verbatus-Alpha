@@ -597,7 +597,7 @@ def round_half_up_bp(dimension: int, bp: int) -> int:
 
 
 # The shared sealed policy remains in the Designator-named configuration while
-# its three readers bind the same exact bytes into their records.
+# its three readers bind the same sealed values into their records.
 DEFAULT_BACKGROUND_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "designator_grouping.toml"
 )

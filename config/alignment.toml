@@ -1,4 +1,4 @@
-# R4 alignment limits. These bytes are sealed at run creation and rechecked at
+# R4 alignment limits. Its values are sealed at run creation and rechecked at
 # the point of use. Values are operational bounds, never similarity thresholds.
 [limits]
 max_characters = 100000

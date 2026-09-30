@@ -522,39 +522,19 @@ def _dai_region(width, height, x=0, y=0):
             "crop-resize-preserve-aspect",
             id="one-past-the-width-ceiling",
         ),
-        # Bound by the width ceiling alone (1,536 > 1,500) to (1,500, 1,500) --
-        # 2,250,000px, under `DAI_MAX_TOTAL_PIXELS` (2,359,296), so the second
-        # pass agrees: no further scale-down.
+        # Bound by the width ceiling alone (1,536 > 1,500).
         pytest.param(
             1_536,
             1_536,
             "L",
             (1_500, 1_500),
             "crop-resize-preserve-aspect",
-            id="square-crop-also-bound-by-the-total-pixel-ceiling",
+            id="square-crop-over-the-width-ceiling",
         ),
-        # A width this far under 1,500 must not become an identity view
-        # regardless of total pixels: 576x4,097 is 2,359,872px, over
-        # `DAI_MAX_TOTAL_PIXELS` (2,359,296) by 576px, so the second pass
-        # catches it: beta = sqrt(2,359,872 / 2,359,296) ~= 1.000122, floored.
-        pytest.param(
-            576,
-            4_097,
-            "L",
-            (575, 4_096),
-            "crop-resize-preserve-aspect",
-            id="tall-crop-past-the-restored-total-pixel-ceiling",
-        ),
-        # One pixel-row further past the same ceiling; the floored result
-        # lands on the same target as the case above.
-        pytest.param(
-            576,
-            4_098,
-            "L",
-            (575, 4_096),
-            "crop-resize-preserve-aspect",
-            id="tall-crop-one-row-past-the-restored-total-pixel-ceiling",
-        ),
+        # No area ceiling of ours: a narrow, tall crop is read at its own size
+        # (`request_capacity` refuses one the row cannot hold).
+        pytest.param(576, 4_097, "L", (576, 4_097), "crop", id="tall-crop-is-not-shrunk"),
+        pytest.param(576, 9_000, "L", (576, 9_000), "crop", id="very-tall-crop-is-not-shrunk"),
         pytest.param(1, 1, "L", (1, 1), "crop", id="one-pixel"),
         # A bilevel scan, which the door seals as mode `1` rather than promoting.
         pytest.param(

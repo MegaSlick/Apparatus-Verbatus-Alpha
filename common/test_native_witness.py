@@ -50,7 +50,7 @@ def _native_capture() -> dict:
             # System-only, which is the shape both vendor-attested profiles
             # send: the user turn carries the image alone.
             "prompt": {"system": "system prompt"},
-            "generation": {"max_new_tokens": 20_000},
+            "generation": {"max_new_tokens": 25_000},
         },
         "raw_response_ref": {
             "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
@@ -633,7 +633,7 @@ def _page_with_churro_capture() -> dict:
                 "adapter": "churro.v1",
                 "view": {
                     "prompt": {"system": "system prompt"},
-                    "generation": {"max_new_tokens": 20_000},
+                    "generation": {"max_new_tokens": 25_000},
                 },
                 "raw_response_ref": {
                     "relative_path": f"3_attestatores/blobs/sha256/{digest}",
@@ -688,7 +688,7 @@ def _page_with_churro_capture() -> dict:
             lambda value: value["native_capture"]["view"]["generation"].update(
                 max_new_tokens=10**100
             ),
-            "20000-token bound",
+            "25000-token bound",
         ),
         (
             lambda value: value["native_capture"].update(stop_reason="partial-parse-failed"),
@@ -1628,7 +1628,7 @@ def test_re_derivation_reads_the_trim_prompt_off_the_record_it_is_checking():
     body = (_SYSTEM + "\nune transcription simple").encode("utf-8")
     digest = digest_bytes(body)
     capture = _native_capture()
-    capture["view"] = {"prompt": {"system": _SYSTEM}, "generation": {"max_new_tokens": 20_000}}
+    capture["view"] = {"prompt": {"system": _SYSTEM}, "generation": {"max_new_tokens": 25_000}}
     capture["raw_response_ref"] = {
         "relative_path": f"3_attestatores/blobs/sha256/{digest}",
         "sha256": digest,
@@ -2304,7 +2304,7 @@ def test_bytes_that_are_not_utf8_are_still_named_rather_than_raised():
 
 def test_the_churro_bound_is_twenty_thousand_and_is_the_declared_tables_own_entry():
     """Re-exported, never restated: one chair's bound cannot drift from the table."""
-    assert CHURRO_OUTPUT_TOKENS == 20_000
+    assert CHURRO_OUTPUT_TOKENS == 25_000
     assert CHURRO_OUTPUT_TOKENS == DECLARED_ANSWER_BOUND_TOKENS["attestator_3"]
 
 

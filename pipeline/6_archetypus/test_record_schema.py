@@ -264,7 +264,7 @@ def test_record_validation_refuses_a_dissent_pointer_that_left_its_perlectio():
         ),
         (
             {"position": "trailing", "start": 2, "end": 2, "witness_evidence": []},
-            "declared trailing but does not end at len\\(text\\)",
+            "declared trailing but text follows it",
         ),
         (
             {"position": "internal", "start": 0, "end": 0, "witness_evidence": []},

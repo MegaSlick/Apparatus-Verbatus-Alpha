@@ -160,12 +160,12 @@ attestatores = load_stage("3_attestatores")
 # catalogue states it at its smallest tier. Chandra's `OCR_LAYOUT_PROMPT`
 # (593) plus its dense-page answer (1,645) and one image token add to 2,239,
 # which overruns a 2,048 context; Churro's system string (27) plus its
-# dense-page answer against the vendor's `HistoricalDocument` grammar (1,905)
-# and one image token add to 1,933, which still fits 2,048. The row moves to
-# what the shipped catalogue states for these chairs at every tier (8,192)
+# vendor answer bound (25,000) and one image token add to 25,028, which
+# overruns 2,048. The row moves to what the shipped catalogue states for these
+# chairs at every tier (8,192; Churro 32,768)
 # regardless, never the arithmetic or the pixels: this fixture mirrors the
 # real catalogue's own row rather than deriving one from local arithmetic.
-LIVE_ROW_CONTEXTS: dict[str, int] = {"attestator_1": 8192, "attestator_3": 8192}
+LIVE_ROW_CONTEXTS: dict[str, int] = {"attestator_1": 8192, "attestator_3": 32768}
 
 
 def _vllm_row(
@@ -397,13 +397,13 @@ def live_run(tmp_path_factory) -> SimpleNamespace:
 # which at the test row's `max_pixels = 1024` costs one prompt token; what
 # refuses is the prompt and the reserved answer, both measured constants
 # (`common/request_capacity.py`). DAI is act-scoped: 1 + 84 + 230 = 315 against
-# 256. Churro is page-scoped and reserves a dense page's answer against the
-# vendor's `HistoricalDocument` grammar (1,905): 1 + 27 + 1,905 = 1,933 against
-# 512. Attestator 1 keeps the module's own 8,192 and needs 1 + 593 + 1,645 =
+# 256. Churro is page-scoped and reserves the vendor's whole answer bound
+# (25,000): 1 + 27 + 25,000 = 25,028 against 512. Attestator 1 keeps the
+# module's own 8,192 and needs 1 + 593 + 1,645 =
 # 2,239 under the carried vendor prompt and answer, so its testimony proves
 # the refusals were per request.
 REFUSING_CONTEXTS = {"attestator_2": 256, "attestator_3": 512}
-REFUSING_NEEDS = {"attestator_2": (315, 256), "attestator_3": (1933, 512)}
+REFUSING_NEEDS = {"attestator_2": (315, 256), "attestator_3": (25028, 512)}
 
 
 @pytest.fixture(scope="module")
