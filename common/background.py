@@ -505,22 +505,26 @@ def validate_ink_not_measurable_payload(payload: Any) -> dict[str, Any]:
     }
 
 
-def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> dict[str, Any]:
+def validate_measured_ink_map_payload(
+    payload: Any, *, audit_contrast: int, ink_margin_bp: int
+) -> dict[str, Any]:
     """Validate the closed current Ink Map measurement before consuming its runs.
 
     The retained ``ink-runs.v2`` codec records audited ink after the named
     page-spanning component is removed, but its run geometry alone cannot
     establish the background predicate that selected those pixels. This
     envelope does: it names the page's complete audit background and the sealed
-    grouping bytes that selected it.
+    grouping bytes that selected it. `ink_margin` must be the margin the sealed
+    `ink_margin_bp` derives from the recorded paper and dark modes, since the
+    page-spanning split behind every count was cut at it.
     """
     if not isinstance(payload, dict):
         raise ContractError("the measured ink-map record has no object payload")
-    fields = {"page_ordinal", "ink_measurable", "background", "ink", "edge", "edge_findings"}
+    fields = {"page_ordinal", "ink_measurable", "background", "edge", "edge_findings"}
     if set(payload) != fields:
         raise ContractError(
             "the measured ink-map payload is not closed: expected exactly "
-            "page_ordinal, ink_measurable, background, ink, edge, and edge_findings"
+            "page_ordinal, ink_measurable, background, edge, and edge_findings"
         )
     ordinal = payload["page_ordinal"]
     if not is_plain_int(ordinal) or ordinal <= 0:
@@ -529,8 +533,8 @@ def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> d
         )
     if payload["ink_measurable"] is not True:
         raise ContractError("the measured ink-map payload ink_measurable is not true")
-    if not isinstance(payload["ink"], dict) or not isinstance(payload["edge"], dict):
-        raise ContractError("the measured ink-map payload has no object ink and edge findings")
+    if not isinstance(payload["edge"], dict):
+        raise ContractError("the measured ink-map payload has no object edge finding")
     if not isinstance(payload["edge_findings"], dict):
         raise ContractError("the measured ink-map payload has no object retained edge findings")
     background = payload["background"]
@@ -558,10 +562,16 @@ def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> d
             raise ContractError(f"the measured ink-map background {field} is not a plain integer")
     if not 0 <= background["background_level"] <= 255 or not 0 <= background["dark_mode"] <= 255:
         raise ContractError("the measured ink-map background levels are outside 8-bit range")
-    if not PRIMARY_MARGIN <= background["ink_margin"] <= 255:
-        raise ContractError("the measured ink-map background ink_margin is outside its domain")
     if background["dark_mode"] > background["background_level"]:
         raise ContractError("the measured ink-map background dark_mode exceeds its paper level")
+    derived_margin = _derived_ink_margin(
+        background["background_level"], background["dark_mode"], ink_margin_bp
+    )
+    if background["ink_margin"] != derived_margin:
+        raise ContractError(
+            f"the measured ink-map background ink_margin {background['ink_margin']} is not the "
+            f"{derived_margin} the sealed ink_margin_bp derives from its own paper and dark modes"
+        )
     if not isinstance(background["background_source"], str) or background[
         "background_source"
     ] not in {

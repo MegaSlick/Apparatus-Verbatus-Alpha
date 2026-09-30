@@ -28,10 +28,8 @@ from common.residual_ink import (
     MINIMUM_INK_PIXELS_FIELD,
     edge_ink,
     edge_ink_from_runs,
-    ink_runs,
     ink_runs_from_rows,
     load_coverage_audit_config,
-    page_residual_ink,
     page_spanning_components,
     residual_ink,
     residual_ink_from_runs,
@@ -73,16 +71,6 @@ def _measure(width, height, rows, covered):
         width,
         height,
         rows,
-        covered,
-        background_policy=_policy(width, height),
-        coverage_policy=_coverage(width, height),
-    )
-
-
-def _measure_page(image_bytes, covered):
-    width, height = dimensions(image_bytes)
-    return page_residual_ink(
-        image_bytes,
         covered,
         background_policy=_policy(width, height),
         coverage_policy=_coverage(width, height),
@@ -442,20 +430,6 @@ def test_overlapping_and_clipped_bounds_cover_exactly_their_union():
     assert ink - union  # the case would prove nothing if everything were covered
 
 
-def test_page_residual_ink_decodes_before_measuring():
-    rows = canvas(10, 10)
-    paint(rows, 0, 0, 6, 6)
-    encoded = encode_grayscale_png(10, 10, rows)
-    result = _measure_page(encoded, [])
-    assert result["outside_ink_pixels"] == 36
-    assert result["flagged"] is True
-
-
-def test_page_residual_ink_refuses_undecodable_bytes():
-    with pytest.raises(ValueError):
-        _measure_page(b"not a page", [])
-
-
 def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink():
     """The map's early edge observation is not a hold after the crop re-measure.
 
@@ -490,7 +464,9 @@ def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink
     assert initial["outside_ink_pixels"] == 2400
     assert initial["flagged"] is True
 
-    runs = ink_runs(image, background_policy=_policy(600, 600), coverage_policy=audit)
+    runs = ink_runs_from_rows(
+        *grayscale_rows(image), background_policy=_policy(600, 600), coverage_policy=audit
+    )
     unclaimed = edge_ink_from_runs(runs, [], coverage_policy=audit)
     assert unclaimed["outside_ink_pixels"] == initial["outside_ink_pixels"]
     assert unclaimed["flagged"] is True
@@ -533,8 +509,8 @@ def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, 
         coverage_policy=_coverage(*dimensions(image)),
     )
     remeasured = edge_ink_from_runs(
-        ink_runs(
-            image,
+        ink_runs_from_rows(
+            *grayscale_rows(image),
             background_policy=_policy(*dimensions(image)),
             coverage_policy=_coverage(*dimensions(image)),
         ),
@@ -574,8 +550,8 @@ def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
         coverage_policy=_coverage(*dimensions(image)),
     )
     remeasured = edge_ink_from_runs(
-        ink_runs(
-            image,
+        ink_runs_from_rows(
+            *grayscale_rows(image),
             background_policy=_policy(*dimensions(image)),
             coverage_policy=_coverage(*dimensions(image)),
         ),

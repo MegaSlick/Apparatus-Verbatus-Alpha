@@ -1,5 +1,6 @@
 """The early ink map is evidence over pages, before any proposal exists."""
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -13,8 +14,10 @@ from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, INK_MAP
 from common.imaging import encode_grayscale_png
+from common.residual_ink import edge_ink, residual_ink
 from common.runtree.store import RunTree
 from conftest import load_stage
+from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -89,14 +92,17 @@ def _coverage(width: int, height: int):
 
 
 def test_early_map_and_late_reconciliation_import_one_measure():
-    assert INK_MAP_RUN.residual_ink is RECENSOR_RUN.residual_ink
+    import common.residual_ink
+
+    assert INK_MAP_RUN.ink_map_page is common.residual_ink.ink_map_page
+    assert RECENSOR_RUN.residual_ink is common.residual_ink.residual_ink
 
 
 def test_unclaimed_edge_ink_is_named_and_bounded_but_not_held():
     rows = [bytearray([230] * 200) for _ in range(200)]
     for y in range(10):
         rows[y][10:30] = bytes([170] * 20)
-    finding = INK_MAP_RUN.edge_ink(
+    finding = edge_ink(
         200, 200, rows, background_policy=_policy(200, 200), coverage_policy=_coverage(200, 200)
     )
     assert finding["flagged"] is True
@@ -107,37 +113,19 @@ def test_unclaimed_edge_ink_is_named_and_bounded_but_not_held():
     assert finding["edge_band_pixels"] == _coverage(200, 200)["edge_band_px"] == 2
     assert classify(INK_MAP, "unclaimed-edge-ink") is OutcomeClass.UNRESOLVED
     assert terminal_category(INK_MAP, "unclaimed-edge-ink") is None
-    handoff = (ROOT / "pipeline/1_ink_map/CONTRACT.md").read_text(encoding="utf-8")
-    assert "Unit 14 owns the explicit hold outcome" in handoff
 
 
-def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
-    """Two of this audit's five numbers are calibrated now; three are not.
+def test_only_the_area_gate_and_the_perimeter_band_carry_a_calibration_claim():
+    """The sealed provenance says which audit values were measured and which were not.
 
-    The two that are *lengths* -- the absolute outside-coverage gate
-    and the perimeter band -- were measured on 44 real pages and sealed in
-    `[coverage_audit]`, with `calibrated_for_this_corpus = true` and their own
-    provenance block. The three that are not lengths are not:
-    `MINIMUM_CONTRAST_BELOW_BACKGROUND` in source, and the noise floor and
-    fraction gate -- sealed in `[coverage_audit.noise_floor]`
-    under a provenance block of their own -- are still reasoned defaults.
-
-    So the claim this test protects has changed shape rather than gone away: the
-    module must still mark the contrast unmeasured, and the sealed blocks must
-    still carry the calibration claim over the two it applies to and deny it
-    over the noise floor. A later edit that widened either would have to move
-    this test.
+    The area gate (`substantial_ink_area_bp`) and the perimeter band
+    (`edge_band_bp`) were measured on 44 real pages and sealed under
+    `[coverage_audit.provenance]` with `calibrated_for_this_corpus = true`. The
+    noise floor and fraction gate are reasoned defaults and sit under a
+    provenance block of their own that denies the claim, so the first block's
+    claim cannot be read as covering them.
     """
     import tomllib
-
-    from common.residual_ink import MINIMUM_CONTRAST_IS_MEASURED
-
-    handoff = " ".join(
-        (ROOT / "pipeline/1_ink_map/CONTRACT.md").read_text(encoding="utf-8").split()
-    ).lower()
-
-    assert MINIMUM_CONTRAST_IS_MEASURED is False
-    assert "proposed, not yet measured" in handoff
 
     config = tomllib.loads((ROOT / "config/designator_grouping.toml").read_bytes().decode("utf-8"))
     provenance = config["coverage_audit"]["provenance"]
@@ -149,10 +137,6 @@ def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
     noise_floor = config["coverage_audit"]["noise_floor"]["provenance"]
     assert noise_floor["calibrated_for_this_corpus"] is False
     assert noise_floor["sample_count"] == 0
-    # The contract must keep saying which two moved and which three did not,
-    # so a reader of the stage interface is not left to infer it from the file
-    # the gates now live in.
-    assert "sample_count = 44" in handoff
 
 
 class _StubTree:
@@ -261,15 +245,17 @@ def test_the_ink_map_measures_only_pixels_it_digested_itself():
 def test_the_ink_map_declares_the_decode_route_it_actually_takes():
     """One implementation may not declare two routes.
 
-    The map and the Recensor's late reconciliation call the same
-    `page_residual_ink` over the same `common/imaging.py` decoder, so a stage
-    seal claiming a different route family for one of them is a false statement
-    about its own pass and makes the decode-environment census
-    report drift that is not there.
+    The map and the Recensor's late reconciliation both decode through
+    `common.imaging.grayscale_rows`, so a stage seal claiming a different route
+    family for one of them is a false statement about its own pass and makes
+    the decode-environment census report drift that is not there.
     """
+    import common.imaging
     from common.contracts.stages import RECENSOR
     from common.stage import _decode_environment
 
+    assert INK_MAP_RUN.grayscale_rows is common.imaging.grayscale_rows
+    assert RECENSOR_RUN.grayscale_rows is common.imaging.grayscale_rows
     ink_map = _decode_environment(INK_MAP)
     assert ink_map["decode_paths_used"] == _decode_environment(RECENSOR)["decode_paths_used"]
     assert ink_map["decode_paths_used"] == ["project-png"]
@@ -305,20 +291,25 @@ def test_a_page_with_no_ink_at_all_still_measures_clean_rather_than_flagging():
     rows = [bytearray([230] * 200) for _ in range(200)]
     policy = _policy(200, 200)
     audit = _coverage(200, 200)
-    edge = INK_MAP_RUN.edge_ink(200, 200, rows, background_policy=policy, coverage_policy=audit)
-    ink = INK_MAP_RUN.residual_ink(
-        200, 200, rows, [], background_policy=policy, coverage_policy=audit
-    )
+    edge = edge_ink(200, 200, rows, background_policy=policy, coverage_policy=audit)
+    ink = residual_ink(200, 200, rows, [], background_policy=policy, coverage_policy=audit)
 
     assert edge["flagged"] is False
     assert ink["total_ink_pixels"] == 0
     assert classify(INK_MAP, "mapped") is OutcomeClass.COMPLETED
 
 
-# One definition, used by both publishing tests below. Kept at module level
-# because two byte-identical copies of a stage-context stub drift: the copy
-# nobody updates keeps testing the old `publish`/`seal_boundary` contract
-# while still passing.
+# One definition of each stub, used by every test that drives `main`: a copy
+# nobody updates keeps testing an old `publish`/`seal_boundary` contract while
+# still passing.
+class _Parser:
+    def __init__(self, args=None):
+        self._args = SimpleNamespace() if args is None else args
+
+    def parse_args(self):
+        return self._args
+
+
 class _PublishingContext:
     def __init__(self, run=None):
         self.tree = object()
@@ -350,18 +341,43 @@ class _PublishingContext:
         self.finished = True
 
 
+def _drive_main(monkeypatch, pages, context=None):
+    """Run `main` over `pages`, `(ordinal, image bytes)` pairs, with a stub context.
+
+    Returns the context so a test can read what was published and sealed.
+    """
+    context = _PublishingContext() if context is None else context
+    images = dict(pages)
+    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
+    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_a, **_k: context)
+    monkeypatch.setattr(
+        INK_MAP_RUN,
+        "sealed_pages",
+        lambda _context: [
+            (ordinal, _sealed_page(ordinal), f"1_exemplar/artifacts/page/{ordinal}.json")
+            for ordinal, _ in pages
+        ],
+    )
+    monkeypatch.setattr(
+        INK_MAP_RUN, "measured_page_bytes", lambda _tree, ordinal, _page: images[ordinal]
+    )
+    return context
+
+
+def _blank(width=200, height=200):
+    return encode_grayscale_png(width, height, [bytearray([230] * width) for _ in range(height)])
+
+
 def test_the_ink_map_opens_both_ingress_routes_through_the_shared_constructor(monkeypatch):
-    """The stage has no opener of its own, on either route.
+    """The stage opens its context only through `common.stage.open_stage_context`.
 
     `main` hands the parsed argv, its own stage name and the registry factory
-    it was given to `common.stage.open_stage_context`, which decides the
-    route from one read of the run authority and applies the same
-    direct-entry guards -- register drift, the sealed snapshot, the Exemplar
-    seal, the run-level cap -- on both.
+    it was given to the shared constructor, which decides the route from one
+    read of the run authority and applies the same direct-entry guards --
+    register drift, the sealed snapshot, the Exemplar seal, the run-level cap
+    -- on both.
     """
-    blank = encode_grayscale_png(200, 200, [bytearray([230] * 200) for _ in range(200)])
-    page = _sealed_page(1)
-    context = _PublishingContext()
+    context = _drive_main(monkeypatch, [(1, _blank())])
     args = SimpleNamespace(run_root="unused", run_id="r")
     opened = []
 
@@ -372,46 +388,22 @@ def test_the_ink_map_opens_both_ingress_routes_through_the_shared_constructor(mo
         opened.append((observed_args, stage, registry_factory))
         return context
 
-    class _Parser:
-        @staticmethod
-        def parse_args():
-            return args
-
-    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
+    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser(args))
     monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", open_stage_context)
-    monkeypatch.setattr(
-        INK_MAP_RUN,
-        "sealed_pages",
-        lambda _context: [(1, page, "1_exemplar/artifacts/page/page.json")],
-    )
-    monkeypatch.setattr(INK_MAP_RUN, "measured_page_bytes", lambda *_args: blank)
 
     assert INK_MAP_RUN.main(registry_factory=registry_factory) == INK_MAP_RUN.EXIT_COMPLETE
     assert opened == [(args, INK_MAP, registry_factory)]
-    assert not hasattr(INK_MAP_RUN, "_open"), "a stage-private opener is the drift this closes"
 
 
 def test_the_ink_map_refuses_a_run_whose_ingress_evidence_names_no_route(monkeypatch):
-    """An absent `ingress` key must still stop this stage, as it did before the
-    shared constructor.
+    """A run with no `ingress` record is refused before any page is published.
 
     `open_stage_context`'s own route test, `is_real_ingress`, treats a missing
     `ingress` key as synthetic by design -- it has to, to decide which route to
     build -- and does not raise. This stage never branches on the route, so
-    nothing else in `main` re-parses the record; before both routes shared one
-    constructor, this stage's own opener re-parsed it unconditionally and
-    refused exactly this run. That refusal is re-created here, deliberately,
-    rather than dropped as a side effect of sharing the constructor.
+    `main` re-parses the record for its refusal alone.
     """
-    context = _PublishingContext(run={})
-
-    class _Parser:
-        @staticmethod
-        def parse_args():
-            return SimpleNamespace()
-
-    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
-    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_args, **_kwargs: context)
+    context = _drive_main(monkeypatch, [(1, _blank())], _PublishingContext(run={}))
 
     with pytest.raises(ApprovalRefusal, match="closed fixture-or-real record"):
         INK_MAP_RUN.main(registry_factory=None)
@@ -419,30 +411,28 @@ def test_the_ink_map_refuses_a_run_whose_ingress_evidence_names_no_route(monkeyp
 
 
 def test_a_page_with_no_ink_is_published_as_mapped(monkeypatch):
-    blank = encode_grayscale_png(200, 200, [bytearray([230] * 200) for _ in range(200)])
-    page = _sealed_page(1)
+    context = _drive_main(monkeypatch, [(1, _blank())])
 
-    context = _PublishingContext()
-
-    class _Parser:
-        @staticmethod
-        def parse_args():
-            return SimpleNamespace()
-
-    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
-    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(
-        INK_MAP_RUN,
-        "sealed_pages",
-        lambda _context: [(1, page, "1_exemplar/artifacts/page/page.json")],
-    )
-    monkeypatch.setattr(INK_MAP_RUN, "measured_page_bytes", lambda *_args: blank)
-
-    # The constant, not 0, for the reason line 65 already gives about literals.
+    # `EXIT_COMPLETE`, not a literal 0: a literal that stops matching the
+    # constant would let this assertion pass for the wrong reason.
     assert INK_MAP_RUN.main(registry_factory=None) == INK_MAP_RUN.EXIT_COMPLETE
     assert [record["outcome"] for record in context.published] == ["mapped"]
     assert context.sealed is True
     assert context.finished is True
+
+
+def test_a_page_with_ink_in_its_perimeter_is_published_as_unclaimed_edge_ink(monkeypatch):
+    """The record's outcome is the edge finding's own flag, not a constant."""
+    rows = [bytearray([230] * 200) for _ in range(200)]
+    for y in range(10):
+        rows[y][10:30] = bytes([170] * 20)
+    context = _drive_main(monkeypatch, [(1, encode_grayscale_png(200, 200, rows))])
+
+    assert INK_MAP_RUN.main(registry_factory=None) == INK_MAP_RUN.EXIT_COMPLETE
+    (record,) = context.published
+    assert record["outcome"] == "unclaimed-edge-ink"
+    assert record["payload"]["edge"]["flagged"] is True
+    assert context.sealed is True
 
 
 def test_the_ink_map_refuses_a_page_whose_verified_pixels_will_not_decode(monkeypatch):
@@ -450,29 +440,13 @@ def test_the_ink_map_refuses_a_page_whose_verified_pixels_will_not_decode(monkey
     named refusal, not a bare traceback.
 
     `measured_page_bytes` proves the bytes match the digest the Exemplar sealed;
-    it says nothing about whether `page_residual_ink`/`edge_ink` can decode
-    them. `run_stage` only catches `RunHalted` and `ContractError`
-    (`common/stage.py`), so an uncaught decoder `ValueError` here would escape as
-    an unhandled traceback with `seal_boundary`/`finish` never reached --
-    silent loss with extra steps.
+    it says nothing about whether `common.imaging.grayscale_rows`, the decode
+    `main` runs, can read them. `run_stage` only catches `RunHalted` and
+    `ContractError` (`common/stage.py`), so an uncaught decoder `ValueError`
+    here would escape as an unhandled traceback with `seal_boundary`/`finish`
+    never reached.
     """
-    page = _sealed_page(1)
-
-    context = _PublishingContext()
-
-    class _Parser:
-        @staticmethod
-        def parse_args():
-            return SimpleNamespace()
-
-    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
-    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(
-        INK_MAP_RUN,
-        "sealed_pages",
-        lambda _context: [(1, page, "1_exemplar/artifacts/page/page.json")],
-    )
-    monkeypatch.setattr(INK_MAP_RUN, "measured_page_bytes", lambda *_args: b"not an image")
+    context = _drive_main(monkeypatch, [(1, b"not an image")])
 
     with pytest.raises(FatalAccounting, match="cannot measure sealed Exemplar page 1"):
         INK_MAP_RUN.main(registry_factory=None)
@@ -480,6 +454,29 @@ def test_the_ink_map_refuses_a_page_whose_verified_pixels_will_not_decode(monkey
     assert context.published == []
     assert context.sealed is False
     assert context.finished is False
+
+
+def test_a_page_with_no_settled_grey_reading_is_refused_as_policy_not_damage(monkeypatch):
+    """A transparent page decodes; the pipeline has no settled way to read it as grey.
+
+    `common.imaging` raises its policy refusal for it, which is not a decode
+    failure, and the stage's refusal must say which one it is so the operator
+    does not go looking for damaged bytes.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGBA", (20, 20), (230, 230, 230, 128)).save(buffer, format="PNG")
+    context = _drive_main(monkeypatch, [(1, buffer.getvalue())])
+
+    with pytest.raises(FatalAccounting, match="no settled policy for reading its pixels") as caught:
+        INK_MAP_RUN.main(registry_factory=None)
+
+    assert "do not decode" not in str(caught.value)
+    assert context.published == []
+    assert context.sealed is False
 
 
 def test_the_undecodable_page_refusal_does_not_claim_an_empty_run_tree(monkeypatch):
@@ -492,31 +489,7 @@ def test_the_undecodable_page_refusal_does_not_claim_an_empty_run_tree(monkeypat
     still unsealed, so nothing downstream proceeds either way; this pins the
     refusal's wording against the records that actually exist.
     """
-    good, bad = _sealed_page(1), _sealed_page(2)
-    blank = encode_grayscale_png(20, 20, [bytearray([230] * 20) for _ in range(20)])
-
-    context = _PublishingContext()
-
-    class _Parser:
-        @staticmethod
-        def parse_args():
-            return SimpleNamespace()
-
-    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
-    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(
-        INK_MAP_RUN,
-        "sealed_pages",
-        lambda _context: [
-            (1, good, "1_exemplar/artifacts/page/one.json"),
-            (2, bad, "1_exemplar/artifacts/page/two.json"),
-        ],
-    )
-    monkeypatch.setattr(
-        INK_MAP_RUN,
-        "measured_page_bytes",
-        lambda _tree, ordinal, _page: blank if ordinal == 1 else b"not an image",
-    )
+    context = _drive_main(monkeypatch, [(1, _blank(20, 20)), (2, b"not an image")])
 
     with pytest.raises(FatalAccounting, match="cannot measure sealed Exemplar page 2") as caught:
         INK_MAP_RUN.main(registry_factory=None)
@@ -526,7 +499,7 @@ def test_the_undecodable_page_refusal_does_not_claim_an_empty_run_tree(monkeypat
     assert "no ink-map record was written" not in message, (
         "the refusal claimed an empty tree while page 1's record was already published"
     )
-    assert [record["subject_id"] for record in context.published] == [good["subject_id"]]
+    assert [record["subject_id"] for record in context.published] == ["page-1"]
     assert context.sealed is False
     assert context.finished is False
 
@@ -558,7 +531,7 @@ def test_a_one_pixel_wide_page_records_its_whole_width_as_edge():
     """The smallest legal width has an edge even though ``width // 2`` is zero."""
     rows = [bytearray([170 if y < 25 else 230]) for y in range(100)]
 
-    edge = INK_MAP_RUN.edge_ink(
+    edge = edge_ink(
         1, 100, rows, background_policy=_policy(1, 100), coverage_policy=_coverage(1, 100)
     )
 
@@ -568,29 +541,16 @@ def test_a_one_pixel_wide_page_records_its_whole_width_as_edge():
     assert edge["flagged"] is True
 
 
-def test_the_fixture_pages_stop_flagging_because_the_band_stopped_being_the_page():
-    """The retired band's flag on a fixture page was an artefact, and it is gone.
+def test_the_fixture_pages_carry_no_ink_in_the_sealed_perimeter_band():
+    """The sealed band is a thin strip on the fixture, and the fixture's ink is inside it.
 
-    A 64-pixel band on a 200x260 page left a 72x132 centre: a third of each
-    dimension was "perimeter", so both pinned scenarios flagged every page and
-    no run in the suite produced `mapped` at all. Measured here, that flag was
-    the page's own body text being counted as edge ink -- these pages carry
-    **zero** ink in every band from 1 pixel to 20, and only at 64 does the band
-    reach the writing. `edge_band_bp` resolves to 2 pixels here, so both pages
-    are now `mapped`.
-
-    **The cost is named rather than hidden: no fixture scenario exercises the
-    `unclaimed-edge-ink` outcome end to end any more.** That path is covered by
-    this module's own unit tests, by `pipeline/5_recensor/test_residual_ink.py`
-    and by `pipeline/7_armarium/test_unit14b_edge_release.py`, all of which build
-    the flagged shape directly. What no run tree in this repository now proves is
-    the release travelling from the Ink Map through the Designator's cuts to the
-    Armarium on a real scenario. It is a real gap and it belongs to the fixture,
-    which has no page with ink near its edge; it is written into the Ink Map's
-    CONTRACT.md beside this test.
+    `edge_band_bp` resolves to 2 pixels on the 200x260 fixture pages, and their
+    painted acts start 20 pixels in, so both pages map as `mapped`. The
+    `unclaimed-edge-ink` outcome is exercised by
+    `test_a_real_submission_names_edge_ink_and_an_unmeasurable_page` below and
+    by the pages the Recensor and Armarium tests build for it.
     """
     from common.imaging import dimensions, grayscale_rows
-    from common.residual_ink import edge_ink
     from proof.synthetic_pages import page_bytes
 
     width, height = dimensions(page_bytes(1))
@@ -612,38 +572,18 @@ def test_the_fixture_pages_stop_flagging_because_the_band_stopped_being_the_page
         assert finding["flagged"] is False
 
 
-def test_the_stage_proves_the_background_policy_bytes_against_the_runs_own_seal():
+def test_the_stage_proves_the_background_policy_bytes_against_the_runs_own_seal(monkeypatch):
     """The policy is read from the parsed argv and checked, not just read.
 
-    Three stages now infer a page's paper value under the same sealed block. If
+    Three stages infer a page's paper value under the same sealed block. If
     this one read a file the run never bound, its counts would be taken at a
-    threshold no other stage's record could be compared against -- the drift the
-    whole point-of-use recheck family exists to catch.
+    threshold no other stage's record could be compared against.
     """
     from common.background import load_background_config
     from common.residual_ink import load_coverage_audit_config
 
-    blank = encode_grayscale_png(200, 200, [bytearray([230] * 200) for _ in range(200)])
-    page = _sealed_page(1)
-    context = _PublishingContext()
-
-    class _Parser:
-        @staticmethod
-        def parse_args():
-            return SimpleNamespace()
-
-    import pytest as _pytest
-
-    with _pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
-        monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_a, **_k: context)
-        monkeypatch.setattr(
-            INK_MAP_RUN,
-            "sealed_pages",
-            lambda _context: [(1, page, "1_exemplar/artifacts/page/page.json")],
-        )
-        monkeypatch.setattr(INK_MAP_RUN, "measured_page_bytes", lambda *_args: blank)
-        assert INK_MAP_RUN.main(registry_factory=None) == INK_MAP_RUN.EXIT_COMPLETE
+    context = _drive_main(monkeypatch, [(1, _blank())])
+    assert INK_MAP_RUN.main(registry_factory=None) == INK_MAP_RUN.EXIT_COMPLETE
 
     # Twice, and deliberately: the stage reads `[grouping.background]` and
     # `[coverage_audit]` through two loaders, and each one proves the bytes IT
@@ -653,7 +593,8 @@ def test_the_stage_proves_the_background_policy_bytes_against_the_runs_own_seal(
         ("designator-grouping", load_background_config()["config_sha256"]),
         ("designator-grouping", load_coverage_audit_config()["config_sha256"]),
     ]
-    background = context.published[0]["payload"]["background"]
+    payload = context.published[0]["payload"]
+    background = payload["background"]
     assert background["config_sha256"] == load_background_config()["config_sha256"]
     # Provenance, as fields rather than as a sentence: the paper value, where
     # it came from, the level this stage measured at, and the derived margin the
@@ -664,10 +605,88 @@ def test_the_stage_proves_the_background_policy_bytes_against_the_runs_own_seal(
     assert background["ink_threshold"] == 190
     assert background["dark_mode"] == 230
     assert background["ink_margin"] == 20
-    # Published once, not on each finding: two copies of one page's paper value
-    # is how two copies come to disagree.
-    assert "background" not in context.published[0]["payload"]["ink"]
-    assert "background" not in context.published[0]["payload"]["edge"]
+    # Published once, beside one edge finding that carries the page's audited
+    # ink total: two copies of one number is how two copies come to disagree.
+    assert set(payload) == {"page_ordinal", "ink_measurable", "background", "edge", "edge_findings"}
+    assert "background" not in payload["edge"]
+
+
+def _measured_payload(monkeypatch):
+    rows = [bytearray([230] * 200) for _ in range(200)]
+    for y in range(10):
+        rows[y][10:30] = bytes([170] * 20)
+    context = _drive_main(monkeypatch, [(1, encode_grayscale_png(200, 200, rows))])
+    assert INK_MAP_RUN.main(registry_factory=None) == INK_MAP_RUN.EXIT_COMPLETE
+    return context.published[0]["payload"]
+
+
+def test_every_consumer_check_accepts_what_the_ink_map_publishes(monkeypatch):
+    """The shared consumer validators pass the producer's own record unchanged."""
+    from common.background import validate_measured_ink_map_payload
+    from common.residual_ink import (
+        MINIMUM_CONTRAST_BELOW_BACKGROUND,
+        load_coverage_audit_config,
+        reconcile_edge_finding_with_runs,
+    )
+
+    payload = _measured_payload(monkeypatch)
+    sealed = load_coverage_audit_config()
+    validate_measured_ink_map_payload(
+        payload,
+        audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND,
+        ink_margin_bp=sealed["ink_margin_bp"],
+    )
+    measured = reconcile_edge_finding_with_runs(
+        payload["edge"],
+        payload["edge_findings"],
+        coverage_policy=_coverage(200, 200),
+        expected_dimensions=(200, 200),
+    )
+    assert measured["flagged"] is True
+
+
+def test_a_recorded_margin_the_sealed_fraction_does_not_derive_is_refused(monkeypatch):
+    """`ink_margin` decides the page-spanning split, so it must be the sealed one.
+
+    A value the producer could never have measured with -- above the paper
+    level, or merely different from what the sealed `ink_margin_bp` derives
+    from the record's own paper and dark modes -- is refused, as is a payload
+    carrying a field the contract no longer has.
+    """
+    from common.background import validate_measured_ink_map_payload
+    from common.contracts.errors import ContractError
+    from common.residual_ink import MINIMUM_CONTRAST_BELOW_BACKGROUND, load_coverage_audit_config
+
+    payload = _measured_payload(monkeypatch)
+    ink_margin_bp = load_coverage_audit_config()["ink_margin_bp"]
+
+    def validate(candidate):
+        return validate_measured_ink_map_payload(
+            candidate, audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND, ink_margin_bp=ink_margin_bp
+        )
+
+    validate(payload)
+    for margin in (payload["background"]["ink_margin"] + 1, 250):
+        tampered = {**payload, "background": {**payload["background"], "ink_margin": margin}}
+        with pytest.raises(ContractError, match="ink_margin"):
+            validate(tampered)
+    with pytest.raises(ContractError, match="not closed"):
+        validate({**payload, "ink": dict(payload["edge"])})
+
+
+def test_retained_runs_for_another_page_size_are_refused_by_the_shared_reconciler(monkeypatch):
+    """Runs and finding that agree with each other still have to fit the sealed page."""
+    from common.contracts.errors import ContractError
+    from common.residual_ink import reconcile_edge_finding_with_runs
+
+    payload = _measured_payload(monkeypatch)
+    with pytest.raises(ContractError, match="not the sealed page's 200x201"):
+        reconcile_edge_finding_with_runs(
+            payload["edge"],
+            payload["edge_findings"],
+            coverage_policy=_coverage(200, 200),
+            expected_dimensions=(200, 201),
+        )
 
 
 def test_a_page_whose_paper_cannot_be_inferred_is_named_rather_than_mapped(monkeypatch):
@@ -689,24 +708,7 @@ def test_a_page_whose_paper_cannot_be_inferred_is_named_rather_than_mapped(monke
     rows = [bytearray([30] * 100) for _ in range(100)]
     for y in range(80, 100):
         rows[y] = bytearray([220] * 100)
-    page = _sealed_page(1)
-    context = _PublishingContext()
-
-    class _Parser:
-        @staticmethod
-        def parse_args():
-            return SimpleNamespace()
-
-    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
-    monkeypatch.setattr(INK_MAP_RUN, "open_stage_context", lambda *_a, **_k: context)
-    monkeypatch.setattr(
-        INK_MAP_RUN,
-        "sealed_pages",
-        lambda _context: [(1, page, "1_exemplar/artifacts/page/page.json")],
-    )
-    monkeypatch.setattr(
-        INK_MAP_RUN, "measured_page_bytes", lambda *_args: encode_grayscale_png(100, 100, rows)
-    )
+    context = _drive_main(monkeypatch, [(1, encode_grayscale_png(100, 100, rows))])
 
     assert INK_MAP_RUN.main(registry_factory=None) == INK_MAP_RUN.EXIT_COMPLETE
     (record,) = context.published
@@ -724,3 +726,77 @@ def test_a_page_whose_paper_cannot_be_inferred_is_named_rather_than_mapped(monke
     # The census still closes: the page is present, and the boundary is sealed.
     assert context.sealed is True
     assert context.finished is True
+
+
+def test_paper_too_dark_for_this_audits_contrast_is_not_measurable_here(monkeypatch):
+    """The second cause of `ink-not-measurable`: the shared inference accepts the paper.
+
+    A uniform page at 30 infers paper 30 on the Designator's own terms (its
+    floor margin is 20), but 30 levels leave no room for this audit's 40, so
+    no pixel could count as ink and the page is named rather than mapped clean.
+    """
+    from common.background import infer_background_evidence
+
+    rows = [bytearray([30] * 100) for _ in range(100)]
+    assert (
+        infer_background_evidence(100, 100, rows, background_policy=_policy(100, 100))["background"]
+        == 30
+    )
+    context = _drive_main(monkeypatch, [(1, encode_grayscale_png(100, 100, rows))])
+
+    assert INK_MAP_RUN.main(registry_factory=None) == INK_MAP_RUN.EXIT_COMPLETE
+    (record,) = context.published
+    assert record["outcome"] == "ink-not-measurable"
+    assert "a background of 30 at a 40-point margin" in record["payload"]["background_refusal"]
+
+
+def test_a_real_submission_names_edge_ink_and_an_unmeasurable_page(tmp_path):
+    """Door, Exemplar and Ink Map as programs over pages the fixture does not carry.
+
+    One page has writing inside its 2-pixel perimeter band and one is paper too
+    dark to measure. The Ink Map's sealed run tree names each outcome.
+    """
+    edge_rows = [bytearray([230] * 200) for _ in range(260)]
+    for y in range(12):
+        edge_rows[y][40:160] = bytes([40] * 120)
+    dark_rows = [bytearray([30] * 200) for _ in range(260)]
+    approved = tmp_path / "approved-storage"
+    source = approved / "submitted-pages"
+    source.mkdir(parents=True)
+    (source / "page-1.png").write_bytes(encode_grayscale_png(200, 260, edge_rows))
+    (source / "page-2.png").write_bytes(encode_grayscale_png(200, 260, dark_rows))
+    policy = json.loads(gate.DEFAULT_POLICY_PATH.read_text(encoding="utf-8"))
+    policy["storage_roots"] = [str(approved)]
+    policy_path = tmp_path / "data-gate-policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    ledger = approved / "submission-ledger.json"
+    submit.submit(source, ledger, policy_path=policy_path)
+    root = approved / "runs"
+    door_argv = [
+        "--submission-folder",
+        str(source),
+        "--submission-manifest",
+        str(ledger),
+        "--data-gate-policy",
+        str(policy_path),
+    ]
+    for program, extra in (
+        ("pipeline/1_exemplar/door.py", door_argv),
+        ("pipeline/1_exemplar/run.py", []),
+        ("pipeline/1_ink_map/run.py", []),
+    ):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / program), "--run-root", str(root), "--run-id", "r", *extra],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "r")
+    outcomes = {}
+    for entry in tree.build_manifest(INK_MAP)["artifacts"]:
+        if entry["kind"] == "ink-map":
+            record = tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
+            outcomes[record["payload"]["page_ordinal"]] = record["outcome"]
+    assert sorted(outcomes.values()) == ["ink-not-measurable", "unclaimed-edge-ink"]

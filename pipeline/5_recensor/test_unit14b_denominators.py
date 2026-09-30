@@ -65,7 +65,12 @@ def _denominators(recensor, context) -> dict[str, str]:
     """
     return {
         "acts": repr(recensor.expected_acts(context)),
-        "ink_map": repr(recensor.ink_map_by_page(context)),
+        "ink_map": repr(
+            recensor.ink_map_by_page(
+                context,
+                recensor.sealed_page_dimensions(context, recensor.sealed_page_images(context)),
+            )
+        ),
         "cut_mask": repr(recensor.regions_by_source_page(context)),
         "residual_ink": repr(recensor.page_coverage_findings(context)),
         "witness_observations": repr(

@@ -1480,11 +1480,13 @@ def _accounting_ink(context, page: _Page) -> tuple[dict[str, Any] | None, list]:
     reference = context.artifact_ref(INK_MAP, "ink-map", entry["artifact_id"])
     if record["outcome"] == INK_NOT_MEASURABLE:
         return None, [reference]
-    measured = validate_measured_ink_map_payload(
-        record["payload"], audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
-    )
     coverage = load_coverage_audit_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", coverage["config_sha256"])
+    measured = validate_measured_ink_map_payload(
+        record["payload"],
+        audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND,
+        ink_margin_bp=coverage["ink_margin_bp"],
+    )
     if coverage["config_sha256"] != measured["background_config_sha256"]:
         raise ContractError(
             f"page {page.page_id}'s ink map and the coverage policy read different sealed bytes"

@@ -40,12 +40,13 @@ from common.background import (
     _ink_threshold,
     infer_background_evidence,
     round_half_up_bp,
+    validate_background_table,
 )
 from common.calibration import validate_provenance_block
 from common.components import label_component_runs, runs_in_row
 from common.contracts.canonical import is_plain_int
 from common.contracts.errors import ContractError
-from common.imaging import Bounds, grayscale_rows
+from common.imaging import Bounds
 from common.sealed_config import read_sealed_toml
 
 #: Sealed, not a constant, so it is inside every run's config digest.
@@ -55,21 +56,19 @@ MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 #: Kept at or above the Designator conservation denominator's margin (2), so
 #: this audit never calls ink a pixel that accounting dismissed, the one
 #: disagreement that could lose ink silently (pinned by
-#: `common/test_designator_recensor_ink_calibration.py`). It sits below a
-#: photographed page's derived margin (median 66), so there it counts more ink
+#: `common/test_designator_recensor_ink_calibration.py`). A reasoned default,
+#: not measured on real pages. Below a page's derived margin it counts more ink
 #: than the Designator's primary scan does; that is why the gates are fractions.
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
-#: A reasoned default, like the sealed noise floor; flip it with a real-corpus measurement.
-MINIMUM_CONTRAST_IS_MEASURED: Final = False
 
 #: Fraction of the page's own ink outside every region that flags it, in basis
 #: points; sealed beside the noise floor, integer because artifacts carry no floats.
 MINIMUM_FRACTION_OUTSIDE_BP_FIELD: Final = "minimum_fraction_outside_bp"
 
 #: Outside-coverage ink that flags a page on its own, as a fraction of the page's
-#: AREA: the fraction gate alone lets several missed words through on a dense
-#: page, and a flat count asked a 240-times stricter question of a real
-#: leaf than of the fixture. Resolved to pixels as `substantial_ink_pixels`.
+#: AREA, so it asks the same question of a small page and a large leaf: the
+#: fraction gate alone lets several missed words through on a dense page.
+#: Resolved to pixels as `substantial_ink_pixels`.
 SUBSTANTIAL_INK_AREA_BP_FIELD: Final = "substantial_ink_area_bp"
 
 #: The Ink Map outcome for a page whose paper value the shared inference refused,
@@ -77,8 +76,8 @@ SUBSTANTIAL_INK_AREA_BP_FIELD: Final = "substantial_ink_area_bp"
 #: this page has no measurement.
 INK_NOT_MEASURABLE = "ink-not-measurable"
 
-#: `v2` runs are the audited ink, less the page-spanning component; `v1` held
-#: the whole page's.
+#: The retained runs are the audited ink, less the page-spanning component; a
+#: reader of any other schema id is refused rather than reading them as whole-page ink.
 INK_RUNS_SCHEMA = "ink-runs.v2"
 
 #: The perimeter strip, a fraction of the page's SHORTER side so every strip has
@@ -224,6 +223,9 @@ def load_coverage_audit_config(
             "the coverage-audit configuration's [grouping.absolute] gap_tolerance_px is not a "
             "non-negative integer"
         )
+    # The page-spanning split is cut at the page's derived margin, so a reader
+    # checking a recorded margin needs the sealed fraction it derives from.
+    ink_margin_bp = validate_background_table(grouping.get("background"))["ink_margin_bp"]
     audit = config.get("coverage_audit")
     values = validate_coverage_audit_table(audit)
     # Only a shipped file must declare provenance; the table validators also
@@ -238,6 +240,7 @@ def load_coverage_audit_config(
         "coverage_audit": values,
         "page_spanning_area_bp": spanning,
         "gap_tolerance_px": gap,
+        "ink_margin_bp": ink_margin_bp,
     }
 
 
@@ -365,10 +368,9 @@ def page_spanning_components(
     component removed here is the one that stage withheld. The mask is needed
     because such a component's bounding box is the whole page.
 
-    Measured cost: one labelling per call, about doubling `residual_ink` (up to
-    1.83 s and 207 MB on an 18.4-megapixel page), paid four times per page per
-    run. Sharing one mask would need an optional argument a caller could get
-    wrong in silence on the measurement that decides a hold, so it is not done.
+    One labelling costs about as much as the rest of `residual_ink` (up to
+    1.83 s and 207 MB on an 18.4-megapixel page), so `ink_map_page` labels
+    once for all of the Ink Map's measures.
     """
     threshold = _ink_threshold(
         background_evidence["background_level"], background_evidence["ink_margin"]
@@ -396,6 +398,35 @@ def page_spanning_components(
     return found, mask
 
 
+class PageInkBasis(TypedDict):
+    """What every measure of one page shares: its paper and its page-spanning ink."""
+
+    background: dict[str, Any]
+    spanning_components: list[Bounds]
+    spanning_mask: bytearray
+    ink_table: bytes
+
+
+def _page_ink_basis(
+    width: int,
+    height: int,
+    rows: list[bytearray],
+    *,
+    background_policy: BackgroundPolicy,
+    coverage_policy: CoverageAuditPolicy,
+) -> PageInkBasis:
+    background = page_background(width, height, rows, background_policy=background_policy)
+    spanning, spanning_mask = page_spanning_components(
+        width, height, rows, background_evidence=background, coverage_policy=coverage_policy
+    )
+    return {
+        "background": background,
+        "spanning_components": [component["bounds"] for component in spanning],
+        "spanning_mask": spanning_mask,
+        "ink_table": _ink_table(background["background_level"]),
+    }
+
+
 def residual_ink(
     width: int,
     height: int,
@@ -415,15 +446,20 @@ def residual_ink(
     `total_ink_pixels` and `outside_ink_pixels` exclude the page-spanning
     component; `page_ink_pixels - page_spanning_ink_pixels == total_ink_pixels`.
     """
-    background_evidence = page_background(width, height, rows, background_policy=background_policy)
-    background = background_evidence["background_level"]
-    spanning, spanning_mask = page_spanning_components(
-        width,
-        height,
-        rows,
-        background_evidence=background_evidence,
-        coverage_policy=coverage_policy,
+    basis = _page_ink_basis(
+        width, height, rows, background_policy=background_policy, coverage_policy=coverage_policy
     )
+    return _residual_counts(width, height, rows, covered, basis, coverage_policy)
+
+
+def _residual_counts(
+    width: int,
+    height: int,
+    rows: list[bytearray],
+    covered: list[Bounds],
+    basis: PageInkBasis,
+    coverage_policy: CoverageAuditPolicy,
+) -> dict[str, Any]:
     covered_mask = bytearray(width * height)
     for bounds in covered:
         x0 = max(0, min(bounds["x"], width))
@@ -437,7 +473,8 @@ def residual_ink(
     # Rows and masks hold only 0 or 1 bytes, so integer `ink & ~covered` is the
     # per-pixel predicate (pinned by
     # `test_the_fast_counts_agree_with_a_straightforward_implementation`).
-    ink_table = _ink_table(background)
+    ink_table = basis["ink_table"]
+    spanning_mask = basis["spanning_mask"]
     page_ink = 0
     total_ink = 0
     outside_ink = 0
@@ -457,51 +494,16 @@ def residual_ink(
 
     fraction_outside, flagged = _policy_flag(total_ink, outside_ink, coverage_policy)
     return {
-        "background": background_evidence,
+        "background": basis["background"],
         "page_ink_pixels": page_ink,
         "page_spanning_ink_pixels": spanning_ink,
-        "page_spanning_components": [component["bounds"] for component in spanning],
+        "page_spanning_components": list(basis["spanning_components"]),
         "total_ink_pixels": total_ink,
         "outside_ink_pixels": outside_ink,
         "fraction_outside": fraction_outside,
         "flagged": flagged,
         "substantial_ink_pixels": coverage_policy["substantial_ink_pixels"],
     }
-
-
-def page_residual_ink(
-    image_bytes: bytes,
-    covered: list[Bounds],
-    *,
-    background_policy: BackgroundPolicy,
-    coverage_policy: CoverageAuditPolicy,
-) -> dict[str, Any]:
-    width, height, rows = grayscale_rows(image_bytes)
-    return residual_ink(
-        width,
-        height,
-        rows,
-        covered,
-        background_policy=background_policy,
-        coverage_policy=coverage_policy,
-    )
-
-
-def ink_runs(
-    image_bytes: bytes,
-    *,
-    background_policy: BackgroundPolicy,
-    coverage_policy: CoverageAuditPolicy,
-) -> dict[str, Any]:
-    """`ink_runs_from_rows` over bytes this caller has not already decoded."""
-    width, height, rows = grayscale_rows(image_bytes)
-    return ink_runs_from_rows(
-        width,
-        height,
-        rows,
-        background_policy=background_policy,
-        coverage_policy=coverage_policy,
-    )
 
 
 def ink_runs_from_rows(
@@ -518,19 +520,19 @@ def ink_runs_from_rows(
     Armarium's release measure and the Ink Map's finding read one set. The
     page-spanning component is removed here, as in `residual_ink`.
     """
-    background_evidence = page_background(width, height, rows, background_policy=background_policy)
-    _spanning, spanning_mask = page_spanning_components(
-        width,
-        height,
-        rows,
-        background_evidence=background_evidence,
-        coverage_policy=coverage_policy,
+    basis = _page_ink_basis(
+        width, height, rows, background_policy=background_policy, coverage_policy=coverage_policy
     )
-    table = _ink_table(background_evidence["background_level"])
+    return _audited_runs(width, height, rows, basis)
+
+
+def _audited_runs(
+    width: int, height: int, rows: list[bytearray], basis: PageInkBasis
+) -> dict[str, Any]:
     encoded: list[list[list[int]]] = []
     for y, row in enumerate(rows):
-        bits = int.from_bytes(bytes(row.translate(table)), "big") & ~_row_bits(
-            spanning_mask, y, width
+        bits = int.from_bytes(bytes(row.translate(basis["ink_table"])), "big") & ~_row_bits(
+            basis["spanning_mask"], y, width
         )
         encoded.append(
             [[start, end - start] for start, end in runs_in_row(bits.to_bytes(width, "big"))]
@@ -720,11 +722,14 @@ def reconcile_edge_finding_with_runs(
     evidence: Any,
     *,
     coverage_policy: CoverageAuditPolicy,
+    expected_dimensions: tuple[int, int],
 ) -> dict[str, Any]:
     """Validate and reconcile the Ink Map's two initial edge measurements.
 
     ``finding`` is the producer's closed summary and ``evidence`` is its retained
-    audited-pixel run set.  The runs cannot reconstruct page-spanning pixels or
+    audited-pixel run set, which must span ``expected_dimensions``, the sealed
+    page's own ``(width, height)``: runs sized for another page reconcile with
+    themselves. The runs cannot reconstruct page-spanning pixels or
     component masks, so those fields receive closed type, range, and partition
     checks here; every value the retained runs can prove must agree exactly.
     """
@@ -734,6 +739,11 @@ def reconcile_edge_finding_with_runs(
         measured = edge_ink_from_runs(evidence, [], coverage_policy=coverage_policy)
     except (KeyError, TypeError, ValueError) as error:
         raise ContractError(f"the retained ink-run evidence is invalid: {error}") from error
+    if (evidence["width"], evidence["height"]) != tuple(expected_dimensions):
+        raise ContractError(
+            f"the retained ink-run evidence is {evidence['width']}x{evidence['height']}, not "
+            "the sealed page's {}x{}".format(*expected_dimensions)
+        )
 
     for field in _EDGE_COUNT_FIELDS:
         value = finding[field]
@@ -820,18 +830,52 @@ def edge_ink(
     The central rectangle is the only covered area, so the ink predicate and the
     gates are `residual_ink`'s. The finding assigns the ink to no act.
     """
+    basis = _page_ink_basis(
+        width, height, rows, background_policy=background_policy, coverage_policy=coverage_policy
+    )
+    return _edge_counts(width, height, rows, basis, coverage_policy)
+
+
+def _edge_counts(
+    width: int,
+    height: int,
+    rows: list[bytearray],
+    basis: PageInkBasis,
+    coverage_policy: CoverageAuditPolicy,
+) -> dict[str, Any]:
     band = _edge_band(width, height, coverage_policy)
     covered = (
         []
         if 2 * band >= width or 2 * band >= height
         else [{"x": band, "y": band, "w": width - 2 * band, "h": height - 2 * band}]
     )
-    finding = residual_ink(
-        width,
-        height,
-        rows,
-        covered,
-        background_policy=background_policy,
-        coverage_policy=coverage_policy,
-    )
+    finding = _residual_counts(width, height, rows, covered, basis, coverage_policy)
     return {**finding, "edge_band_pixels": band, "named_finding": "unclaimed-edge-ink"}
+
+
+def ink_map_page(
+    width: int,
+    height: int,
+    rows: list[bytearray],
+    *,
+    background_policy: BackgroundPolicy,
+    coverage_policy: CoverageAuditPolicy,
+) -> dict[str, Any]:
+    """Everything the Ink Map publishes for one page, from one inference and one labelling.
+
+    `background` is the page's paper evidence, `edge` the perimeter finding
+    (whose `total_ink_pixels` is the page's whole audited ink, the
+    pre-proposal denominator) and `edge_findings` the retained audited runs.
+    Raises `common.background.BackgroundInferenceRefusal` when the paper cannot
+    be inferred or is too dark for this audit's contrast.
+    """
+    basis = _page_ink_basis(
+        width, height, rows, background_policy=background_policy, coverage_policy=coverage_policy
+    )
+    edge = _edge_counts(width, height, rows, basis, coverage_policy)
+    del edge["background"]
+    return {
+        "background": basis["background"],
+        "edge": edge,
+        "edge_findings": _audited_runs(width, height, rows, basis),
+    }

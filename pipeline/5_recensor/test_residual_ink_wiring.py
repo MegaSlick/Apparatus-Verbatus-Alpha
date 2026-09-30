@@ -4,7 +4,7 @@
 canvases. This proves the extraction functions in `run.py`
 (`regions_by_source_page`, `sealed_page_images`, `page_coverage_findings`,
 `page_coverage_for`) read the *real* Designator/Exemplar artifact shapes
-correctly, and that `page_residual_ink` fires on genuine pipeline pixel bytes
+correctly, and that `residual_ink` fires on genuine pipeline pixel bytes
 when handed an incomplete covered set -- not a synthetic canvas standing in
 for one.
 
@@ -39,11 +39,11 @@ from common.background import (
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import DESIGNATOR, RECENSOR
-from common.imaging import dimensions, encode_grayscale_png
+from common.imaging import encode_grayscale_png, grayscale_rows
 from common.residual_ink import (
     MINIMUM_INK_PIXELS_FIELD,
     load_coverage_audit_config,
-    page_residual_ink,
+    residual_ink,
     resolve_coverage_audit_policy,
 )
 from common.runtree.store import RunTree
@@ -58,16 +58,15 @@ MINIMUM_INK_PIXELS = load_coverage_audit_config()["coverage_audit"][MINIMUM_INK_
 
 
 def _measure_page(image_bytes, covered):
-    """`page_residual_ink` under this page's own resolved background policy."""
-    return page_residual_ink(
-        image_bytes,
+    """`residual_ink` over the decoded page, under its own resolved policies."""
+    width, height, rows = grayscale_rows(image_bytes)
+    return residual_ink(
+        width,
+        height,
+        rows,
         covered,
-        background_policy=resolve_background_policy(
-            load_background_config(), *dimensions(image_bytes)
-        ),
-        coverage_policy=resolve_coverage_audit_policy(
-            load_coverage_audit_config(), *dimensions(image_bytes)
-        ),
+        background_policy=resolve_background_policy(load_background_config(), width, height),
+        coverage_policy=resolve_coverage_audit_policy(load_coverage_audit_config(), width, height),
     )
 
 
@@ -635,7 +634,7 @@ def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monk
     context.run = {"sealed_config_digests": {"designator-grouping": expected_digest}}
     context.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
     context.required_configs = []
-    assert RUN.ink_map_by_page(context) == {1: None}
+    assert RUN.ink_map_by_page(context, {1: (100, 100)}) == {1: None}
     assert context.required_configs == [("designator-grouping", expected_digest)]
 
 
@@ -710,7 +709,7 @@ def test_ink_map_by_page_accepts_the_actual_measured_record_from_the_ink_map(mon
     context.run = {"sealed_config_digests": {"designator-grouping": expected_digest}}
     context.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
     context.required_configs = []
-    assert RUN.ink_map_by_page(context) == {1: record["payload"]["edge_findings"]}
+    assert RUN.ink_map_by_page(context, {1: (100, 100)}) == {1: record["payload"]["edge_findings"]}
     assert context.required_configs == [("designator-grouping", expected_digest)]
 
     # The same outcome is not enough: shorten one retained edge run while the
@@ -720,7 +719,7 @@ def test_ink_map_by_page_accepts_the_actual_measured_record_from_the_ink_map(mon
     record = copy.deepcopy(record)
     record["payload"]["edge_findings"]["rows"][-1][0][1] = 40
     with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
-        RUN.ink_map_by_page(context)
+        RUN.ink_map_by_page(context, {1: (100, 100)})
 
 
 def test_ink_map_by_page_refuses_an_unmeasurable_payload_with_a_wrong_seal():
@@ -744,7 +743,7 @@ def test_ink_map_by_page_refuses_an_unmeasurable_payload_with_a_wrong_seal():
     context.run = {"sealed_config_digests": {"designator-grouping": "0" * 64}}
     context.required_configs = []
     with pytest.raises(FatalAccounting, match="invalid sealed ink-not-measurable payload"):
-        RUN.ink_map_by_page(context)
+        RUN.ink_map_by_page(context, {1: (1, 1)})
 
 
 @pytest.mark.parametrize(
@@ -763,14 +762,12 @@ def test_ink_map_by_page_refuses_a_measured_payload_without_current_background_p
             "ink_threshold": 180,
             "config_sha256": "0" * 64,
         },
-        "ink": {},
         "edge": {},
         "edge_findings": {"schema": "ink-runs.v2", "width": 1, "height": 1, "rows": [[]]},
     }
     if defect == "base-era":
         del payload["ink_measurable"]
         del payload["background"]
-        del payload["ink"]
         del payload["edge"]
     elif defect == "wrong-seal":
         payload["background"]["config_sha256"] = "1" * 64
@@ -789,6 +786,7 @@ def test_ink_map_by_page_refuses_a_measured_payload_without_current_background_p
     context = _FakeContext.__new__(_FakeContext)
     context.tree = MeasuredTree()
     context.run = {"sealed_config_digests": {"designator-grouping": "0" * 64}}
+    context.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
     context.required_configs = []
     with pytest.raises(FatalAccounting, match="invalid sealed measured payload"):
-        RUN.ink_map_by_page(context)
+        RUN.ink_map_by_page(context, {1: (1, 1)})
