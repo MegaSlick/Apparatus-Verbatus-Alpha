@@ -18,7 +18,11 @@ from typing import Callable, Mapping, MutableMapping, Protocol
 from urllib.parse import urlsplit
 
 from common.chairs.errors import ChairRefusal
-from common.chairs.model_store import MaterializationFetcher, materialize_real_roster
+from common.chairs.model_store import (
+    BundleFetcher,
+    MaterializationFetcher,
+    materialize_real_roster,
+)
 from common.contracts.canonical import is_sha256
 
 from .durable import atomic_write, canonical_json
@@ -876,12 +880,18 @@ class ChairCachePlan(Protocol):
 class ModelStoreBootstrapAction:
     """Launch-time acquisition of the real roster onto the mounted model volume."""
 
-    def __init__(self, store_root: str | Path, fetcher: MaterializationFetcher) -> None:
+    def __init__(
+        self,
+        store_root: str | Path,
+        fetcher: MaterializationFetcher,
+        bundle_fetcher: BundleFetcher,
+    ) -> None:
         self.store_root = Path(store_root)
         self.fetcher = fetcher
+        self.bundle_fetcher = bundle_fetcher
 
     def materialize(self) -> dict[str, object]:
-        return materialize_real_roster(self.store_root, self.fetcher)
+        return materialize_real_roster(self.store_root, self.fetcher, self.bundle_fetcher)
 
 
 class SubprocessBootstrapActions:

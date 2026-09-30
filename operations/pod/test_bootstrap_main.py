@@ -1113,6 +1113,94 @@ def test_chair_cache_receipt_says_sources_were_planned(monkeypatch: pytest.Monke
     }
 
 
+def _local_chair_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A roster binding one local-repository chair, and a store snapshot of it."""
+    from common.chairs.manifests import build_manifest, write_manifest
+
+    snapshot = tmp_path / "store" / "local" / "surya2-detection"
+    (snapshot / "surya_layout2").mkdir(parents=True)
+    (snapshot / "surya_layout2" / "LICENSE").write_text("licence\n", encoding="utf-8")
+    (snapshot / "surya_layout2" / "rfdetr_layout.pth").write_bytes(b"weights\n")
+    (snapshot / "surya-bundle.json").write_text("{}\n", encoding="utf-8")
+    config = tmp_path / "repo" / "config"
+    pin = write_manifest(build_manifest(snapshot), config / "manifests" / "surya2-detection.json")
+    models = config / "models-real.toml"
+    models.write_text(
+        'witness_floor = 0\nmodel_root = "real-models"\n\n[chairs.designator_surya]\n'
+        'state = "configured"\nsource = "local-repository"\npath = "designator_surya"\n'
+        f'digest_manifest = "{pin}"\nmanifest = "manifests/surya2-detection.json"\n'
+        'serving_recipe = "unproven-real-surya"\nlicense_note = "under test"\n',
+        encoding="utf-8",
+    )
+
+    class Fetcher:
+        """The store's role fetcher, over the one prepared snapshot."""
+
+        def __init__(self, root: Path) -> None:
+            assert root == tmp_path / "store"
+            self.copies = 0
+
+        def plan(self, identity):  # type: ignore[no-untyped-def]
+            assert identity.digest_manifest == pin
+            return {"snapshot": str(snapshot)}
+
+        def fetch(self, identity, destination: Path, paths) -> None:  # type: ignore[no-untyped-def]
+            self.copies += 1
+            for relative in paths:
+                (destination / relative).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(snapshot / relative, destination / relative)
+
+    monkeypatch.setattr(bootstrap_main, "StoreRoleFetcher", Fetcher)
+    from types import SimpleNamespace
+
+    plan = SimpleNamespace(
+        models_config=models, cache_root=tmp_path / "cache", store_root=tmp_path / "store"
+    )
+    return plan, config / "real-models" / "designator_surya", snapshot
+
+
+def test_chair_cache_places_a_local_chair_s_verified_bundle_where_the_roster_binds_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+
+    receipt = bootstrap_main._build_cache(plan)
+
+    assert receipt["chairs"] == [
+        {"chair": "designator_surya", "state": "local-placed", "snapshot": str(snapshot)}
+    ]
+    assert (placed / "surya_layout2" / "rfdetr_layout.pth").read_bytes() == b"weights\n"
+    assert sorted(p.name for p in placed.parent.iterdir()) == ["designator_surya"]
+    # A second boot finds a verified copy and keeps it.
+    assert bootstrap_main._build_cache(plan)["chairs"] == [
+        {"chair": "designator_surya", "state": "local-verified", "root": str(placed)}
+    ]
+
+
+def test_chair_cache_replaces_a_placed_bundle_that_no_longer_verifies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, placed, _snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    bootstrap_main._build_cache(plan)
+    (placed / "surya_layout2" / "rfdetr_layout.pth").write_bytes(b"changed\n")
+
+    bootstrap_main._build_cache(plan)
+
+    assert (placed / "surya_layout2" / "rfdetr_layout.pth").read_bytes() == b"weights\n"
+
+
+def test_chair_cache_refuses_a_store_copy_that_does_not_match_the_roster_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from common.chairs.errors import ChairRefusal
+
+    plan, _placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    (snapshot / "surya_layout2" / "rfdetr_layout.pth").write_bytes(b"other weights\n")
+
+    with pytest.raises(ChairRefusal):
+        bootstrap_main._build_cache(plan)
+
+
 def test_build_actions_does_not_read_models_config_before_configuration_runs(
     tmp_path: Path,
 ) -> None:

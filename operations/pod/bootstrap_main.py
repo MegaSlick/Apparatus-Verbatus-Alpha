@@ -93,6 +93,7 @@ import math
 import os
 import re
 import secrets
+import shutil
 import stat
 import sys
 import time
@@ -102,6 +103,8 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 
 from common.chairs.config import parse_models_config
+from common.chairs.errors import ChairRefusal
+from common.chairs.manifests import verify_snapshot
 from common.chairs.model_store import StoreRoleFetcher
 from common.chairs.models import ChairIdentity, ServingReceipt
 from common.chairs.receipts import receipt_record
@@ -140,9 +143,11 @@ from operations.serving.smoke import (
     fresh_page_witness,
     render_golden_page,
 )
+from operations.serving.surya_detector import SuryaBundleFetcher
 
 from .bootstrap import (
     CONFIGURATION_RECEIPT_SCHEMA,
+    SURYA_ENVIRONMENT,
     BootstrapActions,
     BootstrapJournal,
     Bootstrapper,
@@ -1050,9 +1055,12 @@ def _build_transfer(plan: Plan) -> Callable[[], dict[str, object]]:
 
 
 def _build_model_store(plan: Plan) -> ModelStoreBootstrapAction:
+    # Surya's bundle is fetched by its own prefetch, in the environment the
+    # UV_ENVIRONMENT step has already synced.
     return ModelStoreBootstrapAction(
         plan.store_root,  # type: ignore[arg-type]
         HuggingFaceMaterializationFetcher.from_huggingface_hub(),
+        SuryaBundleFetcher(SURYA_ENVIRONMENT),
     )
 
 
@@ -1069,9 +1077,56 @@ def _build_cache(plan: Plan) -> dict[str, object]:
             chairs.append(
                 {"chair": role, "state": "source-planned", "snapshot": source["snapshot"]}
             )
+        elif isinstance(identity, ChairIdentity):
+            chairs.append(_place_local_chair(registry, fetcher, identity))
         else:
             chairs.append({"chair": role, "state": "not-cached"})
     return {"chairs": chairs, "cache_root": str(plan.cache_root)}
+
+
+def _place_local_chair(
+    registry: ChairRegistry, fetcher: StoreRoleFetcher, identity: ChairIdentity
+) -> dict[str, object]:
+    """Copy a local-repository chair's verified store bundle to where the roster binds it.
+
+    The roster binds such a chair under its ``model_root``, beside the roster on
+    container-local disk; the store holds it on the volume. A copy already there
+    that verifies against the roster's manifest is kept. Otherwise every file the
+    manifest names is copied from the verified store snapshot into a fresh
+    sibling, which takes the chair's place only once it verifies, so the path the
+    roster names holds a verified bundle or nothing.
+    """
+    config = registry.config
+    if config.model_root is None or config.source_path is None or identity.path is None:
+        raise BootstrapStepFailure(
+            BootstrapStep.CHAIR_CACHE,
+            f"chair {identity.role} is a local repository with no model_root to place it in",
+            "Name model_root in the roster the pod runs with, then resume.",
+        )
+    model_root = config.source_path.parent / config.model_root
+    target = model_root / identity.path
+    if target.is_dir():
+        try:
+            snapshot = registry.ensure(identity)
+        except ChairRefusal:
+            shutil.rmtree(target)
+        else:
+            return {"chair": identity.role, "state": "local-verified", "root": str(snapshot.root)}
+    source = fetcher.plan(identity)
+    model_root.mkdir(parents=True, exist_ok=True)
+    staged = model_root / f".{identity.path}.placing"
+    shutil.rmtree(staged, ignore_errors=True)
+    staged.mkdir()
+    manifest = registry.manifest(identity)
+    fetcher.fetch(identity, staged, tuple(row.path for row in manifest.rows))
+    try:
+        verify_snapshot(identity, staged, manifest)
+    except ChairRefusal:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+    os.replace(staged, target)
+    registry.ensure(identity)
+    return {"chair": identity.role, "state": "local-placed", "snapshot": source["snapshot"]}
 
 
 PREFLIGHT_DTYPE = "bfloat16"

@@ -66,6 +66,7 @@ from .config import (
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
+    SubprocessProfile,
     UnsupportedProfile,
     chair_preflight_identity_digest,
     load_serving_recipes,
@@ -2615,6 +2616,7 @@ def test_real_catalogue_covers_each_chair_and_names_unservable_tiers():
         "attestator_2",
         "attestator_3",
         "perlector",
+        "designator_surya",
     }
     assert len(real_catalogue.profiles) == len(configured) * len(tiers)
     for identity in configured:
@@ -2633,6 +2635,14 @@ def test_real_catalogue_covers_each_chair_and_names_unservable_tiers():
                     1024,
                 )
                 assert serving_mode_for(real_catalogue, identity, tier) == "in-process"
+                continue
+            if identity.role == "designator_surya":
+                assert isinstance(profile, SubprocessProfile)
+                assert (profile.engine, profile.device, profile.environment) == (
+                    "surya",
+                    "cpu",
+                    "operations/serving/surya",
+                )
                 continue
             assert isinstance(profile, ServingProfile)
             assert profile.preflight_state == "unproven"

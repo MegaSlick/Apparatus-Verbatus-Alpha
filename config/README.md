@@ -13,7 +13,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `spend.toml` | the project lead's pod-plus-attached-volume money caps; both paid paths refuse it unless configured, and configuring it is not permission to launch |
 | `pod_placement.toml` | planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
 | `serving_recipes.toml` | the fixture-only default serving catalogue; it stays untouched unless `--serving-recipes-config` selects another file |
-| `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles plus explicit non-launchable rows where no honest engine exists; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
+| `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles, the CPU rows of the two detectors the Designator runs itself (DAI's record detector in-process, Surya as a subprocess), and explicit non-launchable rows where no honest engine exists; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
 | `formats.toml` | which Armarium product projections are written and whether verified pixels are embedded |
 | `perlector_protocol.toml` | the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name; and, since 2026-09-14, `[truncation]`, the truncation instrument's length floor in characters per page-equivalent |
 | `alignment.toml` | sealed character, pair, and wall-clock ceilings for witness-to-Chandra alignment |
@@ -207,6 +207,11 @@ and could not be pinned by it from anywhere else:
 - `manifests/` — one digest-manifest artifact per configured chair: the sorted
   `{path, sha256, size}` rows whose canonical bytes a chair's `digest_manifest`
   names.
+- `real-models/` — where `models-real.toml` binds its local-repository chair,
+  Surya's weight bundle. Never committed: a pod's CHAIR_CACHE step copies the
+  bundle in from the model store, verified against
+  `manifests/surya2-detection.json`, the bundle's measured manifest
+  (`operations/serving/surya/README.md`).
 - `model-fixtures/` — the tiny local-repository snapshots the offline walking
   skeleton resolves. **These are not models.** They stand in for a model
   repository exactly as `proof/fixtures/synthetic-two-page-v0/*.png` stand in for

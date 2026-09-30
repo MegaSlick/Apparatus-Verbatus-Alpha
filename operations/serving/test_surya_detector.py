@@ -335,12 +335,13 @@ def test_a_subprocess_row_resolves_to_the_subprocess_mode_and_is_never_launched(
 
 
 def test_the_surya_chair_is_in_both_rosters_and_addressed_by_stage_two():
-    """Configured on the fixture roster, with a fixture row at every tier; absent
-    on the real roster until a fetched bundle gives it a measured manifest."""
+    """Configured on the fixture roster, with a fixture row at every tier, and on
+    the real roster, with a subprocess row at every tier pinning the release its
+    own environment locks."""
     fixture = tomllib.loads((ROOT / "config" / "models.toml").read_text(encoding="utf-8"))
     real = tomllib.loads((ROOT / "config" / "models-real.toml").read_text(encoding="utf-8"))
     assert fixture["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "configured"
-    assert real["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "absent"
+    assert real["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "configured"
     fixture_rows = [
         p
         for p in load_serving_recipes(ROOT / "config" / "serving_recipes.toml").profiles
@@ -350,7 +351,13 @@ def test_the_surya_chair_is_in_both_rosters_and_addressed_by_stage_two():
         ("fixture", tier) for tier in ("generic-24gb", "generic-48gb", "generic-80gb-plus")
     }
     real_recipes = load_serving_recipes(ROOT / "config" / "serving_recipes_real.toml")
-    assert not [p for p in real_recipes.profiles if p.chair == DESIGNATOR_SURYA_CHAIR]
+    real_rows = [p for p in real_recipes.profiles if p.chair == DESIGNATOR_SURYA_CHAIR]
+    assert {(p.kind, p.tier) for p in real_rows} == {
+        ("subprocess", tier) for tier in ("generic-24gb", "generic-48gb", "generic-80gb-plus")
+    }
+    assert {tuple(sorted(p.required_packages.items())) for p in real_rows} == {
+        tuple(sorted(_row()["required_packages"].items()))
+    }
     config = load_models_toml(ROOT / "config" / "models.toml")
     assert DESIGNATOR_SURYA_CHAIR not in unaddressed_chairs(config)
 
@@ -687,3 +694,61 @@ def test_the_runner_keeps_what_the_layout_detector_returns_unchanged():
     seen = runner._observed(model)
     assert model.detect(["page"], threshold=0.4) == [["box"]]
     assert seen == [[["box"]]]
+
+
+# --- the weight bundle's launch-time fetch ----------------------------------------------
+
+
+def test_the_bundle_fetcher_runs_surya_s_prefetch_in_its_environment(environment, monkeypatch):
+    seen: dict = {}
+
+    def child(argv, **kwargs):
+        seen.update(argv=argv, env=kwargs["env"], timeout=kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setenv("S3_BASE_URL", "https://elsewhere.invalid")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    destination = environment / "store" / "staging" / ".surya2-detection.fetch-x" / "snapshot"
+    surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=child).fetch(
+        surya_detector.BUNDLE_ARTIFACT, destination
+    )
+
+    surya = environment / "operations" / "serving" / "surya"
+    assert seen["argv"] == [
+        str(surya / ".venv" / "bin" / "python"),
+        str(surya / "prefetch.py"),
+        "--out",
+        str(destination),
+    ]
+    # The network route passes; Surya's own settings never do, and the Hub
+    # client's cache sits beside the bundle, not in it.
+    assert "S3_BASE_URL" not in seen["env"]
+    assert seen["env"]["HTTPS_PROXY"] == "http://proxy.invalid:3128"
+    assert seen["env"]["HF_HOME"] == str(destination.parent / "hf-home")
+    assert seen["timeout"] == surya_detector.PREFETCH_TIMEOUT_SECONDS
+
+
+def test_the_bundle_fetcher_names_a_failed_prefetch_and_refuses_another_artifact(environment):
+    def failing(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, "", "HTTPError: 403 Forbidden")
+
+    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=failing)
+    with pytest.raises(SuryaRunFailure, match="prefetch failed .*403 Forbidden"):
+        fetcher.fetch(surya_detector.BUNDLE_ARTIFACT, environment / "out")
+    with pytest.raises(ServingConfigurationError, match="not 'churro-3B'"):
+        fetcher.fetch("churro-3B", environment / "out")
+
+
+def test_the_bundle_fetcher_names_the_sync_command_when_the_environment_is_missing(tmp_path):
+    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/nowhere")
+    with pytest.raises(ServingConfigurationError, match="uv sync --locked --project"):
+        fetcher.fetch(surya_detector.BUNDLE_ARTIFACT, tmp_path / "out")
+
+
+def test_the_bundle_fetcher_writes_the_artifact_the_store_requires_of_it():
+    from common.chairs.model_store import REQUIRED_ARTIFACTS
+
+    (requirement,) = [item for item in REQUIRED_ARTIFACTS if item.source == "local-repository"]
+    assert requirement.artifact == surya_detector.BUNDLE_ARTIFACT
+    # The layout repository's licence, where prefetch lays that repository out.
+    assert requirement.license_file == "surya_layout2/LICENSE"

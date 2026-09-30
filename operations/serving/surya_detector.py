@@ -611,6 +611,74 @@ def surya_run(
     return SuryaRun(run_facts=run_facts, serving_details=details, pages=documents)
 
 
+PREFETCH = "prefetch.py"
+BUNDLE_ARTIFACT = "surya2-detection"
+PREFETCH_TIMEOUT_SECONDS = 1800
+# What the prefetch child inherits: a locale, a temporary directory and the
+# route to the network, never a variable that could set one of Surya's settings.
+_PREFETCH_ENVIRONMENT = {
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+}
+
+
+class SuryaBundleFetcher:
+    """The model store's fetcher for Surya's weight bundle: `prefetch.py`, run in
+    Surya's own environment, writes the bundle and its lock at the destination.
+
+    The Hugging Face client's own cache goes beside the destination, never into
+    it, so the bundle holds only what the lock names.
+    """
+
+    def __init__(self, environment: str, *, runner: Runner = subprocess.run) -> None:
+        self.environment = environment
+        self.runner = runner
+
+    def fetch(self, artifact: str, destination: Path) -> None:
+        if artifact != BUNDLE_ARTIFACT:
+            raise ServingConfigurationError(
+                f"Surya's prefetch writes {BUNDLE_ARTIFACT!r}, not {artifact!r}"
+            )
+        environment = REPO_ROOT / self.environment
+        interpreter = environment / ".venv" / "bin" / "python"
+        if not interpreter.is_file():
+            raise ServingConfigurationError(
+                f"Surya's environment has no interpreter at {interpreter}; build it with "
+                f"`uv sync --locked --project {self.environment}`"
+            )
+        child = {key: value for key, value in os.environ.items() if key in _PREFETCH_ENVIRONMENT}
+        child["HF_HOME"] = str(destination.parent / "hf-home")
+        child["HF_HUB_DISABLE_TELEMETRY"] = "1"
+        argv = [str(interpreter), str(environment / PREFETCH), "--out", str(destination)]
+        try:
+            result = self.runner(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=PREFETCH_TIMEOUT_SECONDS,
+                env=child,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise SuryaRunFailure(
+                f"Surya's prefetch did not finish within {PREFETCH_TIMEOUT_SECONDS} seconds"
+            ) from error
+        except OSError as error:
+            raise SuryaRunFailure(f"Surya's prefetch could not be started: {error}") from error
+        if result.returncode != 0:
+            raise SuryaRunFailure(
+                f"Surya's prefetch failed (exit {result.returncode}): "
+                f"{result.stderr.strip()[-800:]}"
+            )
+
+
 class SuryaSubprocess:
     """How a stage answers a subprocess Surya row: its environment is checked
     before any paid work starts, and its runner is started when the pages are

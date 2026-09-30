@@ -659,8 +659,10 @@ fixture row declared for a page the Exemplar refused is left out, since the
 door already records that loss by name; a fixture row for any other page that
 is not sealed is refused by name.
 The fixture roster configures the chair against fixture rows; the real roster
-records it absent until Surya's weight bundle has been fetched and its digest
-manifest measured (`operations/serving/surya/README.md`, "On the pod").
+configures it as a local repository, Surya's locked weight bundle pinned by its
+measured digest manifest, with a `subprocess` row at every tier. The pod's model
+store fetches the bundle at launch and places it where the roster binds it
+(`operations/serving/surya/README.md`, "On the pod").
 
 **What runs.** Surya's own `DetectionPredictor.local()` for text lines and the
 `LayoutEngine.run_batch` call its fast-layout server makes (rf-detr layout and

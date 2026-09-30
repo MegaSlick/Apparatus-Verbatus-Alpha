@@ -2,10 +2,12 @@
 
 Run in this directory's own environment, on a machine that may reach Datalab's
 model host and the Hugging Face Hub (the pod, never a laptop holding register
-material):
+material). The pod's model store runs it at launch
+(`operations/serving/surya_detector.py::SuryaBundleFetcher`) and accepts the
+bundle only if its measured manifest is the pinned one; by hand:
 
     operations/serving/surya/.venv/bin/python operations/serving/surya/prefetch.py \
-        --out <volume>/store/staging/surya2-detection
+        --out <bundle>
 
 after `uv sync --locked --project operations/serving/surya` has built that
 environment.

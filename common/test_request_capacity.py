@@ -689,7 +689,8 @@ def test_every_configured_real_chair_that_sends_a_request_carries_a_measurement(
     on a pod. The roster's own configured reading chairs are checked here
     instead. `annotator` is absent from the roster by ruling, and an absent
     chair sends nothing; `secondary_proposer` is the record detector, which
-    runs in-process and sends no prompt at all.
+    runs in-process and sends no prompt at all, and `designator_surya` is
+    Surya's detector, run as a subprocess, which sends none either.
     """
 
     roster = load_models_toml(ROOT / "config" / "models-real.toml").chairs
@@ -700,7 +701,7 @@ def test_every_configured_real_chair_that_sends_a_request_carries_a_measurement(
     configured = {
         chair for chair, identity in roster.items() if isinstance(identity, ChairIdentity)
     }
-    measured = set(MEASURED_PROMPT_TOKENS) | {"perlector", "secondary_proposer"}
+    measured = set(MEASURED_PROMPT_TOKENS) | {"perlector", "secondary_proposer", "designator_surya"}
     assert configured == measured
 
 

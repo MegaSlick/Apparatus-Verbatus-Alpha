@@ -75,49 +75,57 @@ instruction set and the machine, and a resumed run on another one is refused.
 | layout | `hf://datalab-to/surya_layout2` | Hub commit `0aee81d5fd9275c0582e545bf3a56944b1e75679` |
 | reading order | `hf://datalab-to/surya_layout2/order` | the same commit |
 
-The Hub commit is `contract.LAYOUT_REPOSITORY_REVISION`; moving it is a reviewed change.
-No file digest is recorded yet: none can be until the first fetch.
+Surya has no setting that names a Hub revision: its loaders fetch whatever the
+default branch holds. So the bundle is fetched once at the pinned commit
+(`contract.LAYOUT_REPOSITORY_REVISION`; moving it is a reviewed change) and Surya is
+handed each checkpoint as a local directory. The whole bundle is pinned by the digest
+of its measured manifest, `config/manifests/surya2-detection.json`:
+`ad19b0280bec623e7edd1b7ca5197ded1add35af9ff0ec76e80db8d035b16cb9`, named in
+`config/models-real.toml` and in `common/chairs/model_store.py::REQUIRED_ARTIFACTS`
+(a test holds the two equal).
+
+| File | SHA-256 | Checked against |
+|---|---|---|
+| `text_detection/2025_05_07/model.safetensors` | `38c3749eeb5f06fc93ed71eeee5cbd86b1945d08f8f74746bda035d41324bd3e` | the host's ETag (S3 multipart MD5, 10 parts of 8 MiB) |
+| `surya_layout2/rfdetr_layout.pth` | `e01b79f858778cdad8a1384e644ac2b35f9c095fbfd102a34942e23f2f179fe7` | the Hub's LFS SHA-256 at the commit |
+| `surya_layout2/order/order_ar.pt` | `f381c38548015cbbe962611cbd2c80c59e88c3c25543ac20df9db16f84923ad8` | the Hub's LFS SHA-256 at the commit |
+
+Every other file was checked the same way: the Hub's git blob SHA-1 for small files
+at the commit, and the host's MD5 ETag for each file its `manifest.json` lists. Two
+fetches gave byte-identical bundles. The layout repository declares `openrail` and
+carries its licence text (`surya_layout2/LICENSE`); the text-detection checkpoint on
+Datalab's host carries none.
+
+To re-pin after a deliberate move: fetch with `prefetch.py`, check each file against
+its host as above, promote the bundle into a scratch store with
+`common/chairs/model_store.py::promote_verified_snapshot` (artifact
+`surya2-detection`, every file required), and copy the manifest it publishes to
+`config/manifests/surya2-detection.json`. Its SHA-256 is the new pin, written in
+`config/models-real.toml` and `SURYA_BUNDLE_DIGEST_MANIFEST` together.
 
 ## On the pod
-
-None of these steps has been run yet.
 
 1. The environment is built on container-local disk, beside the project's own, by the
    pod bootstrap's UV_ENVIRONMENT step (`uv sync --locked --project
    operations/serving/surya`) whenever the catalogue has a subprocess row for a
    configured chair that runs in it; by hand, the same command.
-2. Fetch the bundle once onto the network volume, into the model store's staging area:
-   `operations/serving/surya/.venv/bin/python operations/serving/surya/prefetch.py
-   --out <volume>/store/staging/surya2-detection`. It refuses to overwrite a bundle that
-   exists, and a bundle that exists is complete.
-3. Promote it into the store (`common/chairs/model_store.py::promote_verified_snapshot`),
-   which publishes its digest manifest as `manifests/surya2-detection.json`.
-4. Configure the chair in `config/models-real.toml`, replacing its `absent` entry:
-   `source = "local-repository"`, `path` naming the promoted bundle, `digest_manifest`
-   and `manifest` from step 3, and `serving_recipe = "surya-v0"`.
-5. Add one row per placement tier to `config/serving_recipes_real.toml` (the coverage
-   check refuses a row for an absent chair, so the rows go in with step 4):
+2. The MODEL_STORE step fetches the bundle onto the network volume: the store runs
+   `prefetch.py` in that environment (`surya_detector.SuryaBundleFetcher`) into its
+   staging area, measures the manifest, refuses it unless it is the pinned one, and
+   only then publishes `manifests/surya2-detection.json` and moves the bundle to
+   `local/surya2-detection`. A store from before the chair was configured names the
+   bundle `pending-fetch` and is completed the same way.
+3. The CHAIR_CACHE step copies the verified bundle to where the roster binds it,
+   `config/real-models/designator_surya` on container-local disk, and verifies the
+   copy against the roster's manifest before it replaces anything there.
+4. Preflight verifies the chair's weights against its manifest and runs the runner
+   once on the golden page, on the CPU; a failure is red with the remedy named, and
+   the versions, CPU instruction set and machine that run measured go in its report.
+   `pod_run` refuses a Designator selection without that run.
 
-   ```toml
-   [[profiles]]
-   kind = "subprocess"
-   recipe = "surya-v0"
-   chair = "designator_surya"
-   tier = "generic-24gb"
-   engine = "surya"
-   environment = "operations/serving/surya"
-   device = "cpu"
-   threads = 8
-   startup_timeout_seconds = 600
-   seconds_per_page = 60
-   required_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }
-   ```
-
-6. Preflight then verifies the chair's weights against its manifest and runs the runner
-   once on the golden page, on the CPU; a failure is red with the remedy named, and the
-   versions, CPU instruction set and machine that run measured go in its report.
-
-The thread count and time allowances above are planning values until a pod measures a
-page. One process loads the models once and reads every page, so the run's timeout is
+The rows in `config/serving_recipes_real.toml` (`unproven-real-surya`, 8 threads, 600 s
+to start, 60 s a page) are planning values until a pod measures a page: a development
+machine (AVX512, 2 threads) read four synthetic pages in about 125 s, models loaded
+once. One process loads the models once and reads every page, so the run's timeout is
 the startup allowance plus the per-page allowance for each page, rather than page
 batches that would load the models again for each batch.

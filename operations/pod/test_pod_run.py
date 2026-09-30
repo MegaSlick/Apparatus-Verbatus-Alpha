@@ -2120,6 +2120,9 @@ def _recipe_pins() -> dict[str, str]:
     )
     pins: dict[str, str] = {}
     for profile in catalogue["profiles"]:
+        # A subprocess row runs in its own locked environment, not the pod group's.
+        if profile["kind"] == "subprocess":
+            continue
         for package, version in profile.get("required_packages", {}).items():
             assert pins.setdefault(package, version) == version, (
                 f"the real catalogue pins {package} at two versions"
