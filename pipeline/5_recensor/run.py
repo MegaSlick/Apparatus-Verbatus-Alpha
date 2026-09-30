@@ -62,7 +62,6 @@ from common.stage import (  # noqa: E402
     RETIRED_RESIDUAL_ENUMERATION,
     expected_acts,
     latest_attempt,
-    open_context,  # noqa: F401  (re-export: this stage's tests open fixture trees through it)
     open_stage_context,
     page_residual_act_key,
     reading_denominator,
@@ -658,8 +657,7 @@ def review_route_from_findings(
     ``None`` means the corresponding measurement does not exist and therefore
     routes like ``False``; absence is not a measured shortfall.
     """
-    # A shape guard that cannot refuse anything yet; `publish_review` is the screen
-    # that bites.
+    # A shape guard over the route inputs; `publish_review` screens the payload.
     refuse_capture_preference(
         {
             "cross_capture_occluded_everywhere": cross_capture_occluded_everywhere,

@@ -288,25 +288,6 @@ def test_an_empty_receipt_may_not_claim_to_be_complete():
         validate_recensor_partition_receipt(forged)
 
 
-# --- Audit-and-repair regression (F-new-2, mutation-of-mechanisms pass) ----------
-#
-# Audit-and-repair seat 1, R0. Mutation check: `pipeline/5_recensor/run.py
-# ::validate_chair_coverage` wires `act_attachment_facts(context, act_id)` into
-# `witness_coverage(...)` as its `attachments=` argument -- the one production call
-# site for D2/D3's act-granularity floor accounting (S3's audit question: "can any
-# production caller reach the legacy path... and silently claim act-level coverage
-# without attachment facts?"). Deleting that one keyword argument (falling back to
-# the pre-R0 legacy arithmetic) left the FULL in-repo suite green: no test anywhere
-# asserted a real run's receipt `shortfalls`/`health_unrecorded` values, and
-# `under_witnessed`/`page_granularity_only` happen to come out identical either way
-# for every outcome combination R0's interim (pre-R4-alignment) design can produce
-# (verified: `attached` is definitionally `outcome in WITNESS_READING_OUTCOMES` in
-# R0 today, so `page_granularity_only` is structurally always 0 regardless of
-# whether attachment facts are wired in at all). Only the two host-only semantic
-# pins would have caught it, and those are deselected from the in-chamber gate
-# pending host remeasurement. This test closes that gap directly.
-
-
 # --- Audit-and-repair regression (F-O4) -----------------------------------------
 #
 # Audit-and-repair seat 3, R0. `page_granularity_only` is subtracted from the

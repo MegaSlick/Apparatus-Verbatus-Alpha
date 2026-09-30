@@ -20,39 +20,18 @@ import pytest
 
 from common.background import (
     DEFAULT_INK_MAP_CONFIG_PATH,
-    load_background_config,
-    resolve_background_policy,
 )
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import RECENSOR
-from common.imaging import dimensions, encode_grayscale_png
+from common.imaging import encode_grayscale_png
 from common.page_review import reviewed_rows
-from common.residual_ink import (
-    load_coverage_audit_config,
-    page_residual_ink,
-    resolve_coverage_audit_policy,
-)
 from common.runtree.store import RunTree
 from common.stage import reading_denominator
 from conftest import build_page_tree, load_stage, page_context, programs_through, run_stage
 
 RUN = load_stage("5_recensor")
 page_review = load_stage("5_recensor", "page_review")
-
-
-def _measure_page(image_bytes, covered):
-    """`page_residual_ink` under this page's own resolved background policy."""
-    return page_residual_ink(
-        image_bytes,
-        covered,
-        background_policy=resolve_background_policy(
-            load_background_config(), *dimensions(image_bytes)
-        ),
-        coverage_policy=resolve_coverage_audit_policy(
-            load_coverage_audit_config(), *dimensions(image_bytes)
-        ),
-    )
 
 
 def _built_through_designator(tmp_path, scenario="happy"):
@@ -176,10 +155,8 @@ def test_the_residual_ink_check_refuses_page_bytes_it_did_not_verify(page_tree):
 
     A single-process test cannot land a writer between the two reads, so the
     race is modelled: this tree is honest on every read the verification makes
-    and returns a different page on the second read of the same path. Before the
-    digest check below, this produced `flagged: False` for both pages of the
-    real fixture over pixels nobody verified -- a measurement recorded as a pass
-    without having been made."""
+    and returns a different page on the second read of the same path, which
+    must be refused rather than measured."""
     real = RunTree(page_tree, "r")
 
     class RacingTree:
@@ -210,10 +187,9 @@ def test_a_page_whose_paper_cannot_be_inferred_is_unmeasurable_and_never_checked
     The page substituted here is the inverted scan
     `pipeline/2_designator/test_structure.py` uses -- 80% at 30, 20% at 220 --
     whose mode is darker than its own mean and whose interior is dark, so no
-    branch of the shared inference can call anything on it paper. Before
-    2026-09-06 this check would have taken 30 as the paper value, found no pixel
-    40 levels below it, and reported the page as carrying no ink outside
-    coverage at all: a green coverage proof over a page nobody measured.
+    branch of the shared inference can call anything on it paper. Taking 30 as
+    the paper value would find no pixel 40 levels below it and report the page
+    clean: a coverage proof over a page nobody measured.
 
     Page 1's bytes are substituted at the read this check makes, with the page
     record's own declared digest moved to match, so the boundary check passes
@@ -274,15 +250,15 @@ def test_page_coverage_findings_does_not_flag_the_real_fully_covered_fixture(pag
 def test_a_missing_reading_region_flags_real_pipeline_pixels(page_tree):
     """Real sealed page-1 bytes with one reading region left out of the covered
     set: the evidence a reading that missed an act would leave behind."""
-    tree = RunTree(page_tree, "r")
+    context = _FakeContext(RunTree(page_tree, "r"))
     regions = _reading_regions(page_tree)
     assert len(regions[1]) > 1
-    pages = RUN.sealed_page_images(_FakeContext(tree))
-    image_bytes = tree.read_bytes(pages[1]["payload"]["image_path"])
 
-    assert _measure_page(image_bytes, regions[1][1:])["flagged"] is True
+    short = RUN.page_coverage_findings(context, regions={**regions, 1: regions[1][1:]})
+    assert short[1]["flagged"] is True and short[1]["outside_ink_pixels"] > 0
+    assert short[2]["flagged"] is False
     # The full set clears it, on the identical bytes.
-    assert _measure_page(image_bytes, regions[1])["flagged"] is False
+    assert RUN.page_coverage_findings(context, regions=regions)[1]["flagged"] is False
 
 
 def _run_main(root: Path, monkeypatch) -> int:
@@ -383,3 +359,11 @@ def test_an_unmeasurable_page_holds_every_unit_on_it_through_main(page_tree, tmp
         assert review["outcome"] == "held-for-review"
         assert review["payload"]["page_coverage"]["unmeasurable_pages"]
         assert page_review.RESIDUAL_INK_NOT_MEASURABLE in review["payload"]["hold_codes"]
+
+
+def test_a_run_not_read_by_page_is_refused_before_any_review(page_tree, tmp_path, monkeypatch):
+    root = _copy(page_tree, tmp_path)
+    monkeypatch.setattr(RUN, "reading_denominator", lambda _context: {"reading_unit": "act"})
+    with pytest.raises(FatalAccounting, match="reviews only page-read runs"):
+        _run_main(root, monkeypatch)
+    assert _reviews(root) == []

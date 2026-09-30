@@ -175,8 +175,7 @@ The stage opens through `common.stage.open_stage_context`, which decides the rou
 from one read of the run authority and, on a real submission, carries the registry and
 the sealed digest map this stage requires before its first line of work. The context's
 fixture slot is `None` behind a refusing accessor; this stage never touches it on the
-real route. `open_context` stays importable from this module because this stage's own
-tests open fixture trees through it directly; `main` does not call it.
+real route.
 
 ## The run-level hard-failure cap is the orchestrator's
 

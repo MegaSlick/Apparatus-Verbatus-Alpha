@@ -1,13 +1,19 @@
 """The re-ask budget: a ruled ceiling in code, and the run's sealed record in use."""
 
-import shutil
 from types import SimpleNamespace
 
 import pytest
 
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, FatalAccounting
+from common.contracts.identities import attempt_id
 from common.contracts.stages import RECENSOR
-from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH, RULED_ABSOLUTE_CAP, load_recovery_policy
+from common.recovery import (
+    DEFAULT_RECOVERY_CONFIG_PATH,
+    FALLBACK_RECROP,
+    RULED_ABSOLUTE_CAP,
+    load_recovery_policy,
+    reconcile_recovery_requests,
+)
 from common.runtree.store import RunTree
 from common.stage import StageContext
 from conftest import run_stage
@@ -68,7 +74,17 @@ def test_the_run_authority_names_the_recovery_policy_it_was_sealed_under(tmp_pat
     """Recorded, not merely hashed: a reader holding the tree can name the file."""
     root = tmp_path / "runs"
     recovery_path = tmp_path / "recovery.toml"
-    shutil.copyfile(DEFAULT_RECOVERY_CONFIG_PATH, recovery_path)
+    # A policy other than the shipped one, so the digest proves which file was sealed.
+    recovery_path.write_text(
+        DEFAULT_RECOVERY_CONFIG_PATH.read_text(encoding="utf-8").replace(
+            "page_level_reread = 1", "page_level_reread = 0"
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        load_recovery_policy(recovery_path)["config_sha256"]
+        != load_recovery_policy()["config_sha256"]
+    )
     result = run_stage(
         root,
         "named",
@@ -84,3 +100,36 @@ def test_the_run_authority_names_the_recovery_policy_it_was_sealed_under(tmp_pat
         run["sealed_config_digests"]["recovery"]
         == load_recovery_policy(recovery_path)["config_sha256"]
     )
+
+
+POLICY = load_recovery_policy()
+
+
+def _requests(count: int) -> list[dict]:
+    """`count` fallback-recrop requests for one act, each counter reconciled to its predecessors."""
+    return [
+        {
+            "outcome": "recovery-requested",
+            "attempt_id": attempt_id("act_1", "recover", ordinal),
+            "payload": {
+                "attempt_ordinal": ordinal,
+                "recovery_kind": FALLBACK_RECROP,
+                "budget_allowed": POLICY["allowed"],
+                "budget_used": ordinal - 1,
+                "kind_budget_allowed": POLICY["fallback_recrop"],
+                "kind_budget_used": ordinal - 1,
+                "recovery_policy": POLICY,
+            },
+        }
+        for ordinal in range(1, count + 1)
+    ]
+
+
+def test_requests_within_the_sealed_budget_reconcile_in_ordinal_order():
+    requests = _requests(POLICY["fallback_recrop"])
+    assert reconcile_recovery_requests(list(reversed(requests)), "act_1", POLICY) == requests
+
+
+def test_a_request_above_the_sealed_budget_is_refused_at_the_accounting_boundary():
+    with pytest.raises(FatalAccounting, match="above"):
+        reconcile_recovery_requests(_requests(POLICY["fallback_recrop"] + 1), "act_1", POLICY)

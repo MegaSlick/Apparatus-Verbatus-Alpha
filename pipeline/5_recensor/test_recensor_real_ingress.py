@@ -253,7 +253,10 @@ def test_the_fixture_route_constructs_its_reader_exactly_as_before():
     assert reader._scenario == "happy"
 
 
-# --- the Recensor's one fixture concept ---------------------------------------------
+def test_the_real_route_reads_the_ingress_record_the_constructor_read():
+    """The same reading `common.stage` makes: absent is synthetic, present must parse."""
+    assert PERLECTOR_RUN.real_ingress(_real_context(PERLECTOR)) is True
+    assert PERLECTOR_RUN.real_ingress(_fixture_context(PERLECTOR, {}, "happy")) is False
 
 
 # --- the programs, over a real submission ------------------------------------------
