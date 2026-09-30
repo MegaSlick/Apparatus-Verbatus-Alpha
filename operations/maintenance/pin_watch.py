@@ -21,7 +21,6 @@ class Pin:
     repo: str
     revision: str
     host: str
-    upstream_ref: str = "HEAD"
 
 
 def _get_json(url: str) -> Mapping[str, object]:
@@ -51,10 +50,7 @@ def _pins(config_paths: tuple[Path, ...], vendor_path: Path) -> list[Pin]:
         ("CHURRO_CODE_REPOSITORY", "CHURRO_CODE_COMMIT"),
     ):
         repo = str(constants[repository]).removeprefix("github.com/")
-        # The Churro code pin names a tag. The paper-era commit has no moving
-        # upstream ref, so a HEAD comparison would announce a false move.
-        upstream_ref = "v0.3.0" if revision == "CHURRO_CODE_COMMIT" else "HEAD"
-        pins.append(Pin(repo, str(constants[revision]), "github", upstream_ref))
+        pins.append(Pin(repo, str(constants[revision]), "github"))
     return pins
 
 
@@ -62,7 +58,7 @@ def _upstream(pin: Pin, get_json: Callable[[str], Mapping[str, object]]) -> tupl
     if pin.host == "huggingface":
         data = get_json(f"https://huggingface.co/api/models/{pin.repo}")
         return str(data["sha"]), str(data["lastModified"])
-    data = get_json(f"https://api.github.com/repos/{pin.repo}/commits/{pin.upstream_ref}")
+    data = get_json(f"https://api.github.com/repos/{pin.repo}/commits/HEAD")
     commit = data["commit"]
     if not isinstance(commit, Mapping):
         raise ValueError("GitHub response has no commit object")
@@ -74,9 +70,11 @@ def _upstream(pin: Pin, get_json: Callable[[str], Mapping[str, object]]) -> tupl
 
 def report(
     pins: list[Pin], get_json: Callable[[str], Mapping[str, object]]
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str]]:
+    """Every pin's status line, then the moved lines and the unreachable lines."""
     lines: list[str] = []
     moved: list[str] = []
+    unreachable: list[str] = []
     for pin in pins:
         try:
             head, date = _upstream(pin, get_json)
@@ -87,15 +85,18 @@ def report(
                     f"{pin.repo}: upstream-moved (pinned {pin.revision}, upstream {head}, {date})"
                 )
                 moved.append(lines[-1])
-        except Exception:  # noqa: BLE001 -- every public API failure is an unreachable pin
-            lines.append(f"{pin.repo}: unreachable")
-    return lines, moved
+        except Exception as error:  # noqa: BLE001 -- every public API failure is an unreachable pin
+            lines.append(f"{pin.repo}: unreachable ({type(error).__name__})")
+            unreachable.append(lines[-1])
+    return lines, moved, unreachable
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--notify", action="store_true", help="send one decision notification if any pin moved"
+        "--notify",
+        action="store_true",
+        help="send one decision notification if any pin moved or could not be checked",
     )
     args = parser.parse_args()
     configs = (ROOT / "config/models.toml", ROOT / "config/models-real.toml")
@@ -104,13 +105,18 @@ def main() -> int:
     except (OSError, UnicodeError, tomllib.TOMLDecodeError, SyntaxError, KeyError) as error:
         print(f"pin-watch: could not read pin configuration: {error}")
         return 1
-    lines, moved = report(pins, _get_json)
+    lines, moved, unreachable = report(pins, _get_json)
     print("\n".join(lines))
-    if args.notify and moved:
-        outcome = client.send("decision", "Vendor pins moved: " + "; ".join(moved))
+    if args.notify and (moved or unreachable):
+        parts = []
+        if moved:
+            parts.append("Vendor pins moved: " + "; ".join(moved))
+        if unreachable:
+            parts.append("Vendor pins not checked: " + "; ".join(unreachable))
+        outcome = client.send("decision", " | ".join(parts))
         if not outcome.delivered:
             print(outcome.line())
-    return 0
+    return 1 if unreachable else 0
 
 
 if __name__ == "__main__":
