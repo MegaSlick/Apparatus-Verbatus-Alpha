@@ -684,12 +684,18 @@ def test_a_perlectio_departing_from_its_answer_entry_is_refused(happy_tree, tmp_
     ("kind", "n"),
     [("page-reading", None), ("page-accounting", None), ("act-region", 1), ("perlectio", 1)],
 )
-def test_a_record_of_another_configuration_is_refused(happy_tree, tmp_path, kind, n):
-    # The run tree binds every read to this run's configuration, the denominator's too.
+def test_the_run_tree_refuses_a_page_record_of_another_configuration(happy_tree, tmp_path, kind, n):
+    """A store test: the run tree refuses such a record on every read, before any counting.
+
+    The denominator reads its records only through the run tree, so it needs
+    no configuration check of its own.
+    """
     tree = _copy(happy_tree, tmp_path)
+    path, record = _one(tree[0], kind, 1, n)
+    record["config_digest"] = "0" * 64
+    _write(path, record)
     with pytest.raises(ContractError, match="produced under configuration '0000"):
-        _forge(tree[0], kind, 1, n, lambda record: record.update(config_digest="0" * 64))
-        reading_acts(_context(tree))
+        RunTree(tree[0], RUN_ID).read_artifact(PERLECTOR, kind, record["artifact_id"])
 
 
 @pytest.mark.parametrize(
