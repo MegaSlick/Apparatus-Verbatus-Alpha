@@ -122,6 +122,11 @@ from .process import SubprocessLauncher
 from .residency import FileResidencyLease
 from .smoke import VisionSmokeCall
 
+# One sampling row, sent by the smoke for these tests' chairs and by requests
+# that exercise the handle below the smoke.
+SAMPLING = {"temperature": 0.0, "top_p": 0.1}
+CHAIR_SAMPLING = {"reader": SAMPLING, "perlector": SAMPLING}
+
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 TIER = "generic-48gb"
 REVISION = "a" * 40
@@ -790,6 +795,7 @@ def vision_smoke() -> VisionSmokeCall:
     return VisionSmokeCall(
         PAGE_WITNESS,
         utilization=lambda: (UtilizationSample("71", "31"),),
+        chair_sampling=CHAIR_SAMPLING,
     )
 
 
@@ -978,7 +984,11 @@ def test_start_proves_exact_model_answer_then_publishes_and_stops(tmp_path: Path
     assert published_profile["tier"] == TIER
     assert registry.refusals == []
 
-    result = handle.request("chat-completions", {"messages": [{"role": "user", "content": "read"}]})
+    result = handle.request(
+        "chat-completions",
+        {"messages": [{"role": "user", "content": "read"}]},
+        sampling=SAMPLING,
+    )
     assert result.model_id == "reader-api"
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
@@ -3639,6 +3649,7 @@ def test_serving_smoke_reader_uses_the_owned_service_and_always_stops(tmp_path: 
             "chat-completions",
             fixture_image_payload(supplied_fixture),
             fixture=supplied_fixture,
+            sampling=SAMPLING,
         )
         seen.extend(answer.outputs)
         return SmokeResult(
@@ -4037,11 +4048,16 @@ def test_vision_smoke_retains_exact_exchange_for_a_parsed_format_invalid_answer(
     result = VisionSmokeCall(
         PAGE_WITNESS,
         utilization=lambda: (UtilizationSample("71", "31"),),
+        chair_sampling=CHAIR_SAMPLING,
         raw_exchange_publisher=publish,
     )(handle, chair, fixture, smoke_placement())
 
     assert result.format_valid is False
     assert retained == wire
+    # The smoke reads the page under the chair's sealed row and the profile seed.
+    sent = json.loads(wire["request"])
+    assert {key: sent[key] for key in SAMPLING} == SAMPLING
+    assert sent["seed"] == handle.profile.seed
     assert (
         result.receipt["smoke_request_reference"]["sha256"]
         == hashlib.sha256(retained["request"]).hexdigest()
@@ -4052,6 +4068,18 @@ def test_vision_smoke_retains_exact_exchange_for_a_parsed_format_invalid_answer(
     )
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_refuses_a_chair_without_a_sealed_sampling_row(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, _, _, _ = reader_manager(tmp_path, chair=chair)
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+    with pytest.raises(ServingConfigurationError, match="no sealed sampling values for reader"):
+        VisionSmokeCall(PAGE_WITNESS)(handle, chair, fixture, smoke_placement())
+    assert handle.requests_completed == 0
+    handle.stop()
 
 
 def test_vision_smoke_parser_failure_names_retained_exchange_paths(
@@ -4089,6 +4117,7 @@ def test_vision_smoke_parser_failure_names_retained_exchange_paths(
     call = VisionSmokeCall(
         PAGE_WITNESS,
         utilization=lambda: (UtilizationSample("71", "31"),),
+        chair_sampling=CHAIR_SAMPLING,
         raw_exchange_publisher=publish,
     )
     with pytest.raises(smoke_module.SmokeExchangeRetainedError) as caught:
@@ -4293,7 +4322,11 @@ def test_vision_smoke_call_refuses_an_untyped_utilization_sample_tuple(tmp_path:
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
     handle = manager.start(chair, TIER)
-    call = VisionSmokeCall(PAGE_WITNESS, utilization=lambda: ("71",))  # type: ignore[arg-type]
+    call = VisionSmokeCall(
+        PAGE_WITNESS,
+        utilization=lambda: ("71",),  # type: ignore[arg-type]
+        chair_sampling=CHAIR_SAMPLING,
+    )
 
     with pytest.raises(ServingConfigurationError, match="tuple of UtilizationSample values"):
         call(handle, chair, fixture, smoke_placement())
@@ -4311,7 +4344,9 @@ def test_vision_smoke_call_bounds_utilization_evidence_for_one_request(tmp_path:
     write_golden_page(fixture)
     handle = manager.start(chair, TIER)
     sample = UtilizationSample("71", "31")
-    call = VisionSmokeCall(PAGE_WITNESS, utilization=lambda: (sample,) * 1_025)
+    call = VisionSmokeCall(
+        PAGE_WITNESS, utilization=lambda: (sample,) * 1_025, chair_sampling=CHAIR_SAMPLING
+    )
 
     with pytest.raises(ServingConfigurationError, match="more than 1024 samples"):
         call(handle, chair, fixture, smoke_placement())
@@ -4366,7 +4401,9 @@ def test_serving_smoke_reader_refuses_a_text_only_request_as_golden_page_evidenc
 
     def text_only(handle, *unused):  # type: ignore[no-untyped-def]
         handle.request(
-            "chat-completions", {"messages": [{"role": "user", "content": "not the page"}]}
+            "chat-completions",
+            {"messages": [{"role": "user", "content": "not the page"}]},
+            sampling=SAMPLING,
         )
         return SmokeResult(True, True, True, {"claimed": "green"}, ())
 
@@ -4424,6 +4461,7 @@ def test_fixture_request_refuses_image_bytes_from_another_local_page(tmp_path: P
             "chat-completions",
             fixture_image_payload(other_fixture),
             fixture=expected_fixture,
+            sampling=SAMPLING,
         )
     assert handle.requests_completed == 0
     handle.stop()
@@ -4445,7 +4483,9 @@ def test_fixture_request_refuses_an_image_hidden_outside_openai_chat_content(
     handle = manager.start(chair, TIER)
 
     with pytest.raises(ServingConfigurationError, match="active image_url content block"):
-        handle.request_fixture_image("chat-completions", hidden_image_payload, fixture=fixture)
+        handle.request_fixture_image(
+            "chat-completions", hidden_image_payload, fixture=fixture, sampling=SAMPLING
+        )
     assert handle.requests_completed == 0
     handle.stop()
 
@@ -4462,7 +4502,9 @@ def test_fixture_request_requires_an_openai_image_object_at_the_active_content_b
     handle = manager.start(chair, TIER)
 
     with pytest.raises(ServingConfigurationError, match="OpenAI image object"):
-        handle.request_fixture_image("chat-completions", malformed, fixture=fixture)
+        handle.request_fixture_image(
+            "chat-completions", malformed, fixture=fixture, sampling=SAMPLING
+        )
     assert handle.requests_completed == 0
     handle.stop()
 
@@ -4494,7 +4536,9 @@ def test_fixture_request_dispatches_the_same_payload_snapshot_it_validates(tmp_p
             return validated.items()
 
     handle = manager.start(chair, TIER)
-    handle.request_fixture_image("chat-completions", SwitchingMapping(), fixture=fixture)
+    handle.request_fixture_image(
+        "chat-completions", SwitchingMapping(), fixture=fixture, sampling=SAMPLING
+    )
     sent = [body for method, _, body in http.calls if method == "POST"][-1]
     assert sent is not None
     assert sent["messages"][0]["content"][0]["type"] == "image_url"  # type: ignore[index]
@@ -4519,9 +4563,13 @@ def test_serving_smoke_reader_refuses_green_result_after_a_later_text_request(
 
     def discarded_fixture_response(handle, *unused):  # type: ignore[no-untyped-def]
         answer = handle.request_fixture_image(
-            "chat-completions", fixture_image_payload(fixture), fixture=fixture
+            "chat-completions", fixture_image_payload(fixture), fixture=fixture, sampling=SAMPLING
         )
-        handle.request("chat-completions", {"messages": [{"role": "user", "content": "text only"}]})
+        handle.request(
+            "chat-completions",
+            {"messages": [{"role": "user", "content": "text only"}]},
+            sampling=SAMPLING,
+        )
         return SmokeResult(
             True,
             True,
@@ -4555,7 +4603,7 @@ def test_serving_smoke_reader_requires_the_exact_fixture_response_token(tmp_path
 
     def wrong_response_token(handle, *unused):  # type: ignore[no-untyped-def]
         handle.request_fixture_image(
-            "chat-completions", fixture_image_payload(fixture), fixture=fixture
+            "chat-completions", fixture_image_payload(fixture), fixture=fixture, sampling=SAMPLING
         )
         return SmokeResult(True, True, True, {"fixture_response_sha256": "0" * 64}, ())
 
@@ -4760,6 +4808,7 @@ def test_serving_smoke_reader_turns_an_invalid_page_result_into_existing_preflig
             "chat-completions",
             fixture_image_payload(supplied_fixture),
             fixture=supplied_fixture,
+            sampling=SAMPLING,
         )
         return SmokeResult(
             False,

@@ -305,10 +305,15 @@ class ServiceHandle:
     def endpoint(self) -> str:
         return self.profile.endpoint
 
-    def request(self, kind: str, payload: Mapping[str, object]) -> OpenAIResult:
-        """Issue one exact-model, non-streaming OpenAI-compatible request."""
+    def request(
+        self, kind: str, payload: Mapping[str, object], *, sampling: Mapping[str, int | float]
+    ) -> OpenAIResult:
+        """Issue one exact-model, non-streaming OpenAI-compatible request.
 
-        return self._manager.request(self, kind, payload)
+        ``sampling`` is the chair's sealed decoding row, sent with the profile seed.
+        """
+
+        return self._manager.request(self, kind, payload, sampling=sampling)
 
     def request_reading(self, kind: str, body_bytes: bytes, timeout_seconds: float) -> HttpResponse:
         """POST one already-built reading request and return the raw response.
@@ -363,13 +368,15 @@ class ServiceHandle:
         payload: Mapping[str, object],
         *,
         fixture: str | Path,
+        sampling: Mapping[str, int | float],
         exchange_observer: Callable[[bytes, HttpResponse], None] | None = None,
     ) -> OpenAIResult:
         """Request this service with the actual chat image from ``fixture``.
 
         The pod smoke uses this so a passing page read cannot be a text-only
         request. The image must sit in a ``role=user`` content block; a stray
-        field merely named ``image_url`` is refused.
+        field merely named ``image_url`` is refused. ``sampling`` is the chair's
+        sealed decoding row, so the smoke reads the page as the run will.
         """
 
         if kind != "chat-completions":
@@ -390,7 +397,7 @@ class ServiceHandle:
                 "golden-page request image bytes do not match its supplied local fixture"
             )
         result = self._manager.request(
-            self, kind, sealed_payload, exchange_observer=exchange_observer
+            self, kind, sealed_payload, sampling=sampling, exchange_observer=exchange_observer
         )
         self._fixture_requests_completed += 1
         self._last_fixture_request_sha256 = fixture_digest
@@ -703,9 +710,11 @@ class ServingManager:
         kind: str,
         payload: Mapping[str, object],
         *,
+        sampling: Mapping[str, int | float],
         exchange_observer: Callable[[bytes, HttpResponse], None] | None = None,
     ) -> OpenAIResult:
-        """Send a regular non-streaming request to the handle's exact served alias."""
+        """Send a regular non-streaming request to the handle's exact served alias,
+        under the chair's sealed sampling values and the profile seed."""
 
         self._require_active(handle)
         self._assert_process_live(handle.process)
@@ -714,6 +723,7 @@ class ServingManager:
             model_id=handle.profile.served_model_id,
             seed=handle.profile.seed,
             deterministic=False,
+            sampling=sampling,
         )
         response = self._post(handle.endpoint, kind, body, _INFERENCE_TIMEOUT_SECONDS)
         if exchange_observer is not None:

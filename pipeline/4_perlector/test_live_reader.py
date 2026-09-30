@@ -29,6 +29,7 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.cross_capture_autopsia import atomic_delivered_pixels, build_autopsia
+from common.decoding import variance_arm_seed
 from common.imaging import encode_grayscale_png
 from common.perlector_audit import (
     _rebuild_chair_request_bytes,
@@ -67,6 +68,7 @@ from operations.serving.fakes import (
     ScriptedAnswer,
     scripted_prompt_too_long,
     shipped_chair_decoding,
+    shipped_decoding_policy,
 )
 from operations.serving.http import request_body
 from operations.serving.manager import ServingManager
@@ -77,7 +79,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TIER = "generic-48gb"
 REVISION = "a" * 40
 MANIFEST = "b" * 64
-DECODING_SHA = "c" * 64
+DECODING_SHA = shipped_decoding_policy()[1]
 SERVED_MODEL_ID = "served-perlector"
 
 
@@ -192,7 +194,7 @@ def _built(tmp_path: Path, *, chair: ChairIdentity | None = None, **row_override
         tier=TIER,
         retain=blob_store.retain,
         decoding_config_sha256=DECODING_SHA,
-        chair_decoding=shipped_chair_decoding(chair.role),
+        decoding_policy=shipped_decoding_policy()[0],
         read_receipt=_read_receipt(chair),
     )
     return client, endpoint, blob_store, chair
@@ -419,8 +421,9 @@ def test_the_live_reader_reads_pass_kind_for_nothing_but_the_refusal_and_the_aud
     differently would make the witness-dependence instrument measure its own
     routing rather than the model). Every code line of `VLLMReader.read` that
     names `pass_kind` -- module and method prose excluded, since talking
-    about the rule is not applying it -- must be one of exactly two: the
-    closed-membership refusal, and the hand-off to `validate_audit_delivery`.
+    about the rule is not applying it -- must be one of exactly three: the
+    closed-membership refusal, the hand-off to `validate_audit_delivery`, and
+    naming the sampling-variance arm, which selects only that arm's sealed seed.
     """
     source = Path(live_reader.__file__).read_text(encoding="utf-8")
     module = ast.parse(source)
@@ -436,9 +439,10 @@ def test_the_live_reader_reads_pass_kind_for_nothing_but_the_refusal_and_the_aud
     # reading it. Every other statement in the body is fair game.
     body_lines = lines[read_method.body[0].lineno - 1 : read_method.end_lineno]
     matches = [line for line in body_lines if "pass_kind" in line]
-    assert len(matches) == 2, matches
+    assert len(matches) == 3, matches
     assert "not in PASS_KINDS" in matches[0]
     assert "pass_kind=pass_kind" in matches[1]
+    assert matches[2].strip() == ("variance_arm=pass_kind if pass_kind in VARIANCE_ARMS else None,")
     # The second line is the call's own `pass_kind=` keyword argument; the
     # call it belongs to is `validate_audit_delivery`'s, one line above it.
     call_line = body_lines[body_lines.index(matches[1]) - 1]
@@ -1313,6 +1317,34 @@ def test_max_tokens_always_rides_generation_sent(tmp_path: Path) -> None:
             "seed": 7,
         }
     )
+
+
+def test_the_two_variance_arms_are_one_request_drawn_under_two_sealed_seeds(
+    tmp_path: Path,
+) -> None:
+    """Lectio nuda and the lectio-prior draft send the same request; only the arm's
+    own sealed seed differs, so they are two draws rather than one."""
+    client, endpoint, _blobs, chair = _built(tmp_path)
+    region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
+    with client:
+        for pass_kind in ("lectio-prior", "lectio-nuda", "perlectio"):
+            endpoint.script(ScriptedAnswer(content="a", finish_reason="stop"))
+            _reader(client, chair).read(
+                _dossier(region_image=region_image, page_image=page_image),
+                pass_kind=pass_kind,
+                delivered_pixels=_delivered_pixels(
+                    region_image=region_image, page_image=page_image
+                ),
+            )
+    prior, nuda, perlectio = endpoint.requests
+    policy = shipped_decoding_policy()[0]
+    assert prior["seed"] == variance_arm_seed(policy, "lectio-prior")
+    assert nuda["seed"] == variance_arm_seed(policy, "lectio-nuda")
+    assert prior["seed"] != nuda["seed"]
+    assert perlectio["seed"] == 7
+    assert {key: value for key, value in prior.items() if key != "seed"} == {
+        key: value for key, value in nuda.items() if key != "seed"
+    }
 
 
 @pytest.mark.parametrize(

@@ -14,7 +14,9 @@ SERVING_CONFIG_INPUTS_FIELDS: Final = frozenset(
 )
 
 CHAIR_CALL_RECORD_SCHEMA_V1: Final = "chair-call-record.v1"
-CHAIR_CALL_RECORD_SCHEMA: Final = "chair-call-record.v2"
+# v3 adds `sampling_effective`: the values the pinned engine samples under for
+# the sampling fields `generation_sent` carries (`common.decoding`).
+CHAIR_CALL_RECORD_SCHEMA: Final = "chair-call-record.v3"
 CHAIR_CALL_RECORD_SCHEMAS: Final = frozenset(
     {CHAIR_CALL_RECORD_SCHEMA_V1, CHAIR_CALL_RECORD_SCHEMA}
 )
@@ -45,20 +47,22 @@ CHAIR_CALL_RECORD_FIELDS_V1: Final = frozenset(
         "capacity",
     }
 )
-CHAIR_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS_V1 | frozenset({"response_status"})
+CHAIR_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS_V1 | frozenset(
+    {"response_status", "sampling_effective"}
+)
 
 # Chandra native route only. The intent reference tells equal wire bodies at
 # retry ordinals 5..7 apart after a crash, so recovery never guesses.
-CHANDRA_NATIVE_CALL_RECORD_SCHEMA: Final = "chandra-native-call-record.v1"
+CHANDRA_NATIVE_CALL_RECORD_SCHEMA: Final = "chandra-native-call-record.v2"
 CHANDRA_NATIVE_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozenset(
     {"native_attempt_intent_ref"}
 )
-CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chandra-native-transport-failure.v1"
+CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chandra-native-transport-failure.v2"
 CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS: Final = (
     CHANDRA_NATIVE_CALL_RECORD_FIELDS | frozenset({"transport_problem"})
 )
 
-CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chair-transport-failure.v1"
+CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chair-transport-failure.v2"
 CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozenset(
     {"transport_problem"}
 )

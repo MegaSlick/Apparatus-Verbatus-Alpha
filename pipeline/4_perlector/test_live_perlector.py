@@ -39,7 +39,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
-from common.decoding import SAMPLING_FIELDS, chair_decoding, load_decoding_policy
+from common.decoding import SAMPLING_FIELDS, load_decoding_policy
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
 from common.sealed_config import read_sealed_toml
 from common.stage import StageContext
@@ -62,6 +62,7 @@ from operations.serving.fakes import (
     ScriptedAnswer,
     scripted_prompt_too_long,
     shipped_chair_decoding,
+    shipped_decoding_policy,
 )
 from operations.serving.http import EndpointUnavailable, HttpResponse
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
@@ -332,7 +333,7 @@ def _serving_factory(
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
-            chair_decoding=chair_decoding(decoding_policy, chair.role),
+            decoding_policy=decoding_policy,
             read_receipt=context.tree.read_run_receipt,
         )
 
@@ -596,7 +597,54 @@ def test_live_reproof_call_missing_generation_is_a_schema_refusal(live_run, tmp_
         policy_schema=draft["policy"]["schema"],
     )
     with pytest.raises(SchemaRefusal, match="no recorded generation object"):
-        perlector_audit._validate_live_reproof_request(tree, reading, malformed_evidence, request)
+        perlector_audit._validate_live_reproof_request(
+            tree, reading, malformed_evidence, request, shipped_decoding_policy()[0]
+        )
+
+
+def _first_live_reproof(root: Path):
+    """The first published reading whose audit carried a live re-proof call, with
+    its call evidence and the audit request that call answered."""
+    tree = RunTree(root, "r")
+    for reading in _published_readings(root):
+        finding_ref = reading["payload"]["audit"]["finding_ref"]
+        finding = json.loads(tree.read_bytes(finding_ref["relative_path"]))
+        call_evidence = finding["payload"]["reproof_call"]
+        if call_evidence is not None:
+            break
+    else:
+        raise AssertionError("the live builder produced no re-proof call")
+    draft_ref = reading["payload"]["audit"]["draft_ref"]
+    draft = json.loads(tree.read_bytes(draft_ref["relative_path"]))["payload"]
+    request = perlector_audit.audit_request(
+        act_key=draft["act_key"],
+        attempt_ordinal=draft["attempt_ordinal"],
+        draft_ref=draft_ref,
+        semi_final_text=draft["semi_final_text"],
+        flags=draft["flags"],
+        policy_schema=draft["policy"]["schema"],
+    )
+    return tree, reading, call_evidence, request
+
+
+def test_the_audit_rebuild_holds_a_reproof_call_to_the_sealed_perlector_row(
+    live_run, tmp_path, monkeypatch
+):
+    root, _catalogue = live_run
+    _run_perlector(
+        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+    )
+    tree, reading, call_evidence, request = _first_live_reproof(root)
+    policy = shipped_decoding_policy()[0]
+    # Positive control: the retained call verifies against the sealed row.
+    perlector_audit._validate_live_reproof_request(tree, reading, call_evidence, request, policy)
+    with pytest.raises(SchemaRefusal, match="without the run's sealed decoding policy"):
+        perlector_audit._validate_live_reproof_request(tree, reading, call_evidence, request, None)
+    # A policy whose Perlector row differs is not the one this call was sent under.
+    moved = copy.deepcopy(policy)
+    moved["chair_decoding"]["perlector"]["presence_penalty"] = 1.0
+    with pytest.raises(SchemaRefusal, match="sampling is off"):
+        perlector_audit._validate_live_reproof_request(tree, reading, call_evidence, request, moved)
 
 
 def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(

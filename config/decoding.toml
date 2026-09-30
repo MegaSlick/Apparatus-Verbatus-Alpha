@@ -13,18 +13,20 @@ reading_max_tokens = 4096
 reproof_max_tokens = 8192
 
 [variance_experiment]
-# A labelled experiment: every pass has its own identity; it is never a retry.
-label = "variance.v1"
+# Lectio nuda and the lectio-prior draft send the same request to measure the
+# Perlector's sampling variance, so each arm needs its own seed to be its own
+# draw. The arm at index i of `common.decoding.VARIANCE_ARMS` sends this seed
+# plus i, recorded on its call record; it is never a retry.
 seed = 20260820
-passes = 2
 
 [structure]
-# The Designator structure chair's coverage recovery. Its sampling values are
-# the chair's own row in `chair_decoding` below.
-# Coverage recovery changes only the manager-owned seed.  Attempt one keeps
-# the serving row's sealed base seed; later attempts add ordinal minus one.
-# This is a Designator structure policy, not Chandra's vendor retry ladder.
-recovery_seed_schedule = "base-plus-attempt-ordinal-minus-one"
+# The Designator structure chair's coverage recovery follows Chandra's own
+# retry schedule, the maker's recovery from a degenerate page: attempt one sends
+# the chair's row in `chair_decoding` below, and attempt n sends the pinned
+# recipe's request n (`chandra_native_inference`'s temperature and top_p), with
+# the serving row's seed on every attempt. Each attempt's values are recorded
+# on its call record and its structure-answer record.
+recovery_schedule = "chandra-native-retry"
 recovery_max_attempts = 3
 
 [chandra_native_inference]
@@ -45,8 +47,9 @@ error_backoff_seconds = [2, 4, 6, 8, 10, 12]
 
 # Each reading chair's sampling values, as the model's makers recommend them.
 # The serving client sends exactly these on every request of that chair, with
-# the manager-owned seed, and records both on each call record; no caller may
-# add or change a sampling field. A value absent here is not sent. `source` and
+# the manager-owned seed, and records both on each call record beside the values
+# the pinned engine samples under; no caller may add or change a sampling field.
+# `temperature` is required; another value absent here is not sent. `source` and
 # `revision` name where the values were read; `verification` says who read it.
 # Detection has no decoding and so has no row.
 
@@ -57,7 +60,7 @@ temperature = 0.0
 top_p = 0.1
 source = "https://github.com/datalab-to/chandra/blob/d4f7467435aa4137d9539f000ddf0b7ced3eb43f/chandra/model/vllm.py"
 revision = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
-verification = "verified from the pinned source (chandra-ocr 0.2.0)"
+verification = "read from the pinned source by the vendor-decoding session (Claude), and checked on every load to equal the first request of common/chandra_native_retry.py's port"
 
 [chair_decoding.attestator_1]
 # The same model and pipeline. A page read under `chandra_native_inference`
@@ -66,7 +69,7 @@ temperature = 0.0
 top_p = 0.1
 source = "https://github.com/datalab-to/chandra/blob/d4f7467435aa4137d9539f000ddf0b7ced3eb43f/chandra/model/vllm.py"
 revision = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
-verification = "verified from the pinned source (chandra-ocr 0.2.0)"
+verification = "read from the pinned source by the vendor-decoding session (Claude), and checked on every load to equal the first request of common/chandra_native_retry.py's port"
 
 [chair_decoding.attestator_2]
 # Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR. The model card gives no

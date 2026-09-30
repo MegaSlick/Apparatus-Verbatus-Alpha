@@ -17,6 +17,7 @@ thresholds per page because page fractions cannot be fixed pixels across scans.
 import dataclasses
 import sys
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -51,7 +52,11 @@ from common.contracts.stages import (  # noqa: E402
     INK_MAP,
     RECENSOR,
 )
-from common.decoding import load_decoding_policy, structure_recovery_policy  # noqa: E402
+from common.decoding import (  # noqa: E402
+    STRUCTURE_RECOVERY_SCHEDULE,
+    load_decoding_policy,
+    structure_recovery_policy,
+)
 from common.exemplar_boundary import (  # noqa: E402
     sealed_page_bytes,
     verify_exemplar_corpus_seal,
@@ -86,6 +91,7 @@ from common.stage import (  # noqa: E402
     validate_serving_provenance,
     verify_structure_attempt_call,
 )
+from operations.serving.assembly import stage_chair_client  # noqa: E402
 from operations.serving.client import ChairClient  # noqa: E402
 
 DESCRIPTION = "Designator: marks out the acts and cuts the crops. It establishes no text."
@@ -356,9 +362,9 @@ _STRUCTURE_ANSWER_UNPROPOSED_FIELDS = frozenset(
 _STRUCTURE_ANSWER_VENDOR_FIELDS = frozenset(
     {"repository", "commit", "licence", "prompt_source", "parser_source", "prompt_sha256"}
 )
-_STRUCTURE_ANSWER_DECODING_FIELDS = frozenset({"policy", "temperature", "decoding_config_sha256"})
+_STRUCTURE_ANSWER_DECODING_FIELDS = frozenset({"policy", "sampling", "decoding_config_sha256"})
 _STRUCTURE_ATTEMPT_REFERENCE_FIELDS = frozenset({"relative_path", "sha256"})
-_STRUCTURE_ATTEMPT_POLICY_FIELDS = frozenset({"max_attempts", "seed_schedule"})
+_STRUCTURE_ATTEMPT_POLICY_FIELDS = frozenset({"max_attempts", "sampling_schedule"})
 # Finding kinds from this pass and `common/chandra_layout.py`, declared
 # independently of the producer so the validator cannot agree by construction.
 # `data_bbox` appears only as a digest: this stage publishes no string the chair wrote.
@@ -417,14 +423,14 @@ def _validate_structure_answer_payload(payload: object, *, terminal: bool = True
     if (
         not is_plain_int(maximum)
         or not 1 <= maximum <= ABSOLUTE_STRUCTURE_ATTEMPT_CEILING
-        or policy["seed_schedule"] != "base-plus-attempt-ordinal-minus-one"
+        or policy["sampling_schedule"] != STRUCTURE_RECOVERY_SCHEDULE
     ):
         raise ContractError("a Designator structure answer has an invalid attempt policy")
     ordinal = record["attempt_ordinal"]
     if not is_plain_int(ordinal) or not 1 <= ordinal <= maximum:
         raise ContractError("a Designator structure attempt ordinal is outside the sealed range")
     if not is_plain_int(record["attempt_seed"]) or record["attempt_seed"] < 0:
-        raise ContractError("a Designator structure attempt has no non-negative derived seed")
+        raise ContractError("a Designator structure attempt has no non-negative seed")
     attempts = record["attempts"]
     expected_count = ordinal if terminal else ordinal - 1
     if not isinstance(attempts, list) or len(attempts) != expected_count:
@@ -2551,13 +2557,10 @@ def _published_structure_attempts(
             raise ContractError(
                 f"structure attempts for page {page_id} are not a contiguous sealed history"
             )
-        if result:
-            prior_seed = result[-1][0].record["attempt_seed"]
-            expected_seed = prior_seed + 1
-            if payload["attempt_seed"] != expected_seed:
-                raise ContractError(
-                    f"structure attempts for page {page_id} do not follow the sealed seed schedule"
-                )
+        if result and payload["attempt_seed"] != result[-1][0].record["attempt_seed"]:
+            raise ContractError(
+                f"structure attempts for page {page_id} do not share the serving row's seed"
+            )
         validate_serving_provenance(
             context, payload["provenance"], producer_stage=DESIGNATOR, require_receipt=True
         )
@@ -2710,8 +2713,8 @@ def _serve_unanswered_pages(
     page_cache: dict[int, dict],
     attempt_policy: Mapping[str, Any],
     identity: ChairIdentity,
+    decoding_policy: Mapping[str, Any],
     decoding_sha256: str,
-    temperature: object,
     serving_factory: Callable[[StageContext, ChairIdentity, str], ChairClient],
     tier: str,
 ) -> tuple[dict[int, structure_pass.PageAnswer], dict[int, dict[str, str]]]:
@@ -2754,7 +2757,7 @@ def _serve_unanswered_pages(
                         ordinal,
                         _read_checked_page_bytes(context, page_record),
                         page_cache[ordinal],
-                        temperature=temperature,
+                        decoding_policy=decoding_policy,
                         decoding_config_sha256=decoding_sha256,
                         provenance=provenance,
                         attempt_ordinal=len(history) + 1,
@@ -2787,13 +2790,20 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
 
     The live pass never reads context.fixture. Per page, the answer publishes
     before the status that cites it, then the crops; paid work survives resume.
+    ``serving_factory`` is a test's injected client factory; without one the
+    chair is read through ``stage_chair_client`` under the policy sealed here.
     """
     records, pages, padding, grouping_policy = _initial_pages_and_policies(context)
     # The sealed decoding posture is checked before any chair starts.
     decoding_policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
-    temperature = structure_pass.executable_temperature(decoding_policy)
     attempt_policy = structure_recovery_policy(decoding_policy)
+    if serving_factory is None:
+        serving_factory = partial(
+            stage_chair_client,
+            decoding_policy=decoding_policy,
+            decoding_config_sha256=decoding_sha256,
+        )
     identity = structure_pass.resolved_structure_chair(context)
     for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ANSWER_KIND):
         payload = row.get("payload")
@@ -2815,8 +2825,8 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
         page_cache,
         attempt_policy,
         identity,
+        decoding_policy,
         decoding_sha256,
-        temperature,
         serving_factory,
         tier,
     )
@@ -3252,7 +3262,8 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     """Run through the explicitly supplied structure-chair implementation.
 
     `serving_factory(context, identity, tier) -> ChairClient` is the live seam;
-    tests inject a fake, production gets `structure_pass.default_serving_factory`.
+    tests inject a fake, and production reads through `stage_chair_client` under
+    the decoding policy the live pass sealed.
     The sealed catalogue, not this seam, decides which pass runs.
     """
     args = stage_parser(DESCRIPTION).parse_args()
@@ -3283,13 +3294,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
                 )
             held = initial_pass(context)
         elif mode == "live":
-            held = live_initial_pass(
-                context,
-                structure_pass.default_serving_factory
-                if serving_factory is None
-                else serving_factory,
-                args.placement_tier,
-            )
+            held = live_initial_pass(context, serving_factory, args.placement_tier)
         else:  # pragma: no cover - serving_mode_for closes the vocabulary
             raise ContractError(f"unknown serving mode {mode!r} for the structure chair")
     else:

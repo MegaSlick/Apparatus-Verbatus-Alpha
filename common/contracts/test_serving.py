@@ -44,7 +44,7 @@ def test_serving_config_serializer_and_validators_share_one_contract() -> None:
 
 def test_chair_call_record_field_set_is_closed_and_exact() -> None:
     assert isinstance(CHAIR_CALL_RECORD_FIELDS, frozenset)
-    assert CHAIR_CALL_RECORD_SCHEMA == "chair-call-record.v2"
+    assert CHAIR_CALL_RECORD_SCHEMA == "chair-call-record.v3"
     assert CHAIR_CALL_RECORD_SCHEMA_V1 == "chair-call-record.v1"
     assert CHAIR_CALL_RECORD_SCHEMAS == frozenset(
         {CHAIR_CALL_RECORD_SCHEMA_V1, CHAIR_CALL_RECORD_SCHEMA}
@@ -73,10 +73,14 @@ def test_chair_call_record_field_set_is_closed_and_exact() -> None:
             "usage",
             "parse_problem",
             "capacity",
+            "sampling_effective",
         }
     )
-    assert CHAIR_CALL_RECORD_FIELDS == CHAIR_CALL_RECORD_FIELDS_V1 | {"response_status"}
-    assert CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA == "chair-transport-failure.v1"
+    assert CHAIR_CALL_RECORD_FIELDS == CHAIR_CALL_RECORD_FIELDS_V1 | {
+        "response_status",
+        "sampling_effective",
+    }
+    assert CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA == "chair-transport-failure.v2"
     assert CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS == CHAIR_CALL_RECORD_FIELDS | {"transport_problem"}
     assert CHAIR_TRANSPORT_PROBLEM_SCHEMA == "chair-transport-problem.v1"
     assert CHAIR_TRANSPORT_PROBLEM_FIELDS == {
@@ -88,11 +92,11 @@ def test_chair_call_record_field_set_is_closed_and_exact() -> None:
         "response_completion",
     }
 
-    assert CHANDRA_NATIVE_CALL_RECORD_SCHEMA == "chandra-native-call-record.v1"
+    assert CHANDRA_NATIVE_CALL_RECORD_SCHEMA == "chandra-native-call-record.v2"
     assert CHANDRA_NATIVE_CALL_RECORD_FIELDS == CHAIR_CALL_RECORD_FIELDS | {
         "native_attempt_intent_ref"
     }
-    assert CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA == "chandra-native-transport-failure.v1"
+    assert CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA == "chandra-native-transport-failure.v2"
     assert CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS == (
         CHANDRA_NATIVE_CALL_RECORD_FIELDS | {"transport_problem"}
     )

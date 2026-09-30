@@ -70,14 +70,14 @@ from operations.serving.fakes import (  # noqa: E402
     FakePublisher,
     FakeRegistry,
     ScriptedAnswer,
-    shipped_chair_decoding,
+    shipped_decoding_policy,
 )
 from operations.serving.manager import ServingManager  # noqa: E402
 from operations.serving.residency import FileResidencyLease  # noqa: E402
 
 REVISION = "a" * 40
 MANIFEST = "b" * 64
-DECODING_SHA = "c" * 64
+DECODING_SHA = shipped_decoding_policy()[1]
 TIER = "generic-48gb"
 REPO_ROOT = STAGE.parents[1]
 REAL_RECIPES = REPO_ROOT / "config" / "serving_recipes_real.toml"
@@ -1008,7 +1008,7 @@ def _world(tmp_path: Path, *, chair: ChairIdentity | None = None):
         tier=TIER,
         retain=blob_store.retain,
         decoding_config_sha256=DECODING_SHA,
-        chair_decoding=shipped_chair_decoding(chair.role),
+        decoding_policy=shipped_decoding_policy()[0],
         read_receipt=read_receipt,
     )
     return client, endpoint, blob_store

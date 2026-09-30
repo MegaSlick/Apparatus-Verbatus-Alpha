@@ -3209,6 +3209,7 @@ def _sealed_sibling_semi_finals(
     expected: list[dict[str, Any]],
     protocol_config: dict[str, Any] | None = None,
     protocol_sha256: str | None = None,
+    decoding_policy: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Read same-page sibling Perlectiones as immutable recovery context.
 
@@ -3281,6 +3282,7 @@ def _sealed_sibling_semi_finals(
             act_id,
             length_floor_characters_per_page=_sealed_length_floor(protocol_config),
             legible_page_pixels=_sealed_length_floor(protocol_config, protocol.LEGIBLE_PAGE_FIELD),
+            decoding_policy=decoding_policy,
         )
         draft_payload = chain["draft"]["payload"]
         finding_payload = chain["finding"]["payload"]
@@ -3367,6 +3369,7 @@ def _page_flags(
     recovery_act_id: str | None,
     protocol_config: dict[str, Any] | None = None,
     protocol_sha256: str | None = None,
+    decoding_policy: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     frozen = list(semi_finals)
     if recovery_act_id is not None:
@@ -3377,6 +3380,7 @@ def _page_flags(
                 expected=expected,
                 protocol_config=protocol_config,
                 protocol_sha256=protocol_sha256,
+                decoding_policy=decoding_policy,
             )
         )
     return audit.flags_once_per_page(frozen)
@@ -3955,7 +3959,9 @@ class _Pass:
     witness_context_table: Any
     protocol_config: dict[str, Any]
     protocol_sha256: str
-    # The sealed output bounds of a reading and of an audit re-proof.
+    # The sealed decoding policy, and from it the output bounds of a reading and
+    # of an audit re-proof.
+    decoding_policy: dict[str, Any]
     reading_max_tokens: int
     reproof_max_tokens: int
     nuda_approval: ApprovalRecordBinding | None
@@ -4067,6 +4073,7 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         witness_context_table=witness_context_table,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
+        decoding_policy=decoding_policy,
         reading_max_tokens=reading_max_tokens,
         reproof_max_tokens=reproof_max_tokens,
         nuda_approval=nuda_approval,
@@ -4656,6 +4663,7 @@ def _publish_audited_readings(run: _Pass, pending: list[dict[str, Any]]) -> None
         recovery_act_id=run.args.act,
         protocol_config=run.protocol_config,
         protocol_sha256=run.protocol_sha256,
+        decoding_policy=run.decoding_policy,
     )
     policy_record = audit.policy_record(run.audit_policy, run.audit_sha256)
     _in_order_window(
@@ -4825,6 +4833,7 @@ def _publish_audited_reading(
         act_id,
         length_floor_characters_per_page=_sealed_length_floor(run.protocol_config),
         legible_page_pixels=_sealed_length_floor(run.protocol_config, protocol.LEGIBLE_PAGE_FIELD),
+        decoding_policy=run.decoding_policy,
     )
     validate_reading_payload(
         payload,

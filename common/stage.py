@@ -89,8 +89,12 @@ from common.contracts.stages import (
 from common.corpus_register import read_snapshot, verify_snapshot_is_current
 from common.decoding import (
     DEFAULT_DECODING_CONFIG_PATH,
+    STRUCTURE_RECOVERY_SCHEDULE,
+    chair_attempt_decoding,
     load_decoding_policy,
+    recorded_sampling,
     structure_recovery_policy,
+    verify_call_sampling,
 )
 from common.durability import is_unpublished_blob_temporary
 from common.exemplar_boundary import read_sealed_page, verify_sealed_page_pixels
@@ -2408,8 +2412,8 @@ def _verify_structure_attempt_chain(
     ordinal = payload.get("attempt_ordinal")
     if (
         not isinstance(policy, Mapping)
-        or set(policy) != {"max_attempts", "seed_schedule"}
-        or policy.get("seed_schedule") != "base-plus-attempt-ordinal-minus-one"
+        or set(policy) != {"max_attempts", "sampling_schedule"}
+        or policy.get("sampling_schedule") != STRUCTURE_RECOVERY_SCHEDULE
         or not is_plain_int(policy.get("max_attempts"))
         or not 1 <= policy["max_attempts"] <= 3
         or not is_plain_int(ordinal)
@@ -2473,19 +2477,18 @@ def _verify_structure_attempt_chain(
             or attempt.get("attempt_policy") != policy
             or attempt.get("attempts") != prior
             or not is_plain_int(attempt.get("attempt_seed"))
-            or attempt.get("decoding") != payload.get("decoding")
+            or attempt.get("decoding")
+            != structure_attempt_decoding(decoding_policy, expected_ordinal, decoding_digest)
         ):
             raise FatalAccounting(
                 f"page {page_id}'s structure attempt {expected_ordinal} does not bind its "
-                "identity, page, policy, config, and prior history"
+                "identity, page, policy, sealed sampling values, and prior history"
             )
-        if attempts:
-            expected_seed = attempts[-1]["attempt_seed"] + 1
-            if attempt["attempt_seed"] != expected_seed:
-                raise FatalAccounting(
-                    f"page {page_id}'s structure attempt {expected_ordinal} violates its "
-                    "sealed seed schedule"
-                )
+        if attempts and attempt["attempt_seed"] != attempts[-1]["attempt_seed"]:
+            raise FatalAccounting(
+                f"page {page_id}'s structure attempt {expected_ordinal} does not keep the "
+                "serving row's seed"
+            )
         try:
             validate_serving_provenance(
                 context,
@@ -2504,6 +2507,7 @@ def _verify_structure_attempt_chain(
                 attempt,
                 page_id,
                 attempt_inputs=record.get("inputs"),
+                sealed_decoding=sealed_decoding,
             )
         except (SchemaRefusal, ContractError) as error:
             raise FatalAccounting(
@@ -2629,14 +2633,36 @@ def _structure_source_page(
     return source_ref, page_bytes, page_size
 
 
+def structure_attempt_decoding(
+    policy: Mapping[str, Any], attempt_ordinal: int, decoding_config_sha256: str
+) -> dict[str, Any]:
+    """The decoding block a structure attempt must carry: its sealed sampling values."""
+    return {
+        "policy": STRUCTURE_DECODING_POLICY,
+        "sampling": recorded_sampling(
+            chair_attempt_decoding(policy, DESIGNATOR_CHAIR, attempt_ordinal)
+        ),
+        "decoding_config_sha256": decoding_config_sha256,
+    }
+
+
+def sealed_decoding_policy(context: StageContext) -> tuple[dict[str, Any], str]:
+    """The run's decoding policy, refused unless it is the one the run sealed."""
+    policy, digest = load_decoding_policy(context.args.decoding_config)
+    context.require_sealed_config("decoding", digest)
+    return policy, digest
+
+
 def verify_structure_attempt_call(
     context: StageContext,
     payload: Mapping[str, Any],
     page_id: str,
     *,
     attempt_inputs: object = None,
+    sealed_decoding: tuple[Mapping[str, Any], str] | None = None,
 ) -> None:
-    """Bind one structure attempt to its retained response or transport call."""
+    """Bind one structure attempt to its retained response or transport call, and
+    both to the sealed sampling values of its attempt."""
     refuse_retired_structure_answer(
         payload.get("schema"),
         subject=f"structure attempt for page {page_id}",
@@ -2644,6 +2670,23 @@ def verify_structure_attempt_call(
     )
     if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
         raise ContractError(f"structure attempt for page {page_id} has no supported schema")
+    decoding_policy, decoding_digest = (
+        sealed_decoding_policy(context) if sealed_decoding is None else sealed_decoding
+    )
+    attempt_ordinal = payload.get("attempt_ordinal")
+    try:
+        expected_decoding = structure_attempt_decoding(
+            decoding_policy, attempt_ordinal, decoding_digest
+        )
+    except ContractError as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} names no sealed attempt: {error}"
+        ) from error
+    if payload.get("decoding") != expected_decoding:
+        raise ContractError(
+            f"structure attempt for page {page_id} records decoding other than its attempt's "
+            "sealed sampling values"
+        )
     presented = _verify_structure_request_image(context, payload, page_id, attempt_inputs)
     expected_image_sha256 = presented["image_sha256"]
     reference = payload.get("call_record_ref")
@@ -2700,7 +2743,6 @@ def verify_structure_attempt_call(
         or call.get("request_sha256") != payload.get("request_sha256")
         or not isinstance(generation_sent, Mapping)
         or generation_sent.get("seed") != payload.get("attempt_seed")
-        or generation_sent.get("temperature") != decoding.get("temperature")
         or call.get("receipt_ref") != payload.get("receipt_ref")
         or call.get("receipt_ref") != provenance.get("receipt_ref")
         or call_identity != provenance.get("resolved_identity")
@@ -2715,6 +2757,7 @@ def verify_structure_attempt_call(
         raise ContractError(
             f"structure attempt for page {page_id} disagrees with its retained call record"
         )
+    verify_call_sampling(call, decoding_policy, DESIGNATOR_CHAIR, attempt_ordinal=attempt_ordinal)
     if schema == CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA:
         problem = call.get("transport_problem")
         response_fields = (

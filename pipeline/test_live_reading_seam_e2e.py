@@ -94,7 +94,7 @@ from common.contracts.outcomes import (  # noqa: E402
 )
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA, STOP_REASON_UNREPORTED  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
-from common.decoding import chair_decoding, load_decoding_policy  # noqa: E402
+from common.decoding import load_decoding_policy  # noqa: E402
 from common.native_witness import reported_geometry_overlaps  # noqa: E402
 from common.perlector_audit import RESPONSE_SCHEMA as AUDIT_RESPONSE_SCHEMA  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
@@ -114,7 +114,7 @@ from operations.serving.fakes import (  # noqa: E402
     FakePackages,
     ScriptedAnswer,
     scripted_input_too_long,
-    shipped_chair_decoding,
+    shipped_decoding_policy,
 )
 from operations.serving.http import chat_image_bytes_all  # noqa: E402
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
@@ -661,7 +661,7 @@ class WitnessWorld:
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=self.decoding_sha256,
-            chair_decoding=shipped_chair_decoding(identity.role),
+            decoding_policy=shipped_decoding_policy()[0],
             # Bare, not through a converter: `ChairClient.__enter__` normalizes
             # the manager's read-only receipt reference itself.
             read_receipt=context.tree.read_run_receipt,
@@ -718,7 +718,7 @@ class ReaderWorld:
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
-            chair_decoding=chair_decoding(policy, identity.role),
+            decoding_policy=policy,
             read_receipt=context.tree.read_run_receipt,
         )
 

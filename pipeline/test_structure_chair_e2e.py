@@ -106,7 +106,11 @@ from common.contracts.identities import act_bindings  # noqa: E402
 from common.contracts.identities import verify as verify_identity  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
-from common.decoding import chair_decoding, load_decoding_policy  # noqa: E402
+from common.decoding import (  # noqa: E402
+    chair_decoding,
+    engine_effective_sampling,
+    load_decoding_policy,
+)
 from common.runtree.store import RECEIPTS_DIR, RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -233,7 +237,7 @@ def write_catalogue(path: Path, registry) -> Path:
 class StructureWorld:
     """A serving factory over one scripted endpoint for the structure chair.
 
-    Deliberately close to `structure_pass.default_serving_factory`: the same
+    Deliberately close to production's `stage_chair_client`: the same
     manager, the same real `StageContextReceiptPublisher`, the same
     `retain_chair_bytes` into the Designator's own blob area, the same receipt
     re-read through the tree. The launcher, the transport and the package
@@ -274,7 +278,7 @@ class StructureWorld:
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
-            chair_decoding=chair_decoding(policy, identity.role),
+            decoding_policy=policy,
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
         )
 
@@ -582,7 +586,7 @@ def test_the_sealed_structure_sampling_is_sent_and_recorded_on_every_call(marked
     """
     policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
     sampling = chair_decoding(policy, "designator_structure")
-    sealed = recorded_generation(sampling)["temperature"]
+    sealed = recorded_generation(sampling)
     endpoint = marked_out.world.endpoint
     assert endpoint is not None
     assert len(endpoint.requests) == 2
@@ -594,13 +598,14 @@ def test_the_sealed_structure_sampling_is_sent_and_recorded_on_every_call(marked
     for record in artifacts(marked_out.run_root, DESIGNATOR, STRUCTURE_ANSWER_KIND):
         decoding = record["payload"]["decoding"]
         assert decoding["policy"] == "structure"
-        assert decoding["temperature"] == sealed
+        assert decoding["sampling"] == sealed
         assert decoding["decoding_config_sha256"] == decoding_sha256
         call = json.loads(tree.read_bytes(record["payload"]["call_record_ref"]["relative_path"]))
         assert call["chair"] == "designator_structure"
         assert call["decoding_config_sha256"] == decoding_sha256
-        assert {key: call["generation_sent"][key] for key in sampling} == recorded_generation(
-            sampling
+        assert {key: call["generation_sent"][key] for key in sampling} == sealed
+        assert call["sampling_effective"] == recorded_generation(
+            engine_effective_sampling(sampling)
         )
         # The bytes the record names are the bytes the endpoint served.
         assert tree.read_bytes(record["payload"]["raw_response_ref"]["relative_path"]) in (

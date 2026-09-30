@@ -12,7 +12,7 @@ from typing import Any, Final, Mapping
 
 from common.contracts.canonical import is_sha256
 from common.contracts.envelope import validate_envelope, validate_input_refs
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, perlector_attempt_id
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
@@ -26,6 +26,7 @@ from common.contracts.serving import (
     CHAIR_TRANSPORT_PROBLEM_SCHEMA,
 )
 from common.contracts.stages import PERLECTOR
+from common.decoding import verify_call_sampling
 
 PRE_PERLECTIO_ARTIFACTS: Final = (
     ("lectio-prior", "lectio-prior"),
@@ -186,7 +187,7 @@ def validate_failed_perlectio(
 
     # Imported here to keep this small contract module outside stage startup's
     # import graph while still sharing the exact provenance validator.
-    from common.stage import validate_serving_provenance
+    from common.stage import sealed_decoding_policy, validate_serving_provenance
 
     identity = validate_serving_provenance(
         context, payload["provenance"], producer_stage=PERLECTOR, require_receipt=True
@@ -251,6 +252,10 @@ def validate_failed_perlectio(
             raise SchemaRefusal("a failed Perlectio chair call has malformed request facts")
         validate_input_refs([call["launch_audit_ref"]])
         _verify_ref(context, call["launch_audit_ref"], "serving launch audit")
+        try:
+            verify_call_sampling(call, sealed_decoding_policy(context)[0], "perlector")
+        except ContractError as error:
+            raise SchemaRefusal(f"a failed Perlectio chair call {error}") from error
         if (
             failure["kind"] == "transport"
             and call["schema"] != CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA

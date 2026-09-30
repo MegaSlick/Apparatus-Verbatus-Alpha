@@ -15,7 +15,6 @@ never a fallback in either direction.
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Callable, Mapping, Protocol, cast
@@ -44,7 +43,15 @@ from common.contracts.serving import (
     WIRE_DECIMAL_FIELDS,
     WIRE_DECIMAL_SCHEMA,
 )
-from common.decoding import SAMPLING_FIELDS
+from common.decoding import (
+    VARIANCE_ARMS,
+    chair_attempt_decoding,
+    chair_decoding,
+    engine_effective_sampling,
+    recorded_sampling,
+    variance_arm_seed,
+)
+from common.sealed_config import table_seal
 
 from .config import FixtureProfile, ServingProfile, ServingRecipes, UnsupportedProfile
 from .errors import (
@@ -64,10 +71,13 @@ from .http import (
 )
 from .manager import AdapterCalibration, ServiceHandle, ServingManager, _immutable_json_value
 
-# Never on the wire from a caller: these are the manager's and the sealed
-# decoding table's to set, not an adapter's or a stage's. A caller that names
-# one is refused before anything is built or sent.
-_FORBIDDEN_GENERATION_SENT_KEYS = frozenset({"model", "stream", "seed", "n"}) | SAMPLING_FIELDS
+# The only generation fields a caller's request may carry: the answer bound,
+# the chat-template switch (Chandra's and the Perlector's thinking flag) and
+# DAI's secondary stop id. Sampling values are the sealed decoding table's and
+# `model`, `stream`, `seed` and `n` the manager's; anything else is refused by
+# name before anything is built or sent, since the engine would silently ignore
+# a field it does not know.
+CALLER_GENERATION_FIELDS = frozenset({"max_tokens", "chat_template_kwargs", "stop_token_ids"})
 
 # One JSON serialization, used for both halves of the generation round-trip
 # check below, so the comparison is between two texts rather than between two
@@ -265,10 +275,17 @@ class ChairRequest:
     """One reading request, built by the caller and refused, never repaired.
 
     ``generation_declared`` is the adapter's carried view, retained verbatim
-    as evidence even though it is never sent; ``generation_sent`` is what
-    actually goes on the wire, and may never name ``model``, ``stream``,
-    ``temperature``, ``seed``, or ``n`` — those are the manager's and the
-    decoding policy's alone.
+    as evidence even though it is never sent; ``generation_sent`` is the
+    caller's part of the wire body, limited to ``CALLER_GENERATION_FIELDS``.
+    The client adds the chair's sealed sampling values and the seed, so a
+    caller never names a sampling field, ``model``, ``stream``, ``seed`` or
+    ``n``.
+
+    ``structure_attempt_ordinal`` is the Designator structure chair's coverage
+    recovery attempt, which selects that attempt's sealed sampling values;
+    ``variance_arm`` names the Perlector's sampling-variance arm, which selects
+    that arm's sealed seed. Each belongs to its one chair and is otherwise
+    ``None``.
 
     ``capacity`` is the caller's own
     ``common.request_capacity`` record for this request against the sealed row
@@ -295,7 +312,8 @@ class ChairRequest:
     generation_declared: Mapping[str, object]
     generation_sent: Mapping[str, object]
     capacity: Mapping[str, object] | None = None
-    structure_recovery_seed: int | None = None
+    structure_attempt_ordinal: int | None = None
+    variance_arm: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "messages", tuple(self.messages))
@@ -306,14 +324,19 @@ class ChairRequest:
             self, "generation_declared", MappingProxyType(dict(self.generation_declared))
         )
         object.__setattr__(self, "generation_sent", MappingProxyType(dict(self.generation_sent)))
-        if self.structure_recovery_seed is not None and (
-            not isinstance(self.structure_recovery_seed, int)
-            or isinstance(self.structure_recovery_seed, bool)
-            or self.structure_recovery_seed < 0
+        if self.structure_attempt_ordinal is not None and (
+            not isinstance(self.structure_attempt_ordinal, int)
+            or isinstance(self.structure_attempt_ordinal, bool)
+            or self.structure_attempt_ordinal < 1
         ):
             raise ChairRequestRefusal(
                 "CHAIR_REQUEST_INVALID",
-                "a Designator structure recovery seed must be a non-negative integer",
+                "a Designator structure attempt ordinal must be a positive integer",
+            )
+        if self.variance_arm is not None and self.variance_arm not in VARIANCE_ARMS:
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                f"variance arm {self.variance_arm!r} is not one of {list(VARIANCE_ARMS)}",
             )
 
 
@@ -359,6 +382,7 @@ class ChandraNativeDispatch:
     generation_sent: Mapping[str, object]
     generation_sent_record: Mapping[str, object]
     generation_declared_record: Mapping[str, object]
+    sampling_effective_record: Mapping[str, object]
     body: bytes
     request_sha256: str
 
@@ -368,10 +392,12 @@ class ChairClient:
 
     ``read_receipt`` is the tree's own receipt reader (production:
     ``context.tree.read_run_receipt``); the client never reads run-tree bytes
-    itself. ``chair_decoding`` is this chair's row of the sealed decoding table
-    (``common.decoding.chair_decoding``): it is checked once, at construction,
-    and sent unchanged on each request with the manager-owned seed, and both are
-    on every call record's ``generation_sent``.
+    itself. ``decoding_policy`` is the run's sealed decoding policy, checked at
+    construction against ``decoding_config_sha256``; the client selects its
+    chair's row by its own ``identity.role`` and sends it unchanged on each
+    request with the manager-owned seed. Both are on every call record's
+    ``generation_sent``, and ``sampling_effective`` beside them holds what the
+    pinned engine samples under (``common.decoding.engine_effective_sampling``).
 
     The seed makes a sampled reading repeatable where the engine allows: vLLM
     draws a seeded request's samples from that request's own generator, so the
@@ -389,36 +415,33 @@ class ChairClient:
         tier: str,
         retain: RetainBytes,
         decoding_config_sha256: str,
-        chair_decoding: Mapping[str, int | float],
+        decoding_policy: Mapping[str, object],
         read_receipt: Callable[[Mapping[str, str]], Mapping[str, object]],
         adapter_calibration: AdapterCalibration | None = None,
         chandra_native_policy: Mapping[str, object] | None = None,
     ) -> None:
-        if (
-            not isinstance(chair_decoding, Mapping)
-            or not set(chair_decoding) <= SAMPLING_FIELDS
-            or any(
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(value)
-                for value in chair_decoding.values()
-            )
-        ):
-            raise ServingConfigurationError(
-                "ChairClient requires the chair's sealed sampling values: finite numbers "
-                f"under {sorted(SAMPLING_FIELDS)}; the caller supplied "
-                f"chair_decoding={chair_decoding!r}"
-            )
         if not is_sha256(decoding_config_sha256):
             raise ServingConfigurationError(
                 "ChairClient requires the sealed decoding-policy digest as a lowercase SHA-256"
+            )
+        try:
+            policy = dict(decoding_policy)
+            chair_decoding(policy, identity.role)
+            seal = table_seal(policy, "decoding configuration")
+        except (ContractError, TypeError, ValueError) as error:
+            raise ServingConfigurationError(
+                f"ChairClient requires the run's sealed decoding policy: {error}"
+            ) from error
+        if seal != decoding_config_sha256:
+            raise ServingConfigurationError(
+                "ChairClient's decoding policy does not seal to the decoding digest it records"
             )
         self._manager = manager
         self._identity = identity
         self._tier = tier
         self._retain = retain
         self._decoding_config_sha256 = decoding_config_sha256
-        self._chair_decoding = dict(chair_decoding)
+        self._decoding_policy = policy
         self._read_receipt = read_receipt
         self._adapter_calibration = adapter_calibration
         self._chandra_native_policy = (
@@ -545,10 +568,10 @@ class ChairClient:
                 "CHAIR_REQUEST_INVALID", f"the sealed Chandra native recipe moved: {error}"
             ) from error
         _refuse_unbuildable_request(request)
-        if request.structure_recovery_seed is not None:
+        if request.structure_attempt_ordinal is not None or request.variance_arm is not None:
             raise ChairRequestRefusal(
                 "CHAIR_REQUEST_INVALID",
-                "a Chandra native witness request cannot carry a Designator recovery seed",
+                "a Chandra native witness request follows only its own recipe's attempts",
             )
         expected_wire = chandra_wire_fields()
         if request.generation_sent.get("chat_template_kwargs") != expected_wire[
@@ -572,7 +595,8 @@ class ChairClient:
                 "a Chandra native request does not declare the pinned upstream output bound",
             )
         declared = attempt_parameters(attempt_ordinal)
-        sent = {**request.generation_sent, **wire_parameters(attempt_ordinal)}
+        sampling = wire_parameters(attempt_ordinal)
+        sent = {**request.generation_sent, **sampling}
         sent_record = _recorded_generation(sent)
         declared_record = _recorded_generation(request.generation_declared)
         _refuse_generation_that_cannot_be_recorded_as_sent(sent_record, sent, "generation_sent")
@@ -593,6 +617,10 @@ class ChairClient:
             generation_sent_record=cast(Mapping[str, object], _immutable_json_value(sent_record)),
             generation_declared_record=cast(
                 Mapping[str, object], _immutable_json_value(declared_record)
+            ),
+            sampling_effective_record=cast(
+                Mapping[str, object],
+                _immutable_json_value(recorded_sampling(engine_effective_sampling(sampling))),
             ),
             body=body,
             request_sha256=digest_bytes(body),
@@ -629,6 +657,33 @@ class ChairClient:
             native_intent_ref=dict(intent_ref),
         )
 
+    def _sampling_and_seed(self, request: ChairRequest) -> tuple[dict[str, int | float], int]:
+        """This request's sealed sampling values and seed, chosen by this client's chair."""
+
+        role = self._identity.role
+        if request.structure_attempt_ordinal is not None and role != "designator_structure":
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "only the Designator structure chair has coverage recovery attempts",
+            )
+        if request.variance_arm is not None and role != "perlector":
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "only the Perlector reads the sampling-variance arms",
+            )
+        try:
+            sampling = chair_attempt_decoding(
+                self._decoding_policy, role, request.structure_attempt_ordinal or 1
+            )
+            seed = (
+                self.handle.profile.seed
+                if request.variance_arm is None
+                else variance_arm_seed(self._decoding_policy, request.variance_arm)
+            )
+        except ContractError as error:
+            raise ChairRequestRefusal("CHAIR_REQUEST_INVALID", str(error)) from error
+        return sampling, seed
+
     def _read(
         self,
         request: ChairRequest,
@@ -652,32 +707,20 @@ class ChairClient:
             _refuse_generation_that_cannot_be_recorded_as_sent(
                 generation_declared, request.generation_declared, "generation_declared"
             )
-            if (
-                request.structure_recovery_seed is not None
-                and self._identity.role != "designator_structure"
-            ):
-                raise ChairRequestRefusal(
-                    "CHAIR_REQUEST_INVALID",
-                    "only the Designator structure chair may override the manager seed for "
-                    "bounded structural coverage recovery",
-                )
-            actual_seed = (
-                handle.profile.seed
-                if request.structure_recovery_seed is None
-                else request.structure_recovery_seed
-            )
+            sampling, actual_seed = self._sampling_and_seed(request)
             actual_generation_sent = {
                 **request.generation_sent,
-                **self._chair_decoding,
+                **sampling,
                 "seed": actual_seed,
             }
             actual_generation_record = _recorded_generation(actual_generation_sent)
+            sampling_effective = recorded_sampling(engine_effective_sampling(sampling))
             body = request_body(
                 {**request.generation_sent, "messages": list(request.messages)},
                 model_id=handle.profile.served_model_id,
                 seed=actual_seed,
                 deterministic=False,
-                sampling=self._chair_decoding,
+                sampling=sampling,
             )
         else:
             if native_intent_ref is None:
@@ -686,6 +729,7 @@ class ChairClient:
                 )
             actual_generation_record = _plain_capacity(native_dispatch.generation_sent_record)
             generation_declared = _plain_capacity(native_dispatch.generation_declared_record)
+            sampling_effective = _plain_capacity(native_dispatch.sampling_effective_record)
             body = native_dispatch.body
         request_sha256 = (
             digest_bytes(body) if native_dispatch is None else native_dispatch.request_sha256
@@ -726,6 +770,7 @@ class ChairClient:
                 "image_sha256s": list(request.image_sha256s),
                 "generation_sent": actual_generation_record,
                 "generation_declared": generation_declared,
+                "sampling_effective": sampling_effective,
                 "raw_response_ref": None,
                 "response_sha256": None,
                 "response_status": None,
@@ -824,6 +869,7 @@ class ChairClient:
             "image_sha256s": list(request.image_sha256s),
             "generation_sent": actual_generation_record,
             "generation_declared": generation_declared,
+            "sampling_effective": sampling_effective,
             "raw_response_ref": dict(raw_response_ref),
             "response_sha256": raw_response_ref["sha256"],
             "response_status": response.status,
@@ -885,12 +931,13 @@ def _refuse_unbuildable_request(request: ChairRequest) -> None:
             "CHAIR_REQUEST_INVALID",
             f"reading kind {request.kind!r} is not supported; vision chairs are chat-completions only",
         )
-    forbidden = sorted(_FORBIDDEN_GENERATION_SENT_KEYS & set(request.generation_sent))
-    if forbidden:
+    refused = sorted(set(request.generation_sent) - CALLER_GENERATION_FIELDS)
+    if refused:
         raise ChairRequestRefusal(
             "CHAIR_REQUEST_INVALID",
-            f"generation_sent must not name {forbidden}; those fields are the manager's "
-            "and the sealed decoding table's to set",
+            f"generation_sent must not name {refused}; a caller may send only "
+            f"{sorted(CALLER_GENERATION_FIELDS)}, and sampling values are the sealed decoding "
+            "table's to set",
         )
     for field, view in (
         ("generation_sent", request.generation_sent),

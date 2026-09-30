@@ -51,10 +51,11 @@ both claims are "no rectangle was proposed" and tiling keeps the page covered
 rather than costing every act on it until reviewed.
 
 **Decoding** is the structure chair's row of `config/decoding.toml`'s
-`chair_decoding` table, which is Chandra's own first-request settings; the
-temperature is digest-checked and recorded on every page. Coverage recovery
-(`[structure]`) keeps those values and advances the seed by attempt ordinal
-from the serving profile's base seed.
+`chair_decoding` table, which is Chandra's own first-request settings. Coverage
+recovery (`[structure]`) follows Chandra's own retry schedule: attempt n sends
+the pinned recipe's request n, the maker's recovery from a degenerate page,
+under the serving profile's seed. Every attempt's sampling values and the
+decoding digest are recorded on its answer record and its call record.
 
 **No picker.** The chair proposes rectangles; the ink scan corroborates them
 and never overrides them; nothing here ranks, selects among, or repairs what
@@ -88,7 +89,7 @@ from common.contracts.envelope import verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
 from common.contracts.stages import DESIGNATOR
-from common.decoding import chair_decoding, load_decoding_policy
+from common.decoding import STRUCTURE_RECOVERY_SCHEDULE
 from common.imaging import Bounds, dimensions
 from common.native_witness import validate_presented, validate_presented_page_binding
 from common.request_capacity import (
@@ -104,14 +105,14 @@ from common.stage import (
     STRUCTURE_CALL_KIND,
     STRUCTURE_CALL_SCHEMA,
     STRUCTURE_DECODING_POLICY,
+    structure_attempt_decoding,
     validate_serving_provenance,
 )
-from operations.serving.assembly import bound_serving_recipes, stage_chair_client
+from operations.serving.assembly import bound_serving_recipes
 from operations.serving.client import (
     ChairClient,
     ChairRequest,
     ChairResponse,
-    recorded_generation,
     serving_mode_for,
 )
 from operations.serving.errors import ChairResponseRefusal, ChairTransportFailure, ServingError
@@ -275,12 +276,6 @@ def structure_serving_mode(context: Any, args: Any) -> tuple[str, ChairIdentity]
 # --- decoding -----------------------------------------------------------------
 
 
-def executable_temperature(policy: Mapping[str, Any]) -> object:
-    """The structure chair's sealed temperature, in the form its call record holds it."""
-    sampling = chair_decoding(policy, DESIGNATOR_CHAIR)
-    return recorded_generation({"temperature": sampling["temperature"]})["temperature"]
-
-
 def structure_engine_call(decoding_config_sha256: str) -> dict[str, str]:
     """The closed posture record `common/stage.py` verifies on every structural seal."""
     return {
@@ -318,22 +313,6 @@ def live_chair_record(
     }
     validate_serving_provenance(context, record, producer_stage=DESIGNATOR, require_receipt=True)
     return record
-
-
-# --- the production client --------------------------------------------------
-
-
-def default_serving_factory(context: Any, identity: ChairIdentity, tier: str) -> ChairClient:
-    """Build the client the live pass reads the structure chair through; tests inject
-    their own through `main(serving_factory=...)`."""
-    policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
-    return stage_chair_client(
-        context,
-        identity,
-        tier,
-        decoding_policy=policy,
-        decoding_config_sha256=decoding_sha256,
-    )
 
 
 # --- the request ----------------------------------------------------------------
@@ -444,8 +423,7 @@ def page_request(
     image_bytes: bytes,
     image_sha256: str,
     *,
-    temperature: object,
-    structure_recovery_seed: int | None = None,
+    attempt_ordinal: int = 1,
     capacity: Mapping[str, Any] | None = None,
 ) -> ChairRequest:
     """One whole-page structure request with Chandra's native presented PNG.
@@ -458,7 +436,8 @@ def page_request(
     12,384-token `MAX_OUTPUT_TOKENS` is sent only where the row leaves strictly
     more than that, otherwise nothing is sent and the engine bounds generation
     by `max_model_len` itself. No capacity record means no bound either, since
-    a bound is never sent on a guess.
+    a bound is never sent on a guess. `attempt_ordinal` selects the attempt's
+    sealed sampling values, which the client adds.
     """
     # One user turn, no system turn, carrying Chandra's own prompt bytes.
     (user,) = structure_prompt.messages()
@@ -488,7 +467,7 @@ def page_request(
             **chandra_wire_fields(),
         },
         capacity=capacity,
-        structure_recovery_seed=structure_recovery_seed,
+        structure_attempt_ordinal=attempt_ordinal,
     )
 
 
@@ -846,8 +825,7 @@ def _refused_page_answer(
     page_w: int,
     page_h: int,
     capacity: Mapping[str, Any],
-    temperature: object,
-    decoding_config_sha256: str,
+    decoding: Mapping[str, Any],
     provenance: Mapping[str, Any],
     attempt_ordinal: int,
     attempt_seed: int,
@@ -892,11 +870,7 @@ def _refused_page_answer(
         "findings": [],
         "quantization": structure_answer.QUANTIZATION_RULE,
         "page_text_rule": structure_answer.PAGE_TEXT_RULE,
-        "decoding": {
-            "policy": STRUCTURE_DECODING_POLICY,
-            "temperature": temperature,
-            "decoding_config_sha256": decoding_config_sha256,
-        },
+        "decoding": dict(decoding),
         "provenance": dict(provenance),
         "capacity": dict(capacity),
         "attempt_ordinal": attempt_ordinal,
@@ -922,8 +896,7 @@ def _failed_call_page_answer(
     page_w: int,
     page_h: int,
     capacity: Mapping[str, Any],
-    temperature: object,
-    decoding_config_sha256: str,
+    decoding: Mapping[str, Any],
     provenance: Mapping[str, Any],
     attempt_ordinal: int,
     attempt_seed: int,
@@ -965,11 +938,7 @@ def _failed_call_page_answer(
         "findings": [],
         "quantization": structure_answer.QUANTIZATION_RULE,
         "page_text_rule": structure_answer.PAGE_TEXT_RULE,
-        "decoding": {
-            "policy": STRUCTURE_DECODING_POLICY,
-            "temperature": temperature,
-            "decoding_config_sha256": decoding_config_sha256,
-        },
+        "decoding": dict(decoding),
         "provenance": dict(provenance),
         "capacity": dict(capacity),
         "attempt_ordinal": attempt_ordinal,
@@ -1042,7 +1011,7 @@ def ask_page(
     page_bytes: bytes,
     analysis: Mapping[str, Any],
     *,
-    temperature: object,
+    decoding_policy: Mapping[str, Any],
     decoding_config_sha256: str,
     provenance: Mapping[str, Any],
     attempt_ordinal: int = 1,
@@ -1073,10 +1042,13 @@ def ask_page(
         or not 1 <= attempt_ordinal <= attempt_policy.get("max_attempts", 0)
     ):
         raise ContractError("structure attempt ordinal must be a positive integer")
-    schedule = attempt_policy.get("seed_schedule")
-    if schedule != "base-plus-attempt-ordinal-minus-one":
-        raise ContractError(f"unsupported structure recovery seed schedule {schedule!r}")
-    attempt_seed = client.handle.profile.seed + attempt_ordinal - 1
+    schedule = attempt_policy.get("sampling_schedule")
+    if schedule != STRUCTURE_RECOVERY_SCHEDULE:
+        raise ContractError(f"unsupported structure recovery schedule {schedule!r}")
+    # Every attempt runs under the serving row's seed; what recovers is the
+    # attempt's own sampling values.
+    attempt_seed = client.handle.profile.seed
+    decoding = structure_attempt_decoding(decoding_policy, attempt_ordinal, decoding_config_sha256)
     request_image, presented, presentation_ref = prepare_page_request_image(
         context, page_record, page_bytes, page_w, page_h
     )
@@ -1094,8 +1066,7 @@ def ask_page(
             page_w=page_w,
             page_h=page_h,
             capacity=capacity,
-            temperature=temperature,
-            decoding_config_sha256=decoding_config_sha256,
+            decoding=decoding,
             provenance=provenance,
             attempt_ordinal=attempt_ordinal,
             attempt_seed=attempt_seed,
@@ -1105,9 +1076,8 @@ def ask_page(
     request = page_request(
         request_image,
         presented["image_sha256"],
-        temperature=temperature,
+        attempt_ordinal=attempt_ordinal,
         capacity=capacity,
-        structure_recovery_seed=attempt_seed if attempt_ordinal > 1 else None,
     )
     try:
         response: ChairResponse = client.read(request)
@@ -1125,8 +1095,7 @@ def ask_page(
                 page_w=page_w,
                 page_h=page_h,
                 capacity=capacity,
-                temperature=temperature,
-                decoding_config_sha256=decoding_config_sha256,
+                decoding=decoding,
                 provenance=provenance,
                 attempt_ordinal=attempt_ordinal,
                 attempt_seed=attempt_seed,
@@ -1258,11 +1227,7 @@ def ask_page(
         # falsely tell every stored record that it had moved.
         "quantization": structure_answer.QUANTIZATION_RULE,
         "page_text_rule": structure_answer.PAGE_TEXT_RULE,
-        "decoding": {
-            "policy": STRUCTURE_DECODING_POLICY,
-            "temperature": temperature,
-            "decoding_config_sha256": decoding_config_sha256,
-        },
+        "decoding": dict(decoding),
         "provenance": dict(provenance),
         "capacity": capacity,
         "attempt_ordinal": attempt_ordinal,

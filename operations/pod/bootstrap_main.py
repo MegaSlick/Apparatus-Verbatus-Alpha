@@ -118,6 +118,7 @@ from common.credentials import (
     argv_credential_piece,
     looks_like_credential_field,
 )
+from common.decoding import READING_CHAIRS, chair_decoding, load_decoding_policy
 from common.sealed_config import parse_sealed_toml
 from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH
 from common.witness_context import validate_witness_context_configuration
@@ -1218,10 +1219,21 @@ def _build_preflight(
         probe = chosen.gpu_probe or SystemGpuProbe(disk_path=plan.volume_mount_path)
         profile = probe.profile(PREFLIGHT_DTYPE, expected_gpu_count=REQUESTED_GPU_COUNT)
         fixture, witness, page_bytes_at_render = _golden_page(plan, chosen)
+        try:
+            decoding_policy, _decoding_sha256 = load_decoding_policy()
+        except ContractError as error:
+            raise BootstrapStepFailure(
+                BootstrapStep.PREFLIGHT,
+                f"the decoding policy could not be read: {error}",
+                "Restore the reviewed decoding policy at the pinned commit, then resume.",
+            ) from error
         smoke_call = VisionSmokeCall(
             witness,
             utilization=chosen.utilization or NvidiaSmiUtilization(),
             raw_exchange_publisher=publisher.publish_smoke_exchange,
+            chair_sampling={
+                chair: chair_decoding(decoding_policy, chair) for chair in READING_CHAIRS
+            },
         )
         witness_reference = publisher.publish_page_witness(witness)
         smoke_call = replace(smoke_call, page_witness_reference=witness_reference)

@@ -62,7 +62,13 @@ from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import attempt_id
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
-from common.decoding import chair_decoding, load_decoding_policy, structure_recovery_policy
+from common.decoding import (
+    chair_decoding,
+    engine_effective_sampling,
+    load_decoding_policy,
+    recorded_sampling,
+    structure_recovery_policy,
+)
 from common.imaging import dimensions
 from common.runtree.store import RunTree
 from common.stage import (
@@ -84,7 +90,6 @@ from common.stage import (
     validate_serving_provenance,
 )
 from common.stage import _verify_structure_attempt_chain as real_verify_structure_attempt_chain
-from operations.serving.client import recorded_generation
 from operations.submit import gate, submit
 
 
@@ -325,6 +330,7 @@ class _StructureDesignator:
             "finish_reason": "stop",
             "usage": None,
             "parse_problem": None,
+            "sampling_effective": {},
         }
         record.update(changes)
         return record
@@ -395,16 +401,15 @@ class _StructureDesignator:
         )
         presentation_ref = self.context.input_ref(presentation.relative_path)
         decoding_policy, _ = load_decoding_policy()
-        temperature = recorded_generation(
-            {"temperature": chair_decoding(decoding_policy, DESIGNATOR_CHAIR)["temperature"]}
-        )["temperature"]
+        sampling = chair_decoding(decoding_policy, DESIGNATOR_CHAIR)
         capacity = {"images": [{"width": target[0], "height": target[1]}]}
         raw_ref = self.context.retain(b"{}")
         record = (
             self.call_record(
                 request_sha256="a" * 64,
                 image_sha256s=[image_ref["sha256"]],
-                generation_sent={"seed": 0, "temperature": temperature},
+                generation_sent={"seed": 0, **recorded_sampling(sampling)},
+                sampling_effective=recorded_sampling(engine_effective_sampling(sampling)),
                 raw_response_ref=raw_ref,
                 response_sha256=raw_ref["sha256"],
                 response_status=200,
@@ -466,7 +471,7 @@ class _StructureDesignator:
             "page_text_rule": "fixture",
             "decoding": {
                 "policy": STRUCTURE_DECODING_POLICY,
-                "temperature": temperature,
+                "sampling": recorded_sampling(sampling),
                 "decoding_config_sha256": self.decoding_sha256,
             },
             "provenance": answer_provenance,

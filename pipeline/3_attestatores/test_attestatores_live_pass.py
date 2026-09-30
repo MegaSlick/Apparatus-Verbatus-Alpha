@@ -79,7 +79,7 @@ from operations.serving.fakes import (  # noqa: E402
     FakeRegistry,
     ScriptedAnswer,
     scripted_prompt_too_long,
-    shipped_chair_decoding,
+    shipped_decoding_policy,
 )
 from operations.serving.manager import (  # noqa: E402
     ServingManager,
@@ -506,7 +506,7 @@ class LiveWorld:
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=self.live_run.decoding_sha256,
-            chair_decoding=shipped_chair_decoding(identity.role),
+            decoding_policy=shipped_decoding_policy()[0],
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
             chandra_native_policy=recipe_record(),
         )
@@ -2141,8 +2141,8 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
         identity=identity,
         tier=TIER,
         retain=blob_store.retain,
-        decoding_config_sha256="c" * 64,
-        chair_decoding=shipped_chair_decoding(identity.role),
+        decoding_config_sha256=shipped_decoding_policy()[1],
+        decoding_policy=shipped_decoding_policy()[0],
         read_receipt=lambda reference: {
             "chair": identity.role,
             "source": identity.source,
@@ -2181,7 +2181,9 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
     assert posted["temperature"] == declared["temperature"]
 
 
-def test_the_default_serving_factory_binds_the_run_that_will_record_the_reading(live_run, tmp_path):
+def test_the_production_serving_factory_binds_the_run_that_will_record_the_reading(
+    live_run, tmp_path
+):
     """Construction only: the registry, receipts and catalogue are the run's own.
 
     Nothing here starts a process or opens a socket -- building a `ChairClient`
@@ -2192,7 +2194,10 @@ def test_the_default_serving_factory_binds_the_run_that_will_record_the_reading(
     context = open_live_context(live_run, run_root)
     identity = context.registry.resolve("attestator_3")
 
-    client = attestatores.default_serving_factory(context, identity, TIER)
+    policy, decoding_sha256 = load_decoding_policy(ROOT / "config" / "decoding.toml")
+    client = attestatores.production_serving_factory(policy, decoding_sha256)(
+        context, identity, TIER
+    )
 
     assert isinstance(client, ChairClient)
     # Reaching into the client for its manager: the whole claim of this test is

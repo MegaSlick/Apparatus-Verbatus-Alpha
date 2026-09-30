@@ -11,11 +11,14 @@ reads its truncation classification -- is unchanged by which reader answered.
 docstring on ``reader.py`` explains why: ``lectio-nuda`` and ``lectio-prior``
 are built from identical dossier arguments and carry the same
 ``dossier_digest`` and ``rendered_sha256``, so a reader that let its
-generation vary with the label rather than the evidence would make
+request vary with the label rather than the evidence would make
 the witness-dependence contrast measure the pipeline's own routing instead of the
-model. ``read`` below reads ``pass_kind`` in exactly two places: the closed
-membership check, and the delivery hand-off to ``validate_audit_delivery``.
-Nothing else in this module ever inspects it.
+model. ``read`` below reads ``pass_kind`` in exactly three places: the closed
+membership check, the delivery hand-off to ``validate_audit_delivery``, and
+naming the sampling-variance arm, whose only effect is the arm's own sealed
+seed (``common.decoding.variance_arm_seed``), recorded on its call record. The
+two arms are the same request drawn twice; under one seed they would be one
+draw. Nothing else in this module ever inspects it.
 The output bound follows the same rule: a reading's bound is one value for every
 reading kind, and only a delivered re-proof instrument selects the re-proof's own.
 
@@ -71,6 +74,7 @@ from common.chairs.models import ChairIdentity
 from common.contracts.errors import ContractError
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
 from common.cross_capture_autopsia import presented_image_sha256s
+from common.decoding import VARIANCE_ARMS
 from common.perlector_audit import render_reproof_instruction
 from common.request_capacity import (
     act_answer_budget,
@@ -415,6 +419,7 @@ class VLLMReader:
                 "max_tokens": max_tokens,
             },
             capacity=capacity,
+            variance_arm=pass_kind if pass_kind in VARIANCE_ARMS else None,
         )
         response = self._client.read(request)
 
