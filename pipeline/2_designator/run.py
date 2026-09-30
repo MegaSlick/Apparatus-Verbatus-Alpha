@@ -55,12 +55,14 @@ from common.contracts.stages import (  # noqa: E402
 )
 from common.decoding import load_decoding_policy, structure_recovery_policy  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
+    cut_exemplar_crop,
+    exemplar_crop_transform,
     sealed_page_bytes,
     verify_exemplar_corpus_seal,
     verify_sealed_page_pixels,
 )
 from common.fixture_identity import act_bounds, act_identity, page_identity  # noqa: E402
-from common.imaging import crop_png, dimensions, grayscale_rows  # noqa: E402
+from common.imaging import dimensions, grayscale_rows  # noqa: E402
 from common.recovery import FALLBACK_RECROP  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
@@ -858,32 +860,13 @@ def sealed_pages(records: dict[int, dict]) -> dict[int, dict]:
     }
 
 
-def _crop_transform(page_ordinal: int, page_id: str, bounds: dict) -> dict:
-    """The one construction of a crop transform, as `verify_exemplar_crop_lineage` reads it.
-
-    Region identity derives from this shape and `recovery_pass` predicts identities
-    with it, so a second copy would silently disable the duplicate-recrop check.
-    """
-    return {
-        "operation": "crop",
-        "source_page_ordinal": page_ordinal,
-        "source_page_id": page_id,
-        "bounds": bounds,
-    }
-
-
 def _stored_crop(
     context, page_bytes: bytes, page_ordinal: int, page_record: dict, final_bounds: dict
 ) -> dict:
     """Cut and store one crop, returned as the payload fields that describe it."""
-    transform = _crop_transform(page_ordinal, page_record["subject_id"], final_bounds)
-    stored = context.retain(crop_png(page_bytes, final_bounds))
-    return {
-        "transform": transform,
-        "transform_digest": geometry.transform_digest(transform),
-        "image_path": stored["relative_path"],
-        "image_sha256": stored["sha256"],
-    }
+    return cut_exemplar_crop(
+        context.retain, page_bytes, page_ordinal, page_record["subject_id"], final_bounds
+    )
 
 
 def cut_region(
@@ -3492,7 +3475,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             page_h,
         )
     # The same builder `cut_region` uses, so the predicted identity matches.
-    transform = _crop_transform(page_ordinal, page_record["subject_id"], bounds)
+    transform = exemplar_crop_transform(page_ordinal, page_record["subject_id"], bounds)
     duplicate = region_id(act_id, transform)
     existing_regions = _regions_of(context, act_id)
     already_recovered = [
