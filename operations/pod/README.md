@@ -286,7 +286,8 @@ bootstrap checked and measured, and `--data-gate-policy` inside the repository. 
 
 It refuses by name: no `--`; a `--hold-only` plan; a report path that is the bootstrap's or
 lacks the launch token; a run root or submission outside the volume or missing; a policy
-outside the repository; a bad run id.
+outside the repository; a `--perlector-protocol-config` outside the repository or not a
+file; `--no-hold` under a launch token; a bad run id.
 
 **The data gate is asked first**, before a model is fetched on a billing card.
 `config/data_handling_policy.json` lists the pod volume's mount path (the
@@ -315,18 +316,21 @@ selection is the auto mode, which carries a held Recensor through to the Armariu
   run (every later selection or resume of that run must pass it too), recorded in the
   report, and proves no row.
 - **`--perlector-protocol-config <path>`**, inside the repository, is forwarded to the
-  orchestrator, which seals its bytes into the run; the report records it
+  orchestrator, which seals its bytes into the run's config digest, so every later
+  selection or resume of that run must name the same file; the report records it
   (`plan.perlector_protocol_config`, `null` for the orchestrator's default). Its
-  `reading_unit` picks the Perlector's act or page path.
+  `reading_unit` picks the Perlector's act or page path. pod_run checks only that it is a
+  file; the orchestrator parses it, after the bootstrap.
 - **`--no-hold`** is for a run started by hand, outside the pod timer
   ([the hand route](#the-hand-route-a-proof-run-started-by-hand)). After the final report
-  of a run whose orchestrator ran, whatever its outcome, it returns instead of holding and
-  moves the pod guard's deadline (`<volume>/.pod_guard/deadline-$RUNPOD_POD_ID`) to now, so
-  the guard deletes the pod on its next one-minute tick instead of after 30 idle minutes.
-  The report records the flag (`plan.no_hold`) and what happened (`guard_release`). A
-  refusal or a red bootstrap leaves the guard alone, so the pod stays through the idle
-  window for a fix and a rerun. Never use it under the pod timer, which reads the early
-  exit as `completed-early`.
+  of any run past a green bootstrap, whatever its outcome, it returns instead of holding
+  and moves this pod's guard deadline (`<volume>/.pod_guard/deadline-$RUNPOD_POD_ID`) to
+  now, so the guard deletes the pod on its next one-minute tick instead of after 30 idle
+  minutes. It only moves a deadline file the guard already wrote; with none, or no pod
+  id, `guard_release.released` is false and says why. The report records the flag
+  (`plan.no_hold`) and the release (`guard_release`). A refusal or a red bootstrap leaves
+  the guard alone, so the pod stays through the idle window for a fix and a rerun. It is
+  refused under a launch token: the pod timer reads the early exit as `completed-early`.
 
 **Without `--no-hold`, it holds only for a finished full run.** A selection ending before Armarium records
 `selection-complete` and returns at once so the pod timer closes the card. A held
@@ -545,8 +549,9 @@ serves every chair in turn.
    `nothing is stored under 'runs/s3-path-check/'`: the listing worked and the path is
    empty. Any other failure (credential, endpoint, datacenter) is fixed before renting.
    If an earlier run's tree is on the volume, fetch that run id instead for a full proof.
-3. Pick `<sha>`: a commit on `main` carrying this runbook, `pod_start_command.sh` and
-   `pod_run --no-hold`. The pod checks it out, and the guard is fetched at it.
+3. Pick `<sha>`: the full 40-character commit on `main` carrying this runbook,
+   `pod_start_command.sh` and `pod_run --no-hold`. The pod checks it out, and the guard is
+   fetched at it; a short hash arms the guard and then fails the bootstrap.
 
 ### Create the pod with its guard armed
 
@@ -574,25 +579,31 @@ run is doing, and an hour later the backstop deletes it even if the guard never 
 
 ```sh
 findmnt /workspace/private                  # the network volume, not a plain directory
-cat /workspace/private/.pod_guard/guard.log # "armed for pod <id>: deadline ..."
+tail /workspace/private/.pod_guard/guard.log # "armed for pod <id>: deadline ..."
 echo "$RUNPOD_POD_ID"                       # must print the pod id; --no-hold needs it
+cat /workspace/private/.pod_guard/deadline-$RUNPOD_POD_ID   # the guard's deadline, epoch seconds
 
 git clone https://github.com/MegaSlick/Apparatus-Verbatus-Alpha /opt/verbatus
 cd /opt/verbatus && git checkout --detach <sha>
 bash operations/pod/prepare_runtime.sh
-UV_CACHE_DIR=/var/tmp/uv-cache uv sync --frozen
+UV_CACHE_DIR=/tmp/verbatus-uv-cache uv sync --frozen
 ```
 
-If `RUNPOD_POD_ID` is empty in the SSH shell, `export RUNPOD_POD_ID=<pod id>` first.
+**No "armed for pod" line for this pod, or no deadline file: stop.** Only the backstop is
+watching, an hour after the window. Delete the pod now (`runpodctl pod delete <pod id>`),
+confirm it is gone, and find out why before renting again. If `RUNPOD_POD_ID` is empty in
+the SSH shell, `export RUNPOD_POD_ID=<pod id>` before these checks.
 Arm the guard's completion ping now if wanted ("Arming the ping" above).
 
 Then launch detached, so a dropped SSH session or a sleeping laptop cannot kill it. The
-hard deadline is taken from the guard's own, five minutes earlier:
+bootstrap requires a hard deadline; it is taken from the guard's own, and the launch line
+stops if the guard's deadline is missing:
 
 ```sh
 V=/workspace/private RUN=<run id> R=/opt/verbatus
-export VERBATUS_HARD_DEADLINE=$(date -u -d "@$(( $(cat $V/.pod_guard/deadline-$RUNPOD_POD_ID) - 300 ))" +%Y-%m-%dT%H:%M:%SZ)
-setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
+GUARD_DEADLINE=$(cat $V/.pod_guard/deadline-$RUNPOD_POD_ID) && [ -n "$GUARD_DEADLINE" ] &&
+export VERBATUS_HARD_DEADLINE=$(date -u -d "@$(( GUARD_DEADLINE - 300 ))" +%Y-%m-%dT%H:%M:%SZ) &&
+cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   --report-path $V/pod-run-report-$RUN.json \
   --run-id $RUN \
   --submission-folder $V/submission \
@@ -626,6 +637,11 @@ setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   `--keep-env HF_TOKEN` in the bootstrap half, never on the command line.
 - A refusal or a red bootstrap leaves the pod up until the guard's idle window (30
   minutes): read the report, fix, and launch again.
+- **Nothing stops the run before the guard's deadline.** Under `--no-hold` the hard
+  deadline only satisfies the bootstrap. If the window runs out mid-run, the guard deletes
+  the pod with the stage in flight: that stage's work is lost, the report still reads
+  `running`, and the transcript keeps only its head. Size `<hours>` with margin, and when
+  the lead approves more time, write the new deadline file before the old one passes.
 
 ### Watching it
 
@@ -638,12 +654,14 @@ tail -f $V/.pod_guard/guard.log
 ```
 
 A long quiet wait that is still wanted (no GPU, CPU or network use for 30 minutes)
-touches the keep-alive file above, or the guard deletes the pod. More time is the lead's
+touches the keep-alive file above, or the guard deletes the pod. Reads from the network
+volume may not show as network traffic inside the container, so a slow weight load at
+low CPU could look idle; how the guard reads such a phase is not yet observed. More time is the lead's
 decision and a new deadline file.
 
 **The hard-failure cap.** `config/hard_failure.toml` halts the run at the next stage
-boundary once more than two distinct subjects (acts or pages) carry a counted failure;
-the stage in flight finishes. It counts Door refusals for `corrupt` or `unreadable`
+boundary once more than two distinct (stage, subject) incidents carry a counted failure
+(one act failing at two stages counts twice); the stage in flight finishes. It counts Door refusals for `corrupt` or `unreadable`
 pages, Designator and Recensor `failed`, Archetypus `refused`, and Perlector `failed`.
 On the Perlector's **act** path (`reading_unit = "act"`, the committed default today) a
 reading that failed is `failed` and counts, once per act however often it is retried. On
@@ -819,7 +837,8 @@ the runtime report's `-terminating.json` breadcrumb are derived the same way.
 `verbatus fetch-run --launch-receipt <path>` derives every key except the transfer journal
 from the saved receipt's sealed `docker_start_cmd`.
 
-**Not records, deliberately not fetched:** `<volume>/store/` (weights),
+**Not records, deliberately not fetched:** the model store at `--store-root` (weights;
+`<volume>/model-store/` in Boot B and the hand route),
 `<volume>/submission/` and `<volume>/submission-manifest.json` (page images and their
 ledger, kept beside rather than inside the folder because the Door refuses pipeline records
 among source images), `<volume>/pod-transfer/` (transferred bytes), and any other upload

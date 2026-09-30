@@ -348,6 +348,9 @@ def test_a_topic_file_sends_one_notification_when_the_guard_deletes(pod, tmp_pat
     [notification] = lines(curl_calls)
     assert "-H Title: Pod guard" in notification
     assert "Pod testpod: its guard requested deletion (no GPU, CPU or network work" in notification
+    # ntfy's answer echoes the topic; it must not land in the guard log.
+    assert notification.endswith("-o /dev/null")
+    assert "guard-test-topic" not in log_of(state)
     # Assembled from pieces so the ingress check does not read a topic URL here.
     topic_url = "https://ntfy" + ".sh/" + "guard-test-topic"
     assert lines(tmp_path / "curl-configs.txt") == [f'url = "{topic_url}"']

@@ -7,9 +7,10 @@
 #
 # Uses RUNPOD_POD_ID and the pod-scoped RUNPOD_API_KEY that RunPod sets in every pod, and
 # keeps its deadline, keep-alive file and log in $POD_GUARD_DIR (default
-# /workspace/private/.pod_guard, on the network volume at the pod's mount path). To extend the deadline, write the new
-# epoch second to a temporary file and move it over deadline-<pod id>. Touching
-# keepalive-<pod id> counts as work at that moment: the idle limit then runs from the touch.
+# /workspace/private/.pod_guard, on the network volume at the pod's mount path). To extend
+# the deadline, write the new epoch second to a temporary file and move it over
+# deadline-<pod id>. Touching keepalive-<pod id> counts as work at that moment: the idle
+# limit then runs from the touch.
 set -u
 
 max_hours=${1:?usage: pod_guard.sh <max_hours> [idle_minutes]}
@@ -70,7 +71,8 @@ notify() {
   case $topic in '' | *[!A-Za-z0-9_-]*) return 0 ;; esac
   config=$(mktemp) || return 0
   printf 'url = "https://ntfy.sh/%s"\n' "$topic" >"$config"
-  limited curl -fsS --max-time 30 -K "$config" -H "Title: Pod guard" -d "$1"
+  # The response echoes the topic, a bearer secret, so it never reaches the log.
+  limited curl -fsS --max-time 30 -K "$config" -H "Title: Pod guard" -d "$1" -o /dev/null
   rm -f "$config"
 }
 

@@ -83,10 +83,10 @@ only here.
 ``--mechanics-qualification`` permits unproven rows for that run.
 
 **``--no-hold`` is for a run started by hand, outside the pod timer.**  After
-the final report of a run whose orchestrator ran, it returns instead of
-holding and moves the pod guard's deadline to now, so the guard deletes the
-pod within about a minute rather than after its idle window.  Under the pod
-timer the early exit reads as ``completed-early``.
+the final report of any run past a green bootstrap, it returns instead of
+holding and moves this pod's guard deadline to now, so the guard deletes the
+pod within about a minute rather than after its idle window.  It is refused
+under a launch token: the pod timer reads an early exit as ``completed-early``.
 
 **The data gate is checked before the bootstrap spends anything.**  The
 orchestrator's Door refuses a submission folder outside the policy's approved
@@ -165,7 +165,6 @@ DEFAULT_RUNS_DIRECTORY = "runs"
 # The pod guard's state directory on the volume (`pod_start_command.sh`); its
 # deadline file is keyed by the pod id the provider sets in the environment.
 POD_GUARD_DIRECTORY = ".pod_guard"
-POD_ID_ENV = POD_ID_ENVIRONMENT
 
 # The transcript's two bounds. The head is written to the volume as it arrives,
 # so a process killed mid-run still leaves the beginning of the run durable; the
@@ -1042,22 +1041,21 @@ def release_pod_guard(
     """
 
     if not pod_id or not all(character.isalnum() for character in pod_id):
-        return {"released": False, "detail": f"{POD_ID_ENV} is unset or not a pod id"}
-    directory = volume / POD_GUARD_DIRECTORY
-    path = directory / f"deadline-{pod_id}"
+        return {"released": False, "detail": f"{POD_ID_ENVIRONMENT} is unset or not a pod id"}
+    path = volume / POD_GUARD_DIRECTORY / f"deadline-{pod_id}"
     record: dict[str, object] = {"path": str(path)}
-    if not directory.is_dir():
+    # The guard writes this file when it arms; without it no guard is watching
+    # this pod, and a new file would be read only by the start command's backstop.
+    try:
+        current = int(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError) as error:
         return {
             **record,
             "released": False,
-            "detail": "no guard directory on the volume; the pod stays until its guard's "
-            "idle window or deadline",
+            "detail": f"no readable guard deadline for this pod ({type(error).__name__}); "
+            "delete the pod by hand",
         }
     stamp = int(now().timestamp())
-    try:
-        current = int(path.read_text(encoding="ascii").strip())
-    except (OSError, ValueError):
-        current = None
     if current is not None and current <= stamp:
         return {**record, "released": True, "deadline": current}
     try:
@@ -1300,7 +1298,7 @@ def main(
     # The token is read before `prepare` scrubs the environment: its own name
     # is credential-shaped and would be gone afterwards.
     launch_token = environment.get("VERBATUS_LAUNCH_TOKEN") or None
-    pod_id = environment.get(POD_ID_ENV) or None
+    pod_id = environment.get(POD_ID_ENVIRONMENT) or None
     try:
         bootstrap_plan, hard_deadline = bootstrap_main.prepare(bootstrap_argv, environment, now=now)
     except PlanRefusal as refusal:
@@ -1313,6 +1311,12 @@ def main(
         )
         args = build_parser().parse_flags(run_argv, run_report)
         plan = resolve_run_plan(args, bootstrap_plan, launch_token)
+        if plan.no_hold and launch_token:
+            raise RunRefusal(
+                "--no-hold is for a run started by hand; under a launch token the pod timer "
+                "reads its early exit as completed-early",
+                report_path=plan.report_path,
+            )
         if plan.stage is not None or plan.from_stage is not None:
             bootstrap_plan = replace(
                 bootstrap_plan, preflight_roles=tuple(sorted(plan.required_chairs()))
@@ -1503,9 +1507,9 @@ def main(
     holding = exit_code in _HOLD_AFTER_EXITS and not plan.ends_before_armarium and not plan.no_hold
     if plan.no_hold:
         hold_detail = (
-            f"the run ended {state}; --no-hold returns now and moves the pod guard's deadline "
-            "to now, so the guard deletes the pod. Every record is on the volume, which "
-            "outlives the pod"
+            f"the run ended {state}; --no-hold returns now and asks the pod guard to delete "
+            "the pod (guard_release says whether it could). Every record is on the volume, "
+            "which outlives the pod"
         )
     elif holding:
         hold_detail = (

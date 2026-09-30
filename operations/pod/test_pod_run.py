@@ -443,6 +443,8 @@ def _guard_deadline(ws: Workspace, value: int) -> Path:
         (0, EXIT_COMPLETE),
         (orchestrator.EXIT_HELD, EXIT_HELD),
         (orchestrator.EXIT_RUN_HALTED, EXIT_HALTED),
+        (pod_run.ORCHESTRATOR_FATAL, EXIT_FAILED),
+        (None, EXIT_FAILED),
     ],
 )
 def test_no_hold_returns_at_once_and_moves_the_guard_deadline_to_now(
@@ -455,11 +457,13 @@ def test_no_hold_returns_at_once_and_moves_the_guard_deadline_to_now(
 
     code = main(
         _run_argv(ws, extra=("--no-hold",)),
-        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENV: "pod123"}),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
         now=clock.now,
         sleeper=clock.sleep,
         actions_factory=lambda plan: PreflightedActions(),
-        runner=RecordedRunner(returncode=orchestrator_exit),
+        runner=RecordedRunner(
+            returncode=orchestrator_exit or 0, raise_oserror=orchestrator_exit is None
+        ),
     )
 
     assert code == expected_exit
@@ -475,6 +479,29 @@ def test_no_hold_returns_at_once_and_moves_the_guard_deadline_to_now(
     assert report["guard_release"] == {"path": str(deadline), "released": True, "deadline": now}
 
 
+def test_no_hold_is_refused_under_a_launch_token(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    ws.report_path = ws.volume / "bootstrap-report-launch-abc123.json"
+    ws.journal = ws.volume / "bootstrap-journal-launch-abc123.json"
+    clock = Clock()
+    runner = RecordedRunner()
+
+    code = main(
+        _run_argv(
+            ws, extra=("--no-hold",), report_path=ws.volume / "pod-run-report-launch-abc123.json"
+        ),
+        environ=_environ(clock, lifetime=1.0, extra={"VERBATUS_LAUNCH_TOKEN": "launch-abc123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=_never_called,
+        runner=runner,
+    )
+
+    assert code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "--no-hold" in _report(ws, "pod-run-report-launch-abc123.json")["reason"]
+
+
 def test_no_hold_never_moves_an_earlier_guard_deadline_later(tmp_path: Path) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
@@ -483,7 +510,7 @@ def test_no_hold_never_moves_an_earlier_guard_deadline_later(tmp_path: Path) -> 
 
     main(
         _run_argv(ws, extra=("--no-hold",)),
-        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENV: "pod123"}),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
         now=clock.now,
         sleeper=clock.sleep,
         actions_factory=lambda plan: PreflightedActions(),
@@ -494,13 +521,15 @@ def test_no_hold_never_moves_an_earlier_guard_deadline_later(tmp_path: Path) -> 
     assert _report(ws)["guard_release"]["released"] is True
 
 
-@pytest.mark.parametrize("case", ["no-pod-id", "no-guard-directory"])
+@pytest.mark.parametrize("case", ["no-pod-id", "no-guard-directory", "no-deadline-file"])
 def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
     tmp_path: Path, case: str
 ) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
-    extra = {} if case == "no-pod-id" else {pod_run.POD_ID_ENV: "pod123"}
+    extra = {} if case == "no-pod-id" else {pod_run.POD_ID_ENVIRONMENT: "pod123"}
+    if case == "no-deadline-file":
+        (ws.volume / pod_run.POD_GUARD_DIRECTORY).mkdir()
 
     code = main(
         _run_argv(ws, extra=("--no-hold",)),
@@ -516,10 +545,10 @@ def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
     release = _report(ws)["guard_release"]
     assert release["released"] is False
     assert release["detail"]
-    assert not (ws.volume / pod_run.POD_GUARD_DIRECTORY).exists()
+    assert not (ws.volume / pod_run.POD_GUARD_DIRECTORY / "deadline-pod123").exists()
 
 
-def test_no_hold_leaves_the_guard_alone_when_the_orchestrator_never_ran(tmp_path: Path) -> None:
+def test_no_hold_leaves_the_guard_alone_after_a_red_bootstrap(tmp_path: Path) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
     later = int(clock.now().timestamp()) + 3600
@@ -528,7 +557,7 @@ def test_no_hold_leaves_the_guard_alone_when_the_orchestrator_never_ran(tmp_path
 
     code = main(
         _run_argv(ws, extra=("--no-hold",)),
-        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENV: "pod123"}),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
         now=clock.now,
         sleeper=clock.sleep,
         actions_factory=lambda plan: red,
