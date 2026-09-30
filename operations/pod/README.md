@@ -691,23 +691,26 @@ two together.
 
 | Package | Pin | Licence | Why this one |
 |---|---|---|---|
-| `vllm` | `0.27.1` | Apache-2.0 | The newest release that registers every architecture the roster declares **and** states no `huggingface_hub` floor of its own |
-| `transformers` | `5.14.1` | Apache-2.0 | The version the vLLM 0.27 line's requirements moved to; above vLLM's `>= 5.5.3` floor and the Perlector's `>= 5.8.0` |
+| `vllm` | `0.30.0` | Apache-2.0 | The lowest release that fixes every advisory pip-audit reports against 0.27.1 (among them PYSEC-2026-4004, -4005, -4006, fixed in 0.30.0, and CVE-2026-69147, fixed in 0.28.0), and it registers every architecture the roster declares |
+| `transformers` | `5.14.1` | Apache-2.0 | Above vLLM 0.30.0's `>= 5.10.4` floor and the Perlector's `>= 5.8.0`; its metadata accepts `huggingface-hub` `>=1.5.0,<2.0` |
 | `qwen-vl-utils` | `0.0.14` | Apache-2.0 | Latest; it and its dependencies (`av`, `pillow`, `requests`) all publish linux x86_64 wheels, so nothing compiles on the card |
 
-Licence sources: the `LICENSE` files at `github.com/vllm-project/vllm` (tag `v0.27.1`) and
+Licence sources: the `LICENSE` files at `github.com/vllm-project/vllm` (tag `v0.30.0`) and
 `github.com/huggingface/transformers`; `qwen-vl-utils`'s PyPI metadata (maintained under
 `github.com/QwenLM/Qwen2.5-VL`, Apache-2.0).
 
 - **`transformers` 4.x cannot lock**: no 4.57.x accepts `huggingface-hub` 1.x, and the
-  project pins `huggingface_hub==1.26.0`.
+  project pins `huggingface_hub==1.31.0`.
 - **One vLLM release serves all four chairs.** Chandra-2 and the Perlector declare
   `Qwen3_5ForConditionalGeneration` (multimodal); DAI and Churro-3B declare
-  `Qwen2_5_VLForConditionalGeneration` (each model's `raw/main/config.json`). vLLM v0.27.1's
+  `Qwen2_5_VLForConditionalGeneration` (each model's `raw/main/config.json`). vLLM 0.30.0's
   `registry.py` lists both in `_MULTIMODAL_MODELS`. The Perlector's vLLM recipe asks for
   vLLM 0.17.0+ and transformers >= 5.8.0.
-- **Not vLLM 0.28.0**: it declares `huggingface_hub>=1.27.0`, which collides with the
-  project's pin, and only its DFlash2 speculative decoding (unused here) needs it.
+- **`huggingface_hub` follows vLLM's floor**: vLLM 0.30.0 declares `huggingface_hub>=1.31.0`,
+  so the project pins 1.31.0, the lowest release that satisfies it. The two calls
+  `common/chairs/registry.py` makes, `snapshot_download` (`repo_id`, `revision`,
+  `allow_patterns`, `cache_dir`) and `metadata_load`, keep their signatures, return values
+  and snapshot layout from 1.26.0; the per-call client cache is outside the evidence tree.
 - **No `flash-attn`**: vLLM does not import it (it ships its own FlashAttention), and
   `flash-attn` 2.8.3.post1 is sdist-only, which would mean an hours-long nvcc build on a
   rented card.
@@ -796,7 +799,7 @@ Record the pod id, timestamps, provider responses, and whether each item is **ve
   and stamp only the measured tier's rows proven. Record the `CUDA_COMPAT` receipt and
   `nvidia-smi`'s CUDA version before `uv sync --group pod`. Record whether the sync
   completed and how long it took,
-  whether each chair loaded under `vllm 0.27.1`, and per chair whether the witness was read
+  whether each chair loaded under `vllm 0.30.0`, and per chair whether the witness was read
   back. **Record free container disk before and after the sync and the final `.venv` size**;
   they replace `models.DEFAULT_CONTAINER_DISK_GB`, `bootstrap.UV_CACHE_REQUIRED_BYTES` and
   `REPOSITORY_VENV_REQUIRED_BYTES`.

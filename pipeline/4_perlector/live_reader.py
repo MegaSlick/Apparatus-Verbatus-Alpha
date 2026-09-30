@@ -325,7 +325,7 @@ class VLLMReader:
         # about the launch argument `common/chair_wire.py` documents
         # (`--chat-template-content-format`, `operations/serving/manager.py`)
         # and cannot be pinned from a request builder** (verified against the
-        # pinned `vllm==0.27.1` source: it is resolved once at server
+        # pinned `vllm==0.30.0` source: it is resolved once at server
         # construction, never read from the request body). This reorder is
         # therefore a necessary but not sufficient fix; the launch argument is
         # the other half, out of this module's reach.

@@ -2636,7 +2636,7 @@ def test_real_catalogue_covers_each_chair_and_names_unservable_tiers():
                 continue
             assert isinstance(profile, ServingProfile)
             assert profile.preflight_state == "unproven"
-            assert profile.required_packages["vllm"] == "0.27.1"
+            assert profile.required_packages["vllm"] == "0.30.0"
             assert serving_mode_for(real_catalogue, identity, tier) == "live"
 
 
