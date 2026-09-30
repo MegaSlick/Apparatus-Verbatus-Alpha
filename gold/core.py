@@ -16,7 +16,7 @@ import stat
 import unicodedata
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from common.contracts.canonical import (
     SCHEMA_LABEL,
@@ -214,8 +214,65 @@ def read_transcription_text(path: str | Path) -> str:
     return text[:-1] if text.endswith("\n") else text
 
 
-def load_run_frame(path: str | Path) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    """Read the source authority and reject a forged derived frame record."""
+class RunFrame(NamedTuple):
+    """What gold takes from one verified R0 run: its frame, pages and canaries."""
+
+    frame: dict[str, str]
+    source: list[dict[str, Any]]
+    canaries: set[int]
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _frame_seed(page_digest: str) -> str:
+    """The frame seed R0 derives from its page membership, never a free field."""
+    return digest_bytes(canonical_bytes({"page_digest": page_digest, "purpose": "frame"}))
+
+
+def _membership(source: list[dict[str, Any]], label: str) -> list[dict[str, Any]]:
+    """Order `{ordinal, sha256}` pages, refusing an ordinal that names no one page."""
+    for page in source:
+        _refuse(not _is_int(page["ordinal"]), f"{label} ordinal is not an integer")
+        _refuse(
+            page["ordinal"] < 1,
+            f"{label} ordinal is not a page number: a page is counted from one, "
+            "so a value below it names no page",
+        )
+        _sha(page["sha256"], f"{label} sha256")
+    source.sort(key=lambda page: page["ordinal"])
+    _refuse(len({page["ordinal"] for page in source}) != len(source), f"{label} ordinals repeat")
+    return source
+
+
+def _page_row(row: Any, label: str, remedy: str) -> dict[str, Any]:
+    """One closed `{ordinal, sha256, stratum, width, height}` page description."""
+    _refuse(
+        not isinstance(row, dict)
+        or set(row) != {"ordinal", "sha256", "stratum", "width", "height"},
+        f"{label} has the wrong closed schema. It must carry exactly ordinal, sha256, "
+        f"stratum, width, and height. {remedy}",
+    )
+    _refuse(not _is_int(row["ordinal"]), f"{label} ordinal is not an integer")
+    _sha(row["sha256"], f"{label} sha256")
+    _refuse(
+        not isinstance(row["stratum"], str) or not row["stratum"].strip(),
+        f"{label} stratum is empty",
+    )
+    for dimension in ("width", "height"):
+        _refuse(
+            not _is_int(row[dimension]) or row[dimension] <= 0,
+            f"{label} {dimension} is not a positive integer. Rectangle bounds cannot be "
+            f"checked without a real page size. {remedy}",
+        )
+    return row
+
+
+def load_run_frame(path: str | Path) -> RunFrame:
+    """Read the source authority once and reject a forged derived frame record."""
+    from common.stage import canary_ordinals
+
     run = read_json(path)
     _refuse(not isinstance(run, dict), "run authority is not an object")
     _refuse(
@@ -238,30 +295,17 @@ def load_run_frame(path: str | Path) -> tuple[dict[str, str], list[dict[str, Any
         _refuse(not isinstance(page, dict), "a source page is not an object")
         # This must match RunTree's precedence: container pages share a declared
         # file digest but carry distinct computed membership digests.
-        ordinal = page.get("ordinal")
         page_sha = page.get("computed_sha256")
         if page_sha is None:
             page_sha = page.get("sha256")
-        _refuse(
-            not isinstance(ordinal, int) or isinstance(ordinal, bool),
-            "source page ordinal is not an integer",
-        )
-        _refuse(
-            isinstance(ordinal, int) and not isinstance(ordinal, bool) and ordinal < 1,
-            "source page ordinal is not a page number: a page is counted from one, "
-            "so a run cannot say which page a value below it names",
-        )
-        _sha(page_sha, "source page sha256")
-        source.append({"ordinal": ordinal, "sha256": page_sha})
-    source.sort(key=lambda page: page["ordinal"])
-    _refuse(len({page["ordinal"] for page in source}) != len(source), "source page ordinals repeat")
+        source.append({"ordinal": page.get("ordinal"), "sha256": page_sha})
+    _membership(source, "source page")
     page_digest = digest_bytes(canonical_bytes(source))
     frame_digest = digest_bytes(canonical_bytes({"pages": source}))
-    expected_seed = digest_bytes(canonical_bytes({"page_digest": page_digest, "purpose": "frame"}))
     # The self-hash proves the record was resealed by somebody; only the
     # rederivation proves the seed is the one this run's own pages produce.
     _refuse(
-        membership["seed"] != expected_seed,
+        membership["seed"] != _frame_seed(page_digest),
         "R0 frame seed diverges from its derivation over the run's own pages",
     )
     _refuse(
@@ -272,19 +316,18 @@ def load_run_frame(path: str | Path) -> tuple[dict[str, str], list[dict[str, Any
         membership["frame_digest"] != frame_digest,
         "R0 frame frame_digest diverges from run source_manifest",
     )
-    return dict(membership), source
+    return RunFrame(dict(membership), source, canary_ordinals(run))
 
 
-def set_for_page(frame: dict[str, str], page_sha256: str) -> str:
+def set_for_page(page_sha256: str) -> str:
     """A content-driven partition: a page has one set across every corpus frame.
 
-    The frame seed still drives the within-stratum draw order in `_rank`. It must
-    not drive this boundary: R0 derives a new seed whenever frame membership
-    changes, so a seed-partitioned page could otherwise move from calibration to
-    locked acceptance when the same source page appeared in a later frame.
+    The frame seed drives the within-stratum draw order in `_rank`. It must not
+    drive this boundary: R0 derives a new seed whenever frame membership changes,
+    so a seed-partitioned page could otherwise move from calibration to locked
+    acceptance when the same source page appeared in a later frame.
     """
     _sha(page_sha256, "page sha256")
-    _sha(frame.get("seed"), "corpus frame seed")
     rank = digest_bytes(canonical_bytes({"page_sha256": page_sha256, "purpose": "gold-set-v1"}))
     return "calibration" if int(rank[0], 16) < 8 else "locked-acceptance"
 
@@ -309,10 +352,7 @@ def _rank(frame: dict[str, str], page: dict[str, Any]) -> str:
     )
 
 
-def _canaries_in_run(path: str | Path) -> set[int]:
-    from common.stage import canary_ordinals
-
-    return canary_ordinals(read_json(path))
+_CATALOG_REMEDY = "Add the missing fields, remove extras, or correct the value and retry"
 
 
 def _catalog(
@@ -323,33 +363,12 @@ def _catalog(
     found: set[tuple[int, str]] = set()
     result = []
     for row in rows:
-        _refuse(
-            not isinstance(row, dict)
-            or set(row) != {"ordinal", "sha256", "stratum", "width", "height"},
-            "catalog row has the wrong closed schema. Each row must carry exactly ordinal, "
-            "sha256, stratum, width, and height. Add the missing fields or remove extras "
-            "and retry",
-        )
+        _page_row(row, "catalog page", _CATALOG_REMEDY)
         ordinal, page_sha, stratum = row["ordinal"], row["sha256"], row["stratum"]
-        _refuse(
-            not isinstance(ordinal, int) or isinstance(ordinal, bool),
-            "catalog ordinal is not an integer",
-        )
-        _sha(page_sha, "catalog sha256")
-        _refuse(not isinstance(stratum, str) or not stratum.strip(), "catalog stratum is empty")
         if canaries is not None:
             _refuse(
                 (ordinal in canaries) != (stratum == "canary"),
                 "catalog canary stratum disagrees with the sealed canary ledger mark",
-            )
-        for dimension in ("width", "height"):
-            _refuse(
-                not isinstance(row[dimension], int)
-                or isinstance(row[dimension], bool)
-                or row[dimension] <= 0,
-                f"catalog page {dimension} is not a positive integer. Rectangle bounds "
-                "cannot be checked without a real page size. Record the page's positive "
-                f"integer {dimension} in the catalog and retry",
             )
         found.add((ordinal, page_sha))
         result.append(dict(row))
@@ -425,7 +444,7 @@ def build_sample(
         "selection_basis is empty",
     )
     page_sha = page["sha256"]
-    gold_set = set_for_page(frame, page_sha)
+    gold_set = set_for_page(page_sha)
     record = {
         "schema": SAMPLE_SCHEMA,
         "method": method,
@@ -482,8 +501,8 @@ def _quotas(plan: Any, strata: set[str]) -> dict[str, dict[str, int]]:
 
 def sample_stratified(run_path: str | Path, catalog_rows: Any, plan: Any) -> list[dict[str, Any]]:
     """Select quota pages by seed ranking only after the structural set partition."""
-    frame, source = load_run_frame(run_path)
-    catalog = _catalog(catalog_rows, source, _canaries_in_run(run_path))
+    frame, source, canaries = load_run_frame(run_path)
+    catalog = _catalog(catalog_rows, source, canaries)
     plan = _quotas(plan, {row["stratum"] for row in catalog})
     return _select_stratified(frame, catalog, plan)
 
@@ -504,7 +523,7 @@ def _select_stratified(
             eligible = [
                 page
                 for page in catalog
-                if page["stratum"] == stratum and set_for_page(frame, page["sha256"]) == gold_set
+                if page["stratum"] == stratum and set_for_page(page["sha256"]) == gold_set
             ]
             eligible.sort(key=lambda page: _rank(frame, page))
             _refuse(
@@ -529,8 +548,8 @@ def build_sampling_draw(
     run_path: str | Path, catalog_rows: Any, plan: Any
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Retain every input and selected member needed to replay one seeded draw."""
-    frame, source = load_run_frame(run_path)
-    catalog = _catalog(catalog_rows, source, _canaries_in_run(run_path))
+    frame, source, canaries = load_run_frame(run_path)
+    catalog = _catalog(catalog_rows, source, canaries)
     normalized_plan = _quotas(plan, {row["stratum"] for row in catalog})
     selected = _select_stratified(frame, catalog, normalized_plan)
     record = {
@@ -542,6 +561,9 @@ def build_sampling_draw(
     }
     record["self_hash"] = self_hash(record)
     return validate_sampling_draw(record, run_path), selected
+
+
+_DRAW_REMEDY = "Keep the draw record unchanged and hold its corpus for review"
 
 
 def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> dict[str, Any]:
@@ -571,28 +593,19 @@ def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> d
     # replaced seed would replay a different ranking under an internally
     # consistent record.
     _refuse(
-        frame["seed"]
-        != digest_bytes(canonical_bytes({"page_digest": frame["page_digest"], "purpose": "frame"})),
+        frame["seed"] != _frame_seed(frame["page_digest"]),
         "sampling draw frame seed diverges from its derivation over its own page_digest",
     )
     raw_catalog = record["catalog"]
     _refuse(not isinstance(raw_catalog, list), "sampling draw catalog is not a list")
-    source = []
+    label = "sampling draw catalog page"
     for row in raw_catalog:
-        _refuse(
-            not isinstance(row, dict)
-            or set(row) != {"ordinal", "sha256", "stratum", "width", "height"},
-            "sampling draw catalog row has the wrong closed schema",
-        )
-        ordinal, page_sha = row["ordinal"], row["sha256"]
-        _refuse(
-            not isinstance(ordinal, int) or isinstance(ordinal, bool),
-            "sampling draw catalog ordinal is not an integer",
-        )
-        _sha(page_sha, "sampling draw catalog sha256")
-        source.append({"ordinal": ordinal, "sha256": page_sha})
-    source.sort(key=lambda page: page["ordinal"] if isinstance(page["ordinal"], int) else -1)
-    catalog = _catalog(raw_catalog, source, _canaries_in_run(run_path) if run_path else None)
+        _page_row(row, label, _DRAW_REMEDY)
+    source = _membership(
+        [{"ordinal": row["ordinal"], "sha256": row["sha256"]} for row in raw_catalog], label
+    )
+    run = load_run_frame(run_path) if run_path is not None else None
+    catalog = _catalog(raw_catalog, source, run.canaries if run is not None else None)
     page_digest = digest_bytes(canonical_bytes(source))
     _refuse(
         frame["page_digest"] != page_digest
@@ -614,10 +627,9 @@ def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> d
     _refuse(
         members != expected, "sampling draw membership diverges from its seed, catalog, and plan"
     )
-    if run_path is not None:
-        run_frame, run_source = load_run_frame(run_path)
-        _refuse(frame != run_frame, "sampling draw frame diverges from the R0 run authority")
-        _refuse(source != run_source, "sampling draw catalog diverges from the R0 run membership")
+    if run is not None:
+        _refuse(frame != run.frame, "sampling draw frame diverges from the R0 run authority")
+        _refuse(source != run.source, "sampling draw catalog diverges from the R0 run membership")
     _refuse(not verify_self_hash(record), "sampling draw fails its self-hash")
     return record
 
@@ -694,8 +706,8 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
     """Record the picker's choice without selecting or replacing it.
 
     A manual pick's stated `set` is the picker's provenance, not an assertion
-    this function polices: B1 picks are made in week one, before the R0 frame
-    or its seed exist, so there is no partition to check them against yet. The
+    this function polices: a manual pick may predate the R0 frame and its seed,
+    so there may have been no partition to check it against when it was made. The
     persisted sample's `set` is always the page-derived partition, so
     calibration and locked-acceptance membership remain disjoint; the
     original stated set is kept alongside as `claimed_set` so a pick
@@ -703,39 +715,14 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
     disagreement — never a silent reclassification and never a refusal that
     would force the picker to redo real annotation hours.
     """
-    frame, source = load_run_frame(run_path)
+    frame, source, canaries = load_run_frame(run_path)
     _refuse(
         not isinstance(pick, dict) or set(pick) != {"schema", "selection_basis", "page", "set"},
         "manual pick has the wrong closed schema",
     )
     _refuse_dimensionless_schema(pick["schema"])
     _refuse(pick["schema"] != MANUAL_PICK_SCHEMA, "manual pick schema is not recognized")
-    page = pick["page"]
-    _refuse(
-        not isinstance(page, dict)
-        or set(page) != {"ordinal", "sha256", "stratum", "width", "height"},
-        "manual pick page has the wrong closed schema. Its page must carry exactly "
-        "ordinal, sha256, stratum, width, and height. Add the missing fields or remove "
-        "extras and retry",
-    )
-    _refuse(
-        not isinstance(page["ordinal"], int) or isinstance(page["ordinal"], bool),
-        "manual pick page ordinal is not an integer",
-    )
-    _sha(page["sha256"], "manual pick page sha256")
-    _refuse(
-        not isinstance(page["stratum"], str) or not page["stratum"].strip(),
-        "manual pick stratum is empty",
-    )
-    for dimension in ("width", "height"):
-        _refuse(
-            not isinstance(page[dimension], int)
-            or isinstance(page[dimension], bool)
-            or page[dimension] <= 0,
-            f"manual pick page {dimension} is not a positive integer. Rectangle bounds "
-            "cannot be checked without a real page size. Record the page's positive "
-            f"integer {dimension} and retry",
-        )
+    page = _page_row(pick["page"], "manual pick page", _CATALOG_REMEDY)
     _refuse(
         not isinstance(pick["selection_basis"], str) or not pick["selection_basis"].strip(),
         "manual pick selection_basis is empty",
@@ -745,7 +732,7 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
         not in {(p["ordinal"], p["sha256"]) for p in source},
         "manual pick page is outside the sealed corpus frame",
     )
-    _refuse(page["ordinal"] in _canaries_in_run(run_path), "manual pick names a canary page")
+    _refuse(page["ordinal"] in canaries, "manual pick names a canary page")
     _refuse(
         not isinstance(pick["set"], str) or pick["set"] not in SETS,
         "manual pick set is not recognized. The picker's stated partition would otherwise "
@@ -764,9 +751,9 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
 def _act_identity(value: Any, label: str) -> str:
     """Shape only: well-formed and specifically an act identity.
 
-    R7a samples pages, and no stage before R2 derives an act, so there is no act
-    authority here to check existence against. Shared by every gold record that
-    names an act so they all refuse the same shapes for the same reason.
+    Gold consumes no Designator output, so it checks act identity by shape only
+    and has no act authority to check existence against. Shared by every gold
+    record that names an act so they all refuse the same shapes for the same reason.
     """
     _refuse(
         not is_well_formed(value) or not value.startswith("act_"),
@@ -781,11 +768,10 @@ def bind_instrument(
     """Append a measurement binding; the source sample remains immutable.
 
     `act_identity` is checked for shape only: well-formed and specifically
-    `act_`-prefixed, per `common/contracts/identities.py`. It is not, and at
-    R7a cannot be, verified against a real Designator proposal's bindings —
-    no stage in the build order before R2 produces an act, so R7a has no act
-    authority to invent or check against. A syntactically well-formed but
-    never-derived act id will pass. Pass `run_path` to additionally re-check the
+    `act_`-prefixed, per `common/contracts/identities.py`. Gold consumes no
+    Designator output, so it cannot verify the act against a proposal's
+    bindings, and a well-formed but never-derived act id will pass. Pass
+    `run_path` to additionally re-check the
     bound sample's frame and page against the R0 run authority; it does not and
     cannot reach act existence.
     """
@@ -813,6 +799,11 @@ def _person(value: Any, label: str) -> str:
     """
     _refuse(not isinstance(value, str) or not value.strip(), f"{label} is empty")
     _refuse(value != value.strip(), f"{label} has surrounding whitespace")
+    _refuse(
+        value != unicodedata.normalize("NFC", value),
+        f"{label} is not in Unicode NFC; one person's name has one spelling, so two "
+        "records by the same person always compare equal",
+    )
     _refuse(
         is_well_formed(value),
         f"{label} is a pipeline identity, not a person; gold is what the pipeline is "
@@ -994,7 +985,7 @@ def _adjudication_facts(
         "the two transcriptions are of different acts",
     )
     _refuse(
-        first["transcriber"] == second["transcriber"],
+        _portable_name(first["transcriber"]) == _portable_name(second["transcriber"]),
         "both transcriptions name the same transcriber; the second reading is not "
         "independent of the first",
     )
@@ -1028,7 +1019,8 @@ def _adjudication_facts(
     )
     _person(adjudicator, "adjudicator")
     _refuse(
-        adjudicator in {first["transcriber"], second["transcriber"]},
+        _portable_name(adjudicator)
+        in {_portable_name(first["transcriber"]), _portable_name(second["transcriber"])},
         "the adjudicator is one of the two transcribers; a reading cannot be its own "
         "reconciliation",
     )
@@ -1180,41 +1172,19 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     # frame's own page_digest, never a free field, and a replaced-then-resealed
     # one must be refused offline, not only when a run authority is present.
     _refuse(
-        frame["seed"]
-        != digest_bytes(canonical_bytes({"page_digest": frame["page_digest"], "purpose": "frame"})),
+        frame["seed"] != _frame_seed(frame["page_digest"]),
         "sample frame seed diverges from its derivation over its own page_digest",
     )
-    page = record["page"]
-    _refuse(
-        not isinstance(page, dict)
-        or set(page) != {"ordinal", "sha256", "stratum", "width", "height"},
-        "sample page has the wrong closed schema. Its page must carry exactly ordinal, "
-        "sha256, stratum, width, and height. Regenerate an unpublished sample from its "
-        "catalog; preserve a published record and hold its corpus for review",
+    page = _page_row(
+        record["page"],
+        "sample page",
+        "Regenerate an unpublished sample from its catalog; preserve a published record "
+        "and hold its corpus for review",
     )
-    _refuse(
-        not isinstance(page["ordinal"], int) or isinstance(page["ordinal"], bool),
-        "sample page ordinal is not an integer",
-    )
-    _sha(page["sha256"], "sample page sha256")
-    _refuse(
-        not isinstance(page["stratum"], str) or not page["stratum"].strip(),
-        "sample stratum is empty",
-    )
-    for dimension in ("width", "height"):
-        _refuse(
-            not isinstance(page[dimension], int)
-            or isinstance(page[dimension], bool)
-            or page[dimension] <= 0,
-            f"sample page {dimension} is not a positive integer. Rectangle bounds "
-            "cannot be checked without a real page size. Regenerate an unpublished sample "
-            f"from the catalog's {dimension}; preserve a published record and hold its "
-            "corpus for review",
-        )
     _refuse(
         not isinstance(record["set"], str)
         or record["set"] not in SETS
-        or record["set"] != set_for_page(frame, page["sha256"]),
+        or record["set"] != set_for_page(page["sha256"]),
         "sample set conflicts with the page-derived partition. The page would otherwise "
         "belong to two gold sets. Regenerate an unpublished sample from the page sha256; "
         "preserve a published record and hold its corpus for review",
@@ -1228,9 +1198,9 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     )
     _refuse(not verify_self_hash(record), "sample fails its self-hash")
     if run_path is not None:
-        run_frame, source = load_run_frame(run_path)
+        run_frame, source, canaries = load_run_frame(run_path)
         _refuse(frame != run_frame, "sample frame diverges from the R0 run authority")
-        _refuse(page["ordinal"] in _canaries_in_run(run_path), "sample names a canary page")
+        _refuse(page["ordinal"] in canaries, "sample names a canary page")
         _refuse(
             (page["ordinal"], page["sha256"]) not in {(p["ordinal"], p["sha256"]) for p in source},
             "sample page is outside the R0 run authority",
@@ -1608,7 +1578,7 @@ def validate_corpus(
             "sample is absent from the gold corpus",
         )
         reconcile_act_page(record, f"transcription {record['self_hash']}")
-        key = (record["act_identity"], record["transcriber"])
+        key = (record["act_identity"], _portable_name(record["transcriber"]))
         prior_digest = transcription_keys.setdefault(key, record["self_hash"])
         _refuse(
             prior_digest != record["self_hash"],
@@ -1617,7 +1587,16 @@ def validate_corpus(
             "from that person. Preserve both records and hold the corpus for review",
         )
         transcriptions_by_digest[record["self_hash"]] = record
-        transcriptions_by_act.setdefault(record["act_identity"], set()).add(record["self_hash"])
+        readings = transcriptions_by_act.setdefault(record["act_identity"], set())
+        readings.add(record["self_hash"])
+        # An adjudication reconciles exactly two readings and records are
+        # immutable, so a third transcriber would leave the act unclosable.
+        _refuse(
+            len(readings) > 2,
+            f"act {record['act_identity']} already has two independent transcriptions; "
+            f"a third, by {record['transcriber']!r}, could never be adjudicated, since an "
+            "adjudication reconciles exactly two. Do not publish it",
+        )
 
     adjudications: dict[str, str] = {}
     for record in validated:
@@ -1639,17 +1618,13 @@ def validate_corpus(
             "that sample is absent from the gold corpus",
         )
         reconcile_act_page(record, f"adjudication {record['self_hash']}")
+        # An act holds at most two readings, so a present embedded pair is all of them.
         embedded = {item["self_hash"] for item in record["transcriptions"]}
         absent = sorted(embedded - set(transcriptions_by_digest))
         _refuse(
             bool(absent),
             f"adjudication {record['self_hash']} embeds {len(absent)} transcription(s) that "
             f"are absent as independent gold records (first absent {absent[:1]})",
-        )
-        _refuse(
-            transcriptions_by_act.get(key, set()) != embedded,
-            f"act {record['act_identity']} does not have exactly the two independent "
-            "transcriptions embedded by its adjudication",
         )
         prior_digest = adjudications.setdefault(key, record["self_hash"])
         _refuse(
@@ -1669,12 +1644,14 @@ def validate_corpus(
     return validated
 
 
-def _open_directory_no_follow(path: Path) -> int:
-    """Open the named directory once, refusing a final symlink."""
+def _open_directory_no_follow(path: Path, role: str = "gold output directory") -> int:
+    """Open the named directory once, refusing a final symlink; `role` names it in refusals."""
     no_follow = getattr(os, "O_NOFOLLOW", None)
     directory = getattr(os, "O_DIRECTORY", None)
     if no_follow is None or directory is None:
-        raise SchemaRefusal("safe gold publication requires O_NOFOLLOW and O_DIRECTORY support")
+        raise SchemaRefusal(
+            "safe gold directory access requires O_NOFOLLOW and O_DIRECTORY support"
+        )
     try:
         descriptor = os.open(
             path,
@@ -1682,7 +1659,7 @@ def _open_directory_no_follow(path: Path) -> int:
         )
     except OSError as error:
         raise SchemaRefusal(
-            f"the gold output directory {path} could not be opened without following links"
+            f"the {role} {path} could not be opened without following links"
         ) from error
     try:
         details = os.fstat(descriptor)
@@ -1691,12 +1668,16 @@ def _open_directory_no_follow(path: Path) -> int:
         raise
     if not stat.S_ISDIR(details.st_mode):
         os.close(descriptor)
-        raise SchemaRefusal(f"the gold output directory {path} is not a directory")
+        raise SchemaRefusal(f"the {role} {path} is not a directory")
     return descriptor
 
 
 def _portable_name(name: str) -> str:
-    """The spelling identity used by default case-insensitive APFS."""
+    """One spelling per name, ignoring case and Unicode composition.
+
+    It is how default APFS compares file names, and how gold compares the names
+    of the people who made a record.
+    """
     return unicodedata.normalize("NFC", name).casefold()
 
 
