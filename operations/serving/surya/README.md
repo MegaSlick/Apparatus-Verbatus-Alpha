@@ -43,10 +43,14 @@ one file both sides load; it uses the standard library only.
 
 The runner fixes the CPU as the device, a thread count from the serving row, one interop
 thread, `torch.use_deterministic_algorithms(True)`, `torch.manual_seed(0)`, eval mode
-and one page per call. It refuses to run if any of Surya's output-shaping settings is
-set in the environment, if any differs from Surya's default, if Surya found a
-`local.env` settings file above its package, if the bundle's checkpoints are not the
-ones Surya would load, or if the reading-order head did not load.
+and one page per call. It refuses to run if any of Surya's output-shaping or checkpoint
+settings is set in the environment, in any case, since Surya's settings read the
+environment ignoring case; if any differs from Surya's default; if Surya found a
+`local.env` settings file above its package; if the bundle's checkpoints are not the
+ones Surya would load; if the reading-order head did not load; or if a page is in a
+mode Surya's own loader, `Image.open(path).convert("RGB")`, would clip to 8 bits (a
+16-bit scan, for one). The modes it reads are those the project replays a vendor's RGB
+conversion for (`contract.PAGE_MODES`).
 
 No network rests on two things: every checkpoint is handed to Surya as a directory in
 the bundle, which its loaders use as a local path before any fetch, and the Hugging Face
@@ -61,9 +65,14 @@ logs either. The runner keeps the detections and records which ordering each pag
 Guaranteed: the same bundle, the same locked environment, the same thread count and the
 same CPU instruction set give byte-identical page documents.
 `operations/serving/test_surya_environment.py` checks it twice over the synthetic
-fixture pages with stand-in weights, wherever this environment is synced (CI never
-syncs it, so there it skips), along with both raster fallbacks and an order head that
-does not load. Not guaranteed: identical floats on a CPU with a different vector
+fixture pages with stand-in weights, along with both raster fallbacks, an order head
+that does not load, the state a run leaves torch and the models in (deterministic
+algorithms, the row's thread count, eval mode), and a run with every socket connection
+and Hub download refused. CI never syncs this environment, so there the suite skips: it
+is a gate run on a machine with this environment synced
+(`uv sync --locked --project operations/serving/surya`) before a pod runs Surya, and a
+change to the runner, this environment or its lock is not ready for a pod until it
+passes there. Not guaranteed: identical floats on a CPU with a different vector
 instruction set, since torch picks kernels by instruction set; the run facts name the
 instruction set and the machine, and a resumed run on another one is refused.
 
@@ -101,20 +110,26 @@ its host as above, promote the bundle into a scratch store with
 `common/chairs/model_store.py::promote_verified_snapshot` (artifact
 `surya2-detection`, every file required), and copy the manifest it publishes to
 `config/manifests/surya2-detection.json`. Its SHA-256 is the new pin, written in
-`config/models-real.toml` and `SURYA_BUNDLE_DIGEST_MANIFEST` together.
+`config/models-real.toml` and `SURYA_BUNDLE_DIGEST_MANIFEST` together. A store is
+never re-pinned in place: one that holds the bundle at the old pin is refused by name
+(its manifest is published once and never replaced), so a pod on the new pin needs a
+fresh store, on a new network volume or at an empty store root.
 
 ## On the pod
 
 1. The environment is built on container-local disk, beside the project's own, by the
    pod bootstrap's UV_ENVIRONMENT step (`uv sync --locked --project
-   operations/serving/surya`) whenever the catalogue has a subprocess row for a
-   configured chair that runs in it; by hand, the same command.
+   operations/serving/surya`) whenever the pod's stages run a configured chair from a
+   subprocess row in it, or the model store still lacks the bundle (step 2); by hand,
+   the same command.
 2. The MODEL_STORE step fetches the bundle onto the network volume: the store runs
    `prefetch.py` in that environment (`surya_detector.SuryaBundleFetcher`) into its
    staging area, measures the manifest, refuses it unless it is the pinned one, and
    only then publishes `manifests/surya2-detection.json` and moves the bundle to
-   `local/surya2-detection`. A store from before the chair was configured names the
-   bundle `pending-fetch` and is completed the same way.
+   `local/surya2-detection`. A store whose record names the bundle `pending-fetch`, or
+   does not name it, is completed the same way. The store fetches the bundle whatever
+   the roster configures, so UV_ENVIRONMENT syncs this environment while the store
+   lacks the bundle, and MODEL_STORE checks its interpreter before any download.
 3. The CHAIR_CACHE step copies the verified bundle to where the roster binds it,
    `config/real-models/designator_surya` on container-local disk, and verifies the
    copy against the roster's manifest before it replaces anything there.
@@ -124,8 +139,7 @@ its host as above, promote the bundle into a scratch store with
    `pod_run` refuses a Designator selection without that run.
 
 The rows in `config/serving_recipes_real.toml` (`unproven-real-surya`, 8 threads, 600 s
-to start, 60 s a page) are planning values until a pod measures a page: a development
-machine (AVX512, 2 threads) read four synthetic pages in about 125 s, models loaded
-once. One process loads the models once and reads every page, so the run's timeout is
+to start, 60 s a page) are planning values, not measurements of a pod. One process
+loads the models once and reads every page, so the run's timeout is
 the startup allowance plus the per-page allowance for each page, rather than page
 batches that would load the models again for each batch.
