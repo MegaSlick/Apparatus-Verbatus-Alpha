@@ -452,25 +452,32 @@ def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=Fa
 # What the fake Perlector answers when it reads a page whole (`reading_unit =
 # "page"`). The ids are the page feed's: A is attestator_1 (Chandra, one boxed
 # unit per declared act on page 1, one unboxed unit of page text on page 2), B
-# is attestator_3 (Churro, one unit per line, no boxes). Page 1's entries are
-# placed by Chandra's boxes; page 2's cites no boxed id, so it is held unplaced.
+# is attestator_3 (Churro, one unit per line, no boxes), L are Surya's lines.
+# `happy` places every entry: page 1's by Chandra's boxes, page 2's by the
+# Surya lines over a2's continuation. `page-review` reads page 1 the same way
+# but cites no boxed id on page 2, so that entry is unplaced and the page
+# accounting holds it (rules b, d, f and g), as `review` holds a2 in act mode.
 # Proves wiring only, never reading ink.
+_PAGE_ONE_ANSWER = {
+    "acts": [
+        _page_entry(1, "a1", ["A1", "B1"], text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]"),
+        _page_entry(2, "a2", ["A2", "B2"], to_next=True),
+    ],
+    "set_aside": [],
+}
 PAGE_ANSWERS = (
+    {"scenario": "happy", "page_ordinal": 1, "answer": _PAGE_ONE_ANSWER},
     {
         "scenario": "happy",
-        "page_ordinal": 1,
+        "page_ordinal": 2,
         "answer": {
-            "acts": [
-                _page_entry(
-                    1, "a1", ["A1", "B1"], text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]"
-                ),
-                _page_entry(2, "a2", ["A2", "B2"], to_next=True),
-            ],
+            "acts": [_page_entry(1, "a2", ["A1", "B1", "L1-L3"], from_previous=True)],
             "set_aside": [],
         },
     },
+    {"scenario": "page-review", "page_ordinal": 1, "answer": _PAGE_ONE_ANSWER},
     {
-        "scenario": "happy",
+        "scenario": "page-review",
         "page_ordinal": 2,
         "answer": {
             "acts": [_page_entry(1, "a2", ["A1", "B1"], from_previous=True)],
@@ -508,14 +515,18 @@ def _churro_native_page_text(page_ordinal: int, chair: str) -> str:
 # Only attestator_3's boundary is churro.v1; declared-response validation refuses a
 # Churro response attributed to another chair.
 _CHURRO_PAGE_CHAIRS = ("attestator_3",)
+# `page-review` carries the same pages as `happy`, so a page-read run of it
+# shows Churro in its own units on every page, as `happy` does.
+_NATIVE_CHURRO_SCENARIOS = ("happy", "page-review")
 CHURRO_PAGE_RESPONSES = tuple(
     {
-        "scenario": "happy",
+        "scenario": scenario,
         "page_ordinal": page_ordinal,
         "chair": chair,
         "raw_xml": churro_xml(_joined_page_text(page_ordinal, chair)),
         "transport_stop_reason": "eos",
     }
+    for scenario in _NATIVE_CHURRO_SCENARIOS
     for page_ordinal in sorted(_PAGE_ACTS)
     for chair in _CHURRO_PAGE_CHAIRS
 ) + (
@@ -978,6 +989,14 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         'name = "review"',
         'recover_acts = ["a1"]',
         'hold_acts = ["a2"]',
+        "",
+        "# page-review is the review scenario of a page-read run (reading_unit =",
+        '# "page"): its page 2 answer cites no boxed id, so the page accounting holds',
+        "# that entry. Read act by act it declares neither a recovery nor a hold.",
+        "[[scenario]]",
+        'name = "page-review"',
+        "recover_acts = []",
+        "hold_acts = []",
         "",
         "[[scenario]]",
         'name = "continuation-recovery"',

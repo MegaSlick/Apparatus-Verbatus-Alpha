@@ -237,6 +237,15 @@ def page_tree(tmp_path_factory) -> tuple[Path, Path]:
     return base / "runs", protocol
 
 
+@pytest.fixture(scope="module")
+def review_page_tree(tmp_path_factory) -> tuple[Path, Path]:
+    """The `page-review` scenario read whole: page 1 as `happy`, page 2's entry citing no box."""
+    base = tmp_path_factory.mktemp("page-reading-review")
+    protocol = _page_protocol(base / "config")
+    _chain(base / "runs", protocol, through_perlector=True, scenario="page-review")
+    return base / "runs", protocol
+
+
 def test_every_sealed_page_is_read_whole_into_a_feed_a_reading_and_its_acts(page_tree):
     root, _protocol = page_tree
     feeds, readings = _records(root, "page-feed"), _records(root, "page-reading")
@@ -276,7 +285,11 @@ def test_each_placed_act_region_is_the_union_of_its_cited_boxes_cut_from_the_ink
     feeds = {record["subject_id"]: record["payload"] for record in _records(root, "page-feed")}
     readings = {record["subject_id"]: record for record in _records(root, "page-reading")}
     placed = [r for r in _records(root, "act-region") if r["payload"]["union_box_px"]]
-    assert sorted(region["payload"]["n"] for region in placed) == [1, 2]
+    assert sorted((r["payload"]["page_ordinal"], r["payload"]["n"]) for r in placed) == [
+        (1, 1),
+        (1, 2),
+        (2, 1),
+    ]
     for region in placed:
         payload = region["payload"]
         boxes = placement_boxes(feeds[payload["page_id"]])
@@ -327,9 +340,9 @@ def test_every_act_record_names_its_page_accounting_published_before_it(page_tre
             assert payload["page_holds"] == account["payload"]["holds"]
             held = bool(payload["page_holds"] or payload["holds"])
             assert record["outcome"] == ("held" if held else "read")
-    # Page 1 is read whole and covered; page 2's one entry is unplaced and held.
+    # Both pages are read whole and covered, so nothing holds an act.
     outcomes = {(r["payload"]["page_ordinal"], r["outcome"]) for r in _records(root, "perlectio")}
-    assert outcomes == {(1, "read"), (2, "held")}
+    assert outcomes == {(1, "read"), (2, "read")}
 
 
 def test_a_perlectio_carries_clean_text_doubt_dissent_truncation_and_autopsia(page_tree):
@@ -358,8 +371,8 @@ def test_a_perlectio_carries_clean_text_doubt_dissent_truncation_and_autopsia(pa
     assert last["payload"]["continues_to_next_page"] is True
 
 
-def test_an_entry_citing_no_boxed_id_is_held_unplaced_with_no_crop(page_tree):
-    root, _protocol = page_tree
+def test_an_entry_citing_no_boxed_id_is_held_unplaced_with_no_crop(review_page_tree):
+    root, _protocol = review_page_tree
     [region] = [r for r in _records(root, "act-region") if r["payload"]["page_ordinal"] == 2]
     payload = region["payload"]
     assert region["outcome"] == "held"
@@ -386,19 +399,23 @@ def test_a_second_pass_and_a_fresh_run_leave_the_same_bytes_and_act_ids(page_tre
     )
 
 
-def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree):
-    """Page 1 is read whole and placed, and its readings cover every Surya line:
-    nothing holds it. Page 2's one entry cites no boxed id: it is unplaced, has
-    no region to measure truncation over, and the page's ink and Surya's lines
-    lie outside every reading region."""
+def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, review_page_tree):
+    """Each page is read whole and placed, and its readings cover every Surya line:
+    nothing holds it. In `page-review`, page 2's one entry cites no boxed id: it is
+    unplaced, has no region to measure truncation over, and the page's ink and
+    Surya's lines lie outside every reading region."""
     root, _protocol = page_tree
     accounts = {r["payload"]["page_ordinal"]: r for r in _records(root, "page-accounting")}
     assert set(accounts) == {1, 2}
-    first = accounts[1]["payload"]
-    assert first["schema"] == "page-accounting.v1" and accounts[1]["outcome"] == "read"
-    assert first["holds"] == []
-    assert {unit["disposition"] for unit in first["units"]} == {"cited"}
-    assert first["rules"]["i"]["status"] == "not-applicable"
+    for account in accounts.values():
+        payload = account["payload"]
+        assert payload["schema"] == "page-accounting.v1" and account["outcome"] == "read"
+        assert payload["holds"] == []
+        assert {unit["disposition"] for unit in payload["units"]} == {"cited"}
+        assert payload["rules"]["i"]["status"] == "not-applicable"
+    root, _protocol = review_page_tree
+    accounts = {r["payload"]["page_ordinal"]: r for r in _records(root, "page-accounting")}
+    assert accounts[1]["payload"]["holds"] == []
     assert accounts[2]["payload"]["holds"] == [
         "reading-unplaced",
         "truncation-not-classified",
