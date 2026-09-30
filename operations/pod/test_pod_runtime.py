@@ -5059,16 +5059,24 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
 ) -> None:
     observed: dict[str, object] = {}
 
-    def materialize(root, fetcher):  # type: ignore[no-untyped-def]
-        observed.update(root=root, fetcher=fetcher)
+    def materialize(root, fetcher, bundle_fetcher):  # type: ignore[no-untyped-def]
+        observed.update(root=root, fetcher=fetcher, bundle_fetcher=bundle_fetcher)
         return {"artifacts": [], "complete": False}
 
     monkeypatch.setattr("operations.pod.bootstrap.materialize_real_roster", materialize)
-    fetcher = object()
-    action = ModelStoreBootstrapAction(tmp_path / "models", fetcher)  # type: ignore[arg-type]
+    fetcher, bundle_fetcher = object(), object()
+    action = ModelStoreBootstrapAction(
+        tmp_path / "models",
+        fetcher,  # type: ignore[arg-type]
+        bundle_fetcher,  # type: ignore[arg-type]
+    )
 
     assert action.materialize() == {"artifacts": [], "complete": False}
-    assert observed == {"root": tmp_path / "models", "fetcher": fetcher}
+    assert observed == {
+        "root": tmp_path / "models",
+        "fetcher": fetcher,
+        "bundle_fetcher": bundle_fetcher,
+    }
 
 
 def test_every_bootstrap_actions_implementation_covers_every_step() -> None:
@@ -6237,6 +6245,42 @@ def test_uv_sync_adds_up_the_two_copies_that_share_one_filesystem(tmp_path: Path
 
     actions_with(64 * 1024**3).sync_uv_environment(lockfile)
     assert ran == EXPECTED_SYNCS
+
+
+def test_uv_sync_counts_the_bundles_chair_cache_copies_onto_the_same_disk(
+    tmp_path: Path,
+) -> None:
+    """A local-repository chair copied onto container-local disk after the sync
+    needs its bytes there too, so it is counted before the download starts."""
+
+    repository, lockfile = _checkout_with_locks(tmp_path)
+    ran: list[list[str]] = []
+
+    def record(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        ran.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def actions_with(bundle_bytes: int) -> SubprocessBootstrapActions:
+        return SubprocessBootstrapActions(
+            configuration=lambda: {"profile": "fixture"},
+            repository=repository,
+            transfer=lambda: {},
+            materialize_model_store=lambda: {},
+            cache=None,  # type: ignore[arg-type]
+            preflight=lambda: {"color": "green"},
+            runner=record,
+            free_bytes=lambda _path: 40 * 1024**3,
+            environment={**BOOTSTRAP_ENVIRONMENT, "UV_CACHE_DIR": str(tmp_path / "uv-cache")},
+            local_bundles=lambda: {repository / "config/real-models/surya": bundle_bytes},
+        )
+
+    # The project's two copies (32 GiB) fit in 40 GiB; with a 9 GiB bundle they do not.
+    with pytest.raises(BootstrapStepFailure, match="too small.*bundle CHAIR_CACHE copies"):
+        actions_with(9 * 1024**3).sync_uv_environment(lockfile)
+    assert ran == []
+
+    actions_with(1024**3).sync_uv_environment(lockfile)
+    assert ran == [PROJECT_SYNC]
 
 
 def test_production_bootstrap_refuses_an_incomplete_model_store_receipt(tmp_path: Path) -> None:

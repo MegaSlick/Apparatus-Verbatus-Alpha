@@ -158,6 +158,19 @@ def qualification_candidates(
         )
     _verify_cache_receipts(preflight.get("cache_receipts"), identities)
     _verify_placements(preflight.get("placements"), identities, tier, unserved_states)
+    _verify_subprocess_receipts(
+        preflight.get("subprocess_receipts"),
+        {
+            role: row
+            for role, identity in identities.items()
+            for row in rows
+            if isinstance(row, dict)
+            and row.get("kind") == "subprocess"
+            and row.get("recipe") == identity.serving_recipe
+            and row.get("chair") == role
+            and row.get("tier") == tier
+        },
+    )
 
     root = Path(evidence_root)
     candidates: list[dict[str, object]] = []
@@ -473,6 +486,41 @@ def _verify_cache_receipts(raw_receipts: object, identities: Mapping[str, ChairI
     for role, rows in receipts.items():
         if len(rows) != 1 or rows[0].get("manifest_digest") != identities[role].digest_manifest:
             raise QualificationRefusal(f"chair {role!r} cache receipt does not match its manifest")
+
+
+def _verify_subprocess_receipts(
+    raw_receipts: object, subprocess_rows: Mapping[str, Mapping[str, object]]
+) -> None:
+    """Each subprocess chair's runner read the golden page once, in its row's environment."""
+    receipts = _rows_by_chair([] if raw_receipts is None else raw_receipts, "subprocess receipts")
+    if set(receipts) != set(subprocess_rows):
+        raise QualificationRefusal(
+            "subprocess receipts do not cover exactly the chairs run as subprocesses: "
+            f"expected={sorted(subprocess_rows)}, observed={sorted(receipts)}"
+        )
+    for role, rows in receipts.items():
+        row = subprocess_rows[role]
+        if len(rows) != 1 or rows[0].get("environment") != row.get("environment"):
+            raise QualificationRefusal(
+                f"chair {role!r} subprocess receipt does not name its row's environment"
+            )
+        _verify_measured_packages(role, rows[0].get("versions"), row.get("required_packages"))
+
+
+def _verify_measured_packages(role: str, measured: object, required: object) -> None:
+    """Each package the row pins, as the run measured it: `surya-ocr` is
+    measured as `surya_ocr`, and a local build tag (`2.14.0+cu130`) is the
+    same release."""
+    if not isinstance(required, Mapping) or not required:
+        raise QualificationRefusal(f"chair {role!r} subprocess row pins no packages")
+    if not isinstance(measured, Mapping):
+        raise QualificationRefusal(f"chair {role!r} subprocess receipt measured no versions")
+    for package, pin in required.items():
+        found = measured.get(package.replace("-", "_"))
+        if not isinstance(found, str) or found.split("+", 1)[0] != pin:
+            raise QualificationRefusal(
+                f"chair {role!r} ran {package} {found!r}, and its row pins {pin!r}"
+            )
 
 
 def _verify_placements(

@@ -539,6 +539,7 @@ def test_the_measured_real_roster_pins_each_shipped_manifest():
         "attestator_3",
         "perlector",
         "secondary_proposer",
+        "designator_surya",
     }
     assert (
         configured["designator_structure"].digest_manifest
@@ -551,6 +552,30 @@ def test_the_measured_real_roster_pins_each_shipped_manifest():
             expected_digest=identity.digest_manifest,
             chair=role,
         ).rows
+
+
+def test_the_real_surya_chair_and_the_store_pin_one_measured_bundle():
+    """Surya's bundle has no Hub revision, so its manifest digest is the pin the
+    launch-time fetch is checked against and the roster binds; the two are one fact."""
+    from common.chairs.model_store import REQUIRED_ARTIFACTS
+
+    identity = load_models_toml(ROOT / "config" / "models-real.toml").chairs["designator_surya"]
+    (requirement,) = [item for item in REQUIRED_ARTIFACTS if item.chair == "designator_surya"]
+    assert identity.source == requirement.source == "local-repository"
+    assert identity.digest_manifest == requirement.digest_manifest
+    assert identity.manifest == f"manifests/{requirement.artifact}.json"
+    rows = read_manifest(
+        ROOT / "config" / identity.manifest,
+        expected_digest=identity.digest_manifest,
+        chair="designator_surya",
+    ).rows
+    paths = {row.path for row in rows}
+    assert {"surya-bundle.json", requirement.license_file} <= paths
+    assert {
+        "text_detection/2025_05_07/model.safetensors",
+        "surya_layout2/rfdetr_layout.pth",
+        "surya_layout2/order/order_ar.pt",
+    } <= paths
 
 
 def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(tmp_path):

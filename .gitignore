@@ -38,3 +38,7 @@ scriptorium/*
 
 # graphify output: local, holds absolute paths and code-derived text.
 graphify-out/
+
+# Local-repository chairs of the real roster, placed here from the model store on
+# a pod; never committed.
+config/real-models/

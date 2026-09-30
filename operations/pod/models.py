@@ -281,23 +281,25 @@ container-local ``UV_CACHE_DIR`` (``bootstrap.py`` sizes that at "on the order
 of ten gigabytes of wheels"), then installs an unpacked copy of the same
 torch+CUDA stack into ``<repository>/.venv``, which is larger again; the image
 itself also sits on this disk. Those two are bounded at 32 GiB in
-``bootstrap.py``. When the catalogue runs a configured chair as a subprocess
-(Surya), its own environment adds a cache and a venv bounded at 14 GiB
-(``bootstrap.SUBPROCESS_ENVIRONMENT_REQUIRED_BYTES``): 46 GiB in all, which
+``bootstrap.py``. Surya's own environment adds a cache and a venv bounded at
+14 GiB (``bootstrap.SUBPROCESS_ENVIRONMENT_REQUIRED_BYTES``) whenever it is
+synced: when the catalogue runs a chair the pod's selected roles include as a
+subprocess, or whenever the model store still lacks Surya's bundle, which on a
+fresh store is every pod, whatever its stages run. That is 46 GiB in all, which
 leaves about ten for the image.
 
 **It is a bound, not a measurement**, in the same sense as the spend template's
-figures: no pod has ever been booted from this tree, so nothing here has been
-weighed. The first boot records the real footprint (the README's checklist row
-asks for it) and this number is replaced by the measured one. The pod-side
+figures: nothing here has been weighed on a pod. A boot records the real
+footprint (the README's checklist row asks for it) and this number is replaced
+by the measured one. The pod-side
 refusal in ``bootstrap.sync_uv_environment`` is the half that does measure: it
 reads the free space actually present before the download starts.
 """
 
 BIG_CARD_CONTAINER_DISK_GB = 120
 """Perlector pods: the 52 GiB 27B cache, the project's 32 GiB venv and uv cache, and
-Surya's 14 GiB environment when a Surya subprocess row is configured -- 98 GiB of
-bounds, leaving room for the image."""
+Surya's 14 GiB environment whenever it is synced -- 98 GiB of bounds, leaving room
+for the image."""
 
 
 def container_disk_gb_for_tier(tier: str | None) -> int:

@@ -72,7 +72,18 @@ class RequiredArtifact:
     # A repository may declare a licence in its model card without carrying a
     # licence file, so declaration and snapshotted text are separate evidence.
     license_declaration: str | None = None
+    # A local-repository artifact has no Hub revision to fetch at, so the digest
+    # of its measured manifest is its pin: a fetch that measures anything else
+    # is refused before it is promoted. Its licence file is named, since a
+    # bundle of several checkpoints has no single repository root to look in.
+    digest_manifest: str | None = None
+    license_file: str | None = None
 
+
+# The measured manifest of Surya's bundle as `operations/serving/surya/prefetch.py`
+# writes it: the text-detection checkpoint at Datalab's dated path and the layout
+# and reading-order checkpoints at the pinned Hub commit, with the bundle's lock.
+SURYA_BUNDLE_DIGEST_MANIFEST = "ad19b0280bec623e7edd1b7ca5197ded1add35af9ff0ec76e80db8d035b16cb9"
 
 # The roster policy; the inventory derived from download_record.json refuses any
 # disagreement with it. `license_declaration` is the model card's own licence id
@@ -123,8 +134,19 @@ REQUIRED_ARTIFACTS = (
     ),
     # Surya's detection and layout weight bundle: fetched by its own prefetch from
     # Datalab's model host and the Hub, so it has no single Hub pin and is kept
-    # as a local repository (operations/serving/surya/README.md).
-    RequiredArtifact("designator_surya", "surya2-detection", "local-repository", None, None),
+    # as a local repository pinned by its manifest digest
+    # (operations/serving/surya/README.md). Its licence file is the layout
+    # repository's, whose card declares `openrail`.
+    RequiredArtifact(
+        "designator_surya",
+        "surya2-detection",
+        "local-repository",
+        None,
+        None,
+        "openrail",
+        digest_manifest=SURYA_BUNDLE_DIGEST_MANIFEST,
+        license_file="surya_layout2/LICENSE",
+    ),
     RequiredArtifact(
         "perlector",
         "qwen3.8-27B",
@@ -160,6 +182,16 @@ class MaterializationFetcher(Protocol):
 
     def fetch(self, repo: str, revision: str, destination: Path) -> None:
         """Write the exact repository revision below ``destination``, or raise."""
+
+
+class BundleFetcher(Protocol):
+    """Fetch one local-repository artifact, complete, to a path that does not exist yet."""
+
+    def check(self, artifact: str) -> None:
+        """Raise unless this fetcher can fetch ``artifact`` now; fetches nothing."""
+
+    def fetch(self, artifact: str, destination: Path) -> None:
+        """Write the artifact's whole tree at ``destination``, or raise."""
 
 
 class StoreRoleFetcher:
@@ -225,20 +257,22 @@ class StoreRoleFetcher:
 
 
 def materialize_real_roster(
-    store_root: str | Path, fetcher: MaterializationFetcher
+    store_root: str | Path, fetcher: MaterializationFetcher, bundle_fetcher: BundleFetcher
 ) -> dict[str, Any]:
-    """Fetch each real pinned repository once and publish its measured evidence.
+    """Fetch each real pinned artifact once and publish its measured evidence.
 
-    The one boot-time writer for real model bytes. It never edits
-    ``config/models-real.toml``: a manifest digest becomes a pin only through a
-    reviewed config edit. Pending artifacts are fetched before present ones are
-    re-verified, so an interrupted promotion is closed by re-fetching the same
-    pin; one final whole-store verification backs every receipt.
+    The one boot-time writer for real model bytes. ``fetcher`` fetches each Hub
+    repository at its revision; ``bundle_fetcher`` each local-repository
+    artifact, whose measured manifest must equal its pinned digest. It never
+    edits ``config/models-real.toml``: a manifest digest becomes a pin only
+    through a reviewed config edit. Pending artifacts are fetched before present
+    ones are re-verified, so an interrupted promotion is closed by re-fetching
+    the same pin; one final whole-store verification backs every receipt.
     """
 
     root = Path(store_root).resolve()
     with _materialization_lock(root):
-        return _materialize_real_roster_locked(root, fetcher)
+        return _materialize_real_roster_locked(root, fetcher, bundle_fetcher)
 
 
 @contextmanager
@@ -279,7 +313,9 @@ def _materialization_lock(root: Path):
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def _materialize_real_roster_locked(root: Path, fetcher: MaterializationFetcher) -> dict[str, Any]:
+def _materialize_real_roster_locked(
+    root: Path, fetcher: MaterializationFetcher, bundle_fetcher: BundleFetcher
+) -> dict[str, Any]:
     record = _initial_materialization_record()
     active = root / "download_record.json"
     if active.exists():
@@ -294,20 +330,32 @@ def _materialize_real_roster_locked(root: Path, fetcher: MaterializationFetcher)
     else:
         write_download_record(record, root)
 
-    completed: dict[str, dict[str, str]] = {}
-    requirements = _unique_huggingface_requirements()
+    completed: dict[str, dict[str, str | None]] = {}
+    requirements = _unique_requirements()
     record_by_artifact = {item["artifact"]: item for item in record["artifacts"]}
     already_present = {
         item.artifact
         for item in requirements
         if record_by_artifact[item.artifact]["state"] == "present"
     }
+    # A bundle fetcher that cannot run is found before any repository downloads,
+    # and the local bundles are fetched first, so a bundle that fails to fetch
+    # fails before the Hub downloads are paid for.
     for requirement in requirements:
+        if requirement.source == "local-repository" and requirement.artifact not in already_present:
+            bundle_fetcher.check(requirement.artifact)
+    local_first = sorted(requirements, key=lambda item: item.source != "local-repository")
+    for requirement in local_first:
         if requirement.artifact in already_present:
             continue
-        if not requirement.repo or not requirement.revision:
-            raise DigestMismatchRefusal(requirement.artifact, "Hugging Face artifact lacks a pin")
-        present = _fetch_artifact(root, requirement, fetcher)
+        if requirement.source == "local-repository":
+            present = _fetch_bundle(root, requirement, bundle_fetcher)
+        else:
+            if not requirement.repo or not requirement.revision:
+                raise DigestMismatchRefusal(
+                    requirement.artifact, "Hugging Face artifact lacks a pin"
+                )
+            present = _fetch_artifact(root, requirement, fetcher)
         record = _replace_record_artifact(record, present)
         write_download_record(record, root)
         completed[requirement.artifact] = _materialization_receipt(present)
@@ -318,9 +366,6 @@ def _materialize_real_roster_locked(root: Path, fetcher: MaterializationFetcher)
     verified = {row["artifact"]: row for row in inventory["artifacts"]}
     for artifact in already_present:
         completed[artifact] = _materialization_receipt(verified[artifact])
-    real_roster_complete = all(
-        verified.get(item.artifact, {}).get("state") == "present" for item in requirements
-    )
 
     return {
         "store": str(root),
@@ -331,10 +376,29 @@ def _materialize_real_roster_locked(root: Path, fetcher: MaterializationFetcher)
         # could have moved.
         "download_record_sha256": inventory["download_record_sha256"],
         "complete": inventory["complete"],
-        # Narrower than `complete`, which includes the Surya bundle no Hub pin fetches.
-        "real_roster_complete": real_roster_complete,
+        # Every roster artifact is fetched here, so the real roster is complete
+        # exactly when the store is.
+        "real_roster_complete": inventory["complete"],
         "unattributed_staging_entries": _unattributed_staging_entries(root),
     }
+
+
+def pending_local_artifacts(store_root: str | Path) -> tuple[str, ...]:
+    """The local-repository artifacts :func:`materialize_real_roster` would fetch
+    into this store: each the roster requires that the store does not hold present.
+
+    Reads the store and writes nothing, so a step before materialization can
+    prepare what the fetch needs. A store with no record yet needs every one.
+    """
+
+    root = Path(store_root).resolve()
+    local = [item.artifact for item in _unique_requirements() if item.source == "local-repository"]
+    active = root / "download_record.json"
+    if not active.exists() and not active.is_symlink():
+        return tuple(local)
+    record = _with_new_requirements(_load_custodied(root, _validate_upgradable_record))
+    states = {item["artifact"]: item["state"] for item in record["artifacts"]}
+    return tuple(artifact for artifact in local if states[artifact] != "present")
 
 
 def _fetch_artifact(
@@ -406,6 +470,85 @@ def _fetch_artifact(
     except BaseException:
         _cleanup_failed_staging(staging)
         raise
+
+
+def _fetch_bundle(
+    root: Path, requirement: RequiredArtifact, fetcher: BundleFetcher
+) -> dict[str, Any]:
+    """Fetch, measure, check against its pinned digest and promote one local bundle.
+
+    The measured manifest is compared with the pin before anything is published,
+    so bytes that changed upstream leave no manifest and no present entry behind.
+    """
+    artifact = requirement.artifact
+    if requirement.digest_manifest is None or requirement.license_file is None:
+        raise DigestMismatchRefusal(
+            artifact, "a local-repository artifact names no pinned digest or licence file"
+        )
+    staging_root = _under(root, "staging")
+    staging_root.mkdir(parents=True, exist_ok=True)
+    for leftover in staging_root.iterdir():
+        _cleanup_failed_staging(leftover)
+    work = Path(tempfile.mkdtemp(prefix=f".{artifact}.fetch-", dir=staging_root))
+    snapshot = work / "snapshot"
+    try:
+        fetcher.fetch(artifact, snapshot)
+        if snapshot.is_symlink() or not snapshot.is_dir():
+            raise DigestMismatchRefusal(
+                artifact, "the bundle fetcher wrote no directory at the destination it was given"
+            )
+        _refuse_staged_symlinks(snapshot, artifact)
+        _refuse_unpinned_additions(snapshot, artifact)
+        licence = snapshot / requirement.license_file
+        if licence.is_symlink() or not licence.is_file() or licence.stat().st_size == 0:
+            raise DigestMismatchRefusal(
+                artifact, f"the fetched bundle has no licence text at {requirement.license_file!r}"
+            )
+        # The licence file's own repository declares its licence in the model
+        # card beside it; that declaration must be the roster's.
+        _reconcile_model_card_licence(licence.parent, requirement)
+        measured = build_manifest(snapshot)
+        digest = digest_bytes(canonical_bytes(measured.to_record()))
+        if digest != requirement.digest_manifest:
+            raise DigestMismatchRefusal(
+                artifact,
+                f"the fetched bundle measures manifest {digest}, not the pinned "
+                f"{requirement.digest_manifest}; the bytes at its source have changed, and "
+                "a new pin is a reviewed change",
+            )
+        required_files = [row.path for row in measured.rows]
+        manifest = f"manifests/{artifact}.json"
+        promoted = promote_verified_snapshot(
+            root,
+            {
+                "artifact": artifact,
+                "staging": snapshot.relative_to(root).as_posix(),
+                "manifest": manifest,
+                "required_files": required_files,
+            },
+        )
+        if promoted != requirement.digest_manifest:
+            raise DigestMismatchRefusal(
+                artifact,
+                f"the published manifest {manifest!r} has digest {promoted}, not the pinned "
+                f"{requirement.digest_manifest}",
+            )
+        _promote_materialized_snapshot(snapshot, _under(root, f"local/{artifact}"), artifact)
+        return {
+            "artifact": artifact,
+            "state": "present",
+            "source": requirement.source,
+            "repo": None,
+            "revision": None,
+            "snapshot": f"local/{artifact}",
+            "manifest": manifest,
+            "digest_manifest": promoted,
+            "license": requirement.license_file,
+            "carried": [],
+            "required_files": required_files,
+        }
+    finally:
+        _cleanup_failed_staging(work)
 
 
 def _cleanup_failed_staging(staging: Path) -> None:
@@ -503,13 +646,12 @@ def _refuse_unpinned_additions(snapshot: Path, artifact: str) -> None:
         )
 
 
-def _unique_huggingface_requirements() -> list[RequiredArtifact]:
+def _unique_requirements() -> list[RequiredArtifact]:
     """Roster order, one entry per artifact: chandra fills two chairs at one pin."""
 
     unique: dict[str, RequiredArtifact] = {}
     for item in REQUIRED_ARTIFACTS:
-        if item.source == "huggingface":
-            unique.setdefault(item.artifact, item)
+        unique.setdefault(item.artifact, item)
     return list(unique.values())
 
 
@@ -830,11 +972,12 @@ def _promote_materialized_snapshot(staging: Path, destination: Path, artifact: s
     os.replace(staging, destination)
 
 
-def _materialization_receipt(entry: Mapping[str, Any]) -> dict[str, str]:
+def _materialization_receipt(entry: Mapping[str, Any]) -> dict[str, str | None]:
     return {
         "artifact": str(entry["artifact"]),
-        "repo": str(entry["repo"]),
-        "revision": str(entry["revision"]),
+        # A local bundle has neither; the receipt says so rather than "None".
+        "repo": entry["repo"],
+        "revision": entry["revision"],
         "manifest": str(entry["manifest"]),
         "digest_manifest": str(entry["digest_manifest"]),
         "license": str(entry["license"]),
@@ -998,6 +1141,17 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
                     f"{required.artifact!r} {field} diverges from roster policy: expected "
                     f"{expected!r}, the record says {item.get(field)!r}",
                 )
+        if (
+            required.digest_manifest is not None
+            and item["state"] == "present"
+            and item["digest_manifest"] != required.digest_manifest
+        ):
+            raise DigestMismatchRefusal(
+                required.artifact,
+                f"the store holds {required.artifact!r} at manifest {item['digest_manifest']}, "
+                f"not the pinned {required.digest_manifest}; a store is never re-pinned in "
+                "place, so fetch the new pin into a fresh store",
+            )
         rows.append({"chair": required.chair, **item})
     pending = sorted(
         {item["artifact"] for item in record["artifacts"] if item["state"] == "pending-fetch"}

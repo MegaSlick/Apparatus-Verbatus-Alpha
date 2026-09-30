@@ -18,7 +18,11 @@ from typing import Callable, Mapping, MutableMapping, Protocol
 from urllib.parse import urlsplit
 
 from common.chairs.errors import ChairRefusal
-from common.chairs.model_store import MaterializationFetcher, materialize_real_roster
+from common.chairs.model_store import (
+    BundleFetcher,
+    MaterializationFetcher,
+    materialize_real_roster,
+)
 from common.contracts.canonical import is_sha256
 
 from .durable import atomic_write, canonical_json
@@ -89,17 +93,17 @@ PREFLIGHT and fails on a missing pin *after* the ten-gigabyte download.
 # `uv sync --locked --group pod` starts: the wheel cache under UV_CACHE_DIR,
 # which this module's own comment sizes at "on the order of ten gigabytes", and
 # the unpacked install in `<repository>/.venv`, which is larger again. Both are
-# bounds rather than measurements -- no pod has been booted from this tree -- and
-# the first live boot replaces them with what it actually observes. They are
-# deliberately checked against *free* space, which is the one fact the pod can
+# bounds rather than measurements, to be replaced by what a live boot observes.
+# They are deliberately checked against *free* space, which is the one fact the pod can
 # measure for itself, rather than against the requested container disk, which is
 # only what was asked for.
 UV_CACHE_REQUIRED_BYTES = 12 * 1024**3
 REPOSITORY_VENV_REQUIRED_BYTES = 20 * 1024**3
 
 SURYA_ENVIRONMENT = "operations/serving/surya"
-"""Surya's own uv project, synced beside the project's environment when a
-subprocess serving row for a configured chair runs in it.
+"""Surya's own uv project, synced beside the project's environment when a chair
+the pod's stages run is served from it, or when the model store still lacks
+Surya's weight bundle, which Surya's own prefetch fetches in it.
 
 Surya pins Pillow and OpenCV versions the project cannot share, so the
 Designator runs it through this environment's interpreter
@@ -418,7 +422,9 @@ class BootstrapStep(StrEnum):
     UV_ENVIRONMENT = "uv-environment"
     TRANSFER = "transfer"
     MODEL_STORE = "model-store"
-    CHAIR_CACHE = "chair-cache"  # Stable journal key; the receipt records source planning.
+    # Plans each Hugging Face chair's store source and places each local-repository
+    # chair's verified bundle where the roster binds it.
+    CHAIR_CACHE = "chair-cache"
     PREFLIGHT = "preflight"
 
 
@@ -876,12 +882,18 @@ class ChairCachePlan(Protocol):
 class ModelStoreBootstrapAction:
     """Launch-time acquisition of the real roster onto the mounted model volume."""
 
-    def __init__(self, store_root: str | Path, fetcher: MaterializationFetcher) -> None:
+    def __init__(
+        self,
+        store_root: str | Path,
+        fetcher: MaterializationFetcher,
+        bundle_fetcher: BundleFetcher,
+    ) -> None:
         self.store_root = Path(store_root)
         self.fetcher = fetcher
+        self.bundle_fetcher = bundle_fetcher
 
     def materialize(self) -> dict[str, object]:
-        return materialize_real_roster(self.store_root, self.fetcher)
+        return materialize_real_roster(self.store_root, self.fetcher, self.bundle_fetcher)
 
 
 class SubprocessBootstrapActions:
@@ -906,11 +918,15 @@ class SubprocessBootstrapActions:
         image_contract: Callable[[], dict[str, object]] | None = None,
         free_bytes: Callable[[Path], int] | None = None,
         subprocess_environments: Callable[[], frozenset[str]] = frozenset,
+        local_bundles: Callable[[], Mapping[Path, int]] = dict,
     ) -> None:
         self.repository = Path(repository)
         # Read after checkout, like the roster the stages read: the environments
         # the checked-out catalogue's subprocess rows run in, for configured chairs.
         self.subprocess_environments = subprocess_environments
+        # Also read after checkout: where CHAIR_CACHE will copy each
+        # local-repository chair on container-local disk, and its manifest's bytes.
+        self.local_bundles = local_bundles
         self.transfer = transfer
         self.configuration = configuration
         self.materialize = materialize_model_store
@@ -1157,10 +1173,11 @@ class SubprocessBootstrapActions:
         """Refuse a sync the container-local disk cannot hold, before it starts.
 
         The create request states a container disk size, but nothing proves the
-        pod got one: it is a documented field, and this is the first boot from
-        this tree. What the pod *can* do is read the free space actually under
-        the two directories the sync fills -- the wheel cache and the venv --
-        and say so in one sentence naming both figures. Without this the
+        pod got one: it is a documented field. What the pod *can* do is read the
+        free space actually under the directories the sync fills -- the wheel
+        cache and the venv, and those of each subprocess environment -- and
+        under each place CHAIR_CACHE later copies a local-repository chair, and
+        say so in one sentence naming both figures. Without this the
         failure is uv's own ENOSPC part way through a ten-gigabyte download
         that was already paid for, which must never happen silently: a
         cost with nothing to show and no named reason.
@@ -1186,6 +1203,8 @@ class SubprocessBootstrapActions:
                 wanted[Path(cache_directory)] += bound["uv_cache"]
             environment_venv = self.repository / name / REPOSITORY_VENV_DIRECTORY
             wanted[environment_venv] = wanted.get(environment_venv, 0) + bound["venv"]
+        for bundle, size in self.local_bundles().items():
+            wanted[bundle] = wanted.get(bundle, 0) + size
         shared: dict[int, int] = {}
         for path, required in wanted.items():
             try:
@@ -1208,7 +1227,7 @@ class SubprocessBootstrapActions:
                     f"{_gib(free)} GiB free under {path}, and this sync needs about "
                     f"{_gib(shared[key])} GiB there (the wheel cache and the installed "
                     f"{REPOSITORY_VENV_DIRECTORY}, and those of any subprocess environment, "
-                    "are two copies of it)",
+                    "are two copies of it, beside any bundle CHAIR_CACHE copies)",
                     "Create the pod with a larger container disk (container_disk_gb in "
                     "the pod request) and boot again; uv would otherwise fill this disk "
                     "part way through the download and fail with no space left.",
