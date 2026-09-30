@@ -1146,11 +1146,29 @@ def test_a_truncated_entry_holds():
     ]
 
 
-def test_an_unclassified_entry_holds():
+def test_an_unknown_truncation_holds_as_reading_incomplete():
+    case = page()
+    case["entry_truncation"][2] = "unknown"
+
+    record = account(case)
+
+    only_hold(record, "g")
+    assert record["rules"]["g"]["findings"] == [
+        {"code": "reading-incomplete", "n": 2, "truncation": "unknown"}
+    ]
+
+
+def test_an_unclassified_entry_is_not_measured_and_holds():
     case = page()
     del case["entry_truncation"][3]
 
-    only_hold(account(case), "g")
+    record = account(case)
+
+    assert record["rules"]["g"] == {
+        "status": "not-measured",
+        "findings": [{"code": "truncation-not-classified", "n": 3}],
+    }
+    assert "truncation-not-classified" in record["holds"]
 
 
 def test_a_failed_call_holds_under_rule_g():
@@ -1308,6 +1326,7 @@ def test_no_detector_census_is_not_measured_and_held():
     assert record["rules"]["i"] == {
         "status": "not-measured",
         "findings": [{"code": "detector-records-not-measured"}],
+        "records_not_measured": None,
     }
     assert record["holds"] == ["detector-records-not-measured"]
 
@@ -1339,6 +1358,7 @@ def test_a_roster_without_a_record_detector_is_not_applicable():
     assert record["rules"]["i"] == {
         "status": "not-applicable",
         "findings": [{"code": "no-record-detector"}],
+        "records_not_measured": 0,
     }
     assert record["holds"] == []
 

@@ -2074,16 +2074,28 @@ def _utc(value: str) -> datetime:
     return parsed
 
 
-def _refuse_past_deadline(deadline: datetime | None, seconds_needed: int, what: str) -> None:
+def refuse_past_deadline(
+    deadline: datetime | None, seconds_needed: int, what: str, *, rate: str, remedy: str
+) -> None:
+    """Refuse work the reading deadline cannot hold, naming the planning rate and the way out."""
     if deadline is None:
         return
     remaining = int((deadline - datetime.now(timezone.utc)).total_seconds())
     if remaining < seconds_needed:
         raise ContractError(
-            f"{what} needs {seconds_needed}s at {PLANNED_SECONDS_PER_CALL}s a call, but the "
-            f"reading deadline {deadline.isoformat()} leaves {remaining}s; nothing more was "
-            "started. Give a later --reading-deadline, or fewer acts with --act"
+            f"{what} needs {seconds_needed}s at {rate}, but the reading deadline "
+            f"{deadline.isoformat()} leaves {remaining}s; nothing more was started. {remedy}"
         )
+
+
+def _refuse_past_deadline(deadline: datetime | None, seconds_needed: int, what: str) -> None:
+    refuse_past_deadline(
+        deadline,
+        seconds_needed,
+        what,
+        rate=f"{PLANNED_SECONDS_PER_CALL}s a call",
+        remedy="Give a later --reading-deadline, or fewer acts with --act",
+    )
 
 
 def with_engine_call(payload: dict, result: dict, fields: frozenset) -> frozenset:
@@ -4007,7 +4019,7 @@ def _read_the_pages(run: "_Pass") -> int:
             unrecorded_replies=_unrecorded_replies,
             answers_a_send=_answers_a_send,
             in_order_window=_in_order_window,
-            refuse_past_deadline=_refuse_past_deadline,
+            refuse_past_deadline=refuse_past_deadline,
             failure_record=_failure_record,
             real_ingress=real_ingress,
             sent_kind=SENT_KIND,

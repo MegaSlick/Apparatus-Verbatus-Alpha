@@ -67,7 +67,8 @@ Under `witness_units = "flat"` the rows keep the same units, ids, sealed
 boxes (`box_px`) and unit kind, so the accounting reads them unchanged; only
 what is shown changes: no unit box_1000, and the prompt shows each witness as
 one unit with no box, its units' texts joined, cited by the range of its unit
-ids. Such a witness places nothing: `placement_boxes` gives its units no box,
+ids. Such a witness places nothing: `common.page_accounting.placement_boxes`
+gives its units no box,
 so an entry's region comes only from boxed ids -- Surya's detections and the
 units of a boxed witness shown in its own units -- and two entries citing the
 same flat witness never share a region through it.
@@ -96,7 +97,7 @@ Churro's section names -- are part of its report and are shown as given.
     parts = page_prompt.prompt_parts(chair.serving_recipe, feed)  # what the capacity charges
     overlay = page_overlay.overlay_image(feed, context.tree.read_bytes)  # when drawn
     images = request_image_sizes(feed)   # what the capacity check charges
-    boxes = placement_boxes(feed)        # each id's box for an entry's region
+    boxes = page_accounting.placement_boxes(feed)  # each id's box for an entry's region
     nothing = shows_nothing(feed)        # a feed a reading could not be made from
 
 Each `testimonium` must already have passed the stage's own page-Testimonium
@@ -161,7 +162,6 @@ from common.native_witness import (
     validate_native_capture,
     verify_native_capture_bytes,
 )
-from common.page_accounting import placement_boxes as _placement_boxes
 from common.witness_regime import BLINDED, NAMED, REGIMES
 from operations.serving.surya_detector import contract as surya_contract
 
@@ -1139,15 +1139,6 @@ def shows_nothing(feed: dict[str, Any]) -> bool:
         any(unit["text"] for row in feed["witnesses"] for unit in row["units"])
         or (surya is not None and (surya["lines"] or surya["blocks"]))
     )
-
-
-def placement_boxes(feed: dict[str, Any]) -> dict[str, dict[str, int] | None]:
-    """Every id the feed defines, with the sealed-page box it places an entry by, or `None`.
-
-    The one derivation, `common.page_accounting.placement_boxes`, so the stage
-    cuts act regions from the map the accounting measures against.
-    """
-    return _placement_boxes(feed)
 
 
 def request_image_sizes(feed: dict[str, Any]) -> list[tuple[int, int]]:

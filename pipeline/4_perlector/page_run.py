@@ -61,7 +61,7 @@ from common import page_accounting, page_answer
 from common.alignment import bracket_marker_view
 from common.background import validate_measured_ink_map_payload
 from common.chairs.models import AbsentChair, ChairIdentity
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import digest_bytes, digest_of, is_plain_int
 from common.contracts.envelope import read_verified
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import act_id as derive_act_id
@@ -135,7 +135,6 @@ READING_INCOMPLETE: Final = "reading-incomplete"
 DOUBT_MARKS_MALFORMED: Final = "doubt-marks-malformed"
 ENTRY_NO_READABLE_TEXT: Final = "entry-no-readable-text"
 NO_AUTOPSIA: Final = "no-autopsia"
-NO_READABLE_TEXT: Final = "no-readable-text"
 
 READING_CLASS: Final = "reading"
 UNPLACED_CLASS: Final = "reading-unplaced"
@@ -346,7 +345,10 @@ def _surya_detections(
         record = context.tree.read_artifact(DESIGNATOR, kind, entry["artifact_id"])
         payload = _fields(record["payload"], _SURYA_DETECTION_FIELDS[kind], f"Surya {subject}")
         if payload["page_id"] != page_id or payload["n"] != n:
-            raise FatalAccounting(f"Surya {subject} states page {payload['page_id']!r}, n {n}")
+            raise FatalAccounting(
+                f"Surya {subject} states page {payload['page_id']!r}, n {payload['n']!r}, "
+                f"where its census places it on page {page_id!r} as {n}"
+            )
         row = {
             "box_px": payload["bounds"],
             "confidence_bp": payload["confidence_bp"],
@@ -740,16 +742,27 @@ def _serving_row(state: _PagePass):
     return state.row
 
 
+def _refuse_past_page_deadline(state: _PagePass, seconds_needed: int, what: str) -> None:
+    """The deadline check in pages: a page-read pass reads every sealed page, so only
+    a later deadline makes room."""
+    per_page = planned_seconds_per_page(state.run.page_max_tokens)
+    state.hooks.refuse_past_deadline(
+        state.run.args.reading_deadline,
+        seconds_needed,
+        what,
+        rate=f"{per_page}s a page (planned_seconds_per_page for the sealed page answer cap)",
+        remedy="Give a later --reading-deadline; a page-read pass reads every sealed page",
+    )
+
+
 def _page_job(state: _PagePass, page: _Page):
     """One prepared page's call, if it is sent, and its in-order finish."""
     run, hooks = state.run, state.hooks
     finish = partial(_finish, state, page)
     if not _sends(state, page):
         return None, finish
-    hooks.refuse_past_deadline(
-        run.args.reading_deadline,
-        planned_seconds_per_page(run.page_max_tokens),
-        f"reading page {page.ordinal}",
+    _refuse_past_page_deadline(
+        state, planned_seconds_per_page(run.page_max_tokens), f"reading page {page.ordinal}"
     )
     images = _request_images(state.context, page.feed)
     if run.service.client is None:
@@ -982,11 +995,6 @@ def answer_entries(answer: dict[str, Any], feed: dict[str, Any]) -> list[dict[st
     return entries
 
 
-def _whole_act_unreadable(text: str, gaps: list[dict[str, Any]]) -> bool:
-    """The `no-readable-text` contract exactly: an empty text and one whole-act gap."""
-    return text == "" and any(gap["position"] == "whole-act" for gap in gaps)
-
-
 def entry_plans(state: _PagePass, page: _Page, reading: dict[str, Any]) -> list[dict[str, Any]]:
     """Each entry of a read page as it will be published, computed without publishing.
 
@@ -1027,8 +1035,7 @@ def entry_plans(state: _PagePass, page: _Page, reading: dict[str, Any]) -> list[
         )
         if record is not None and truncation.holds_as_failure(record["classification"]):
             reading_holds.append(READING_INCOMPLETE)
-        whole_act_gap = _whole_act_unreadable(text, assessment["gaps"])
-        if not text.strip() and not whole_act_gap:
+        if not text.strip():
             reading_holds.append(ENTRY_NO_READABLE_TEXT)
         plans.append(
             {
@@ -1045,7 +1052,6 @@ def entry_plans(state: _PagePass, page: _Page, reading: dict[str, Any]) -> list[
                 "reading_holds": reading_holds,
                 "text": text,
                 "assessment": assessment,
-                "whole_act_gap": whole_act_gap,
                 "truncation": record,
                 "autopsia": autopsia,
             }
@@ -1220,12 +1226,7 @@ def publish_act_records(
             _check_adopted_perlectio(adopted, refs, act_id)
             continue
         reading_holds = list(plan["reading_holds"])
-        if reading_holds or page_holds:
-            outcome = HELD
-        elif plan["whole_act_gap"]:
-            outcome = NO_READABLE_TEXT
-        else:
-            outcome = READ
+        outcome = HELD if reading_holds or page_holds else READ
         assessment = plan["assessment"]
         context.publish(
             kind=PERLECTIO_KIND,
@@ -1313,54 +1314,118 @@ def _one_record(entries: list[dict[str, Any]], kind: str, subject: str) -> dict[
     return found[0]
 
 
-def _record_detections(context, page_id: str) -> tuple[Any, Any, list[dict[str, str]]]:
-    """The record detector's records and census for one page, or `(None, None, [])`.
+def _dai_unit_ids(page: _Page) -> dict[tuple[int, int, int, int], list[str]]:
+    """The feed ids of DAI's units by box, in the feed's order.
 
-    Both are `None` when the detector published no `detector-page` for the page
-    or its run facts state no `max_det`, so whether it stopped at its cap is
-    unknown; the accounting then holds rule (i) as not measured. A record whose
-    corners enclose no crop is given with no box, and the accounting reports
-    it not measured.
+    DAI reads one unit per detector record it was shown, boxed by that record's
+    bounds, so a detector record and the DAI unit with its box are one record.
+    A DAI the feed hides has no row and names none.
     """
+    labels = {w["witness_label"] for w in page.witnesses if w["adapter"] == page_feed.DAI}
+    ids: dict[tuple[int, int, int, int], list[str]] = {}
+    for row in page.feed["witnesses"]:
+        if row["witness_label"] not in labels:
+            continue
+        for unit in row["units"]:
+            box = unit["box_px"]
+            if box is not None:
+                ids.setdefault((box["x"], box["y"], box["w"], box["h"]), []).append(unit["id"])
+    return ids
+
+
+def _record_detections(context, page: _Page) -> tuple[Any, Any, list[dict[str, str]]]:
+    """The record detector's records and census for one page, and the records read.
+
+    Records and census are `None` when the detector published no
+    `detector-page` for the page, or when its run facts state no `max_det`, so
+    whether it stopped at its cap is unknown; the accounting then holds rule
+    (i) as not measured, and the `detector-page` read is still an input. A
+    record whose corners enclose no crop is given with no box, and the
+    accounting reports it not measured. A record carries the feed id of the
+    DAI unit that is that record, so setting that unit aside is seen as
+    setting the record aside. The census and its records must agree exactly --
+    count, subjects, order, page -- and every sealed record of the page must be
+    named by its census, or the stage refuses by name.
+    """
+    page_id = page.page_id
     entries = stage_manifest(context, DESIGNATOR)["artifacts"]
+    prefix = f"{page_id}-detector-"
+    sealed = {
+        e["subject_id"]
+        for e in entries
+        if e["kind"] == "detector-record" and e["subject_id"].startswith(prefix)
+    }
     pages = [e for e in entries if e["kind"] == "detector-page" and e["subject_id"] == page_id]
     if not pages:
+        if sealed:
+            raise FatalAccounting(
+                f"the Designator sealed detector records {sorted(sealed)} but no "
+                f"detector-page for page {page_id}"
+            )
         return None, None, []
     entry = _one_record(entries, "detector-page", page_id)
-    payload = context.tree.read_artifact(DESIGNATOR, "detector-page", entry["artifact_id"])[
-        "payload"
-    ]
+    page_ref = context.artifact_ref(DESIGNATOR, "detector-page", entry["artifact_id"])
+    what = f"page {page_id}'s detector-page"
     census = _fields(
-        payload,
-        ("raw_output_ref", "record_subjects", "detection_count"),
-        f"page {page_id}'s detector-page",
+        context.tree.read_artifact(DESIGNATOR, "detector-page", entry["artifact_id"])["payload"],
+        ("page_ordinal", "raw_output_ref", "record_subjects", "detection_count"),
+        what,
     )
+    subjects, count = census["record_subjects"], census["detection_count"]
+    if (
+        not isinstance(subjects, list)
+        or not all(isinstance(subject, str) for subject in subjects)
+        or not is_plain_int(count)
+        or len(subjects) != count
+    ):
+        raise FatalAccounting(f"{what} names record subjects that are not a list of its count")
+    if census["page_ordinal"] != page.ordinal:
+        raise FatalAccounting(f"{what} states page ordinal {census['page_ordinal']!r}")
+    unnamed = sorted(sealed - set(subjects))
+    if unnamed:
+        raise FatalAccounting(
+            f"the Designator sealed detector records {unnamed} that {what} does not name"
+        )
     output = json.loads(
         read_verified(context.tree.read_bytes, census["raw_output_ref"], "a detector output")
     )
     if not isinstance(output, dict) or not isinstance(output.get("run"), dict):
         raise FatalAccounting(f"page {page_id}'s detector output carries no run facts")
     if "max_det" not in output["run"]:
-        return None, None, []
+        return None, None, [page_ref]
     max_det = output["run"]["max_det"]
-    if not isinstance(max_det, int) or isinstance(max_det, bool):
+    if not is_plain_int(max_det) or max_det < 1:
         raise FatalAccounting(f"page {page_id}'s detector run facts state a max_det of {max_det!r}")
-    references = [context.artifact_ref(DESIGNATOR, "detector-page", entry["artifact_id"])]
+    unit_ids = _dai_unit_ids(page)
+    references = [page_ref]
     records = []
-    for subject in census["record_subjects"]:
+    for position, subject in enumerate(subjects):
+        if subject != f"{prefix}{position}":
+            raise FatalAccounting(f"{what} names {subject!r} as its record {position}")
         row = _one_record(entries, "detector-record", subject)
         record = context.tree.read_artifact(DESIGNATOR, "detector-record", row["artifact_id"])
-        bounds = _fields(record["payload"], ("bounds",), f"detector record {subject}")["bounds"]
+        fields = _fields(
+            record["payload"],
+            ("page_ordinal", "detector_ordinal", "bounds"),
+            f"detector record {subject}",
+        )
+        if (fields["page_ordinal"], fields["detector_ordinal"]) != (page.ordinal, position):
+            raise FatalAccounting(
+                f"detector record {subject} states page {fields['page_ordinal']!r}, "
+                f"ordinal {fields['detector_ordinal']!r}"
+            )
+        bounds = fields["bounds"]
         reference = context.artifact_ref(DESIGNATOR, "detector-record", row["artifact_id"])
         references.append(reference)
-        records.append({"box_px": bounds, "ref": reference})
+        item: dict[str, Any] = {"box_px": bounds, "ref": reference}
+        if isinstance(bounds, dict):
+            same_box = unit_ids.get(tuple(bounds.get(name) for name in ("x", "y", "w", "h")))
+            if same_box:
+                item["id"] = same_box.pop(0)
+        records.append(item)
     return (
         records,
-        {
-            "detection_count": census["detection_count"],
-            "max_det": max_det,
-            "max_det_reached": census["detection_count"] >= max_det,
-        },
+        {"detection_count": count, "max_det": max_det, "max_det_reached": count >= max_det},
         references,
     )
 
@@ -1385,7 +1450,7 @@ def _accounting_detections(state: _PagePass, page: _Page) -> tuple[dict[str, Any
         ]
     configured = isinstance(context.registry.resolve(SECONDARY_PROPOSER_CHAIR), ChairIdentity)
     records, record_census, record_refs = (
-        _record_detections(context, page.page_id) if configured else (None, None, [])
+        _record_detections(context, page) if configured else (None, None, [])
     )
     return {
         "surya": surya,
@@ -1397,32 +1462,38 @@ def _accounting_detections(state: _PagePass, page: _Page) -> tuple[dict[str, Any
 
 def _accounting_ink(context, page: _Page) -> tuple[dict[str, Any] | None, list]:
     """The page's retained ink runs and resolved coverage policy, or `None` when unmeasured."""
+    found = []
     for entry in stage_manifest(context, INK_MAP)["artifacts"]:
         if entry["kind"] != "ink-map":
             continue
         record = context.tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
-        if record["payload"].get("page_ordinal") != page.ordinal:
-            continue
-        reference = context.artifact_ref(INK_MAP, "ink-map", entry["artifact_id"])
-        if record["outcome"] == INK_NOT_MEASURABLE:
-            return None, [reference]
-        measured = validate_measured_ink_map_payload(
-            record["payload"], audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
+        if record["payload"].get("page_ordinal") == page.ordinal:
+            found.append((entry, record))
+    if len(found) > 1:
+        raise FatalAccounting(
+            f"the Ink Map sealed {len(found)} ink maps for page {page.page_id}, not one; the "
+            "page's residual ink cannot be measured against one of them by choice"
         )
-        coverage = load_coverage_audit_config(context.args.designator_grouping_config)
-        context.require_sealed_config("designator-grouping", coverage["config_sha256"])
-        if coverage["config_sha256"] != measured["background_config_sha256"]:
-            raise ContractError(
-                f"page {page.page_id}'s ink map and the coverage policy read different sealed bytes"
-            )
-        runs = record["payload"]["edge_findings"]
-        return {
-            "runs": runs,
-            "coverage_policy": resolve_coverage_audit_policy(
-                coverage, runs["width"], runs["height"]
-            ),
-        }, [reference]
-    return None, []
+    if not found:
+        return None, []
+    [(entry, record)] = found
+    reference = context.artifact_ref(INK_MAP, "ink-map", entry["artifact_id"])
+    if record["outcome"] == INK_NOT_MEASURABLE:
+        return None, [reference]
+    measured = validate_measured_ink_map_payload(
+        record["payload"], audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
+    )
+    coverage = load_coverage_audit_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", coverage["config_sha256"])
+    if coverage["config_sha256"] != measured["background_config_sha256"]:
+        raise ContractError(
+            f"page {page.page_id}'s ink map and the coverage policy read different sealed bytes"
+        )
+    runs = record["payload"]["edge_findings"]
+    return {
+        "runs": runs,
+        "coverage_policy": resolve_coverage_audit_policy(coverage, runs["width"], runs["height"]),
+    }, [reference]
 
 
 def _by_path(references: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -1452,7 +1523,9 @@ def publish_page_accounting(
             *ink_refs,
         ]
     )
-    sealed = _sealed(context, PAGE_ACCOUNTING_KIND, page.page_id, None)
+    # Bound to the reading's attempt: a later reading of the page is accounted apart.
+    attempt = page_reading_attempt(page.page_id)
+    sealed = _sealed(context, PAGE_ACCOUNTING_KIND, page.page_id, attempt)
     if sealed is not None:
         payload = sealed["payload"]
         if (
@@ -1493,11 +1566,12 @@ def publish_page_accounting(
         kind=PAGE_ACCOUNTING_KIND,
         subject_id=page.page_id,
         outcome=HELD if accounting["holds"] else READ,
+        attempt=attempt,
         inputs=inputs,
         payload=accounting,
     )
     return context.tree.read_artifact(
-        PERLECTOR, PAGE_ACCOUNTING_KIND, _artifact(PAGE_ACCOUNTING_KIND, page.page_id, None)
+        PERLECTOR, PAGE_ACCOUNTING_KIND, _artifact(PAGE_ACCOUNTING_KIND, page.page_id, attempt)
     )
 
 
@@ -1558,8 +1632,8 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         left = _pages_left(state, prepared)
         if left:
             startup = _serving_row(state).startup_timeout_seconds
-            hooks.refuse_past_deadline(
-                run.args.reading_deadline,
+            _refuse_past_page_deadline(
+                state,
                 startup + left * planned_seconds_per_page(run.page_max_tokens),
                 f"starting the Perlector ({startup}s) and reading {left} pages",
             )

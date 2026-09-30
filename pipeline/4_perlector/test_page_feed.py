@@ -23,6 +23,7 @@ from common.churro_document import churro_system_prompt
 from common.contracts.canonical import code_digest, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.native_witness import CHURRO_OUTPUT_TOKENS, derive_churro_capture
+from common.page_accounting import placement_boxes
 from common.request_capacity import (
     PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST,
     RequestCapacityRefusal,
@@ -1322,11 +1323,11 @@ def _entry_union(boxes, cited):
 
 
 def test_a_flat_witness_places_nothing_so_two_entries_citing_it_keep_their_own_regions():
-    own = page_feed.placement_boxes(feed_for(_Blobs()))
+    own = placement_boxes(feed_for(_Blobs()))
     assert own["A1"] == {"x": 255, "y": 165, "w": 2040, "h": 231}
     assert own["C1"] is None and own["L1"] is not None
     feed = feed_for(_Blobs(), witness_units="flat")
-    boxes = page_feed.placement_boxes(feed)
+    boxes = placement_boxes(feed)
     ids = [unit["id"] for row in feed["witnesses"] for unit in row["units"]]
     assert all(boxes[identifier] is None for identifier in ids)
     # The sealed geometry stays on the feed for the accounting.

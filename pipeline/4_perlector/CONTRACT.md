@@ -1296,7 +1296,9 @@ page render and the sealed page it names, each re-derived from the bytes on disk
   unrecognized word is `call-failed` with code `ENGINE_FINISH_REASON_UNRECOGNIZED`.
 - `provenance` is `provenance_for`, attempted for a sent (or fixture-answered) page.
 
-`kind="page-accounting"` (subject page_id, no attempt), published for every page
+`kind="page-accounting"` (subject page_id, attempt the page reading's own
+`attempt_id(page_id, "page-read", n)`, so each reading of a page has its own
+accounting), published for every page
 that has a feed, whatever its reading's disposition, after the reading and before any
 act record: `common.page_accounting.page_accounting`'s `page-accounting.v1` payload
 under the sealed `page-accounting` policy (read at stage open through
@@ -1317,10 +1319,16 @@ anything (`page_run.entry_plans`). It is given:
   showed; the record detector as `configured` when the sealed
   `secondary_proposer` is a chair, its page's `detector-record` boxes -- a record whose
   corners enclose no crop is given with no box, and rule (i) reports it
-  `detector-record-not-measured` (held) and counts them as `records_not_measured` --
-  and census `{detection_count, max_det, max_det_reached}` with `max_det` from the
-  detector's retained run facts, both `null` when the detector published no page
-  record or its run facts state no `max_det`;
+  `detector-record-not-measured` (held) and counts them as `records_not_measured`
+  (always present: 0 with no detector, null when there are no records to count) --
+  each record carrying the feed id of the DAI unit with its box, so a set-aside DAI
+  unit is a set-aside record (`set-aside-record`); and census `{detection_count,
+  max_det, max_det_reached}` with `max_det` from the detector's retained run facts,
+  both `null` when the detector published no page record or its run facts state no
+  `max_det` (the `detector-page` read is an input either way). The census and its
+  records must agree -- count, subjects in detector order, page -- and every sealed
+  record of the page must be named by its census, or the stage refuses by name; more
+  than one ink map for a page refuses too;
 - the reading's `parse_state`, `finish_reason` and `answer`, and each placed entry's
   truncation classification by `n`;
 - the Ink Map's retained runs and the coverage policy resolved for the page, or
@@ -1378,14 +1386,13 @@ held:
   not `read`, is a row with `compared: false` and its reason.
 - `truncation` is `truncation.classify` over the union box's pixels against the page's;
   null for an unplaced entry. A `truncated` or `unknown` classification adds hold
-  `reading-incomplete`.
+  `reading-incomplete`; the page accounting's rule (g) records an entry with no
+  classification (an unplaced one) as `truncation-not-classified`, not measured,
+  which holds.
 - An entry whose text is empty, or only `[[?]]` and whitespace, holds
-  `entry-no-readable-text`; the `no-readable-text` outcome is kept for the whole-act
-  contract exactly (an empty text and one whole-act gap, which a reader's own marks
-  never make).
-- Outcome: `held` with any hold in `holds` or `page_holds`; otherwise
-  `no-readable-text` under that exact contract, else `read`. `holds` repeats the
-  act-region's plus the reading's own.
+  `entry-no-readable-text`.
+- Outcome: `held` with any hold in `holds` or `page_holds`, else `read`. `holds`
+  repeats the act-region's plus the reading's own.
 
 ### Resume
 
@@ -1408,7 +1415,8 @@ so there is no Designator act to read alone.
 
 A later page-reading attempt (`page-read:2`, the re-ask Train 3 plans) is a new
 attempt of the same page, so every act it establishes gets new act ids: `act_id`
-binds the page-reading attempt. Attempt 1's act records stay sealed beside them.
+binds the page-reading attempt, and the attempt has its own `page-accounting`, which
+its act records name. Attempt 1's accounting and act records stay sealed beside them.
 Whether a later attempt supersedes attempt 1 -- and how a consumer tells which
 attempt's acts are current -- is not decided here; the Train 3 design must state it.
 

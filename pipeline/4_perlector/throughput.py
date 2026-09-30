@@ -1,10 +1,13 @@
-"""The Perlector's planned reading time, from its slowest measured live call.
+"""The Perlector's planned reading time: planning values, not measurements of a page.
 
-The slowest measured act call decoded 441 answer tokens in about 33 s beside
-~6,500 prompt tokens on an 80 GB card, against a mean of 12 s. An act call is
-planned above it, and a whole-page answer may run to the sealed page cap at
-that decoding rate. A live pass refuses to start work its reading deadline
-cannot hold at these rates.
+The figures come from fifteen live act calls on an 80 GB card: the slowest
+decoded 441 answer tokens in about 33 s beside ~6,500 prompt tokens, against a
+mean of 12 s. An act call is planned above it. A whole-page call is planned as
+its answer running to the sealed page cap at that call's overall rate; its
+prompt (about 58,000 tokens for a dense page) is far larger than an act's, so
+its prefill takes longer than the act call's did, and no page call has been
+timed. A live pass refuses to start work its reading deadline cannot hold at
+these rates.
 """
 
 from __future__ import annotations

@@ -34,8 +34,8 @@ from test_live_perlector import (
     _TreeBlobs,
 )
 
-from common.contracts.canonical import digest_of
-from common.contracts.errors import ContractError
+from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import act_bindings, region_id, verify
 from common.decoding import (
     chair_decoding,
@@ -45,7 +45,7 @@ from common.decoding import (
 )
 from common.exemplar_boundary import read_sealed_page
 from common.imaging import crop_png
-from common.page_accounting import is_inside, load_page_accounting_policy
+from common.page_accounting import is_inside, load_page_accounting_policy, placement_boxes
 from common.runtree.store import RunTree
 from conftest import file_bytes_snapshot, load_stage, programs_through
 from operations.serving.config import profile_preflight_digest
@@ -279,7 +279,7 @@ def test_each_placed_act_region_is_the_union_of_its_cited_boxes_cut_from_the_ink
     assert sorted(region["payload"]["n"] for region in placed) == [1, 2]
     for region in placed:
         payload = region["payload"]
-        boxes = page_feed.placement_boxes(feeds[payload["page_id"]])
+        boxes = placement_boxes(feeds[payload["page_id"]])
         assert set(payload["cited_ids"]) <= set(boxes)
         cited = [boxes[identifier] for identifier in payload["cited_ids"] if boxes[identifier]]
         assert payload["union_box_px"] == _union(cited)
@@ -400,8 +400,8 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree):
     assert {unit["disposition"] for unit in first["units"]} == {"cited"}
     assert first["rules"]["i"]["status"] == "not-applicable"
     assert accounts[2]["payload"]["holds"] == [
-        "reading-incomplete",
         "reading-unplaced",
+        "truncation-not-classified",
         "unread-ink",
         "unread-line",
     ]
@@ -606,12 +606,15 @@ def test_a_run_with_surya_absent_states_it_on_the_feed_and_holds_rule_d(tmp_path
         assert account["outcome"] == "held"
 
 
-def _detector_tree(base: Path, monkeypatch, detections: list[dict[str, Any]]):
+def _detector_tree(
+    base: Path, monkeypatch, detections: list[dict[str, Any]], *, max_det: int | None = 300
+):
     """A page-read tree whose stage-2 record detector declared `detections`.
 
     The fixture detector states no detection cap, so its records would leave
     rule (i) unmeasured; here it states one (`max_det`), as the in-process
-    detector does, so the rule is measured over real stage-2 records.
+    detector does, so the rule is measured over real stage-2 records. With
+    `max_det` None it states none, as the fixture detector does.
     """
     protocol = _page_protocol(base / "config")
     flags = (
@@ -627,7 +630,9 @@ def _detector_tree(base: Path, monkeypatch, detections: list[dict[str, Any]]):
 
     def declared(_rows, identity, details):
         detector = original(detections, identity, details)
-        return dataclasses.replace(detector, run_facts={**detector.run_facts, "max_det": 300})
+        if max_det is None:
+            return detector
+        return dataclasses.replace(detector, run_facts={**detector.run_facts, "max_det": max_det})
 
     monkeypatch.setattr(designator, "fixture_record_detector", declared)
     monkeypatch.chdir(ROOT)
@@ -691,6 +696,183 @@ def test_a_page_held_by_rule_i_holds_every_act_record_and_reports_an_unboxed_rec
             if record["payload"]["page_ordinal"] == 1:
                 assert record["outcome"] == "held"
                 assert "merged-detection" in record["payload"]["page_holds"]
+
+
+class _Doctored:
+    """A run tree whose records read back edited, for refusals no honest stage would write."""
+
+    def __init__(self, tree: RunTree, edit=None, manifest=None):
+        self._tree, self._edit, self._manifest = tree, edit, manifest
+
+    def __getattr__(self, name: str):
+        return getattr(self._tree, name)
+
+    def read_artifact(self, stage: str, kind: str, artifact_id: str) -> dict[str, Any]:
+        record = json.loads(json.dumps(self._tree.read_artifact(stage, kind, artifact_id)))
+        if self._edit is not None:
+            self._edit(kind, record["payload"])
+        return record
+
+    def build_manifest(self, stage: str) -> dict[str, Any]:
+        manifest = self._tree.build_manifest(stage)
+        return manifest if self._manifest is None else self._manifest(stage, manifest)
+
+
+def _reading_context(root: Path, edit=None, manifest=None) -> SimpleNamespace:
+    tree = RunTree(root, "r")
+    context = SimpleNamespace(tree=_Doctored(tree, edit, manifest))
+    context.artifact_ref = lambda stage, kind, artifact_id: {
+        "relative_path": tree.artifact_path(stage, kind, artifact_id),
+        "sha256": digest_bytes(tree.read_bytes(tree.artifact_path(stage, kind, artifact_id))),
+    }
+    return context
+
+
+def _first_page(root: Path) -> SimpleNamespace:
+    feed = next(r for r in _records(root, "page-feed") if r["payload"]["page_ordinal"] == 1)
+    return SimpleNamespace(
+        page_id=feed["subject_id"], ordinal=1, feed=feed["payload"], witnesses=[]
+    )
+
+
+def test_each_detector_record_is_named_by_the_dai_unit_with_its_box(tmp_path, monkeypatch):
+    """So a DAI unit set aside is a detector record set aside (rule (i), set-aside-record)."""
+    root = _detector_tree(tmp_path, monkeypatch, _SPLIT_AND_COLLAPSED)
+    page = _first_page(root)
+    records, census, references = page_run._record_detections(_reading_context(root), page)
+    assert census == {"detection_count": 3, "max_det": 300, "max_det_reached": False}
+    assert [record.get("id") for record in records] == [None, None, None]
+    assert references[0]["relative_path"].startswith("2_designator/artifacts/detector-page/")
+    # The fixture roster shows no DAI page witness; give page 1 one whose units are
+    # the two cut records, as DAI's own reading of them would be.
+    page.witnesses = [{"witness_label": "attestator_2", "adapter": page_feed.DAI}]
+    page.feed = {
+        **page.feed,
+        "witnesses": [
+            *page.feed["witnesses"],
+            {
+                "witness_label": "attestator_2",
+                "units": [
+                    {"id": f"D{n}", "box_px": record["box_px"]}
+                    for n, record in enumerate(records[:2], start=1)
+                ],
+            },
+        ],
+    }
+    records, _census, _references = page_run._record_detections(_reading_context(root), page)
+    assert [record.get("id") for record in records] == ["D1", "D2", None]
+
+
+@pytest.mark.parametrize(
+    ("kind", "edit", "refusal"),
+    [
+        ("detector-page", {"detection_count": 4}, "not a list of its count"),
+        ("detector-page", {"detection_count": "3"}, "not a list of its count"),
+        ("detector-page", {"record_subjects": "all"}, "not a list of its count"),
+        ("detector-page", {"page_ordinal": 2}, "states page ordinal 2"),
+        ("detector-record", {"detector_ordinal": 7}, "ordinal 7"),
+    ],
+)
+def test_a_detector_census_its_records_contradict_is_refused(
+    tmp_path, monkeypatch, kind, edit, refusal
+):
+    root = _detector_tree(tmp_path, monkeypatch, _SPLIT_AND_COLLAPSED)
+
+    def doctor(read_kind, payload):
+        if read_kind == kind:
+            payload.update(edit)
+
+    with pytest.raises(FatalAccounting, match=refusal):
+        page_run._record_detections(_reading_context(root, doctor), _first_page(root))
+
+
+def test_a_detector_record_no_census_names_is_refused(tmp_path, monkeypatch):
+    root = _detector_tree(tmp_path, monkeypatch, _SPLIT_AND_COLLAPSED)
+
+    def doctor(kind, payload):
+        if kind == "detector-page":
+            payload["record_subjects"] = payload["record_subjects"][:-1]
+            payload["detection_count"] -= 1
+
+    with pytest.raises(FatalAccounting, match="that page .* detector-page does not name"):
+        page_run._record_detections(_reading_context(root, doctor), _first_page(root))
+
+
+def test_a_detector_that_reached_its_cap_holds_the_page_end_to_end(tmp_path, monkeypatch):
+    root = _detector_tree(tmp_path, monkeypatch, _SPLIT_AND_COLLAPSED, max_det=3)
+    account = next(
+        r for r in _records(root, "page-accounting") if r["payload"]["page_ordinal"] == 1
+    )
+    rule = account["payload"]["rules"]["i"]
+    assert rule["status"] == "not-measured"
+    assert [finding["code"] for finding in rule["findings"]][0] == "record-detector-capped"
+    assert "record-detector-capped" in account["payload"]["holds"]
+    assert account["outcome"] == "held"
+
+
+def test_a_detector_that_states_no_cap_is_not_measured_and_its_page_is_still_an_input(
+    tmp_path, monkeypatch
+):
+    root = _detector_tree(tmp_path, monkeypatch, _SPLIT_AND_COLLAPSED, max_det=None)
+    account = next(
+        r for r in _records(root, "page-accounting") if r["payload"]["page_ordinal"] == 1
+    )
+    assert account["payload"]["rules"]["i"] == {
+        "status": "not-measured",
+        "findings": [{"code": "detector-records-not-measured"}],
+        "records_not_measured": None,
+    }
+    assert any(
+        ref["relative_path"].startswith("2_designator/artifacts/detector-page/")
+        for ref in account["inputs"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "edit", "refusal"),
+    [
+        ("surya-page", {"page_id": "pg_elsewhere"}, "names another page"),
+        ("surya-page", {"reading_order": "by-hand"}, "not one Surya gives"),
+        ("surya-page", {"line_count": 99}, "not a list of its count"),
+        ("surya-block", {"reading_order": "raster-fallback"}, "but its page census states"),
+        ("surya-line", {"n": 99}, "n 99, where its census places it"),
+    ],
+)
+def test_a_surya_census_its_records_contradict_is_refused(page_tree, kind, edit, refusal):
+    root, _protocol = page_tree
+
+    def doctor(read_kind, payload):
+        if read_kind == kind:
+            payload.update(edit)
+
+    with pytest.raises(FatalAccounting, match=refusal):
+        page_run.sealed_surya_census(_reading_context(root, doctor))
+
+
+def test_a_surya_detection_no_census_names_is_refused(page_tree):
+    root, _protocol = page_tree
+
+    def doctor(kind, payload):
+        if kind == "surya-page":
+            payload["line_subjects"] = payload["line_subjects"][:-1]
+            payload["line_count"] -= 1
+
+    with pytest.raises(FatalAccounting, match="that no page census names"):
+        page_run.sealed_surya_census(_reading_context(root, doctor))
+
+
+def test_two_ink_maps_for_one_page_are_refused(page_tree):
+    root, _protocol = page_tree
+
+    def twice(stage, manifest):
+        if stage != "ink-map":
+            return manifest
+        maps = [entry for entry in manifest["artifacts"] if entry["kind"] == "ink-map"]
+        return {**manifest, "artifacts": manifest["artifacts"] + maps}
+
+    context = _reading_context(root, manifest=twice)
+    with pytest.raises(FatalAccounting, match="ink maps for page .*, not one"):
+        page_run._accounting_ink(context, _first_page(root))
 
 
 # --- the answer's entries -----------------------------------------------------------
@@ -1244,6 +1426,132 @@ def test_a_retained_reply_no_record_names_stops_the_resume(live_tree, tmp_path, 
     with pytest.raises(ContractError, match="asking again would read them twice"):
         _read_pages(live_tree, tmp_path / "again", monkeypatch, _answers()[1])
     assert len(_records(root, "page-reading")) == 1
+
+
+def _serial(tree: _Live, tmp_path, monkeypatch, *answers: ScriptedAnswer):
+    return _read_pages(
+        tree, tmp_path, monkeypatch, *answers, extra=("--perlector-concurrency", "1")
+    )
+
+
+def test_a_pass_stopped_between_the_accounting_and_the_act_records_resumes_them(
+    live_tree, tmp_path, monkeypatch
+):
+    root = live_tree.root
+    original = page_run.publish_act_records
+
+    def stopped(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(page_run, "publish_act_records", stopped)
+    with pytest.raises(KeyboardInterrupt):
+        _serial(live_tree, tmp_path, monkeypatch, *_answers())
+    [account] = _records(root, "page-accounting")
+    assert _records(root, "act-region") == [] and _records(root, "perlectio") == []
+    before = (root / "r" / "4_perlector" / "artifacts" / "page-accounting").glob("*.json")
+    sealed = {path.name: path.read_bytes() for path in before}
+    monkeypatch.setattr(page_run, "publish_act_records", original)
+    endpoint, exit_code = _serial(live_tree, tmp_path / "again", monkeypatch, _answers()[1])
+    assert exit_code == 0
+    # Page 1 is not asked again: only page 2 is sent.
+    assert len(_chat_requests(endpoint)) == 1
+    directory = root / "r" / "4_perlector" / "artifacts" / "page-accounting"
+    assert {name: (directory / name).read_bytes() for name in sealed} == sealed
+    assert len(_records(root, "perlectio")) == 3
+    for record in _records(root, "perlectio"):
+        if record["payload"]["page_ordinal"] == 1:
+            assert record["payload"]["page_accounting_ref"]["relative_path"].endswith(
+                f"{account['artifact_id']}.json"
+            )
+
+
+def test_a_pass_stopped_between_an_act_region_and_its_perlectio_resumes_the_rest(
+    live_tree, tmp_path, monkeypatch
+):
+    root = live_tree.root
+    original = page_run._dissent
+    calls = []
+
+    def stopped_at_the_second(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(page_run, "_dissent", stopped_at_the_second)
+    with pytest.raises(KeyboardInterrupt):
+        _serial(live_tree, tmp_path, monkeypatch, *_answers())
+    regions = [r for r in _records(root, "act-region") if r["payload"]["page_ordinal"] == 1]
+    [kept] = _records(root, "perlectio")
+    assert len(regions) == 2
+    [kept_path] = (root / "r" / "4_perlector" / "artifacts" / "perlectio").glob("*.json")
+    kept_bytes = kept_path.read_bytes()
+    monkeypatch.setattr(page_run, "_dissent", original)
+    endpoint, exit_code = _serial(live_tree, tmp_path / "again", monkeypatch, _answers()[1])
+    assert exit_code == 0 and len(_chat_requests(endpoint)) == 1
+    assert kept_path.read_bytes() == kept_bytes
+    assert sorted(
+        r["payload"]["n"] for r in _records(root, "perlectio") if r["payload"]["page_ordinal"] == 1
+    ) == [1, 2]
+    assert kept["subject_id"] in {r["subject_id"] for r in regions}
+
+
+def test_a_retained_accounting_measured_from_other_inputs_is_not_adopted(
+    live_tree, tmp_path, monkeypatch
+):
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    original = page_run._accounting_detections
+
+    def one_more_input(state, page):
+        detections, references = original(state, page)
+        extra = state.context.artifact_ref("exemplar", "page", page.page_record["artifact_id"])
+        return detections, [*references, extra]
+
+    monkeypatch.setattr(page_run, "_accounting_detections", one_more_input)
+    with pytest.raises(ContractError, match="retained page accounting was measured from other"):
+        _read_pages(live_tree, tmp_path / "again", monkeypatch)
+
+
+def test_a_retained_page_reading_or_perlectio_from_other_inputs_is_not_adopted():
+    state = SimpleNamespace(context=SimpleNamespace(config_digest="now"))
+    page = SimpleNamespace(page_id="pg_0000000000000001", feed_ref={"relative_path": "f"})
+    reading = {
+        "config_digest": "now",
+        "payload": {
+            "schema": page_run.PAGE_READING_SCHEMA,
+            "feed_ref": {"relative_path": "f"},
+            "disposition": "read",
+            "engine_call": None,
+        },
+    }
+    page_run._check_adopted(state, page, reading)
+    for changed in ({"config_digest": "then"}, {"payload": {**reading["payload"], "feed_ref": {}}}):
+        with pytest.raises(ContractError, match="retained page reading .* not adopted"):
+            page_run._check_adopted(state, page, {**reading, **changed})
+    expected = {"page_accounting_ref": {"relative_path": "a"}}
+    page_run._check_adopted_perlectio({"payload": dict(expected)}, expected, "act_1")
+    with pytest.raises(ContractError, match="retained perlectio .* not adopted"):
+        page_run._check_adopted_perlectio(
+            {"payload": {"page_accounting_ref": {"relative_path": "b"}}}, expected, "act_1"
+        )
+
+
+def test_the_page_deadline_refusal_speaks_in_pages(live_tree, tmp_path, monkeypatch):
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=5)
+    with pytest.raises(ContractError) as refused:
+        _read_pages(
+            live_tree,
+            tmp_path,
+            monkeypatch,
+            *_answers(),
+            extra=("--reading-deadline", deadline.isoformat()),
+        )
+    message = str(refused.value)
+    per_page = page_run.planned_seconds_per_page(12288)
+    assert f"at {per_page}s a page" in message and "reading 2 pages" in message
+    assert "--act" not in message and "a call" not in message
+    assert _records(live_tree.root, "reader-sent") == []
 
 
 # --- flat witnesses, an ink-free page, an absent chair -----------------------------

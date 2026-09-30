@@ -76,6 +76,9 @@ TOO_FEW_DISTINCTIVE_PIECES: Final = "too-few-distinctive-pieces"
 UNREAD_INK: Final = "unread-ink"
 UNREAD_INK_NOT_MEASURED: Final = "unread-ink-not-measured"
 READING_INCOMPLETE: Final = "reading-incomplete"
+# An entry with no truncation classification (one citing no boxed id has no
+# region to classify over): whether it is complete was not measured.
+TRUNCATION_NOT_CLASSIFIED: Final = "truncation-not-classified"
 SHARED_LINE: Final = "shared-line"
 MERGED_DETECTION: Final = "merged-detection"
 RECORD_READ_AS_OTHER: Final = "record-read-as-other"
@@ -103,6 +106,7 @@ HOLD_CODES: Final = frozenset(
         UNREAD_INK,
         UNREAD_INK_NOT_MEASURED,
         READING_INCOMPLETE,
+        TRUNCATION_NOT_CLASSIFIED,
         DUPLICATE_REGION,
         MERGED_DETECTION,
         RECORD_READ_AS_OTHER,
@@ -124,6 +128,7 @@ NOT_MEASURED_CODES: Final = frozenset(
         RECORD_NOT_MEASURED,
         RECORD_DETECTOR_CAPPED,
         NO_PARSED_ANSWER,
+        TRUNCATION_NOT_CLASSIFIED,
     }
 )
 _PROBLEM_RULE: Final = {UNKNOWN_ID: "b", DUPLICATE_REGION: "h"}
@@ -1173,7 +1178,8 @@ def page_accounting(
     - `reading`: the `page-reading` payload's `parse_state`, `finish_reason` and
       `answer` (the parsed object as given, or `None`).
     - `entry_truncation`: `{n: "complete" | "truncated" | "unknown"}`, each
-      entry's truncation classification; an entry missing here is incomplete.
+      entry's truncation classification; an entry missing here is
+      `truncation-not-classified` (not measured, which holds).
     - `ink`: `{"runs": <ink-runs.v2 evidence> | None, "coverage_policy":
       <CoverageAuditPolicy resolved for this page>}`, or `None`.
     - `clock`: the deadline's clock; a parameter so a test can expire it.
@@ -1230,8 +1236,10 @@ def page_accounting(
             {"code": READING_INCOMPLETE, "parse_state": parse_state, "finish_reason": finish_reason}
         )
     for entry in entries:
-        classification = entry_truncation.get(entry["n"], "not-classified")
-        if classification != TRUNCATION_COMPLETE:
+        classification = entry_truncation.get(entry["n"])
+        if classification is None:
+            incomplete_reading.append({"code": TRUNCATION_NOT_CLASSIFIED, "n": entry["n"]})
+        elif classification != TRUNCATION_COMPLETE:
             incomplete_reading.append(
                 {"code": READING_INCOMPLETE, "n": entry["n"], "truncation": classification}
             )
@@ -1564,12 +1572,18 @@ def _detection_rule(
 
     A record whose corners enclose no crop has no box to measure: each is a
     `detector-record-not-measured` finding, which holds, and the rule states
-    how many (`records_not_measured`).
+    how many (`records_not_measured`: 0 with no detector, null when the page
+    has no records to count).
     """
     if rows is None:
         if detector == RECORD_DETECTOR_ABSENT:
-            return {"status": NOT_APPLICABLE, "findings": [{"code": NO_RECORD_DETECTOR}]}
-        return _rule([{"code": RECORDS_NOT_MEASURED}])
+            return {
+                "status": NOT_APPLICABLE,
+                "findings": [{"code": NO_RECORD_DETECTOR}],
+                "records_not_measured": 0,
+            }
+        # No records to count: how many would go unmeasured is itself unknown.
+        return {**_rule([{"code": RECORDS_NOT_MEASURED}]), "records_not_measured": None}
     if capped:
         # The detector stopped at its cap: records past it were never cut, so
         # "every record is inside one act" cannot be measured.
