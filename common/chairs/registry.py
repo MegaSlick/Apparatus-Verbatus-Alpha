@@ -67,10 +67,8 @@ class HuggingFaceClient(Protocol):
     def metadata_load(self, local_path: Path) -> dict[str, object] | None:
         """Read one local model card's front-matter metadata.
 
-        `load_model_card_metadata` calls this, so the declared seam has to name
-        it: a fake that implemented the Protocol as written failed here with
-        `AttributeError`, and the `attr-defined` ignore at the call site kept
-        the type checker from pointing at the cause.
+        `load_model_card_metadata` calls this, so a fake client must implement it
+        to satisfy the seam.
         """
 
 
@@ -379,8 +377,8 @@ class ChairRegistry:
         validator can see. Only here is the configuration available, so only here can
         the base's revision and digest be checked — and without that a receipt could
         name the right base role at a stale revision, losing the identity of the base
-        artifact that actually answered. `_cache_descriptor` already refuses that exact
-        drift for the cache; this was the weaker door on the same fact.
+        artifact that actually answered. `_cache_descriptor` refuses the same drift
+        for the cache.
         """
 
         self._require_current_identity(identity)
@@ -404,8 +402,8 @@ class ChairRegistry:
     def refuse_recipe_start(self, identity: ChairIdentity, difference: str) -> None:
         """Represent a serving-manager start failure without offering another recipe.
 
-        Spec 04's serving manager uses this for ordinary start failures it
-        observed that have not already crossed the chair boundary. A prior chair
+        The serving manager (`operations/serving/manager.py`) uses this for
+        ordinary start failures it observed that have not already crossed the chair boundary. A prior chair
         refusal is normally re-raised without this call; unverified cleanup is
         the exception, and operator interrupts never pass through this method.
         """
@@ -509,8 +507,13 @@ class ChairRegistry:
             except ChairRefusal:
                 raise
             except Exception as error:
-                refusal = AdapterFetchRefusal if identity.adapter_of else UnresolvedChairRefusal
-                raise refusal(identity.role, f"pinned fetch failed: {error}") from error
+                if identity.adapter_of:
+                    raise AdapterFetchRefusal(
+                        identity.role, f"pinned fetch failed: {error}"
+                    ) from error
+                raise UnresolvedChairRefusal(
+                    identity.role, f"pinned fetch failed: {error}"
+                ) from error
             verified = verify_snapshot(identity, candidate, manifest)
             with _cache_write(identity.role, "the verified snapshot could not be promoted"):
                 _write_cache_descriptor(candidate, descriptor)
@@ -587,11 +590,10 @@ class ChairRegistry:
 
 @contextmanager
 def _cache_write(chair: str, what: str):
-    """Keep the cache's own filesystem writes inside the closed refusal taxonomy.
+    """Turn a filesystem failure during a cache write into a refusal naming the chair.
 
-    A failed mkdir, copy or promote raised a bare `OSError` naming no chair, so a
-    stage catching `ChairRefusal` to record a refusal crashed instead of recording
-    one. Four sites needed the same three lines; one of them is easier to keep true.
+    A stage catches `ChairRefusal` to record a refusal, so a bare `OSError` from a
+    mkdir, copy or promote would crash it instead.
     """
     try:
         yield
