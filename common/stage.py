@@ -2708,17 +2708,22 @@ def _verify_page_reading(
         attempt,
     )
     _verify_disposition(what, payload, feed)
-    plans = (
-        page_path.entry_plans(
-            payload["answer"],
-            feed,
-            page_id=page_id,
-            stop_reason=payload.get("stop_reason"),
-            truncation_policy=index.truncation_policy,
+    try:
+        plans = (
+            page_path.entry_plans(
+                payload["answer"],
+                feed,
+                page_id=page_id,
+                stop_reason=payload.get("stop_reason"),
+                truncation_policy=index.truncation_policy,
+            )
+            if payload["disposition"] == page_path.READ
+            else []
         )
-        if payload["disposition"] == page_path.READ
-        else []
-    )
+    except (ContractError, KeyError, TypeError, ValueError) as error:
+        raise FatalAccounting(
+            f"{what}'s answer entries cannot be planned against its feed: {error!r}"
+        ) from error
     page_holds = _verify_accounting(
         context, index, what, accounting, feed_record, feed_ref, payload, reading_ref, plans
     )
@@ -2746,6 +2751,19 @@ def _verify_page_reading(
     return row, acts
 
 
+def _refs_by_path(references: Any, what: str) -> list[dict[str, str]]:
+    """`page_path.refs_by_path`, refusing inputs that are not a list of path references."""
+    _require(
+        isinstance(references, list)
+        and all(
+            isinstance(reference, Mapping) and isinstance(reference.get("relative_path"), str)
+            for reference in references
+        ),
+        f"{what} names inputs that are not a list of path references",
+    )
+    return page_path.refs_by_path(references)
+
+
 def _verify_disposition(what: str, payload: Mapping[str, Any], feed: Mapping[str, Any]) -> None:
     """Recompute whether the page's answer is read, from the answer, the feed and the finish.
 
@@ -2759,6 +2777,10 @@ def _verify_disposition(what: str, payload: Mapping[str, Any], feed: Mapping[str
             f"{what}'s reading is {payload['parse_state']!r} yet says it was read",
         )
         return
+    _require(
+        isinstance(payload.get("answer"), Mapping),
+        f"{what}'s reading is parsed, but its answer is not an object",
+    )
     _require(
         payload.get("stop_reason") != "length",
         f"{what}'s reading was cut at the output cap (stop reason 'length') yet is parsed; "
@@ -2801,7 +2823,8 @@ def _verify_accounting(
     )
     holds = recomputed["holds"]
     _require(
-        page_path.refs_by_path(accounting.get("inputs", [])) == page_path.refs_by_path(inputs)
+        _refs_by_path(accounting.get("inputs"), f"{what}'s page accounting")
+        == _refs_by_path(inputs, f"{what}'s recomputed page accounting")
         and _payload_of(accounting) == recomputed
         and accounting.get("outcome") == (page_path.HELD if holds else page_path.READ),
         f"{what}'s page accounting is not what its sealed inputs measure: the page's holds "

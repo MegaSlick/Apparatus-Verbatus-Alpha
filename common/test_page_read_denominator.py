@@ -776,6 +776,33 @@ def test_a_page_accounting_its_inputs_do_not_measure_is_refused(review_tree, tmp
         reading_acts(_context(tree))
 
 
+@pytest.mark.parametrize("answer", ["not an object", ["acts"], None], ids=["text", "list", "none"])
+def test_a_parsed_reading_whose_answer_is_not_an_object_is_refused(happy_tree, tmp_path, answer):
+    tree = _copy(happy_tree, tmp_path)
+    _forge(tree[0], "page-reading", 1, None, lambda record: record["payload"].update(answer=answer))
+    with pytest.raises(FatalAccounting, match="is parsed, but its answer is not an object"):
+        reading_acts(_context(tree))
+
+
+def test_answer_entries_that_cannot_be_planned_refuse_as_accounting(happy_tree, monkeypatch):
+    def malformed(*_args, **_kwargs):
+        raise KeyError("page_size")
+
+    monkeypatch.setattr(page_path, "entry_plans", malformed)
+    with pytest.raises(FatalAccounting, match="answer entries cannot be planned"):
+        reading_acts(_context(happy_tree))
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [None, "refs", [{"sha256": "0" * 64}], [["relative_path"]]],
+    ids=["none", "text", "no-path", "not-a-mapping"],
+)
+def test_malformed_accounting_inputs_refuse_as_accounting(inputs):
+    with pytest.raises(FatalAccounting, match="not a list of path references"):
+        stage_module._refs_by_path(inputs, "page 1's page accounting")
+
+
 def test_a_reading_naming_another_feed_than_its_inputs_is_refused(happy_tree, tmp_path):
     tree = _copy(happy_tree, tmp_path)
     root = tree[0]
