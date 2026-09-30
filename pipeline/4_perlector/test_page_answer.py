@@ -28,7 +28,7 @@ GOOD = {
             "continues_to_next_page": True,
         },
     ],
-    "set_aside": [{"id": "C9", "reason": "printed page number"}],
+    "set_aside": [{"id": "C9", "reason": "empty unit"}],
 }
 
 
@@ -138,3 +138,53 @@ def test_every_problem_in_an_answer_is_reported_not_only_the_first():
 
 def test_a_reply_that_is_not_text_is_malformed():
     assert page_answer.parse_page_answer(b"{}")[:2] == ("malformed", None)
+
+
+# Every JSON type, including the unhashable ones and one nested deeper than repr likes.
+_ANY_JSON = [None, True, 0, 1.5, "", "act", [], ["act"], {}, {"kind": "act"}, [[[[[]]]]]]
+_DEEP = "[" * 900 + "]" * 900
+
+
+@pytest.mark.parametrize("value", _ANY_JSON, ids=repr)
+@pytest.mark.parametrize(
+    "place",
+    [
+        *(("act", field) for field in sorted(page_answer._ACT_FIELDS)),
+        ("set_aside", "id"),
+        ("set_aside", "reason"),
+        ("top", "acts"),
+        ("top", "set_aside"),
+    ],
+    ids=lambda place: ".".join(place),
+)
+def test_a_value_of_any_json_type_anywhere_is_read_or_held_never_an_error(place, value):
+    where, field = place
+
+    def change(answer):
+        target = {"act": answer["acts"][0], "set_aside": answer["set_aside"][0], "top": answer}
+        target[where][field] = value
+
+    state, answer, problems = page_answer.parse_page_answer(_with(change))
+    assert state in page_answer.PARSE_STATES
+    assert (answer is None) == bool(problems)
+
+
+@pytest.mark.parametrize("field", ["n", "kind", "label", "cites", "text", "id"])
+def test_a_deeply_nested_value_is_named_by_its_type_not_quoted(field):
+    act = {**GOOD["acts"][0]}
+    act.pop("label")
+    raw = json.dumps({"acts": [act], "set_aside": [{"id": "C9", "reason": "r"}]})
+    target = '"C9"' if field == "id" else json.dumps(act[field] if field in act else "x")
+    if field == "label":
+        raw = raw.replace('"text":', '"label": "x", "text":', 1)
+    raw = raw.replace(f'"{field}": {target}', f'"{field}": {_DEEP}', 1)
+    state, _answer, problems = page_answer.parse_page_answer(raw)
+    assert state == "malformed"
+    assert all(len(problem["detail"]) < 200 for problem in problems)
+
+
+def test_a_non_string_kind_is_malformed_not_a_crash():
+    for kind in (["act"], {"act": 1}):
+        raw = _with(lambda a, kind=kind: a["acts"][0].update(kind=kind))
+        state, answer, problems = page_answer.parse_page_answer(raw)
+        assert (state, answer, _codes(problems)) == ("malformed", None, ["kind-unknown"])

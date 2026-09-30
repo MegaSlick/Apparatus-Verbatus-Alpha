@@ -23,8 +23,13 @@ The grammar:
 * each set-aside entry: `id` and `reason`, both strings.
 
 Whether an id exists, whether a range is well formed and the set-aside rules
-are checked against the page feed by the accounting (`common/page_accounting.py`),
-not here.
+are checked against the page feed by the shared page-accounting validator, not
+here.
+
+Every value is checked for its type before it is compared or hashed, so a reply
+of any JSON shape is `parsed` or `malformed` and never an error; a problem's
+detail quotes a scalar it found (shortened) and names any other value by its
+JSON type.
 
 ## What surrounds the object
 
@@ -103,8 +108,21 @@ def _decode(body: str) -> tuple[Any, list[dict[str, str]]]:
     return value, []
 
 
+_QUOTED_MAX_CHARACTERS: Final = 40
+
+
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _shown(value: Any) -> str:
+    """A found value for a problem's detail: a short scalar quoted, anything else its type."""
+    if isinstance(value, str):
+        quoted = repr(value[:_QUOTED_MAX_CHARACTERS])
+        return quoted if len(value) <= _QUOTED_MAX_CHARACTERS else f"{quoted}..."
+    if value is None or isinstance(value, (bool, int, float)):
+        return json.dumps(value)[:_QUOTED_MAX_CHARACTERS]
+    return "a list" if isinstance(value, list) else "an object"
 
 
 def _act_problems(index: int, act: Any, count: int) -> list[dict[str, str]]:
@@ -119,13 +137,13 @@ def _act_problems(index: int, act: Any, count: int) -> list[dict[str, str]]:
     if extra:
         problems.append(_problem("act-field-unknown", f"{where} carries {extra}"))
     if "n" in act and not _is_int(act["n"]):
-        problems.append(_problem("n-not-integer", f"{where}.n is {act['n']!r}"))
+        problems.append(_problem("n-not-integer", f"{where}.n is {_shown(act['n'])}"))
     elif "n" in act and act["n"] != index + 1:
         problems.append(
             _problem("n-not-contiguous", f"{where}.n is {act['n']}, expected {index + 1}")
         )
-    if "kind" in act and act["kind"] not in ACT_KINDS:
-        problems.append(_problem("kind-unknown", f"{where}.kind is {act['kind']!r}"))
+    if "kind" in act and not (isinstance(act["kind"], str) and act["kind"] in ACT_KINDS):
+        problems.append(_problem("kind-unknown", f"{where}.kind is {_shown(act['kind'])}"))
     label = act.get("label")
     if label is not None and (
         not isinstance(label, str) or not label.strip() or len(label) > LABEL_MAX_CHARACTERS
