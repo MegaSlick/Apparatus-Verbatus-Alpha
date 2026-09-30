@@ -19,6 +19,7 @@ from common.contracts.errors import SchemaRefusal
 from common.decoding import SAMPLING_FIELDS
 from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
+    capture_text_view,
     churro_capture_system_prompt,
     derive_churro_capture,
     detect_repetition,
@@ -535,6 +536,9 @@ def retain_model_view(
         "findings": [],
         "parse": {"state": "not-requested" if parser is None else "pending", "parser": parser},
     }
+    # The view the parse below reads under, so a later build can refuse it by name.
+    if (text_view := capture_text_view(adapter, parser)) is not None:
+        record["text_view"] = text_view
     if adapter == "churro.v1":
         import churro  # Local: churro.py imports this retention seam.
 

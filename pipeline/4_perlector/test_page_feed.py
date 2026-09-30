@@ -22,7 +22,11 @@ from PIL import Image, ImageColor, ImageDraw
 from common.churro_document import churro_system_prompt
 from common.contracts.canonical import code_digest, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.native_witness import CHURRO_OUTPUT_TOKENS, derive_churro_capture
+from common.native_witness import (
+    CHURRO_OUTPUT_TOKENS,
+    capture_text_view,
+    derive_churro_capture,
+)
 from common.page_accounting import placement_boxes
 from common.request_capacity import (
     PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST,
@@ -118,6 +122,7 @@ def _capture(adapter: str, ref: dict, parser: str, text: str) -> dict:
         "stop_reason": "stop",
         "findings": [],
         "parse": {"state": "parsed", "parser": parser, "text": text},
+        **({"text_view": view} if (view := capture_text_view(adapter, parser)) is not None else {}),
     }
 
 
@@ -147,6 +152,7 @@ def churro_testimonium(blobs: _Blobs, body: str, outcome="read"):
         },
         "raw_response_ref": blobs.retain(raw),
         "transport_stop_reason": "stop",
+        "text_view": capture_text_view("churro.v1", "xml"),
         **derived,
     }
     return _record(outcome, {"native_capture": capture})

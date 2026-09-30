@@ -32,7 +32,7 @@ merely states:
   (`chandra_layout.parse_layout_html`), each mapped to sealed-page pixels by
   `chandra_layout.block_page_bounds`, as the adapter's own `observe` maps them.
   A blank-page or malformed-bbox block is a unit with no box. A block's text is
-  Chandra's text view of its blocks (`chandra-layout-text.v1`): markup removed,
+  Chandra's text view of its blocks (`chandra-layout-text.v2`): markup removed,
   character references resolved, whitespace runs outside `<pre>` made one
   space and block-level tags made line breaks.
 * Churro (`churro.v1`): the non-blank lines of its parsed document text in

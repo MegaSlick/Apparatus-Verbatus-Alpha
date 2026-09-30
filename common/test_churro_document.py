@@ -660,7 +660,7 @@ def test_a_response_that_is_not_bytes_is_refused():
 
 
 def test_the_declared_vocabulary_is_what_the_records_use():
-    assert CHURRO_TEXT_VIEW == "churro-historical-document-text.v1"
+    assert CHURRO_TEXT_VIEW == "churro-historical-document-text.v2"
     assert CHURRO_PARSER == "xml"
     assert PARSE_STATES == {"parsed", "failed", "unrecognized-shape"}
     assert DOCUMENT_SHAPES == {"historical-document", "plain-text", "output-element"}

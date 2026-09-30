@@ -659,7 +659,7 @@ def test_every_finding_a_page_can_produce_is_a_declared_kind():
 
 
 # ---------------------------------------------------------------------------
-# The text view `chandra-layout-text.v1`
+# The text view `chandra-layout-text.v2`
 # ---------------------------------------------------------------------------
 
 

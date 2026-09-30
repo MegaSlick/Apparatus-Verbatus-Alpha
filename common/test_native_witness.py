@@ -60,6 +60,7 @@ def _native_capture() -> dict:
         "stop_reason": "stop",
         "findings": [],
         "parse": {"state": "parsed", "parser": "xml", "text": "read"},
+        "text_view": "churro-historical-document-text.v2",
     }
 
 
@@ -694,6 +695,7 @@ def _page_with_churro_capture() -> dict:
                 # so: a shape nobody asked for is visible rather than silent.
                 "findings": [{"kind": "retired-output-envelope"}],
                 "parse": {"state": "parsed", "parser": "xml", "text": text},
+                "text_view": "churro-historical-document-text.v2",
             },
         }
     )
@@ -2426,3 +2428,27 @@ def test_the_vendor_pin_travels_through_the_byte_level_re_derivation_unchanged()
     capture.update(derive_churro_capture(body, "eos", parser="xml"))
     assert verify_native_capture_bytes(capture, body) is capture
     assert capture["vendor_identity"] == _vendor_identity()
+
+
+@pytest.mark.parametrize(
+    ("adapter", "parser", "retired"),
+    [
+        ("churro.v1", "xml", "churro-historical-document-text.v1"),
+        ("chandra.v1", "html", "chandra-layout-text.v1"),
+    ],
+)
+def test_a_capture_read_under_an_older_parser_is_refused_by_name(adapter, parser, retired):
+    """The parser changed what it reads from the same bytes, so an older capture is
+    retired at a named boundary instead of failing a generic re-derivation."""
+    value = _native_capture()
+    if adapter == "chandra.v1":
+        value.update(
+            adapter=adapter, view={}, parse={"state": "parsed", "parser": parser, "text": ""}
+        )
+    value["text_view"] = retired
+    assert validate_native_capture(value) is value
+    with pytest.raises(SchemaRefusal, match=f"the retired text view {retired}.*from the Door"):
+        verify_native_capture_bytes(value, b"")
+    del value["text_view"]
+    with pytest.raises(SchemaRefusal, match="no recorded text view.*from the Door"):
+        verify_native_capture_bytes(value, b"")

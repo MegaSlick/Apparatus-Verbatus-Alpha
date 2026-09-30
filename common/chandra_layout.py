@@ -70,7 +70,7 @@ page-pixel mapping. The sealed page is the right denominator because the vendor
 uses the same one: `InferenceManager` runs `parse_chunks` against the original
 image, not the resized one it sent.
 
-## The text view `chandra-layout-text.v1`
+## The text view `chandra-layout-text.v2`
 
 The vendor's own text path is `parse_markdown`, which routes through
 `markdownify` and `BeautifulSoup`. Neither is a dependency here and neither
@@ -100,7 +100,10 @@ blocks in `<p>`. So the text view is ours, named, and stated in full:
 
 `page_text` is `common.structure_answer.join_delivered_texts` over the block
 texts -- a newline between delivered (non-empty) texts and nowhere else -- and
-`spans` locates each block in it, empty and blank blocks as a zero-width span.
+`spans` locates each block in it, empty blocks as a zero-width span. A
+`Blank-Page` block's text is kept like any other block's; `v1`, which dropped it,
+is retired (`RETIRED_LAYOUT_TEXT_VIEWS`), and a record read under it is refused
+by that name rather than re-read under this view.
 That is the same join and the same span rule the Designator's answer and the
 retired wire contract both used, so a span published against this page text
 lands where every other Chandra reading of the page puts it.
@@ -271,7 +274,10 @@ BBOX_SCALE: Final = 1000
 
 # The named rule this module's `page_text` and `spans` are produced by. It is
 # ours, not the vendor's; see the module docstring for the rule in full.
-LAYOUT_TEXT_VIEW: Final = "chandra-layout-text.v1"
+LAYOUT_TEXT_VIEW: Final = "chandra-layout-text.v2"
+# Views a retained record may name but this build no longer produces: a record
+# read under one is refused by that name, never re-derived under the current view.
+RETIRED_LAYOUT_TEXT_VIEWS: Final = frozenset({"chandra-layout-text.v1"})
 
 # The same operational ceilings the Chandra adapter has always applied to bytes
 # crossing the native model boundary: the byte bound matches the repository's

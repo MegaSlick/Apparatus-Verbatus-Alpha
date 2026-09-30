@@ -610,7 +610,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert payload["block_count"] == len(expected)
         assert payload["blocks_without_proposal"] == []
         assert payload["answer_schema"] == "chandra-layout-html.v1"
-        assert payload["text_view"] == "chandra-layout-text.v1"
+        assert payload["text_view"] == "chandra-layout-text.v2"
         assert payload["vendor"]["repository"] == "github.com/datalab-to/chandra"
         assert payload["vendor"]["commit"] == "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
         presentation = tree.read_artifact_reference(
@@ -2354,6 +2354,17 @@ def test_retired_structure_answer_schema_is_refused_by_name(schema):
     with pytest.raises(
         ContractError,
         match=f"sealed under {schema}, which this build no longer reads; re-run",
+    ):
+        designator._validate_structure_answer_payload(record)
+
+
+def test_a_structure_answer_read_under_a_retired_text_view_is_refused_by_name():
+    """Blank-Page block text changed the view, so each block's text digest did too."""
+    record = _minimal_answer_record()
+    record["text_view"] = "chandra-layout-text.v1"
+
+    with pytest.raises(
+        ContractError, match="read under chandra-layout-text.v1, which this build no longer reads"
     ):
         designator._validate_structure_answer_payload(record)
 

@@ -1113,7 +1113,7 @@ schema = "designator-structure-answer.v4"
 attempt_ordinal, attempt_seed, attempt_policy, attempts, presentation_ref
 page_id, page_ordinal, page_w, page_h
 prompt_version, prompt_sha256, answer_schema = "chandra-layout-html.v1"
-text_view = "chandra-layout-text.v1"
+text_view = "chandra-layout-text.v2"
 vendor = {repository, commit, licence, prompt_source, parser_source,
           prompt_sha256}
 call_record_ref, raw_response_ref | null, custody_ref | null,

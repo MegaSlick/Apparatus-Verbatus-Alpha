@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable
 from typing import Any, Final
 
-from common import churro_document
+from common import chandra_layout, churro_document
 from common.chairs.models import is_hf_revision
 from common.chandra_native_retry import validate_trace as validate_chandra_native_trace
 from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256
@@ -1195,8 +1195,50 @@ _NATIVE_CAPTURE_FIELDS: Final = frozenset(
     }
 )
 # Optional so earlier records stay valid; each adapter's tests require it for
-# that chair.
-_NATIVE_CAPTURE_OPTIONAL_FIELDS: Final = frozenset({"vendor_identity"})
+# that chair. `text_view` is the view a vendor grammar's parse was read under.
+_NATIVE_CAPTURE_OPTIONAL_FIELDS: Final = frozenset({"vendor_identity", "text_view"})
+# The text view each vendor grammar's capture must name, by (adapter, parser),
+# and the views it retires. A capture made before its view was recorded, or
+# under a retired one, is refused by name: its text and findings are not what
+# this build's parser reads from the same bytes.
+CAPTURE_TEXT_VIEWS: Final = {
+    ("chandra.v1", "html"): (
+        chandra_layout.LAYOUT_TEXT_VIEW,
+        chandra_layout.RETIRED_LAYOUT_TEXT_VIEWS,
+    ),
+    ("churro.v1", churro_document.CHURRO_PARSER): (
+        churro_document.CHURRO_TEXT_VIEW,
+        churro_document.RETIRED_CHURRO_TEXT_VIEWS,
+    ),
+}
+
+
+def capture_text_view(adapter: str, parser: str | None) -> str | None:
+    """The text view a capture of this adapter and parser records, if it records one."""
+    views = CAPTURE_TEXT_VIEWS.get((adapter, parser))
+    return None if views is None else views[0]
+
+
+def _validate_capture_text_view(value: dict[str, Any], parser: Any) -> None:
+    views = CAPTURE_TEXT_VIEWS.get((value["adapter"], parser))
+    if views is None:
+        return
+    current, retired = views
+    named = value.get("text_view")
+    if named == current:
+        return
+    if named is None or named in retired:
+        under = "no recorded text view" if named is None else f"the retired text view {named}"
+        raise SchemaRefusal(
+            f"a {value['adapter']} page capture was read under {under}, not {current}, "
+            "which this build no longer reads; its text and findings are not this parser's. "
+            "Re-run the run from the Door"
+        )
+    raise SchemaRefusal(
+        f"a {value['adapter']} page capture names unknown text view {named!r}, not {current}"
+    )
+
+
 _VENDOR_IDENTITY_FIELDS: Final = frozenset({"repository", "sha", "carried_strings"})
 #: One parser name per vendor grammar: Chandra `html`, Churro `xml`, DAI `text`.
 #: Closed because re-derivation dispatches on the recorded name.
@@ -1415,8 +1457,13 @@ def churro_capture_system_prompt(capture: dict[str, Any]) -> str | None:
 
 
 def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
-    """Verify one capture's derived record against raw bytes already digest-checked."""
+    """Verify one capture's derived record against raw bytes already digest-checked.
+
+    A capture read under a text view this build no longer produces is refused by
+    that name first, rather than reported as differing from its bytes.
+    """
     capture = validate_native_capture(value)
+    _validate_capture_text_view(capture, capture["parse"].get("parser"))
     if capture["adapter"] != "churro.v1":
         return capture
     derived = derive_churro_capture(
@@ -1629,6 +1676,10 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         raise SchemaRefusal(
             "a page Testimonium native capture claims an unrecognized shape without naming it"
         )
+    if "text_view" in value and not (
+        isinstance(value["text_view"], str) and value["text_view"].strip()
+    ):
+        raise SchemaRefusal("a page Testimonium native capture names a blank text view")
     if value["adapter"] == "churro.v1":
         _validate_churro_capture(value)
     return value
