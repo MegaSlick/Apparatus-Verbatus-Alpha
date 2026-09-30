@@ -93,6 +93,7 @@ from common.stage import (  # noqa: E402
     open_stage_context,
     page_residual_act_key,
     refuse_retired_structure_answer,
+    refuse_structure_answer_text_view,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -374,22 +375,16 @@ def _closed_object(value: object, fields: frozenset, what: str) -> dict:
     return value
 
 
-def _refuse_retired_text_view(text_view: object, *, subject: str) -> None:
-    """Refuse an answer whose block texts were taken under a retired text view, by name."""
-    if text_view in structure_pass.chandra_layout.RETIRED_LAYOUT_TEXT_VIEWS:
-        raise ContractError(
-            f"{subject} was read under {text_view}, which this build no longer reads; re-run"
-        )
-
-
 def _validate_structure_answer_payload(payload: object, *, terminal: bool = True) -> None:
     """Validate one current attempt or terminal answer."""
     if not isinstance(payload, dict):
         raise ContractError("a Designator structure-answer payload is not an object")
     schema = payload.get("schema")
     refuse_retired_structure_answer(schema, subject="structure answer", error_type=ContractError)
-    _refuse_retired_text_view(payload.get("text_view"), subject="structure answer")
     if schema == STRUCTURE_ANSWER_RECORD_SCHEMA:
+        refuse_structure_answer_text_view(
+            payload.get("text_view"), subject="structure answer", error_type=ContractError
+        )
         record = _closed_object(payload, _STRUCTURE_ANSWER_V3_FIELDS, "v3 structure-answer payload")
         _closed_object(
             record["presentation_ref"],
@@ -3107,9 +3102,12 @@ def live_initial_pass(
                 subject=f"page {row.get('subject_id')}'s structure answer",
                 error_type=ContractError,
             )
-            _refuse_retired_text_view(
-                payload.get("text_view"), subject=f"page {row.get('subject_id')}'s structure answer"
-            )
+            if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA:
+                refuse_structure_answer_text_view(
+                    payload.get("text_view"),
+                    subject=f"page {row.get('subject_id')}'s structure answer",
+                    error_type=ContractError,
+                )
     # Checked before the structure chair starts, so a detector this stage cannot
     # run refuses before any paid work; the detector itself loads only once the
     # structure chair has closed, and Surya runs then too.

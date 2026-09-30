@@ -2358,15 +2358,56 @@ def test_retired_structure_answer_schema_is_refused_by_name(schema):
         designator._validate_structure_answer_payload(record)
 
 
-def test_a_structure_answer_read_under_a_retired_text_view_is_refused_by_name():
+@pytest.mark.parametrize(
+    ("text_view", "refusal"),
+    [
+        (
+            "chandra-layout-text.v1",
+            "read under chandra-layout-text.v1, which this build no longer reads; "
+            "re-run the submission from the Door",
+        ),
+        ("chandra-layout-text.v9", "names unknown text view 'chandra-layout-text.v9'"),
+        (None, "names no text view"),
+    ],
+)
+def test_a_structure_answer_not_read_under_this_builds_text_view_is_refused_by_name(
+    text_view, refusal
+):
     """Blank-Page block text changed the view, so each block's text digest did too."""
     record = _minimal_answer_record()
+    record["text_view"] = text_view
+
+    with pytest.raises(ContractError, match=refusal):
+        designator._validate_structure_answer_payload(record)
+
+
+def test_a_resumed_pass_refuses_an_answer_read_under_a_retired_text_view(monkeypatch):
+    context = SimpleNamespace(
+        args=SimpleNamespace(decoding_config=None),
+        tree=object(),
+        require_sealed_config=lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        designator, "_initial_pages_and_policies", lambda unused: ({}, {}, None, None)
+    )
+    monkeypatch.setattr(designator, "load_decoding_policy", lambda unused: ({}, "0" * 64))
+    monkeypatch.setattr(designator, "structure_recovery_policy", lambda unused: {})
+    monkeypatch.setattr(designator.structure_pass, "resolved_structure_chair", lambda unused: None)
+    record = _minimal_answer_record()
     record["text_view"] = "chandra-layout-text.v1"
+    monkeypatch.setattr(
+        designator, "_stage_records", lambda *_args: [{"subject_id": "page-1", "payload": record}]
+    )
+    monkeypatch.setattr(
+        designator,
+        "_publish_secondary_provenance",
+        lambda *_args: pytest.fail("secondary provenance was published before refusal"),
+    )
 
     with pytest.raises(
-        ContractError, match="read under chandra-layout-text.v1, which this build no longer reads"
+        ContractError, match="page page-1's structure answer was read under chandra-layout-text.v1"
     ):
-        designator._validate_structure_answer_payload(record)
+        designator.live_initial_pass(context, None, "small")
 
 
 @pytest.mark.parametrize("schema", sorted(RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS))

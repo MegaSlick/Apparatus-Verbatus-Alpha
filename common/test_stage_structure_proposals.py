@@ -49,6 +49,7 @@ from typing import Any
 import pytest
 
 import common.stage as stage_contract
+from common import chandra_layout
 from common.chairs import ChairIdentity, ChairRegistry
 from common.chandra_presentation import (
     STRUCTURE_REQUEST_IMAGE_KIND,
@@ -370,6 +371,7 @@ class _StructureDesignator:
         call_record: dict[str, Any] | str = "default",
         attempt_seed: int = 0,
         call_changes: dict[str, Any] | None = None,
+        text_view: str | None = chandra_layout.LAYOUT_TEXT_VIEW,
     ) -> dict[str, str]:
         """One `structure-answer` record, text-free as SPEC_D §1.3 requires.
 
@@ -436,7 +438,7 @@ class _StructureDesignator:
             "prompt_version": "fixture",
             "prompt_sha256": "a" * 64,
             "answer_schema": "fixture",
-            "text_view": "fixture",
+            "text_view": text_view,
             "vendor": {},
             "call_record_ref": (
                 self.context.input_ref(stored.relative_path)
@@ -845,6 +847,31 @@ def test_a_retired_structure_attempt_is_refused_by_its_schema(real_root, monkeyp
         FatalAccounting,
         match=f"structure attempt 1 was sealed under {schema}, which this build no longer reads; re-run",
     ):
+        expected_acts(_open(real_root, ATTESTATORES))
+
+
+@pytest.mark.parametrize(
+    ("text_view", "refusal"),
+    [
+        (
+            "chandra-layout-text.v1",
+            "was read under chandra-layout-text.v1, which this build no longer reads; "
+            "re-run the submission from the Door",
+        ),
+        ("chandra-layout-text.v9", "names unknown text view 'chandra-layout-text.v9'"),
+        (None, "names no text view"),
+    ],
+)
+def test_a_structure_answer_not_read_under_this_builds_text_view_is_refused(
+    real_root, text_view, refusal
+):
+    designator = _real_designator(real_root)
+    rectangle = designator.rectangle(1, 0)
+    designator.status(1, designator.answer(1, [rectangle], text_view=text_view))
+    designator.propose(1, rectangle)
+    designator.seal()
+
+    with pytest.raises(FatalAccounting, match=f"terminal structure answer {refusal}"):
         expected_acts(_open(real_root, ATTESTATORES))
 
 

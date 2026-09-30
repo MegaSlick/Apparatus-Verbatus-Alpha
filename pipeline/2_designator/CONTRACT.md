@@ -1058,13 +1058,16 @@ mints no act, and seals a denominator missing a page whose crops are on disk —
 which the immutable seal would then make permanent. A `held` page cut nothing
 and has nothing to reproduce. All three dispositions are resumed under test.
 
-What a resume does **not** check is that the build asking for the remaining
-pages is the build that answered the earlier ones. `_sealed_structure_answer`
-re-validates the reused serving provenance — the chair pin, the adapter recipe
-and the sealed decoding config all refuse if they moved — but not the answer's
-`prompt_sha256`, `prompt_version`, `text_view` or `vendor`. A resume across a
-prompt-version or vendor-pin bump therefore marks one run out under two
-prompts. Each answer record names the prompt it was given, so the mixture is
+What a resume checks of the build that answered the earlier pages is narrow.
+`_sealed_structure_answer` re-validates the reused serving provenance — the
+chair pin, the adapter recipe and the sealed decoding config all refuse if they
+moved — and the pass refuses, before any chair starts, a sealed answer whose
+`text_view` is not this build's `chandra-layout-text.v2`: a retired view by
+name, an unknown or missing one as such. The block texts behind every
+`text_digest` were read under that view, so an answer under another cannot be
+mixed with this build's. It does not check the answer's `prompt_sha256`,
+`prompt_version` or `vendor`. A resume across a prompt-version or vendor-pin
+bump therefore marks one run out under two prompts. Each answer record names the prompt it was given, so the mixture is
 visible per page and nothing is lost; nothing refuses it or reports it at run
 level. The Perlector's own resume guard has the same shape, so closing this is
 a cross-stage decision rather than a Designator one.
@@ -1139,7 +1142,14 @@ provenance (the served chair, its real receipt, and `engine_call`)
 
 Structure answers sealed as `designator-structure-answer.v1`, `.v2` or `.v3`
 are refused by name; a new run produces the current request-image evidence and
-the complete sealed sampling of every attempt.
+the complete sealed sampling of every attempt. An answer or attempt whose
+`text_view` is not `chandra-layout-text.v2` is refused the same way, by this
+stage and by every reader in `common/stage.py`
+(`refuse_structure_answer_text_view`): the retired `chandra-layout-text.v1`,
+which dropped a `Blank-Page` block's text, by name, and an unknown or missing
+view as such. Both refusals say to re-run the submission from the Door: the run
+tree is immutable and a resumed Designator reuses its sealed answers, so only a
+fresh run asks the chair again.
 
 The raw response is retained twice under one digest: by the client before it
 is parsed, and under `common/chandra_custody.py`'s one-receipt binding
