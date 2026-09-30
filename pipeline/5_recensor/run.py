@@ -36,7 +36,6 @@ from common.background import (  # noqa: E402
     validate_ink_not_measurable_payload,
     validate_measured_ink_map_payload,
 )
-from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import is_plain_int, is_sha256  # noqa: E402
 from common.contracts.errors import (  # noqa: E402
@@ -76,12 +75,11 @@ from common.imaging import grayscale_rows  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
     unrouted_observations,
-    validate_capture_text_view,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
     validate_reportable_observations,
-    verify_native_capture_blob,
 )
+from common.page_testimonia import verify_page_native_capture  # noqa: E402
 from common.perlector_audit import (  # noqa: E402
     EXAMINATION_CAP_EXHAUSTED,
     EXAMINATION_INCOMPLETE,
@@ -732,7 +730,9 @@ def _verify_page_witness_entry(
             )
     native_capture = page_payload.get("native_capture")
     if native_capture is not None:
-        _verify_native_capture(context, act_id, chair, page_testimonium, native_capture)
+        verify_page_native_capture(
+            context, f"act {act_id}", chair, page_testimonium, native_capture
+        )
     # Native page outcomes are independent; legacy joins derive from act attempts. A
     # page read one record at a time is a native page reading too.
     attachment_outcome = (
@@ -795,41 +795,6 @@ def _verify_page_witness_entry(
             "count text the page record cannot supply for this act. Rebuild the attachment "
             "from the referenced page Testimonium and alignment."
         )
-
-
-def _verify_native_capture(
-    context, act_id: str, chair: str, page_testimonium: dict, native_capture: dict
-) -> None:
-    """A native capture must bind its raw response and come from the chair's own adapter."""
-    if native_capture["raw_response_ref"] not in page_testimonium.get("inputs", []):
-        raise FatalAccounting(
-            f"act {act_id} page witness {chair!r} does not bind its retained raw "
-            "response as a verified input"
-        )
-    # `resolve` may return an `AbsentChair`, which has no `witness_adapter`;
-    # refuse by name rather than raise AttributeError.
-    resolved = context.registry.resolve(chair)
-    if not isinstance(resolved, ChairIdentity):
-        raise FatalAccounting(
-            f"act {act_id} page witness {chair!r} carries a native capture while the "
-            "roster records that chair as absent; an absent chair has no adapter "
-            "boundary to attribute it to; restore the chair or the retained record"
-        )
-    if native_capture["adapter"] != resolved.witness_adapter:
-        raise FatalAccounting(
-            f"act {act_id} page witness {chair!r} attributes its native capture to "
-            "an adapter other than that chair's configured boundary"
-        )
-    # A capture read under a text view this build does not read is refused as
-    # that, with its remedy, not as a capture that differs from its bytes.
-    validate_capture_text_view(native_capture)
-    try:
-        verify_native_capture_blob(context.tree, native_capture)
-    except ContractError as error:
-        raise FatalAccounting(
-            f"act {act_id} page witness {chair!r} has a native capture that does "
-            f"not derive from its retained raw response: {error}"
-        ) from error
 
 
 _ALIGNED_KEYS = frozenset(
@@ -2262,7 +2227,7 @@ def current_act_attachments(context) -> dict[str, dict]:
     }
 
 
-def current_page_testimonia(context) -> dict[tuple[int, str], dict]:
+def page_testimonia_by_ordinal_and_chair(context) -> dict[tuple[int, str], dict]:
     """The current page Testimonium per page and chair, from retained history.
 
     Testimony is append-only, so the Attestatores manifest legitimately carries
@@ -2553,7 +2518,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
     never a verdict about which witness is right.
     """
     attachments = current_act_attachments(context)
-    page_testimonia = current_page_testimonia(context)
+    page_testimonia = page_testimonia_by_ordinal_and_chair(context)
     acts_by_page, proposal_regions_by_page = _proposal_pages_of_acts(context)
     rows_by_page_chair = _page_rows_by_chair(context, acts_by_page, attachments, page_testimonia)
     # After the rows, so a missing record names the act that lost it; this catches the

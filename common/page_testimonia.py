@@ -20,6 +20,8 @@ from common.imaging import dimensions
 from common.native_witness import (
     record_presentations,
     unpresented_region_ids,
+    validate_capture_text_view,
+    validate_native_capture,
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
     validate_presented_page_binding,
@@ -288,17 +290,29 @@ def validate_page_testimonium_record(
 def verify_page_native_capture(
     context, subject: str, chair: str, testimonium: dict, native_capture: dict
 ) -> None:
-    """The retained native capture is bound, attributed to the chair's adapter and intact."""
+    """The retained native capture is bound, attributed to the chair's adapter and intact.
+
+    A capture read under a text view this build does not read is refused as
+    that, before its bytes are read.
+    """
     if native_capture["raw_response_ref"] not in testimonium.get("inputs", []):
         raise SchemaRefusal(
             f"{subject} page Testimonium for chair {chair!r} does not bind its "
             "retained raw response as a verified input"
         )
-    if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
+    resolved = context.registry.resolve(chair)
+    if not isinstance(resolved, ChairIdentity):
+        raise SchemaRefusal(
+            f"{subject} page Testimonium for chair {chair!r} carries a native capture while "
+            "the roster records that chair as absent; an absent chair has no adapter "
+            "boundary to attribute it to"
+        )
+    if native_capture["adapter"] != resolved.witness_adapter:
         raise SchemaRefusal(
             f"{subject} page Testimonium for chair {chair!r} attributes its "
             "native capture to an adapter other than that chair's configured boundary"
         )
+    validate_capture_text_view(validate_native_capture(native_capture))
     verify_native_capture_blob(context.tree, native_capture)
 
 

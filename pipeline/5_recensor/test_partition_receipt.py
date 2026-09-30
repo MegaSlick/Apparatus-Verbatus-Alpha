@@ -346,7 +346,7 @@ def test_recensor_refuses_a_native_capture_attributed_to_another_adapter(tmp_pat
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact_reference", wrong_adapter)
-    with pytest.raises(FatalAccounting, match="configured boundary"):
+    with pytest.raises(SchemaRefusal, match="configured boundary"):
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 
@@ -372,7 +372,7 @@ def test_recensor_names_an_absent_chair_that_still_carries_a_native_capture(tmp_
         return original(chair)
 
     monkeypatch.setattr(context.registry, "resolve", absent_third_chair)
-    with pytest.raises(FatalAccounting, match="roster records that chair as absent") as caught:
+    with pytest.raises(SchemaRefusal, match="roster records that chair as absent") as caught:
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
     assert "attestator_3" in str(caught.value)
 
@@ -470,7 +470,7 @@ def test_recensor_rederives_a_native_projection_from_the_retained_raw_response(
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact_reference", forged_projection)
-    with pytest.raises(FatalAccounting, match="parse.*retained raw response"):
+    with pytest.raises(SchemaRefusal, match="parse.*retained raw response"):
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 
