@@ -67,9 +67,10 @@ proof; exceeding any bound is an explicit refusal, never a partial manifest.
 
 Derivative pages must carry `derivative_page_backlink(row, part_index)`. The link
 contains the corpus, source-frame digest, row digest, and exact part index; a row-only
-link cannot distinguish the two pages produced by a spread. The future door calls
-`verify_submitted_frame(row, bytes)` before applying any geometry, refusing a row
-whose source digest differs from the submitted bytes.
+link cannot distinguish the two pages produced by a spread. The Door
+(`pipeline/1_exemplar/door.py::decide`) calls `verify_submitted_frame(row, bytes)`
+before applying any geometry, refusing a row whose source digest differs from the
+submitted bytes.
 
 `validate_manifest(manifest, clusters)` refuses a manifest whose rows name a cluster
 when no cluster records are supplied. The `clusters` argument is optional only
@@ -102,30 +103,25 @@ identity, but the consuming Door refuses a submitted shard when a named cluster 
 outside that shard. The enforced reach is therefore bounded by submitted-shard geometry;
 the producer must not represent a cross-shard cluster as ingestible. A row may name a
 cluster only when its source digest is a member, and all members declare the same split
-count. The mapping key a caller files a record under must equal the record's own
+count. Membership holds in both directions: a frame is a member of at most one supplied
+cluster record, and a listed member whose row is in the manifest must name that cluster.
+The mapping key a caller files a record under must equal the record's own
 `cluster_id`, and the record's `corpus_id` must match the manifest and every row it
 contains. Every frame remains processable.
 
-## ScanTailor seam — unverified
+## ScanTailor transcription
 
-**UNVERIFIED FORMAT GAP — DO NOT TREAT THIS AS A REAL SCANTAILOR IMPORTER.**
-`transcribe_scantailor_project` accepts only the checked-in XML fixture shape
-`scantailor-project shape="unverified-fixture-v0"`. It is a defended parsing seam,
-bounded to 4 MiB before XML parsing, not a claim about ScanTailor Advanced's real
-project-file format. No real project file was available offline, so closing this gap
-here was impossible under the inherited Q2 ruling. Every decision field — operation
-order, coordinate spaces, each part's region, local crop, rotation direction, origin,
-canvas rule, colour mode and deskew angle — is read from the fixture's own attributes;
-none is synthesized or defaulted. Empty projects are refused. If real projects do not
-carry per-page geometry — including split geometry specifically — Unit 6 must change
-the transcription source explicitly; it must not synthesize geometry.
-
-The seam builds the actor itself from the project's recorded `version`, and refuses a
-project that records none. A caller supplies the known corpus, batch mode and override
-flag, but no actor claim: a caller-supplied version would assert something about an
-artifact nobody read, and a caller-supplied `kind` would let a
-transcribed row claim to be natively produced, which is exactly what "distinguishable
-by actor alone" is for.
+ScanTailor Advanced geometry reaches this contract through
+`operations/operator/scantailor_worker.py`, which parses a closed ScanTailor Advanced
+v4 project, and `operations/triage/scantailor_bridge.py`, which turns the imported
+geometry into ordinary decision rows. The bridge accepts only a full-frame two-page
+layout with one integral vertical cutter; perspective, deskew, partial outlines,
+slanted cutters and a removed half are refusals, not approximations. Every submitted
+frame must have exactly one imported geometry entry, and the reverse. Each row's
+`source_frame_sha256` is the digest of the submitted master bytes, never an attribute
+of the project; its confidence is `0`, since a project carries no confidence ordinal;
+and its actor is `kind: "scantailor"`, which is what keeps a transcribed row
+distinguishable from a natively produced one by actor alone.
 
 ## Two fields that look redundant and are not
 
@@ -193,15 +189,6 @@ dimension refusals are count-checked against the evidence manifest before either
 walked, and an evidence manifest may name only frames in the producer submission. Pillow's
 decompression-bomb warning and error are producer refusals, and the canonical confirmation
 loader reads at most 16 MiB from a direct regular file without following its final path.
-
-The two ScanTailor fixture seams must be replaced together when real transcription lands.
-A real project has no trustworthy `source_frame_sha256` attribute: Unit 6B computes a
-path-to-digest map from the submitted master bytes and binds each transcribed row through it.
-Nor does a project supply this pipeline's confidence ordinal: every transcribed row records
-confidence `0`, with `actor.kind == "scantailor"` preserving its origin. Do not synthesize
-geometry the real project does not carry, and verify its rotation sign convention against a
-real project before claiming transcription. A frame ScanTailor omitted still receives one
-explicit full-frame producer row at confidence 0 so coverage remains exact.
 
 Before producing rows, inspect every real master's decoded mode and dimensions. A mode outside
 `common.imaging.ENCODER_LOSSLESS_MODES` requires an explicit per-part colour conversion; an

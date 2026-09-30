@@ -10,13 +10,13 @@ spread's two pages each want their own crop besides.
 ``region`` is a half-open rectangle in source-frame pixel coordinates; after
 cutting it, ``crop_box`` is half-open in that part's local pixel coordinates.
 The cropped pixels are then rotated clockwise about the crop's centre onto an
-expanded canvas. Pixel sampling, fill and encoding belong to Unit 7's sealed
-apply recipe, not to geometry defaults hidden here.
+expanded canvas. Pixel sampling, fill and encoding belong to the Door's sealed
+apply recipe (`door.py`, `triage-raster-apply-v1`), not to geometry defaults
+hidden here.
 """
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from typing import Any, Final
 
@@ -35,19 +35,17 @@ MANIFEST_SCHEMA: Final = "triage-decision-manifest-v1"
 CLUSTER_SCHEMA: Final = "triage-re-shoot-cluster-v1"
 CONFIDENCE_ORDINALS: Final = range(0, 5)
 COLOUR_MODES: Final = ("keep", "grayscale", "rgb", "bitonal")
-SCANTAILOR_IDENTITY: Final = "ScanTailor Advanced"
 SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"
 MAX_MANIFEST_ROWS: Final = 1_000
 MAX_CLUSTER_RECORDS: Final = 1_000
 MAX_CLUSTER_MEMBERS: Final = 4_096
 # A single frame's parts must remain in one content-aware shard, and the shared
 # corpus-frame policy refuses any configured shard limit above 1,000 — so any
-# bound at or below that keeps every ingestible frame provable. The 64-part
-# value is the security pass's ceiling on the quadratic pairwise-disjointness
-# proof; a real frame with more parts is a triage-policy conversation, not a
-# bigger loop. The Exemplar boundary bounds the same split with the shared cap.
+# bound at or below that keeps every ingestible frame provable. The 64-part cap
+# bounds the quadratic pairwise-disjointness proof; a real frame with more parts
+# is a triage-policy question, not a bigger loop. The Exemplar boundary bounds the
+# same split with the shared cap.
 MAX_SPLIT_PARTS: Final = MAX_TRIAGE_SPLIT_PARTS
-MAX_SCANTAILOR_PROJECT_BYTES: Final = 4 * 1024 * 1024
 
 _RECTANGLE_FIELDS: Final = {"space", "x", "y", "w", "h"}
 _ROTATION_FIELDS: Final = {"rotation_millidegrees", "direction", "origin", "canvas"}
@@ -58,13 +56,6 @@ _CLUSTER_FIELDS: Final = {
     "member_frame_sha256",
     "split_count",
 }
-
-
-class _ClosedFixtureTreeBuilder(ET.TreeBuilder):
-    """Reject declarations outside the deliberately tiny fixture-only XML seam."""
-
-    def doctype(self, name: str, pubid: str | None, system: str | None) -> None:
-        raise SchemaRefusal("ScanTailor fixture declarations are outside the closed XML shape")
 
 
 def _rectangle(
@@ -118,9 +109,8 @@ def _row_digest(row: Mapping[str, Any]) -> str:
     ):
         # ``make_row`` derives the digest before full validation. Refuse this
         # quadratic-work input before canonical serialization copies it. The
-        # message says *where* the refusal happened, because the identical one in
-        # ``_validate_split`` would otherwise make the two indistinguishable, and a
-        # test could not then tell that this early guard had been removed.
+        # message names where it was refused, apart from the same limit in
+        # ``_validate_split``.
         raise SchemaRefusal(
             f"triage split exceeds the {MAX_SPLIT_PARTS}-part limit before its row is serialized"
         )
@@ -132,11 +122,9 @@ def _row_digest(row: Mapping[str, Any]) -> str:
         # containers with ValueError, and cycles found by its own pre-walk with
         # RecursionError. A lone Unicode surrogate — which JSON accepts and UTF-8
         # has no form for — arrives as TypeError too, because `canonical_bytes`
-        # converts it there deliberately; naming `UnicodeError` here would neither
-        # widen this clause (it is a `ValueError` subclass) nor be reachable, while
-        # reading as a branch a test had covered. A caller building a row is inside
-        # this contract's refusal algebra, so each is one here too; a bare built-in
-        # exception would escape every `except SchemaRefusal` in the pipeline.
+        # converts it there. Each becomes a SchemaRefusal here, since a bare
+        # built-in exception would escape every `except SchemaRefusal` in the
+        # pipeline.
         raise SchemaRefusal(f"triage row cannot be canonically serialized: {error}") from error
 
 
@@ -177,7 +165,7 @@ def _validate_split(split: Any, frame: Mapping[str, int]) -> None:
     # no overlap, without a tolerance. It costs the number of parts rather than
     # the number of pixels, which is what makes it usable: enumerating the pixels
     # of a 4000x6000 master takes ~8s and ~3.3GB for a single row, and a parish
-    # set is ruled to run past 2,000 frames.
+    # set can run past 2,000 frames.
     for index, region in enumerate(regions):
         for other in regions[index + 1 :]:
             if not (
@@ -378,6 +366,19 @@ def validate_manifest(
             )
         if len(row["split"]["parts"]) != record["split_count"]:
             raise SchemaRefusal("triage cluster members have incompatible split counts")
+    # Membership holds in both directions: a listed member whose own row names no
+    # cluster, or another one, would drop out of every cluster check and be read
+    # as an independent act.
+    cluster_of_row = {row["source_frame_sha256"]: row["re_shoot_cluster_id"] for row in rows}
+    cluster_of_member: dict[str, str] = {}
+    for cluster_id, record in checked.items():
+        for member in record["member_frame_sha256"]:
+            if cluster_of_member.setdefault(member, cluster_id) != cluster_id:
+                raise SchemaRefusal("a frame is a member of more than one re-shoot cluster")
+            if member in cluster_of_row and cluster_of_row[member] != cluster_id:
+                raise SchemaRefusal(
+                    "a re-shoot cluster lists a frame whose own triage row does not name it"
+                )
     return manifest
 
 
@@ -405,139 +406,3 @@ def derivative_page_backlink(row: Mapping[str, Any], part_index: int) -> dict[st
         "triage_manifest_row_sha256": checked["manifest_row_sha256"],
         "triage_part_index": part_index,
     }
-
-
-def _fixture_rectangle(text: str, what: str) -> dict[str, int]:
-    try:
-        x, y, width, height = (int(part) for part in text.split(","))
-    except ValueError as error:
-        raise SchemaRefusal(f"ScanTailor fixture {what} geometry is malformed") from error
-    return {"x": x, "y": y, "w": width, "h": height}
-
-
-def transcribe_scantailor_project(
-    project_bytes: bytes, *, corpus_id: str, mode: str, human_override: bool
-) -> list[dict[str, Any]]:
-    """Parse only the documented, unverified fixture seam for ScanTailor geometry.
-
-    The real ScanTailor Advanced project format was unavailable offline.  This
-    refuses any other XML shape rather than pretending arbitrary project files
-    contain page geometry; Unit 6 must replace this seam after verification.
-
-    Every geometric field — each part's region, its crop and its own deskew — is
-    read from the project's own attributes, never synthesized: a page that was not
-    actually split declares one full-frame part explicitly, the same as a page
-    that was.
-
-    The actor is built here from the project's own recorded version rather than
-    taken from the caller. The record protects the past, and
-    a caller-supplied version is an assertion about an artifact nobody read; a
-    caller-supplied *kind* would also let a transcribed row claim to be natively
-    produced, which is precisely what the "distinguishable by actor alone"
-    requirement is for.
-    """
-    if not isinstance(project_bytes, bytes):
-        raise SchemaRefusal("ScanTailor project fixture must be bytes")
-    if len(project_bytes) > MAX_SCANTAILOR_PROJECT_BYTES:
-        raise SchemaRefusal(
-            "ScanTailor project fixture exceeds the "
-            f"{MAX_SCANTAILOR_PROJECT_BYTES}-byte parsing limit"
-        )
-    try:
-        parser = ET.XMLParser(target=_ClosedFixtureTreeBuilder())
-        root = ET.fromstring(project_bytes, parser=parser)
-    except ET.ParseError as error:
-        raise SchemaRefusal("ScanTailor project fixture is not XML") from error
-    if (
-        root.tag != "scantailor-project"
-        or set(root.attrib) != {"shape", "version"}
-        or root.attrib["shape"] != "unverified-fixture-v0"
-    ):
-        raise SchemaRefusal(
-            "ScanTailor project shape is unverified; only the documented fixture seam is accepted"
-        )
-    if root.text and root.text.strip():
-        raise SchemaRefusal("ScanTailor fixture project has text outside its closed XML shape")
-    version = root.attrib["version"]
-    if not version.strip():
-        raise SchemaRefusal("ScanTailor project records no version, so no actor can be resolved")
-    actor = {"kind": "scantailor", "identity": SCANTAILOR_IDENTITY, "revision": version}
-    rows = []
-    for page in root:
-        if page.tag != "page" or set(page.attrib) != {
-            "source_frame_sha256",
-            "width",
-            "height",
-            "confidence",
-            "operation_order",
-        }:
-            raise SchemaRefusal("ScanTailor fixture page has the wrong closed geometry shape")
-        if page.text and page.text.strip():
-            raise SchemaRefusal(
-                "ScanTailor fixture page has text outside its closed geometry shape"
-            )
-        parts = []
-        for part in page:
-            if part.tag != "part" or set(part.attrib) != {
-                "region",
-                "crop",
-                "rotation_millidegrees",
-                "rotation_direction",
-                "rotation_origin",
-                "rotation_canvas",
-                "colour_mode",
-                "region_space",
-                "crop_space",
-            }:
-                raise SchemaRefusal("ScanTailor fixture part has the wrong closed geometry shape")
-            if len(part) or (part.text and part.text.strip()):
-                raise SchemaRefusal("ScanTailor fixture part has content outside its closed shape")
-            try:
-                rotation = int(part.attrib["rotation_millidegrees"])
-            except ValueError as error:
-                raise SchemaRefusal("ScanTailor fixture rotation is malformed") from error
-            parts.append(
-                make_part(
-                    _fixture_rectangle(part.attrib["region"], "split"),
-                    _fixture_rectangle(part.attrib["crop"], "crop"),
-                    rotation,
-                    colour_mode=part.attrib["colour_mode"],
-                    region_space=part.attrib["region_space"],
-                    crop_space=part.attrib["crop_space"],
-                    rotation_direction=part.attrib["rotation_direction"],
-                    rotation_origin=part.attrib["rotation_origin"],
-                    rotation_canvas=part.attrib["rotation_canvas"],
-                )
-            )
-            if part.tail and part.tail.strip():
-                raise SchemaRefusal(
-                    "ScanTailor fixture page has text outside its closed geometry shape"
-                )
-        if not parts:
-            raise SchemaRefusal("ScanTailor fixture page declares no split part")
-        try:
-            frame = {"width": int(page.attrib["width"]), "height": int(page.attrib["height"])}
-        except ValueError as error:
-            raise SchemaRefusal("ScanTailor fixture page dimensions are malformed") from error
-        try:
-            confidence = int(page.attrib["confidence"])
-        except ValueError as error:
-            raise SchemaRefusal("ScanTailor fixture page confidence is malformed") from error
-        rows.append(
-            make_row(
-                corpus_id=corpus_id,
-                source_frame_sha256=page.attrib["source_frame_sha256"],
-                frame=frame,
-                split=make_split(parts, operation_order=page.attrib["operation_order"]),
-                re_shoot_cluster_id=None,
-                confidence=confidence,
-                mode=mode,
-                actor=dict(actor),
-                human_override=human_override,
-            )
-        )
-        if page.tail and page.tail.strip():
-            raise SchemaRefusal("ScanTailor fixture project has text outside its closed XML shape")
-    if not rows:
-        raise SchemaRefusal("ScanTailor project fixture declares no pages")
-    return rows

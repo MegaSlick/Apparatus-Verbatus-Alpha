@@ -423,14 +423,8 @@ def load_triage_decisions(
             "the triage decision manifest contains producer rows but no triage producer "
             "recipe was supplied"
         )
-    rows: dict[str, dict[str, Any]] = {}
-    for row in checked["records"]:
-        digest = row["source_frame_sha256"]
-        if digest in rows:
-            raise ContractError(
-                "the triage decision manifest names one submitted frame more than once"
-            )
-        rows[digest] = row
+    # `validate_manifest` refuses a second row for one frame, so keying is exact.
+    rows = {row["source_frame_sha256"]: row for row in checked["records"]}
     return rows, dict(clusters or {}), digests
 
 

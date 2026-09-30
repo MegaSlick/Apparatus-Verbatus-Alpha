@@ -1,8 +1,8 @@
 import time
 from collections.abc import Mapping
 from copy import deepcopy
-from pathlib import Path
 
+import manifest as manifest_module
 import pytest
 from manifest import (
     CLUSTER_SCHEMA,
@@ -10,12 +10,10 @@ from manifest import (
     MAX_CLUSTER_MEMBERS,
     MAX_CLUSTER_RECORDS,
     MAX_MANIFEST_ROWS,
-    MAX_SCANTAILOR_PROJECT_BYTES,
     MAX_SPLIT_PARTS,
     derivative_page_backlink,
     make_row,
     make_split,
-    transcribe_scantailor_project,
     validate_cluster_record,
     validate_manifest,
     verify_submitted_frame,
@@ -32,13 +30,7 @@ DIGEST_A = "a" * 64
 DIGEST_B = "b" * 64
 DIGEST_C = "c" * 64
 ACTOR = {"kind": "model", "identity": "triage-model", "revision": "r17"}
-FIXTURE = Path(__file__).resolve().parents[2] / "proof/fixtures/scantailor-project-shape-v0.xml"
 CORPUS_ID = "montebello"
-PART_CONVENTIONS = (
-    b' region_space="frame" crop_space="part" rotation_direction="clockwise" '
-    b'rotation_origin="crop-centre" '
-    b'rotation_canvas="expand" colour_mode="keep"'
-)
 
 
 def make_part(region, crop_box, rotation_millidegrees, *, colour_mode="keep"):
@@ -74,46 +66,6 @@ def row(**changes):
 
 def manifest(records, *, corpus_id=CORPUS_ID):
     return {"schema": MANIFEST_SCHEMA, "corpus_id": corpus_id, "records": records}
-
-
-def fixture_part(*, region=b"0,0,10,8", crop=b"0,0,10,8", conventions=PART_CONVENTIONS):
-    return (
-        b'<part region="'
-        + region
-        + b'" crop="'
-        + crop
-        + b'" rotation_millidegrees="0"'
-        + conventions
-        + b" />"
-    )
-
-
-def transcribe(project_bytes):
-    return transcribe_scantailor_project(
-        project_bytes, corpus_id=CORPUS_ID, mode="manual", human_override=False
-    )
-
-
-def project(pages: bytes, shape=b"unverified-fixture-v0", version=b"6.0"):
-    return (
-        b'<scantailor-project shape="'
-        + shape
-        + b'" version="'
-        + version
-        + b'">'
-        + pages
-        + b"</scantailor-project>"
-    )
-
-
-def page(parts: bytes):
-    return (
-        b'<page source_frame_sha256="'
-        + DIGEST_A.encode()
-        + b'" width="10" height="8" confidence="0" operation_order="region-crop-rotate">'
-        + parts
-        + b"</page>"
-    )
 
 
 def test_every_field_round_trips_and_a_derivative_links_to_the_row():
@@ -162,13 +114,9 @@ def test_required_provenance_and_closed_values_are_refused(field, value, match):
     """Pinned to the reason, as the geometry-convention cases below already are.
 
     Each case mutates a row `make_row` already sealed, so `manifest_row_sha256` no
-    longer binds the payload and `validate_row` has a second reason to refuse it.
-    With a bare `pytest.raises(ContractError)` the digest check answered for every
-    guard named here: delete the confidence ordinal check, or the mode check, or
-    any branch of `_validate_actor`, and the row was still refused and the test was
-    still green. What that would cost in practice is a triage row carrying a
-    confidence nobody declared or a mode nobody declared, and those two fields
-    decide which frames go to human review."""
+    longer binds the payload and `validate_row` has a second reason to refuse it;
+    the specific match is what shows the named guard itself refused the row. The
+    confidence and mode fields decide which frames go to human review."""
     values = row()
     values[field] = value
     with pytest.raises(ContractError, match=match):
@@ -514,17 +462,18 @@ def test_cluster_is_corpus_scoped_and_refuses_incompatible_split_counts_across_r
 
 
 def test_a_cluster_record_carries_no_run_or_shard_scoped_field():
-    # The DoD's "survives being read from two different runs" is a property of the
-    # record's shape, not of a run fixture: there is no run argument to give, and
-    # this pins the closed field set so one cannot be added without failing here.
-    record = cluster([DIGEST_A, DIGEST_B])
-    assert set(record) == {
+    # A cluster record survives being read from two different runs because its
+    # closed field set holds nothing run- or shard-scoped; a field added to that
+    # set must be named here.
+    assert manifest_module._CLUSTER_FIELDS == {
         "schema",
         "corpus_id",
         "cluster_id",
         "member_frame_sha256",
         "split_count",
     }
+    record = cluster([DIGEST_A, DIGEST_B])
+    validate_manifest(manifest([]), {"opening-35": record})
     strayed = dict(record, run_id="run-1")
     with pytest.raises(ContractError, match="closed corpus-scoped schema"):
         validate_manifest(manifest([]), {"opening-35": strayed})
@@ -629,16 +578,45 @@ def test_submitted_frame_refuses_a_non_bytes_boundary_value():
         verify_submitted_frame(row(), "not bytes")
 
 
+def test_a_manifest_with_two_rows_for_one_frame_is_refused():
+    """One frame may not carry two geometries inside one shard."""
+    first = row()
+    second = row(
+        split=make_split(
+            [
+                make_part({"x": 0, "y": 0, "w": 5, "h": 8}, {"x": 0, "y": 0, "w": 5, "h": 8}, 0),
+                make_part({"x": 5, "y": 0, "w": 5, "h": 8}, {"x": 0, "y": 0, "w": 5, "h": 8}, 0),
+            ]
+        )
+    )
+    with pytest.raises(SchemaRefusal, match="more than one row for a submitted frame"):
+        validate_manifest(manifest([first, second]))
+
+
+def test_a_cluster_member_whose_own_row_names_no_cluster_is_refused():
+    """Membership holds both ways, or the member drops out of every cluster check."""
+    records = {"opening-35": cluster([DIGEST_A, DIGEST_B])}
+    with pytest.raises(SchemaRefusal, match="own triage row does not name it"):
+        validate_manifest(manifest([row()]), records)
+
+
+def test_a_frame_listed_in_two_cluster_records_is_refused():
+    records = {
+        "opening-35": cluster([DIGEST_A, DIGEST_B]),
+        "opening-36": cluster([DIGEST_A, DIGEST_C], cluster_id="opening-36"),
+    }
+    with pytest.raises(SchemaRefusal, match="member of more than one re-shoot cluster"):
+        validate_manifest(manifest([]), records)
+
+
 def test_contract_counts_are_bounded_before_their_work_can_amplify():
     too_many_parts = [
         make_part({"x": index, "y": 0, "w": 1, "h": 1}, {"x": 0, "y": 0, "w": 1, "h": 1}, 0)
         for index in range(MAX_SPLIT_PARTS + 1)
     ]
-    # "before its row is serialized" specifically: `make_row` guards the count once
-    # before it derives the digest and `_validate_split` guards it again afterwards,
-    # and while both said the same words this assertion passed with the early guard
-    # deleted — which is the guard that keeps the quadratic work off untrusted input
-    # in the first place.
+    # "before its row is serialized" specifically: `make_row` guards the count
+    # before it derives the digest and `_validate_split` guards it again afterwards;
+    # the early guard is the one that keeps quadratic work off untrusted input.
     with pytest.raises(
         SchemaRefusal, match=f"{MAX_SPLIT_PARTS}-part limit before its row is serialized"
     ):
@@ -661,167 +639,6 @@ def test_contract_counts_are_bounded_before_their_work_can_amplify():
     }
     with pytest.raises(SchemaRefusal, match=f"{MAX_CLUSTER_RECORDS}-record limit"):
         validate_manifest(manifest([]), records)
-
-
-def test_scantailor_transcription_reads_every_part_of_its_geometry():
-    transcribed = transcribe(FIXTURE.read_bytes())[0]
-    assert transcribed["split"] == {
-        "operation_order": "region-crop-rotate",
-        "parts": [
-            {
-                "region": {"space": "frame", "x": 0, "y": 0, "w": 50, "h": 80},
-                "crop_box": {"space": "part", "x": 1, "y": 2, "w": 45, "h": 70},
-                "rotation": {
-                    "rotation_millidegrees": 1250,
-                    "direction": "clockwise",
-                    "origin": "crop-centre",
-                    "canvas": "expand",
-                },
-                "colour_mode": "rgb",
-            },
-            {
-                "region": {"space": "frame", "x": 50, "y": 0, "w": 50, "h": 80},
-                "crop_box": {"space": "part", "x": 4, "y": 2, "w": 45, "h": 70},
-                "rotation": {
-                    "rotation_millidegrees": -300,
-                    "direction": "clockwise",
-                    "origin": "crop-centre",
-                    "canvas": "expand",
-                },
-                "colour_mode": "bitonal",
-            },
-        ],
-    }
-
-
-def test_scantailor_actor_revision_is_the_project_version_not_the_callers_claim():
-    # The record protects the past. A caller-supplied version would
-    # be an assertion about an artifact nobody read, and a caller-supplied kind
-    # would let a transcribed row claim to be natively produced.
-    transcribed = transcribe(
-        project(
-            page(fixture_part()),
-            version=b"1.0.20",
-        )
-    )[0]
-    assert transcribed["actor"] == {
-        "kind": "scantailor",
-        "identity": "ScanTailor Advanced",
-        "revision": "1.0.20",
-    }
-
-
-def test_scantailor_refuses_a_project_that_records_no_version():
-    with pytest.raises(ContractError, match="records no version"):
-        transcribe(
-            project(
-                page(fixture_part()),
-                version=b"  ",
-            )
-        )
-
-
-def test_scantailor_refuses_non_xml_bytes():
-    with pytest.raises(ContractError, match="not XML"):
-        transcribe(b"not xml")
-
-
-def test_scantailor_parser_refuses_unbounded_or_non_bytes_input_before_parsing():
-    with pytest.raises(SchemaRefusal, match="parsing limit"):
-        transcribe(b" " * (MAX_SCANTAILOR_PROJECT_BYTES + 1))
-    with pytest.raises(SchemaRefusal, match="must be bytes"):
-        transcribe("<scantailor-project />")
-
-
-def test_scantailor_refuses_an_unrecognized_project_shape():
-    with pytest.raises(ContractError, match="unverified"):
-        transcribe(project(b"", shape=b"real-scantailor-v6"))
-
-
-def test_scantailor_refuses_an_empty_project_instead_of_importing_nothing():
-    with pytest.raises(ContractError, match="declares no pages"):
-        transcribe(project(b""))
-
-
-def test_scantailor_refuses_a_page_missing_the_closed_attribute_set():
-    truncated = (
-        b'<page source_frame_sha256="'
-        + DIGEST_A.encode()
-        + b'" width="10" height="8" operation_order="region-crop-rotate">'
-        + fixture_part()
-        + b"</page>"
-    )
-    with pytest.raises(ContractError, match="wrong closed geometry shape"):
-        transcribe(project(truncated))
-
-
-def test_scantailor_refuses_malformed_confidence_with_the_right_cause():
-    malformed = page(fixture_part()).replace(b'confidence="0"', b'confidence="unknown"')
-    with pytest.raises(ContractError, match="confidence is malformed"):
-        transcribe(project(malformed))
-
-
-def test_scantailor_refuses_a_part_missing_the_closed_attribute_set():
-    with pytest.raises(ContractError, match="part has the wrong closed geometry shape"):
-        transcribe(project(page(fixture_part(conventions=b""))))
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        b'<!DOCTYPE scantailor-project><scantailor-project shape="unverified-fixture-v0" '
-        b'version="6.0"></scantailor-project>',
-        project(page(fixture_part().replace(b" />", b"><ignored /></part>"))),
-        project(page(b"unexpected" + fixture_part())),
-        project(page(fixture_part()) + b"unexpected"),
-    ],
-)
-def test_scantailor_refuses_content_outside_the_closed_fixture_shape(payload):
-    with pytest.raises(SchemaRefusal, match="outside.*closed"):
-        transcribe(payload)
-
-
-def test_scantailor_refuses_a_page_with_no_split_part():
-    with pytest.raises(ContractError, match="no split part"):
-        transcribe(project(page(b"")))
-
-
-def test_scantailor_refuses_split_geometry_that_does_not_partition_the_frame():
-    with pytest.raises(ContractError, match="does not partition"):
-        transcribe(project(page(fixture_part(region=b"0,0,9,8", crop=b"0,0,9,8"))))
-
-
-def test_scantailor_reads_coordinate_and_order_conventions_instead_of_defaulting_them():
-    wrong_order = page(fixture_part()).replace(b"region-crop-rotate", b"region-rotate-crop")
-    with pytest.raises(ContractError, match="operation_order"):
-        transcribe(project(wrong_order))
-
-    wrong_space = page(fixture_part()).replace(b'region_space="frame"', b'region_space="part"')
-    with pytest.raises(ContractError, match="frame coordinates"):
-        transcribe(project(wrong_space))
-
-
-def test_scantailor_refuses_malformed_split_geometry_rather_than_guessing():
-    with pytest.raises(ContractError, match="split geometry is malformed"):
-        transcribe(project(page(fixture_part(region=b"not,a,number,here"))))
-
-
-def test_scantailor_and_native_rows_are_distinguishable_by_actor_alone():
-    scantailor = transcribe(FIXTURE.read_bytes())[0]
-    native = row(
-        source_frame_sha256=scantailor["source_frame_sha256"],
-        frame=scantailor["frame"],
-        split=scantailor["split"],
-        confidence=scantailor["confidence"],
-        mode=scantailor["mode"],
-        human_override=scantailor["human_override"],
-    )
-    left, right = dict(scantailor), dict(native)
-    for record in (left, right):
-        record.pop("actor")
-        record.pop("manifest_row_sha256")
-    assert left == right
-    assert scantailor["actor"] != native["actor"]
 
 
 def test_the_mode_triple_is_the_shared_vocabulary_not_a_private_one():
