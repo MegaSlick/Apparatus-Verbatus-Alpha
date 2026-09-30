@@ -723,6 +723,17 @@ class ChairCacheVerifier(Protocol):
         """Return an identity-bound verification receipt or raise a named refusal."""
 
 
+SubprocessChecker = Callable[[ChairIdentity, Any], dict[str, str]]
+"""Check a subprocess chair's pinned environment; return the versions it reports."""
+
+
+def check_subprocess_environment(identity: ChairIdentity, profile: Any) -> dict[str, str]:
+    """Ask the chair's own environment for its versions; refuse unless they match the row."""
+    from operations.serving.surya_detector import environment_versions
+
+    return environment_versions(profile)
+
+
 class SmokeReader(Protocol):
     """Serving-manager seam; production must actually read the given proof page."""
 
@@ -846,8 +857,10 @@ class PreflightRunner:
         *,
         serving_recipes: ServingRecipes | None = None,
         selected_roles: frozenset[str] | None = None,
+        subprocess_checker: SubprocessChecker = check_subprocess_environment,
     ) -> None:
         self.models = models
+        self.subprocess_checker = subprocess_checker
         self.placement = placement
         self.cache_verifier = cache_verifier
         self.smoke_reader = smoke_reader
@@ -856,7 +869,7 @@ class PreflightRunner:
         self.selected_roles = selected_roles
 
     def run(self, profile: GpuProfile) -> PreflightReport:
-        from operations.serving.config import UnsupportedProfile
+        from operations.serving.config import SubprocessProfile, UnsupportedProfile
 
         issues: list[PreflightIssue] = []
         placements: list[ChairPlacement] = []
@@ -940,6 +953,26 @@ class PreflightRunner:
                         role,
                     )
                 )
+                continue
+            if isinstance(serving_profile, SubprocessProfile):
+                # Never served and never on the card: its weights and its own
+                # environment are what a run needs, so both are checked here and
+                # no golden page is read through it.
+                placements.append(
+                    ChairPlacement(
+                        role,
+                        configured.serving_recipe,
+                        tier.identifier,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        "subprocess",
+                    )
+                )
+                if self._verify_cache(configured, issues, cache_receipts):
+                    self._check_subprocess(configured, serving_profile, issues)
                 continue
             placements.append(
                 ChairPlacement(
@@ -1129,6 +1162,23 @@ class PreflightRunner:
                 )
             )
             return None
+
+    def _check_subprocess(
+        self, identity: ChairIdentity, profile: Any, issues: list[PreflightIssue]
+    ) -> None:
+        try:
+            self.subprocess_checker(identity, profile)
+        except Exception as error:
+            issues.append(
+                PreflightIssue(
+                    "subprocess-environment-unready",
+                    f"chair {identity.role}'s environment in {profile.environment} is not the "
+                    f"one its serving row pins: {error}",
+                    f"Run `uv sync --frozen --project {profile.environment}` on the pod, then "
+                    "run preflight again.",
+                    identity.role,
+                )
+            )
 
     def _verify_cache(
         self,
