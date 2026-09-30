@@ -81,10 +81,10 @@ witness_adapter = "churro.v1"
 witness_scope = "page"
 
 # DAI's own project's record detector (Teklia, YOLOv26-m OBB, trained on the
-# same RecordGold corpus as DAI). The project lead ruled that each witness sees
-# the page the way it was trained: DAI reads crops of the records this detector
-# finds, never the Designator's act crops. Its records are page-scoped evidence
-# with no authority over acts; they only give DAI its units.
+# same RecordGold corpus as DAI). Each witness sees the page the way it was
+# trained: DAI reads crops of the records this detector finds, never the
+# Designator's act crops. Its records are page-scoped evidence with no
+# authority over acts; they only give DAI its units.
 [chairs.secondary_proposer]
 state = "configured"
 source = "huggingface"

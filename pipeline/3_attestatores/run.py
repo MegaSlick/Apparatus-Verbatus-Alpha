@@ -3449,9 +3449,7 @@ def publish_page_testimonia_and_attachments(
     # Walked only when a chair reads detector records; no other chair needs it.
     sealed_page_records = (
         _sealed_page_testimonia(context, ordinal)
-        if any(
-            reads_detector_records(context.registry.resolve(chair)) for chair in page_chairs
-        )
+        if any(reads_detector_records(context.registry.resolve(chair)) for chair in page_chairs)
         else {}
     )
     for page_ordinal, page_acts in sorted(by_page.items()):
