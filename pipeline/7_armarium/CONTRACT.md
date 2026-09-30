@@ -408,10 +408,17 @@ layers recomputed: `annotations` must equal the reading's own layer validated
 `page-blank` one.
 
 **Witnesses.** Each delivered reading's witnesses are
-`page_review.shown_page_witnesses`, the Archetypus's custody check, each exported
-as `{chair, witness_label, outcome, testimonium_ref, provenance}`: the chair read
-from the Testimonium the feed row names, and the label the reader saw it under (a
-pseudonym in a blinded run, the chair in a named one).
+`page_testimonia.shown_page_witnesses` over the page's validated current
+Testimonia (`current_page_testimonia`), the Archetypus's custody check, each
+exported as `{chair, witness_label, outcome, testimonium_ref, provenance}`: the
+chair read from the Testimonium the feed row names, and the label the reader saw
+it under (a pseudonym in a blinded run, the chair in a named one). Only the
+sealed page witnesses read a page, so the Recensor's coverage records count
+exactly them: `aggregate_basis.page_witness_chairs` (page path only) names them,
+sorted, as part of `witness_chairs`; every coverage record's `configured` is
+their number, and a delivered reading's witnesses are a non-empty part of them.
+Each manifest entry carries its review's `notes` as `review_notes` (a
+continuation flag on an `other` entry, which holds nothing).
 
 **Pages with no act.** A read page whose entries are all `other` carries
 `no-act-on-page-unconfirmed` on each. Until the Recensor confirms the page holds

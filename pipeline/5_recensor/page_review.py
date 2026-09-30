@@ -35,6 +35,14 @@ from common.contracts.outcomes import WITNESS_READING_OUTCOMES, classify, witnes
 from common.contracts.stages import ATTESTATORES, EXEMPLAR, PERLECTOR, RECENSOR
 from common.page_accounting import NOT_APPLICABLE, PASS
 from common.page_path import PAGE_ACCOUNTING_KIND, refs_by_path
+from common.page_review import (
+    CONTINUATION_LINK_KIND,
+    CONTINUATION_LINK_SCHEMA,
+    HELD,
+    PAGE_REVIEW_FIELDS,
+    RELEASABLE_HOLDS,
+    reviewed_rows,
+)
 from common.page_testimonia import (
     PAGE_TESTIMONIUM_KIND,
     current_page_testimonia,
@@ -44,7 +52,6 @@ from common.page_testimonia import (
 )
 from common.recensor_receipt import build_recensor_reading_receipt
 from common.stage import (
-    COUNTED_READING_CLASSES,
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_CLASS,
     PAGE_BLANK_HOLD,
@@ -53,10 +60,7 @@ from common.stage import (
     reading_denominator,
 )
 
-CONTINUATION_LINK_KIND: Final = "continuation-link"
-CONTINUATION_LINK_SCHEMA: Final = "recensor-continuation-link.v1"
 ACCEPTED: Final = "accepted"
-HELD: Final = "held-for-review"
 CONFIRMED_BLANK: Final = "confirmed-blank"
 # A chair of the sealed page roster with no Testimonium for a page has not been
 # attempted there: unresolved, never a reading.
@@ -65,7 +69,6 @@ NO_TESTIMONIUM_OUTCOME: Final = "not-run"
 # A read page whose entries are all `other`: the reading says the page holds no
 # act, which this stage confirms or holds as it does a blank page.
 NO_ACT_HOLD: Final = NO_ACT_ON_PAGE_HOLD
-RELEASABLE: Final = frozenset({PAGE_BLANK_HOLD, NO_ACT_HOLD})
 
 # The codes this stage adds to a unit's own, each with the sentence its reason uses.
 UNDER_WITNESSED: Final = "under-witnessed"
@@ -98,50 +101,13 @@ OWN_CODES: Final = frozenset(
 NO_ACT_RULES: Final = ("d", "e", "f", "i")
 BLANK_RULES: Final = {"d": {PASS}, "e": {PASS}, "f": {PASS}, "i": {PASS, NOT_APPLICABLE}}
 
-PAGE_REVIEW_FIELDS: Final = frozenset(
-    {
-        "act_key",
-        "unit_class",
-        "kind",
-        "page_ordinal",
-        "reason",
-        "hold_codes",
-        "coverage",
-        "page_reading_ref",
-        "page_accounting_ref",
-        "act_region_ref",
-        "perlectio_ref",
-        "page_coverage",
-        "continuation",
-        "uncertainty_assessment",
-        "confirmation",
-        "release",
-        "notes",
-        "recoveries_used",
-    }
-)
-CONTINUATION_LINK_FIELDS: Final = frozenset(
-    {
-        "schema",
-        "from_page_ordinal",
-        "to_page_ordinal",
-        "from_act_id",
-        "from_act_key",
-        "to_act_id",
-        "to_act_key",
-        "continues_to_next_page",
-        "continues_from_previous_page",
-        "agreed",
-    }
-)
-
 
 # --- the units -----------------------------------------------------------------------
 
 
 def counted_units(denominator: dict[str, Any]) -> list[dict]:
     """The denominator's counted rows: every class but a refused page's row."""
-    return [act for act in denominator["acts"] if act["class"] in COUNTED_READING_CLASSES]
+    return reviewed_rows(denominator["acts"])
 
 
 # --- the page witnesses ------------------------------------------------------------
@@ -549,7 +515,7 @@ def review_of(
         and confirmed["confirmed"]
         and not own
         and row_codes
-        and set(row_codes) <= RELEASABLE
+        and set(row_codes) <= RELEASABLE_HOLDS
     )
     if released:
         release = {
@@ -754,7 +720,7 @@ def require_derived_outcome(act: dict, review: dict, coverage: dict, off_edge: l
             not isinstance(release, dict)
             or release.get("hold_codes") != sorted(row)
             or not row
-            or not row <= RELEASABLE
+            or not row <= RELEASABLE_HOLDS
             or not isinstance(confirmed, dict)
             or confirmed.get("confirmed") is not True
         ):

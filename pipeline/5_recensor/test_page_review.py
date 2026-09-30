@@ -14,25 +14,25 @@ import copy
 import json
 import shutil
 import subprocess
-import tomllib
 from pathlib import Path
 from typing import Any, Callable
 
 import pytest
 
-from common import page_path
-from common import stage as stage_module
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR, PERLECTOR, RECENSOR
+from common.page_review import CONTINUATION_LINK_FIELDS
 from common.runtree.store import RunTree
 from common.stage import PAGE_BLANK_HOLD, open_context, reading_acts, stage_parser
 from conftest import (
+    build_page_tree,
     file_bytes_snapshot,
     load_stage,
-    programs_through,
+    reaccount_page,
     rewitness_stage_boundary,
+    rewrite_page_reading,
     run_stage,
 )
 
@@ -43,27 +43,6 @@ page_review = load_stage("5_recensor", "page_review")
 
 
 # --- trees -------------------------------------------------------------------------
-
-
-def _page_protocol(directory: Path) -> Path:
-    text = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
-    assert 'reading_unit = "act"' in text
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "perlector_protocol.toml"
-    path.write_text(text.replace('reading_unit = "act"', 'reading_unit = "page"'), "utf-8")
-    return path
-
-
-def _floor_config(directory: Path, floor: int) -> Path:
-    """The live model config with its witness floor set to `floor`."""
-    shutil.copytree(ROOT / "config" / "model-fixtures", directory / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", directory / "manifests")
-    live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
-    assert "\nwitness_floor = 3\n" in live
-    path = directory / "models.toml"
-    path.write_text(live.replace("\nwitness_floor = 3\n", f"\nwitness_floor = {floor}\n"), "utf-8")
-    assert tomllib.loads(path.read_text(encoding="utf-8"))["witness_floor"] == floor
-    return path
 
 
 class Tree:
@@ -98,13 +77,7 @@ class Tree:
 
 
 def _tree(base: Path, scenario: str, floor: int | None) -> Tree:
-    options = {"perlector_protocol_config": _page_protocol(base / "config")}
-    if floor is not None:
-        options["models_config"] = _floor_config(base / "models", floor)
-    root = base / "runs"
-    for program in programs_through("perlector"):
-        result = run_stage(root, RUN_ID, scenario, program, **options)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
+    root, options = build_page_tree(base, scenario, RUN_ID, floor=floor)
     return Tree(root, scenario, options)
 
 
@@ -141,56 +114,14 @@ def _forge(tree: Tree, kind: str, ordinal: int, change: Callable[[dict], None]) 
     path.write_bytes(canonical_bytes(forged))
 
 
-def _drop_act_records(tree: Tree, ordinal: int) -> None:
-    for kind in ("act-region", "perlectio"):
-        directory = tree.root / RUN_ID / "4_perlector" / "artifacts" / kind
-        for path in directory.glob("*.json"):
-            if json.loads(path.read_text("utf-8"))["payload"]["page_ordinal"] == ordinal:
-                path.unlink()
-
-
 def _forge_page_two(tree: Tree, reading: Callable[[dict], None]) -> None:
     """Replace page 2's answer, drop its act records, and measure its accounting again.
 
     The accounting is measured as the denominator measures it, so the page
     carries the accounting stage 4 would have written for the forged answer.
     """
-    _drop_act_records(tree, 2)
-    _forge(tree, "page-reading", 2, reading)
-    rewitness_stage_boundary(RunTree(tree.root, RUN_ID), PERLECTOR)
-    context = tree.context()
-    index = stage_module._PageReadRecords(context)
-    [reading_record] = [r for r in tree.records("4_perlector", "page-reading") if _on(r, 2)]
-    payload = reading_record["payload"]
-    feed = context.tree.read_artifact_reference(
-        payload["feed_ref"],
-        stage=PERLECTOR,
-        kind="page-feed",
-        subject_id=reading_record["subject_id"],
-    )
-    plans = (
-        page_path.entry_plans(
-            payload["answer"],
-            feed["payload"],
-            page_id=reading_record["subject_id"],
-            stop_reason=payload["stop_reason"],
-            truncation_policy=index.truncation_policy,
-        )
-        if payload["disposition"] == "read"
-        else []
-    )
-    measured, inputs = stage_module._measure_page_accounting(
-        context, index, "test", feed, payload["feed_ref"], payload, index.ref(reading_record), plans
-    )
-    _forge(
-        tree,
-        "page-accounting",
-        2,
-        lambda record: record.update(
-            payload=measured, inputs=inputs, outcome="held" if measured["holds"] else "read"
-        ),
-    )
-    rewitness_stage_boundary(RunTree(tree.root, RUN_ID), PERLECTOR)
+    rewrite_page_reading(tree.root, RUN_ID, 2, reading)
+    reaccount_page(tree.root, RUN_ID, tree.scenario, tree.options, 2)
 
 
 def _on(record: dict, ordinal: int) -> bool:
@@ -997,7 +928,7 @@ def test_continuation_links_record_each_flagged_break_agreed_or_one_sided():
     assert (after["agreed"], after["from_act_key"], after["to_act_key"]) == (False, "p2:2", "p3:1")
     assert (after["continues_to_next_page"], after["continues_from_previous_page"]) == (True, False)
     assert page_review.continuation_links(pages, [_link_row(1, 1), _link_row(2, 1)]) == []
-    assert set(links["page-break:1:2"]) == page_review.CONTINUATION_LINK_FIELDS
+    assert set(links["page-break:1:2"]) == CONTINUATION_LINK_FIELDS
     assert page_review.continuation_off_edge(rows) == {}
 
 

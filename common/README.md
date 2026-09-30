@@ -122,9 +122,19 @@ The reader lives here rather than in the orchestrator's contract because it is a
 `common/` function three stages call (Recensor, Archetypus, Armarium); the
 orchestrator counts nothing.
 
-`page_review.py` is the one reader of the Recensor's page path for the two
-stages after it: `current_page_reviews` (one current review per row, each
-naming its row), `reviewed_rows` (every row but a refused page's),
+`page_review.py` holds the shape of the Recensor's page-path records (the
+closed page-review field set, the release and note shapes, the releasable holds
+and the `recensor-continuation-link.v1` fields), which the Recensor writes, and
+is the one reader of them for the two stages after it: `current_page_reviews`
+(one current review per row, each in the closed shape and naming its row's key,
+class, kind, page and records, held exactly when it names a hold code),
+`reviewed_rows` (every counted row, so not a refused page's),
 `require_establishable` (an accepted review stands over a `read` row, or over a
 row whose only hold is `no-act-on-page-unconfirmed` and whose review names it
-in its `release`), `continuation_links`, and the review's reason and coverage.
+in its `release`), `continuation_links` (one per break, each inputting its named
+sides' readings), and the review's reason, coverage and notes.
+
+`page_testimonia.py` reads the page witnesses: the sealed page roster, each
+page's current validated page Testimonia, and `shown_page_witnesses`, the
+custody check that every witness a page reading's feed showed is its chair's
+current page Testimonium under this run's label.

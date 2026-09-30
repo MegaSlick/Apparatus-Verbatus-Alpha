@@ -2687,17 +2687,7 @@ def _verify_page_reading(
         attempt,
     )
     _verify_disposition(what, payload, feed)
-    plans = (
-        page_path.entry_plans(
-            payload["answer"],
-            feed,
-            page_id=page_id,
-            stop_reason=payload.get("stop_reason"),
-            truncation_policy=index.truncation_policy,
-        )
-        if payload["disposition"] == page_path.READ
-        else []
-    )
+    plans = _entry_plans(index, payload, feed, page_id)
     page_holds = _verify_accounting(
         context, index, what, accounting, feed_record, feed_ref, payload, reading_ref, plans
     )
@@ -2723,6 +2713,21 @@ def _verify_page_reading(
         return row, [_page_row(context, ordinal, page_id, payload, codes, page_holds, refs)]
     acts = _verify_entries(context, index, ordinal, page_id, payload, plans, refs, page_holds)
     return row, acts
+
+
+def _entry_plans(
+    index: _PageReadRecords, payload: Mapping[str, Any], feed: Mapping[str, Any], page_id: str
+) -> list[dict[str, Any]]:
+    """The entry plans of a read page's answer; a page not read has none."""
+    if payload["disposition"] != page_path.READ:
+        return []
+    return page_path.entry_plans(
+        payload["answer"],
+        feed,
+        page_id=page_id,
+        stop_reason=payload.get("stop_reason"),
+        truncation_policy=index.truncation_policy,
+    )
 
 
 def _verify_disposition(what: str, payload: Mapping[str, Any], feed: Mapping[str, Any]) -> None:
@@ -2830,6 +2835,34 @@ def _measure_page_accounting(
             f"{what}'s page accounting cannot be measured again: {error}"
         ) from error
     return recomputed, inputs
+
+
+def measure_page_accounting(
+    context, reading: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """One sealed page reading's accounting and its inputs, measured as the denominator does.
+
+    `reading` is a `page-reading` record of this run. The result is what stage 4
+    writes as that page's `page-accounting` payload and inputs; its `holds` are
+    the page's holds.
+    """
+    index = _PageReadRecords(context)
+    payload = _payload_of(reading)
+    page_id = reading["subject_id"]
+    feed_ref = payload["feed_ref"]
+    feed_record = context.tree.read_artifact_reference(
+        feed_ref, stage=PERLECTOR, kind=page_path.PAGE_FEED_KIND, subject_id=page_id
+    )
+    return _measure_page_accounting(
+        context,
+        index,
+        f"page {payload['page_ordinal']} ({page_id})",
+        feed_record,
+        feed_ref,
+        payload,
+        index.ref(reading),
+        _entry_plans(index, payload, _payload_of(feed_record), page_id),
+    )
 
 
 def _accounting_page_witnesses(

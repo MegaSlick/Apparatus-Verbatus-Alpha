@@ -77,6 +77,10 @@ from common.page_review import (  # noqa: E402
     current_page_reviews,
     require_establishable,
     reviewed_rows,
+)
+from common.page_testimonia import (  # noqa: E402
+    current_page_testimonia,
+    sealed_proposal_regions,
     shown_page_witnesses,
 )
 from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
@@ -1749,9 +1753,11 @@ def establish_from_accepted_primed_perlectio(
 
 
 def establish_from_accepted_page_reading(
-    context, *, row: dict, review_ref: dict[str, str]
+    context, *, row: dict, review_ref: dict[str, str], page_testimonia: list[dict]
 ) -> tuple[dict, list[dict[str, str]]]:
     """The page path's one constructor: a `reading_acts` row and its accepted review.
+
+    `page_testimonia` is the row's page's entry in `current_page_testimonia`.
 
     The reading is the `perlectio.v2` the row and the review both name; its one
     region is the `act-region` that reading names, proven from the Exemplar by
@@ -1820,12 +1826,7 @@ def establish_from_accepted_page_reading(
     crop_references = _crop_references(context, regions, act_id, fields=_PAGE_REGION_FIELDS)
     # Custody: every witness the feed showed is its chair's current page
     # Testimonium, and a feed that showed none made the reading a Lectio nuda.
-    shown_page_witnesses(
-        context,
-        reading,
-        artifacts_for(context, ATTESTATORES, "page-testimonium", row["page_id"]),
-        f"the page reading of {row['act_key']}",
-    )
+    shown_page_witnesses(context, reading, page_testimonia, f"the page reading of {row['act_key']}")
     text = payload.get("text")
     if not isinstance(text, str):
         raise SchemaRefusal("the accepted page reading has no string text")
@@ -1885,6 +1886,7 @@ def _main_page(context) -> int:
     """Establish every accepted reading of a page-read run, and reconcile the index."""
     rows = reviewed_rows(reading_acts(context))
     reviews = current_page_reviews(context, rows)
+    testimonia = current_page_testimonia(context, sealed_proposal_regions(context))
     unresolved: list[str] = []
     # Every record is built and checked before any is published, so a refused
     # one leaves no partial set of established readings behind it.
@@ -1900,7 +1902,10 @@ def _main_page(context) -> int:
         require_establishable(row, review)
         review_ref = context.artifact_ref(RECENSOR, "review", review["artifact_id"])
         record, inputs = establish_from_accepted_page_reading(
-            context, row=row, review_ref=review_ref
+            context,
+            row=row,
+            review_ref=review_ref,
+            page_testimonia=testimonia.get(row["page_id"], []),
         )
         established.append((row, record, inputs))
     for row, record, inputs in established:

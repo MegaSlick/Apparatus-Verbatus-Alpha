@@ -98,14 +98,15 @@ reading). A `page-refused` row is the census's and is never reviewed
   established reading of each. The record gains `kind` (`act` | `other`); its
   closed field set is the act record's plus `kind`.
 - **The constructor** is `establish_from_accepted_page_reading(context, row,
-  review_ref)`. The reading is the row's `perlectio.v2`, which the review must name
+  review_ref, page_testimonia)`, the last the row's page's entry in
+  `common.page_testimonia.current_page_testimonia`, computed once per pass. The reading is the row's `perlectio.v2`, which the review must name
   and input; it must be `read` with no `holds` or `page_holds`, of the row's kind.
   Its one region is the `act-region` the reading names (and the row counted),
   proven from the Exemplar by `verify_reading_region_lineage`; the record's region
   is exactly what that returns (`region_id`, `image_path`, `image_sha256`,
   `verified_dimensions`, `source_page_ordinal`, `source_page_id`, `transform`),
   a closed set of its own. There is no act-attachment requirement.
-- **Witness custody** is `page_review.shown_page_witnesses`: the feed the reading
+- **Witness custody** is `page_testimonia.shown_page_witnesses`: the feed the reading
   inputs was built under this run's witness regime; it showed at least one
   witness, or the reading is a Lectio nuda and is refused by name; every row names
   a current `page-testimonium` of the page by reference (a blinded feed names no

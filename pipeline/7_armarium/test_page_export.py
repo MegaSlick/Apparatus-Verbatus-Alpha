@@ -1,9 +1,11 @@
 """The Armarium on a page-read run: acts, the other layer, page rows and page accounting.
 
 The trees are the fixture's `happy` and `page-review` scenarios read with
-`reading_unit = "page"`, the Recensor stood in for by
-`conftest.publish_stand_in_page_reviews`. Every bundle is checked the way a
-recipient would, by `verify_delivered_bundle` on a clean directory.
+`reading_unit = "page"` and reviewed by the real Recensor. A test that needs a
+decision the Recensor does not make on the fixture forges it
+(`conftest.forge_page_review`, `conftest.forge_continuation_links`) and says
+why. Every bundle is checked the way a recipient would, by
+`verify_delivered_bundle` on a clean directory.
 """
 
 from __future__ import annotations
@@ -32,10 +34,12 @@ from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM
 from common.page_accounting import load_page_accounting_policy
 from common.runtree.store import RunTree
+from common.stage import NO_ACT_ON_PAGE_HOLD, PAGE_BLANK_HOLD
 from conftest import (
     build_page_tree,
+    forge_continuation_links,
+    forge_page_review,
     load_stage,
-    publish_stand_in_page_reviews,
     reaccount_page,
     rewrite_page_answer_entry,
     rewrite_page_reading,
@@ -46,52 +50,51 @@ RUN_ID = "r"
 
 
 @pytest.fixture(scope="module")
-def happy(tmp_path_factory) -> tuple[Path, Path]:
+def happy(tmp_path_factory) -> tuple[Path, dict]:
     return build_page_tree(tmp_path_factory.mktemp("happy"), "happy")
 
 
 @pytest.fixture(scope="module")
-def page_review(tmp_path_factory) -> tuple[Path, Path]:
+def page_review(tmp_path_factory) -> tuple[Path, dict]:
     return build_page_tree(tmp_path_factory.mktemp("page-review"), "page-review")
 
 
 @pytest.fixture(scope="module")
 def complete(tmp_path_factory, happy) -> dict:
     """Happy with p1:1 read as `other` and no continuation: nothing held, one other reading."""
-    root, protocol = _copy(happy, tmp_path_factory.mktemp("complete"))
+    root, options = _copy(happy, tmp_path_factory.mktemp("complete"))
     rewrite_page_answer_entry(root, RUN_ID, 1, 1, kind="other")
     rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
     rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_from_previous_page=False)
-    result = _export(root, protocol, "happy")
+    result = _export(root, options, "happy")
     assert result.returncode == 0, result.stderr
     return _bundle(root, tmp_path_factory.mktemp("complete-clean"))
 
 
-def _copy(tree: tuple[Path, Path], base: Path) -> tuple[Path, Path]:
-    root, protocol = tree
+def _copy(tree: tuple[Path, dict], base: Path) -> tuple[Path, dict]:
+    root, options = tree
     shutil.copytree(root, base / "runs")
-    return base / "runs", protocol
+    return base / "runs", options
 
 
-def _export(
-    root: Path,
-    protocol: Path,
-    scenario: str,
-    *,
-    links: list[tuple[str, str, bool]] | None = None,
-    options: dict[str, object] | None = None,
-    **outcomes: str,
-):
-    publish_stand_in_page_reviews(
-        root, RUN_ID, scenario, protocol, outcomes=outcomes, links=links, options=options
-    )
+def _recense(root: Path, options: dict, scenario: str) -> None:
+    result = run_stage(root, RUN_ID, scenario, "pipeline/5_recensor/run.py", **options)
+    assert result.returncode in (0, 3), result.stderr
+
+
+def _after_recensor(root: Path, options: dict, scenario: str):
+    """The Archetypus, then (when it completes) the Armarium; the last result."""
     for program in ("pipeline/6_archetypus/run.py", "pipeline/7_armarium/run.py"):
-        result = run_stage(
-            root, RUN_ID, scenario, program, perlector_protocol_config=protocol, **(options or {})
-        )
+        result = run_stage(root, RUN_ID, scenario, program, **options)
         if program.startswith("pipeline/6") and result.returncode != 0:
             return result
     return result
+
+
+def _export(root: Path, options: dict, scenario: str):
+    """The real Recensor, the Archetypus and the Armarium."""
+    _recense(root, options, scenario)
+    return _after_recensor(root, options, scenario)
 
 
 def _bundle(root: Path, clean: Path) -> dict:
@@ -220,8 +223,8 @@ def test_the_same_established_reading_appears_identically_in_every_format(comple
 
 
 def test_a_held_reading_is_a_review_item_with_its_reasons(page_review, tmp_path):
-    root, protocol = _copy(page_review, tmp_path)
-    result = _export(root, protocol, "page-review")
+    root, options = _copy(page_review, tmp_path)
+    result = _export(root, options, "page-review")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     claims = bundle["manifest"]["claims"]
@@ -238,8 +241,8 @@ def test_a_held_reading_is_a_review_item_with_its_reasons(page_review, tmp_path)
 def test_the_act_count_conserves_across_the_partition_the_formats_and_the_ledger(
     page_review, tmp_path
 ):
-    root, protocol = _copy(page_review, tmp_path)
-    _export(root, protocol, "page-review")
+    root, options = _copy(page_review, tmp_path)
+    _export(root, options, "page-review")
     bundle = _bundle(root, tmp_path / "clean")
     manifest, members = bundle["manifest"], bundle["members"]
     partition = manifest["claims"]["act_partition"]
@@ -253,7 +256,7 @@ def test_the_act_count_conserves_across_the_partition_the_formats_and_the_ledger
 
 
 def test_a_page_whose_answer_was_not_read_is_one_held_item_with_its_reasons(happy, tmp_path):
-    root, protocol = _copy(happy, tmp_path)
+    root, options = _copy(happy, tmp_path)
 
     def malformed(record):
         record["outcome"] = "held"
@@ -265,9 +268,9 @@ def test_a_page_whose_answer_was_not_read_is_one_held_item_with_its_reasons(happ
         )
 
     rewrite_page_reading(root, RUN_ID, 2, malformed)
-    reaccount_page(root, RUN_ID, "happy", protocol, 2)
+    reaccount_page(root, RUN_ID, "happy", options, 2)
     rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
-    result = _export(root, protocol, "happy")
+    result = _export(root, options, "happy")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     items = _jsonl(bundle["members"], "review-items.jsonl")
@@ -281,14 +284,14 @@ def test_a_page_whose_answer_was_not_read_is_one_held_item_with_its_reasons(happ
 
 
 @pytest.mark.parametrize(
-    ("outcome", "category", "exit_code"),
-    [("confirmed-blank", "confirmed-blank", 0), (None, "held-for-review", 3)],
+    ("confirmed", "category", "exit_code"),
+    [(True, "confirmed-blank", 0), (False, "held-for-review", 3)],
     ids=["confirmed", "unconfirmed"],
 )
 def test_a_page_read_as_blank_is_confirmed_blank_only_when_the_recensor_confirms_it(
-    happy, tmp_path, outcome, category, exit_code
+    happy, tmp_path, confirmed, category, exit_code
 ):
-    root, protocol = _copy(happy, tmp_path)
+    root, options = _copy(happy, tmp_path)
     feed_dir = root / RUN_ID / "4_perlector" / "artifacts" / "page-feed"
     [feed] = [
         json.loads(path.read_text("utf-8"))["payload"]
@@ -306,10 +309,21 @@ def test_a_page_read_as_blank_is_confirmed_blank_only_when_the_recensor_confirms
         }
 
     rewrite_page_reading(root, RUN_ID, 2, blank)
-    reaccount_page(root, RUN_ID, "happy", protocol, 2)
+    reaccount_page(root, RUN_ID, "happy", options, 2)
     rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
-    outcomes = {"p2:blank": outcome} if outcome else {}
-    result = _export(root, protocol, "happy", **outcomes)
+    _recense(root, options, "happy")
+    if confirmed:
+        # Page 2 carries ink, Surya lines and witness text, so the real Recensor
+        # never confirms it blank.
+        forge_page_review(
+            root,
+            RUN_ID,
+            "p2:blank",
+            "confirmed-blank",
+            hold_codes=[],
+            release={"hold_codes": [PAGE_BLANK_HOLD], "reason": "confirmed"},
+        )
+    result = _after_recensor(root, options, "happy")
     assert result.returncode == exit_code, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     partition = bundle["manifest"]["claims"]["act_partition"]
@@ -323,8 +337,8 @@ def test_a_page_read_as_blank_is_confirmed_blank_only_when_the_recensor_confirms
 def test_an_agreed_continuation_is_a_labelled_reconstruction_and_keeps_the_run_partial(
     happy, tmp_path
 ):
-    root, protocol = _copy(happy, tmp_path)
-    result = _export(root, protocol, "happy")
+    root, options = _copy(happy, tmp_path)
+    result = _export(root, options, "happy")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     [reconstruction] = [
@@ -401,6 +415,15 @@ def _held_page_one(members: dict) -> None:
     _claims(members, hold)
 
 
+def _page_roster_is_the_whole_roster(members: dict) -> None:
+    """The page witness chairs widened to the whole roster, in the basis and the manifest."""
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    roster = sorted(manifest["witness_chairs"])
+    manifest["aggregate_basis"]["page_witness_chairs"] = roster
+    members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
+    _sources(members, lambda s: s["aggregate_basis"].update(page_witness_chairs=roster))
+
+
 @pytest.mark.parametrize(
     ("change", "refusal"),
     [
@@ -437,6 +460,7 @@ def _held_page_one(members: dict) -> None:
         (_held_page_one, "held by their page accounting yet delivered"),
         (_other_named_as_an_act, "other reading is counted in the act partition"),
         (_other_doubt, "formats carrying the other layer disagree"),
+        (_page_roster_is_the_whole_roster, "disagrees with the exported roster"),
     ],
     ids=[
         "other-count",
@@ -448,6 +472,7 @@ def _held_page_one(members: dict) -> None:
         "held-page-delivered",
         "other-as-act",
         "formats-disagree",
+        "page-roster",
     ],
 )
 def test_the_clean_verifier_recomputes_the_page_claims_and_refuses_a_tampered_one(
@@ -470,11 +495,13 @@ def _no_continuation(root: Path) -> None:
     rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_from_previous_page=False)
 
 
-def test_a_held_other_reading_keeps_the_run_partial(happy, tmp_path):
-    root, protocol = _copy(happy, tmp_path)
-    rewrite_page_answer_entry(root, RUN_ID, 1, 1, kind="other")
-    _no_continuation(root)
-    result = _export(root, protocol, "happy", **{"p1:1": "held-for-review"})
+def test_a_held_other_reading_keeps_the_run_partial(page_review, tmp_path):
+    root, options = _copy(page_review, tmp_path)
+    # The page-review scenario's held entry read as `other`.
+    rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
+    rewrite_page_answer_entry(root, RUN_ID, 2, 1, kind="other")
+    reaccount_page(root, RUN_ID, "page-review", options, 2)
+    result = _export(root, options, "page-review")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     claims = bundle["manifest"]["claims"]
@@ -486,17 +513,20 @@ def test_a_held_other_reading_keeps_the_run_partial(happy, tmp_path):
     ] == ("held-for-review")
 
 
-def _other_only_page_two(root: Path, protocol: Path) -> None:
+def _other_only_page_two(root: Path, options: dict) -> None:
     """Page 2's one entry read as `other`, its accounting measured again."""
     _no_continuation(root)
     rewrite_page_answer_entry(root, RUN_ID, 2, 1, kind="other")
-    reaccount_page(root, RUN_ID, "happy", protocol, 2)
+    reaccount_page(root, RUN_ID, "happy", options, 2)
 
 
-def test_a_page_of_other_readings_is_held_until_the_recensor_confirms_no_act(happy, tmp_path):
-    root, protocol = _copy(happy, tmp_path)
-    _other_only_page_two(root, protocol)
-    result = _export(root, protocol, "happy")
+def test_a_page_of_other_readings_is_held_until_the_recensor_confirms_no_act(
+    tmp_path_factory, tmp_path
+):
+    # The fixture's page-no-act scenario: page 2's answer names one `other`
+    # entry, which says it runs on from page 1.
+    root, options = build_page_tree(tmp_path_factory.mktemp("page-no-act"), "page-no-act")
+    result = _export(root, options, "page-no-act")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     manifest = bundle["manifest"]
@@ -509,12 +539,35 @@ def test_a_page_of_other_readings_is_held_until_the_recensor_confirms_no_act(hap
     assert "carries no act" in page_two["reason"]
     assert manifest["claims"]["other_readings"]["by_category"] == {"held-for-review": 1}
     assert "p2:1" not in bundle["established"]
+    # The Recensor's note on the `other` entry's flag reaches its manifest entry.
+    tree = RunTree(root, RUN_ID)
+    entries = [
+        tree.read_artifact(ARMARIUM, "manifest-entry", item["artifact_id"])["payload"]
+        for item in tree.build_manifest(ARMARIUM)["artifacts"]
+        if item["kind"] == "manifest-entry"
+    ]
+    [entry] = [entry for entry in entries if entry["act_key"] == "p2:1"]
+    assert entry["review_notes"] == [
+        {"code": "continuation-flag-on-other", "flags": ["continues_from_previous_page"]}
+    ]
 
 
 def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(happy, tmp_path):
-    root, protocol = _copy(happy, tmp_path)
-    _other_only_page_two(root, protocol)
-    result = _export(root, protocol, "happy", **{"p2:1": "accepted"})
+    root, options = _copy(happy, tmp_path)
+    _other_only_page_two(root, options)
+    _recense(root, options, "happy")
+    # The fixture configures no record detector, so page accounting rule (i)
+    # never passes and the real Recensor cannot confirm a page holds no act.
+    forge_page_review(
+        root,
+        RUN_ID,
+        "p2:1",
+        "accepted",
+        hold_codes=[],
+        reason="confirmed",
+        release={"hold_codes": [NO_ACT_ON_PAGE_HOLD], "reason": "confirmed"},
+    )
+    result = _after_recensor(root, options, "happy")
     assert result.returncode == 0, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     manifest = bundle["manifest"]
@@ -529,9 +582,9 @@ def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(happy
 
 
 def test_a_link_whose_flags_disagree_is_a_join_that_reconstructs_nothing(happy, tmp_path):
-    root, protocol = _copy(happy, tmp_path)
+    root, options = _copy(happy, tmp_path)
     rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_from_previous_page=False)
-    result = _export(root, protocol, "happy")
+    result = _export(root, options, "happy")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     [join] = json.loads(bundle["members"]["sources.json"])["continuation_joins"]
@@ -545,11 +598,11 @@ def test_a_link_whose_flags_disagree_is_a_join_that_reconstructs_nothing(happy, 
 
 
 def test_a_break_with_no_act_on_one_side_is_a_join_that_names_no_act(happy, tmp_path):
-    root, protocol = _copy(happy, tmp_path)
+    root, options = _copy(happy, tmp_path)
     _no_continuation(root)
     # The last page's act runs on past the run's last page.
     rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_to_next_page=True)
-    result = _export(root, protocol, "happy")
+    result = _export(root, options, "happy")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     [join] = json.loads(bundle["members"]["sources.json"])["continuation_joins"]
@@ -560,10 +613,13 @@ def test_a_break_with_no_act_on_one_side_is_a_join_that_names_no_act(happy, tmp_
 
 
 def test_a_continuation_flag_no_link_pairs_is_named_and_keeps_the_run_partial(happy, tmp_path):
-    root, protocol = _copy(happy, tmp_path)
+    root, options = _copy(happy, tmp_path)
     _no_continuation(root)
     rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_to_next_page=True)
-    result = _export(root, protocol, "happy", links=[])
+    _recense(root, options, "happy")
+    # The Recensor records every page break a flag names.
+    forge_continuation_links(root, RUN_ID, "happy", options, [])
+    result = _after_recensor(root, options, "happy")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     [reason] = bundle["manifest"]["aggregate"]["reasons"]
@@ -581,16 +637,21 @@ def test_a_continuation_flag_no_link_pairs_is_named_and_keeps_the_run_partial(ha
     ids=["other-reading", "non-adjacent"],
 )
 def test_a_continuation_link_the_recensor_never_makes_is_refused(happy, tmp_path, links, refusal):
-    root, protocol = _copy(happy, tmp_path)
+    root, options = _copy(happy, tmp_path)
     rewrite_page_answer_entry(root, RUN_ID, 1, 1, kind="other")
-    result = _export(root, protocol, "happy", links=links)
+    _recense(root, options, "happy")
+    forge_continuation_links(root, RUN_ID, "happy", options, links)
+    result = _after_recensor(root, options, "happy")
     assert result.returncode == 2
     assert refusal in result.stderr
 
 
 def test_confirmed_blank_on_a_row_that_is_not_a_blank_page_is_refused(happy, tmp_path):
-    root, protocol = _copy(happy, tmp_path)
-    result = _export(root, protocol, "happy", **{"p1:2": "confirmed-blank"})
+    root, options = _copy(happy, tmp_path)
+    _recense(root, options, "happy")
+    # The Recensor confirms blank only a page-blank row.
+    forge_page_review(root, RUN_ID, "p1:2", "confirmed-blank")
+    result = _after_recensor(root, options, "happy")
     assert result.returncode == 2
     assert "only a page read as blank can be confirmed blank" in result.stderr
 
@@ -610,10 +671,11 @@ def test_a_page_refused_row_must_stand_for_a_page_the_census_refused():
 def test_a_blinded_run_exports_each_witness_by_chair_and_by_the_label_its_reader_saw(
     tmp_path_factory,
 ):
-    options = {"witness_context": "blinded"}
-    root, protocol = build_page_tree(tmp_path_factory.mktemp("blinded"), "happy", **options)
+    root, options = build_page_tree(
+        tmp_path_factory.mktemp("blinded"), "happy", witness_context="blinded"
+    )
     _no_continuation(root)
-    result = _export(root, protocol, "happy", options=options)
+    result = _export(root, options, "happy")
     assert result.returncode == 0, result.stderr
     bundle = _bundle(root, tmp_path_factory.mktemp("blinded-clean"))
     roster = set(bundle["export"]["payload"]["witness_chairs"])

@@ -118,12 +118,11 @@ from common.native_witness import (  # noqa: E402
     unrouted_observations,
     validate_native_witness_geometry,
 )
+from common.page_path import distinct_refs, refs_by_path  # noqa: E402
 from common.page_testimonia import (  # noqa: E402
     declared_page_witness_chairs,
-    distinct_inputs,
     input_order,
     sealed_proposal_regions,
-    sorted_distinct_inputs,
     validate_page_testimonium_record,
     validate_presented_page,
     verify_page_native_capture,
@@ -622,7 +621,7 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
             )
         for row in validate_chandra_trace(native_inference)["attempts"]:
             input_references.extend((row["intent_ref"], row["attempt_ref"]))
-    expected_inputs = sorted_distinct_inputs(input_references)
+    expected_inputs = refs_by_path(distinct_refs(input_references))
     # Re-derive the explicit limit for every presentation kind so a kind change
     # cannot understate which bound crops its one page-space image omits.
     if unpresented != unpresented_region_ids(presented, proposal_regions):
@@ -2226,7 +2225,7 @@ def _publish_reading_failure(
         for name in ("raw_response_ref", "call_record_ref", "receipt_ref")
         if failure[name] is not None
     ]
-    inputs = distinct_inputs(inputs + evidence)
+    inputs = distinct_refs(inputs + evidence)
     payload = {
         "act_key": act_key,
         "attempt_ordinal": ordinal,
@@ -3521,7 +3520,7 @@ def _publish_lectio_prior_failure(context, attempt: _Attempt, error: Exception) 
         subject_id=attempt.act_id,
         outcome="failed",
         attempt=perlector_attempt_id(attempt.act_id, "lectio-prior", attempt.ordinal),
-        inputs=distinct_inputs(evidence),
+        inputs=distinct_refs(evidence),
         payload=payload,
     )
 
@@ -4739,11 +4738,7 @@ def _audited_reading_inputs(
     """
     return (
         established
-        + [
-            reference
-            for reference in distinct_inputs(reproof_inputs)
-            if reference not in established
-        ]
+        + [reference for reference in distinct_refs(reproof_inputs) if reference not in established]
         + [draft_ref, finding_ref]
     )
 

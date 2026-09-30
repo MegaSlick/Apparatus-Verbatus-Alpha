@@ -903,7 +903,7 @@ widens the closed field set for the record that carries it (`with_engine_call`, 
 `response_sha256` disagreeing with `raw_response_ref["sha256"]` — rather than raising a
 bare `KeyError` or publishing two digests for one response.
 
-**`_distinct_inputs` narrows what this stage *expects*; it never widens what a record
+**`distinct_refs` narrows what this stage *expects*; it never widens what a record
 may claim.** The envelope refuses a repeated path outright, even at an identical digest
 (`validate_input_refs`) — that is the double-count guard that keeps one reading per act
 in every export, and nothing here touches it: a duplicate inside a published `inputs` list still

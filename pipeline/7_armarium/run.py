@@ -91,8 +91,14 @@ from common.page_review import (  # noqa: E402
     current_page_reviews,
     require_establishable,
     review_coverage,
+    review_notes,
     review_reason,
     reviewed_rows,
+)
+from common.page_testimonia import (  # noqa: E402
+    current_page_testimonia,
+    declared_page_witness_chairs,
+    sealed_proposal_regions,
     shown_page_witnesses,
 )
 from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
@@ -1995,19 +2001,19 @@ def verify_established_page_record(
     return payload, reading
 
 
-def export_page_witnesses(context, reading: dict, manifest_cache: dict[str, dict]) -> list[dict]:
+def export_page_witnesses(context, reading: dict, page_testimonia: list[dict]) -> list[dict]:
     """The page witnesses a reading was shown, each its chair's current page Testimonium.
 
-    Each is exported under its chair, read from the Testimonium it names, and the
-    label the reader saw it under (a pseudonym when the run was blinded).
+    `page_testimonia` is the reading's page's entry in `current_page_testimonia`.
+    Each witness is exported under its chair, read from the Testimonium it
+    names, and the label the reader saw it under (a pseudonym when the run was
+    blinded).
     """
     payload = reading["payload"]
     shown = shown_page_witnesses(
         context,
         reading,
-        artifacts_for(
-            context, ATTESTATORES, "page-testimonium", payload["page_id"], manifest_cache
-        ),
+        page_testimonia,
         f"the established page reading of {payload['page_id']} entry {payload.get('n')}",
     )
     witnesses = []
@@ -2226,6 +2232,7 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
     rows = reviewed_rows(rows)
     reviews = current_page_reviews(context, rows)
     links = continuation_links(context, rows)
+    testimonia = current_page_testimonia(context, sealed_proposal_regions(context))
     manifest_cache: dict[str, dict] = {}
     categories: dict[str, ArmariumCategory] = {}
     coverages: dict[str, dict] = {}
@@ -2265,6 +2272,7 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
             "category": category.value,
             "hold_codes": row["hold_codes"],
             "witness_coverage": review_coverage(review),
+            "review_notes": review_notes(review),
             "evidence_refs": export_evidence_refs(context, review, established),
         }
         if established is not None and category is ArmariumCategory.DELIVERED:
@@ -2292,7 +2300,9 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
                             ),
                             "perlectio_ref": payload["perlectio_ref"],
                             "recensor_ref": payload["recensor_ref"],
-                            "witnesses": export_page_witnesses(context, reading, manifest_cache),
+                            "witnesses": export_page_witnesses(
+                                context, reading, testimonia.get(row["page_id"], [])
+                            ),
                             "dissent_ref": payload["dissent_ref"],
                             "uncertainty": payload["uncertainty"],
                         }
@@ -2413,6 +2423,7 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
                 "act_pages": act_pages,
                 "act_text_status": act_text_status,
                 "continuation_flags": continuation_flags,
+                "page_witness_chairs": sorted(declared_page_witness_chairs(context)),
             },
             ink_map_pages=ink_map_pages,
             not_measured_basis=page_not_measured_basis(

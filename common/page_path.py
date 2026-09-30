@@ -113,14 +113,22 @@ def perlectio_attempt(act_id: str) -> str:
 
 
 def distinct_refs(references: list[dict[str, str] | None]) -> list[dict[str, str]]:
-    """The references once each, in first-seen order; one path claiming two digests refuses."""
+    """The references once each, in first-seen order, skipping `None`.
+
+    One content-addressed blob can honestly be reached twice (a re-proof answering the
+    same bytes; a page partition and its native capture). Two digests under one path
+    means a blob was rewritten, and refuses.
+    """
     seen: dict[str, dict[str, str]] = {}
     for reference in references:
         if reference is None:
             continue
         known = seen.setdefault(reference["relative_path"], dict(reference))
         if known != reference:
-            raise SchemaRefusal(f"two digests are claimed for input {reference['relative_path']!r}")
+            raise SchemaRefusal(
+                f"two different digests are claimed for input {reference['relative_path']!r}: "
+                f"{known!r} and {reference!r}"
+            )
     return list(seen.values())
 
 

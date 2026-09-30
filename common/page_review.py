@@ -1,11 +1,12 @@
-"""The Recensor's page-path records, read for the two stages after it.
+"""The Recensor's page-path records: their shape, and how the stages after it read them.
 
 A page-read run's Recensor publishes one `review` per counted unit of
 `common.stage.reading_acts` (an act or other reading of a page, or the one row
 standing for a page with none) and one `continuation-link` per page break
-either side's answer flag names. The Archetypus and the
-Armarium both read them; this module is the one place the shape of those
-records is read, so the two stages cannot disagree about it.
+either side's answer flag names (`pipeline/5_recensor/CONTRACT.md`). The
+Recensor writes them in the shapes named here, and the Archetypus and the
+Armarium read them through this module, so no two stages can disagree about
+them.
 """
 
 from __future__ import annotations
@@ -14,23 +15,69 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from common.contracts.errors import FatalAccounting
-from common.contracts.stages import ATTESTATORES, PERLECTOR, RECENSOR
+from common.contracts.stages import RECENSOR
 from common.stage import (
+    COUNTED_READING_CLASSES,
     NO_ACT_ON_PAGE_HOLD,
-    PAGE_REFUSED_CLASS,
+    PAGE_BLANK_HOLD,
     latest_attempt,
-    latest_per_chair,
     stage_manifest,
 )
-from common.witness_regime import NAMED, witness_label
 
 REVIEW_KIND: Final = "review"
-CONTINUATION_LINK_KIND: Final = "continuation-link"
 REVIEW_OPERATION: Final = "recense"
-# The row hold a review may release by name over a reading: the Recensor
-# confirms that a page read as holding no act holds none, and the page's other
-# readings are then established. Every other row hold keeps its reading held.
+HELD: Final = "held-for-review"
+# The row holds a review may release by name, on a page the Recensor confirms
+# blank or holding no act. Every other row hold keeps its unit held.
+RELEASABLE_HOLDS: Final = frozenset({PAGE_BLANK_HOLD, NO_ACT_ON_PAGE_HOLD})
+# Of those, the one a reading can carry: once the Recensor confirms that a page
+# read as holding no act holds none, the page's other readings are established.
+# A blank page has no reading to establish.
 RELEASABLE_READING_HOLDS: Final = frozenset({NO_ACT_ON_PAGE_HOLD})
+# A page review's payload, as the Recensor builds it; `publish_review` adds
+# `attempt_ordinal`.
+PAGE_REVIEW_FIELDS: Final = frozenset(
+    {
+        "act_key",
+        "unit_class",
+        "kind",
+        "page_ordinal",
+        "reason",
+        "hold_codes",
+        "coverage",
+        "page_reading_ref",
+        "page_accounting_ref",
+        "act_region_ref",
+        "perlectio_ref",
+        "page_coverage",
+        "continuation",
+        "uncertainty_assessment",
+        "confirmation",
+        "release",
+        "notes",
+        "recoveries_used",
+    }
+)
+PUBLISHED_PAGE_REVIEW_FIELDS: Final = PAGE_REVIEW_FIELDS | {"attempt_ordinal"}
+RELEASE_FIELDS: Final = frozenset({"hold_codes", "reason"})
+NOTE_FIELDS: Final = frozenset({"code", "flags"})
+
+CONTINUATION_LINK_KIND: Final = "continuation-link"
+CONTINUATION_LINK_SCHEMA: Final = "recensor-continuation-link.v1"
+CONTINUATION_LINK_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "from_page_ordinal",
+        "to_page_ordinal",
+        "from_act_id",
+        "from_act_key",
+        "to_act_id",
+        "to_act_key",
+        "continues_to_next_page",
+        "continues_from_previous_page",
+        "agreed",
+    }
+)
 
 
 def _payload(record: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -42,9 +89,13 @@ def _payload(record: Mapping[str, Any]) -> Mapping[str, Any]:
     return payload
 
 
+def _strings(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) and item for item in value)
+
+
 def reviewed_rows(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    """The rows the Recensor decides about: every row but a refused page's."""
-    return [row for row in rows if row["class"] != PAGE_REFUSED_CLASS]
+    """The rows the Recensor decides about: every counted unit, so not a refused page's row."""
+    return [row for row in rows if row["class"] in COUNTED_READING_CLASSES]
 
 
 def current_page_reviews(context, rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -84,18 +135,60 @@ def current_page_reviews(context, rows: Sequence[Mapping[str, Any]]) -> dict[str
 
 
 def _require_review_of_row(review: Mapping[str, Any], row: Mapping[str, Any]) -> None:
-    """The review names the row it decides: its key, kind and reading."""
+    """The review is a page review of the row: its key, class, kind, page and records.
+
+    Its reason, hold codes, notes and release must be in the page-review shape,
+    and it is held exactly when it names a hold code.
+    """
     payload = _payload(review)
-    reading_ref = payload.get("perlectio_ref")
+    what = f"the Recensor review of {row['act_key']}"
+    if set(payload) != PUBLISHED_PAGE_REVIEW_FIELDS:
+        raise FatalAccounting(
+            f"{what} is not the closed page-review shape: "
+            f"{sorted(set(payload) ^ PUBLISHED_PAGE_REVIEW_FIELDS)}"
+        )
+    reading_ref = payload["perlectio_ref"]
     if (
-        payload.get("act_key") != row["act_key"]
-        or payload.get("kind") != row["kind"]
+        payload["act_key"] != row["act_key"]
+        or payload["unit_class"] != row["class"]
+        or payload["kind"] != row["kind"]
+        or payload["page_ordinal"] != row["page_ordinal"]
         or reading_ref != row["perlectio_ref"]
+        or payload["act_region_ref"] != row["region_ref"]
+        or payload["page_reading_ref"] != row["reading_ref"]
+        or payload["page_accounting_ref"] != row["accounting_ref"]
         or (reading_ref is not None and reading_ref not in review.get("inputs", []))
     ):
         raise FatalAccounting(
-            f"the Recensor review of {row['act_key']} does not name that unit's key, kind and "
-            "reading as the denominator counts them"
+            f"{what} does not name that unit's key, class, kind, page and records as the "
+            "denominator counts them"
+        )
+    release, notes = payload["release"], payload["notes"]
+    if (
+        not isinstance(payload["reason"], str)
+        or not _strings(payload["hold_codes"])
+        or (review.get("outcome") == HELD) != bool(payload["hold_codes"])
+        or not (
+            release is None
+            or (
+                isinstance(release, Mapping)
+                and set(release) == RELEASE_FIELDS
+                and _strings(release["hold_codes"])
+                and isinstance(release["reason"], str)
+            )
+        )
+        or not isinstance(notes, list)
+        or not all(
+            isinstance(note, Mapping)
+            and set(note) == NOTE_FIELDS
+            and isinstance(note["code"], str)
+            and _strings(note["flags"])
+            for note in notes
+        )
+    ):
+        raise FatalAccounting(
+            f"{what} does not carry its reason, hold codes, release and notes in the "
+            "page-review shape, held exactly when it names a hold code"
         )
 
 
@@ -131,105 +224,6 @@ def require_establishable(row: Mapping[str, Any], review: Mapping[str, Any]) -> 
         )
 
 
-def shown_page_witnesses(
-    context, reading: Mapping[str, Any], testimonia: Sequence[Mapping[str, Any]], what: str
-) -> list[dict[str, Any]]:
-    """The page witnesses a page reading was shown, each its chair's current page Testimonium.
-
-    `testimonia` are the page Testimonia of the reading's page on disk. The feed
-    the reading inputs lists every witness it showed; each row must name one of
-    the current ones, under the label this run's regime gives that chair (a
-    blinded feed names no chair, so the Testimonium is found by its reference).
-    A feed that showed no witness made the reading a Lectio nuda, which is never
-    established. The reading's dissent compares against exactly the letters the
-    feed showed, once each. Returns `{letter, witness_label, chair, testimonium,
-    testimonium_ref}` per shown witness, in letter order.
-    """
-    payload = reading.get("payload")
-    payload = payload if isinstance(payload, Mapping) else {}
-    page_id = payload.get("page_id")
-    feed_ref = payload.get("feed_ref")
-    if feed_ref not in reading.get("inputs", []):
-        raise FatalAccounting(f"{what} does not input the page feed it was read from")
-    feed = context.tree.read_artifact_reference(
-        feed_ref, stage=PERLECTOR, kind="page-feed", subject_id=page_id
-    )["payload"]
-    regime = context.witness_context
-    if feed.get("witness_regime") != regime:
-        raise FatalAccounting(
-            f"{what} was read from a feed under witness regime {feed.get('witness_regime')!r}, "
-            f"not this run's {regime!r}"
-        )
-    rows = feed.get("witnesses")
-    if not isinstance(rows, list) or not rows:
-        raise FatalAccounting(
-            f"{what} was shown no page witness: a reading shown no witness is a Lectio nuda, "
-            "an instrument record, never an establishing read"
-        )
-    current = {}
-    for record in latest_per_chair(list(testimonia), f"page Testimonium of {page_id}"):
-        reference = context.artifact_ref(ATTESTATORES, "page-testimonium", record["artifact_id"])
-        current[(reference["relative_path"], reference["sha256"])] = (reference, record)
-    shown: list[dict[str, Any]] = []
-    for row in rows:
-        reference = row.get("testimonium_ref") if isinstance(row, Mapping) else None
-        found = (
-            current.get((reference.get("relative_path"), reference.get("sha256")))
-            if isinstance(reference, Mapping)
-            else None
-        )
-        if found is None or found[0] != reference:
-            raise FatalAccounting(
-                f"{what} was shown a witness from a Testimonium that is not its chair's current "
-                "page Testimonium; nothing is established over superseded testimony"
-            )
-        record = found[1]
-        chair = record["payload"].get("chair")
-        if not isinstance(chair, str) or not chair:
-            raise FatalAccounting(f"{what} was shown a page Testimonium that names no chair")
-        label = witness_label(
-            chair, regime=regime, run_id=context.tree.run_id, config_digest=context.config_digest
-        )
-        if row.get("witness_label") != label or row.get("chair") != (
-            chair if regime == NAMED else None
-        ):
-            raise FatalAccounting(
-                f"{what} was shown witness {row.get('witness_label')!r}, which is not the label "
-                "this run's regime gives the chair whose Testimonium it names"
-            )
-        shown.append(
-            {
-                "letter": row.get("letter"),
-                "witness_label": label,
-                "chair": chair,
-                "testimonium": record,
-                "testimonium_ref": reference,
-            }
-        )
-    letters = [witness["letter"] for witness in shown]
-    labels = {witness["letter"]: witness["witness_label"] for witness in shown}
-    if len(set(letters)) != len(letters) or len({w["chair"] for w in shown}) != len(shown):
-        raise FatalAccounting(f"{what} was shown one witness letter or chair twice")
-    dissent = payload.get("dissent")
-    if (
-        not isinstance(dissent, list)
-        or not all(isinstance(row, Mapping) for row in dissent)
-        or not all(isinstance(row.get("letter"), str) for row in dissent)
-        or sorted(row.get("letter") for row in dissent) != sorted(letters)
-        or any(labels[row["letter"]] != row.get("witness_label") for row in dissent)
-    ):
-        raise FatalAccounting(
-            f"{what} does not record its dissent against exactly the witnesses its feed showed, "
-            "once each"
-        )
-    return sorted(shown, key=lambda witness: witness["letter"])
-
-
-def review_reading_ref(review: Mapping[str, Any]) -> dict[str, str] | None:
-    """The Perlectio the review decided about; `None` for a page row's review."""
-    return _payload(review).get("perlectio_ref")
-
-
 def review_reason(review: Mapping[str, Any]) -> str:
     """The review's own reason, with its hold codes named when it holds."""
     payload = _payload(review)
@@ -252,21 +246,9 @@ def review_coverage(review: Mapping[str, Any]) -> dict[str, Any]:
     return coverage
 
 
-CONTINUATION_LINK_SCHEMA: Final = "recensor-continuation-link.v1"
-_CONTINUATION_LINK_FIELDS: Final = frozenset(
-    {
-        "schema",
-        "from_page_ordinal",
-        "to_page_ordinal",
-        "from_act_id",
-        "from_act_key",
-        "to_act_id",
-        "to_act_key",
-        "continues_to_next_page",
-        "continues_from_previous_page",
-        "agreed",
-    }
-)
+def review_notes(review: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """What the review records for a reader without holding the unit, `{code, flags}` each."""
+    return [dict(note) for note in _payload(review)["notes"]]
 
 
 def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -276,19 +258,21 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
     One link per page break an answer flags, subject `page-break:<p>:<p+1>`:
     `head` (`from_act_id`) is the last `act` entry of page p and `tail`
     (`to_act_id`) the first of page p+1, either `None` where that side has no
-    act entry. Each named side must be a counted row under its own key; the
-    link is `agreed` exactly when both flags say an act crosses the break, and
-    is `accepted` exactly when it agrees.
+    act entry. Each named side must be a counted row under its own key whose
+    reading the link inputs; the link is `agreed` exactly when both flags say
+    an act crosses the break, and is `accepted` exactly when it agrees. A break
+    has one link.
     """
     counted = {row["act_id"]: row for row in rows}
     links: list[dict[str, Any]] = []
+    subjects: set[str] = set()
     for entry in stage_manifest(context, RECENSOR)["artifacts"]:
         if entry["kind"] != CONTINUATION_LINK_KIND:
             continue
         record = context.tree.read_artifact(RECENSOR, CONTINUATION_LINK_KIND, entry["artifact_id"])
         payload = _payload(record)
         what = f"Recensor continuation-link {entry['artifact_id']!r}"
-        if set(payload) != _CONTINUATION_LINK_FIELDS or payload["schema"] != (
+        if set(payload) != CONTINUATION_LINK_FIELDS or payload["schema"] != (
             CONTINUATION_LINK_SCHEMA
         ):
             raise FatalAccounting(f"{what} is not a {CONTINUATION_LINK_SCHEMA} record")
@@ -312,6 +296,8 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
                 )
             if payload[flag] is not (row[flag] is True):
                 raise FatalAccounting(f"{what} does not carry {act_key}'s own {flag} flag")
+            if row["perlectio_ref"] not in record.get("inputs", []):
+                raise FatalAccounting(f"{what} does not input the reading of {act_key}")
             sides.append(act_id)
         if (
             not all(
@@ -330,6 +316,9 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
             raise FatalAccounting(
                 f"{what} does not name one flagged page break, its flags, and whether they agree"
             )
+        if record["subject_id"] in subjects:
+            raise FatalAccounting(f"{record['subject_id']} has more than one continuation-link")
+        subjects.add(record["subject_id"])
         links.append(
             {
                 "ref": {"relative_path": entry["relative_path"], "sha256": entry["sha256"]},

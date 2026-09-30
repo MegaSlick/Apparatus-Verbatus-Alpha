@@ -1254,7 +1254,7 @@ def test_a_duplicated_page_render_input_still_refuses_the_double_count():
     the re-proof: `row["inputs"]` (the image, testimonia, attachment and prior
     references) can never legitimately repeat, and a duplicate there must
     still hit the envelope's own two-digests-for-one-path refusal rather than
-    being silently absorbed by `_distinct_inputs` across the whole list.
+    being silently absorbed by `distinct_refs` across the whole list.
 
     This calls the production composition, `_audited_reading_inputs`, because a
     local copy proves nothing about what `run.py` actually does."""
@@ -1336,9 +1336,9 @@ def test_two_digests_for_one_input_path_are_refused():
     """Content addressing makes this impossible, so it is a rewritten blob."""
     first = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "a" * 64}
     second = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "b" * 64}
-    assert perlector.distinct_inputs([first, first]) == [first]
+    assert perlector.distinct_refs([first, first]) == [first]
     with pytest.raises(SchemaRefusal, match="two different digests"):
-        perlector.distinct_inputs([first, second])
+        perlector.distinct_refs([first, second])
 
 
 def _engine_call_world(tree, *, seed: int, schema: str = "chair-call-record.v3"):

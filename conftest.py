@@ -424,22 +424,46 @@ def page_protocol_config(directory: Path) -> Path:
     return path
 
 
-def build_page_tree(
-    base: Path, scenario: str, run_id: str = "r", **options: object
-) -> tuple[Path, Path]:
-    """A fixture tree read page by page, through the Perlector; returns (root, protocol).
+def floor_models_config(directory: Path, floor: int) -> Path:
+    """The live model config with its witness floor set to `floor`, written under `directory`."""
+    shutil.copytree(ROOT / "config" / "model-fixtures", directory / "model-fixtures")
+    shutil.copytree(ROOT / "config" / "manifests", directory / "manifests")
+    live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
+    assert "\nwitness_floor = 3\n" in live
+    path = directory / "models.toml"
+    path.write_text(live.replace("\nwitness_floor = 3\n", f"\nwitness_floor = {floor}\n"), "utf-8")
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["witness_floor"] == floor
+    return path
 
-    `options` are further stage arguments, passed to every stage (for example
+
+# The fixture seals two page witnesses (DAI is act-scoped), so a page-read tree
+# whose pages should be accepted is sealed with a witness floor of 2.
+PAGE_WITNESS_FLOOR = 2
+
+
+def build_page_tree(
+    base: Path,
+    scenario: str,
+    run_id: str = "r",
+    *,
+    floor: int | None = PAGE_WITNESS_FLOOR,
+    **options,
+) -> tuple[Path, dict[str, object]]:
+    """A fixture tree read page by page, through the Perlector; returns (root, stage options).
+
+    The options, which every later stage of the run takes too, name the page
+    protocol and, unless `floor` is `None` (the live floor), a model config
+    with that witness floor; `options` adds others (for example
     `witness_context="blinded"`).
     """
-    protocol = page_protocol_config(base / "config")
+    options = {"perlector_protocol_config": page_protocol_config(base / "config"), **options}
+    if floor is not None:
+        options["models_config"] = floor_models_config(base / "models", floor)
     root = base / "runs"
     for program in programs_through("perlector"):
-        result = run_stage(
-            root, run_id, scenario, program, perlector_protocol_config=protocol, **options
-        )
+        result = run_stage(root, run_id, scenario, program, **options)
         assert result.returncode == 0, f"{program}: {result.stderr}"
-    return root, protocol
+    return root, options
 
 
 def rewrite_page_answer_entry(root: Path, run_id: str, ordinal: int, n: int, **fields) -> None:
@@ -472,15 +496,12 @@ def rewrite_page_answer_entry(root: Path, run_id: str, ordinal: int, n: int, **f
                 )
             else:
                 continue
-            record["self_hash"] = self_hash(
-                {key: value for key, value in record.items() if key != "self_hash"}
-            )
-            path.write_bytes(canonical_bytes(record))
+            _write_record(path, record)
     rewitness_stage_boundary(RunTree(root, run_id), PERLECTOR)
 
 
-def page_context(root: Path, run_id: str, scenario: str, protocol: Path, options=None):
-    """A page-read tree's context, opened as the Recensor's so the stages after it can read."""
+def page_context(root: Path, run_id: str, scenario: str, options: dict[str, object], stage=None):
+    """A page-read tree's context under `options`, opened as `stage` (the Recensor's by default)."""
     from common.contracts.stages import RECENSOR
     from common.stage import open_context, stage_parser
 
@@ -492,24 +513,26 @@ def page_context(root: Path, run_id: str, scenario: str, protocol: Path, options
             run_id,
             "--scenario",
             scenario,
-            "--perlector-protocol-config",
-            str(protocol),
             *(
                 item
-                for name, value in (options or {}).items()
+                for name, value in options.items()
                 for item in (f"--{name.replace('_', '-')}", str(value))
             ),
         ]
     )
-    return open_context(args, RECENSOR)
+    return open_context(args, stage or RECENSOR)
 
 
-def _page_records(root: Path, run_id: str, kind: str) -> list[tuple[Path, dict]]:
-    directory = root / run_id / "4_perlector" / "artifacts" / kind
+def _stage_records(root: Path, run_id: str, stage_dir: str, kind: str) -> list[tuple[Path, dict]]:
+    directory = root / run_id / stage_dir / "artifacts" / kind
     return [
         (path, json.loads(path.read_text(encoding="utf-8")))
         for path in sorted(directory.glob("*.json"))
     ]
+
+
+def _page_records(root: Path, run_id: str, kind: str) -> list[tuple[Path, dict]]:
+    return _stage_records(root, run_id, "4_perlector", kind)
 
 
 def _write_record(path: Path, record: dict) -> None:
@@ -535,46 +558,27 @@ def rewrite_page_reading(root: Path, run_id: str, ordinal: int, change) -> None:
 
 
 def reaccount_page(
-    root: Path, run_id: str, scenario: str, protocol: Path, ordinal: int, options=None
+    root: Path, run_id: str, scenario: str, options: dict[str, object], ordinal: int
 ) -> list[str]:
     """Measure page `ordinal`'s accounting again, as the denominator does, and carry it on.
 
     Models stage 4 having written the page's records after reading what a test
-    rewrote: the page accounting is measured by the denominator's own
-    measurement, never written by hand, and the page's act records take its
-    holds. Returns the page's holds.
+    rewrote: the page accounting is `common.stage.measure_page_accounting`'s,
+    never written by hand, and the page's act records take its holds. Returns
+    the page's holds.
     """
-    from common import page_path
-    from common import stage as stage_module
     from common.contracts.stages import PERLECTOR
     from common.runtree.store import RunTree
+    from common.stage import measure_page_accounting
 
     rewitness_stage_boundary(RunTree(root, run_id), PERLECTOR)
-    context = page_context(root, run_id, scenario, protocol, options)
-    index = stage_module._PageReadRecords(context)
+    context = page_context(root, run_id, scenario, options)
     [reading] = [
         record
         for _path, record in _page_records(root, run_id, "page-reading")
         if record["payload"]["page_ordinal"] == ordinal
     ]
-    payload = reading["payload"]
-    feed = context.tree.read_artifact_reference(
-        payload["feed_ref"], stage=PERLECTOR, kind="page-feed", subject_id=reading["subject_id"]
-    )
-    plans = (
-        page_path.entry_plans(
-            payload["answer"],
-            feed["payload"],
-            page_id=reading["subject_id"],
-            stop_reason=payload["stop_reason"],
-            truncation_policy=index.truncation_policy,
-        )
-        if payload["disposition"] == "read"
-        else []
-    )
-    measured, inputs = stage_module._measure_page_accounting(
-        context, index, "test", feed, payload["feed_ref"], payload, index.ref(reading), plans
-    )
+    measured, inputs = measure_page_accounting(context, reading)
     holds = measured["holds"]
     for path, accounting in _page_records(root, run_id, "page-accounting"):
         if accounting["payload"]["page_ordinal"] == ordinal:
@@ -591,139 +595,76 @@ def reaccount_page(
     return holds
 
 
-def publish_stand_in_page_reviews(
+# --- Recensor decisions the fixture cannot reach -------------------------------------
+#
+# Page-read tests run the real Recensor. These forge its records only for a
+# decision it does not make on the fixture's pages, each rewitnessed as a
+# Recensor that made it; the partition receipt is not rewritten, since no
+# stage after the Recensor reads it.
+
+
+def forge_page_review(root: Path, run_id: str, act_key: str, outcome: str, **payload) -> None:
+    """Give the real Recensor's review of `act_key` another outcome and payload fields."""
+    from common.contracts.stages import RECENSOR
+    from common.runtree.store import RunTree
+
+    [(path, record)] = [
+        (path, record)
+        for path, record in _stage_records(root, run_id, "5_recensor", "review")
+        if record["payload"]["act_key"] == act_key
+    ]
+    record["outcome"] = outcome
+    record["payload"].update(payload)
+    _write_record(path, record)
+    rewitness_stage_boundary(RunTree(root, run_id), RECENSOR)
+
+
+def forge_continuation_links(
     root: Path,
     run_id: str,
     scenario: str,
-    protocol: Path,
-    *,
-    outcomes: dict[str, str] | None = None,
-    links: list[tuple[str, str, bool]] | None = None,
-    options: dict[str, object] | None = None,
+    options: dict[str, object],
+    links: list[tuple[str, str, bool]],
 ) -> None:
-    """Publish and seal a Recensor page path for a page-read tree, standing in for it.
+    """Replace the real Recensor's continuation links with `(head_key, tail_key, agreed)` rows.
 
-    One `review` per counted `reading_acts` row -- `accepted` for a row the
-    denominator reads, `held-for-review` for a held one, unless `outcomes` names
-    another by act key; an accepted row held only by a releasable hold names it
-    in its `release`. One `continuation-link` per page break either side's flag
-    names, between the last `act` entry of a page and the first of the next,
-    `agreed` only when both flag it, a side with no `act` entry null, in the
-    Recensor's `recensor-continuation-link.v1` shape; `links` replaces them with
-    `(head_key, tail_key, agreed)` rows. The real Recensor page path replaces
-    this; the records carry the shape the downstream readers
-    (`common/page_review.py`) read. `options` are further stage arguments.
+    Each is written in the `recensor-continuation-link.v1` shape between the two
+    named readings, inputting both.
     """
     from common.contracts.identities import attempt_id
-    from common.contracts.outcomes import witness_coverage
-    from common.contracts.stages import ATTESTATORES, RECENSOR
-    from common.page_review import RELEASABLE_READING_HOLDS, reviewed_rows
-    from common.stage import open_context, reading_acts, stage_parser
+    from common.contracts.stages import RECENSOR
+    from common.page_review import CONTINUATION_LINK_KIND, CONTINUATION_LINK_SCHEMA
+    from common.stage import reading_acts
 
-    args = stage_parser("stand-in page Recensor").parse_args(
-        [
-            "--run-root",
-            str(root),
-            "--run-id",
-            run_id,
-            "--scenario",
-            scenario,
-            "--perlector-protocol-config",
-            str(protocol),
-            *(
-                item
-                for name, value in (options or {}).items()
-                for item in (f"--{name.replace('_', '-')}", str(value))
-            ),
-        ]
-    )
-    context = open_context(args, RECENSOR)
-    rows = reviewed_rows(reading_acts(context))
-    # Coverage counts every roster chair that testified anywhere in the run, as
-    # `read`; how the real page path counts an act-scoped chair on a page is the
-    # Recensor's to decide.
-    testified = {
-        context.tree.read_artifact(ATTESTATORES, entry["kind"], entry["artifact_id"])["payload"][
-            "chair"
-        ]
-        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] in ("page-testimonium", "testimonium")
-    }
-    for row in rows:
-        outcome = (outcomes or {}).get(row["act_key"]) or (
-            "accepted" if row["disposition"] == "read" else "held-for-review"
-        )
-        chairs = {
-            chair: "read" if chair in testified else "not-run" for chair in context.witness_chairs
-        }
-        refs = [
-            row[name] for name in ("perlectio_ref", "region_ref", "reading_ref", "accounting_ref")
-        ]
-        inputs = {ref["relative_path"]: ref for ref in refs if ref is not None}
-        release = (
-            {"hold_codes": sorted(row["hold_codes"]), "reason": "confirmed"}
-            if outcome == "accepted"
-            and row["hold_codes"]
-            and set(row["hold_codes"]) <= RELEASABLE_READING_HOLDS
-            else None
-        )
-        context.publish(
-            kind="review",
-            subject_id=row["act_id"],
-            outcome=outcome,
-            attempt=attempt_id(row["act_id"], "recense", 1),
-            inputs=[inputs[path] for path in sorted(inputs)],
-            payload={
-                "attempt_ordinal": 1,
-                "act_key": row["act_key"],
-                "kind": row["kind"],
-                "reason": "" if outcome == "accepted" else f"{row['act_key']} is held",
-                "coverage": witness_coverage(chairs, context.witness_floor),
-                "page_accounting_ref": row["accounting_ref"],
-                "perlectio_ref": row["perlectio_ref"],
-                "act_region_ref": row["region_ref"],
-                "page_reading_ref": row["reading_ref"],
-                "hold_codes": [] if release else row["hold_codes"],
-                "release": release,
-            },
-        )
-    by_key = {row["act_key"]: row for row in rows}
-    breaks: list[tuple[dict | None, dict | None, bool]] = []
-    if links is None:
-        edges: dict[int, list[dict]] = {}
-        for row in rows:
-            if row["kind"] == "act" and row["n"] is not None:
-                edges.setdefault(row["page_ordinal"], []).append(row)
-        ordinals = sorted({row["page_ordinal"] for row in rows})
-        for left in range(ordinals[0] - 1, ordinals[-1] + 1):
-            head = max(edges.get(left, []), key=lambda row: row["n"], default=None)
-            tail = min(edges.get(left + 1, []), key=lambda row: row["n"], default=None)
-            to_next = head is not None and head["continues_to_next_page"] is True
-            from_previous = tail is not None and tail["continues_from_previous_page"] is True
-            if to_next or from_previous:
-                breaks.append((head, tail, to_next and from_previous))
-    else:
-        breaks = [(by_key[head], by_key[tail], agreed) for head, tail, agreed in links]
-    for head, tail, agreed in breaks:
-        left = head["page_ordinal"] if head else tail["page_ordinal"] - 1
-        right = tail["page_ordinal"] if tail else left + 1
-        context.publish(
-            kind="continuation-link",
-            subject_id=f"page-break:{left}:{right}",
+    context = page_context(root, run_id, scenario, options)
+    for path, _record in _stage_records(root, run_id, "5_recensor", CONTINUATION_LINK_KIND):
+        path.unlink()
+    rows = {row["act_key"]: row for row in reading_acts(context)}
+    for head_key, tail_key, agreed in links:
+        head, tail = rows[head_key], rows[tail_key]
+        subject = f"page-break:{head['page_ordinal']}:{tail['page_ordinal']}"
+        record = context.envelope(
+            kind=CONTINUATION_LINK_KIND,
+            subject_id=subject,
             outcome="accepted" if agreed else "held-for-review",
+            attempt=attempt_id(subject, "link", 1),
+            inputs=[head["perlectio_ref"], tail["perlectio_ref"]],
             payload={
-                "schema": "recensor-continuation-link.v1",
-                "from_page_ordinal": left,
-                "to_page_ordinal": right,
-                "from_act_id": head["act_id"] if head else None,
-                "from_act_key": head["act_key"] if head else None,
-                "to_act_id": tail["act_id"] if tail else None,
-                "to_act_key": tail["act_key"] if tail else None,
-                "continues_to_next_page": bool(head) and head["continues_to_next_page"] is True,
-                "continues_from_previous_page": bool(tail)
-                and tail["continues_from_previous_page"] is True,
+                "schema": CONTINUATION_LINK_SCHEMA,
+                "from_page_ordinal": head["page_ordinal"],
+                "to_page_ordinal": tail["page_ordinal"],
+                "from_act_id": head["act_id"],
+                "from_act_key": head_key,
+                "to_act_id": tail["act_id"],
+                "to_act_key": tail_key,
+                "continues_to_next_page": head["continues_to_next_page"] is True,
+                "continues_from_previous_page": tail["continues_from_previous_page"] is True,
                 "agreed": agreed,
             },
         )
-    context.seal_boundary()
-    context.finish()
+        path = context.tree.resolve(
+            context.tree.artifact_path(RECENSOR, CONTINUATION_LINK_KIND, record["artifact_id"])
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(canonical_bytes(record))
+    rewitness_stage_boundary(context.tree, RECENSOR)

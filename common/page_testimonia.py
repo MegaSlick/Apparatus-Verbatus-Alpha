@@ -14,7 +14,7 @@ from typing import Any
 from common.chairs.models import ChairIdentity
 from common.chandra_native_retry import validate_trace as validate_chandra_trace
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
-from common.contracts.stages import ATTESTATORES, DESIGNATOR
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
 from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_lineage
 from common.imaging import dimensions
 from common.native_witness import (
@@ -25,6 +25,7 @@ from common.native_witness import (
     validate_presented_page_binding,
     verify_native_capture_blob,
 )
+from common.page_path import distinct_refs, refs_by_path
 from common.stage import (
     ATTEMPTED_WITNESS_OUTCOMES,
     latest_per_chair,
@@ -32,6 +33,7 @@ from common.stage import (
     stage_manifest,
     validate_serving_provenance,
 )
+from common.witness_regime import NAMED, witness_label
 
 PAGE_TESTIMONIUM_KIND = "page-testimonium"
 
@@ -76,32 +78,8 @@ def declared_page_witness_chairs(context) -> set[str]:
 # --- inputs -------------------------------------------------------------------------
 
 
-def distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
-    """One entry per path, in first-named order, refusing two digests for one path.
-
-    One content-addressed blob can honestly be reached twice (a re-proof answering the
-    same bytes; a page partition and its native capture). Two digests under one path
-    means a blob was rewritten.
-    """
-    distinct: dict[str, dict[str, str]] = {}
-    for reference in references:
-        seen = distinct.get(reference["relative_path"])
-        if seen is None:
-            distinct[reference["relative_path"]] = reference
-        elif seen != reference:
-            raise SchemaRefusal(
-                f"two different digests are claimed for input {reference['relative_path']!r}: "
-                f"{seen!r} and {reference!r}"
-            )
-    return list(distinct.values())
-
-
 def input_order(reference: dict[str, str]) -> tuple[str, str]:
     return reference["relative_path"], reference["sha256"]
-
-
-def sorted_distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
-    return sorted(distinct_inputs(references), key=input_order)
 
 
 # --- the Designator's proposals a page Testimonium is measured against -------------
@@ -238,7 +216,7 @@ def validate_page_testimonium_record(
         # through both `raw_response_refs` and `native_capture`, and
         # `validate_input_refs` refuses a repeated path, so a doubled expectation could
         # never be met.
-        expected_inputs = sorted_distinct_inputs(expected_inputs + retained)
+        expected_inputs = refs_by_path(distinct_refs(expected_inputs + retained))
         if record.get("inputs") != expected_inputs:
             raise SchemaRefusal(
                 "a page Testimonium does not bind exactly its presented image"
@@ -330,3 +308,101 @@ def require_page_roster(page_id: str, records: list[dict], page_chairs: set[str]
             f"page {page_id} has no current page Testimonium for configured page witness(es) "
             f"{sorted(page_chairs - present)}; it cannot be counted over a shortened roster"
         )
+
+
+# --- the witnesses a page reading was shown ------------------------------------------
+
+
+def shown_page_witnesses(
+    context, reading: dict[str, Any], current: list[dict[str, Any]], what: str
+) -> list[dict[str, Any]]:
+    """The page witnesses a page reading was shown, each its chair's current page Testimonium.
+
+    `current` is the reading's page's entry in `current_page_testimonia`: each
+    chair's latest page Testimonium, every one validated. The feed
+    the reading inputs lists every witness it showed; each row must name one of
+    the current ones, under the label this run's regime gives that chair (a
+    blinded feed names no chair, so the Testimonium is found by its reference).
+    A feed that showed no witness made the reading a Lectio nuda, which is never
+    established. The reading's dissent compares against exactly the letters the
+    feed showed, once each. Returns `{letter, witness_label, chair, testimonium,
+    testimonium_ref}` per shown witness, in letter order.
+    """
+    payload = reading.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    page_id = payload.get("page_id")
+    feed_ref = payload.get("feed_ref")
+    if feed_ref not in reading.get("inputs", []):
+        raise FatalAccounting(f"{what} does not input the page feed it was read from")
+    feed = context.tree.read_artifact_reference(
+        feed_ref, stage=PERLECTOR, kind="page-feed", subject_id=page_id
+    )["payload"]
+    regime = context.witness_context
+    if feed.get("witness_regime") != regime:
+        raise FatalAccounting(
+            f"{what} was read from a feed under witness regime {feed.get('witness_regime')!r}, "
+            f"not this run's {regime!r}"
+        )
+    rows = feed.get("witnesses")
+    if not isinstance(rows, list) or not rows:
+        raise FatalAccounting(
+            f"{what} was shown no page witness: a reading shown no witness is a Lectio nuda, "
+            "an instrument record, never an establishing read"
+        )
+    by_reference = {}
+    for record in current:
+        reference = context.artifact_ref(ATTESTATORES, PAGE_TESTIMONIUM_KIND, record["artifact_id"])
+        by_reference[input_order(reference)] = (reference, record)
+    shown: list[dict[str, Any]] = []
+    for row in rows:
+        reference = row.get("testimonium_ref") if isinstance(row, dict) else None
+        found = (
+            by_reference.get((reference.get("relative_path"), reference.get("sha256")))
+            if isinstance(reference, dict)
+            else None
+        )
+        if found is None or found[0] != reference:
+            raise FatalAccounting(
+                f"{what} was shown a witness from a Testimonium that is not its chair's current "
+                "page Testimonium; nothing is established over superseded testimony"
+            )
+        record = found[1]
+        chair = record["payload"].get("chair")
+        if not isinstance(chair, str) or not chair:
+            raise FatalAccounting(f"{what} was shown a page Testimonium that names no chair")
+        label = witness_label(
+            chair, regime=regime, run_id=context.tree.run_id, config_digest=context.config_digest
+        )
+        if row.get("witness_label") != label or row.get("chair") != (
+            chair if regime == NAMED else None
+        ):
+            raise FatalAccounting(
+                f"{what} was shown witness {row.get('witness_label')!r}, which is not the label "
+                "this run's regime gives the chair whose Testimonium it names"
+            )
+        shown.append(
+            {
+                "letter": row.get("letter"),
+                "witness_label": label,
+                "chair": chair,
+                "testimonium": record,
+                "testimonium_ref": reference,
+            }
+        )
+    letters = [witness["letter"] for witness in shown]
+    labels = {witness["letter"]: witness["witness_label"] for witness in shown}
+    if len(set(letters)) != len(letters) or len({w["chair"] for w in shown}) != len(shown):
+        raise FatalAccounting(f"{what} was shown one witness letter or chair twice")
+    dissent = payload.get("dissent")
+    if (
+        not isinstance(dissent, list)
+        or not all(isinstance(row, dict) for row in dissent)
+        or not all(isinstance(row.get("letter"), str) for row in dissent)
+        or sorted(row.get("letter") for row in dissent) != sorted(letters)
+        or any(labels[row["letter"]] != row.get("witness_label") for row in dissent)
+    ):
+        raise FatalAccounting(
+            f"{what} does not record its dissent against exactly the witnesses its feed showed, "
+            "once each"
+        )
+    return sorted(shown, key=lambda witness: witness["letter"])

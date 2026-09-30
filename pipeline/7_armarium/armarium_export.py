@@ -2544,8 +2544,10 @@ def _validate_witness_accounting(
 ) -> None:
     """Keep the exported roster, coverage counts, and per-act witnesses one fact.
 
-    On the page path a reading is shown only the page-scoped witnesses, so its
-    witnesses are a non-empty part of the roster rather than all of it.
+    On the page path only the page-scoped witnesses read a page: the basis
+    names them (`page_witness_chairs`, part of the roster), each coverage
+    record counts exactly them, and a reading's witnesses are a non-empty part
+    of them.
     """
     if (
         not isinstance(witness_chairs, (list, tuple))
@@ -2555,6 +2557,23 @@ def _validate_witness_accounting(
         raise SchemaRefusal("Armarium witness chairs are not a unique named roster")
     if not _is_count(witness_floor) or witness_floor > len(witness_chairs):
         raise SchemaRefusal("Armarium witness floor does not fit its named roster")
+    counted = witness_chairs
+    if page_path:
+        counted = (
+            aggregate_basis.get("page_witness_chairs")
+            if isinstance(aggregate_basis, dict)
+            else None
+        )
+        if (
+            not isinstance(counted, list)
+            or not counted
+            or any(not _is_nonempty_str(chair) for chair in counted)
+            or counted != sorted(set(counted))
+            or not set(counted) <= set(witness_chairs)
+        ):
+            raise SchemaRefusal(
+                "Armarium page witness chairs are not a sorted, unique part of the roster"
+            )
     coverage = (
         aggregate_basis.get("coverage_records") if isinstance(aggregate_basis, dict) else None
     )
@@ -2563,7 +2582,7 @@ def _validate_witness_accounting(
     for act_key, record in coverage.items():
         if (
             not isinstance(record, dict)
-            or record.get("configured") != len(witness_chairs)
+            or record.get("configured") != len(counted)
             or record.get("floor") != witness_floor
         ):
             raise SchemaRefusal(
@@ -2571,7 +2590,7 @@ def _validate_witness_accounting(
             )
     if acts is None:
         return
-    expected = set(witness_chairs)
+    expected = set(counted)
     for act in acts:
         if act.get("category") != ArmariumCategory.DELIVERED.value:
             continue
@@ -2652,10 +2671,13 @@ def _aggregate_from_basis(
 
     `others` is a page-read run's other layer (`{page_ordinal, category}` rows),
     `None` on the act path; a page-read basis also carries `continuation_flags`,
-    read against the joins through `act_keys` (act id to act key).
+    read against the joins through `act_keys` (act id to act key), and
+    `page_witness_chairs`, which `_validate_witness_accounting` checks.
     """
     page_read = others is not None
-    fields = set(_AGGREGATE_BASIS_FIELDS) | ({"continuation_flags"} if page_read else set())
+    fields = set(_AGGREGATE_BASIS_FIELDS) | (
+        {"continuation_flags", "page_witness_chairs"} if page_read else set()
+    )
     if not isinstance(basis, dict) or set(basis) != fields:
         raise SchemaRefusal("an Armarium aggregate has no recognized accounting basis")
     page_terms: dict[str, Any] = {}

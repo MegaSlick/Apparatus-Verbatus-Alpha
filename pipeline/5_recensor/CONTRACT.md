@@ -557,8 +557,10 @@ records the rule statuses, the line count, each witness's measured blankness and
 every failure. An unconfirmed one stays held with its code and the failures in
 `reason`.
 
-The closed `kind="review"` payload (`page_review.PAGE_REVIEW_FIELDS`, plus the
-`attempt_ordinal` every review carries, minted as on the act path):
+The closed `kind="review"` payload (`common/page_review.py`'s
+`PAGE_REVIEW_FIELDS`, plus the `attempt_ordinal` every review carries, minted as
+on the act path; that module also holds the link fields below and is how the
+Archetypus and the Armarium read both records):
 
 ```
 {act_key, unit_class, kind, page_ordinal, reason, hold_codes, coverage,
