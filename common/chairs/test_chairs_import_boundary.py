@@ -1,9 +1,11 @@
-"""Import boundary: a static check that `common/` never imports a stage.
+"""Import boundary: a static check that `common/` never imports a stage or `operations/`.
 
-`common/` knows nothing about stages: stages import it and it never imports back.
-The chair package and its tests fail on any import of `pipeline` or `proof`, and
-every other module under `common/` fails on any import of `pipeline`, wherever in
-a file the import sits.
+`common/` knows nothing about stages or operations: both import it and it never
+imports back. The chair package and its tests fail on any import of `pipeline` or
+`proof`, every module under `common/` fails on any import of `pipeline`, and every
+production module under `common/` fails on any import of `operations`, wherever in
+a file the import sits. Tests may import `operations/` to prove a shared contract
+from both sides.
 
 The check is static because numbering the stage directories only makes a
 statement such as `import 4_perlector` invalid Python; a dynamic import or path

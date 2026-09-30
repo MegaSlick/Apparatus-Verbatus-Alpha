@@ -2,12 +2,12 @@
 
 The only project code a stage may import besides its own.
 
-It knows nothing about stages. Stages import it; it never imports back. That is
-now checked rather than declared: `common/chairs/test_chairs_import_boundary.py`
-reads every `.py` file under `common/` through `ast` and fails on an import of
-`pipeline`, wherever in the file it sits. Static, because numbering the stage
-directories only makes `import 4_perlector` invalid — a dynamic import would
-still cross.
+It knows nothing about stages or operations. Stages and `operations/` import it;
+it never imports back. `common/chairs/test_chairs_import_boundary.py` checks this:
+it reads every `.py` file under `common/` through `ast` and fails on an import of
+`pipeline`, or on an import of `operations` from any module other than a test,
+wherever in the file it sits. Static, because numbering the stage directories only
+makes `import 4_perlector` invalid — a dynamic import would still cross.
 
 | Module | What a stage gets from it |
 |---|---|
