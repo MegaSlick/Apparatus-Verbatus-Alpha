@@ -59,7 +59,10 @@ from throughput import planned_seconds_per_page
 import operations.serving.errors as serving_errors
 from common import page_accounting, page_answer
 from common.alignment import bracket_marker_view
-from common.background import validate_measured_ink_map_payload
+from common.background import (
+    validate_ink_not_measurable_payload,
+    validate_measured_ink_map_payload,
+)
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes, digest_of, is_plain_int
 from common.contracts.envelope import read_verified
@@ -80,6 +83,7 @@ from common.residual_ink import (
     INK_NOT_MEASURABLE,
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
     load_coverage_audit_config,
+    reconcile_edge_finding_with_runs,
     resolve_coverage_audit_policy,
 )
 from common.stage import (
@@ -1461,7 +1465,11 @@ def _accounting_detections(state: _PagePass, page: _Page) -> tuple[dict[str, Any
 
 
 def _accounting_ink(context, page: _Page) -> tuple[dict[str, Any] | None, list]:
-    """The page's retained ink runs and resolved coverage policy, or `None` when unmeasured."""
+    """The page's retained ink runs and resolved coverage policy, or `None` when unmeasured.
+
+    The runs must span the sealed page (`page.page_size`) and reconcile with the
+    Ink Map's own edge finding and outcome before rule (f) counts them.
+    """
     found = []
     for entry in stage_manifest(context, INK_MAP)["artifacts"]:
         if entry["kind"] != "ink-map":
@@ -1479,7 +1487,11 @@ def _accounting_ink(context, page: _Page) -> tuple[dict[str, Any] | None, list]:
     [(entry, record)] = found
     reference = context.artifact_ref(INK_MAP, "ink-map", entry["artifact_id"])
     if record["outcome"] == INK_NOT_MEASURABLE:
+        refusal = validate_ink_not_measurable_payload(record["payload"])
+        context.require_sealed_config("designator-grouping", refusal["background_config_sha256"])
         return None, [reference]
+    if record["outcome"] not in {"mapped", "unclaimed-edge-ink"}:
+        raise ContractError(f"page {page.page_id}'s ink map has an unknown outcome")
     coverage = load_coverage_audit_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", coverage["config_sha256"])
     measured = validate_measured_ink_map_payload(
@@ -1492,10 +1504,18 @@ def _accounting_ink(context, page: _Page) -> tuple[dict[str, Any] | None, list]:
             f"page {page.page_id}'s ink map and the coverage policy read different sealed bytes"
         )
     runs = record["payload"]["edge_findings"]
-    return {
-        "runs": runs,
-        "coverage_policy": resolve_coverage_audit_policy(coverage, runs["width"], runs["height"]),
-    }, [reference]
+    coverage_policy = resolve_coverage_audit_policy(coverage, *page.page_size)
+    initial_measure = reconcile_edge_finding_with_runs(
+        record["payload"]["edge"],
+        runs,
+        coverage_policy=coverage_policy,
+        expected_dimensions=page.page_size,
+    )
+    if record["outcome"] != ("unclaimed-edge-ink" if initial_measure["flagged"] else "mapped"):
+        raise ContractError(
+            f"page {page.page_id}'s ink map outcome disagrees with its retained edge measurement"
+        )
+    return {"runs": runs, "coverage_policy": coverage_policy}, [reference]
 
 
 def _by_path(references: list[dict[str, str]]) -> list[dict[str, str]]:
