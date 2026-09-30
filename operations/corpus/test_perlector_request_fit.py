@@ -67,7 +67,8 @@ def test_every_page_is_counted_under_each_feed_setting_and_context():
     assert len(table) == 8
     assert skipped_gold_records(pages) == 1
     for cell in table.values():
-        assert cell["fit"] + cell["refused_context"] + cell["refused_answer_cap"] == 2
+        assert cell["fit"] + cell["refused_context"] == 2
+        assert cell["reserve_clamped"] == 0
     assert table["page request, default feed, 32768"]["fit"] == 2
     # Two witnesses in record units and one in lines; one Surya line per text line.
     shape = page_shape(pages[0])

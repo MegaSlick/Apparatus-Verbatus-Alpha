@@ -11,6 +11,8 @@ switches it was built under.
 Nothing here chooses among the witnesses. Witness letters are assigned
 `A, B, C, ...` in sorted `witness_label` order, which is a pseudonym under a
 blinded regime, so a letter carries no preference and reveals no chair.
+`L` and `S` are skipped (`WITNESS_LETTERS`): they name Surya's lines and
+blocks, so a witness letter never makes an id ambiguous.
 
 ## Ids
 
@@ -41,25 +43,34 @@ merely states:
   when the caller says the run is synthetic (`fixture_placeholders`).
 * DAI (`dai.v1`): one unit per record its own detector found
   (`unit_captures`), box = that record's bounds, text = DAI's response for it
-  decoded exactly, and checked against the span the record states.
+  decoded exactly, and checked against the span the record states. Two
+  records whose spans overlap are refused by name.
 
 Text a witness's own parse places outside its units -- Chandra's character
-data outside every block (`content-outside-blocks`), Churro's page text
-outside every section (`page-text-outside-sections`) -- is one more unit at
-the end of that witness's order, with no ordinal, no box and the label
-`OUTSIDE_UNITS_LABEL`, shown and accounted like any other: nothing a witness
-said is absent from the feed. Each row also carries the findings its parse of
-the retained bytes names.
+data outside every block (`content-outside-blocks`), Churro's text outside
+every section or every page (`page-text-outside-sections`,
+`document-text-outside-pages`), DAI's page text outside every record's span --
+is one more unit at the end of that witness's order, with no ordinal, no box
+and the label `OUTSIDE_UNITS_LABEL`, shown and accounted like any other:
+nothing a witness said is absent from the feed. Each row also carries the
+findings its parse of the retained bytes names, and its `answer_health`: the
+Testimonium's `content_health.truncated` and every repetition finding its
+native captures carry, which the prompt states on the witness's line.
 
-A witness whose page outcome is not `read` is a row with its outcome and no
-units: it is never silently absent. Every chair of the sealed page-witness
-roster has a row, shown or hidden by the `witnesses` switch; a roster chair
-with no Testimonium is refused.
+A shown witness whose page outcome is not `read` is a row with its outcome
+and no units: it is never silently absent. Every chair of the sealed
+page-witness roster must be given with its Testimonium (a roster chair with
+none is refused), but only the chairs the `witnesses` switch shows become
+rows; a hidden chair appears only in the recorded `switches`.
 
 Under `witness_units = "flat"` the rows keep the same units, ids, sealed
 boxes (`box_px`) and unit kind, so the accounting reads them unchanged; only
 what is shown changes: no unit box_1000, and the prompt shows each witness as
-one line, its units joined, cited by the range of its unit ids.
+one unit with no box, its units' texts joined, cited by the range of its unit
+ids. Such a witness places nothing: `placement_boxes` gives its units no box,
+so an entry's region comes only from boxed ids -- Surya's detections and the
+units of a boxed witness shown in its own units -- and two entries citing the
+same flat witness never share a region through it.
 
 Letters and labels are shown as the regime gives them. The blinded regime
 hides chair and model names (`witness_label` is a pseudonym, `chair` is
@@ -81,21 +92,23 @@ Churro's section names -- are part of its report and are shown as given.
         read_bytes=context.tree.read_bytes,
     )
     text = page_prompt.build_page_prompt(chair.serving_recipe, feed)
+    parts = page_prompt.prompt_parts(chair.serving_recipe, feed)  # what the capacity charges
     overlay = page_overlay.overlay_image(feed, context.tree.read_bytes)  # when drawn
     images = request_image_sizes(feed)   # what the capacity check charges
+    boxes = placement_boxes(feed)        # each id's box for an entry's region
 
 Each `testimonium` must already have passed the stage's own page-Testimonium
 checks (`run.validate_page_testimonium_record`); this module re-derives units
 from its retained bytes but does not re-run those checks. It does check that
 each `testimonium` is the record its `testimonium_ref` names: the ref's bytes,
 read digest-checked, decode to exactly that record, a `page-testimonium` of
-this page. Every ref on the feed (`testimonium_ref`, Surya's `census_ref` and
+this page whose payload names the row's chair; no two rows may share a ref. Every ref on the feed (`testimonium_ref`, Surya's `census_ref` and
 each line's and block's `ref`) is an input the caller binds on the page-feed
 record.
 
 `assemble_page_feed` takes the same arguments with each witness's reading
 already made (`{chair, witness_label, adapter, outcome, testimonium_ref,
-units, findings}`) and no `read_bytes`; `build_page_feed` is `witness_reading`
+units, findings, answer_health}`) and no `read_bytes`; `build_page_feed` is `witness_reading`
 then `assemble_page_feed`, and measurement tools call it directly.
 """
 
@@ -104,7 +117,6 @@ from __future__ import annotations
 import json
 import math
 import re
-import string
 from fractions import Fraction
 from typing import Any, Callable, Final
 
@@ -122,6 +134,7 @@ from common.contracts.canonical import digest_of, is_plain_int
 from common.contracts.envelope import digest_ref, read_verified
 from common.contracts.errors import SchemaRefusal
 from common.native_witness import (
+    REPETITION_FINDING_KINDS,
     churro_capture_system_prompt,
     churro_text_outside_sections,
     parse_churro_response,
@@ -147,13 +160,30 @@ UNIT_KINDS: Final = {CHANDRA: "layout-block", DAI: "detector-record", CHURRO: "l
 _ACT_SIZED_UNIT_KINDS: Final = frozenset({"layout-block", "detector-record"})
 # The label of the unit holding a witness's text outside its own units.
 OUTSIDE_UNITS_LABEL: Final = "outside units"
+# The letters a shown witness may take, in order: every capital but `L` and
+# `S`, which name Surya's lines and blocks.
+WITNESS_LETTERS: Final = tuple(
+    letter for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if letter not in "LS"
+)
 
 _WITNESS_FIELDS: Final = frozenset(
     {"chair", "witness_label", "adapter", "testimonium", "testimonium_ref"}
 )
 _ASSEMBLED_WITNESS_FIELDS: Final = frozenset(
-    {"chair", "witness_label", "adapter", "outcome", "testimonium_ref", "units", "findings"}
+    {
+        "chair",
+        "witness_label",
+        "adapter",
+        "outcome",
+        "testimonium_ref",
+        "units",
+        "findings",
+        "answer_health",
+    }
 )
+_ANSWER_HEALTH_FIELDS: Final = frozenset({"truncated", "repetition"})
+# The answer health of a witness that did not read, or whose answer shows nothing.
+NO_ANSWER_HEALTH: Final = {"truncated": None, "repetition": []}
 _UNIT_FIELDS: Final = frozenset({"ordinal", "box_px", "label", "text"})
 _SURYA_FIELDS: Final = frozenset({"census_ref", "lines", "blocks"})
 # Given as `surya` when the run holds no Surya census at all: the feed then
@@ -165,6 +195,7 @@ _SURYA_BLOCK_FIELDS: Final = frozenset({"box_px", "label", "position", "ref"})
 _BOX_FIELDS: Final = frozenset({"x", "y", "w", "h"})
 _NON_BLANK_LINE: Final = re.compile(r"[^\n]+")
 _ASCII_WHITESPACE: Final = " \t\n\r\f\v"
+_ASCII_WHITESPACE_RUN: Final = re.compile(f"[{re.escape(_ASCII_WHITESPACE)}]+")
 
 
 # --- geometry -------------------------------------------------------------------
@@ -215,6 +246,28 @@ def _unit(ordinal: int | None, box_px: dict[str, int] | None, label: str | None,
 def _with_outside(units: list[dict[str, Any]], outside: str) -> list[dict[str, Any]]:
     """The units, then the text outside them as one more unit when there is any."""
     return units + ([_unit(None, None, OUTSIDE_UNITS_LABEL, outside)] if outside else [])
+
+
+def _repetition(captures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every repetition finding the witness's native captures carry, in capture order."""
+    return [
+        dict(finding)
+        for capture in captures
+        for finding in capture["findings"]
+        if finding.get("kind") in REPETITION_FINDING_KINDS
+    ]
+
+
+def _answer_health(payload: dict[str, Any], captures: list[dict[str, Any]]) -> dict[str, Any]:
+    """Whether the witness's answer was cut off, and whether it repeats itself."""
+    health = payload.get("content_health")
+    truncated = health.get("truncated", "absent") if isinstance(health, dict) else "absent"
+    if truncated not in (True, False, None):
+        raise SchemaRefusal(
+            "a page Testimonium read as `read` records no content_health.truncated of true, "
+            "false or null, so whether its answer was cut off cannot be shown"
+        )
+    return {"truncated": truncated, "repetition": _repetition(captures)}
 
 
 def _checked_capture(
@@ -276,7 +329,11 @@ def _chandra_reading(
         )
         for block in parsed["blocks"]
     ]
-    return {"units": _with_outside(units, outside_blocks_text(raw)), "findings": parsed["findings"]}
+    return {
+        "units": _with_outside(units, outside_blocks_text(raw)),
+        "findings": parsed["findings"],
+        "answer_health": _answer_health(payload, [capture]),
+    }
 
 
 FIXTURE_CHANDRA_SCHEMA: Final = "fixture-chandra-response.v1"
@@ -346,7 +403,7 @@ def _fixture_chandra_reading(
         if not isinstance(text, str):
             raise SchemaRefusal("a joined fixture Chandra page carries no page text")
         units.append(_unit(0, None, None, text))
-    return {"units": units, "findings": []}
+    return {"units": units, "findings": [], "answer_health": _answer_health(payload, [])}
 
 
 def _churro_reading(payload: dict[str, Any], read_bytes: Callable[[str], bytes]) -> dict[str, Any]:
@@ -374,7 +431,11 @@ def _churro_reading(payload: dict[str, Any], read_bytes: Callable[[str], bytes])
         )
         units.append(_unit(len(units) + 1, None, label, match.group()))
     outside = churro_text_outside_sections(raw, system_prompt=system_prompt)
-    return {"units": _with_outside(units, outside), "findings": document["findings"]}
+    return {
+        "units": _with_outside(units, outside),
+        "findings": document["findings"],
+        "answer_health": _answer_health(payload, [capture]),
+    }
 
 
 def _dai_reading(
@@ -393,13 +454,14 @@ def _dai_reading(
             "a DAI page Testimonium read as `read` does not carry one unit capture and one "
             "observed box per record its detector found"
         )
-    units = []
+    units, checked, spans = [], [], []
     for position, (capture, item) in enumerate(zip(captures, observed, strict=True)):
         if capture is None:
             raise SchemaRefusal(
                 f"a DAI page Testimonium read as `read` has no response for record {position}"
             )
         capture, raw = _checked_capture(capture, DAI, read_bytes)
+        checked.append(capture)
         try:
             # DAI's own `text` parser: the response decoded exactly, nothing rewritten.
             text = raw.decode("utf-8")
@@ -422,6 +484,7 @@ def _dai_reading(
                 f"DAI's page text does not carry record {position}'s retained response at "
                 "the span the record states"
             )
+        spans.append((span["start"], span["end"], position))
         units.append(
             _unit(
                 item["ordinal"],
@@ -431,7 +494,37 @@ def _dai_reading(
             )
         )
     # DAI's text parser reads each response exactly and names no finding.
-    return {"units": units, "findings": []}
+    return {
+        "units": _with_outside(units, _dai_outside_text(page_text, spans)),
+        "findings": [],
+        "answer_health": _answer_health(payload, checked),
+    }
+
+
+def _dai_outside_text(page_text: str, spans: list[tuple[int, int, int]]) -> str:
+    """DAI's page text outside every record's span, or a refusal naming two that overlap.
+
+    The Attestatores join the records' responses with a newline between them,
+    so the text between spans is normally whitespace alone and nothing is
+    returned. Each run between spans has its whitespace runs made one space
+    and its ends stripped, as Churro's outside text is; the non-empty runs are
+    joined by a newline.
+    """
+    runs, cursor, previous = [], 0, None
+    for start, end, position in sorted(spans):
+        if start < cursor:
+            raise SchemaRefusal(
+                f"DAI records {previous} and {position} state overlapping spans of the page "
+                "text, so one stretch of text would be shown as two records' units"
+            )
+        runs.append(page_text[cursor:start])
+        if end > start:
+            cursor, previous = end, position
+    runs.append(page_text[cursor:])
+    collapsed = (
+        " ".join(part for part in _ASCII_WHITESPACE_RUN.split(run) if part) for run in runs
+    )
+    return "\n".join(run for run in collapsed if run)
 
 
 def witness_reading(
@@ -442,7 +535,7 @@ def witness_reading(
     read_bytes: Callable[[str], bytes],
     fixture_placeholders: bool = False,
 ) -> dict[str, Any]:
-    """One witness's page as `{units, findings}`, both empty unless its outcome is `read`.
+    """One witness's page as `{units, findings, answer_health}`, empty unless it read.
 
     `testimonium` is the sealed `page-testimonium` record, `adapter` the chair's
     configured witness adapter, `page_size` the sealed page's `(width, height)`
@@ -450,13 +543,15 @@ def witness_reading(
     label, text}`, `box_px` being a sealed-page `{x, y, w, h}` or `None`; the
     last may be the witness's text outside its own units (`OUTSIDE_UNITS_LABEL`,
     no ordinal). `findings` are what the witness's parse of its retained bytes
-    names. `fixture_placeholders` lets a synthetic run's joined Chandra page be
-    read (`_fixture_chandra_reading`); a real run leaves it off.
+    names; `answer_health` is `{truncated, repetition}`: the Testimonium's
+    `content_health.truncated` and every repetition finding its native
+    captures carry. `fixture_placeholders` lets a synthetic run's joined
+    Chandra page be read (`_fixture_chandra_reading`); a real run leaves it off.
     """
     if "outcome" not in testimonium:
         raise SchemaRefusal("a page Testimonium records no outcome")
     if testimonium["outcome"] != READ_OUTCOME:
-        return {"units": [], "findings": []}
+        return {"units": [], "findings": [], "answer_health": {"truncated": None, "repetition": []}}
     payload = testimonium.get("payload")
     if not isinstance(payload, dict):
         raise SchemaRefusal("a page Testimonium has no payload to read units from")
@@ -535,6 +630,15 @@ def _checked_witnesses(
         values = [witness[field] for witness in witnesses]
         if len(set(values)) != len(values):
             raise SchemaRefusal(f"two page-feed witnesses share a {field}")
+    refs = [
+        digest_of(digest_ref(witness["testimonium_ref"], "a page Testimonium reference"))
+        for witness in witnesses
+    ]
+    if len(set(refs)) != len(refs):
+        raise SchemaRefusal(
+            "two page-feed witnesses share a testimonium_ref; each row is its own chair's "
+            "page Testimonium"
+        )
     chairs = {witness["chair"] for witness in witnesses}
     missing, extra = sorted(set(roster) - chairs), sorted(chairs - set(roster))
     if missing:
@@ -569,13 +673,27 @@ def _witness_row(
     regime: str,
     page_size: tuple[int, int],
 ) -> dict[str, Any]:
-    units, findings = witness["units"], witness["findings"]
+    units, findings, health = witness["units"], witness["findings"], witness["answer_health"]
     if not isinstance(units, list) or not isinstance(findings, list):
         raise SchemaRefusal(
             f"shown witness {witness['witness_label']!r} carries no units or no findings list"
         )
-    if witness["outcome"] != READ_OUTCOME and (units or findings):
-        raise SchemaRefusal("a witness that did not read carries units or findings")
+    if (
+        not isinstance(health, dict)
+        or set(health) != _ANSWER_HEALTH_FIELDS
+        or health["truncated"] not in (True, False, None)
+        or not isinstance(health["repetition"], list)
+        or not all(
+            isinstance(finding, dict) and finding.get("kind") in REPETITION_FINDING_KINDS
+            for finding in health["repetition"]
+        )
+    ):
+        raise SchemaRefusal(
+            f"shown witness {witness['witness_label']!r} carries no answer health of "
+            f"{sorted(_ANSWER_HEALTH_FIELDS)}"
+        )
+    if witness["outcome"] != READ_OUTCOME and (units or findings or health != NO_ANSWER_HEALTH):
+        raise SchemaRefusal("a witness that did not read carries units, findings or answer health")
     # Boxes are shown only with coordinates on and units shown as their own.
     boxes_shown = switches["witness_coordinates"] and switches["witness_units"] == "own"
     shown = []
@@ -611,6 +729,9 @@ def _witness_row(
         "outcome": witness["outcome"],
         "testimonium_ref": digest_ref(witness["testimonium_ref"], "a page Testimonium reference"),
         "findings": findings,
+        # Stated on the witness's line in the prompt: a cut-off or repeating
+        # answer is part of what the witness reported.
+        "answer_health": health,
         "units": shown,
     }
 
@@ -751,6 +872,12 @@ def _check_testimonium_ref(
         )
     if "outcome" not in testimonium:
         raise SchemaRefusal(f"witness {witness['chair']!r}'s page Testimonium records no outcome")
+    payload = testimonium.get("payload")
+    if not isinstance(payload, dict) or payload.get("chair") != witness["chair"]:
+        raise SchemaRefusal(
+            f"witness {witness['chair']!r}'s page Testimonium names chair "
+            f"{payload.get('chair') if isinstance(payload, dict) else None!r}, not the row's"
+        )
 
 
 def build_page_feed(
@@ -792,15 +919,13 @@ def build_page_feed(
             fixture_placeholders=fixture_placeholders,
         )
         if witness["chair"] in shown
-        else {"units": None, "findings": None}
+        else {"units": None, "findings": None, "answer_health": None}
         for witness in witnesses
     }
     render_bytes = None
     if switches["page_overlay"] != "off" and isinstance(page_render, dict):
         render_bytes = read_verified(
-            read_bytes,
-            {"relative_path": page_render["image_path"], "sha256": page_render["image_sha256"]},
-            "the page render",
+            read_bytes, page_overlay.render_ref(page_render), "the page render"
         )
     return assemble_page_feed(
         page_id=page_id,
@@ -843,12 +968,13 @@ def assemble_page_feed(
 ) -> dict[str, Any]:
     """The feed from witness readings already made, for `build_page_feed` and for measurement.
 
-    `roster` is the sealed page-witness roster, and `witnesses` one row per
+    `roster` is the sealed page-witness roster, and `witnesses` one entry per
     roster chair, in any order: `{chair, witness_label, adapter, outcome,
-    testimonium_ref, units, findings}`, `units` and `findings` being
+    testimonium_ref, units, findings, answer_health}`, the last three being
     `witness_reading`'s for a shown witness (`None` is allowed for one the
-    switch hides). The `witnesses` switch picks which are shown; shown ones get
-    letters in sorted `witness_label` order. `surya` is the page's Surya census
+    switch hides). The `witnesses` switch picks which become rows; shown ones
+    get `WITNESS_LETTERS` in sorted `witness_label` order, and a hidden chair
+    appears only in the recorded `switches`. `surya` is the page's Surya census
     as `{census_ref, lines: [{box_px, ref}] in Surya's order, blocks: [{box_px,
     label, position, ref}]}`, `position` being Surya's reading order; it may be
     `None` only when both Surya switches are off, or `SURYA_ABSENT` when the
@@ -879,11 +1005,14 @@ def assemble_page_feed(
         (witness for witness in witnesses if witness["chair"] in shown),
         key=lambda witness: witness["witness_label"],
     )
-    if len(ordered) > len(string.ascii_uppercase):
-        raise SchemaRefusal(f"{len(ordered)} witnesses are more than one letter each can name")
+    if len(ordered) > len(WITNESS_LETTERS):
+        raise SchemaRefusal(
+            f"{len(ordered)} witnesses are shown, more than the {len(WITNESS_LETTERS)} letters "
+            "a witness may take (every capital but L and S)"
+        )
     rows = [
         _witness_row(letter, witness, switches=switches, regime=witness_regime, page_size=page_size)
-        for letter, witness in zip(string.ascii_uppercase, ordered, strict=False)
+        for letter, witness in zip(WITNESS_LETTERS, ordered, strict=False)
     ]
     feed: dict[str, Any] = {
         "schema": SCHEMA,
@@ -898,6 +1027,14 @@ def assemble_page_feed(
         "witnesses": rows,
         "surya": _surya(surya, switches, page_size),
     }
+    if feed["page_render"] is None and not (
+        any(unit["text"] for row in rows for unit in row["units"])
+        or (feed["surya"] is not None and (feed["surya"]["lines"] or feed["surya"]["blocks"]))
+    ):
+        raise SchemaRefusal(
+            "the sealed feed shows no page image, and this page has no witness text and no "
+            "detection to show either; a reading would have nothing to be made from"
+        )
     feed["answer_measure"] = answer_measure(
         [
             (witness["adapter"], witness["units"])
@@ -917,6 +1054,27 @@ def assemble_page_feed(
     feed["prompt"] = page_prompt.page_prompt_evidence(serving_recipe, feed)
     feed["feed_digest"] = digest_of(feed)
     return feed
+
+
+def placement_boxes(feed: dict[str, Any]) -> dict[str, dict[str, int] | None]:
+    """Every id the feed defines, with the sealed-page box it places an entry by, or `None`.
+
+    Surya's lines and blocks place by their boxes, and so does each witness
+    unit with a box when witnesses are shown in their own units. Under
+    `witness_units = "flat"` a witness is shown as one unit with no box, so its
+    units place nothing (their `box_px` stays on the feed for the accounting):
+    an entry citing it takes its region from the boxed ids it also cites.
+    """
+    flat = feed["switches"]["witness_units"] == "flat"
+    boxes: dict[str, dict[str, int] | None] = {}
+    for row in feed["witnesses"]:
+        for unit in row["units"]:
+            boxes[unit["id"]] = None if flat else unit["box_px"]
+    surya = feed["surya"]
+    if surya is not None:
+        for item in surya["lines"] + surya["blocks"]:
+            boxes[item["id"]] = item["box_px"]
+    return boxes
 
 
 def request_image_sizes(feed: dict[str, Any]) -> list[tuple[int, int]]:

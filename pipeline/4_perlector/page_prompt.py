@@ -8,7 +8,12 @@ instruction is never the reader's first framing.
 
 The instruction is rendered from the feed too (`page_reading_instruction`): it
 names only the inputs the feed shows, and says to read from the image only
-when an image is shown, so a switched-off input is never referred to.
+when an image is shown, so a switched-off input is never referred to. With no
+image the reading is made from the witnesses' reports, with [[?]] where they
+disagree or none reports the text. Every witness unit whose text is read is
+cited, also where another witness's unit reads the same text; only an id with
+nothing to read, or a Surya detection repeating another, is set aside, so the
+instruction never invites a choice between witnesses.
 
 A builder is registered per serving recipe as `prompts.py` registers act
 builders, and a recipe with none refuses rather than borrowing another's
@@ -16,16 +21,24 @@ template. The rendered text reads only the feed fields that describe what is
 shown -- never `prompt`, `feed_digest`, `unit_kind` or `findings` -- so the
 same bytes are rebuilt from a sealed feed.
 
+Each witness has a line of its own before its units: its letter and label,
+then what its `answer_health` shows -- that its answer was cut off, or repeats
+one passage over and over. A witness that did not read says its outcome, and
+one that read but has no unit says "read, no text"; the unit-format header is
+printed only when some witness has a unit.
+
 Each unit is one line: its id, `[x0,y0,x1,y1]` (its box_1000) when coordinates
 are shown, its label as a JSON string in parentheses when it has one, and its
 text as a JSON string. The text is the unit's text as the feed holds it -- for
 Chandra, its text view of its blocks: markup removed, character references
 resolved and whitespace runs made one space (`chandra-layout-text.v1`) -- with
 only JSON's own escapes, so where a label or a unit ends and the next begins is
-never in doubt. Under `witness_units = "flat"` a witness is one line: the range
-of its unit ids, then its units' texts joined by newlines as one JSON string.
+never in doubt. Under `witness_units = "flat"` a witness is one unit with no
+box, on one line: the range of its unit ids, then its units' texts joined by
+newlines as one JSON string.
 
     text = build_page_prompt(serving_recipe, feed)
+    parts = prompt_parts(serving_recipe, feed)   # the same text, reported pieces marked
     evidence = page_prompt_evidence(serving_recipe, feed)
     # {serving_recipe, builder_sha256, rendered_sha256, instruction_sha256}
 """
@@ -51,25 +64,35 @@ DOUBT_SENTENCE: Final = (
     "Where ink cannot be read, write [[?]] in its place. Where a reading is uncertain, "
     "write it as [[reading]], or as [[reading|other|other]] to add other possible readings. "
 )
+# The answer's shape with placeholders only, so it suggests no reading.
 ANSWER_FORM: Final = (
-    '{"acts": [{"n": 1, "kind": "act", "label": "baptism", "cites": ["A2", "B3", "L10-L17"], '
-    '"text": "...", "continues_from_previous_page": false, "continues_to_next_page": false}, '
-    '{"n": 2, "kind": "other", "label": "page number", "cites": ["A3", "L18"], "text": "12", '
+    '{"acts": [{"n": 1, "kind": "<act or other>", "label": "<a few words>", '
+    '"cites": ["<id>", "<first id>-<last id>"], "text": "<the entry\'s text>", '
     '"continues_from_previous_page": false, "continues_to_next_page": false}], '
-    '"set_aside": [{"id": "L19", "reason": "not text"}]}'
+    '"set_aside": [{"id": "<id>", "reason": "<short reason>"}]}'
 )
+# The repetition finding that says a witness's answer repeats itself.
+REPEATING: Final = "post-hoc-repetition"
 
 
-def _box(box: list[int] | None) -> str:
-    return "" if box is None else " [" + ",".join(str(value) for value in box) + "]"
+# A rendered line is a list of parts, each `(text, reported)`: `reported` marks
+# a string a witness or detector wrote -- a unit's text or label, a witness
+# label, a block label -- which the request's capacity check charges at one
+# token per byte (`prompt_parts`); every other part is this module's own
+# fixed wording, ids and numbers.
+_Part = tuple[str, bool]
+
+
+def _box(box: list[int] | None) -> _Part:
+    return ("" if box is None else " [" + ",".join(str(value) for value in box) + "]", False)
 
 
 def _text(text: str) -> str:
     return json.dumps(text, ensure_ascii=False)
 
 
-def _label(label: str | None) -> str:
-    return "" if label is None else f" ({_text(label)})"
+def _label(label: str | None) -> list[_Part]:
+    return [] if label is None else [(" (", False), (_text(label), True), (")", False)]
 
 
 def _shown(feed: dict[str, Any]) -> dict[str, bool]:
@@ -87,74 +110,116 @@ def _shown(feed: dict[str, Any]) -> dict[str, bool]:
     }
 
 
-def _witness_lines(row: dict[str, Any], flat: bool) -> list[str]:
+def _witness_lines(row: dict[str, Any], flat: bool) -> list[list[_Part]]:
     units = row["units"]
     if flat:
         ids = units[0]["id"] if len(units) == 1 else f"{units[0]['id']}-{units[-1]['id']}"
-        return [f"{ids} {_text(chr(10).join(unit['text'] for unit in units if unit['text']))}"]
+        joined = chr(10).join(unit["text"] for unit in units if unit["text"])
+        return [[(f"{ids} ", False), (_text(joined), True)]]
     return [
-        f"{unit['id']}{_box(unit['box_1000'])}{_label(unit['label'])} {_text(unit['text'])}"
+        [
+            (unit["id"], False),
+            _box(unit["box_1000"]),
+            *_label(unit["label"]),
+            (" ", False),
+            (_text(unit["text"]), True),
+        ]
         for unit in units
     ]
 
 
-def _feed_lines(feed: dict[str, Any]) -> list[str]:
+def _health_notes(row: dict[str, Any]) -> str:
+    """What the witness's own answer shows about itself: cut off, or repeating."""
+    notes = []
+    health = row["answer_health"]
+    if health["truncated"] is True:
+        notes.append("this witness's answer was cut off before it finished")
+    if any(finding["kind"] == REPEATING for finding in health["repetition"]):
+        notes.append("this witness's answer repeats one passage over and over")
+    return "" if not notes else " -- " + "; ".join(notes)
+
+
+def _fixed(text: str) -> list[_Part]:
+    return [(text, False)]
+
+
+def _feed_parts(feed: dict[str, Any]) -> list[list[_Part]]:
     """The shown inputs of one feed, in the shape every page builder shares."""
     shown = _shown(feed)
-    lines = [f"page {feed['page_ordinal']}"]
+    lines = [_fixed(f"page {feed['page_ordinal']}")]
     if shown["image"]:
-        lines.append("first image: the page.")
+        lines.append(_fixed("first image: the page."))
     else:
-        lines.append("page image: not shown.")
+        lines.append(_fixed("page image: not shown."))
     if shown["overlay"]:
         lines.append(
-            "second image: the same page with each boxed id below outlined and labelled with "
-            "its id, to show where each clue lies; read the ink from the first image."
+            _fixed(
+                "second image: the same page with each boxed id below outlined and labelled "
+                "with its id, to show where each clue lies; read the ink from the first image."
+            )
         )
-    lines.append(f"witness regime: {feed['witness_regime']}")
-    if feed["witnesses"]:
+    lines.append(_fixed(f"witness regime: {feed['witness_regime']}"))
+    if shown["witnesses"]:
         if shown["flat"]:
             lines.append(
-                "witnesses: what other readers transcribed from this page, one line per "
-                "witness: the range of its unit ids, then all its text as one JSON string."
+                _fixed(
+                    "witnesses: what other readers transcribed from this page, one line per "
+                    "witness: the range of its unit ids, then all its text as one JSON string."
+                )
             )
         else:
             box = " its box_1000," if shown["witness_boxes"] else ""
             lines.append(
-                "witnesses: what other readers transcribed from this page, each in its own "
-                f"units. Each line is one unit: its id,{box} its label as a JSON string in "
-                "parentheses where it has one, and its text as a JSON string. A unit labelled "
-                '"outside units" is text the witness wrote outside its own units.'
+                _fixed(
+                    "witnesses: what other readers transcribed from this page, each in its own "
+                    f"units. Each line is one unit: its id,{box} its label as a JSON string in "
+                    "parentheses where it has one, and its text as a JSON string. A unit "
+                    'labelled "outside units" is text the witness wrote outside its own units.'
+                )
             )
     for witness in feed["witnesses"]:
+        head = [
+            (f"witness {witness['letter']} (", False),
+            (witness["witness_label"], True),
+            (")", False),
+        ]
         if witness["outcome"] != "read":
-            lines.append(
-                f"witness {witness['letter']} ({witness['witness_label']}): "
-                f"{witness['outcome']}, no units"
-            )
+            lines.append([*head, (f": {witness['outcome']}, no units", False)])
             continue
-        lines.append(f"witness {witness['letter']} ({witness['witness_label']})")
-        if witness["units"]:
-            lines.extend(_witness_lines(witness, shown["flat"]))
+        if not witness["units"]:
+            lines.append([*head, (": read, no text" + _health_notes(witness), False)])
+            continue
+        lines.append([*head, (_health_notes(witness), False)])
+        lines.extend(_witness_lines(witness, shown["flat"]))
     surya = feed["surya"]
     if shown["lines"]:
-        lines.append("surya lines: text lines a layout detector found, with their box_1000.")
-        lines.extend(f"{line['id']}{_box(line['box_1000'])}" for line in surya["lines"])
+        lines.append(
+            _fixed("surya lines: text lines a layout detector found, with their box_1000.")
+        )
+        lines.extend([(line["id"], False), _box(line["box_1000"])] for line in surya["lines"])
     if shown["blocks"]:
         lines.append(
-            "surya blocks: layout blocks the same detector found, in its reading order, "
-            "with their box_1000 and label."
+            _fixed(
+                "surya blocks: layout blocks the same detector found, in its reading order, "
+                "with their box_1000 and label."
+            )
         )
         lines.extend(
-            f"{block['id']}{_box(block['box_1000'])}{_label(block['label'])}"
+            [(block["id"], False), _box(block["box_1000"]), *_label(block["label"])]
             for block in surya["blocks"]
         )
     if shown["witness_boxes"] or shown["lines"] or shown["blocks"]:
         lines.append(
-            "coordinates: box_1000 = [x0,y0,x1,y1] on a 0-1000 grid of the page, from its "
-            "top-left corner."
+            _fixed(
+                "coordinates: box_1000 = [x0,y0,x1,y1] on a 0-1000 grid of the page, from its "
+                "top-left corner."
+            )
         )
     return lines
+
+
+def _rendered(lines: list[list[_Part]]) -> str:
+    return "\n".join("".join(text for text, _reported in line) for line in lines)
 
 
 def _listed(names: list[str]) -> str:
@@ -182,6 +247,7 @@ def page_reading_instruction(feed: dict[str, Any]) -> str:
         )
         if present
     ]
+    detections = shown["lines"] or shown["blocks"]
     parts = []
     if shown["image"]:
         parts.append("Read this page from its ink in the page image. ")
@@ -194,10 +260,8 @@ def page_reading_instruction(feed: dict[str, Any]) -> str:
             )
     else:
         parts.append(
-            "No page image is shown. Read this page from "
-            + (_listed(clues) if clues else "what is shown")
-            + " above; any of them may be wrong, incomplete or in disagreement with the "
-            "others. "
+            "No page image is shown. The reading is made from what was reported of this page: "
+            f"{_listed(clues)} above. Any of them may be wrong or incomplete. "
         )
     parts.append(
         "Establish all the text written on the page, entry by entry, in the order it is "
@@ -206,31 +270,56 @@ def page_reading_instruction(feed: dict[str, Any]) -> str:
         "such as a heading, a page number or a marginal note that is not an entry, is read "
         'too, as an entry of kind "other". '
     )
+    covers = "its ink covers" if shown["image"] else "it is read from"
     cite = (
-        f"cites, the ids of every {_listed(kinds)} its ink covers, where a range such as "
+        f"cites, the ids of every {_listed(kinds)} {covers}, where a range such as "
         "L10-L17 stands for every id of that letter from the first to the last; "
         if kinds
         else "cites, an empty list, since no ids are shown; "
     )
+    text = (
+        "text, the entry transcribed from the ink"
+        if shown["image"]
+        else "text, the entry as the witnesses report it"
+    )
     parts.append(
         f"For each entry give: {cite}label, if you wish, a few words naming the entry, at "
-        "most 80 characters; and text, the entry transcribed from the ink. "
+        f"most 80 characters; and {text}. "
     )
     if shown["witnesses"] and shown["flat"]:
-        parts.append("A witness shown on one line is cited by the range of ids before its text. ")
-    parts.append(TRANSCRIBE_SENTENCE)
+        parts.append(
+            "A witness shown on one line is one unit with no box: cite it by the range of ids "
+            "before its text. "
+        )
     if shown["image"]:
+        parts.append(TRANSCRIBE_SENTENCE)
         parts.append(
             "Read only what the page image shows: where an entry's ink runs past the edge of "
             "the image, stop at the edge and write [[?]] there. "
         )
-    parts.append(DOUBT_SENTENCE)
+        parts.append(DOUBT_SENTENCE)
+    else:
+        parts.append(
+            "Give each text as the witnesses report it: do not modernize spelling, expand "
+            "abbreviations, or correct it. Where the witnesses disagree about a reading, or "
+            "none of them reports it, write [[?]] in its place. "
+        )
     if kinds:
         parts.append(
-            "Every id shown above is either cited by an entry or set aside. Set aside only an "
-            "id whose ink you do not read at all -- one that is empty, is not text, or repeats "
-            'the ink of another id -- with a short reason, such as "empty", "not text" or '
-            '"same ink as L12". '
+            "Every id shown above is either cited by an entry or set aside. "
+            + (
+                "Cite every witness unit whose text you read, also where another witness's "
+                "unit reads the same text. "
+                if shown["witnesses"]
+                else ""
+            )
+            + "Set aside only an id with nothing to read -- one that is empty or is not text"
+            + (
+                " -- or a detected line or block that repeats another detection"
+                if detections
+                else ""
+            )
+            + ', with a short reason, such as "empty" or "not text". '
         )
     parts.append(
         "Set continues_from_previous_page to true only on the first entry, when it began on an "
@@ -242,25 +331,26 @@ def page_reading_instruction(feed: dict[str, Any]) -> str:
     return "".join(parts)
 
 
-def _fake_perlector_page_v0(feed: dict[str, Any]) -> str:
+def _fake_perlector_page_v0(feed: dict[str, Any]) -> list[list[_Part]]:
     """The fixture recipe's page template: the shown inputs only."""
-    return "\n".join(_feed_lines(feed))
+    return _feed_parts(feed)
 
 
-def _unproven_real_perlector_page_v0(feed: dict[str, Any]) -> str:
+def _unproven_real_perlector_page_v0(feed: dict[str, Any]) -> list[list[_Part]]:
     """`unproven-real-perlector`'s page template: the shown inputs, then the instruction."""
-    return "\n".join([*_feed_lines(feed), page_reading_instruction(feed)])
+    return [*_feed_parts(feed), _fixed(page_reading_instruction(feed))]
 
 
+_Build = Callable[[dict[str, Any]], list[list[_Part]]]
 _Render = Callable[[dict[str, Any]], str]
 # Each recipe's builder and the instruction it sends, `None` where it sends none.
-_BUILDERS: Final[dict[str, tuple[_Render, _Render | None]]] = {
+_BUILDERS: Final[dict[str, tuple[_Build, _Render | None]]] = {
     "fake-perlector-v0": (_fake_perlector_page_v0, None),
     "unproven-real-perlector": (_unproven_real_perlector_page_v0, page_reading_instruction),
 }
 
 
-def _builder_for(serving_recipe: str) -> tuple[_Render, _Render | None]:
+def _builder_for(serving_recipe: str) -> tuple[_Build, _Render | None]:
     entry = _BUILDERS.get(serving_recipe)
     if entry is None:
         raise ValueError(
@@ -273,7 +363,22 @@ def _builder_for(serving_recipe: str) -> tuple[_Render, _Render | None]:
 
 def build_page_prompt(serving_recipe: str, feed: dict[str, Any]) -> str:
     """The text part of one page request, byte-exact, or a refusal by name."""
-    return _builder_for(serving_recipe)[0](feed)
+    return _rendered(_builder_for(serving_recipe)[0](feed))
+
+
+def prompt_parts(serving_recipe: str, feed: dict[str, Any]) -> list[tuple[str, bool]]:
+    """The page prompt in its pieces, `(text, reported)`, joining to `build_page_prompt`'s text.
+
+    `reported` marks each string a witness or detector wrote -- a unit's text
+    or label, a witness label, a Surya block label -- which the capacity check
+    charges at one token per byte (`request_capacity.page_request_capacity`).
+    """
+    parts: list[tuple[str, bool]] = []
+    for index, line in enumerate(_builder_for(serving_recipe)[0](feed)):
+        if index:
+            parts.append(("\n", False))
+        parts.extend(part for part in line if part[0])
+    return parts
 
 
 def page_prompt_evidence(serving_recipe: str, feed: dict[str, Any]) -> dict[str, str | None]:
@@ -285,7 +390,7 @@ def page_prompt_evidence(serving_recipe: str, feed: dict[str, Any]) -> dict[str,
     `None` for a recipe that sends none.
     """
     builder, instruction = _builder_for(serving_recipe)
-    rendered = builder(feed)
+    rendered = _rendered(builder(feed))
     return {
         "serving_recipe": serving_recipe,
         "builder_sha256": BUILDER_SHA256,

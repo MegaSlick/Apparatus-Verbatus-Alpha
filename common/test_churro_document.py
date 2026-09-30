@@ -669,6 +669,7 @@ def test_the_declared_vocabulary_is_what_the_records_use():
         "retired-output-envelope",
         "stray-markup-escaped",
         "page-text-outside-sections",
+        "document-text-outside-pages",
     }
     assert MARKED_SPAN_KINDS == {
         "Addition",
@@ -807,3 +808,27 @@ def test_the_text_outside_sections_reads_an_answer_parsed_after_the_stray_escape
 
     raw = b"<HistoricalDocument><Page>a < b<Body><Line>x</Line></Body></Page></HistoricalDocument>"
     assert text_outside_sections(raw) == "a < b"
+
+
+def test_text_outside_every_page_is_named_and_returned_but_metadata_is_not():
+    from common.churro_document import parse_churro_document, text_outside_sections
+
+    raw = (
+        b"<HistoricalDocument>avant<Metadata><Language>fra</Language></Metadata>"
+        b"<Page><Body><Line>b</Line></Body></Page>entre<Note>hors page</Note>"
+        b"<Page>marge<Body><Line>c</Line></Body></Page></HistoricalDocument>"
+    )
+    record = parse_churro_document(raw)
+    assert record["text"] == "b\n\nc"
+    kinds = [finding["kind"] for finding in record["findings"]]
+    assert {"kind": "document-text-outside-pages"} in record["findings"]
+    assert "page-text-outside-sections" in kinds
+    assert validate_churro_document_parse(record) == record
+    assert text_outside_sections(raw) == "avant\nentre\nhors page\nmarge"
+    # Metadata alone is not text a reader is missing.
+    only_metadata = (
+        b"<HistoricalDocument><Metadata><Language>fra</Language></Metadata>"
+        b"<Page><Body><Line>b</Line></Body></Page></HistoricalDocument>"
+    )
+    assert parse_churro_document(only_metadata)["findings"] == []
+    assert text_outside_sections(only_metadata) == ""

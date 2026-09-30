@@ -35,9 +35,11 @@ grammar, `chandra/settings.py` for `BBOX_SCALE`.
   finding.** The vendor substitutes `[0, 0, 1, 1]` and only prints a warning
   to a stdout nobody retains, so a value the model never reported would be
   published as though it had been. `block_page_bounds` returns `None` for it.
-* **A `Blank-Page` block is retained**, with `blank_page: True`, empty text and
-  no page geometry, rather than dropped entirely as the vendor's `continue`
-  does -- indistinguishable from a page never answered otherwise.
+* **A `Blank-Page` block is retained**, with `blank_page: True` and no page
+  geometry, rather than dropped entirely as the vendor's `continue` does --
+  indistinguishable from a page never answered otherwise. Its text is its
+  content's text view like any block's: empty when it is empty, and never
+  emptied when the model wrote text into a block it labelled blank.
 * **Nested `data-bbox` attributes are recorded, not stripped** (the vendor
   deletes them "not needed in open source"). `nested_bboxes` lists them per
   block; nothing derives page geometry from them.
@@ -323,7 +325,7 @@ class LayoutBlock(TypedDict):
     # The block's inner HTML, exactly as the answer wrote it, nested
     # `data-bbox` attributes included.
     content: str
-    # `content` under `LAYOUT_TEXT_VIEW`. Empty for a `Blank-Page` block.
+    # `content` under `LAYOUT_TEXT_VIEW`, for a `Blank-Page` block too.
     text: str
     # Every `data-bbox` a descendant of this block carried, in document order.
     nested_bboxes: list[str]
@@ -856,7 +858,7 @@ def parse_layout_html(raw: Any) -> ParsedLayout | dict[str, str]:
                 "blank_page": blank,
                 "bbox_1000": bbox,
                 "content": content,
-                "text": "" if blank else layout_block_text(content),
+                "text": layout_block_text(content),
                 "nested_bboxes": nested,
             }
         )

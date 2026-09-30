@@ -378,19 +378,6 @@ _ID: Final = re.compile(r"^[A-Z][1-9][0-9]*$")
 _RANGE: Final = re.compile(r"^(?P<a>[A-Z])(?P<i>[1-9][0-9]*)-(?P<b>[A-Z])(?P<j>[1-9][0-9]*)$")
 
 
-def feed_boxes(feed: dict[str, Any]) -> dict[str, dict[str, int] | None]:
-    """Every id the feed defines, with its sealed-page box or `None` where it has none."""
-    boxes: dict[str, dict[str, int] | None] = {}
-    for witness in feed["witnesses"]:
-        for unit in witness["units"]:
-            boxes[unit["id"]] = unit["box_px"]
-    surya = feed["surya"]
-    if surya is not None:
-        for row in surya["lines"] + surya["blocks"]:
-            boxes[row["id"]] = row["box_px"]
-    return boxes
-
-
 def expand_cites(cites: list[str], known: dict[str, Any]) -> tuple[list[str], list[dict]]:
     """The ids `cites` names, a range expanded inclusive, in order; and every problem."""
     ids: list[str] = []
@@ -422,7 +409,7 @@ def expand_cites(cites: list[str], known: dict[str, Any]) -> tuple[list[str], li
 
 def validate_answer(answer: dict[str, Any], feed: dict[str, Any]) -> list[dict[str, str]]:
     """Every way a parsed answer's ids disagree with its feed; empty when it is valid."""
-    known = feed_boxes(feed)
+    known = page_feed.placement_boxes(feed)
     problems: list[dict[str, str]] = []
     cited: set[str] = set()
     for act in answer["acts"]:
@@ -594,6 +581,7 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
             _serving_row(state),
             image_sizes=page_feed.request_image_sizes(feed),
             prompt_text=page.text,
+            prompt_parts=page_prompt.prompt_parts(run.chair.serving_recipe, feed),
             template_digest=page_prompt.BUILDER_SHA256,
             answer_measure=feed["answer_measure"],
             page_max_tokens=run.page_max_tokens,
@@ -822,7 +810,7 @@ def _union(boxes: list[dict[str, int]]) -> dict[str, int] | None:
 
 def answer_entries(answer: dict[str, Any], feed: dict[str, Any]) -> list[dict[str, Any]]:
     """Each entry of a valid answer with its expanded ids, union box and entry holds."""
-    known = feed_boxes(feed)
+    known = page_feed.placement_boxes(feed)
     entries = []
     for act in answer["acts"]:
         cited_ids, _problems = expand_cites(act["cites"], known)

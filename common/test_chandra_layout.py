@@ -383,16 +383,17 @@ def test_a_finding_quotes_a_bounded_amount_of_what_the_model_wrote():
     assert short["data_bbox_truncated"] is False
 
 
-def test_a_blank_page_block_is_retained_without_text_or_geometry():
+def test_a_blank_page_block_is_retained_with_its_text_and_without_geometry():
     parsed = _read(
         '<div data-bbox="0 0 1000 1000" data-label="Blank-Page">nothing written here</div>'
     )
     (block,) = parsed["blocks"]
     assert block["label"] == BLANK_PAGE_LABEL
     assert block["blank_page"] is True
-    assert block["text"] == ""
-    assert parsed["page_text"] == ""
-    assert parsed["spans"] == [{"start": 0, "end": 0}]
+    # What the model wrote into a block it called blank is kept, never emptied.
+    assert block["text"] == "nothing written here"
+    assert parsed["page_text"] == "nothing written here"
+    assert parsed["spans"] == [{"start": 0, "end": 20}]
     assert block_page_bounds(block, page_size=(200, 260)) is None
     # Its declared box is still recorded rather than thrown away, and the
     # retention is itself a finding, because the vendor drops the block whole.

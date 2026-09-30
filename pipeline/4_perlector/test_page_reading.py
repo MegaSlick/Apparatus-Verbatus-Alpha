@@ -18,6 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import page_feed
 import page_run
 import pytest
 from test_live_perlector import (
@@ -118,7 +119,7 @@ def _records(root: Path, kind: str) -> list[dict[str, Any]]:
 
 
 def _feed_ids(feed: dict[str, Any]) -> dict[str, Any]:
-    return page_run.feed_boxes(feed)
+    return page_feed.placement_boxes(feed)
 
 
 # --- the fixture page path --------------------------------------------------------
@@ -346,6 +347,7 @@ def test_each_feed_switch_changes_the_sealed_feed(page_tree, tmp_path, feed, pro
 def _feed() -> dict[str, Any]:
     unit = {"box_px": None}
     return {
+        "switches": {"witness_units": "own"},
         "witnesses": [
             {"units": [{**unit, "id": f"A{n}"} for n in range(1, 4)]},
             {"units": [{**unit, "id": "B1"}]},
@@ -362,7 +364,7 @@ def _answer(cites: list[str], set_aside: list[dict[str, str]] | None = None) -> 
 
 
 def test_a_range_expands_inclusive_and_a_valid_answer_has_no_problem():
-    ids, problems = page_run.expand_cites(["A1", "L2-L4", "A1"], page_run.feed_boxes(_feed()))
+    ids, problems = page_run.expand_cites(["A1", "L2-L4", "A1"], page_feed.placement_boxes(_feed()))
     assert (ids, problems) == (["A1", "L2", "L3", "L4"], [])
     answer = _answer(["A1-A3"], [{"id": "B1", "reason": "printed page number"}])
     assert page_run.validate_answer(answer, _feed()) == []
@@ -390,7 +392,11 @@ def test_an_answer_that_disagrees_with_its_feed_is_named(answer, code):
 
 def test_entries_with_one_union_box_are_both_held_and_keep_their_own_ids():
     box = {"x": 1, "y": 2, "w": 3, "h": 4}
-    feed = {"witnesses": [{"units": [{"id": "A1", "box_px": box}]}], "surya": None}
+    feed = {
+        "switches": {"witness_units": "own"},
+        "witnesses": [{"units": [{"id": "A1", "box_px": box}]}],
+        "surya": None,
+    }
     answer = {"acts": [{"n": 1, "cites": ["A1"]}, {"n": 2, "cites": ["A1"]}], "set_aside": []}
     entries = page_run.answer_entries(answer, feed)
     assert [entry["holds"] for entry in entries] == [["duplicate-region"]] * 2

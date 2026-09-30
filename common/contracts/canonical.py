@@ -310,6 +310,9 @@ def _ast_value(value: Any) -> Any:
         return [_ast_value(item) for item in value]
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
+    if isinstance(value, bytes):
+        # Tagged, so a bytes literal never digests like a list of strings.
+        return ["bytes", value.hex()]
     raise TypeError(f"no canonical form for a {type(value).__name__} constant")
 
 

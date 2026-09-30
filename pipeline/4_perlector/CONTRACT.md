@@ -1238,7 +1238,9 @@ Per entry `n` of a `read` page's answer, in answer order:
 
 - `act_id = act_id(page_id, act_class, {page_reading: <attempt>, n, union_box_px})`
   (`common/contracts/identities.py`, classes `reading` and `reading-unplaced`).
-- `union_box_px` is the union of the cited ids' sealed-page boxes, unpadded. The
+- `union_box_px` is the union of the cited ids' sealed-page boxes as
+  `page_feed.placement_boxes` gives them (a witness shown `flat` places nothing),
+  unpadded. The
   crop is cut from the sealed Exemplar by the Designator's own crop path
   (`common.exemplar_boundary.cut_exemplar_crop`): `transform` is the closed crop
   transform, `region_id = region_id(act_id, transform)`, and the crop blob is an

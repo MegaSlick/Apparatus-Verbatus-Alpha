@@ -86,7 +86,9 @@ toward keeping evidence, never toward changing a reading.
    `.//Header` etc. would double-count a section under a nested `Page` or
    another section; here each is walked exactly once. Text a `Page` carries
    outside every section stays outside the transcription but is named via the
-   finding `page-text-outside-sections`, rather than silently absent.
+   finding `page-text-outside-sections`, rather than silently absent; so is
+   text the document carries outside every `Page` other than its `Metadata`
+   (`document-text-outside-pages`). `text_outside_sections` returns both.
 
 Kept from the vendor unchanged: the walk scope and order, the `"\\n"` join
 between a page's sections and `"\\n\\n"` between pages, `Metadata` staying
@@ -139,6 +141,9 @@ CHURRO_PARSER: Final = "xml"
 DOCUMENT_ROOT_ELEMENT: Final = "HistoricalDocument"
 OUTPUT_ROOT_ELEMENT: Final = "output"
 PAGE_ELEMENT: Final = "Page"
+# The document's description of itself, outside the transcription and not text
+# a reader is missing.
+METADATA_ELEMENT: Final = "Metadata"
 LINE_ELEMENT: Final = "Line"
 # The vendor walks exactly these three, in exactly this order, whatever order
 # they appear in inside a `Page`.
@@ -173,6 +178,7 @@ DOCUMENT_FINDING_KINDS: Final = frozenset(
         "retired-output-envelope",
         "stray-markup-escaped",
         "page-text-outside-sections",
+        "document-text-outside-pages",
     }
 )
 # The findings that count characters rather than name a place.
@@ -496,6 +502,11 @@ def _flatten_document(root: ET.Element) -> dict[str, Any]:
                         "lines": lines,
                     }
                 )
+    if any(
+        run.strip(_ASCII_WHITESPACE) for scope, run in _outside_runs(root) if scope == "document"
+    ):
+        # Text no page encloses is outside every page's transcription (departure 5).
+        findings.append({"kind": "document-text-outside-pages"})
     return {
         "text": builder.text(),
         "sections": sections,
@@ -678,22 +689,35 @@ def parse_churro_document(
     }
 
 
-def _outside_runs(page: ET.Element) -> list[str]:
-    """The text `_page_sections` finds outside this page's sections, in document order."""
-    runs = [page.text]
-    stack: list[tuple[str, ET.Element]] = [("enter", child) for child in reversed(page)]
+def _outside_runs(root: ET.Element) -> list[tuple[str, str]]:
+    """Every text run outside the transcription, as `(scope, run)` in document order.
+
+    `scope` is `"page"` for text a `Page` carries outside its sections (what
+    `_page_sections` finds) and `"document"` for text outside every `Page`,
+    `Metadata` aside.
+    """
+    runs = [("document", root.text)]
+    stack: list[tuple[str, ET.Element, str]] = [
+        ("enter", child, "document") for child in reversed(root)
+    ]
     while stack:
-        step, element = stack.pop()
+        step, element, scope = stack.pop()
         if step == "tail":
-            runs.append(element.tail)
+            runs.append((scope, element.tail))
             continue
-        stack.append(("tail", element))
+        stack.append(("tail", element, scope))
         name = _local(element.tag)
-        if name == PAGE_ELEMENT or name in PAGE_SECTIONS:
+        if name == PAGE_ELEMENT:
+            runs.append(("page", element.text))
+            stack.extend(("enter", child, "page") for child in reversed(element))
             continue
-        runs.append(element.text)
-        stack.extend(("enter", child) for child in reversed(element))
-    return [run for run in runs if run]
+        if (scope == "page" and name in PAGE_SECTIONS) or (
+            scope == "document" and name == METADATA_ELEMENT
+        ):
+            continue
+        runs.append((scope, element.text))
+        stack.extend(("enter", child, scope) for child in reversed(element))
+    return [(scope, run) for scope, run in runs if run]
 
 
 def text_outside_sections(
@@ -701,11 +725,12 @@ def text_outside_sections(
 ) -> str:
     """The text a `HistoricalDocument` answer wrote outside every page section.
 
-    What `page-text-outside-sections` names without quoting: a `Page`'s own
-    text, the tails of its children and the text of any element that is not a
-    section, over every page in document order, each run's ASCII whitespace
-    collapsed to one space as a line's is, the non-empty runs joined by a
-    newline. Empty for any other shape or state, which has no sections.
+    What `page-text-outside-sections` and `document-text-outside-pages` name
+    without quoting: a `Page`'s own text, the tails of its children and the
+    text of any element that is not a section, and the text outside every
+    `Page` other than `Metadata`'s, in document order, each run's ASCII
+    whitespace collapsed to one space as a line's is, the non-empty runs joined
+    by a newline. Empty for any other shape or state, which has no sections.
     """
     document = parse_churro_document(raw, system_prompt=system_prompt, max_bytes=max_bytes)
     if document["state"] != "parsed" or document["shape"] != "historical-document":
@@ -718,9 +743,7 @@ def text_outside_sections(
         root = ET.fromstring(_escape_stray_markup(body)[0])
     runs = (
         " ".join(part for part in _WHITESPACE_RUN.split(run) if part)
-        for page in root.iter()
-        if page is not root and _local(page.tag) == PAGE_ELEMENT
-        for run in _outside_runs(page)
+        for _scope, run in _outside_runs(root)
     )
     return "\n".join(run for run in runs if run)
 
@@ -785,7 +808,7 @@ def validate_churro_document_parse(value: Any) -> dict[str, Any]:
             ):
                 raise SchemaRefusal(f"a Churro {kind} finding is malformed")
         elif set(finding) != {"kind"}:
-            raise SchemaRefusal("a Churro retired-envelope finding is malformed")
+            raise SchemaRefusal(f"a Churro {kind} finding is malformed")
     if state != "parsed":
         reason = value["reason"]
         if not isinstance(reason, str) or not reason.strip():

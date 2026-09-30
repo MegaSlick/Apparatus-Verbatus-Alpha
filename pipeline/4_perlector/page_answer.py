@@ -40,13 +40,15 @@ was asked for bare JSON, and taking the object out of a wrapper would be
 reading a reply the grammar does not admit (a fence is named
 `fenced-answer`, so a proof run can count how often it happens). Duplicate
 keys, `NaN`/`Infinity` and nesting too deep to read are `malformed` too: each
-would make the parsed object say something the bytes do not.
+would make the parsed object say something the bytes do not. So is a lone
+surrogate (a `\\ud800`-style escape with no partner) in any key or string
+value: it is no Unicode character, so the answer could not be encoded as the
+UTF-8 every record is written in (`lone-surrogate`).
 """
 
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Final
 
 PARSED: Final = "parsed"
@@ -64,7 +66,7 @@ _ACT_REQUIRED: Final = frozenset(
 _ACT_FIELDS: Final = _ACT_REQUIRED | {"label"}
 _SET_ASIDE_FIELDS: Final = frozenset({"id", "reason"})
 _JSON_WHITESPACE: Final = " \t\n\r"
-_FENCE: Final = re.compile(r"\A\s*```(?:json)?\s*(?P<body>.*?)\s*```\s*\Z", re.S)
+_FENCE_MARK: Final = "```"
 
 
 class _DuplicateKey(ValueError):
@@ -105,7 +107,47 @@ def _decode(body: str) -> tuple[Any, list[dict[str, str]]]:
         return None, [
             _problem("content-outside-object", f"{len(stripped) - end} characters follow the value")
         ]
+    if (where := _lone_surrogate(value)) is not None:
+        return None, [_problem("lone-surrogate", f"{where} holds a lone surrogate")]
     return value, []
+
+
+def _encodable(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _lone_surrogate(value: Any) -> str | None:
+    """Where the first key or string holding a lone surrogate sits, or `None`."""
+    stack: list[tuple[str, Any]] = [("the answer", value)]
+    while stack:
+        where, item = stack.pop()
+        if isinstance(item, str):
+            if not _encodable(item):
+                return where
+        elif isinstance(item, dict):
+            for key in reversed(list(item)):
+                if not _encodable(key):
+                    return f"a key of {where}"
+                stack.append((f"{where}[{_shown(key)}]", item[key]))
+        elif isinstance(item, list):
+            stack.extend(
+                (f"{where}[{index}]", entry) for index, entry in reversed(list(enumerate(item)))
+            )
+    return None
+
+
+def _is_fenced(text: str) -> bool:
+    """Whether the reply is wrapped in a Markdown code fence, read without a regular expression."""
+    stripped = text.strip()
+    return (
+        len(stripped) >= 2 * len(_FENCE_MARK)
+        and stripped.startswith(_FENCE_MARK)
+        and stripped.endswith(_FENCE_MARK)
+    )
 
 
 _QUOTED_MAX_CHARACTERS: Final = 40
@@ -216,7 +258,7 @@ def parse_page_answer(raw_text: str) -> tuple[str, dict[str, Any] | None, list[d
     """`(parse_state, answer | None, problems)` for one page reading's reply text."""
     if not isinstance(raw_text, str):
         return MALFORMED, None, [_problem("not-text", "the reply is not text")]
-    if _FENCE.match(raw_text) is not None:
+    if _is_fenced(raw_text):
         return (
             MALFORMED,
             None,
