@@ -24,6 +24,7 @@ from common.contracts.canonical import code_digest, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.native_witness import CHURRO_OUTPUT_TOKENS, derive_churro_capture
 from common.page_accounting import placement_boxes
+from common.page_witness_units import OUTSIDE_UNITS_LABEL
 from common.request_capacity import (
     PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST,
     RequestCapacityRefusal,
@@ -894,7 +895,7 @@ def test_chandra_text_outside_its_blocks_is_a_unit_of_its_own_with_the_finding()
         "ordinal": None,
         "box_px": None,
         "box_1000": None,
-        "label": page_feed.OUTSIDE_UNITS_LABEL,
+        "label": OUTSIDE_UNITS_LABEL,
         "text": "en marge : 12\nsignature",
     }
     assert "content-outside-blocks" in [finding["kind"] for finding in chandra["findings"]]
@@ -922,7 +923,7 @@ def test_churro_page_text_outside_its_sections_is_a_unit_of_its_own_with_the_fin
     churro = feed["witnesses"][2]
     assert [(unit["label"], unit["text"]) for unit in churro["units"]][-2:] == [
         ("Footer", "12"),
-        (page_feed.OUTSIDE_UNITS_LABEL, "Folio 3\nen marge"),
+        (OUTSIDE_UNITS_LABEL, "Folio 3\nen marge"),
     ]
     assert churro["units"][-1]["ordinal"] is None
     assert "page-text-outside-sections" in [finding["kind"] for finding in churro["findings"]]
@@ -931,7 +932,7 @@ def test_churro_page_text_outside_its_sections_is_a_unit_of_its_own_with_the_fin
 def test_a_witness_with_nothing_outside_its_units_has_no_extra_unit():
     feed = feed_for(_Blobs())
     for row in feed["witnesses"]:
-        assert all(unit["label"] != page_feed.OUTSIDE_UNITS_LABEL for unit in row["units"])
+        assert all(unit["label"] != OUTSIDE_UNITS_LABEL for unit in row["units"])
     assert feed["witnesses"][1]["findings"] == []
 
 
@@ -1290,7 +1291,7 @@ def test_dai_page_text_outside_every_record_is_a_unit_of_its_own():
         "baptisé Pierre",
         "en marge\nsigné",
     ]
-    assert dai["units"][-1]["label"] == page_feed.OUTSIDE_UNITS_LABEL
+    assert dai["units"][-1]["label"] == OUTSIDE_UNITS_LABEL
     assert dai["units"][-1]["ordinal"] is None and dai["units"][-1]["box_px"] is None
     # The newline the join puts between records is no text of DAI's.
     assert all(unit["label"] is None for unit in feed_for(_Blobs())["witnesses"][1]["units"])

@@ -34,7 +34,7 @@ from typing import Any, Final
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import annotations  # noqa: E402
+from common import reading_annotations as annotations  # noqa: E402
 import audit  # noqa: E402
 import combined  # noqa: E402
 import dossier as dossier_module  # noqa: E402
@@ -44,7 +44,7 @@ import page_run  # noqa: E402
 import prompts  # noqa: E402
 import protocol  # noqa: E402
 import regime  # noqa: E402
-import truncation  # noqa: E402
+from common import truncation  # noqa: E402
 from dissent import departures, dissent_against, validate_dissent  # noqa: E402
 from live_reader import EngineSignalRefusal, VLLMReader  # noqa: E402
 from reader import FixtureReader, validate_audit_delivery  # noqa: E402

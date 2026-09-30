@@ -2762,7 +2762,7 @@ def test_a_whitespace_reproof_publishes_empty_text_with_its_own_measure():
 
 def test_the_validator_that_refused_the_unmeasured_emptying_still_does():
     """The behavioural half: the binding the branch above has to satisfy."""
-    import truncation
+    from common import truncation
 
     region, page = 160 * 80, 200 * 260
     policy = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0][

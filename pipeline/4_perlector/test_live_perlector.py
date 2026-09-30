@@ -736,7 +736,7 @@ def test_a_reply_that_reaches_its_bound_holds_the_act_and_is_never_asked_again(
 
 
 def test_an_unreported_stop_reason_holds_the_reading_as_unknown(live_run, tmp_path, monkeypatch):
-    """An engine that reported nothing is never `complete` (`truncation.py`).
+    """An engine that reported nothing is never `complete` (`common/truncation.py`).
 
     The absence travels verbatim: `finish_reason` is `null` on the call record
     and `stop_reason_declared` is `None` on the instrument, rather than a `"stop"`

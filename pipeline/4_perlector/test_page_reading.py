@@ -34,9 +34,10 @@ from test_live_perlector import (
     _TreeBlobs,
 )
 
+from common import page_path
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError, FatalAccounting
-from common.contracts.identities import act_bindings, region_id, verify
+from common.contracts.identities import act_bindings, artifact_id, region_id, verify
 from common.decoding import (
     chair_decoding,
     engine_effective_sampling,
@@ -46,6 +47,7 @@ from common.decoding import (
 from common.exemplar_boundary import read_sealed_page
 from common.imaging import crop_png
 from common.page_accounting import is_inside, load_page_accounting_policy, placement_boxes
+from common.page_witness_units import DAI
 from common.runtree.store import RunTree
 from conftest import file_bytes_snapshot, load_stage, programs_through
 from operations.serving.config import profile_preflight_digest
@@ -752,17 +754,33 @@ def _first_page(root: Path) -> SimpleNamespace:
     )
 
 
+def _record_detections(context, page):
+    return page_path._record_detections(
+        context,
+        context.tree.build_manifest("designator")["artifacts"],
+        page.page_id,
+        page.ordinal,
+        page_path._dai_unit_ids(page.feed, page.witnesses),
+    )
+
+
+def _surya_census(context):
+    return page_path.sealed_surya_census(
+        context, context.tree.build_manifest("designator")["artifacts"]
+    )
+
+
 def test_each_detector_record_is_named_by_the_dai_unit_with_its_box(tmp_path, monkeypatch):
     """So a DAI unit set aside is a detector record set aside (rule (i), set-aside-record)."""
     root = _detector_tree(tmp_path, monkeypatch, _SPLIT_AND_COLLAPSED)
     page = _first_page(root)
-    records, census, references = page_run._record_detections(_reading_context(root), page)
+    records, census, references = _record_detections(_reading_context(root), page)
     assert census == {"detection_count": 3, "max_det": 300, "max_det_reached": False}
     assert [record.get("id") for record in records] == [None, None, None]
     assert references[0]["relative_path"].startswith("2_designator/artifacts/detector-page/")
     # The fixture roster shows no DAI page witness; give page 1 one whose units are
     # the two cut records, as DAI's own reading of them would be.
-    page.witnesses = [{"witness_label": "attestator_2", "adapter": page_feed.DAI}]
+    page.witnesses = [{"witness_label": "attestator_2", "adapter": DAI}]
     page.feed = {
         **page.feed,
         "witnesses": [
@@ -776,7 +794,7 @@ def test_each_detector_record_is_named_by_the_dai_unit_with_its_box(tmp_path, mo
             },
         ],
     }
-    records, _census, _references = page_run._record_detections(_reading_context(root), page)
+    records, _census, _references = _record_detections(_reading_context(root), page)
     assert [record.get("id") for record in records] == ["D1", "D2", None]
 
 
@@ -800,7 +818,7 @@ def test_a_detector_census_its_records_contradict_is_refused(
             payload.update(edit)
 
     with pytest.raises(FatalAccounting, match=refusal):
-        page_run._record_detections(_reading_context(root, doctor), _first_page(root))
+        _record_detections(_reading_context(root, doctor), _first_page(root))
 
 
 def test_a_detector_record_no_census_names_is_refused(tmp_path, monkeypatch):
@@ -812,7 +830,7 @@ def test_a_detector_record_no_census_names_is_refused(tmp_path, monkeypatch):
             payload["detection_count"] -= 1
 
     with pytest.raises(FatalAccounting, match="that page .* detector-page does not name"):
-        page_run._record_detections(_reading_context(root, doctor), _first_page(root))
+        _record_detections(_reading_context(root, doctor), _first_page(root))
 
 
 def test_a_detector_that_reached_its_cap_holds_the_page_end_to_end(tmp_path, monkeypatch):
@@ -863,7 +881,7 @@ def test_a_surya_census_its_records_contradict_is_refused(page_tree, kind, edit,
             payload.update(edit)
 
     with pytest.raises(FatalAccounting, match=refusal):
-        page_run.sealed_surya_census(_reading_context(root, doctor))
+        _surya_census(_reading_context(root, doctor))
 
 
 def test_a_surya_detection_no_census_names_is_refused(page_tree):
@@ -875,7 +893,7 @@ def test_a_surya_detection_no_census_names_is_refused(page_tree):
             payload["line_count"] -= 1
 
     with pytest.raises(FatalAccounting, match="that no page census names"):
-        page_run.sealed_surya_census(_reading_context(root, doctor))
+        _surya_census(_reading_context(root, doctor))
 
 
 def test_two_ink_maps_for_one_page_are_refused(page_tree):
@@ -889,7 +907,12 @@ def test_two_ink_maps_for_one_page_are_refused(page_tree):
 
     context = _reading_context(root, manifest=twice)
     with pytest.raises(FatalAccounting, match="ink maps for page .*, not one"):
-        page_run._accounting_ink(context, _first_page(root))
+        page_path._accounting_ink(
+            context,
+            context.tree.build_manifest("ink-map")["artifacts"],
+            _first_page(root).page_id,
+            1,
+        )
 
 
 # --- the answer's entries -----------------------------------------------------------
@@ -910,10 +933,10 @@ def test_entries_with_one_union_box_are_held_and_keep_their_own_ids():
         "continues_to_next_page": False,
     }
     answer = {"acts": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
-    entries = page_run.answer_entries(answer, feed)
+    entries = page_path.answer_entries(answer, feed)
     assert [entry["holds"] for entry in entries] == [["duplicate-region"]] * 2
     assert [entry["union_box_px"] for entry in entries] == [box, box]
-    attempt = page_run.page_reading_attempt("pg_0000000000000001")
+    attempt = page_path.page_reading_attempt("pg_0000000000000001")
     ids = {
         digest_of(
             act_bindings(
@@ -934,7 +957,7 @@ def test_a_shared_union_box_does_not_hold_the_page_but_an_unknown_id_does():
             {"code": "unknown-id", "id": "Q7"},
         ]
     }
-    assert [p["code"] for p in page_run.page_problems(validated)] == ["unknown-id"]
+    assert [p["code"] for p in page_path.page_problems(validated)] == ["unknown-id"]
 
 
 def test_dissent_does_not_count_a_witness_s_own_doubt_markers_as_departure():
@@ -1518,14 +1541,14 @@ def test_a_retained_accounting_measured_from_other_inputs_is_not_adopted(
 ):
     _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
     assert exit_code == 0
-    original = page_run._accounting_detections
+    original = page_path.accounting_inputs
 
-    def one_more_input(state, page):
-        detections, references = original(state, page)
-        extra = state.context.artifact_ref("exemplar", "page", page.page_record["artifact_id"])
-        return detections, [*references, extra]
+    def one_more_input(context, **kwargs):
+        measured, references = original(context, **kwargs)
+        page = artifact_id("exemplar", "page", kwargs["feed"]["page_id"])
+        return measured, [*references, context.artifact_ref("exemplar", "page", page)]
 
-    monkeypatch.setattr(page_run, "_accounting_detections", one_more_input)
+    monkeypatch.setattr(page_path, "accounting_inputs", one_more_input)
     with pytest.raises(ContractError, match="retained page accounting was measured from other"):
         _read_pages(live_tree, tmp_path / "again", monkeypatch)
 
