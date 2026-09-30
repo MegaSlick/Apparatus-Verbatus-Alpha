@@ -27,6 +27,7 @@ never been observed; only a pod can settle it.
 from __future__ import annotations
 
 import math
+import re
 import unicodedata
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -257,8 +258,8 @@ PROMPT_TOKENS_MEASURED_FLOOR: Final = "measured-floor-for-this-prompt-shape"
 PROMPT_TOKENS_MEASURED_RATE: Final = "measured-tokens-per-word-extrapolation"
 # The only basis a dossier-built prompt may be admitted on.
 PROMPT_TOKENS_MEASURED_BOUND: Final = "measured-upper-bound-for-this-prompt-shape"
-# The act prompt's measured bound applied to the page prompt, which no tokenizer
-# has measured yet (`perlector_page_prompt_bound`).
+# The act prompt's measured bound applied to the page prompt's prose, with every
+# run holding a digit charged at one token per byte (`perlector_page_prompt_bound`).
 PROMPT_TOKENS_CARRIED_BOUND: Final = "upper-bound-carried-from-the-act-prompt-measurement"
 PROMPT_TOKENS_BASES: Final = frozenset(
     {
@@ -648,15 +649,19 @@ def _rate_bound_tokens(characters: int) -> int:
 # `pipeline/4_perlector/page_prompt.py` renders from the page feed, and one JSON
 # answer covering every act on the page.
 #
-# No tokenizer has measured the page prompt. Its text is the kind the act
-# prompt's rate was measured over -- register French witness readings in a thin
-# scaffold -- so that measured bound (`PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS`
-# with its margin) is carried to it and the record names it as carried
-# (`PROMPT_TOKENS_CARRIED_BOUND`). It is sealed against the page builder's own
-# digest, so editing the builder expires it. To be re-measured on the first pod:
-# the proof run compares admitted tokens with the engine's `usage.prompt_tokens`.
+# No tokenizer has measured the page prompt. Its prose -- register French witness
+# readings and the instruction -- is the kind the act prompt's rate was measured
+# over, so that measured bound (`PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS` with
+# its margin) is carried to the prose and the record names it as carried
+# (`PROMPT_TOKENS_CARRIED_BOUND`). The page prompt also carries what the act
+# prompt has little of: id, box and coordinate rows and digit-dense text, which
+# a byte-level tokenizer may split into a token per digit. Every
+# whitespace-separated run holding an ASCII digit is therefore charged at one
+# token per UTF-8 byte, a bound no byte-level BPE can exceed, as `capped_spans`
+# are in the act prompt. The bound is sealed against the page builder's own
+# digest, so editing the builder expires it.
 PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
-    "b37105e533f473d7a774e22d0e1ae9adecd1c8603a96ef8c07f62b05f84aab01"
+    "a73aaf609ce9cb8218923e7776f02a6868ce910ef5fa134f5f5cf633a303b70c"
 )
 # Chat-template cost: 52 for the one turn plus 2 per image, charged at the most a
 # page request sends -- the page render and its overlay (`[feed] page_overlay`).
@@ -679,8 +684,32 @@ PAGE_ANSWER_ENTRY_SKELETON: Final = (
 PAGE_ANSWER_WRAPPER: Final = '{"acts": [], "set_aside": []}'
 
 
+_WHITESPACE_RUN_SPLIT: Final = re.compile(r"(\s+)")
+_ASCII_DIGIT: Final = re.compile(r"[0-9]")
+
+
+def page_prompt_charge(text: str) -> tuple[int, int]:
+    """``(byte_charged_bytes, rate_charged_characters)`` of one page prompt.
+
+    Each whitespace-separated run holding an ASCII digit is charged by its
+    UTF-8 bytes, as sent or NFC-normalized, whichever is more; every other
+    character, whitespace included, at the carried rate.
+    """
+    digit_runs = [
+        run for run in _WHITESPACE_RUN_SPLIT.split(text) if run and _ASCII_DIGIT.search(run)
+    ]
+    return (
+        sum(max(len(run.encode("utf-8")), _text_bytes(run)) for run in digit_runs),
+        len(text) - sum(len(run) for run in digit_runs),
+    )
+
+
 def perlector_page_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str]:
-    """``(tokens, basis)`` for one rendered page prompt: the carried upper bound."""
+    """``(tokens, basis)`` for one rendered page prompt: the carried upper bound.
+
+    The chat overhead, the digit-bearing runs at one token per byte, and the
+    rest at the carried rate (`page_prompt_charge`).
+    """
 
     if template_digest != PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST:
         raise RequestCapacityRefusal(
@@ -691,8 +720,9 @@ def perlector_page_prompt_bound(text: str, *, template_digest: str) -> tuple[int
             "of text nobody renders any more. Re-check the carried rate against the new "
             "builder and update common/request_capacity.py"
         )
+    byte_charged, rate_charged = page_prompt_charge(text)
     return (
-        PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS + _rate_bound_tokens(len(text)),
+        PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS + byte_charged + _rate_bound_tokens(rate_charged),
         PROMPT_TOKENS_CARRIED_BOUND,
     )
 

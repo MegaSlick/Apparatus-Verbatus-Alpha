@@ -738,3 +738,15 @@ def test_spans_locate_every_delivered_block_in_the_page_text():
     for block, span in zip(parsed["blocks"], parsed["spans"], strict=True):
         assert parsed["page_text"][span["start"] : span["end"]] == block["text"]
     assert parsed["page_text"].count("\n") == 6
+
+
+def test_the_text_outside_blocks_is_what_the_finding_counts():
+    from common.chandra_layout import outside_blocks_text
+
+    raw = b'lead <div data-bbox="1 2 3 4">in</div>\n between \n<p>para  x</p>'
+    parsed = parse_layout_html(raw)
+    counted = _finding(parsed, "content-outside-blocks")["characters"]
+    text = outside_blocks_text(raw)
+    assert text == "lead\nbetween\npara x"
+    assert counted == len(text.replace("\n", "").replace(" ", ""))
+    assert outside_blocks_text(b'<div data-bbox="1 2 3 4">in</div>\n') == ""

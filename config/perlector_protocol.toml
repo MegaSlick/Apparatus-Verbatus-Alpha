@@ -84,7 +84,7 @@ covered_page_edge = 1024
 #   witness_coordinates  whether each unit's box is shown as box_1000.
 #   surya_lines          whether Surya's detected lines are shown (ids L1..Ln).
 #   surya_blocks         whether Surya's detected blocks are shown (ids S1..Sn).
-#   crops                "off"; crops on request are later work.
+#   crops                "off", the only setting this build applies.
 #   page_overlay         "off", or "boxes": a second image after the page
 #                        render, a copy of it with every shown boxed id
 #                        outlined and labelled (`pipeline/4_perlector/page_overlay.py`).

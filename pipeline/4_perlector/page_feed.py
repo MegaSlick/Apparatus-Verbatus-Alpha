@@ -29,7 +29,10 @@ merely states:
 * Chandra (`chandra.v1`): the top-level layout blocks of its answer
   (`chandra_layout.parse_layout_html`), each mapped to sealed-page pixels by
   `chandra_layout.block_page_bounds`, as the adapter's own `observe` maps them.
-  A blank-page or malformed-bbox block is a unit with no box.
+  A blank-page or malformed-bbox block is a unit with no box. A block's text is
+  Chandra's text view of its blocks (`chandra-layout-text.v1`): markup removed,
+  character references resolved, whitespace runs outside `<pre>` made one
+  space and block-level tags made line breaks.
 * Churro (`churro.v1`): the non-blank lines of its parsed document text in
   document order (`churro_document`), labelled with the `Header`/`Body`/`Footer`
   section they sit in, no box: Churro reports no coordinates.
@@ -40,16 +43,37 @@ merely states:
   (`unit_captures`), box = that record's bounds, text = DAI's response for it
   decoded exactly, and checked against the span the record states.
 
+Text a witness's own parse places outside its units -- Chandra's character
+data outside every block (`content-outside-blocks`), Churro's page text
+outside every section (`page-text-outside-sections`) -- is one more unit at
+the end of that witness's order, with no ordinal, no box and the label
+`OUTSIDE_UNITS_LABEL`, shown and accounted like any other: nothing a witness
+said is absent from the feed. Each row also carries the findings its parse of
+the retained bytes names.
+
 A witness whose page outcome is not `read` is a row with its outcome and no
-units: it is never silently absent.
+units: it is never silently absent. Every chair of the sealed page-witness
+roster has a row, shown or hidden by the `witnesses` switch; a roster chair
+with no Testimonium is refused.
+
+Under `witness_units = "flat"` the rows keep the same units, ids, sealed
+boxes (`box_px`) and unit kind, so the accounting reads them unchanged; only
+what is shown changes: no unit box_1000, and the prompt shows each witness as
+one line, its units joined, cited by the range of its unit ids.
+
+Letters and labels are shown as the regime gives them. The blinded regime
+hides chair and model names (`witness_label` is a pseudonym, `chair` is
+`None`); the labels a witness wrote on its own units -- Chandra's block labels,
+Churro's section names -- are part of its report and are shown as given.
 
 ## Calling it (stage 4, page path)
 
     feed = build_page_feed(
         page_id=..., page_ordinal=..., page_size=(width, height),
         feed_switches=protocol_config["feed"], witness_regime="named" | "blinded",
+        roster=[chair, ...],                    # the sealed page-witness roster
         witnesses=[{"chair", "witness_label", "adapter", "testimonium",
-                    "testimonium_ref"}, ...],   # one per configured page witness
+                    "testimonium_ref"}, ...],   # one per roster chair
         surya={"census_ref", "lines": [{"box_px", "ref"}],
                "blocks": [{"box_px", "label", "position", "ref"}]} | None,
         page_render=dossier.build_page_render(...) | None,
@@ -62,14 +86,17 @@ units: it is never silently absent.
 
 Each `testimonium` must already have passed the stage's own page-Testimonium
 checks (`run.validate_page_testimonium_record`); this module re-derives units
-from its retained bytes but does not re-run those checks. Every ref on the
-feed (`testimonium_ref`, Surya's `census_ref` and each line's and block's
-`ref`) is an input the caller binds on the page-feed record.
+from its retained bytes but does not re-run those checks. It does check that
+each `testimonium` is the record its `testimonium_ref` names: the ref's bytes,
+read digest-checked, decode to exactly that record, a `page-testimonium` of
+this page. Every ref on the feed (`testimonium_ref`, Surya's `census_ref` and
+each line's and block's `ref`) is an input the caller binds on the page-feed
+record.
 
-`assemble_page_feed` takes the same arguments with each witness's units
-already read (`{chair, witness_label, adapter, outcome, testimonium_ref,
-units}`) and no `read_bytes`; `build_page_feed` is `witness_units` then
-`assemble_page_feed`, and measurement tools call it directly.
+`assemble_page_feed` takes the same arguments with each witness's reading
+already made (`{chair, witness_label, adapter, outcome, testimonium_ref,
+units, findings}`) and no `read_bytes`; `build_page_feed` is `witness_reading`
+then `assemble_page_feed`, and measurement tools call it directly.
 """
 
 from __future__ import annotations
@@ -85,12 +112,18 @@ import page_overlay
 import page_prompt
 import protocol
 
-from common.chandra_layout import block_page_bounds, is_refusal, parse_layout_html
+from common.chandra_layout import (
+    block_page_bounds,
+    is_refusal,
+    outside_blocks_text,
+    parse_layout_html,
+)
 from common.contracts.canonical import digest_of, is_plain_int
 from common.contracts.envelope import digest_ref, read_verified
 from common.contracts.errors import SchemaRefusal
 from common.native_witness import (
     churro_capture_system_prompt,
+    churro_text_outside_sections,
     parse_churro_response,
     validate_native_capture,
     verify_native_capture_bytes,
@@ -106,20 +139,22 @@ BOX_SCALE: Final = 1000
 CHANDRA: Final = "chandra.v1"
 CHURRO: Final = "churro.v1"
 DAI: Final = "dai.v1"
+PAGE_TESTIMONIUM_KIND: Final = "page-testimonium"
 # How finely each adapter's own units cut a page: a layout block or detector
 # record is about one act; a line is a fraction of one. The answer reserve
-# counts act entries from the coarser kind (`answer_measure`).
+# counts act entries from the act-sized kinds only (`answer_measure`).
 UNIT_KINDS: Final = {CHANDRA: "layout-block", DAI: "detector-record", CHURRO: "line"}
-# A witness shown `flat` has one unit, its whole page text.
-FLAT_UNIT_KIND: Final = "page-text"
 _ACT_SIZED_UNIT_KINDS: Final = frozenset({"layout-block", "detector-record"})
+# The label of the unit holding a witness's text outside its own units.
+OUTSIDE_UNITS_LABEL: Final = "outside units"
 
 _WITNESS_FIELDS: Final = frozenset(
     {"chair", "witness_label", "adapter", "testimonium", "testimonium_ref"}
 )
 _ASSEMBLED_WITNESS_FIELDS: Final = frozenset(
-    {"chair", "witness_label", "adapter", "outcome", "testimonium_ref", "units"}
+    {"chair", "witness_label", "adapter", "outcome", "testimonium_ref", "units", "findings"}
 )
+_UNIT_FIELDS: Final = frozenset({"ordinal", "box_px", "label", "text"})
 _SURYA_FIELDS: Final = frozenset({"census_ref", "lines", "blocks"})
 # Given as `surya` when the run holds no Surya census at all: the feed then
 # records Surya as absent and shows no line or block, whatever the switches say.
@@ -173,8 +208,27 @@ def box_1000(box_px: dict[str, int], page_size: tuple[int, int]) -> list[int]:
 # --- each witness's own units ---------------------------------------------------
 
 
-def _unit(ordinal: int, box_px: dict[str, int] | None, label: str | None, text: str) -> dict:
+def _unit(ordinal: int | None, box_px: dict[str, int] | None, label: str | None, text: str):
     return {"ordinal": ordinal, "box_px": box_px, "label": label, "text": text}
+
+
+def _with_outside(units: list[dict[str, Any]], outside: str) -> list[dict[str, Any]]:
+    """The units, then the text outside them as one more unit when there is any."""
+    return units + ([_unit(None, None, OUTSIDE_UNITS_LABEL, outside)] if outside else [])
+
+
+def _checked_capture(
+    capture: Any, adapter: str, read_bytes: Callable[[str], bytes]
+) -> tuple[dict[str, Any], bytes]:
+    """One native capture and its retained raw response, digest-checked and re-derived."""
+    capture = validate_native_capture(capture)
+    if capture["adapter"] != adapter:
+        raise SchemaRefusal(
+            f"a page Testimonium's native capture names adapter {capture['adapter']!r}, not "
+            f"the chair's configured {adapter!r}"
+        )
+    raw = read_verified(read_bytes, capture["raw_response_ref"], f"a {adapter} raw response")
+    return verify_native_capture_bytes(capture, raw), raw
 
 
 def _native_capture_bytes(
@@ -188,19 +242,12 @@ def _native_capture_bytes(
             "own units cannot be re-derived from what the chair answered; the page feed "
             "reads only native page captures"
         )
-    capture = validate_native_capture(capture)
-    if capture["adapter"] != adapter:
-        raise SchemaRefusal(
-            f"a page Testimonium's native capture names adapter {capture['adapter']!r}, not "
-            f"the chair's configured {adapter!r}"
-        )
-    raw = read_verified(read_bytes, capture["raw_response_ref"], f"a {adapter} raw response")
-    return verify_native_capture_bytes(capture, raw), raw
+    return _checked_capture(capture, adapter, read_bytes)
 
 
-def _chandra_units(
+def _chandra_reading(
     payload: dict[str, Any], page_size: tuple[int, int], read_bytes: Callable[[str], bytes]
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     capture, raw = _native_capture_bytes(payload, CHANDRA, read_bytes)
     if capture["parse"].get("parser") != "html":
         raise SchemaRefusal(
@@ -220,7 +267,7 @@ def _chandra_units(
         raise SchemaRefusal(
             "a Chandra page capture's parsed text differs from its retained raw response"
         )
-    return [
+    units = [
         _unit(
             block["ordinal"],
             block_page_bounds(block, page_size=page_size),
@@ -229,14 +276,15 @@ def _chandra_units(
         )
         for block in parsed["blocks"]
     ]
+    return {"units": _with_outside(units, outside_blocks_text(raw)), "findings": parsed["findings"]}
 
 
 FIXTURE_CHANDRA_SCHEMA: Final = "fixture-chandra-response.v1"
 
 
-def _fixture_chandra_units(
+def _fixture_chandra_reading(
     payload: dict[str, Any], page_size: tuple[int, int], read_bytes: Callable[[str], bytes]
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """A synthetic fixture's Chandra page, joined from its declared act responses.
 
     The committed fixture declares Chandra as JSON placeholders, one per act,
@@ -298,14 +346,13 @@ def _fixture_chandra_units(
         if not isinstance(text, str):
             raise SchemaRefusal("a joined fixture Chandra page carries no page text")
         units.append(_unit(0, None, None, text))
-    return units
+    return {"units": units, "findings": []}
 
 
-def _churro_units(
-    payload: dict[str, Any], read_bytes: Callable[[str], bytes]
-) -> list[dict[str, Any]]:
+def _churro_reading(payload: dict[str, Any], read_bytes: Callable[[str], bytes]) -> dict[str, Any]:
     capture, raw = _native_capture_bytes(payload, CHURRO, read_bytes)
-    document = parse_churro_response(raw, system_prompt=churro_capture_system_prompt(capture))
+    system_prompt = churro_capture_system_prompt(capture)
+    document = parse_churro_response(raw, system_prompt=system_prompt)
     if document["state"] != "parsed":
         raise SchemaRefusal(
             "a Churro page Testimonium read as `read` retains a response its grammar does not "
@@ -326,12 +373,13 @@ def _churro_units(
             None,
         )
         units.append(_unit(len(units) + 1, None, label, match.group()))
-    return units
+    outside = churro_text_outside_sections(raw, system_prompt=system_prompt)
+    return {"units": _with_outside(units, outside), "findings": document["findings"]}
 
 
-def _dai_units(
+def _dai_reading(
     payload: dict[str, Any], page_size: tuple[int, int], read_bytes: Callable[[str], bytes]
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     captures = payload.get("unit_captures")
     observed = payload.get("observed")
     page_text = payload.get("payload")
@@ -351,16 +399,19 @@ def _dai_units(
             raise SchemaRefusal(
                 f"a DAI page Testimonium read as `read` has no response for record {position}"
             )
-        capture = validate_native_capture(capture)
-        if capture["adapter"] != DAI:
-            raise SchemaRefusal(f"a DAI unit capture names adapter {capture['adapter']!r}")
-        raw = read_verified(read_bytes, capture["raw_response_ref"], "a DAI raw response")
+        capture, raw = _checked_capture(capture, DAI, read_bytes)
         try:
             # DAI's own `text` parser: the response decoded exactly, nothing rewritten.
             text = raw.decode("utf-8")
         except UnicodeDecodeError as error:
             raise SchemaRefusal(f"a DAI response is not UTF-8 text: {error}") from error
-        span = item.get("span") if isinstance(item, dict) else None
+        if capture["parse"].get("state") == "parsed" and capture["parse"].get("text") != text:
+            raise SchemaRefusal(
+                f"DAI record {position}'s parsed text differs from its retained raw response"
+            )
+        if not isinstance(item, dict) or not is_plain_int(item.get("ordinal")):
+            raise SchemaRefusal(f"DAI record {position} has no integer ordinal")
+        span = item.get("span")
         if (
             not isinstance(span, dict)
             or not is_plain_int(span.get("start"))
@@ -379,7 +430,48 @@ def _dai_units(
                 text,
             )
         )
-    return units
+    # DAI's text parser reads each response exactly and names no finding.
+    return {"units": units, "findings": []}
+
+
+def witness_reading(
+    testimonium: dict[str, Any],
+    *,
+    adapter: str,
+    page_size: tuple[int, int],
+    read_bytes: Callable[[str], bytes],
+    fixture_placeholders: bool = False,
+) -> dict[str, Any]:
+    """One witness's page as `{units, findings}`, both empty unless its outcome is `read`.
+
+    `testimonium` is the sealed `page-testimonium` record, `adapter` the chair's
+    configured witness adapter, `page_size` the sealed page's `(width, height)`
+    and `read_bytes` the run tree's reader. Each unit is `{ordinal, box_px,
+    label, text}`, `box_px` being a sealed-page `{x, y, w, h}` or `None`; the
+    last may be the witness's text outside its own units (`OUTSIDE_UNITS_LABEL`,
+    no ordinal). `findings` are what the witness's parse of its retained bytes
+    names. `fixture_placeholders` lets a synthetic run's joined Chandra page be
+    read (`_fixture_chandra_reading`); a real run leaves it off.
+    """
+    if "outcome" not in testimonium:
+        raise SchemaRefusal("a page Testimonium records no outcome")
+    if testimonium["outcome"] != READ_OUTCOME:
+        return {"units": [], "findings": []}
+    payload = testimonium.get("payload")
+    if not isinstance(payload, dict):
+        raise SchemaRefusal("a page Testimonium has no payload to read units from")
+    if adapter == CHANDRA:
+        if fixture_placeholders and payload.get("native_capture") is None:
+            return _fixture_chandra_reading(payload, page_size, read_bytes)
+        return _chandra_reading(payload, page_size, read_bytes)
+    if adapter == CHURRO:
+        return _churro_reading(payload, read_bytes)
+    if adapter == DAI:
+        return _dai_reading(payload, page_size, read_bytes)
+    raise SchemaRefusal(
+        f"witness adapter {adapter!r} has no page-unit reader; its page cannot be shown in its "
+        f"own units (the readers are {sorted(UNIT_KINDS)})"
+    )
 
 
 def witness_units(
@@ -390,35 +482,27 @@ def witness_units(
     read_bytes: Callable[[str], bytes],
     fixture_placeholders: bool = False,
 ) -> list[dict[str, Any]]:
-    """One witness's page broken into its own units, or `[]` unless its outcome is `read`.
-
-    `testimonium` is the sealed `page-testimonium` record, `adapter` the chair's
-    configured witness adapter, `page_size` the sealed page's `(width, height)`
-    and `read_bytes` the run tree's reader. Each unit is `{ordinal, box_px,
-    label, text}`, `box_px` being a sealed-page `{x, y, w, h}` or `None`.
-    `fixture_placeholders` lets a synthetic run's joined Chandra page be read
-    (`_fixture_chandra_units`); a real run leaves it off.
-    """
-    if testimonium.get("outcome") != READ_OUTCOME:
-        return []
-    payload = testimonium.get("payload")
-    if not isinstance(payload, dict):
-        raise SchemaRefusal("a page Testimonium has no payload to read units from")
-    if adapter == CHANDRA:
-        if fixture_placeholders and payload.get("native_capture") is None:
-            return _fixture_chandra_units(payload, page_size, read_bytes)
-        return _chandra_units(payload, page_size, read_bytes)
-    if adapter == CHURRO:
-        return _churro_units(payload, read_bytes)
-    if adapter == DAI:
-        return _dai_units(payload, page_size, read_bytes)
-    raise SchemaRefusal(
-        f"witness adapter {adapter!r} has no page-unit reader; its page cannot be shown in its "
-        f"own units (the readers are {sorted(UNIT_KINDS)})"
-    )
+    """`witness_reading`'s units alone."""
+    return witness_reading(
+        testimonium,
+        adapter=adapter,
+        page_size=page_size,
+        read_bytes=read_bytes,
+        fixture_placeholders=fixture_placeholders,
+    )["units"]
 
 
 # --- the feed -------------------------------------------------------------------
+
+
+def _checked_roster(roster: Any) -> list[str]:
+    if (
+        not isinstance(roster, list)
+        or not all(isinstance(chair, str) and chair.strip() for chair in roster)
+        or len(set(roster)) != len(roster)
+    ):
+        raise SchemaRefusal("the sealed page-witness roster is not a list of distinct chair names")
+    return roster
 
 
 def _shown_chairs(switch: Any, roster: list[str]) -> set[str]:
@@ -433,7 +517,9 @@ def _shown_chairs(switch: Any, roster: list[str]) -> set[str]:
     return set(switch)
 
 
-def _checked_witnesses(witnesses: Any, fields: frozenset[str], regime: str) -> list[dict]:
+def _checked_witnesses(
+    witnesses: Any, fields: frozenset[str], regime: str, roster: list[str]
+) -> list[dict]:
     if not isinstance(witnesses, list):
         raise SchemaRefusal("the page feed's witnesses are not a list")
     for witness in witnesses:
@@ -449,7 +535,30 @@ def _checked_witnesses(witnesses: Any, fields: frozenset[str], regime: str) -> l
         values = [witness[field] for witness in witnesses]
         if len(set(values)) != len(values):
             raise SchemaRefusal(f"two page-feed witnesses share a {field}")
+    chairs = {witness["chair"] for witness in witnesses}
+    missing, extra = sorted(set(roster) - chairs), sorted(chairs - set(roster))
+    if missing:
+        raise SchemaRefusal(
+            f"configured page witness(es) {missing} of the sealed roster have no row on this "
+            "page's feed; a witness is never silently absent"
+        )
+    if extra:
+        raise SchemaRefusal(
+            f"page-feed witness(es) {extra} are not in the sealed page-witness roster"
+        )
     return witnesses
+
+
+def _checked_unit(unit: Any) -> dict[str, Any]:
+    if (
+        not isinstance(unit, dict)
+        or set(unit) != _UNIT_FIELDS
+        or not (unit["ordinal"] is None or is_plain_int(unit["ordinal"]))
+        or not (unit["label"] is None or isinstance(unit["label"], str))
+        or not isinstance(unit["text"], str)
+    ):
+        raise SchemaRefusal(f"a witness unit is not exactly {sorted(_UNIT_FIELDS)}")
+    return unit
 
 
 def _witness_row(
@@ -460,16 +569,18 @@ def _witness_row(
     regime: str,
     page_size: tuple[int, int],
 ) -> dict[str, Any]:
-    units = witness["units"]
-    if not isinstance(units, list):
-        raise SchemaRefusal(f"shown witness {witness['witness_label']!r} carries no units")
-    if witness["outcome"] != READ_OUTCOME and units:
-        raise SchemaRefusal("a witness that did not read carries units")
-    if switches["witness_units"] == "flat" and witness["outcome"] == READ_OUTCOME:
-        # One unit: the witness's units joined in its own order, placed nowhere.
-        units = [_unit(1, None, None, "\n".join(unit["text"] for unit in units if unit["text"]))]
+    units, findings = witness["units"], witness["findings"]
+    if not isinstance(units, list) or not isinstance(findings, list):
+        raise SchemaRefusal(
+            f"shown witness {witness['witness_label']!r} carries no units or no findings list"
+        )
+    if witness["outcome"] != READ_OUTCOME and (units or findings):
+        raise SchemaRefusal("a witness that did not read carries units or findings")
+    # Boxes are shown only with coordinates on and units shown as their own.
+    boxes_shown = switches["witness_coordinates"] and switches["witness_units"] == "own"
     shown = []
     for number, unit in enumerate(units, start=1):
+        unit = _checked_unit(unit)
         box_px = (
             None
             if unit["box_px"] is None
@@ -483,7 +594,7 @@ def _witness_row(
                 # witness's sealed evidence, which the stage's accounting reads.
                 "box_px": box_px,
                 "box_1000": box_1000(box_px, page_size)
-                if box_px is not None and switches["witness_coordinates"]
+                if box_px is not None and boxes_shown
                 else None,
                 "label": unit["label"],
                 "text": unit["text"],
@@ -496,36 +607,38 @@ def _witness_row(
         # What one unit of this row is. `detector-record` marks DAI's units as
         # the records its own detector found, which the page accounting holds
         # to one act each; it is never rendered into the prompt.
-        "unit_kind": FLAT_UNIT_KIND
-        if switches["witness_units"] == "flat"
-        else UNIT_KINDS[witness["adapter"]],
+        "unit_kind": UNIT_KINDS[witness["adapter"]],
         "outcome": witness["outcome"],
         "testimonium_ref": digest_ref(witness["testimonium_ref"], "a page Testimonium reference"),
+        "findings": findings,
         "units": shown,
     }
 
 
-def answer_measure(rows: list[tuple[str, list[dict[str, Any]]]]) -> dict[str, int]:
-    """What the page's answer is reserved on, from the shown witnesses' own units.
+def answer_measure(
+    rows: list[tuple[str, list[dict[str, Any]]]], *, surya_blocks: int
+) -> dict[str, int]:
+    """What the page's answer is reserved on, from what the feed shows of the page.
 
-    `rows` is `(adapter, own units)` per shown witness whose outcome is `read`.
-    The answer transcribes the same ink the witnesses read, so its text is
-    measured by the longest witness text; its entries by the unit count of the
-    witness whose units are about one act each (a layout block, a detector
-    record), or, where only line-level witnesses were shown, by their line
-    count, which over-reserves rather than under. Taken before `flat` joins the
-    units, so the reserve does not move with how the units are shown.
+    `rows` is `(adapter, own units)` per shown witness whose outcome is `read`,
+    and `surya_blocks` the number of Surya blocks shown. The answer transcribes
+    the same ink the witnesses read, so its text is measured by the longest
+    witness text, text outside its units included. Its entries are the page's
+    likely act count: the most of Surya's blocks, DAI's detector records and
+    Chandra's layout blocks, each about one act. A line witness's lines are
+    fractions of acts and are not counted. With none of the three shown the
+    count is 0 and only the text is reserved; the reserve decides admission,
+    and the request is sent the page cap or the room left, whichever is less.
     """
     longest = max((sum(len(unit["text"]) for unit in units) for _adapter, units in rows), default=0)
     act_sized = [
-        len(units) for adapter, units in rows if UNIT_KINDS[adapter] in _ACT_SIZED_UNIT_KINDS
-    ]
-    lines = [
-        len(units) for adapter, units in rows if UNIT_KINDS[adapter] not in _ACT_SIZED_UNIT_KINDS
+        sum(1 for unit in units if unit["ordinal"] is not None)
+        for adapter, units in rows
+        if UNIT_KINDS[adapter] in _ACT_SIZED_UNIT_KINDS
     ]
     return {
         "longest_witness_characters": longest,
-        "act_entries": max(act_sized) if act_sized else max(lines, default=0),
+        "act_entries": max([surya_blocks, *act_sized]),
     }
 
 
@@ -611,6 +724,35 @@ def _checked_page_render(
     return page_render
 
 
+def _check_testimonium_ref(
+    witness: dict[str, Any], page_id: str, read_bytes: Callable[[str], bytes]
+) -> None:
+    """Refuse a testimonium that is not the `page-testimonium` its ref's bytes hold."""
+    ref = digest_ref(witness["testimonium_ref"], "a page Testimonium reference")
+    data = read_verified(read_bytes, ref, "a page Testimonium")
+    try:
+        record = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise SchemaRefusal(
+            f"page Testimonium {ref['relative_path']} is not JSON: {error}"
+        ) from error
+    testimonium = witness["testimonium"]
+    if record != testimonium:
+        raise SchemaRefusal(
+            f"witness {witness['chair']!r}'s page Testimonium is not the record its reference "
+            f"{ref['relative_path']} holds"
+        )
+    if not isinstance(testimonium, dict):
+        raise SchemaRefusal("a page Testimonium is not a record")
+    if testimonium.get("kind") != PAGE_TESTIMONIUM_KIND or testimonium.get("subject_id") != page_id:
+        raise SchemaRefusal(
+            f"witness {witness['chair']!r}'s Testimonium is not a {PAGE_TESTIMONIUM_KIND} of "
+            f"page {page_id!r}"
+        )
+    if "outcome" not in testimonium:
+        raise SchemaRefusal(f"witness {witness['chair']!r}'s page Testimonium records no outcome")
+
+
 def build_page_feed(
     *,
     page_id: str,
@@ -618,6 +760,7 @@ def build_page_feed(
     page_size: tuple[int, int],
     feed_switches: dict[str, Any],
     witness_regime: str,
+    roster: list[str],
     witnesses: list[dict[str, Any]],
     surya: dict[str, Any] | None,
     page_render: dict[str, Any] | None,
@@ -627,14 +770,31 @@ def build_page_feed(
 ) -> dict[str, Any]:
     """The `perlector-page-feed.v1` payload for one page, deterministic from sealed inputs.
 
-    `witnesses` is every configured page witness's Testimonium for this page, in
-    any order: `{chair, witness_label, adapter, testimonium, testimonium_ref}`.
-    Units are read from the retained bytes of the shown witnesses only; the rest
-    is `assemble_page_feed`.
+    `roster` is the sealed page-witness roster (chair names) and `witnesses`
+    one Testimonium per roster chair for this page, in any order: `{chair,
+    witness_label, adapter, testimonium, testimonium_ref}`. Each testimonium is
+    checked to be exactly the record its ref's bytes hold. Units are read from
+    the retained bytes of the shown witnesses only; the rest is
+    `assemble_page_feed`.
     """
     switches = protocol.validate_feed_table(feed_switches)
-    witnesses = _checked_witnesses(witnesses, _WITNESS_FIELDS, witness_regime)
-    shown = _shown_chairs(switches["witnesses"], [witness["chair"] for witness in witnesses])
+    roster = _checked_roster(roster)
+    witnesses = _checked_witnesses(witnesses, _WITNESS_FIELDS, witness_regime, roster)
+    for witness in witnesses:
+        _check_testimonium_ref(witness, page_id, read_bytes)
+    shown = _shown_chairs(switches["witnesses"], roster)
+    readings = {
+        witness["chair"]: witness_reading(
+            witness["testimonium"],
+            adapter=witness["adapter"],
+            page_size=page_size,
+            read_bytes=read_bytes,
+            fixture_placeholders=fixture_placeholders,
+        )
+        if witness["chair"] in shown
+        else {"units": None, "findings": None}
+        for witness in witnesses
+    }
     render_bytes = None
     if switches["page_overlay"] != "off" and isinstance(page_render, dict):
         render_bytes = read_verified(
@@ -648,22 +808,15 @@ def build_page_feed(
         page_size=page_size,
         feed_switches=switches,
         witness_regime=witness_regime,
+        roster=roster,
         witnesses=[
             {
                 "chair": witness["chair"],
                 "witness_label": witness["witness_label"],
                 "adapter": witness["adapter"],
-                "outcome": witness["testimonium"].get("outcome"),
+                "outcome": witness["testimonium"]["outcome"],
                 "testimonium_ref": witness["testimonium_ref"],
-                "units": witness_units(
-                    witness["testimonium"],
-                    adapter=witness["adapter"],
-                    page_size=page_size,
-                    read_bytes=read_bytes,
-                    fixture_placeholders=fixture_placeholders,
-                )
-                if witness["chair"] in shown
-                else None,
+                **readings[witness["chair"]],
             }
             for witness in witnesses
         ],
@@ -681,17 +834,19 @@ def assemble_page_feed(
     page_size: tuple[int, int],
     feed_switches: dict[str, Any],
     witness_regime: str,
+    roster: list[str],
     witnesses: list[dict[str, Any]],
     surya: dict[str, Any] | None,
     page_render: dict[str, Any] | None,
     serving_recipe: str,
     page_render_bytes: bytes | None = None,
 ) -> dict[str, Any]:
-    """The feed from witness units already read, for `build_page_feed` and for measurement.
+    """The feed from witness readings already made, for `build_page_feed` and for measurement.
 
-    `witnesses` is every configured page witness, in any order: `{chair,
-    witness_label, adapter, outcome, testimonium_ref, units}`, `units` being
-    `witness_units`' list for a shown witness (`None` is allowed for one the
+    `roster` is the sealed page-witness roster, and `witnesses` one row per
+    roster chair, in any order: `{chair, witness_label, adapter, outcome,
+    testimonium_ref, units, findings}`, `units` and `findings` being
+    `witness_reading`'s for a shown witness (`None` is allowed for one the
     switch hides). The `witnesses` switch picks which are shown; shown ones get
     letters in sorted `witness_label` order. `surya` is the page's Surya census
     as `{census_ref, lines: [{box_px, ref}] in Surya's order, blocks: [{box_px,
@@ -717,8 +872,9 @@ def assemble_page_feed(
     width, height = page_size
     if not (is_plain_int(width) and is_plain_int(height) and width > 0 and height > 0):
         raise SchemaRefusal(f"page size {page_size!r} is not two positive integers")
-    witnesses = _checked_witnesses(witnesses, _ASSEMBLED_WITNESS_FIELDS, witness_regime)
-    shown = _shown_chairs(switches["witnesses"], [witness["chair"] for witness in witnesses])
+    roster = _checked_roster(roster)
+    witnesses = _checked_witnesses(witnesses, _ASSEMBLED_WITNESS_FIELDS, witness_regime, roster)
+    shown = _shown_chairs(switches["witnesses"], roster)
     ordered = sorted(
         (witness for witness in witnesses if witness["chair"] in shown),
         key=lambda witness: witness["witness_label"],
@@ -741,14 +897,15 @@ def assemble_page_feed(
         "overlay": None,
         "witnesses": rows,
         "surya": _surya(surya, switches, page_size),
-        "answer_measure": answer_measure(
-            [
-                (witness["adapter"], witness["units"])
-                for witness in ordered
-                if witness["outcome"] == READ_OUTCOME
-            ]
-        ),
     }
+    feed["answer_measure"] = answer_measure(
+        [
+            (witness["adapter"], witness["units"])
+            for witness in ordered
+            if witness["outcome"] == READ_OUTCOME
+        ],
+        surya_blocks=0 if feed["surya"] is None else len(feed["surya"]["blocks"]),
+    )
     if switches["page_overlay"] != "off":
         if page_render_bytes is None:
             raise SchemaRefusal(

@@ -7,6 +7,7 @@ from operations.corpus.perlector_request_fit import (
     padded_crop,
     page_fit_table,
     page_shape,
+    skipped_gold_records,
 )
 
 PADDING = {"top_bp": 1000, "bottom_bp": 1000, "left_bp": 1000, "right_bp": 1000}
@@ -63,7 +64,8 @@ def test_every_page_is_counted_under_each_feed_setting_and_context():
         {"width": 2550, "height": 3300, "records": []},
     ]
     table = page_fit_table(pages)
-    assert len(table) == 6
+    assert len(table) == 8
+    assert skipped_gold_records(pages) == 1
     for cell in table.values():
         assert cell["fit"] + cell["refused_context"] + cell["refused_answer_cap"] == 2
     assert table["page request, default feed, 32768"]["fit"] == 2

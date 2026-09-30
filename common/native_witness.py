@@ -1214,6 +1214,14 @@ def parse_churro_response(raw: bytes, *, system_prompt: str | None = None) -> di
     )
 
 
+def churro_text_outside_sections(raw: bytes, *, system_prompt: str | None = None) -> str:
+    """`churro_document.text_outside_sections` under the intake ceiling."""
+
+    return churro_document.text_outside_sections(
+        raw, system_prompt=system_prompt, max_bytes=CHURRO_MAX_RESPONSE_BYTES
+    )
+
+
 def native_parse_refusal(parse: dict[str, Any]) -> str:
     """The one sentence a non-parsed native capture is described by.
 

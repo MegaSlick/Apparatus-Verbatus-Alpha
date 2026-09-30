@@ -131,3 +131,28 @@ def test_more_images_than_the_overhead_covers_are_refused():
 def test_an_answer_measure_that_is_not_the_feeds_is_refused():
     with pytest.raises(RequestCapacityRefusal, match="answer measure"):
         _admit(measure={"longest_witness_characters": 1})
+
+
+def test_digit_bearing_runs_are_charged_a_token_per_byte_and_prose_at_the_rate():
+    from common.request_capacity import page_prompt_charge
+
+    row = "L100 [100,50,900,120]\n"
+    text = row * 500
+    assert page_prompt_charge(text) == (500 * (len(row) - 2), 500 * 2)
+    tokens, _basis = perlector_page_prompt_bound(
+        text, template_digest=PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST
+    )
+    # A byte-level tokenizer can split every digit apart; the bound never charges less.
+    assert tokens >= PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS + len(
+        text.replace(" ", "").replace("\n", "")
+    )
+    rate_only, _ = perlector_page_prompt_bound(
+        "x" * len(text), template_digest=PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST
+    )
+    assert tokens > 2 * rate_only - PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS
+
+
+def test_a_digit_run_is_charged_its_utf8_bytes_not_its_characters():
+    from common.request_capacity import page_prompt_charge
+
+    assert page_prompt_charge("vingt-2ème baptême") == (len("vingt-2ème".encode()), len(" baptême"))

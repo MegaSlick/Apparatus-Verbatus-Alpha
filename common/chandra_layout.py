@@ -610,6 +610,7 @@ class _TopLevelDivReader(HTMLParser):
         self.overflowed = False
         self.unclosed = False
         self.outside_characters = 0
+        self.outside_data: list[str] = []
 
     def _index(self) -> int:
         line, offset = self.getpos()
@@ -687,6 +688,7 @@ class _TopLevelDivReader(HTMLParser):
         """
         if self._open is None:
             self.outside_characters += len(_WHITESPACE_RUN.sub("", data))
+            self.outside_data.append(data)
 
     def _note_nested_bbox(self, attrs: list[tuple[str, str | None]]) -> None:
         if self._open is None:
@@ -748,6 +750,24 @@ def _count_top_level_divs(html: str) -> int:
     counter.feed(html)
     counter.close()
     return counter.count
+
+
+def outside_blocks_text(raw: bytes) -> str:
+    """The text Chandra's answer wrote outside every top-level block, for a reader to see.
+
+    The same character data `content-outside-blocks` counts, in answer order:
+    each run of it with every whitespace run made one space and its ends
+    stripped, the non-empty runs joined by a newline. Empty when the finding is
+    absent. Only for an answer `parse_layout_html` read without refusal; the
+    finding itself still publishes the count and never the text.
+    """
+    html = bytes(raw).decode("utf-8")
+    reader = _TopLevelDivReader(html)
+    reader.feed(html)
+    reader.close()
+    reader.finish()
+    runs = (_WHITESPACE_RUN.sub(" ", data).strip(" ") for data in reader.outside_data)
+    return "\n".join(run for run in runs if run)
 
 
 def parse_layout_html(raw: Any) -> ParsedLayout | dict[str, str]:

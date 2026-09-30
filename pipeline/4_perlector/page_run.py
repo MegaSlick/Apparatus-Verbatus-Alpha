@@ -561,6 +561,7 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
         page_size=(width, height),
         feed_switches=run.protocol_config["feed"],
         witness_regime=context.witness_context,
+        roster=sorted(state.page_chairs),
         witnesses=_page_witnesses(
             context, page_id, state.testimonia.get(page_id, []), state.page_chairs
         ),

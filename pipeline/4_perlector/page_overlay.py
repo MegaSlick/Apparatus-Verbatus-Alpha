@@ -7,12 +7,22 @@ witness unit with a shown box_1000 and each shown Surya line and block. It is
 drawn on the render, never on the Exemplar, and never replaces the render, so
 the ink is always also seen unmarked.
 
-The drawing is deterministic: boxes are mapped from sealed-page pixels to
-render pixels in exact rationals rounded half to even, outlines are axis-aligned
-rectangles, and labels use Pillow's built-in bitmap font scaled by an integer
-factor with nearest-neighbour resampling, so no anti-aliasing enters the bytes.
-Every colour is fixed per source (`COLOURS`). The same render bytes and the
-same feed give the same PNG bytes.
+The drawing is deterministic and owes nothing to a library's choices: boxes
+are mapped from sealed-page pixels to render pixels in exact rationals rounded
+half to even; outlines are solid axis-aligned bands; labels are drawn from this
+module's own 5x7 bitmap glyphs (`GLYPHS`), each glyph pixel a solid square of
+the label scale, so no font file, font version or anti-aliasing enters the
+pixels; and the PNG is written by the project's own encoder
+(`common.imaging.encode_image_deterministic`), every byte fixed by the PNG and
+DEFLATE specifications. The same render bytes and the same feed give the same
+PNG bytes on any host.
+
+Each source has its own colour: one per witness letter (`WITNESS_COLOURS`),
+never repeated, and one each for Surya's lines and blocks. A label is placed at the
+first free spot scanning its box's rows left to right from the top-left
+corner, then the rows below it, so labels of a witness unit and of the Surya
+detections on the same box sit side by side; only when no free spot remains
+on the render does a label overlap another.
 
     plan = overlay_plan(feed_body)          # what is drawn, from the feed alone
     png = draw_page_overlay(render_bytes, plan)
@@ -30,24 +40,76 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable, Final
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageColor
 
 from common.contracts.canonical import code_digest, digest_bytes
 from common.contracts.envelope import read_verified
 from common.contracts.errors import SchemaRefusal
+from common.imaging import encode_image_deterministic
 
 RENDERER_SHA256: Final[str] = code_digest(Path(__file__).resolve().read_text(encoding="utf-8"))
 
 # One colour per witness letter, in letter order, then one for Surya's lines and
-# one for its blocks. A letter is a sorted-label position, so its colour names
-# no chair.
-WITNESS_COLOURS: Final = ("#d62728", "#1f77b4", "#2ca02c", "#9467bd", "#8c564b", "#e377c2")
+# one for its blocks, all distinct. A letter is a sorted-label position, so its
+# colour names no chair. A feed with more letters than colours draws no overlay.
+WITNESS_COLOURS: Final = (
+    "#d62728",
+    "#1f77b4",
+    "#2ca02c",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+)
 SURYA_LINE_COLOUR: Final = "#ff7f0e"
 SURYA_BLOCK_COLOUR: Final = "#17becf"
 LABEL_TEXT_COLOUR: Final = "#ffffff"
-# The label scale: the bitmap font is about 11 px tall, so it is enlarged by one
-# step per this many pixels of the render's longer edge (3x on a 2,560 render).
+# The label scale: a glyph is 7 px tall, so it is enlarged by one step per this
+# many pixels of the render's longer edge (3x on a 2,560 render).
 LABEL_SCALE_EDGE: Final = 800
+
+# 5x7 glyphs for every character an id can hold: a letter and digits.
+GLYPHS: Final[dict[str, tuple[str, str, str, str, str, str, str]]] = {
+    "0": (".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###."),
+    "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "2": (".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"),
+    "3": ("#####", "...#.", "..#..", "...#.", "....#", "#...#", ".###."),
+    "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
+    "5": ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
+    "6": ("..##.", ".#...", "#....", "####.", "#...#", "#...#", ".###."),
+    "7": ("#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."),
+    "8": (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
+    "9": (".###.", "#...#", "#...#", ".####", "....#", "...#.", ".##.."),
+    "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
+    "C": (".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."),
+    "D": ("###..", "#..#.", "#...#", "#...#", "#...#", "#..#.", "###.."),
+    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
+    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
+    "G": (".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".####"),
+    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "I": (".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "J": ("..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."),
+    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
+    "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
+    "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
+    "N": ("#...#", "#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#"),
+    "O": (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
+    "Q": (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
+    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
+    "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
+    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
+    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "V": ("#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."),
+    "W": ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "#.#.#", ".#.#."),
+    "X": ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"),
+    "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
+    "Z": ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
+}
+_GLYPH_W: Final = 5
+_GLYPH_H: Final = 7
 
 
 def _source_colour(source: str) -> str:
@@ -55,8 +117,14 @@ def _source_colour(source: str) -> str:
         return SURYA_LINE_COLOUR
     if source == "surya-block":
         return SURYA_BLOCK_COLOUR
-    letter = source.removeprefix("witness-")
-    return WITNESS_COLOURS[(ord(letter) - ord("A")) % len(WITNESS_COLOURS)]
+    index = ord(source.removeprefix("witness-")) - ord("A")
+    if not 0 <= index < len(WITNESS_COLOURS):
+        raise SchemaRefusal(
+            f"the overlay has {len(WITNESS_COLOURS)} distinct witness colours, and witness "
+            f"{source.removeprefix('witness-')} would repeat one; switch the overlay off or "
+            "show fewer witnesses"
+        )
+    return WITNESS_COLOURS[index]
 
 
 def _render_box(
@@ -124,12 +192,52 @@ def overlay_plan(feed: dict[str, Any]) -> dict[str, Any]:
 
 
 def _label_image(text: str, colour: str, scale: int) -> Image.Image:
-    """The id in white on its source's colour, bitmap font, enlarged without smoothing."""
-    font = ImageFont.load_default_imagefont()
-    left, top, right, bottom = font.getbbox(text)
-    label = Image.new("RGB", (right - left + 2, bottom - top + 2), colour)
-    ImageDraw.Draw(label).text((1 - left, 1 - top), text, font=font, fill=LABEL_TEXT_COLOUR)
-    return label.resize((label.width * scale, label.height * scale), Image.Resampling.NEAREST)
+    """The id in white on its source's colour, from `GLYPHS`, each glyph pixel `scale` square."""
+    label = Image.new("RGB", label_size(text, scale), ImageColor.getrgb(colour))
+    ink = ImageColor.getrgb(LABEL_TEXT_COLOUR)
+    for position, character in enumerate(text):
+        glyph = GLYPHS.get(character)
+        if glyph is None:
+            raise SchemaRefusal(f"the overlay has no glyph for {character!r} in id {text!r}")
+        left = 1 + position * (_GLYPH_W + 1)
+        for row, bits in enumerate(glyph):
+            for column, bit in enumerate(bits):
+                if bit == "#":
+                    x, y = (left + column) * scale, (1 + row) * scale
+                    label.paste(ink, (x, y, x + scale, y + scale))
+    return label
+
+
+def _outline(image: Image.Image, box: list[int], colour: tuple[int, int, int], width: int) -> None:
+    """A solid band `width` px wide just inside `[x0, y0, x1, y1]`, clipped to the image."""
+    x0, y0, x1, y1 = box
+    for band in (
+        (x0, y0, x1, min(y1, y0 + width)),
+        (x0, max(y0, y1 - width), x1, y1),
+        (x0, y0, min(x1, x0 + width), y1),
+        (max(x0, x1 - width), y0, x1, y1),
+    ):
+        image.paste(colour, band)
+
+
+def _overlaps(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _label_place(
+    box: list[int], size: tuple[int, int], image_size: tuple[int, int], placed: list
+) -> tuple[int, int]:
+    """The first free spot for a label: along the box's rows, then the rows below it."""
+    (width, height), (image_w, image_h) = size, image_size
+    x0, y0, x1, _y1 = box
+    left = max(0, min(x0, image_w - width))
+    right = max(left, min(x1, image_w) - width)
+    for y in range(max(0, min(y0, image_h - height)), max(1, image_h - height + 1), height):
+        for x in range(left, right + 1, width):
+            spot = (x, y, x + width, y + height)
+            if not any(_overlaps(spot, other) for other in placed):
+                return x, y
+    return left, max(0, min(y0, image_h - height))
 
 
 def draw_page_overlay(render_bytes: bytes, plan: dict[str, Any]) -> bytes:
@@ -145,19 +253,28 @@ def draw_page_overlay(render_bytes: bytes, plan: dict[str, Any]) -> bytes:
             f"{plan['dimensions']['w']}x{plan['dimensions']['h']}"
         )
     scale = plan["label_scale"]
-    draw = ImageDraw.Draw(image)
+    colours = {source: ImageColor.getrgb(colour) for source, colour in plan["colours"].items()}
     for item in plan["drawn"]:
-        draw.rectangle(item["box"], outline=plan["colours"][item["source"]], width=scale)
+        _outline(image, item["box"], colours[item["source"]], scale)
+    for item, (x, y, _x1, _y1) in zip(plan["drawn"], label_boxes(plan), strict=True):
+        image.paste(_label_image(item["id"], plan["colours"][item["source"]], scale), (x, y))
+    return encode_image_deterministic(image)
+
+
+def label_size(text: str, scale: int) -> tuple[int, int]:
+    """The `(width, height)` of one label, in render pixels."""
+    return (1 + len(text) * (_GLYPH_W + 1)) * scale, (_GLYPH_H + 2) * scale
+
+
+def label_boxes(plan: dict[str, Any]) -> list[tuple[int, int, int, int]]:
+    """Where each planned id's label is drawn, `(x0, y0, x1, y1)`, in plan order."""
+    image_size = (plan["dimensions"]["w"], plan["dimensions"]["h"])
+    placed: list[tuple[int, int, int, int]] = []
     for item in plan["drawn"]:
-        label = _label_image(item["id"], plan["colours"][item["source"]], scale)
-        x0, y0, x1, _y1 = item["box"]
-        # Witness labels sit at the box's top-left, Surya's at its top-right, so
-        # a witness unit and the detection under it do not cover each other's id.
-        x = x0 if item["source"].startswith("witness-") else max(0, x1 - label.width)
-        image.paste(label, (min(x, image.width - label.width), y0))
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG", optimize=False, compress_level=6)
-    return buffer.getvalue()
+        width, height = label_size(item["id"], plan["label_scale"])
+        x, y = _label_place(item["box"], (width, height), image_size, placed)
+        placed.append((x, y, x + width, y + height))
+    return placed
 
 
 def overlay_record(render_bytes: bytes, plan: dict[str, Any]) -> dict[str, Any]:
