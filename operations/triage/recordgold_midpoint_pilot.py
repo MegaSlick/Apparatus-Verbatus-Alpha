@@ -51,17 +51,28 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--output-dir must already exist")
     if len({identifier for identifier, _rotation in args.page}) != len(args.page):
         parser.error("each --page id may appear once")
+    manifest_output = args.output_dir / "triage-decision-manifest.json"
+    binding_output = args.output_dir / "scantailor-triage-binding.json"
+    if args.geometry_document is not None:
+        if manifest_output.exists() or binding_output.exists():
+            parser.error("--output-dir already holds a triage manifest or binding")
+        if args.prepared_source_dir is not None:
+            if not args.prepared_source_dir.is_dir() or any(args.prepared_source_dir.iterdir()):
+                parser.error("--prepared-source-dir must be an existing empty directory")
+            stems = [
+                Path(f"pages/{identifier}.jpg").stem.casefold()
+                for identifier, _rotation in args.page
+            ]
+            if len(set(stems)) != len(stems):
+                # Prepared pages are named by the page's file stem alone.
+                parser.error("two --page ids share a file name, so their prepared pages collide")
     frames: dict[str, producer.SubmittedFrame] = {}
     prescribed: list[PrescribedSpread] = []
     orientations: dict[str, int] = {}
     for identifier, degrees in args.page:
         relative = f"pages/{identifier}.jpg"
         source = args.source_root / relative
-        # Resolved and contained *before* the read, not after. A page
-        # identifier carrying separators or `..` otherwise makes this tool read
-        # an unrelated local file, and the containment check that exists
-        # further down only rejects the escaped path once its bytes are already
-        # in hand.
+        # Contained before the read, so an identifier with `..` cannot read an unrelated file.
         root = args.source_root.resolve()
         if not source.resolve().is_relative_to(root):
             parser.error(f"page identifier {identifier!r} leaves --source-root")
@@ -114,8 +125,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     materialized: list[dict[str, object]] = []
     if args.prepared_source_dir is not None:
-        if not args.prepared_source_dir.is_dir() or any(args.prepared_source_dir.iterdir()):
-            parser.error("--prepared-source-dir must be an existing empty directory")
+        # Every page is rendered before any is written, so a refusal leaves the
+        # directory empty and the command can be rerun.
+        rendered: list[tuple[str, bytes]] = []
         for source_path, frame in frames.items():
             row = translated.rows_by_submitted_path[frame.path]
             stem = Path(frame.path).stem
@@ -125,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
                 except ValueError as error:
                     parser.error(f"could not materialize {frame.path} part {part_index}: {error}")
                 output_name = f"{stem}-{'left' if part_index == 0 else 'right'}.png"
-                atomic_create(args.prepared_source_dir / output_name, pixels)
+                rendered.append((output_name, pixels))
                 materialized.append(
                     {
                         "prepared_relative_path": output_name,
@@ -138,14 +150,12 @@ def main(argv: list[str] | None = None) -> int:
                         "triage_part_index": part_index,
                     }
                 )
+        for output_name, pixels in rendered:
+            atomic_create(args.prepared_source_dir / output_name, pixels)
         translated.binding["materialized_pages"] = materialized
-    atomic_create(
-        args.output_dir / "scantailor-triage-binding.json", canonical_bytes(translated.binding)
-    )
-    atomic_create(
-        args.output_dir / "triage-decision-manifest.json", canonical_bytes(admitted.manifest)
-    )
-    print(args.output_dir / "triage-decision-manifest.json")
+    atomic_create(binding_output, canonical_bytes(translated.binding))
+    atomic_create(manifest_output, canonical_bytes(admitted.manifest))
+    print(manifest_output)
     return 0
 
 

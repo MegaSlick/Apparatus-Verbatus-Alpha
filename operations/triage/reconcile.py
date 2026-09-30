@@ -108,10 +108,8 @@ def validate_verdict(value: Any) -> dict[str, Any]:
             for key, item in fact["categorical"].items()
         ):
             raise ReconciliationRefusal("structural categorical facts must be non-blank strings")
-        # The first measured pass used open vocabularies ("up"/"down",
-        # "recto"/"verso"); its face disagreement is vocabulary-induced and
-        # stands as recorded. The enum below is closed so unanimity on this
-        # fact is decidable by observation, not by dialect.
+        # A closed vocabulary makes unanimity on this fact a matter of observation,
+        # not of how each seat happened to phrase it.
         face = fact["categorical"].get("loose_document_face")
         if face is not None and face not in {
             "written-side-up",
@@ -163,7 +161,7 @@ def validate_verdict(value: Any) -> dict[str, Any]:
     refuse_capture_preference(value)
     try:
         encoded = canonical_bytes(value)
-    except (TypeError, ValueError) as error:
+    except TypeError as error:
         raise ReconciliationRefusal(
             "structural verdict cannot be represented as canonical JSON"
         ) from error
@@ -390,7 +388,7 @@ def reconcile_files(
     )
     try:
         verdicts = [json.loads(_read_verdict_bytes(path).decode("utf-8")) for path in source_paths]
-    except (OSError, UnicodeDecodeError, ValueError) as error:
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
         raise ReconciliationRefusal("structural verdict file could not be read") from error
     expected_value, disagreement_value = reconcile(verdicts)
     # Publish the disagreement record first. A failure before the expected record

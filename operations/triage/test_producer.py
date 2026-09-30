@@ -331,7 +331,10 @@ def test_confirmation_refuses_a_pair_the_instrument_never_evidenced():
     # evidence record. Keep the genuine manifest and all genuine emitted records;
     # only the confirmation attempts to promote the refused pair.
     confirmed["clusters"][0]["evidence_pairs"] = [manifest["dimension_refused_pairs"][0]]
-    with pytest.raises(ProducerRefusal, match="manual refusal evidence-not-instrumented"):
+    with pytest.raises(
+        ProducerRefusal,
+        match="evidence-not-instrumented: confirmation names a pair the instrument never evidenced$",
+    ):
         produce(
             frames,
             corpus_id="synthetic",
@@ -443,7 +446,10 @@ def test_confirmation_refuses_an_evidence_manifest_from_a_different_pass():
     right_frames = [frame("70"), frame("71")]
     confirmed, recipe, _own_manifest, _own_evidence = confirmation(left_frames)
     _other_recipe, _other_manifest, other_evidence = build_evidence(right_frames)
-    with pytest.raises(ProducerRefusal, match="manual refusal evidence-not-instrumented"):
+    with pytest.raises(
+        ProducerRefusal,
+        match="evidence manifest digest does not match the supplied evidence manifest$",
+    ):
         produce(
             left_frames,
             corpus_id="synthetic",
@@ -458,7 +464,10 @@ def test_confirmation_refuses_an_evidence_manifest_from_a_different_pass():
 def test_confirmation_requires_evidence_when_a_confirmation_is_given():
     frames = [frame("63"), frame("64")]
     confirmed, _recipe, _manifest, _evidence = confirmation(frames)
-    with pytest.raises(ProducerRefusal, match="evidence-not-instrumented"):
+    with pytest.raises(
+        ProducerRefusal,
+        match="requires the producer recipe, candidate evidence manifest, and records it traces to$",
+    ):
         produce(frames, corpus_id="synthetic", mode="auto", confirmation=confirmed)
 
 
@@ -1215,3 +1224,109 @@ def test_a_no_op_confirmation_proves_the_head_under_the_lock_not_from_its_own_re
             confirmed, produced, expected_register_digest=first_head, **arguments
         )
     assert register_digest(register_path.read_bytes()) == corrected_head
+
+
+def _produce_with(frames, confirmed, recipe, manifest, evidence):
+    """Produce against an edited evidence manifest the confirmation is resealed to."""
+    return produce(
+        frames,
+        corpus_id="synthetic",
+        mode="auto",
+        confirmation={**confirmed, "evidence_manifest_sha256": digest_of(manifest)},
+        instrument_recipe=recipe,
+        evidence_manifest=manifest,
+        evidence_records=evidence,
+    )
+
+
+def _with_cost(manifest: dict, **costs: int) -> dict:
+    return {**manifest, "candidate_cost": {**manifest["candidate_cost"], **costs}}
+
+
+def test_an_evidence_manifest_frame_outside_the_submission_is_refused():
+    frames = [frame("63"), frame("64"), frame("65")]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    with pytest.raises(
+        ProducerRefusal,
+        match="evidence manifest frame set reaches outside this producer submission$",
+    ):
+        _produce_with(frames[:2], confirmed, recipe, manifest, evidence)
+
+
+def test_a_dimension_refusal_count_must_match_its_named_list():
+    frames = [frame("63"), frame("64")]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    miscounted = _with_cost(manifest, dimension_refused_pairs=1)
+    with pytest.raises(
+        ProducerRefusal,
+        match="unequal-dimension refusal count does not match the candidate accounting$",
+    ):
+        _produce_with(frames, confirmed, recipe, miscounted, evidence)
+
+
+def test_a_dimension_refusal_named_twice_is_refused():
+    frames = [frame("63"), frame("64"), frame("65", size=(80, 48))]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    assert len(manifest["dimension_refused_pairs"]) == 2
+    repeated = {
+        **manifest,
+        "dimension_refused_pairs": [manifest["dimension_refused_pairs"][0]] * 2,
+    }
+    with pytest.raises(ProducerRefusal, match="does not name each refused pair exactly once$"):
+        _produce_with(frames, confirmed, recipe, repeated, evidence)
+
+
+def test_a_pair_both_evidenced_and_refused_is_refused():
+    frames = [frame("63"), frame("64"), frame("65", size=(80, 48))]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    both = _with_cost(
+        manifest, dimension_refused_pairs=manifest["candidate_cost"]["dimension_refused_pairs"] + 1
+    )
+    both["dimension_refused_pairs"] = [
+        *manifest["dimension_refused_pairs"],
+        list(evidence[0]["both_digests"]),
+    ]
+    with pytest.raises(ProducerRefusal, match="one candidate pair is both evidenced and refused$"):
+        _produce_with(frames, confirmed, recipe, both, evidence)
+
+
+def test_evidence_records_must_match_the_sealed_record_digest():
+    frames = [frame("63"), frame("64")]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    resealed = {**manifest, "evidence_records_sha256": "0" * 64}
+    with pytest.raises(
+        ProducerRefusal, match="do not match the evidence manifest's sealed record digest$"
+    ):
+        _produce_with(frames, confirmed, recipe, resealed, evidence)
+
+
+def test_selected_and_refused_pairs_must_conserve_the_recorded_reach(tmp_path: Path):
+    # A one-frame window leaves the outer pair to the global prefilter, so a manifest
+    # that reports no prefilter passes cannot account for reaching it.
+    config_path = tmp_path / "instrument.toml"
+    config_path.write_bytes(
+        instrument.DEFAULT_CONFIG_PATH.read_bytes().replace(
+            b"submission_window = 12", b"submission_window = 1"
+        )
+    )
+    config = instrument.load_config(config_path)
+    frames = [frame("63"), frame("64"), frame("65")]
+    proxies = [instrument.build_proxies_from_bytes(item.data, config) for item in frames]
+    evidence, manifest = instrument.candidate_evidence(proxies, config)
+    assert manifest["candidate_cost"]["submission_window_pairs"] == 2
+    assert manifest["emitted_evidence_records"] == 3
+    confirmed, _recipe, _manifest, _evidence = confirmation(frames)
+    confirmed["instrument_config_sha256"] = manifest["instrument_config_sha256"]
+    unreached = _with_cost(manifest, global_prefilter_passes=0)
+    with pytest.raises(
+        ProducerRefusal,
+        match="selected and refused pairs do not conserve the candidate selector's recorded reach$",
+    ):
+        _produce_with(frames, confirmed, instrument.producer_recipe(config), unreached, evidence)
+
+
+def test_a_confirmation_file_nested_past_the_parser_is_a_named_refusal(tmp_path: Path):
+    path = tmp_path / "confirmation.json"
+    path.write_bytes(b"[" * 100_000 + b"]" * 100_000)
+    with pytest.raises(ProducerRefusal, match="confirmation file could not be read$"):
+        load_confirmation(path)

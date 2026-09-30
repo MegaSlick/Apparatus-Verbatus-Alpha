@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import copy
+import os
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
+from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.imaging import render_triage_derivative
 from operations.operator.scantailor_worker import parse
 from operations.triage.producer import SubmittedFrame, produce
 from operations.triage.scantailor_bridge import (
     ScantailorBridgeRefusal,
+    load_imported_geometry,
+    transcribe_imported_geometry,
     transcribe_midpoint_splits,
 )
 from operations.triage.scantailor_project import PrescribedSpread, prescribed_midpoint_project
@@ -116,17 +121,15 @@ def test_foreign_submitted_source_refuses_exact_coverage(tmp_path: Path):
             submitted_by_source_path=foreign,
             corpus_id="recordgold-pilot",
             mode="manual",
+            orientation_degrees_by_source_path={sources[0]: 0},
         )
 
 
 def test_a_declared_removed_half_is_refused_rather_than_published(tmp_path: Path):
     """The operator deleted a half in ScanTailor; this bridge emits both.
 
-    `removed_half` was required by the closed image schema and then read by
-    nothing, so an excluded half reached the Door as an ordinary row and could
-    be established as an act with nothing downstream able to tell the removal
-    had been discarded. Refused rather than honoured: emitting
-    only the retained half would decide that half's physical ordering silently.
+    Publishing both halves would let the excluded half reach the Door as an ordinary
+    row, and emitting only the retained half would decide its ordering silently.
     """
     document, frames, sources = _document(tmp_path)
     removed = {
@@ -148,3 +151,147 @@ def test_a_declared_removed_half_is_refused_rather_than_published(tmp_path: Path
             mode="manual",
             orientation_degrees_by_source_path={sources[0]: 0, sources[1]: 180},
         )
+
+
+def _small(tmp_path: Path) -> tuple[dict, dict[str, SubmittedFrame], list[str]]:
+    sources = [str((tmp_path / "pages/a.png").resolve()), str((tmp_path / "pages/b.png").resolve())]
+    project = prescribed_midpoint_project(
+        [PrescribedSpread("pages/a.png", 40, 20), PrescribedSpread("pages/b.png", 30, 20)]
+    )
+    document = parse(project, tmp_path / "small.ScanTailor")
+    frames = {
+        sources[0]: _frame("pages/a.png", (40, 20)),
+        sources[1]: _frame("pages/b.png", (30, 20)),
+    }
+    return document, frames, sources
+
+
+def _translate(document, frames, orientations):
+    return transcribe_midpoint_splits(
+        document,
+        geometry_document_sha256="a" * 64,
+        submitted_by_source_path=frames,
+        corpus_id="recordgold-pilot",
+        mode="manual",
+        orientation_degrees_by_source_path=orientations,
+    )
+
+
+def _entry(document: dict, index: int = 0) -> dict:
+    return document["geometry"][index]
+
+
+@pytest.mark.parametrize(
+    ("edit", "tail"),
+    [
+        (
+            lambda d, f, o, s: f.__setitem__(s[1], SubmittedFrame(f[s[0]].path, f[s[1]].data)),
+            "two ScanTailor sources map to one submitted path",
+        ),
+        (
+            lambda d, f, o, s: _entry(d)["image"].__setitem__("width", 41),
+            "imported ScanTailor dimensions disagree with submitted bytes",
+        ),
+        (
+            lambda d, f, o, s: o.__setitem__(s[0], 90),
+            "source orientation must be 0 or 180 degrees",
+        ),
+        (
+            lambda d, f, o, s: o.__setitem__(s[0], False),
+            "source orientation must be 0 or 180 degrees",
+        ),
+        (
+            lambda d, f, o, s: _entry(d)["outline"][1].__setitem__("x", "39"),
+            "ScanTailor outline is not the exact submitted frame",
+        ),
+        (
+            lambda d, f, o, s: _entry(d)["cutters"].append(copy.deepcopy(_entry(d)["cutters"][0])),
+            "ScanTailor two-pages geometry needs exactly one cutter",
+        ),
+        (
+            lambda d, f, o, s: _entry(d)["cutters"][0].__setitem__("name", "cutter2"),
+            "ScanTailor cutter is not the supported primary split",
+        ),
+        (
+            lambda d, f, o, s: [
+                _entry(d)["cutters"][0][point].__setitem__("x", "20.5") for point in ("p1", "p2")
+            ],
+            "ScanTailor geometry cannot be represented exactly by triage pixels",
+        ),
+        (
+            lambda d, f, o, s: _entry(d)["image"].__setitem__("file_image", 1),
+            "names a page other than the first of its file",
+        ),
+        (
+            lambda d, f, o, s: o.pop(s[1]),
+            "every imported source needs exactly one declared orientation",
+        ),
+    ],
+)
+def test_bridge_refusals_name_their_reason(tmp_path: Path, edit, tail: str):
+    document, frames, sources = _small(tmp_path)
+    orientations = {sources[0]: 0, sources[1]: 180}
+    _translate(document, dict(frames), dict(orientations))
+    edit(document, frames, orientations, sources)
+    with pytest.raises(ScantailorBridgeRefusal, match=f"{tail}$"):
+        _translate(document, frames, orientations)
+
+
+def _published(tmp_path: Path, document: dict) -> Path:
+    path = tmp_path / "geometry.json"
+    path.write_bytes(canonical_bytes(document) + b"\n")
+    return path
+
+
+def test_published_geometry_is_read_once_and_bound_by_digest(tmp_path: Path):
+    document, frames, sources = _small(tmp_path)
+    path = _published(tmp_path, document)
+    loaded, digest = load_imported_geometry(path)
+    assert loaded == document
+    assert digest == digest_bytes(path.read_bytes())
+    translated = transcribe_imported_geometry(
+        path,
+        submitted_by_source_path=frames,
+        corpus_id="recordgold-pilot",
+        mode="manual",
+        orientation_degrees_by_source_path={sources[0]: 0, sources[1]: 0},
+    )
+    assert translated.binding["geometry_document_sha256"] == digest
+
+
+@pytest.mark.parametrize(
+    ("raw", "tail"),
+    [
+        (b"{not json\n", "imported ScanTailor geometry is not JSON"),
+        (b"[" * 100_000 + b"]" * 100_000, "imported ScanTailor geometry is not JSON"),
+        (
+            b"[" * 300 + b"]" * 300 + b"\n",
+            "imported ScanTailor geometry cannot be represented as canonical JSON",
+        ),
+        (b"1.5\n", "imported ScanTailor geometry cannot be represented as canonical JSON"),
+        (b'"\\ud800"\n', "imported ScanTailor geometry cannot be represented as canonical JSON"),
+        (b'{"a": 1}\n', "imported ScanTailor geometry is not canonical bytes"),
+    ],
+)
+def test_published_geometry_refuses_unreadable_json(tmp_path: Path, raw: bytes, tail: str):
+    path = tmp_path / "geometry.json"
+    path.write_bytes(raw)
+    with pytest.raises(ScantailorBridgeRefusal, match=f"{tail}$"):
+        load_imported_geometry(path)
+
+
+def test_published_geometry_must_be_one_direct_regular_file(tmp_path: Path):
+    document, _frames, _sources = _small(tmp_path)
+    target = _published(tmp_path, document)
+    link = tmp_path / "link.json"
+    os.symlink(target, link)
+    tail = "imported ScanTailor geometry could not be read as one direct regular file$"
+    for path in (link, tmp_path / "missing.json", tmp_path):
+        with pytest.raises(ScantailorBridgeRefusal, match=tail):
+            load_imported_geometry(path)
+
+
+@pytest.mark.parametrize("size", [(1, 20), (40, 1), (True, 20), (40.0, 20)])
+def test_a_prescribed_source_needs_two_pixels_on_each_axis(size):
+    with pytest.raises(ValueError, match="integers of at least 2 pixels$"):
+        prescribed_midpoint_project([PrescribedSpread("pages/a.png", *size)])
