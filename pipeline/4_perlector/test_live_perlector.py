@@ -2683,7 +2683,11 @@ def _stop_after_the_first_semi_final(monkeypatch, *, wait: float = 0.0) -> None:
     _stop_after_the_first(monkeypatch, perlector.SEMI_FINAL_KIND, wait=wait)
 
 
-def _stop_after_the_first(monkeypatch, kind: str, *, wait: float = 0.0) -> None:
+def _stop_after_the_first(
+    monkeypatch, kind: str, *, wait: float = 0.0, in_flight: threading.Event | None = None
+) -> None:
+    """Interrupt once the first `kind` record is written; with `in_flight`, not before
+    that event says the call the test holds has reached its endpoint."""
     real_publish = StageContext.publish
     struck = False
 
@@ -2692,6 +2696,8 @@ def _stop_after_the_first(monkeypatch, kind: str, *, wait: float = 0.0) -> None:
         result = real_publish(self, **kwargs)
         if kwargs["kind"] == kind and not struck:
             struck = True
+            if in_flight is not None and not in_flight.wait(10):
+                raise AssertionError("the held call never reached its endpoint")
             time.sleep(wait)
             raise KeyboardInterrupt
         return result
@@ -2774,6 +2780,9 @@ class _HeldEndpoint(_ContentEndpoint):
 
     def __init__(self, *, answer: bool, holds=_act_two_reading, **kwargs) -> None:
         super().__init__(**kwargs)
+        # Set when the held request arrives, so the test interrupts only once the
+        # call is really in flight rather than racing the reader thread to it.
+        self.arrived = threading.Event()
         self.release = threading.Event()
         self._answer = answer
         self._holds = holds
@@ -2782,6 +2791,7 @@ class _HeldEndpoint(_ContentEndpoint):
     def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
         if body is not None and self._holds(body) and not self._held:
             self._held = True
+            self.arrived.set()
             self.release.wait(10)
             if not self._answer:
                 raise EndpointUnavailable("the connection dropped with the call in flight")
@@ -2812,7 +2822,7 @@ def _interrupt_with_act_two_in_flight(
     """
     endpoint = _HeldEndpoint(answer=answer, holds=holds, served_model_id=SERVED_MODEL_ID)
     with monkeypatch.context() as patch:
-        _stop_after_the_first(patch, stop_after)
+        _stop_after_the_first(patch, stop_after, in_flight=endpoint.arrived)
         with pytest.raises(KeyboardInterrupt):
             _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, endpoint=endpoint)
         if before_release is not None:
