@@ -76,7 +76,7 @@ def budget_stopped_comparisons(
     chairs = []
     for row in rows:
         if isinstance(row, dict) and "max_comparison_steps" in row:
-            chair = row.get("chair", row.get("letter"))
+            chair = row.get("chair")
             if not isinstance(chair, str) or not chair:
                 raise SchemaRefusal(f"{subject} has a stopped dissent row naming no witness")
             chairs.append(chair)

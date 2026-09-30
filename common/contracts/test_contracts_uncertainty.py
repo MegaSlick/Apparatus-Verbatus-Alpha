@@ -418,13 +418,18 @@ def test_budget_stopped_comparisons_names_the_stops_and_refuses_an_unsealed_budg
         "dissent": [
             {"chair": "b", "compared": "unknown", "reason": "stopped", "max_comparison_steps": 7},
             {"chair": "a", "compared": True},
-            {"letter": "C", "compared": "unknown", "reason": "stopped", "max_comparison_steps": 7},
+            {"chair": "c", "compared": "unknown", "reason": "stopped", "max_comparison_steps": 7},
         ],
     }
-    assert budget_stopped_comparisons(payload, 7, "a reading") == (True, ["C", "b"])
+    assert budget_stopped_comparisons(payload, 7, "a reading") == (True, ["b", "c"])
     assert budget_stopped_comparisons({**payload, "self_revision": []}, 7, "a reading")[0] is False
     with pytest.raises(SchemaRefusal, match="self_revision stopped on a 7-step .* sealed 8"):
         budget_stopped_comparisons(payload, 8, "a reading")
     unnamed = {"self_revision": [], "dissent": [{"max_comparison_steps": 7}]}
     with pytest.raises(SchemaRefusal, match="naming no witness"):
         budget_stopped_comparisons(unnamed, 7, "a reading")
+    # A page-path row names its witness by letter, never by chair; one reaching
+    # here is refused rather than mapped onto a chair.
+    lettered = {"self_revision": [], "dissent": [{"letter": "C", "max_comparison_steps": 7}]}
+    with pytest.raises(SchemaRefusal, match="naming no witness"):
+        budget_stopped_comparisons(lettered, 7, "a reading")
