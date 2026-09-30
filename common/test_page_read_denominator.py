@@ -536,8 +536,30 @@ def test_a_page_the_exemplar_refused_is_a_row_that_is_not_counted(happy_tree, tm
             "not the not-run",
         ),
         (lambda r: r["payload"]["problems"][0].update(code=7), "records a problem with no code"),
+        *(
+            (lambda r, name=name: r["payload"].update({name: {"forged": True}}), "not the not-run")
+            for name in (
+                "engine_call",
+                "request_digest",
+                "finish_reason",
+                "stop_reason",
+                "sampling",
+                "capacity",
+            )
+        ),
     ],
-    ids=["schema", "parse-state", "problems", "code-type"],
+    ids=[
+        "schema",
+        "parse-state",
+        "problems",
+        "code-type",
+        "engine-call",
+        "request-digest",
+        "finish-reason",
+        "stop-reason",
+        "sampling",
+        "capacity",
+    ],
 )
 def test_a_refused_page_s_reading_that_is_not_its_not_run_reading_is_refused(
     happy_tree, tmp_path, change, refusal

@@ -2612,8 +2612,19 @@ def _refused_page_row(
         and payload.get("parse_state") == page_path.NOT_RUN
         and payload.get("disposition") == page_path.HELD
         and reading.get("outcome") == page_path.HELD
-        and payload.get("feed_ref") is None
-        and payload.get("answer") is None
+        and all(
+            payload.get(name) is None
+            for name in (
+                "feed_ref",
+                "request_digest",
+                "engine_call",
+                "sampling",
+                "capacity",
+                "finish_reason",
+                "stop_reason",
+                "answer",
+            )
+        )
         and _problem_codes(payload.get("problems"), f"{what}'s page reading")
         == [page_path.PAGE_NOT_SEALED]
         and reading.get("inputs") == [exemplar_ref],
