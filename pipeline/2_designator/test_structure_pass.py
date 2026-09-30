@@ -2616,9 +2616,7 @@ def test_one_region_covering_half_two_rectangles_is_still_shared_detection():
     assert all(block["detected_bounds"] == band for block in blocks)
 
 
-def test_a_parsed_answer_records_the_text_view_its_parser_reports(
-    live_run, tmp_path, monkeypatch
-):
+def test_a_parsed_answer_records_the_text_view_its_parser_reports(live_run, tmp_path, monkeypatch):
     """The record names the view the parser read under, not a fixed constant, so a
     parser reporting a view this build does not read is refused by that name."""
     root, catalogue = live_run

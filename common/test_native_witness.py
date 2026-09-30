@@ -2475,9 +2475,7 @@ def test_a_capture_read_under_an_older_parser_is_refused_by_name(adapter, parser
         ("chandra.v1", "html", "chandra-layout-text.v9"),
     ],
 )
-def test_a_capture_naming_an_unknown_text_view_is_refused_with_its_remedy(
-    adapter, parser, unknown
-):
+def test_a_capture_naming_an_unknown_text_view_is_refused_with_its_remedy(adapter, parser, unknown):
     value = _native_capture()
     if adapter == "chandra.v1":
         value.update(
