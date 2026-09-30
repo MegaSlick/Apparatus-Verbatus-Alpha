@@ -362,3 +362,55 @@ and calibration set until Tyrel rules otherwise. This package is built so that
 ruling, whenever it comes, is a decision about which corpus a number is drawn
 from — not a schema migration, because RecordGold truth was never filed where
 `gold/` truth lives.
+
+## The crop census
+
+`crop_census.py` counts, with no model and no network, how many pages of a
+RecordGold page manifest would qualify for crops on request: a second round in
+which the Perlector, having read the whole page from its capped render, is sent
+up to k regions of the sealed page at native resolution. It decides whether a
+paid on/off comparison is worth running; the feature itself stays off
+(`[feed] crops = "off"`).
+
+```sh
+.venv/bin/python -m operations.corpus.crop_census /path/to/set/page_manifest.jsonl \
+  --out /path/outside/the/tree/crop-census.json
+```
+
+Per page it records:
+
+- `native`: the manifest's `width` and `height` (which `local_admission.py`
+  checks against the decoded pixels); no image is opened;
+- `sent`: the page render the page request embeds, at `[page_context]
+  maximum_edge` (`common.page_render.render_size`, the rule the renderer uses);
+- `seen`: the size the Perlector row's processor resizes that render to
+  (`common.request_capacity.smart_resize`, with the row's `min_pixels`,
+  `max_pixels`, `patch_size` and `merge_size`; the token count is the
+  processor's `image_grid_thw.prod() // merge_size**2`);
+- `gain_bp`: how many times finer, linearly, native pixels are than those seen,
+  `sqrt(native area / seen area)`, in basis points;
+- `need` and `headroom`: the page request's capacity record against the sealed
+  row's 65,536-token context, built as `perlector_request_fit.py` builds it (the
+  sealed feed, the page's gold text standing in for three witnesses, Surya lines
+  estimated from it);
+- `k`: the most crops, up to `--max-crops`, that round two fits. Round two is
+  the page request exactly as admitted — same images, prompt charge and answer
+  reserve — plus k crops, each charged its image tokens (`request_fits`) and the
+  chat template's two tokens per image. The round-one answer is not carried into
+  round two, and no wording for the crop request is charged beyond those tokens;
+- `qualifies`: `gain_bp` at least `--min-gain` and k at least 1. A page whose
+  request is refused at 65,536 tokens has k 0 and does not qualify.
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `--min-gain` | 1.5 | the least linear gain worth a crop |
+| `--crop-width` | 0.5 | a crop's width as a share of the page's |
+| `--crop-height` | 0.125 | a crop's height as a share of the page's |
+| `--max-crops` | 8 | the most crops round two may ask for |
+
+The default crop is half the page wide and an eighth tall, a few lines of an
+act; k falls as the crop's area grows, so the census is worth running at more
+than one crop size. The report is canonical JSON (sorted keys, no timestamps)
+carrying its inputs, the manifest's digest, every page and a summary: the share
+of pages qualifying, gain quantiles (nearest rank) and a histogram of k. The
+printed summary carries counts only.
