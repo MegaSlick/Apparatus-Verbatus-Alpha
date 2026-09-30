@@ -29,8 +29,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from .errors import OperatorError
 from .surface import OperatorSurface
 
