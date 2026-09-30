@@ -245,13 +245,15 @@ def _toml_profile(row: dict[str, Any]) -> str:
 def write_live_catalogue(path: Path, registry, *, contexts: dict[str, int] | None = None) -> Path:
     """A serving catalogue whose witness rows are live, sealed into this run.
 
-    The two non-witness chairs keep fixture rows: this run's Designator and
-    Perlector are not what the Attestatores reads, and inventing live rows for
-    them would put figures nobody measured beside chairs nothing starts.
+    The non-witness chairs keep fixture rows: this run's Designator (with its
+    Surya detector) and Perlector are not what the Attestatores reads, and
+    inventing live rows for them would put figures nobody measured beside
+    chairs nothing starts.
     """
     rows: list[dict[str, Any]] = []
     for chair, recipe in (
         ("designator_structure", "fake-designator-v0"),
+        ("designator_surya", "fake-surya-v0"),
         ("perlector", "fake-perlector-v0"),
     ):
         rows.extend(

@@ -25,6 +25,14 @@ from pathlib import Path
 from typing import Any
 
 PAGE_SCHEMA = "verbatus-surya-page.v1"
+# Where a page's block positions came from. Surya's layout call orders blocks
+# with its learned reading-order head, but raster-sorts them (top to bottom,
+# then left to right) when the page has more detections than the head was
+# trained on, or when the layout detector returned no feature map for the head
+# to read. Surya only logs either fallback; the runner records which one ran.
+ORDER_HEAD = "surya-order-head"
+RASTER_FALLBACK = "raster-fallback"
+READING_ORDERS = (ORDER_HEAD, RASTER_FALLBACK)
 # The Surya settings that shape what the two detectors return. The runner
 # refuses to run unless each holds Surya's own default, and records them.
 OUTPUT_SETTINGS = (
@@ -62,6 +70,25 @@ _READ_CHUNK = 1 << 20
 
 class BundleRefusal(RuntimeError):
     """A bundle that is missing, malformed, or no longer matches its own lock."""
+
+
+def reading_order(detections: int, feature_map: bool, max_boxes: int) -> tuple[str, str | None]:
+    """Which ordering Surya's `build_layout_result` applies to one page, and why.
+
+    `detections` is how many boxes the layout detector returned for the page,
+    `feature_map` whether it returned the encoder feature map the head reads,
+    and `max_boxes` the head's own limit. The branches are Surya's: with no
+    detection there is nothing to order, and a single one is position 0 either
+    way, so only a page with detections can fall back.
+    """
+    if detections and not feature_map:
+        return RASTER_FALLBACK, "the layout detector returned no feature map for the order head"
+    if detections > max_boxes:
+        return (
+            RASTER_FALLBACK,
+            f"{detections} detections exceed the order head's limit of {max_boxes}",
+        )
+    return ORDER_HEAD, None
 
 
 def file_rows(root: Path) -> list[dict[str, Any]]:
@@ -134,7 +161,17 @@ def _check_record(record: Any, root: Path) -> None:
         raise BundleRefusal(f"the bundle lock at {root} names schema {record['schema']!r}")
     if not isinstance(record["surya_ocr"], str) or not record["surya_ocr"]:
         raise BundleRefusal("the bundle lock names no surya-ocr version")
-    checkpoints = record["checkpoints"]
+    check_checkpoints(record["checkpoints"])
+    for name, checkpoint in record["checkpoints"].items():
+        if not (root / checkpoint["path"]).is_dir():
+            raise BundleRefusal(
+                f"bundle checkpoint {name!r} path {checkpoint['path']!r} is not a bundle folder"
+            )
+    check_file_rows(record["files"])
+
+
+def check_checkpoints(checkpoints: Any) -> None:
+    """The three checkpoints, each at its host's pin, at a relative bundle path."""
     if not isinstance(checkpoints, dict) or set(checkpoints) != set(CHECKPOINT_SETTINGS):
         raise BundleRefusal(
             f"the bundle lock must name exactly the checkpoints {sorted(CHECKPOINT_SETTINGS)}"
@@ -153,15 +190,12 @@ def _check_record(record: Any, root: Path) -> None:
             )
         if source.startswith("s3://") and revision is not None:
             raise BundleRefusal(f"bundle checkpoint {name!r} names a revision its host has none of")
-        if (
-            not isinstance(path, str)
-            or not path
-            or path.startswith("/")
-            or ".." in path.split("/")
-            or not (root / path).is_dir()
-        ):
+        if not isinstance(path, str) or not path or path.startswith("/") or ".." in path.split("/"):
             raise BundleRefusal(f"bundle checkpoint {name!r} path {path!r} is not a bundle folder")
-    files = record["files"]
+
+
+def check_file_rows(files: Any) -> None:
+    """Every file row a path, a sha256 digest and a size, sorted by path, once each."""
     if not isinstance(files, list):
         raise BundleRefusal("the bundle lock lists no files")
     for row in files:
@@ -176,3 +210,6 @@ def _check_record(record: Any, root: Path) -> None:
             or row["size"] < 0
         ):
             raise BundleRefusal(f"the bundle lock carries a malformed file row {row!r}")
+    paths = [row["path"] for row in files]
+    if paths != sorted(set(paths)):
+        raise BundleRefusal("the bundle lock's file rows are not sorted by path, once each")

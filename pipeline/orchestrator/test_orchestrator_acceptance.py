@@ -119,10 +119,10 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # the ink map must confirm ink under it before it may spend a recovery or hold
 # an act; here it cannot, so a2 goes straight to a hold without a
 # second recovery round.
-HAPPY_SNAPSHOT_FILES = 98
-REVIEW_SNAPSHOT_FILES = 108
-HAPPY_RUN_TREE_DIGEST = "dcf4fddf2c36610cb3bd87439b52aaeee484eb303073b8cc6817366c0e87ed5f"
-REVIEW_RUN_TREE_DIGEST = "b7dbb9bb6a66a74923d8052112fdb83af96606ce8d0c566ccc99d0b674111651"
+HAPPY_SNAPSHOT_FILES = 119
+REVIEW_SNAPSHOT_FILES = 129
+HAPPY_RUN_TREE_DIGEST = "a2e6042b0c74fa0aec760f5fe82182d532dd46023dc1e2abf355c5cc5735bdb7"
+REVIEW_RUN_TREE_DIGEST = "8a6d2f8624bdec9f0526517c063ad23d8051852076c448cde3e2f67c0c5a1d94"
 
 
 def orchestrate(

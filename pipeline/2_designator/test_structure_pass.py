@@ -74,6 +74,7 @@ from operations.serving.fakes import (
     FakeLauncher,
     FakePackages,
     FakeRegistry,
+    InProcessSurya,
     ScriptedAnswer,
     scripted_prompt_too_long,
     scripted_structure_answer,
@@ -85,6 +86,7 @@ from operations.serving.fakes import (
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.residency import FileResidencyLease
 from operations.submit import gate, submit
+from proof.build_fixture import SURYA_BLOCKS, SURYA_LINES
 
 ROOT = Path(__file__).resolve().parents[2]
 DOOR_CLI = ROOT / "pipeline" / "1_exemplar" / "door.py"
@@ -175,10 +177,31 @@ def _live_row(identity) -> dict[str, Any]:
     return row
 
 
+SURYA_TIERS = ("generic-24gb", "generic-48gb", "generic-80gb-plus")
+
+
+def surya_subprocess_rows(recipe: str) -> str:
+    """Subprocess rows for the Surya chair at every tier, as a live catalogue carries."""
+    return "".join(
+        f'\n[[profiles]]\nkind = "subprocess"\nrecipe = "{recipe}"\nchair = "designator_surya"\n'
+        f'tier = "{tier}"\nengine = "surya"\nenvironment = "operations/serving/surya"\n'
+        'device = "cpu"\nthreads = 2\nstartup_timeout_seconds = 300\nseconds_per_page = 60\n'
+        'required_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }\n'
+        for tier in SURYA_TIERS
+    )
+
+
+def in_process_surya() -> InProcessSurya:
+    """Surya answering a live pass in this process, from the fixture's declared rows."""
+    return InProcessSurya(SURYA_LINES, SURYA_BLOCKS)
+
+
 def _live_catalogue(destination: Path) -> Path:
-    """The committed fixture catalogue with its structure-chair rows made
-    live: the three `designator_structure` fixture rows are replaced by one
-    live row at `TIER`; every other chair's rows follow unchanged.
+    """The committed fixture catalogue made live for stage 2: the three
+    `designator_structure` fixture rows are replaced by one live row at `TIER`,
+    and the Surya chair's fixture rows by subprocess rows (a live pass runs
+    Surya as a subprocess, never from the fixture). Every other chair's rows
+    follow unchanged.
     """
     source = FIXTURE_CATALOGUE.read_text(encoding="utf-8")
     marker = '[[profiles]]\nkind = "fixture"\nrecipe = "fake-designator-v0"'
@@ -186,6 +209,14 @@ def _live_catalogue(destination: Path) -> Path:
     assert len(designator_rows) == 3, "the fixture catalogue no longer carries three structure rows"
     tail = designator_rows[-1]
     tail = tail[tail.index("\n[[profiles]]") :]
+    surya_fixture_rows = "".join(
+        f'\n[[profiles]]\nkind = "fixture"\nrecipe = "fake-surya-v0"\nchair = "designator_surya"\n'
+        f'tier = "{tier}"\n'
+        'description = "offline walking-skeleton fixture for the Surya detector chair"\n'
+        for tier in SURYA_TIERS
+    )
+    assert surya_fixture_rows in tail, "the fixture catalogue no longer carries its Surya rows"
+    tail = tail.replace(surya_fixture_rows, surya_subprocess_rows("fake-surya-v0"))
     row = _live_row(_structure_identity())
     body = "\n".join(f"{key} = {_toml_value(value)}" for key, value in row.items())
     path = destination / "serving_recipes_live_designator.toml"
@@ -373,7 +404,7 @@ def _run_designator(
         "argv",
         _argv(root, catalogue, *argv, "--decoding-config", str(decoding)),
     )
-    return endpoint, designator.main(serving_factory=factory)
+    return endpoint, designator.main(serving_factory=factory, surya_runner=in_process_surya())
 
 
 def _answer(acts, page_w: int = 200, page_h: int = 260, **fields: Any) -> ScriptedAnswer:
@@ -667,10 +698,13 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
     assert {row["outcome"] for row in rows} == {"proposed"}
     assert seal["payload"]["provenance"]["engine_call"]["call_kind"] == "chat-completions"
 
-    # No fixture:// receipt anywhere: the one receipt is the served chair's.
+    # No fixture:// receipt anywhere: one is the served chair's, one Surya's subprocess.
     receipts = _receipts(root)
-    assert [receipt["chair"] for receipt in receipts] == ["designator_structure"]
-    assert not receipts[0]["endpoint"].startswith("fixture://")
+    assert sorted(receipt["chair"] for receipt in receipts) == [
+        "designator_structure",
+        "designator_surya",
+    ]
+    assert not any(receipt["endpoint"].startswith("fixture://") for receipt in receipts)
 
     # No act text in any Designator artifact; the custody blob is the one
     # permitted home for it.
@@ -1993,7 +2027,7 @@ def test_a_record_detector_the_live_pass_cannot_run_is_refused_before_any_reques
         _argv(root, catalogue, "--placement-tier", TIER, "--models-config", str(models)),
     )
     with pytest.raises(ContractError, match="serving posture of the record detector"):
-        designator.main(serving_factory=factory)
+        designator.main(serving_factory=factory, surya_runner=in_process_surya())
     assert endpoint.requests == []
     assert _receipts(root) == []
 
@@ -2006,7 +2040,8 @@ def test_the_fixture_catalogue_runs_the_fixture_pass_with_no_answer_and_no_call(
 ):
     """Under the committed catalogue nothing of the live path appears on
     disk: the fixture pass writes no structure-answer, no engine call, no
-    answer reference, and the one `fixture://` receipt it always wrote.
+    answer reference, and only `fixture://` receipts: the structure chair's
+    and Surya's.
     """
     root = tmp_path / "runs"
     _chain(root, FIXTURE_CATALOGUE)
@@ -2025,8 +2060,11 @@ def test_the_fixture_catalogue_runs_the_fixture_pass_with_no_answer_and_no_call(
     assert "engine_call" not in seal["payload"]["provenance"]
     assert [row["act_key"] for row in seal["payload"]["expected_acts"]] == ["a1", "a2"]
     receipts = _receipts(root)
-    assert [receipt["chair"] for receipt in receipts] == ["designator_structure"]
-    assert receipts[0]["endpoint"].startswith("fixture://")
+    assert sorted(receipt["chair"] for receipt in receipts) == [
+        "designator_structure",
+        "designator_surya",
+    ]
+    assert all(receipt["endpoint"].startswith("fixture://") for receipt in receipts)
 
 
 # --- the record's own closed field set -----------------------------------------

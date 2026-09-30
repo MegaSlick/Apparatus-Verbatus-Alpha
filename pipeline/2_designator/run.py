@@ -2347,7 +2347,9 @@ def initial_pass(context) -> bool:
     provenance = structure_provenance(context)
     secondary, detector = secondary_provenance(context)
     secondary = _publish_secondary_provenance(context, secondary)
-    surya_detection.publish_surya_detections(context, pages, live=False)
+    surya_detection.publish_surya_detections(
+        context, pages, live=False, refused_pages=frozenset(records) - frozenset(pages)
+    )
     # Decided once, before any crop is cut.
     failures = structure_failures(context, pages)
     page_cache: dict[int, dict] = {}
@@ -3038,7 +3040,12 @@ def _serve_unanswered_pages(
     return {ordinal: answers[ordinal] for ordinal in sorted(answers)}, answer_refs
 
 
-def live_initial_pass(context, serving_factory, tier: str) -> bool:
+def live_initial_pass(
+    context,
+    serving_factory,
+    tier: str,
+    surya_runner: surya_detection.SuryaRunner = surya_detection.SURYA_SUBPROCESS,
+) -> bool:
     """Mark out sealed pages through the served chair; return whether any were held.
 
     The live pass never reads context.fixture. Per page, the answer publishes
@@ -3065,7 +3072,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     configured_secondary = _resolved_secondary(context)
     if isinstance(configured_secondary, ChairIdentity):
         _record_detector_mode(context, configured_secondary, fixture_allowed=False)
-    surya_detection.check_surya_runnable(context)
+    surya_detection.check_surya_runnable(context, surya_runner)
 
     page_cache: dict[int, dict] = {}
     for ordinal, page_record in pages.items():
@@ -3082,7 +3089,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
         serving_factory,
         tier,
     )
-    surya_detection.publish_surya_detections(context, pages, live=True)
+    surya_detection.publish_surya_detections(context, pages, live=True, runner=surya_runner)
 
     secondary, detector = _live_secondary(context)
     secondary = _publish_secondary_provenance(context, secondary)
@@ -3521,15 +3528,18 @@ def _open(args, registry_factory) -> tuple[StageContext, bool]:
     return context, parse_ingress_record(context.run.get("ingress")) == REAL_INGRESS
 
 
-def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
+def main(registry_factory=ChairRegistry.from_toml, serving_factory=None, surya_runner=None) -> int:
     """Run through the explicitly supplied structure-chair implementation.
 
     `serving_factory(context, identity, tier) -> ChairClient` is the live seam;
     tests inject a fake, production gets `structure_pass.default_serving_factory`.
-    The sealed catalogue, not this seam, decides which pass runs.
+    `surya_runner` is the same seam for a Surya subprocess row, which only the
+    live pass runs: production runs Surya's runner process, tests an in-process
+    stand-in. The sealed catalogue, not either seam, decides which pass runs.
     """
     args = stage_parser(DESCRIPTION).parse_args()
     context, real_input = _open(args, registry_factory)
+    surya = surya_detection.SURYA_SUBPROCESS if surya_runner is None else surya_runner
 
     if args.operation == "recover":
         if not args.act:
@@ -3562,6 +3572,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
                 if serving_factory is None
                 else serving_factory,
                 args.placement_tier,
+                surya,
             )
         else:  # pragma: no cover - serving_mode_for closes the vocabulary
             raise ContractError(f"unknown serving mode {mode!r} for the structure chair")

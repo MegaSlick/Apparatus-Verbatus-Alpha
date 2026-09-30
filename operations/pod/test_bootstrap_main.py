@@ -1763,14 +1763,34 @@ def _render_recipes(rows: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+SURYA_CHAIR = "designator_surya"
+
+
+def _surya_environment_answers(identity, profile, weights_root, golden_page):  # type: ignore[no-untyped-def]
+    """Surya's runner answering its golden-page run with the row's own pins."""
+    del identity, weights_root, golden_page
+    return {
+        "versions": {
+            "surya_ocr": profile.required_packages["surya-ocr"],
+            "torch": profile.required_packages["torch"],
+            "python": "3.12.3",
+            "cpu_capability": "AVX512",
+            "machine": "x86_64",
+        },
+        "engine_version": "surya-ocr 0.22.1; torch 2.14.0; cpu AVX512 on x86_64",
+        "golden_page": {"lines": 1, "blocks": 1, "reading_order": "surya-order-head"},
+    }
+
+
 def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspace, dict]:
     """A checked-out repository whose fixture roster has launchable vLLM rows.
 
     The committed catalogue holds fixture rows only, which the manager refuses
-    by name, so the roster's five configured chairs get a vLLM row at every
-    tier here -- proven or unproven as the test asks -- and the real
-    ``config/models.toml``, manifests and model fixtures are copied in so
-    ``ChairRegistry.ensure`` verifies real local snapshots.
+    by name, so every configured chair but Surya gets a vLLM row at every
+    tier here -- proven or unproven as the test asks -- and Surya the
+    subprocess row it always has; the real ``config/models.toml``, manifests
+    and model fixtures are copied in so ``ChairRegistry.ensure`` verifies real
+    local snapshots. Returns the served chairs' identities.
     """
 
     import shutil
@@ -1785,9 +1805,11 @@ def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspa
         (ws.repository / "config" / stray).unlink()
     models = load_models_toml(ws.models_config)
     identities = {
-        role: chair for role, chair in models.chairs.items() if not isinstance(chair, AbsentChair)
+        role: chair
+        for role, chair in models.chairs.items()
+        if not isinstance(chair, AbsentChair) and role != SURYA_CHAIR
     }
-    rows = []
+    rows: list[dict[str, object]] = []
     for port, (role, chair) in enumerate(sorted(identities.items()), start=8100):
         for tier in ("generic-24gb", PROVEN_TIER, "generic-80gb-plus"):
             row = profile_row(
@@ -1800,6 +1822,23 @@ def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspa
             row["gpu_memory_utilization"] = "0.50"
             row["preflight_state"] = preflight_state
             rows.append(row)
+    surya = models.chairs[SURYA_CHAIR]
+    rows.extend(
+        {
+            "kind": "subprocess",
+            "recipe": surya.serving_recipe,
+            "chair": SURYA_CHAIR,
+            "tier": tier,
+            "engine": "surya",
+            "environment": "operations/serving/surya",
+            "device": "cpu",
+            "threads": 2,
+            "startup_timeout_seconds": 300,
+            "seconds_per_page": 60,
+            "required_packages": {"surya-ocr": "0.22.1", "torch": "2.14.0"},
+        }
+        for tier in ("generic-24gb", PROVEN_TIER, "generic-80gb-plus")
+    )
     recipes = ws.repository / "config" / "serving_recipes.toml"
     recipes.write_text(
         _render_recipes(seal_rows(rows, identities)),
@@ -1836,6 +1875,7 @@ def _preflight_seams(tmp_path: Path, identities: dict, *, witness: str = WITNESS
         package_inspector=FakePackages({"vllm": "0.test"}),
         fetcher_factory=lambda: None,  # type: ignore[arg-type,return-value]
         residency_lock=tmp_path / "pod-gpu.lock",
+        subprocess_checker=_surya_environment_answers,
     )
     return seams, http, launcher
 
@@ -1863,6 +1903,25 @@ def test_preflight_measures_the_placement_table_the_run_seals(tmp_path: Path) ->
     assert record["serving_config_inputs"]["pod_placement_sha256"] == sealed  # type: ignore[index]
 
 
+def test_bootstrap_syncs_a_subprocess_environment_only_for_a_row_that_runs_in_it(
+    tmp_path: Path,
+) -> None:
+    from .bootstrap_main import _subprocess_environments, build_parser, resolve_plan
+
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    assert _subprocess_environments(plan) == frozenset({"operations/serving/surya"})
+
+    # The committed fixture catalogue answers Surya from fixture rows only.
+    import shutil
+
+    shutil.copyfile(
+        ROOT / "config" / "serving_recipes.toml",
+        ws.repository / "config" / "serving_recipes.toml",
+    )
+    assert _subprocess_environments(plan) == frozenset()
+
+
 def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
     tmp_path: Path,
 ) -> None:
@@ -1879,8 +1938,17 @@ def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
 
     assert record["color"] == "green"
     assert record["placement_tier"] == PROVEN_TIER
-    assert {receipt["chair"] for receipt in record["cache_receipts"]} == set(identities)
+    # Surya's weights are verified like every chair's, and it is never smoke-read
+    # through a served engine: its own runner reads the golden page, and the
+    # versions and CPU that run measured are in the report.
+    assert {receipt["chair"] for receipt in record["cache_receipts"]} == set(identities) | {
+        SURYA_CHAIR
+    }
     assert {receipt["chair"] for receipt in record["smoke_receipts"]} == set(identities)
+    (surya,) = [row for row in record["placements"] if row["chair"] == SURYA_CHAIR]
+    assert surya["state"] == "subprocess"
+    (measured,) = record["subprocess_receipts"]
+    assert (measured["chair"], measured["versions"]["cpu_capability"]) == (SURYA_CHAIR, "AVX512")
     assert all(
         receipt["page_witness_matches"] is True and "PAGE-WITNESS" not in json.dumps(receipt)
         for receipt in record["smoke_receipts"]
@@ -1976,6 +2044,7 @@ def _preflight_seams_swapping_the_page_on_call(  # type: ignore[no-untyped-def]
         package_inspector=FakePackages({"vllm": "0.test"}),
         fetcher_factory=lambda: None,  # type: ignore[arg-type,return-value]
         residency_lock=tmp_path / "pod-gpu.lock",
+        subprocess_checker=_surya_environment_answers,
     )
     return seams, http, launcher
 

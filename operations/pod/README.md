@@ -406,12 +406,16 @@ minted only by the `nvidia-smi` probe and the serving evidence path and refused 
 caller, so the claim cannot be set from outside.
 
 A chair whose serving row is `kind = "subprocess"` (Surya, run by stage 2 on the CPU) is
-never served, so preflight reads no golden page through it: it verifies the chair's
-weights against the pinned manifest and asks the chair's own environment for its
-versions (`operations/serving/surya_detector.py::environment_versions`), and goes red
-with the sync command as the remedy when they differ. That environment is built on the
-pod with `uv sync --frozen --project operations/serving/surya`, and its weight bundle is
-fetched once onto the network volume by `operations/serving/surya/prefetch.py`
+never served through an engine: preflight verifies the chair's weights against the
+pinned manifest, then runs the chair's own runner once on the golden page, on the CPU
+(`preflight.check_subprocess_environment`). A broken environment or bundle goes red with
+the sync command as the remedy, and the versions, CPU instruction set and machine the
+run measured go in the report's `subprocess_receipts`. Bootstrap's UV_ENVIRONMENT step
+builds that environment right after the project's own, with
+`uv sync --locked --project operations/serving/surya`, only when the checked-out
+catalogue has a subprocess row for a chair the roster configures, and then counts its
+14 GiB in the container disk it checks first. Its weight bundle is fetched once onto the
+network volume by `operations/serving/surya/prefetch.py`
 (`operations/serving/surya/README.md`, "On the pod").
 
 ## The pod guard: every pod deletes itself when idle or out of time

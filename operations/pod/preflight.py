@@ -723,15 +723,39 @@ class ChairCacheVerifier(Protocol):
         """Return an identity-bound verification receipt or raise a named refusal."""
 
 
-SubprocessChecker = Callable[[ChairIdentity, Any], dict[str, str]]
-"""Check a subprocess chair's pinned environment; return the versions it reports."""
+SubprocessChecker = Callable[[ChairIdentity, Any, Path, Path], dict[str, object]]
+"""Run a subprocess chair once on the golden page; return what the run measured.
+
+Called as ``(identity, profile, verified_weights_root, golden_page)``.
+"""
+
+_MEASURED_RUN_FACTS = ("surya_ocr", "torch", "python", "cpu_capability", "machine")
 
 
-def check_subprocess_environment(identity: ChairIdentity, profile: Any) -> dict[str, str]:
-    """Ask the chair's own environment for its versions; refuse unless they match the row."""
-    from operations.serving.surya_detector import environment_versions
+def check_subprocess_environment(
+    identity: ChairIdentity, profile: Any, weights_root: Path, golden_page: Path
+) -> dict[str, object]:
+    """Run the chair's own runner once, on the CPU, over the golden page.
 
-    return environment_versions(profile)
+    The run starts with the environment's version check against the row's
+    pins, then loads the verified weights and reads one small page, so a broken
+    environment or bundle fails here rather than in the paid run after it.
+    """
+    from common.imaging import dimensions
+    from operations.serving.surya_detector import run_surya_subprocess
+
+    data = golden_page.read_bytes()
+    run = run_surya_subprocess(profile, weights_root, {1: data}, {1: dimensions(data)}, identity)
+    page = run.pages[1].document
+    return {
+        "versions": {key: run.run_facts[key] for key in _MEASURED_RUN_FACTS},
+        "engine_version": run.serving_details.engine_version,
+        "golden_page": {
+            "lines": len(page["text_detection"]["bboxes"]),
+            "blocks": len(page["layout"]["bboxes"]),
+            "reading_order": page["reading_order"],
+        },
+    }
 
 
 class SmokeReader(Protocol):
@@ -788,6 +812,8 @@ class PreflightReport:
     card_profile: str | None = None
     card_profile_note: str | None = None
     plan_source: str = "computed from measured VRAM"
+    subprocess_receipts: tuple[dict[str, object], ...] = ()
+    """What each subprocess chair's golden-page run measured: its versions and CPU."""
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -826,6 +852,7 @@ class PreflightReport:
             ],
             "cache_receipts": list(self.cache_receipts),
             "smoke_receipts": list(self.smoke_receipts),
+            "subprocess_receipts": list(self.subprocess_receipts),
             "utilization": [
                 {"gpu_percent": str(sample.gpu_percent), "cpu_percent": str(sample.cpu_percent)}
                 for sample in self.utilization
@@ -879,6 +906,7 @@ class PreflightRunner:
         placements: list[ChairPlacement] = []
         cache_receipts: list[dict[str, object]] = []
         smoke_receipts: list[dict[str, object]] = []
+        subprocess_receipts: list[dict[str, object]] = []
         utilization: list[UtilizationSample] = []
         # (chair, engine) for every chair that read the golden page back through
         # an engine that actually served it.  Half of the assembly claim below.
@@ -977,9 +1005,9 @@ class PreflightRunner:
                 self._verify_cache(configured, issues, cache_receipts)
                 continue
             if isinstance(serving_profile, SubprocessProfile):
-                # Never served and never on the card: its weights and its own
-                # environment are what a run needs, so both are checked here and
-                # no golden page is read through it.
+                # Never served and never on the card: its weights are verified,
+                # then its own runner reads the golden page once on the CPU, so a
+                # broken environment or bundle is red before any paid work.
                 placements.append(
                     ChairPlacement(
                         role,
@@ -993,8 +1021,11 @@ class PreflightRunner:
                         "subprocess",
                     )
                 )
-                if self._verify_cache(configured, issues, cache_receipts):
-                    self._check_subprocess(configured, serving_profile, issues)
+                cache = self._verify_cache(configured, issues, cache_receipts)
+                if cache is not None and fixture_present:
+                    self._check_subprocess(
+                        configured, serving_profile, cache, issues, subprocess_receipts
+                    )
                 continue
             placements.append(
                 ChairPlacement(
@@ -1053,6 +1084,7 @@ class PreflightRunner:
             card_profile=matched.name if matched is not None else None,
             card_profile_note=matched.note if matched is not None and matched.note else None,
             plan_source=plan_source,
+            subprocess_receipts=tuple(subprocess_receipts),
         )
 
     @staticmethod
@@ -1186,28 +1218,47 @@ class PreflightRunner:
             return None
 
     def _check_subprocess(
-        self, identity: ChairIdentity, profile: Any, issues: list[PreflightIssue]
+        self,
+        identity: ChairIdentity,
+        profile: Any,
+        cache_receipt: dict[str, object],
+        issues: list[PreflightIssue],
+        receipts: list[dict[str, object]],
     ) -> None:
+        root = cache_receipt.get("root")
+        if not isinstance(root, str) or not root:
+            issues.append(
+                PreflightIssue(
+                    "cache-receipt-invalid",
+                    f"chair {identity.role}'s cache receipt names no verified weights root.",
+                    "Repair the cache adapter so it returns the verified snapshot's root.",
+                    identity.role,
+                )
+            )
+            return
         try:
-            self.subprocess_checker(identity, profile)
+            measured = self.subprocess_checker(identity, profile, Path(root), self.fixture)
         except Exception as error:
             issues.append(
                 PreflightIssue(
                     "subprocess-environment-unready",
-                    f"chair {identity.role}'s environment in {profile.environment} is not the "
-                    f"one its serving row pins: {error}",
-                    f"Run `uv sync --frozen --project {profile.environment}` on the pod, then "
-                    "run preflight again.",
+                    f"chair {identity.role} could not run its own environment in "
+                    f"{profile.environment} on the golden page: {error}",
+                    f"Run `uv sync --locked --project {profile.environment}` on the pod, check "
+                    "the chair's weights, then run preflight again.",
                     identity.role,
                 )
             )
+            return
+        receipts.append({"chair": identity.role, "environment": profile.environment, **measured})
 
     def _verify_cache(
         self,
         identity: ChairIdentity,
         issues: list[PreflightIssue],
         receipts: list[dict[str, object]],
-    ) -> bool:
+    ) -> dict[str, object] | None:
+        """The chair's bound cache receipt, recorded, or None with the issue recorded."""
         try:
             receipt = self.cache_verifier.verify(identity)
         except Exception as initial_error:
@@ -1221,12 +1272,13 @@ class PreflightRunner:
                     identity.role,
                 )
             )
-            return False
+            return None
         normalized = self._bound_receipt(identity, receipt, issues, "cache")
         if normalized is None:
-            return False
-        receipts.append({"chair": identity.role, **normalized})
-        return True
+            return None
+        recorded = {"chair": identity.role, **normalized}
+        receipts.append(recorded)
+        return recorded
 
     @staticmethod
     def _bound_receipt(

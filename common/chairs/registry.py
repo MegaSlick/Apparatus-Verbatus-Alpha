@@ -366,6 +366,12 @@ class ChairRegistry:
             return verify_snapshot(identity, self._resolve_local_path(identity), manifest)
         return self._ensure_huggingface(identity, manifest)
 
+    def manifest(self, identity: ChairIdentity) -> DigestManifest:
+        """The configured identity's pinned digest manifest, checked against its pin."""
+
+        self._require_current_identity(identity)
+        return self._manifest(identity)
+
     def receipt(self, identity: ChairIdentity, serving: ServingDetails) -> ServingReceipt:
         """Validate a run-receipt value; writing it belongs to the run receipt writer.
 

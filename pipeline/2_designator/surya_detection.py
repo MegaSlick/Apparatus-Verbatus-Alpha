@@ -8,14 +8,16 @@ quantization. Nothing here carries text, cuts a crop, holds an act or enters
 one: the records are for later stages to account against.
 
 The chair is resolved every run. Absent, nothing is published and the sealed
-roster records why. Configured, its serving row says how it answers: a fixture
-row from the synthetic fixture's declared rows, on the fixture pass only (a
-live pass reads no fixture and writes no fixture receipt); a subprocess row by
-running Surya in its own pinned environment, on either pass.
+roster records why. Configured, its serving row says how it answers, and each
+row answers one pass only, so a run's receipts are never mixed: a fixture row
+from the synthetic fixture's declared rows, on the fixture pass (a live pass
+reads no fixture and writes no fixture receipt); a subprocess row by running
+Surya in its own pinned environment, on the live pass.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
@@ -39,9 +41,17 @@ from operations.serving.client import serving_mode_for
 from operations.serving.errors import ServingError
 from operations.serving.surya_detector import (
     SuryaRun,
+    SuryaSubprocess,
     fixture_surya_run,
-    run_surya_subprocess,
 )
+
+# How a subprocess row is answered: `check(profile)` asks Surya's environment
+# for its versions, and a call `(profile, bundle_root, page_bytes, sizes,
+# identity, *, manifest_rows) -> SuryaRun` runs it. Production starts Surya's
+# runner process; tests inject an in-process stand-in
+# (`operations.serving.fakes.InProcessSurya`).
+SuryaRunner = SuryaSubprocess
+SURYA_SUBPROCESS = SuryaSubprocess()
 
 SURYA_PROVENANCE_KIND = "surya-provenance"
 SURYA_PAGE_KIND = "surya-page"
@@ -100,8 +110,9 @@ def resolved_surya(context) -> ChairIdentity | None:
 def surya_mode(context, identity: ChairIdentity, *, live: bool) -> str:
     """`fixture` or `subprocess`, by the sealed catalogue row alone.
 
-    Surya is never a served engine, so a `vllm` row is refused, and a fixture
-    row answers only the fixture pass.
+    Surya is never a served engine, so a `vllm` row is refused. A fixture row
+    answers only the fixture pass and a subprocess row only the live pass, so
+    a fixture run never carries a real receipt beside its declared ones.
     """
     try:
         mode = serving_mode_for(
@@ -113,8 +124,14 @@ def surya_mode(context, identity: ChairIdentity, *, live: bool) -> str:
         raise ContractError(
             f"the serving posture of the Surya chair could not be resolved: {error}"
         ) from error
-    if mode == "subprocess" or (mode == "fixture" and not live):
+    if mode == ("subprocess" if live else "fixture"):
         return mode
+    if mode == "subprocess":
+        raise ContractError(
+            f"the Surya chair {identity.role!r} resolves to a subprocess row on the fixture "
+            "pass; a subprocess row answers only the live pass, and a fixture run's receipts "
+            "are all declared"
+        )
     raise ContractError(
         f"the Surya chair {identity.role!r} resolves to a {mode!r} row; Surya runs as a "
         "subprocess in its own environment"
@@ -122,48 +139,77 @@ def surya_mode(context, identity: ChairIdentity, *, live: bool) -> str:
     )
 
 
-def check_surya_runnable(context) -> None:
-    """Refuse a Surya row the live pass cannot run, before any paid work starts."""
+def _profile(context, identity: ChairIdentity):
+    return bound_serving_recipes(context, context.args.serving_recipes_config).for_identity(
+        identity, context.args.placement_tier
+    )
+
+
+def check_surya_runnable(context, runner: SuryaRunner = SURYA_SUBPROCESS) -> None:
+    """Refuse a Surya chair the live pass cannot run, before any paid work starts:
+    its row, the versions its environment reports, and its verified weights."""
     identity = resolved_surya(context)
-    if identity is not None:
-        surya_mode(context, identity, live=True)
+    if identity is None:
+        return
+    surya_mode(context, identity, live=True)
+    try:
+        runner.check(_profile(context, identity))
+    except ServingError as error:
+        raise ContractError(f"Surya's environment is not ready: {error}") from error
+    context.registry.ensure(identity)
 
 
-def _fixture_rows(context) -> dict[str, list[dict]]:
+def _fixture_rows(context, refused_pages: frozenset[int]) -> dict[str, list[dict]]:
+    """This scenario's declared rows, less those for a page the Exemplar refused:
+    that page's loss is already recorded by name at the door, and Surya never
+    sees it. A row for any other page that is not sealed is refused downstream."""
     return {
         family: [
             row
             for row in context.fixture.get(family, [])
             if row.get("scenario") in (None, context.scenario)
+            and row["page_ordinal"] not in refused_pages
         ]
         for family in ("surya_line", "surya_block")
     }
 
 
 def _run_surya(
-    context, identity: ChairIdentity, mode: str, pages: dict[int, dict]
+    context,
+    identity: ChairIdentity,
+    mode: str,
+    pages: dict[int, dict],
+    runner: SuryaRunner,
+    refused_pages: frozenset[int],
 ) -> tuple[SuryaRun, dict[int, bytes]]:
+    if not pages:
+        raise ContractError("there is no sealed page for Surya to run on")
     page_bytes = {
         ordinal: sealed_page_bytes(context.tree, record, refusal=ContractError)
         for ordinal, record in sorted(pages.items())
     }
     sizes = {ordinal: dimensions(data) for ordinal, data in page_bytes.items()}
-    if mode == "fixture":
-        rows = _fixture_rows(context)
-        run = fixture_surya_run(
-            rows["surya_line"],
-            rows["surya_block"],
+    try:
+        if mode == "fixture":
+            rows = _fixture_rows(context, refused_pages)
+            # A detector has no token context and sizes each page itself, as
+            # the live receipt says too.
+            details = dataclasses.replace(
+                fixture_serving_details(identity), context_cap=0, pixel_cap=0
+            )
+            run = fixture_surya_run(
+                rows["surya_line"], rows["surya_block"], sizes, identity, details
+            )
+            return run, page_bytes
+        snapshot = context.registry.ensure(identity)
+        manifest_rows = [row.to_record() for row in context.registry.manifest(identity).rows]
+        run = runner(
+            _profile(context, identity),
+            snapshot.root,
+            page_bytes,
             sizes,
             identity,
-            fixture_serving_details(identity),
-        )
-        return run, page_bytes
-    profile = bound_serving_recipes(context, context.args.serving_recipes_config).for_identity(
-        identity, context.args.placement_tier
-    )
-    try:
-        run = run_surya_subprocess(
-            profile, context.registry.ensure(identity).root, page_bytes, sizes, identity
+            manifest_rows=manifest_rows,
         )
     except ServingError as error:
         raise ContractError(f"Surya did not run: {error}") from error
@@ -174,11 +220,20 @@ def _provenance(context, identity: ChairIdentity, run: SuryaRun) -> dict:
     """The chair's provenance, published once; a resumed pass reuses what it sealed.
 
     A receipt names its serving moment, so a second run would write a different
-    one; the records it re-derives must then match the ones already sealed.
+    one; the records it re-derives must then match the ones already sealed. A
+    run on another engine or CPU instruction set is refused outright: its
+    records would be re-derived by something the sealed receipt does not name.
     """
     published = _stage_records(context.tree, DESIGNATOR, SURYA_PROVENANCE_KIND)
     if published:
         provenance = published[0]["payload"]
+        sealed = context.tree.read_run_receipt(provenance["receipt_ref"])["engine_version"]
+        if sealed != run.serving_details.engine_version:
+            raise ContractError(
+                f"the sealed Surya receipt names {sealed!r}, and this run is "
+                f"{run.serving_details.engine_version!r}; a resumed run re-derives Surya's "
+                "records only on the engine and CPU instruction set that sealed them"
+            )
     else:
         provenance = {
             "chair": identity.role,
@@ -238,18 +293,28 @@ def _publish(context, kind: str, subject: str, inputs: list, payload: dict) -> N
     )
 
 
-def publish_surya_detections(context, pages: dict[int, dict], *, live: bool) -> None:
+def publish_surya_detections(
+    context,
+    pages: dict[int, dict],
+    *,
+    live: bool,
+    runner: SuryaRunner = SURYA_SUBPROCESS,
+    refused_pages: frozenset[int] = frozenset(),
+) -> None:
     """Run Surya over every sealed page and publish what it found, page by page.
 
     A page with no detection still gets its `surya-page`, with zero counts, so
     a page Surya found empty reads differently from a page never asked. A
     re-run republishes identical bytes, or refuses where anything differs.
+    `refused_pages` are the ordinals the Exemplar refused at the door, whose
+    declared fixture rows are left out; a row for any other unsealed page is
+    refused by name.
     """
     identity = resolved_surya(context)
     if identity is None:
         return
     mode = surya_mode(context, identity, live=live)
-    run, page_bytes = _run_surya(context, identity, mode, pages)
+    run, page_bytes = _run_surya(context, identity, mode, pages, runner, refused_pages)
     provenance = _provenance(context, identity, run)
     for ordinal, page_record in sorted(pages.items()):
         page_id = page_record["subject_id"]
@@ -273,7 +338,7 @@ def publish_surya_detections(context, pages: dict[int, dict], *, live: bool) -> 
             payload["label"] = block["label"]
             payload["raw_label"] = block["raw_label"]
             payload["reading_order_position"] = block["position"]
-            payload["count"] = block["count"]
+            payload["reading_order"] = page.document["reading_order"]
             _publish(context, SURYA_BLOCK_KIND, block_subjects[n - 1], inputs, payload)
         _publish(
             context,
@@ -290,7 +355,8 @@ def publish_surya_detections(context, pages: dict[int, dict], *, live: bool) -> 
                 "block_count": len(blocks),
                 "line_subjects": line_subjects,
                 "block_subjects": block_subjects,
-                "layout_error": page.document["layout"]["error"],
+                "reading_order": page.document["reading_order"],
+                "reading_order_reason": page.document["reading_order_reason"],
                 "raw_output_ref": raw_ref,
                 "run": dict(run.run_facts),
                 "quantization": QUANTIZATION,

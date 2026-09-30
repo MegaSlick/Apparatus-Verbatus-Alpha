@@ -124,6 +124,7 @@ from common.witness_context import validate_witness_context_configuration
 from operations.serving.assembly import ProfileProbe, assemble_serving_smoke_reader
 from operations.serving.config import (
     ServingConfigInputs,
+    SubprocessProfile,
     load_serving_recipes,
     parse_serving_recipes,
 )
@@ -157,8 +158,10 @@ from .models import POD_VOLUME_MOUNT_PATH, require_utc, utc_now
 from .preflight import (
     PlacementRefusal,
     PreflightRunner,
+    SubprocessChecker,
     SystemGpuProbe,
     UtilizationSample,
+    check_subprocess_environment,
     load_placement_table,
 )
 from .provider_runpod import REQUESTED_GPU_COUNT
@@ -463,6 +466,8 @@ class PreflightSeams:
     # serve a chair take the same constant, so the preflight and the run it
     # precedes contend for one lease rather than two disjoint ones.
     residency_lock: Path = POD_RESIDENCY_LOCK_PATH
+    # How a subprocess chair's (Surya's) own environment is asked for its versions.
+    subprocess_checker: SubprocessChecker = check_subprocess_environment
 
 
 _FLAG_NAME = re.compile(r"--[a-z0-9-]+")
@@ -1247,6 +1252,7 @@ def _build_preflight(
             reader,
             fixture,
             serving_recipes=recipes,
+            subprocess_checker=chosen.subprocess_checker,
             selected_roles=frozenset(plan.preflight_roles)
             if plan.preflight_roles is not None
             else None,
@@ -1431,10 +1437,40 @@ def _read_configuration_source(path: Path, label: str, repository: Path) -> byte
         raise ContractError(f"{label} {path} could not be read: {error}") from error
 
 
+def _subprocess_environments(plan: Plan) -> frozenset[str]:
+    """The environments the checked-out catalogue's subprocess rows run in, for
+    the chairs the checked-out roster configures; read after CONFIGURATION has
+    validated both, so a pod syncs Surya's environment only when it will run."""
+
+    if plan.repository is None or plan.models_config is None:
+        return frozenset()
+    if plan.serving_recipes_config is None:
+        return frozenset()
+    models = parse_models_config(
+        parse_sealed_toml(
+            _read_configuration_source(plan.models_config, "model roster", plan.repository),
+            f"model roster {plan.models_config}",
+        )[0],
+        source_path=plan.models_config,
+    )
+    recipes = load_serving_recipes(plan.serving_recipes_config)
+    configured = {
+        (identity.serving_recipe, role)
+        for role, identity in models.chairs.items()
+        if isinstance(identity, ChairIdentity)
+    }
+    return frozenset(
+        profile.environment
+        for profile in recipes.profiles
+        if isinstance(profile, SubprocessProfile) and (profile.recipe, profile.chair) in configured
+    )
+
+
 def build_actions(plan: Plan) -> BootstrapActions:
     """The real composition; check image facts at REPOSITORY before paid setup."""
 
     return SubprocessBootstrapActions(
+        subprocess_environments=lambda: _subprocess_environments(plan),
         repository=plan.repository,  # type: ignore[arg-type]
         configuration=_build_configuration_validation(plan),
         transfer=_build_transfer(plan),

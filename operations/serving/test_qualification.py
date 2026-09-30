@@ -11,7 +11,7 @@ from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.sealed_config import parse_sealed_toml
-from operations.pod.test_bootstrap_main import PROVEN_TIER, _serving_workspace
+from operations.pod.test_bootstrap_main import PROVEN_TIER, SURYA_CHAIR, _serving_workspace
 
 from .config import parse_serving_recipes
 from .qualify import QualificationRefusal, _verified_artifact_bytes, qualification_candidates
@@ -76,6 +76,25 @@ def _qualification_fixture(
     placements = []
     for role, identity in sorted(models.chairs.items()):
         if not isinstance(identity, ChairIdentity):
+            continue
+        if role == SURYA_CHAIR:
+            # A subprocess chair: preflight verifies its weights and places it,
+            # and reads no page through it, so it has no smoke receipt.
+            cache_receipts.append(
+                {
+                    "chair": role,
+                    "manifest_digest": identity.digest_manifest,
+                    "root": f"/runpod-volume/models/{role}",
+                }
+            )
+            placements.append(
+                {
+                    "chair": role,
+                    "configured_serving_recipe": identity.serving_recipe,
+                    "tier": PROVEN_TIER,
+                    "state": "subprocess",
+                }
+            )
             continue
         served_model_id = next(
             row["served_model_id"]
@@ -249,7 +268,12 @@ def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: 
             row["preflight_identity_digest"] = by_key[key]["preflight_identity_digest"]
             row["preflight_digest"] = by_key[key]["preflight_digest"]
     parsed = parse_serving_recipes(raw)
-    assert sum(profile.preflight_state == "proven" for profile in parsed.profiles) == 5  # type: ignore[attr-defined]
+    # The five served chairs; the Surya subprocess row has no proof state at all.
+    assert SURYA_CHAIR not in {item["chair"] for item in candidates}
+    assert (
+        sum(getattr(profile, "preflight_state", None) == "proven" for profile in parsed.profiles)
+        == 5
+    )
 
 
 def test_bootstrap_witness_evidence_is_accepted_by_the_qualifier(tmp_path: Path) -> None:

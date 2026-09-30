@@ -33,6 +33,7 @@ from operations.serving.config import (
 from operations.serving.errors import ServingConfigurationError
 from operations.serving.surya_detector import (
     SuryaOutputRefusal,
+    SuryaRunFailure,
     fixture_surya_run,
     parse_page_document,
     run_surya_subprocess,
@@ -58,9 +59,11 @@ def _run_facts() -> dict:
     return {
         "engine": "surya",
         "surya_ocr": "0.22.1",
-        "torch": "2.14.0",
+        "torch": "2.14.0+cu130",
         "python": "3.12.3",
         "device": "cpu",
+        "cpu_capability": "AVX512",
+        "machine": "x86_64",
         "threads": 2,
         "deterministic_algorithms": True,
         "settings": {name: "None" for name in contract.OUTPUT_SETTINGS},
@@ -109,13 +112,15 @@ def _document(input_ordinal: int = 1) -> dict:
                     "label": "SectionHeader",
                     "raw_label": "Section-header",
                     "position": 1,
-                    "count": 50,
+                    "count": 0,
                 },
             ],
             "image_bbox": [0.0, 0.0, float(WIDTH), float(HEIGHT)],
             "raw": None,
             "error": False,
         },
+        "reading_order": "surya-order-head",
+        "reading_order_reason": None,
     }
 
 
@@ -159,7 +164,19 @@ def _mutated(path: tuple, value=None, *, delete: bool = False) -> dict:
         (("layout", "bboxes", 1, "position"), 3, False, "reading order"),
         (("layout", "bboxes", 0, "label"), "", False, "non-blank"),
         (("layout", "bboxes", 0, "count"), -50, False, "non-negative"),
-        (("layout", "error"), "no", False, "boolean"),
+        (("layout", "bboxes", 1, "count"), 50, False, "is not 0"),
+        (("layout", "error"), True, False, "reported an error"),
+        (("layout", "error"), "no", False, "is not false"),
+        (("reading_order",), "raster", False, "is not one of"),
+        (("reading_order_reason",), "because", False, "null for the order head"),
+        (("reading_order",), None, True, "missing field"),
+        (("run", "cpu_capability"), " ", False, "non-blank"),
+        (("run", "machine"), None, True, "missing field"),
+        (("run", "checkpoints", "layout", "source"), "https://x", False, "s3:// or hf://"),
+        (("run", "checkpoints", "order", "revision"), "0" * 40, False, "pinned Hub commit"),
+        (("run", "checkpoints", "text_detection", "revision"), "v1", False, "has none of"),
+        (("run", "checkpoints", "layout", "path"), "../up", False, "bundle folder"),
+        (("run", "weights", 0, "sha256"), "A" * 64, False, "malformed file row"),
         (("run", "device"), "cuda", False, "deterministic CPU"),
         (("run", "deterministic_algorithms"), False, False, "deterministic CPU"),
         (("run", "threads"), 0, False, "positive"),
@@ -172,6 +189,34 @@ def _mutated(path: tuple, value=None, *, delete: bool = False) -> dict:
 def test_anything_but_the_closed_shape_is_refused_by_name(path, value, delete, reason):
     with pytest.raises(SuryaOutputRefusal, match=re.escape(reason)):
         _validate(_mutated(path, value, delete=delete))
+
+
+def test_a_raster_fallback_names_its_reason():
+    document = _document()
+    document["reading_order"] = "raster-fallback"
+    document["reading_order_reason"] = "300 detections exceed the order head's limit of 128"
+    assert _validate(copy.deepcopy(document)) == document
+    document["reading_order_reason"] = None
+    with pytest.raises(SuryaOutputRefusal, match="non-blank reason for a raster fallback"):
+        _validate(document)
+
+
+@pytest.mark.parametrize(
+    ("detections", "feature_map", "expected"),
+    [
+        (0, False, ("surya-order-head", None)),
+        (1, True, ("surya-order-head", None)),
+        (128, True, ("surya-order-head", None)),
+        (129, True, ("raster-fallback", "129 detections exceed the order head's limit of 128")),
+        (
+            1,
+            False,
+            ("raster-fallback", "the layout detector returned no feature map for the order head"),
+        ),
+    ],
+)
+def test_the_reading_order_is_the_branch_surya_takes(detections, feature_map, expected):
+    assert contract.reading_order(detections, feature_map, 128) == expected
 
 
 def test_a_non_finite_coordinate_is_refused_at_parse():
@@ -210,7 +255,6 @@ def test_the_fixture_detector_answers_every_page_including_an_empty_one():
             "raw_label": "Text",
             "position": 0,
             "confidence_bp": 9500,
-            "count": 0,
         },
     ]
     identity = _identity()
@@ -237,7 +281,8 @@ def _row(**changes) -> dict:
         "environment": "operations/serving/surya",
         "device": "cpu",
         "threads": 2,
-        "timeout_seconds": 600,
+        "startup_timeout_seconds": 300,
+        "seconds_per_page": 60,
         "required_packages": {"surya-ocr": "0.22.1", "torch": "2.14.0"},
     }
     row.update(changes)
@@ -290,14 +335,22 @@ def test_a_subprocess_row_resolves_to_the_subprocess_mode_and_is_never_launched(
 
 
 def test_the_surya_chair_is_in_both_rosters_and_addressed_by_stage_two():
+    """Configured on the fixture roster, with a fixture row at every tier; absent
+    on the real roster until a fetched bundle gives it a measured manifest."""
     fixture = tomllib.loads((ROOT / "config" / "models.toml").read_text(encoding="utf-8"))
     real = tomllib.loads((ROOT / "config" / "models-real.toml").read_text(encoding="utf-8"))
-    assert fixture["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "absent"
+    assert fixture["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "configured"
     assert real["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "absent"
-    # Neither catalogue carries a row for an absent chair.
-    for name in ("serving_recipes.toml", "serving_recipes_real.toml"):
-        recipes = load_serving_recipes(ROOT / "config" / name)
-        assert not [p for p in recipes.profiles if p.chair == DESIGNATOR_SURYA_CHAIR]
+    fixture_rows = [
+        p
+        for p in load_serving_recipes(ROOT / "config" / "serving_recipes.toml").profiles
+        if p.chair == DESIGNATOR_SURYA_CHAIR
+    ]
+    assert {(p.kind, p.tier) for p in fixture_rows} == {
+        ("fixture", tier) for tier in ("generic-24gb", "generic-48gb", "generic-80gb-plus")
+    }
+    real_recipes = load_serving_recipes(ROOT / "config" / "serving_recipes_real.toml")
+    assert not [p for p in real_recipes.profiles if p.chair == DESIGNATOR_SURYA_CHAIR]
     config = load_models_toml(ROOT / "config" / "models.toml")
     assert DESIGNATOR_SURYA_CHAIR not in unaddressed_chairs(config)
 
@@ -327,18 +380,23 @@ def environment(tmp_path, monkeypatch):
 class FakeChild:
     """Answers the version check, then writes one document per page given."""
 
-    def __init__(self, versions=None, documents=None, returncode=0):
+    def __init__(self, versions=None, documents=None, returncode=0, raises=None):
         self.versions = versions or {
             "surya_ocr": "0.22.1",
             "torch": "2.14.0+cu130",
             "python": "3.12.3",
         }
+        self.raises = raises
+        self.timeouts: list[int] = []
         self.documents = documents
         self.returncode = returncode
         self.calls: list[tuple[list[str], dict]] = []
 
     def __call__(self, argv, **kwargs):
         self.calls.append((argv, kwargs["env"]))
+        self.timeouts.append(kwargs["timeout"])
+        if self.raises is not None and "--check" not in argv:
+            raise self.raises
         if "--check" in argv:
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.versions), "")
         output = Path(argv[argv.index("--output-dir") + 1])
@@ -376,7 +434,9 @@ def test_the_runner_runs_under_its_own_interpreter_with_nothing_inherited(enviro
     assert set(child_env) <= {"LANG", "LC_ALL", "TMPDIR"}
     assert set(run.pages) == {1, 2}
     assert run.run_facts == _run_facts()
-    assert run.serving_details.engine_version == "surya-ocr 0.22.1; torch 2.14.0+cu130"
+    assert run.serving_details.engine_version == (
+        "surya-ocr 0.22.1; torch 2.14.0+cu130; cpu AVX512 on x86_64"
+    )
     assert run.serving_details.endpoint == "subprocess://cpu/threads-2"
 
 
@@ -388,7 +448,7 @@ def test_an_environment_whose_versions_differ_from_the_row_is_refused(environmen
 
 def test_an_unsynced_environment_is_refused_with_the_sync_command(tmp_path, monkeypatch):
     monkeypatch.setattr(surya_detector, "REPO_ROOT", tmp_path)
-    with pytest.raises(ServingConfigurationError, match="uv sync --frozen --project"):
+    with pytest.raises(ServingConfigurationError, match="uv sync --locked --project"):
         surya_detector.environment_versions(_profile(), runner=FakeChild())
 
 
@@ -420,16 +480,76 @@ def test_documents_that_disagree_about_their_run_are_refused(environment):
         )
 
 
+def _one_page(child, **kwargs):
+    return run_surya_subprocess(
+        _profile(), Path("/b"), {1: b"a"}, {1: (WIDTH, HEIGHT)}, _identity(), runner=child, **kwargs
+    )
+
+
 def test_a_failed_runner_is_refused_with_its_stderr(environment):
-    with pytest.raises(ServingConfigurationError, match="boom"):
-        run_surya_subprocess(
-            _profile(),
-            Path("/b"),
-            {1: b"a"},
-            {1: (WIDTH, HEIGHT)},
-            _identity(),
-            runner=FakeChild(returncode=2),
-        )
+    with pytest.raises(SuryaRunFailure, match="boom"):
+        _one_page(FakeChild(returncode=2))
+
+
+@pytest.mark.parametrize(
+    ("raised", "reason"),
+    [
+        (subprocess.TimeoutExpired(["runner"], 360), "did not finish within 360 seconds"),
+        (PermissionError(13, "Permission denied"), "could not be started: .*Permission denied"),
+    ],
+)
+def test_a_runner_that_times_out_or_cannot_start_is_a_named_failure(environment, raised, reason):
+    with pytest.raises(SuryaRunFailure, match=reason):
+        _one_page(FakeChild(raises=raised))
+
+
+def test_the_runner_s_timeout_grows_with_the_pages_it_reads(environment):
+    child = FakeChild()
+    run_surya_subprocess(
+        _profile(),
+        Path("/b"),
+        {1: b"a", 2: b"b", 3: b"c"},
+        {ordinal: (WIDTH, HEIGHT) for ordinal in (1, 2, 3)},
+        _identity(),
+        runner=child,
+    )
+    # The version check gets the startup allowance; the run adds 60 s a page.
+    assert child.timeouts == [300, 300 + 3 * 60]
+
+
+def test_an_empty_page_set_is_refused_by_name(environment):
+    with pytest.raises(SuryaOutputRefusal, match="no page to run on"):
+        run_surya_subprocess(_profile(), Path("/b"), {}, {}, _identity(), runner=FakeChild())
+    with pytest.raises(SuryaOutputRefusal, match="no page to run on"):
+        fixture_surya_run([], [], {}, _identity(), None)
+
+
+def _manifest(weights):
+    return [{"path": contract.BUNDLE_FILE, "sha256": "b" * 64, "size": 9}, *weights]
+
+
+def test_the_weights_a_run_names_must_be_the_files_the_manifest_pins(environment):
+    weights = _run_facts()["weights"]
+    assert _one_page(FakeChild(), manifest_rows=_manifest(weights)).run_facts["weights"] == weights
+    other = [{**weights[0], "sha256": "c" * 64}]
+    with pytest.raises(SuryaOutputRefusal, match="digest manifest pins"):
+        _one_page(FakeChild(), manifest_rows=_manifest(other))
+    extra = [*weights, {"path": "surya_layout2/extra.bin", "sha256": "d" * 64, "size": 1}]
+    with pytest.raises(SuryaOutputRefusal, match="digest manifest pins"):
+        _one_page(FakeChild(), manifest_rows=_manifest(extra))
+
+
+def test_run_facts_that_name_another_version_than_the_environment_are_refused(environment):
+    document = _document(1)
+    document["run"]["surya_ocr"] = "0.22.0"
+    with pytest.raises(SuryaOutputRefusal, match="do not describe the run"):
+        _one_page(FakeChild(documents={1: document}))
+
+
+def test_fixture_rows_for_a_page_that_is_not_sealed_are_refused_by_name():
+    line = {"page_ordinal": 4, "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]], "confidence_bp": 1}
+    with pytest.raises(SuryaOutputRefusal, match=r"surya_line rows for page\(s\) \[4\]"):
+        fixture_surya_run([line], [], {1: (WIDTH, HEIGHT)}, _identity(), None)
 
 
 # --- the weight bundle lock -----------------------------------------------------------
@@ -539,3 +659,31 @@ def test_the_runner_refuses_a_bundle_holding_checkpoints_surya_would_not_load(tm
     defaults["DETECTOR_MODEL_CHECKPOINT"] = "s3://text_detection/2026_01_01"
     with pytest.raises(runner.RunRefusal, match="text_detection"):
         runner._checked_checkpoints(record, defaults)
+
+
+def test_the_runner_refuses_an_order_head_that_did_not_load():
+    runner = _runner_module()
+    runner._require_order_head(type("Engine", (), {"_order": object()})())
+    with pytest.raises(runner.RunRefusal, match="reading-order head did not load"):
+        runner._require_order_head(type("Engine", (), {"_order": None})())
+
+
+def test_the_runner_refuses_a_settings_file_surya_found():
+    runner = _runner_module()
+    runner._checked_env_file(type("Settings", (), {"model_config": {"env_file": ""}}))
+    found = type("Settings", (), {"model_config": {"env_file": "/srv/local.env"}})
+    with pytest.raises(runner.RunRefusal, match="settings file at /srv/local.env"):
+        runner._checked_env_file(found)
+
+
+def test_the_runner_keeps_what_the_layout_detector_returns_unchanged():
+    runner = _runner_module()
+
+    class Model:
+        def detect(self, images, **kwargs):
+            return [["box"] * len(images)]
+
+    model = Model()
+    seen = runner._observed(model)
+    assert model.detect(["page"], threshold=0.4) == [["box"]]
+    assert seen == [[["box"]]]

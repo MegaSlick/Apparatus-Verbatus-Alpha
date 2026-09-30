@@ -128,6 +128,7 @@ from operations.serving.config import (  # noqa: E402
 from operations.serving.fakes import (  # noqa: E402
     FakeLauncher,
     FakePackages,
+    InProcessSurya,
     ScriptedAnswer,
     scriptable_structure_refusals,
     scripted_structure_answer,
@@ -138,6 +139,7 @@ from operations.serving.fakes import (  # noqa: E402
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
 from operations.serving.residency import FileResidencyLease  # noqa: E402
+from proof.build_fixture import SURYA_BLOCKS, SURYA_LINES  # noqa: E402
 from proof.synthetic_pages import PAGE_BREAK_PAGES, render_page  # noqa: E402
 
 designator = load_stage("2_designator")
@@ -186,7 +188,8 @@ def labelled(page_acts, labels):
 
 
 def write_catalogue(path: Path, registry) -> Path:
-    """Every configured chair live at every tier, the structure chair included.
+    """Every configured chair live at every tier, the structure chair included,
+    and Surya on its subprocess rows.
 
     The live-seam suite writes the same file with `designator_structure` left
     on its fixture rows; the one difference is the whole point of this module,
@@ -217,6 +220,23 @@ def write_catalogue(path: Path, registry) -> Path:
             row["preflight_identity_digest"] = identity_digest
             row["preflight_digest"] = profile_preflight_digest(row)
             rows.append(row)
+    # Surya runs beside the structure chair, as a subprocess on the CPU.
+    surya = registry.resolve("designator_surya")
+    rows.extend(
+        {
+            "kind": "subprocess",
+            "recipe": surya.serving_recipe,
+            "chair": "designator_surya",
+            "tier": tier,
+            "engine": "surya",
+            "environment": "operations/serving/surya",
+            "device": "cpu",
+            "threads": 2,
+            "timeout_seconds": 600,
+            "required_packages": {"surya-ocr": "0.22.1", "torch": "2.14.0"},
+        }
+        for tier in TIERS
+    )
     path.write_text(
         'schema = "serving-recipes.v1"\n\n' + "\n".join(_toml_profile(row) for row in rows),
         encoding="utf-8",
@@ -240,12 +260,20 @@ class StructureWorld:
     inspector are the fakes; nothing else is.
     """
 
-    def __init__(self, catalogue: Path, work: Path, answers: list[ScriptedAnswer]) -> None:
+    def __init__(
+        self,
+        catalogue: Path,
+        work: Path,
+        answers: list[ScriptedAnswer],
+        surya: InProcessSurya | None = None,
+    ) -> None:
         self.catalogue = catalogue
         self.work = work
         self.work.mkdir(parents=True, exist_ok=True)
         self.answers = answers
         self.endpoint: RecordingEndpoint | None = None
+        # Surya's subprocess, answered here from the fixture's declared rows.
+        self.surya = InProcessSurya(SURYA_LINES, SURYA_BLOCKS) if surya is None else surya
 
     def factory(self, context, identity, tier: str) -> ChairClient:
         policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
@@ -314,6 +342,7 @@ def mark_out(designated: SimpleNamespace, run_root: Path, work: Path, answers=No
         designated.catalogue,
         placement_tier=TIER,
         serving_factory=world.factory,
+        surya_runner=world.surya,
     )
     return world, exit_code
 
@@ -633,13 +662,16 @@ def test_no_designator_artifact_carries_the_chair_s_transcription(marked_out):
 
 
 def test_no_fixture_receipt_is_written_on_the_live_path(marked_out):
-    """The one receipt is the moment the chair really served."""
+    """The two receipts are the moment the chair really served and Surya's
+    subprocess run; neither is a fixture's."""
     directory = marked_out.run_root / RUN_ID / RECEIPTS_DIR
     receipts = [
         json.loads(path.read_text(encoding="utf-8")) for path in sorted(directory.rglob("*.json"))
     ]
-    assert [receipt["chair"] for receipt in receipts] == ["designator_structure"]
-    assert not receipts[0]["endpoint"].startswith("fixture://")
+    by_chair = {receipt["chair"]: receipt for receipt in receipts}
+    assert len(receipts) == len(by_chair) == 2
+    assert by_chair["designator_structure"]["endpoint"].startswith("http://")
+    assert by_chair["designator_surya"]["endpoint"] == "subprocess://cpu/threads-2"
 
 
 # ============================ the roster over those acts =========================
@@ -1182,6 +1214,7 @@ def test_an_interrupted_live_pass_keeps_its_answers_and_asks_only_for_the_rest(
             designated.catalogue,
             placement_tier=TIER,
             serving_factory=interrupted.factory,
+            surya_runner=interrupted.surya,
         )
     first_receipts = answer_receipts(run_root)
     assert sorted(first_receipts) == [1], "an interrupted pass published no answer it had"
@@ -1296,6 +1329,7 @@ def test_a_pass_interrupted_after_its_fallback_tiles_seals_them_on_the_resume(
             designated.catalogue,
             placement_tier=TIER,
             serving_factory=world.factory,
+            surya_runner=world.surya,
         )
     monkeypatch.undo()
     (fallback,) = artifacts(run_root, DESIGNATOR, "page-fallback")
@@ -1369,11 +1403,11 @@ def _real_argv(run_root: Path, catalogue: Path) -> list[str]:
     ]
 
 
-def _run_real_in_process(module, run_root: Path, catalogue: Path, serving_factory) -> int:
+def _run_real_in_process(module, run_root: Path, catalogue: Path, serving_factory, **seams) -> int:
     original = sys.argv
     sys.argv = [module.__file__, *_real_argv(run_root, catalogue)]
     try:
-        return module.main(serving_factory=serving_factory)
+        return module.main(serving_factory=serving_factory, **seams)
     finally:
         sys.argv = original
 
@@ -1395,8 +1429,13 @@ def page_break_run(work: Path) -> SimpleNamespace:
         scripted_structure_answer(PAGE_BREAK_ACTS[ordinal], PAGE_WIDTH, PAGE_HEIGHT)
         for ordinal in sorted(PAGE_BREAK_ACTS)
     ]
-    structure = StructureWorld(catalogue, work / "structure-world", answers)
-    designator_exit = _run_real_in_process(designator, run_root, catalogue, structure.factory)
+    # The fixture declares no Surya detections for these pages, so Surya finds none.
+    structure = StructureWorld(
+        catalogue, work / "structure-world", answers, surya=InProcessSurya((), ())
+    )
+    designator_exit = _run_real_in_process(
+        designator, run_root, catalogue, structure.factory, surya_runner=structure.surya
+    )
 
     _policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
     page_acts = [PAGE_BREAK_ACTS[ordinal] for ordinal in sorted(PAGE_BREAK_ACTS)]
