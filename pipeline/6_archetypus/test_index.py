@@ -30,7 +30,8 @@ from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
-from common.stage import load_fixture
+from common.sealed_config import require_sealed_config
+from common.stage import load_fixture, run_sealed_config_digests
 from conftest import load_stage, run_stage
 from conftest import run_orchestrator as orchestrate
 
@@ -47,13 +48,18 @@ class _Context:
     through `expected_acts`, which binds the seal's act denominator back to the
     fixture the run was sealed with and re-derives its region references. Both
     are reproduced here rather than mocked away, so these tests reconcile against
-    the same evidence the real stage does.
+    the same evidence the real stage does. Both also read the run's sealed
+    reading unit, so the shim carries the sealed Perlector protocol.
     """
 
     def __init__(self, tree: RunTree):
         self.tree = tree
         self.run = tree.read_run()
         self.fixture = load_fixture(str(ROOT / "proof"))
+        self.perlector_protocol_config_path = ROOT / "config" / "perlector_protocol.toml"
+
+    def require_sealed_config(self, name: str, observed_sha256: str) -> None:
+        require_sealed_config(run_sealed_config_digests(self.run), name, observed_sha256)
 
     def input_ref(self, relative_path: str) -> dict[str, str]:
         return {

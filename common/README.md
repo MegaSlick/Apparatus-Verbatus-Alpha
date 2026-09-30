@@ -125,4 +125,6 @@ orchestrator counts nothing.
 `page_review.py` is the one reader of the Recensor's page path for the two
 stages after it: `current_page_reviews` (one current review per row, each
 naming its row), `reviewed_rows` (every row but a refused page's),
-`continuation_links`, and the review's reason and coverage.
+`require_establishable` (an accepted review stands over a `read` row, or over a
+row whose only hold is `no-act-on-page-unconfirmed` and whose review names it
+in its `release`), `continuation_links`, and the review's reason and coverage.

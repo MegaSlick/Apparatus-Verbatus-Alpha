@@ -9,11 +9,13 @@ recipient would, by `verify_delivered_bundle` on a clean directory.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import shutil
 import sqlite3
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
@@ -26,14 +28,17 @@ from armarium_export import (
 )
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR
+from common.contracts.errors import FatalAccounting, SchemaRefusal
+from common.contracts.stages import ARCHETYPUS, ARMARIUM
+from common.page_accounting import load_page_accounting_policy
 from common.runtree.store import RunTree
 from conftest import (
     build_page_tree,
+    load_stage,
     publish_stand_in_page_reviews,
-    rewitness_stage_boundary,
+    reaccount_page,
     rewrite_page_answer_entry,
+    rewrite_page_reading,
     run_stage,
 )
 
@@ -68,10 +73,22 @@ def _copy(tree: tuple[Path, Path], base: Path) -> tuple[Path, Path]:
     return base / "runs", protocol
 
 
-def _export(root: Path, protocol: Path, scenario: str, **outcomes: str):
-    publish_stand_in_page_reviews(root, RUN_ID, scenario, protocol, outcomes=outcomes)
+def _export(
+    root: Path,
+    protocol: Path,
+    scenario: str,
+    *,
+    links: list[tuple[str, str, bool]] | None = None,
+    options: dict[str, object] | None = None,
+    **outcomes: str,
+):
+    publish_stand_in_page_reviews(
+        root, RUN_ID, scenario, protocol, outcomes=outcomes, links=links, options=options
+    )
     for program in ("pipeline/6_archetypus/run.py", "pipeline/7_armarium/run.py"):
-        result = run_stage(root, RUN_ID, scenario, program, perlector_protocol_config=protocol)
+        result = run_stage(
+            root, RUN_ID, scenario, program, perlector_protocol_config=protocol, **(options or {})
+        )
         if program.startswith("pipeline/6") and result.returncode != 0:
             return result
     return result
@@ -235,32 +252,8 @@ def test_the_act_count_conserves_across_the_partition_the_formats_and_the_ledger
     assert members["other.jsonl"] == b""
 
 
-def _drop_page_entries(root: Path, ordinal: int) -> None:
-    directory = root / RUN_ID / "4_perlector" / "artifacts"
-    for kind in ("act-region", "perlectio"):
-        for path in (directory / kind).glob("*.json"):
-            if json.loads(path.read_text("utf-8"))["payload"]["page_ordinal"] == ordinal:
-                path.unlink()
-
-
-def _rewrite(root: Path, kind: str, ordinal: int, change) -> None:
-    directory = root / RUN_ID / "4_perlector" / "artifacts" / kind
-    [path] = [
-        path
-        for path in directory.glob("*.json")
-        if json.loads(path.read_text("utf-8"))["payload"]["page_ordinal"] == ordinal
-    ]
-    record = json.loads(path.read_text("utf-8"))
-    change(record)
-    record["self_hash"] = self_hash(
-        {key: value for key, value in record.items() if key != "self_hash"}
-    )
-    path.write_bytes(canonical_bytes(record))
-
-
 def test_a_page_whose_answer_was_not_read_is_one_held_item_with_its_reasons(happy, tmp_path):
     root, protocol = _copy(happy, tmp_path)
-    _drop_page_entries(root, 2)
 
     def malformed(record):
         record["outcome"] = "held"
@@ -271,13 +264,9 @@ def test_a_page_whose_answer_was_not_read_is_one_held_item_with_its_reasons(happ
             disposition="held",
         )
 
-    def held(record):
-        record["outcome"] = "held"
-        record["payload"]["holds"] = ["page-answer-incomplete"]
-
-    _rewrite(root, "page-reading", 2, malformed)
-    _rewrite(root, "page-accounting", 2, held)
-    rewitness_stage_boundary(RunTree(root, RUN_ID), PERLECTOR)
+    rewrite_page_reading(root, RUN_ID, 2, malformed)
+    reaccount_page(root, RUN_ID, "happy", protocol, 2)
+    rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
     result = _export(root, protocol, "happy")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
@@ -300,7 +289,6 @@ def test_a_page_read_as_blank_is_confirmed_blank_only_when_the_recensor_confirms
     happy, tmp_path, outcome, category, exit_code
 ):
     root, protocol = _copy(happy, tmp_path)
-    _drop_page_entries(root, 2)
     feed_dir = root / RUN_ID / "4_perlector" / "artifacts" / "page-feed"
     [feed] = [
         json.loads(path.read_text("utf-8"))["payload"]
@@ -317,7 +305,8 @@ def test_a_page_read_as_blank_is_confirmed_blank_only_when_the_recensor_confirms
             "set_aside": [{"id": identifier, "reason": "blank paper"} for identifier in ids],
         }
 
-    _rewrite(root, "page-reading", 2, blank)
+    rewrite_page_reading(root, RUN_ID, 2, blank)
+    reaccount_page(root, RUN_ID, "happy", protocol, 2)
     rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
     outcomes = {"p2:blank": outcome} if outcome else {}
     result = _export(root, protocol, "happy", **outcomes)
@@ -381,6 +370,26 @@ def _other_text(members: dict) -> None:
     members["other.jsonl"] = canonical_bytes(row) + b"\n"
 
 
+def _other_named_as_an_act(members: dict) -> None:
+    """The other reading's key made an act's, in its row and ledger unit alike."""
+    _sources(members, lambda s: s["other_outcomes"][0].update(act_key="p1:2"))
+
+    def rename(claims):
+        for unit in claims["terminal_ledger"]["units"]:
+            if unit["unit_id"].startswith("other:"):
+                unit["act_key"] = "p1:2"
+
+    _claims(members, rename)
+
+
+def _other_doubt(members: dict) -> None:
+    """other.jsonl's doubt edited, still a valid layer over its unchanged literal."""
+    [row] = [json.loads(line) for line in members["other.jsonl"].splitlines()]
+    [span] = row["uncertainty"]["uncertain_spans"]
+    span["confidence"] = "high" if span["confidence"] != "high" else "low"
+    members["other.jsonl"] = canonical_bytes(row) + b"\n"
+
+
 def _held_page_one(members: dict) -> None:
     """Page 1 held in both the rows and the claim, consistently, over its delivered readings."""
     _sources(members, lambda s: s["page_accounting"][0].update(hold_codes=["unread-ink"]))
@@ -426,6 +435,8 @@ def _held_page_one(members: dict) -> None:
         ),
         (_other_text, "valid literal text hash"),
         (_held_page_one, "held by their page accounting yet delivered"),
+        (_other_named_as_an_act, "other reading is counted in the act partition"),
+        (_other_doubt, "formats carrying the other layer disagree"),
     ],
     ids=[
         "other-count",
@@ -435,6 +446,8 @@ def _held_page_one(members: dict) -> None:
         "other-category",
         "other-text",
         "held-page-delivered",
+        "other-as-act",
+        "formats-disagree",
     ],
 )
 def test_the_clean_verifier_recomputes_the_page_claims_and_refuses_a_tampered_one(
@@ -442,3 +455,238 @@ def test_the_clean_verifier_recomputes_the_page_claims_and_refuses_a_tampered_on
 ):
     with pytest.raises(SchemaRefusal, match=refusal):
         verify_export_bundle(_tampered(complete, change), tmp_path / "clean")
+
+
+# --- page-path accounting a delivered act alone does not show ------------------------
+
+
+def _unit(manifest: dict, unit_id: str) -> dict:
+    [unit] = [u for u in manifest["claims"]["terminal_ledger"]["units"] if u["unit_id"] == unit_id]
+    return unit
+
+
+def _no_continuation(root: Path) -> None:
+    rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
+    rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_from_previous_page=False)
+
+
+def test_a_held_other_reading_keeps_the_run_partial(happy, tmp_path):
+    root, protocol = _copy(happy, tmp_path)
+    rewrite_page_answer_entry(root, RUN_ID, 1, 1, kind="other")
+    _no_continuation(root)
+    result = _export(root, protocol, "happy", **{"p1:1": "held-for-review"})
+    assert result.returncode == 3, result.stderr
+    bundle = _bundle(root, tmp_path / "clean")
+    claims = bundle["manifest"]["claims"]
+    assert claims["other_readings"]["by_category"] == {"held-for-review": 1}
+    assert claims["act_partition"]["counted"] == 2
+    assert claims["status"] == "partial"
+    assert _unit(bundle["manifest"], f"other:{claims['other_readings']['act_ids'][0]}")[
+        "category"
+    ] == ("held-for-review")
+
+
+def _other_only_page_two(root: Path, protocol: Path) -> None:
+    """Page 2's one entry read as `other`, its accounting measured again."""
+    _no_continuation(root)
+    rewrite_page_answer_entry(root, RUN_ID, 2, 1, kind="other")
+    reaccount_page(root, RUN_ID, "happy", protocol, 2)
+
+
+def test_a_page_of_other_readings_is_held_until_the_recensor_confirms_no_act(happy, tmp_path):
+    root, protocol = _copy(happy, tmp_path)
+    _other_only_page_two(root, protocol)
+    result = _export(root, protocol, "happy")
+    assert result.returncode == 3, result.stderr
+    bundle = _bundle(root, tmp_path / "clean")
+    manifest = bundle["manifest"]
+    reasons = manifest["aggregate"]["reasons"]
+    assert not any("no act was marked out" in reason for reason in reasons)
+    [held] = [reason for reason in reasons if reason.startswith("page 2 ")]
+    assert "carries no act" in held and "held until the Recensor confirms" in held
+    page_two = _unit(manifest, "page:2")
+    assert page_two["category"] == "held-for-review"
+    assert "carries no act" in page_two["reason"]
+    assert manifest["claims"]["other_readings"]["by_category"] == {"held-for-review": 1}
+    assert "p2:1" not in bundle["established"]
+
+
+def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(happy, tmp_path):
+    root, protocol = _copy(happy, tmp_path)
+    _other_only_page_two(root, protocol)
+    result = _export(root, protocol, "happy", **{"p2:1": "accepted"})
+    assert result.returncode == 0, result.stderr
+    bundle = _bundle(root, tmp_path / "clean")
+    manifest = bundle["manifest"]
+    assert manifest["claims"]["status"] == "complete"
+    assert manifest["aggregate"]["reasons"] == []
+    page_two = _unit(manifest, "page:2")
+    assert page_two["category"] == "delivered"
+    assert "confirmed it carries no act" in page_two["reason"]
+    assert manifest["claims"]["other_readings"]["by_category"] == {"delivered": 1}
+    assert bundle["established"]["p2:1"]["kind"] == "other"
+    assert sorted(_jsonl(bundle["members"], "other.jsonl")) == ["p2:1"]
+
+
+def test_a_link_whose_flags_disagree_is_a_join_that_reconstructs_nothing(happy, tmp_path):
+    root, protocol = _copy(happy, tmp_path)
+    rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_from_previous_page=False)
+    result = _export(root, protocol, "happy")
+    assert result.returncode == 3, result.stderr
+    bundle = _bundle(root, tmp_path / "clean")
+    [join] = json.loads(bundle["members"]["sources.json"])["continuation_joins"]
+    assert (join["status"], join["not_reconstructed_reason"]) == (
+        "not-reconstructed",
+        "flags-disagree",
+    )
+    assert "reconstructions.jsonl" not in bundle["members"]
+    [reason] = bundle["manifest"]["aggregate"]["reasons"]
+    assert "(not-reconstructed)" in reason and "flags-disagree" in reason
+
+
+def test_a_break_with_no_act_on_one_side_is_a_join_that_names_no_act(happy, tmp_path):
+    root, protocol = _copy(happy, tmp_path)
+    _no_continuation(root)
+    # The last page's act runs on past the run's last page.
+    rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_to_next_page=True)
+    result = _export(root, protocol, "happy")
+    assert result.returncode == 3, result.stderr
+    bundle = _bundle(root, tmp_path / "clean")
+    [join] = json.loads(bundle["members"]["sources.json"])["continuation_joins"]
+    assert (join["head_page_ordinal"], join["tail_page_ordinal"]) == (2, 3)
+    assert (join["tail_act_ids"], join["not_reconstructed_reason"]) == ([], "side-names-no-act")
+    [reason] = bundle["manifest"]["aggregate"]["reasons"]
+    assert "side-names-no-act" in reason
+
+
+def test_a_continuation_flag_no_link_pairs_is_named_and_keeps_the_run_partial(happy, tmp_path):
+    root, protocol = _copy(happy, tmp_path)
+    _no_continuation(root)
+    rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_to_next_page=True)
+    result = _export(root, protocol, "happy", links=[])
+    assert result.returncode == 3, result.stderr
+    bundle = _bundle(root, tmp_path / "clean")
+    [reason] = bundle["manifest"]["aggregate"]["reasons"]
+    assert reason.startswith("act p2:1 says it continues onto the next page")
+    basis = bundle["manifest"]["aggregate_basis"]
+    assert basis["continuation_flags"] == {"p2:1": ["continues_to_next_page"]}
+
+
+@pytest.mark.parametrize(
+    ("links", "refusal"),
+    [
+        ([("p1:1", "p2:1", False)], "names an other reading"),
+        ([("p2:1", "p1:2", True)], "does not name one flagged page break"),
+    ],
+    ids=["other-reading", "non-adjacent"],
+)
+def test_a_continuation_link_the_recensor_never_makes_is_refused(happy, tmp_path, links, refusal):
+    root, protocol = _copy(happy, tmp_path)
+    rewrite_page_answer_entry(root, RUN_ID, 1, 1, kind="other")
+    result = _export(root, protocol, "happy", links=links)
+    assert result.returncode == 2
+    assert refusal in result.stderr
+
+
+def test_confirmed_blank_on_a_row_that_is_not_a_blank_page_is_refused(happy, tmp_path):
+    root, protocol = _copy(happy, tmp_path)
+    result = _export(root, protocol, "happy", **{"p1:2": "confirmed-blank"})
+    assert result.returncode == 2
+    assert "only a page read as blank can be confirmed blank" in result.stderr
+
+
+def test_a_page_refused_row_must_stand_for_a_page_the_census_refused():
+    armarium = load_stage("7_armarium")
+    assert armarium.PAGE_REFUSED_CLASS == "page-refused"
+    row = {"act_key": "p2:refused", "page_ordinal": 2, "class": "page-refused"}
+    armarium._require_refused_in_census(row, {2: {"outcome": "refused", "reason": "door: x"}})
+    for census in ({2: {"outcome": "sealed"}}, {}):
+        with pytest.raises(FatalAccounting, match="stands for a refused page"):
+            armarium._require_refused_in_census(row, census)
+    kept = armarium.reviewed_rows([row, {**row, "class": "reading", "act_key": "p1:1"}])
+    assert [item["act_key"] for item in kept] == ["p1:1"]
+
+
+def test_a_blinded_run_exports_each_witness_by_chair_and_by_the_label_its_reader_saw(
+    tmp_path_factory,
+):
+    options = {"witness_context": "blinded"}
+    root, protocol = build_page_tree(tmp_path_factory.mktemp("blinded"), "happy", **options)
+    _no_continuation(root)
+    result = _export(root, protocol, "happy", options=options)
+    assert result.returncode == 0, result.stderr
+    bundle = _bundle(root, tmp_path_factory.mktemp("blinded-clean"))
+    roster = set(bundle["export"]["payload"]["witness_chairs"])
+    for row in _jsonl(bundle["members"], "acts.jsonl").values():
+        assert row["witnesses"]
+        for witness in row["witnesses"]:
+            assert witness["chair"] in roster
+            assert witness["witness_label"].startswith("witness-")
+            assert witness["witness_label"] != witness["chair"]
+
+
+def test_page_rows_carry_the_page_read_lectio_kind_under_their_own_ids(complete):
+    members = complete["members"]
+    for row in _jsonl(members, "acts.jsonl").values():
+        assert row["schema"] == "armarium-act.v4"
+        assert row["uncertainty"]["lectio_kind"] == "page-read"
+        assert row["uncertainty"]["self_revisions"] is None
+    with sqlite3.connect(complete["clean"] / "acts.sqlite") as connection:
+        assert connection.execute(
+            "SELECT value FROM export_metadata WHERE key = 'schema'"
+        ).fetchone() == ("armarium-acts-sqlite.v4",)
+        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
+
+
+# --- the export's own checks of a page reading's category ---------------------------
+
+
+class _Tree:
+    def __init__(self, record: dict):
+        self.record = record
+
+    def read_artifact(self, _stage, _kind, _identity):
+        return self.record
+
+
+def test_an_accepted_review_over_a_held_row_is_refused_without_a_release():
+    armarium = load_stage("7_armarium")
+    established = {"artifact_id": "a", "outcome": "established", "payload": {}}
+    context = SimpleNamespace(tree=_Tree(established))
+    cache = {
+        ARCHETYPUS: {"artifacts": [{"kind": "archetypus", "subject_id": "x", "artifact_id": "a"}]}
+    }
+    row = {
+        "act_id": "x",
+        "act_key": "p2:1",
+        "class": "reading",
+        "kind": "act",
+        "disposition": "held",
+        "hold_codes": ["unread-ink"],
+        "perlectio_ref": {"relative_path": "p", "sha256": "0" * 64},
+    }
+    review = {"outcome": "accepted", "payload": {"release": None}}
+    with pytest.raises(FatalAccounting, match="may not resurrect a held reading"):
+        armarium._page_category(context, row, review, cache)
+    released = {**review, "payload": {"release": {"hold_codes": ["unread-ink"]}}}
+    with pytest.raises(FatalAccounting, match="may not resurrect a held reading"):
+        armarium._page_category(context, row, released, cache)
+    no_act = {**row, "kind": "other", "hold_codes": ["no-act-on-page-unconfirmed"]}
+    with pytest.raises(FatalAccounting, match="may not resurrect a held reading"):
+        armarium._page_category(context, no_act, review, cache)
+    category, record = armarium._page_category(
+        context,
+        no_act,
+        {**review, "payload": {"release": {"hold_codes": ["no-act-on-page-unconfirmed"]}}},
+        cache,
+    )
+    assert (category.value, record) == ("delivered", established)
+
+
+def test_the_exported_threshold_list_refuses_a_threshold_that_is_not_an_integer(monkeypatch):
+    armarium = load_stage("7_armarium")
+    policy = dataclasses.replace(load_page_accounting_policy(), band_slack=True)
+    monkeypatch.setattr(armarium, "require_page_accounting_policy", lambda _context, _path: policy)
+    context = SimpleNamespace(page_accounting_config_path=None)
+    with pytest.raises(FatalAccounting, match="band_slack is True, not an integer"):
+        armarium.page_not_measured_basis(context, {}, [], {})

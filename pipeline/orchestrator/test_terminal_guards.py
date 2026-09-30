@@ -116,7 +116,7 @@ class _RecordingContext:
         # Read for the sealed reading unit, which decides the act or page export.
         self.perlector_protocol_config_path = self.args.perlector_protocol_config
         # Mirror the real context's named point-of-use seals.  The terminal
-        # paths read all four files; recording their digests here makes the
+        # paths read every file named below; recording their digests here makes the
         # double refuse drift or an unsealed name instead of bypassing that
         # boundary.
         self.sealed_config_digests = {

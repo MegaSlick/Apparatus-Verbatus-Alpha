@@ -1356,3 +1356,27 @@ def test_the_anchor_line_run_floor_sits_between_coincidence_and_a_real_reading()
     misread = line.replace("unieme", "vnicme").replace("Marguerite", "Marguerste")
     for name, witness in (("the line itself", line), ("the line misread", misread)):
         assert longest_run(witness) >= outcomes.ANCHOR_LINE_RUN_FLOOR, name
+
+
+def test_a_page_read_aggregate_names_its_pages_in_the_page_path_s_words() -> None:
+    sealed = {"outcome": "sealed"}
+    census = {1: sealed, 2: sealed, 3: sealed}
+    aggregate = run_aggregate(
+        {"p1:1": ArmariumCategory.DELIVERED},
+        {"p1:1": {"under_witnessed": False, "unresolved_chairs": 0}},
+        census,
+        act_pages={"p1:1": [1]},
+        act_text_status={"p1:1": "established"},
+        edge_hold_pages=[1],
+        page_read=True,
+        other_categories_by_page={2: ["held-for-review"], 3: ["delivered"]},
+        unpaired_continuations=[("p1:1", "continues_to_next_page")],
+    )
+    reasons = aggregate["reasons"]
+    assert not any("no act was marked out" in reason for reason in reasons)
+    assert not any("Designator crop" in reason for reason in reasons)
+    assert any("no reading region on the page claims" in reason for reason in reasons)
+    assert any(reason.startswith("page 2 was read and carries no act") for reason in reasons)
+    # Page 3's other readings were delivered: a confirmed no-act page names no reason.
+    assert not any(reason.startswith("page 3") for reason in reasons)
+    assert any(reason.startswith("act p1:1 says it continues onto") for reason in reasons)

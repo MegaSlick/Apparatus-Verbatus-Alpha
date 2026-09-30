@@ -375,3 +375,34 @@ def test_validation_refuses_an_assessment_that_says_nothing_usable(assessment, e
 
     with pytest.raises(SchemaRefusal, match=expected):
         validate(layer, "Maria")
+
+
+def _page_perlectio(**changes):
+    assessment = {"state": "assessed", "problem": None, "uncertain_spans": [], "gaps": []}
+    payload = {
+        "text": "abc",
+        "uncertain_spans": [],
+        "gaps": [],
+        "uncertainty_assessment": assessment,
+    }
+    payload.update(changes)
+    return payload
+
+
+def test_a_page_reading_is_its_own_lectio_kind_with_no_measured_revisions() -> None:
+    layer = canonical_uncertainty.from_page_perlectio(_page_perlectio())
+    assert (layer["lectio_kind"], layer["self_revisions"]) == ("page-read", None)
+    with pytest.raises(SchemaRefusal, match="self-revisions are not measured"):
+        validate({**layer, "self_revisions": []}, "abc")
+
+
+def test_a_page_reading_s_spans_must_be_the_copy_in_its_assessment() -> None:
+    span = {"start": 0, "end": 1, "alternatives": [], "confidence": "low"}
+    with pytest.raises(SchemaRefusal, match="uncertain_spans differ"):
+        canonical_uncertainty.from_page_perlectio(_page_perlectio(uncertain_spans=[span]))
+    with pytest.raises(SchemaRefusal, match="gaps differ"):
+        canonical_uncertainty.from_page_perlectio(
+            _page_perlectio(
+                uncertainty_assessment={"state": "assessed", "problem": None, "uncertain_spans": []}
+            )
+        )

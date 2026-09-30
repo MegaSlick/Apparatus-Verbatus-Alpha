@@ -595,6 +595,32 @@ SILENT_PAGE_REASON: Final = (
     "rather than inferred"
 )
 
+# The page path's wording. A page-read run reads every sealed page whole, so a
+# page reaches the aggregate through its readings, not through marked-out acts.
+PAGE_READ_SILENT_PAGE_REASON: Final = (
+    "page {ordinal} was sealed and read whole, yet the page-read denominator counts no "
+    "reading of it; a page no reading accounts for cannot be told from one nobody read"
+)
+NO_ACT_PAGE_HELD_REASON: Final = (
+    "page {ordinal} was read and carries no act; its other readings are {categories}, not "
+    "delivered, because they are held until the Recensor confirms that no act is on the "
+    "page; once it does, they are delivered in the other layer and the page counts as a "
+    "confirmed no-act page"
+)
+CONFIRMED_NO_ACT_PAGE_REASON: Final = (
+    "page {ordinal} was read and the Recensor confirmed it carries no act; its other "
+    "readings are delivered in the other layer"
+)
+UNPAIRED_CONTINUATION_REASON: Final = (
+    "act {act} says it {says}, and no continuation link pairs it with a reading across "
+    "that break; it is delivered as its own literal and may be only part of an act"
+)
+CONTINUATION_FLAGS: Final = ("continues_from_previous_page", "continues_to_next_page")
+_CONTINUATION_SAYS: Final = {
+    "continues_from_previous_page": "continues from the previous page",
+    "continues_to_next_page": "continues onto the next page",
+}
+
 NO_ATTRIBUTION_REASON: Final = (
     "the run supplied no act-to-page attribution, so no page could be checked for "
     "silence; a page that produced nothing cannot be told from a page nobody marked out"
@@ -712,6 +738,10 @@ def run_aggregate(
     act_text_status: Mapping[str, str] | None = None,
     edge_hold_pages: Sequence[int] | None = None,
     continuation_joins: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    page_read: bool = False,
+    other_categories_by_page: Mapping[int, Sequence[str]] | None = None,
+    unpaired_continuations: Sequence[tuple[str, str]] = (),
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -742,6 +772,13 @@ def run_aggregate(
     ink, so a held page keeps the aggregate partial even if its acts were
     delivered. Each `continuation_joins` row does the same for a page break the
     geometry says an act may cross: its sides are delivered apart, unjoined.
+
+    `page_read` gives the page path's wording. There a sealed page with no act
+    row is a page whose readings are all `other` (`other_categories_by_page`
+    names their categories): held, with its reason, until every one is
+    delivered, which the Recensor allows only once it confirms no act is on the
+    page. Each `unpaired_continuations` row `(act, flag)` is a delivered act
+    whose continuation flag no link pairs, which keeps the run partial.
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
@@ -794,7 +831,8 @@ def run_aggregate(
     for ordinal in sorted(set(edge_hold_pages or ())):
         reasons.append(
             f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
-            "Designator crop on the page claims, so its coverage is not reconciled"
+            f"{'reading region' if page_read else 'Designator crop'} on the page claims, so "
+            "its coverage is not reconciled"
         )
 
     for join in continuation_joins or ():
@@ -812,6 +850,14 @@ def run_aggregate(
                 crossing + f"no reconstruction was made ({join['not_reconstructed_reason']}), "
                 "and no act was joined"
             )
+
+    for act, flag in sorted(set(unpaired_continuations)):
+        if act not in act_categories or flag not in _CONTINUATION_SAYS:
+            raise FatalAccounting(
+                f"an unpaired continuation names {act!r} and {flag!r}, not a counted act and a "
+                "continuation flag"
+            )
+        reasons.append(UNPAIRED_CONTINUATION_REASON.format(act=act, says=_CONTINUATION_SAYS[flag]))
 
     for act in sorted(act_categories):
         category = act_categories[act]
@@ -861,7 +907,17 @@ def run_aggregate(
             reason = page_census[ordinal].get("reason") or "no reason was recorded"
             reasons.append(f"page {ordinal} was {outcome}: {reason}")
         elif pages_with_acts is not None and ordinal not in pages_with_acts:
-            reasons.append(SILENT_PAGE_REASON.format(ordinal=ordinal))
+            others = (other_categories_by_page or {}).get(ordinal)
+            if not page_read:
+                reasons.append(SILENT_PAGE_REASON.format(ordinal=ordinal))
+            elif not others:
+                reasons.append(PAGE_READ_SILENT_PAGE_REASON.format(ordinal=ordinal))
+            elif set(others) != {ArmariumCategory.DELIVERED.value}:
+                reasons.append(
+                    NO_ACT_PAGE_HELD_REASON.format(
+                        ordinal=ordinal, categories=", ".join(sorted(set(others)))
+                    )
+                )
 
     return {
         "status": "complete" if not reasons else "partial",

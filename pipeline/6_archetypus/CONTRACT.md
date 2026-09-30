@@ -83,12 +83,16 @@ reviewed, no review of an uncounted unit, each naming its row's key, kind and
 reading). A `page-refused` row is the census's and is never reviewed
 (`reviewed_rows`). The act path is unchanged.
 
-- **Which rows are established.** A row whose current review is `accepted`. Every
-  decision is checked before any record is written: an accepted row with no
-  reading (`page-unread`, `page-blank`) or one the denominator holds
-  (`disposition` other than `read`) is fatal, because a stage may not resurrect a
-  held reading. Held and page rows end at the Recensor with no record and count
-  toward held; `EXIT_HELD` only for an outcome the algebra leaves open.
+- **Which rows are established.** A row whose current review is `accepted`, and
+  that `page_review.require_establishable` allows: a row with a reading whose
+  disposition is `read`, or a held row whose only hold is
+  `no-act-on-page-unconfirmed` and whose review names exactly that code in its
+  `release` (the Recensor confirmed its page holds no act). An accepted row with no
+  reading (`page-unread`, `page-blank`) or any other hold is fatal, because a stage
+  may not resurrect a held reading. Every record is built and checked before any is
+  published, so a refusal leaves no partial set behind. Held and page rows end at
+  the Recensor with no record and count toward held; `EXIT_HELD` only for an
+  outcome the algebra leaves open.
 - **`other` readings are established too.** The Perlector names `act` and `other`
   entries on a page; both are established here, so every export shows the one
   established reading of each. The record gains `kind` (`act` | `other`); its
@@ -101,18 +105,22 @@ reading). A `page-refused` row is the census's and is never reviewed
   is exactly what that returns (`region_id`, `image_path`, `image_sha256`,
   `verified_dimensions`, `source_page_ordinal`, `source_page_id`, `transform`),
   a closed set of its own. There is no act-attachment requirement.
-- **Witness custody** is the act path's check re-pointed to the page: every
-  witness row of the feed the reading names must carry its chair's current
-  `page-testimonium` of that page, and every dissent row must compare against a
-  witness the feed showed. The annotation roster is those page Testimonia.
+- **Witness custody** is `page_review.shown_page_witnesses`: the feed the reading
+  inputs was built under this run's witness regime; it showed at least one
+  witness, or the reading is a Lectio nuda and is refused by name; every row names
+  a current `page-testimonium` of the page by reference (a blinded feed names no
+  chair), under the label this run's regime gives that Testimonium's chair; and the
+  reading's dissent compares against exactly the letters the feed showed, once
+  each. A page reading records no annotation layer, so a record's `annotations` is
+  `[]` and a reading carrying one is refused.
 - **Uncertainty** is `common.contracts.uncertainty.from_page_perlectio`: the
-  reading's spans and gaps with its `{state, problem}` assessment. A page reader is
-  shown no Pass-A draft, so, like a draft-withheld act reading, `self_revisions`
-  is `null` (not measured) and `lectio_kind` is `primed-draft-withheld`.
+  reading's spans and gaps (which must equal the copies in its
+  `uncertainty_assessment`) with its `{state, problem}` assessment, under its own
+  lectio kind `page-read`, whose `self_revisions` is `null` (not measured).
 - **Inputs** are the review, the reading, its act-region and the crop.
-- **Index.** `accepted_act_ids` follows the tree: a tree whose Perlector
-  published page readings reconciles against the page rows the Recensor accepted,
-  1:1, exactly as the act path does.
+- **Index.** `accepted_act_ids` follows the sealed reading unit: a page-read run
+  reconciles against the page rows the Recensor accepted, 1:1, exactly as the act
+  path does, and its rows carry `kind`.
 
 ## `kind="archetypus"`
 
@@ -296,8 +304,11 @@ deliberately the Recensor's accepted set, recomputed from the immutable review r
 an index checked only against the writer's own list would agree with itself about an act
 the writer had skipped. `validate_index` proves the same thing for any consumer that
 wants it before relying on the file — with one practical caveat: its first argument is a
-stage-context-shaped object (`.tree`, `.fixture`, `.input_ref`, `.artifact_ref`), so a
-consumer outside a stage builds a small shim first, exactly as `test_index.py` does.
+stage-context-shaped object (`.tree`, `.fixture`, `.input_ref`, `.artifact_ref`, and
+the sealed Perlector protocol it reads the run's reading unit from:
+`.perlector_protocol_config_path`, `.require_sealed_config`), so a consumer outside a
+stage builds a small shim first, exactly as `test_index.py` does. A page-read run's
+rows also carry `kind` (`act` | `other`).
 
 **The clustered index has no such reconciliation yet — deliberately unfilled.**
 `build_logical_index` (Unit 19D) seals one `{logical_act_id, text_hash}` row per

@@ -397,20 +397,49 @@ partition unit with no text: `held-for-review` with the review's reason and the
 row's hold codes, or `confirmed-blank` (a `page-blank` row only) when the
 Recensor confirms it. A `page-refused` row must be a page the census refused; it
 is reported there with the Door's reason and counted nowhere else. An accepted
-row has exactly one Archetypus record, verified against its row, its accepted
-review, its reading and its act-region (re-proven from the Exemplar), with the
-damage layers recomputed.
+row must be one `page_review.require_establishable` allows (a `read` row, or one
+held only by `no-act-on-page-unconfirmed` whose review releases exactly that
+code) and has exactly one Archetypus record, verified against its row, its
+accepted review, its reading (`read`, of the row's kind, with no `holds` or
+`page_holds`) and its act-region (re-proven from the Exemplar), with the damage
+layers recomputed: `annotations` must equal the reading's own layer validated
+(`[]`, since a page reading records none) and `uncertainty` its
+`from_page_perlectio` layer. `confirmed-blank` is refused on any row but a
+`page-blank` one.
+
+**Witnesses.** Each delivered reading's witnesses are
+`page_review.shown_page_witnesses`, the Archetypus's custody check, each exported
+as `{chair, witness_label, outcome, testimonium_ref, provenance}`: the chair read
+from the Testimonium the feed row names, and the label the reader saw it under (a
+pseudonym in a blinded run, the chair in a named one).
+
+**Pages with no act.** A read page whose entries are all `other` carries
+`no-act-on-page-unconfirmed` on each. Until the Recensor confirms the page holds
+no act, its other readings are held and the aggregate and ledger name the page as
+read with no act, its other readings held until that confirmation; once every
+one is delivered the page is a confirmed no-act page: `delivered` in the ledger,
+with that reason, and no aggregate reason. Page-path reasons never speak of acts
+marked out or Designator crops: a page no reading accounts for is named as such,
+and an edge hold names the reading regions.
 
 **Regions and the ink map.** Source regions are the Archetypus's, each linked to
 the original filename ledger as on the act path. The rectangles that may release
 unclaimed edge ink are every placed act and other reading's `act-region`, each
 verified by `verify_reading_region_lineage` in the function that uses it.
 
-**Continuation joins** come from the Recensor's `continuation-link` records: an
-agreed link becomes a join row (its `candidate_ref` is the link), reconstructed
-exactly as on the act path; a link whose two readings' flags disagree joins
-nothing. A link naming an `other` reading, or pages that are not adjacent, is
-fatal. Every join keeps the run `partial` with its reason, as on the act path.
+**Continuation joins** come from the Recensor's `recensor-continuation-link.v1`
+records, read by `page_review.continuation_links` (one per flagged page break
+`page-break:<p>:<p+1>`, each named side a counted row on its side of the break
+carrying its own flag, `agreed` exactly when both flags are raised, `accepted`
+exactly when agreed). Every link becomes a join row (its `candidate_ref` is the
+link): agreed with both sides delivered, it is reconstructed exactly as on the
+act path; a side with no `act` entry is `not-reconstructed`
+(`side-names-no-act`); a link whose flags disagree is `not-reconstructed`
+(`flags-disagree`). A link naming an `other` reading is fatal. Every join keeps
+the run `partial` with its reason, as on the act path. Each delivered act's raised
+flags travel in `aggregate_basis.continuation_flags` (`{act_key: [flag, ...]}`,
+page path only), and a flag no join has as a side is a named partial reason, so a
+flag is never dropped.
 
 **Manifest `armarium-export-manifest.v9`**, its own id because its denominator
 differs (a v7/v8 reader must not read reading acts as proposal-seal rows), with
@@ -419,25 +448,33 @@ two more required claims:
 - `claims.other_readings` -- `{layer, counted_as_acts: false, count,
   by_category, act_ids, carried_by}`, derived from `sources.json`'s
   `other_outcomes`. The terminal ledger gains a fourth unit type, `other`: a held
-  other reading keeps `claims.status` partial; none decides its page's category.
+  other reading keeps `claims.status` partial, and other readings decide a page's
+  category only on a page with no act ("Pages with no act" above).
 - `claims.page_accounting` -- `{denominator, pages, held_pages,
   policy_sha256s}`, one row per real sealed page: `{ordinal, page_id, rules
   (letter -> status), hold_codes, policy_sha256, accounting_ref}`, read from the
   page's `page-accounting` under the policy this run sealed.
 
-`claims.not_measured` names the page path's instruments, in order:
+`claims.not_measured` names the page path's instruments, in order (every
+threshold must be an integer, and one that is not is fatal rather than left out):
 `perlector-uncertain-spans` and `designator-geometry-calibration` as on the act
 path, then `page-accounting-thresholds` (every threshold of the sealed
 `config/page_accounting.toml`; all are starting values, so `not-measured`),
-`perlector-pass-c` (from each page reading's `audit`; the page path never runs
-Pass C, so `declared-unproduced`) and `lectio-nuda` (the sealed
+`perlector-pass-c` (from each real sealed page's reading `audit`, `pages_read`
+bound to that page count; the page path never runs Pass C, so
+`declared-unproduced`) and `lectio-nuda` (the sealed
 `nuda_per_mille`, which the page path refuses above zero, and the Perlector's
 `lectio-nuda` records). The act path's testimony-content, page-ink-conservation
 and act-visibility instruments read act-path records a page-read run does not
 make; the page accounting measures what they did, and it is claimed above.
 
 **Formats.** `sources.json` is `armarium-sources.v4`: v3 plus `other_outcomes`,
-`other_citations` and `page_accounting`. The other layer is carried by:
+`other_citations` and `page_accounting`. A page reading's uncertainty layer names
+its own lectio kind, `page-read` (`self_revisions: null`), a value the v3 act
+shapes do not know, so page-path act rows are `armarium-act.v4` and the acts
+database `armarium-acts-sqlite.v4` (`user_version` 4), each otherwise the v3
+shape; the act path's ids and bytes are unchanged. The other layer is carried
+by:
 
 - `other.jsonl` (with `jsonl`) -- one `armarium-other-reading.v1` row per other
   reading, text only when delivered. A separate member rather than a `kind` field
@@ -456,7 +493,11 @@ which formats do.
 `sources.json`, requires every other reading apart from the act partition, reads
 `other.jsonl` and every OTHER section against the source rows and requires the
 formats carrying the layer to agree on each reading's text, uncertainty and
-status, recomputes the ledger with its `other` units, and refuses a page the
+status, recomputes the ledger with its `other` units, requires the acts
+database's schema id to be the one its reading unit writes, binds Pass C's
+`pages_read` to the real sealed pages, requires `aggregate_basis.act_pages` to
+name every page a delivered act's cited regions were cut from, recomputes each
+join (a `flags-disagree` join only on the page path), and refuses a page the
 accounting holds that delivered any reading.
 
 ## Boundary checks

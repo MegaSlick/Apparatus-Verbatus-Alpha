@@ -49,6 +49,10 @@ from common.contracts.canonical import (
 )
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.outcomes import (
+    CONFIRMED_NO_ACT_PAGE_REASON,
+    CONTINUATION_FLAGS,
+    NO_ACT_PAGE_HELD_REASON,
+    PAGE_READ_SILENT_PAGE_REASON,
     SILENT_PAGE_REASON,
     TEXT_STATUSES,
     ArmariumCategory,
@@ -57,7 +61,7 @@ from common.contracts.outcomes import (
     run_aggregate,
 )
 from common.contracts.stages import ARMARIUM
-from common.contracts.uncertainty import utf8_round_trip
+from common.contracts.uncertainty import PAGE_READ_LECTIO, utf8_round_trip
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
 from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
@@ -115,6 +119,16 @@ _REVIEW_ITEM_FIELDS: Final = frozenset(
 )
 _SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v3"
 _SQLITE_USER_VERSION: Final = 3
+# A page-read run's act rows carry the `page-read` lectio kind in their
+# uncertainty layer, a value the v3 shapes do not name, so both ids move there.
+ACT_RECORD_PAGE_SCHEMA: Final = "armarium-act.v4"
+_SQLITE_PAGE_SCHEMA: Final = "armarium-acts-sqlite.v4"
+_SQLITE_PAGE_USER_VERSION: Final = 4
+# (act row id, SQLite schema id, SQLite user_version) for each reading unit.
+_ACT_PRODUCT_IDS: Final = {
+    READING_UNIT_ACT: (ACT_RECORD_SCHEMA, _SQLITE_SCHEMA, _SQLITE_USER_VERSION),
+    READING_UNIT_PAGE: (ACT_RECORD_PAGE_SCHEMA, _SQLITE_PAGE_SCHEMA, _SQLITE_PAGE_USER_VERSION),
+}
 # Field sets are checked exactly, so each shape change needs a new id.
 SOURCES_SCHEMA: Final = "armarium-sources.v3"
 # v3 plus the page path's `other_outcomes`, `other_citations` and `page_accounting`.
@@ -395,6 +409,9 @@ def canonical_text_sha256(text: str) -> str:
     return digest_bytes(text.encode(CANONICAL_TEXT_ENCODING))
 
 
+_FLAGS_DISAGREE: Final = "flags-disagree"
+
+
 def continuation_join_row(
     *,
     join_id: str,
@@ -405,8 +422,13 @@ def continuation_join_row(
     tail_act_ids: list[str],
     delivered_texts: dict[str, str],
     selected_formats: tuple[str, ...] | list[str],
+    flags_disagree: bool = False,
 ) -> dict[str, Any]:
-    """One continuation candidate as a text-free join row over the delivered literals."""
+    """One continuation candidate as a text-free join row over the delivered literals.
+
+    `flags_disagree` marks a page-read break whose two readings do not both say
+    an act crosses it: it is recorded, and nothing is reconstructed over it.
+    """
     literal = bool(_literal_formats_in(selected_formats))
     # Only these two formats carry a reconstruction; the database has no table for one yet.
     writes = bool({"jsonl", "text-bundle"} & set(selected_formats))
@@ -418,6 +440,8 @@ def continuation_join_row(
 
     if not head_act_ids or not tail_act_ids:
         reason = "side-names-no-act"
+    elif flags_disagree:
+        reason = _FLAGS_DISAGREE
     elif len(set(head_act_ids)) < len(head_act_ids) or len(set(tail_act_ids)) < len(tail_act_ids):
         reason = "act-named-twice-on-one-side"
     elif len(head_act_ids) > 1 or len(tail_act_ids) > 1:
@@ -455,7 +479,7 @@ def _doubt(layer: Any) -> dict[str, int | str | None]:
         "gaps": len(layer.get("gaps") or []),
         "self_revisions": (
             None
-            if layer.get("lectio_kind") == "primed-draft-withheld"
+            if layer.get("lectio_kind") in ("primed-draft-withheld", PAGE_READ_LECTIO)
             else len(layer.get("self_revisions") or [])
         ),
         "assessment": assessment.get("state") if isinstance(assessment, dict) else None,
@@ -627,9 +651,11 @@ def build_armarium_bundle(
             )
         )
     if "acts-database" in formats.formats:
-        members["acts.sqlite"] = _acts_database_bytes(projection.acts)
+        members["acts.sqlite"] = _acts_database_bytes(projection.acts, projection.reading_unit)
     if "jsonl" in formats.formats:
-        members["acts.jsonl"] = _jsonl_bytes(_act_json_records(projection.acts))
+        members["acts.jsonl"] = _jsonl_bytes(
+            _act_json_records(projection.acts, projection.reading_unit)
+        )
         if reconstructions:
             members["reconstructions.jsonl"] = _jsonl_bytes(reconstructions)
         if page_path:
@@ -1666,6 +1692,8 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
             tail_act_ids=sides[1],
             delivered_texts={act_id: literal[0] for act_id, literal in literals.items()},
             selected_formats=formats.formats,
+            flags_disagree=sources["reading_unit"] == READING_UNIT_PAGE
+            and join["not_reconstructed_reason"] == _FLAGS_DISAGREE,
         )
         if expected != join:
             raise SchemaRefusal(
@@ -2244,6 +2272,11 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         _validate_projection_act(act)
     if page_path:
         _validate_page_projection(projection, act_ids | act_keys, sealed)
+        if not_measured_basis[_PASS_C]["pages_read"] != len(sealed):
+            raise SchemaRefusal(
+                "an Armarium projection's Pass C basis does not count exactly its real sealed "
+                "pages as read"
+            )
     perlector_basis = not_measured_basis[_PERLECTOR_UNCERTAIN_SPANS]
     delivered_counts = _delivered_doubt_counts(projection.acts)
     if any(perlector_basis[field] != count for field, count in delivered_counts.items()):
@@ -2271,6 +2304,8 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         projection.aggregate_basis,
         edge_hold_pages,
         list(projection.continuation_joins),
+        others=list(projection.other_readings) if page_path else None,
+        act_keys={act["act_id"]: act["act_key"] for act in projection.acts},
     )
     if canonical_text(projection.aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("an Armarium projection aggregate does not match its measured basis")
@@ -2552,21 +2587,94 @@ def _validate_witness_accounting(
             raise SchemaRefusal("a delivered act's witness provenance disagrees with the roster")
 
 
+_AGGREGATE_BASIS_FIELDS: Final = (
+    "coverage_records",
+    "unaddressed_chairs",
+    "act_pages",
+    "act_text_status",
+)
+
+
+def _validated_continuation_flags(flags: Any, categories: dict[str, str]) -> dict[str, list[str]]:
+    """A page-read basis's continuation flags: delivered acts, each its raised flags in order."""
+    if not isinstance(flags, dict) or any(
+        not _is_nonempty_str(act_key)
+        or categories.get(act_key) != ArmariumCategory.DELIVERED.value
+        or not isinstance(raised, list)
+        or not raised
+        or not all(isinstance(flag, str) and flag in CONTINUATION_FLAGS for flag in raised)
+        or raised != sorted(set(raised))
+        for act_key, raised in flags.items()
+    ):
+        raise SchemaRefusal(
+            "an Armarium aggregate basis's continuation flags are not the raised flags of "
+            "delivered acts"
+        )
+    return flags
+
+
+def unpaired_continuations(
+    flags: dict[str, list[str]], joins: list[dict[str, Any]], act_keys: dict[str, str]
+) -> list[tuple[str, str]]:
+    """Each raised continuation flag of a delivered act that no join row has as a side.
+
+    A join's head continues onto the next page and its tail from the previous
+    one; a flag with no join (at the run's edge, say) is named, never dropped.
+    """
+    paired = {
+        (act_keys.get(act_id), "continues_to_next_page")
+        for join in joins
+        for act_id in join["head_act_ids"]
+    } | {
+        (act_keys.get(act_id), "continues_from_previous_page")
+        for join in joins
+        for act_id in join["tail_act_ids"]
+    }
+    return [
+        (act_key, flag)
+        for act_key in sorted(flags)
+        for flag in flags[act_key]
+        if (act_key, flag) not in paired
+    ]
+
+
 def _aggregate_from_basis(
     categories: dict[str, str],
     pages: tuple[dict[str, Any], ...] | list[dict[str, Any]],
     basis: Any,
     edge_hold_pages: tuple[int, ...] = (),
     continuation_joins: list[dict[str, Any]] | None = None,
+    *,
+    others: list[dict[str, Any]] | None = None,
+    act_keys: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Recompute an Armarium aggregate from its retained, non-text inputs."""
-    if not isinstance(basis, dict) or set(basis) != {
-        "coverage_records",
-        "unaddressed_chairs",
-        "act_pages",
-        "act_text_status",
-    }:
+    """Recompute an Armarium aggregate from its retained, non-text inputs.
+
+    `others` is a page-read run's other layer (`{page_ordinal, category}` rows),
+    `None` on the act path; a page-read basis also carries `continuation_flags`,
+    read against the joins through `act_keys` (act id to act key).
+    """
+    page_read = others is not None
+    fields = set(_AGGREGATE_BASIS_FIELDS) | ({"continuation_flags"} if page_read else set())
+    if not isinstance(basis, dict) or set(basis) != fields:
         raise SchemaRefusal("an Armarium aggregate has no recognized accounting basis")
+    page_terms: dict[str, Any] = {}
+    if page_read:
+        by_page: dict[int, list[str]] = {}
+        for other in others:
+            by_page.setdefault(other["page_ordinal"], []).append(other["category"])
+        flags = _validated_continuation_flags(basis["continuation_flags"], categories)
+        try:
+            unpaired = unpaired_continuations(flags, continuation_joins or [], act_keys or {})
+        except (KeyError, TypeError) as error:
+            raise SchemaRefusal(
+                "an Armarium aggregate's joins cannot be read for pairing"
+            ) from error
+        page_terms = {
+            "page_read": True,
+            "other_categories_by_page": by_page,
+            "unpaired_continuations": unpaired,
+        }
     coverage, chairs, act_pages, act_text_status = (
         basis.get("coverage_records"),
         basis.get("unaddressed_chairs"),
@@ -2599,6 +2707,7 @@ def _aggregate_from_basis(
             act_text_status=act_text_status,
             edge_hold_pages=edge_hold_pages,
             continuation_joins=continuation_joins,
+            **page_terms,
         )
     # The basis may come from an untrusted package and `run_aggregate` reads
     # coverage-record keys nothing above checks. The cause stays chained.
@@ -3276,7 +3385,10 @@ def _text_member_path(folder: str) -> str:
     return f"text/_source_folder/{folder}/readings.txt"
 
 
-def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
+def _acts_database_bytes(
+    acts: tuple[dict[str, Any], ...], reading_unit: str = READING_UNIT_ACT
+) -> bytes:
+    _row_schema, sqlite_schema, user_version = _ACT_PRODUCT_IDS[reading_unit]
     with tempfile.TemporaryDirectory(prefix="armarium-sqlite-") as directory:
         path = f"{directory}/acts.sqlite"
         connection = sqlite3.connect(path)
@@ -3285,13 +3397,13 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
             connection.execute("PRAGMA journal_mode=OFF")
             connection.execute("PRAGMA synchronous=OFF")
             # Moves with `_SQLITE_SCHEMA`.
-            connection.execute(f"PRAGMA user_version={_SQLITE_USER_VERSION}")
+            connection.execute(f"PRAGMA user_version={user_version}")
             connection.executescript(_ACTS_DATABASE_DDL)
             metadata = {
                 "canonical_text_encoding": CANONICAL_TEXT_ENCODING,
                 "canonical_text_field": CANONICAL_TEXT_FIELD,
                 "normalizer_revision": TEXTNORM_REVISION,
-                "schema": _SQLITE_SCHEMA,
+                "schema": sqlite_schema,
                 "unidata_version": unicodedata.unidata_version,
             }
             connection.executemany(
@@ -3370,13 +3482,16 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
         return Path(path).read_bytes()
 
 
-def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+def _act_json_records(
+    acts: tuple[dict[str, Any], ...], reading_unit: str = READING_UNIT_ACT
+) -> list[dict[str, Any]]:
+    row_schema = _ACT_PRODUCT_IDS[reading_unit][0]
     records: list[dict[str, Any]] = []
     for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
         literal = act[CANONICAL_TEXT_FIELD]
         records.append(
             {
-                "schema": ACT_RECORD_SCHEMA,
+                "schema": row_schema,
                 "act_id": act["act_id"],
                 "act_key": act["act_key"],
                 "category": act["category"],
@@ -3874,11 +3989,9 @@ def _verify_acts_database_identity(connection: sqlite3.Connection) -> None:
         raise SchemaRefusal("the acts database has no readable schema") from error
     if any(kinds.get(name) != "table" for name in _STORED_ACTS_TABLES):
         raise SchemaRefusal("the acts database does not carry acts and act_search as stored tables")
-    if (
-        kinds.get("acts_fts") != "table"
-        or user_version != (_SQLITE_USER_VERSION,)
-        or schema != (_SQLITE_SCHEMA,)
-    ):
+    if kinds.get("acts_fts") != "table" or (schema, user_version) not in {
+        ((sqlite_schema,), (version,)) for _row, sqlite_schema, version in _ACT_PRODUCT_IDS.values()
+    }:
         raise SchemaRefusal("the acts database has no recognized SQLite product identity")
     _verify_acts_schema(connection)
 
@@ -3970,7 +4083,11 @@ def _jsonl_literals(path) -> dict[str, tuple]:
 
 
 def _page_ledger_category(
-    ordinal: int, act_categories: list[str], *, edge_hold: bool = False
+    ordinal: int,
+    act_categories: list[str],
+    *,
+    edge_hold: bool = False,
+    other_categories: list[str] | None = None,
 ) -> tuple[str, str | None]:
     """One sealed page's terminal category, derived from the acts cut on it.
 
@@ -3982,6 +4099,21 @@ def _page_ledger_category(
         return (
             ArmariumCategory.HELD_FOR_REVIEW.value,
             f"unclaimed-edge-ink: page {ordinal} carries unreleased ink-map evidence",
+        )
+    if not act_categories and other_categories is not None:
+        # A page-read page: every page it read has a row, so one with no act row
+        # holds only other readings, and it is a confirmed no-act page once all
+        # are delivered.
+        if not other_categories:
+            return ArmariumCategory.HELD_FOR_REVIEW.value, PAGE_READ_SILENT_PAGE_REASON.format(
+                ordinal=ordinal
+            )
+        if set(other_categories) == {ArmariumCategory.DELIVERED.value}:
+            return ArmariumCategory.DELIVERED.value, CONFIRMED_NO_ACT_PAGE_REASON.format(
+                ordinal=ordinal
+            )
+        return ArmariumCategory.HELD_FOR_REVIEW.value, NO_ACT_PAGE_HELD_REASON.format(
+            ordinal=ordinal, categories=", ".join(sorted(set(other_categories)))
         )
     if not act_categories:
         return ArmariumCategory.HELD_FOR_REVIEW.value, SILENT_PAGE_REASON.format(ordinal=ordinal)
@@ -4026,7 +4158,8 @@ def _terminal_ledger(
     page's category. The three unit types describe overlapping material, so
     `by_unit_type` shows that category totals count units, not acts. A page-read
     run's other readings are a fourth unit type (`other`), never acts: a held one
-    keeps the run partial, and none decides its page's category.
+    keeps the run partial, and they decide a page's category only on a page with
+    no act, which is a confirmed no-act page once every one is delivered.
     """
     by_act_id: dict[str, dict[str, Any]] = {}
     categories_by_key: dict[str, str] = {}
@@ -4055,13 +4188,21 @@ def _terminal_ledger(
                 raise SchemaRefusal("an Armarium terminal ledger act names a non-integer page")
             acts_on_page.setdefault(ordinal, []).append(category)
 
+    others_on_page: dict[int, list[str]] = {}
+    for record in other_outcomes or []:
+        others_on_page.setdefault(record["page_ordinal"], []).append(record["category"])
     page_units: list[dict[str, Any]] = []
     source_units: list[dict[str, Any]] = []
     for page in sorted(pages, key=lambda row: row["ordinal"]):
         ordinal = page["ordinal"]
         if page.get("outcome") == "sealed":
             category, reason = _page_ledger_category(
-                ordinal, acts_on_page.get(ordinal, []), edge_hold=ordinal in edge_hold_pages
+                ordinal,
+                acts_on_page.get(ordinal, []),
+                edge_hold=ordinal in edge_hold_pages,
+                other_categories=None
+                if other_outcomes is None
+                else others_on_page.get(ordinal, []),
             )
             page_units.append(_page_ledger_unit("page", page, category, reason))
         else:
@@ -4703,6 +4844,10 @@ def _verify_honest_status_claims(
         sources["aggregate_basis"],
         derived_edge_holds,
         sources["continuation_joins"],
+        others=list(_other_outcome_sources(sources).values())
+        if sources["reading_unit"] == READING_UNIT_PAGE
+        else None,
+        act_keys=act_keys,
     )
     if canonical_text(aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("the exported aggregate does not match its measured accounting basis")
@@ -5055,13 +5200,24 @@ def _verify_page_layers(
     ):
         raise SchemaRefusal("the exported page-accounting claim does not follow from its rows")
     held = {row["ordinal"] for row in page_rows if row["hold_codes"]}
+    pass_c = {entry["instrument"]: entry["detail"] for entry in claims["not_measured"]["entries"]}
+    if pass_c[_PASS_C]["pages_read"] != len(sealed):
+        raise SchemaRefusal(
+            "the Pass C claim does not count exactly the package's real sealed pages as read"
+        )
+    # Each delivered act's pages are where its cited regions were cut, and the
+    # aggregate's page attribution must name every one of them.
     act_pages = sources["aggregate_basis"].get("act_pages") or {}
-    delivered_act_keys = {
-        outcome["act_key"]
-        for outcome in _act_outcome_sources(sources).values()
-        if outcome["category"] == ArmariumCategory.DELIVERED.value
-    }
-    delivered_pages = {page for key in delivered_act_keys for page in act_pages.get(key, [])}
+    delivered_pages: set[int] = set()
+    for citation in _act_citation_sources(sources).values():
+        cut_on = {region["source_page_ordinal"] for region in citation["source_regions"]}
+        attributed = act_pages.get(citation["act_key"])
+        if not isinstance(attributed, list) or not cut_on <= set(attributed):
+            raise SchemaRefusal(
+                f"the aggregate's page attribution of {citation['act_key']} does not name every "
+                "page its cited regions were cut from"
+            )
+        delivered_pages |= cut_on
     delivered_pages |= {outcomes[act_id]["page_ordinal"] for act_id in delivered}
     if held & delivered_pages:
         raise SchemaRefusal(
@@ -5071,12 +5227,13 @@ def _verify_page_layers(
 
 
 def _jsonl_act_records(
-    path: Path, source_graph_regions: list[dict[str, Any]]
+    path: Path, source_graph_regions: list[dict[str, Any]], reading_unit: str = READING_UNIT_ACT
 ) -> dict[str, dict[str, Any]]:
     """Validate JSONL's one-record-per-act projection and return its categories."""
+    row_schema = _ACT_PRODUCT_IDS[reading_unit][0]
     records: dict[str, dict[str, Any]] = {}
     for record in _jsonl_rows(path, "acts JSONL", "an acts JSONL row"):
-        if not isinstance(record, dict) or record.get("schema") != ACT_RECORD_SCHEMA:
+        if not isinstance(record, dict) or record.get("schema") != row_schema:
             raise SchemaRefusal("an acts JSONL row has no recognized schema")
         if set(record) != _ACT_RECORD_FIELDS:
             raise SchemaRefusal("an acts JSONL row has an unrecognized field set")
@@ -5601,6 +5758,15 @@ def _verify_product_accounting(
                 )
     search_fold_verification = None
     if "acts-database" in formats.formats:
+        database_schema = _read_acts_database(
+            root / "acts.sqlite",
+            "SELECT value FROM export_metadata WHERE key = 'schema'",
+            "the acts database has no readable schema",
+        )
+        if database_schema != [(_ACT_PRODUCT_IDS[sources["reading_unit"]][1],)]:
+            raise SchemaRefusal(
+                "the acts database's schema is not the one this package's reading unit writes"
+            )
         database_records, database_literals = _database_act_records(
             root / "acts.sqlite", sources["regions"]
         )
@@ -5616,7 +5782,9 @@ def _verify_product_accounting(
             root / "acts.sqlite", database_literals
         )
     if "jsonl" in formats.formats:
-        jsonl_records = _jsonl_act_records(root / "acts.jsonl", sources["regions"])
+        jsonl_records = _jsonl_act_records(
+            root / "acts.jsonl", sources["regions"], sources["reading_unit"]
+        )
         if _product_categories(jsonl_records) != expected:
             raise SchemaRefusal("the acts JSONL does not reconcile to the manifest act partition")
         _verify_exact_product_outcomes(jsonl_records, outcomes, subject="acts JSONL")

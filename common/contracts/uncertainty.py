@@ -32,6 +32,13 @@ def is_trailing_offset(text: str, offset: int) -> bool:
     )
 
 
+# How the one reading was made. A page reading (`page-read`) is its own kind: its
+# reader read a whole page with the witnesses beside it and no Pass-A draft, so,
+# like a draft-withheld act reading, its self-revisions were not measured.
+PAGE_READ_LECTIO: Final = "page-read"
+LECTIO_KINDS: Final = frozenset({"primed-with-prior", "primed-draft-withheld", PAGE_READ_LECTIO})
+_REVISIONS_NOT_MEASURED: Final = frozenset({"primed-draft-withheld", PAGE_READ_LECTIO})
+
 _GAP_EVIDENCE_FIELDS = frozenset({"chair", "testimonium_id", "reference", "variant"})
 _SOURCE_REVISION_FIELDS = frozenset({"reading_span", "testimonium_span"})
 
@@ -80,16 +87,21 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
 def from_page_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
     """The exportable uncertainty layer of a page reading's `perlectio.v2`.
 
-    A page reader is shown the witnesses and no Pass-A draft, so, like a
-    draft-withheld act reading, its self-revisions were not measured (`None`).
+    Its lectio kind is `page-read`, whose self-revisions were not measured (`None`).
     """
     if not isinstance(payload, dict):
         raise SchemaRefusal("canonical uncertainty requires an object Perlectio payload")
-    # The page reading's record also repeats the reader's spans and gaps beside
-    # its state; the layer keeps the closed `{state, problem}` pair.
+    # The page reading's record repeats the reader's spans and gaps inside its
+    # assessment; the two copies must be one fact, and the layer keeps the
+    # closed `{state, problem}` pair.
     recorded = payload.get("uncertainty_assessment")
     if not isinstance(recorded, dict):
         raise SchemaRefusal("the page Perlectio carries no uncertainty_assessment")
+    for field in ("uncertain_spans", "gaps"):
+        if field not in recorded or recorded[field] != payload.get(field):
+            raise SchemaRefusal(
+                f"the page Perlectio's {field} differ from the copy in its uncertainty_assessment"
+            )
     assessment = validate_assessment_record(
         {"state": recorded.get("state"), "problem": recorded.get("problem")},
         "the page Perlectio's uncertainty_assessment",
@@ -99,7 +111,7 @@ def from_page_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
         "gaps": payload.get("gaps"),
         "self_revisions": None,
         "assessment": assessment,
-        "lectio_kind": "primed-draft-withheld",
+        "lectio_kind": PAGE_READ_LECTIO,
     }
     validate(layer, payload.get("text"))
     return layer
@@ -152,11 +164,11 @@ def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
     revisions = layer["self_revisions"]
     validate_assessment_record(layer["assessment"])
     kind = layer.get("lectio_kind")
-    if "lectio_kind" in layer and kind not in ("primed-with-prior", "primed-draft-withheld"):
+    if "lectio_kind" in layer and (not isinstance(kind, str) or kind not in LECTIO_KINDS):
         raise SchemaRefusal("canonical uncertainty names an unknown lectio kind")
-    if kind == "primed-draft-withheld" and revisions is not None:
-        raise SchemaRefusal("a draft-withheld reading's self-revisions are not measured")
-    if kind != "primed-draft-withheld" and not isinstance(revisions, list):
+    if kind in _REVISIONS_NOT_MEASURED and revisions is not None:
+        raise SchemaRefusal(f"a {kind} reading's self-revisions are not measured")
+    if kind not in _REVISIONS_NOT_MEASURED and not isinstance(revisions, list):
         raise SchemaRefusal("canonical uncertainty self-revisions must be a list when measured")
     if not isinstance(uncertain, list) or not isinstance(gaps, list):
         raise SchemaRefusal("canonical uncertainty members must all be lists")

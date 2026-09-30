@@ -19,6 +19,7 @@ which includes the witness roster the run was authorized with, not only the acts
     python pipeline/7_armarium/run.py --run-root <dir> --run-id <id>
 """
 
+import dataclasses
 import sys
 import unicodedata
 from pathlib import Path
@@ -41,8 +42,10 @@ from armarium_export import (  # noqa: E402
     build_armarium_bundle,
     continuation_join_row,
     edge_hold_pages_from_rows,
+    unpaired_continuations,
 )
 
+from common import page_path  # noqa: E402
 from common.background import (  # noqa: E402
     validate_ink_not_measurable_payload,
     validate_measured_ink_map_payload,
@@ -54,6 +57,7 @@ from common.contracts.envelope import read_verified, validate_input_refs  # noqa
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import is_well_formed  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
+    CONTINUATION_FLAGS,
     TEXT_STATUSES,
     ArmariumCategory,
     derive_record_text_status,
@@ -83,12 +87,13 @@ from common.exemplar_boundary import (  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.page_accounting import require_page_accounting_policy  # noqa: E402
 from common.page_review import (  # noqa: E402
-    PAGE_REFUSED_CLASS,
     continuation_links,
     current_page_reviews,
+    require_establishable,
     review_coverage,
     review_reason,
     reviewed_rows,
+    shown_page_witnesses,
 )
 from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
 from common.residual_ink import (  # noqa: E402
@@ -104,10 +109,10 @@ from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     EXIT_HELD,
+    PAGE_REFUSED_CLASS,
     canary_ordinals,
     expected_acts,
     latest_attempt,
-    latest_per_chair,
     open_stage_context,
     reading_basis_regions,
     reading_denominator,
@@ -1879,6 +1884,9 @@ def _page_category(
             f"{row['act_key']} has Recensor outcome {outcome!r}, which reaches no terminal "
             "category; the export may not complete over an undecided reading"
         )
+    # The denominator's disposition is binding: a held row is accepted only
+    # when the review releases exactly its releasable holds by name.
+    require_establishable(row, review)
     if len(established) != 1:
         raise FatalAccounting(
             f"{row['act_key']} was accepted by the Recensor but carries {len(established)} "
@@ -1931,6 +1939,17 @@ def verify_established_page_record(
     reading_payload = reading.get("payload")
     if not isinstance(reading_payload, dict) or reading_payload.get("act_region_ref") != region_ref:
         raise FatalAccounting(f"the reading of {row['act_key']} names another act-region")
+    if (
+        reading.get("outcome") != "read"
+        or reading_payload.get("schema") != page_path.PERLECTIO_SCHEMA
+        or reading_payload.get("kind") != row["kind"]
+        or reading_payload.get("holds") != []
+        or reading_payload.get("page_holds") != []
+    ):
+        raise FatalAccounting(
+            f"the reading of {row['act_key']} is held or is not the row's own page reading, "
+            "yet an Archetypus established it"
+        )
     region_record = context.tree.read_artifact_reference(
         region_ref, stage=PERLECTOR, kind="act-region", subject_id=row["act_id"]
     )
@@ -1942,7 +1961,10 @@ def verify_established_page_record(
         ) from error
     try:
         annotations = validate_annotations(
-            payload.get("annotations"), payload.get("text", ""), None, "Archetypus annotation"
+            reading_payload.get("annotations", []),
+            reading_payload.get("text"),
+            None,
+            f"the reading of {row['act_key']} annotations",
         )
         uncertainty = from_page_perlectio(reading_payload)
         text_status = derive_record_text_status(payload.get("text"), annotations, uncertainty)
@@ -1974,33 +1996,23 @@ def verify_established_page_record(
 
 
 def export_page_witnesses(context, reading: dict, manifest_cache: dict[str, dict]) -> list[dict]:
-    """The page witnesses a reading was shown, each its chair's current page Testimonium."""
+    """The page witnesses a reading was shown, each its chair's current page Testimonium.
+
+    Each is exported under its chair, read from the Testimonium it names, and the
+    label the reader saw it under (a pseudonym when the run was blinded).
+    """
     payload = reading["payload"]
-    page_id = payload["page_id"]
-    feed_ref = payload.get("feed_ref")
-    if feed_ref not in reading.get("inputs", []):
-        raise FatalAccounting("an established page reading does not input its page feed")
-    feed = context.tree.read_artifact_reference(
-        feed_ref, stage=PERLECTOR, kind="page-feed", subject_id=page_id
-    )["payload"]
-    current = {
-        record["payload"]["chair"]: record
-        for record in latest_per_chair(
-            artifacts_for(context, ATTESTATORES, "page-testimonium", page_id, manifest_cache),
-            f"page Testimonium of {page_id}",
-        )
-    }
+    shown = shown_page_witnesses(
+        context,
+        reading,
+        artifacts_for(
+            context, ATTESTATORES, "page-testimonium", payload["page_id"], manifest_cache
+        ),
+        f"the established page reading of {payload['page_id']} entry {payload.get('n')}",
+    )
     witnesses = []
-    for row in feed.get("witnesses") or []:
-        record = current.get(row.get("chair"))
-        reference = row.get("testimonium_ref")
-        if record is None or reference != context.artifact_ref(
-            ATTESTATORES, "page-testimonium", record["artifact_id"]
-        ):
-            raise FatalAccounting(
-                "an established page reading was shown a witness that is not its chair's "
-                "current page Testimonium"
-            )
+    for witness in shown:
+        record = witness["testimonium"]
         validate_serving_provenance(
             context,
             record["payload"].get("provenance"),
@@ -2009,9 +2021,10 @@ def export_page_witnesses(context, reading: dict, manifest_cache: dict[str, dict
         )
         witnesses.append(
             {
-                "chair": row["chair"],
+                "chair": witness["chair"],
+                "witness_label": witness["witness_label"],
                 "outcome": record["outcome"],
-                "testimonium_ref": reference,
+                "testimonium_ref": witness["testimonium_ref"],
                 "provenance": record["payload"]["provenance"],
             }
         )
@@ -2047,11 +2060,13 @@ def reading_region_bounds_by_page(context, rows: list[dict]) -> dict[int, list[d
 def page_continuation_joins(
     links: list[dict], rows: dict[str, dict], projected_acts: list[dict], formats: tuple[str, ...]
 ) -> tuple[dict, ...]:
-    """Each agreed Recensor continuation link as a join row over the delivered literals.
+    """Each Recensor continuation link as a join row over the delivered literals.
 
-    A link whose two readings' flags disagree joins nothing: the readings do not
-    say that an act crosses the break. A link naming an `other` reading is
-    refused, since an other reading is not half of an act.
+    Every flagged page break is a join, so each keeps the run partial with its
+    reason: an agreed link with both sides delivered is reconstructed; a side
+    with no `act` entry names no act (`side-names-no-act`); a link whose two
+    readings' flags disagree reconstructs nothing (`flags-disagree`). A link
+    naming an `other` reading is refused: the Recensor links only `act` entries.
     """
     delivered_texts = {
         act["act_id"]: act["canonical_clean_text"]
@@ -2059,28 +2074,25 @@ def page_continuation_joins(
         if act["category"] == ArmariumCategory.DELIVERED.value
     }
     joins = []
-    for index, link in enumerate(link for link in links if link["agreed"]):
-        head, tail = rows[link["head_act_id"]], rows[link["tail_act_id"]]
-        if head["kind"] != "act" or tail["kind"] != "act":
+    for index, link in enumerate(links):
+        sides = [link["head_act_id"], link["tail_act_id"]]
+        if any(side is not None and rows[side]["kind"] != "act" for side in sides):
             raise FatalAccounting(
                 f"continuation link {link['ref']['relative_path']} names an other reading; an "
                 "other reading is never half of an act"
             )
-        if tail["page_ordinal"] != head["page_ordinal"] + 1:
-            raise FatalAccounting(
-                f"continuation link {link['ref']['relative_path']} joins pages that are not "
-                "adjacent"
-            )
+        head, tail = link["from_page_ordinal"], link["to_page_ordinal"]
         joins.append(
             continuation_join_row(
-                join_id=f"join-{head['page_ordinal']}-{tail['page_ordinal']}-{index}",
+                join_id=f"join-{head}-{tail}-{index}",
                 candidate_ref=link["ref"],
-                head_page_ordinal=head["page_ordinal"],
-                tail_page_ordinal=tail["page_ordinal"],
-                head_act_ids=[head["act_id"]],
-                tail_act_ids=[tail["act_id"]],
+                head_page_ordinal=head,
+                tail_page_ordinal=tail,
+                head_act_ids=[sides[0]] if sides[0] else [],
+                tail_act_ids=[sides[1]] if sides[1] else [],
                 delivered_texts=delivered_texts,
                 selected_formats=formats,
+                flags_disagree=not link["agreed"],
             )
         )
     return tuple(joins)
@@ -2131,11 +2143,18 @@ def page_not_measured_basis(
 ) -> dict:
     """What a page-read run did not measure, from its own records and sealed configurations."""
     policy = require_page_accounting_policy(context, context.page_accounting_config_path)
-    thresholds = sorted(
-        (name, value)
-        for name, value in vars(policy).items()
-        if name != "sha256" and isinstance(value, int)
-    )
+    thresholds = []
+    for field in dataclasses.fields(policy):
+        if field.name == "sha256":
+            continue
+        value = getattr(policy, field.name)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise FatalAccounting(
+                f"the sealed page-accounting threshold {field.name} is {value!r}, not an integer; "
+                "the export discloses every threshold and cannot state this one"
+            )
+        thresholds.append((field.name, value))
+    thresholds.sort()
     audits = []
     for page in pages.values():
         reading = context.tree.read_artifact_reference(
@@ -2212,6 +2231,8 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
     coverages: dict[str, dict] = {}
     act_text_status: dict[str, str] = {}
     act_pages: dict[str, list[int]] = {}
+    # Each delivered act's raised continuation flags, so one no link pairs is named.
+    continuation_flags: dict[str, list[str]] = {}
     projected_acts: list[dict] = []
     projected_others: list[dict] = []
     delivered: list[dict] = []
@@ -2318,6 +2339,9 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
             )
             if is_delivered:
                 act_text_status[row["act_key"]] = entry["text_status"]
+                raised = [flag for flag in CONTINUATION_FLAGS if row[flag] is True]
+                if raised:
+                    continuation_flags[row["act_key"]] = raised
             projected_acts.append(projected)
         context.publish(
             kind="manifest-entry",
@@ -2334,6 +2358,9 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
         links, {row["act_id"]: row for row in rows}, projected_acts, formats.formats
     )
     unaddressed = list(unaddressed_chairs(context.registry.config))
+    other_categories_by_page: dict[int, list[str]] = {}
+    for other in projected_others:
+        other_categories_by_page.setdefault(other["page_ordinal"], []).append(other["category"])
     aggregate = run_aggregate(
         categories,
         coverages,
@@ -2343,6 +2370,13 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
         act_text_status=act_text_status,
         edge_hold_pages=edge_hold_pages_from_rows(ink_map_pages),
         continuation_joins=joins,
+        page_read=True,
+        other_categories_by_page=other_categories_by_page,
+        unpaired_continuations=unpaired_continuations(
+            continuation_flags,
+            list(joins),
+            {act["act_id"]: act["act_key"] for act in projected_acts},
+        ),
     )
     real_sealed = {
         ordinal for ordinal, page in real_census.items() if page.get("outcome") == "sealed"
@@ -2378,11 +2412,12 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
                 "unaddressed_chairs": unaddressed,
                 "act_pages": act_pages,
                 "act_text_status": act_text_status,
+                "continuation_flags": continuation_flags,
             },
             ink_map_pages=ink_map_pages,
             not_measured_basis=page_not_measured_basis(
                 context,
-                {ordinal: page for ordinal, page in pages.items() if ordinal not in canaries},
+                {ordinal: page for ordinal, page in pages.items() if ordinal in real_sealed},
                 projected_acts,
                 manifest_cache,
             ),
