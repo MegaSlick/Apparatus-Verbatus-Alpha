@@ -5,10 +5,10 @@ identity survives recropping." The second and third follow from the same
 mechanism — every region traces back to the Exemplar, and the exact image shown to
 a model is reproducible from the Exemplar plus the recorded transforms.
 
-Meta-invariant #86 — every derived or authored value is NAMED in the test. The
-bindings below are written out in full at each call rather than hidden behind a
-fixture helper, because the whole point of the test is which facts an identity
-binds and which it does not.
+Every derived or authored value is NAMED in the test. The bindings below are
+written out in full at each call rather than hidden behind a fixture helper,
+because the whole point of the test is which facts an identity binds and which it
+does not.
 """
 
 import pytest
@@ -144,7 +144,7 @@ def test_attempts_are_distinct_per_ordinal_and_per_operation():
 
 
 def test_artifacts_of_one_subject_differ_by_attempt():
-    """Spec 07's retention ruling: attempts are append-only and nothing
+    """Attempts are append-only and nothing
     overwrites attempt 1 to record attempt 2. Two attempts colliding onto one
     artifact id is exactly how the old stage lost testimony."""
     act = identities.act_id(identities.page_id(ORIGIN, WHOLE), "proposal", BOUNDS_ORIGINAL)
@@ -317,3 +317,17 @@ def test_a_run_id_that_would_misbehave_as_a_directory_is_refused():
     ):
         with pytest.raises(IdentityRefusal):
             identities.validate_run_id(bad)
+
+
+@pytest.mark.parametrize("operation", ("prior", ["perlegere"]))
+def test_an_unknown_perlector_operation_is_an_identity_refusal(operation):
+    """A contract refusal, so a stage exits with its honest fatal code."""
+    with pytest.raises(IdentityRefusal, match="unknown Perlector reading operation"):
+        identities.perlector_attempt_id("act_0123456789abcdef", operation, 1)
+
+
+@pytest.mark.parametrize("act_class", (["proposal"], {"reading": 1}))
+def test_an_unhashable_act_class_is_an_identity_refusal(act_class):
+    page = identities.page_id(ORIGIN, WHOLE)
+    with pytest.raises(IdentityRefusal, match="act class"):
+        identities.act_bindings(page, act_class, BOUNDS_ORIGINAL)

@@ -294,6 +294,33 @@ def test_projection_refuses_a_payload_it_cannot_canonicalize(payload, expected) 
             "Maria",
             r"uncertain_spans\[0\] is malformed",
         ),
+        # Unhashable values from JSON: a named refusal, never a TypeError out of `in`.
+        (
+            {
+                "uncertain_spans": [
+                    {"start": 0, "end": 2, "alternatives": ["Ma"], "confidence": ["low"]}
+                ],
+                "gaps": [],
+                "self_revisions": [],
+                "assessment": _ASSESSED,
+                "lectio_kind": "primed-with-prior",
+            },
+            "Maria",
+            r"uncertain_spans\[0\] is malformed",
+        ),
+        (
+            {
+                "uncertain_spans": [],
+                "gaps": [
+                    {"position": {"internal": 1}, "start": 2, "end": 2, "witness_evidence": []}
+                ],
+                "self_revisions": [],
+                "assessment": _ASSESSED,
+                "lectio_kind": "primed-with-prior",
+            },
+            "Maria",
+            r"gaps\[0\] position",
+        ),
     ],
 )
 def test_validation_refuses_a_layer_that_cannot_anchor(layer, text, expected) -> None:

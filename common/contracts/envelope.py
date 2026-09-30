@@ -3,8 +3,8 @@
 Deliberately small. The envelope carries what a *consumer* needs in order to decide
 whether it may act on the thing at all — schema, identities, outcome, what produced
 it, and what it was derived from — and the stage payload carries everything else. A
-fat envelope becomes a second schema competing with the stage's own, which is the
-drift spec 01 is trying to avoid by having one executable authority.
+fat envelope becomes a second schema competing with the stage's own, and two schemas
+for one artifact drift apart; this package is the one executable authority.
 
 The input references are the load-bearing part. Each names a path and the sha256 of
 the bytes at that path, so a consumer can prove that what it is reading is what the
@@ -30,7 +30,7 @@ from .canonical import (
     self_hash_refusal,
     verify_self_hash,
 )
-from .errors import ContractError, ReservedKindRefusal, SchemaRefusal
+from .errors import ContractError, SchemaRefusal
 from .identities import artifact_id, is_well_formed
 from .outcomes import BOUNDARY_OUTCOMES, classify, require_approval
 from .stages import EXEMPLAR, STAGES
@@ -52,10 +52,6 @@ _REQUIRED: Final = (
 )
 
 _OPTIONAL: Final = ("approval_ref",)
-
-# Kinds whose payload is not yet defined; empty now, kept (and test-pinned) so the
-# next deferred kind is refused at the envelope.
-_RESERVED_KINDS: Final = frozenset()
 
 
 def build_envelope(
@@ -137,12 +133,6 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
         if not isinstance(envelope[field], str) or not envelope[field]:
             raise SchemaRefusal(f"artifact field {field!r} is empty or not a string")
 
-    if envelope["kind"] in _RESERVED_KINDS:
-        raise ReservedKindRefusal(
-            f"artifact kind {envelope['kind']!r} is reserved for its producing branch and is "
-            "not accepted by the R0 contract"
-        )
-
     if not is_well_formed(envelope["artifact_id"]):
         raise SchemaRefusal(f"artifact_id {envelope['artifact_id']!r} is malformed")
 
@@ -180,8 +170,26 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
             "with the record, at the moment it was produced"
         )
 
-    # Fatal rather than a refusal when the outcome is in no set: that is invariant
-    # #10's imbalance, and it is not a unit the run may route around.
+    validate_input_refs(envelope["inputs"])
+
+    if not isinstance(envelope["payload"], dict):
+        raise SchemaRefusal("payload is not an object")
+
+    # Before the outcome is classified: an outcome edited on disk is a tampered
+    # artifact refused with its path, not an accounting imbalance.
+    if not verify_self_hash(envelope):
+        # Unhashable current contents permit no digest comparison, so they must
+        # not be described as proof that a published artifact changed.
+        unhashable = self_hash_refusal(envelope)
+        if unhashable is not None:
+            raise SchemaRefusal(f"artifact fails its self-hash: {unhashable}")
+        raise SchemaRefusal(
+            "artifact fails its self-hash: its sealed envelope or payload changed after publication"
+        )
+
+    # Fatal rather than a refusal when a sealed outcome is in no set: every unit
+    # must be completed, unresolved or failed, and one in none of them is not a
+    # unit the run may route around.
     outcome = envelope["outcome"]
     expected_boundary_outcome = BOUNDARY_OUTCOMES.get(envelope["kind"])
     if expected_boundary_outcome is not None and outcome != expected_boundary_outcome:
@@ -201,21 +209,6 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
             f"outcome {outcome!r}"
         )
     require_approval(stage, outcome, envelope.get("approval_ref"))
-
-    validate_input_refs(envelope["inputs"])
-
-    if not isinstance(envelope["payload"], dict):
-        raise SchemaRefusal("payload is not an object")
-
-    if not verify_self_hash(envelope):
-        # Unhashable current contents permit no digest comparison, so they must
-        # not be described as proof that a published artifact changed.
-        unhashable = self_hash_refusal(envelope)
-        if unhashable is not None:
-            raise SchemaRefusal(f"artifact fails its self-hash: {unhashable}")
-        raise SchemaRefusal(
-            "artifact fails its self-hash: its sealed envelope or payload changed after publication"
-        )
 
     return envelope
 
@@ -251,7 +244,7 @@ def validate_input_refs(inputs: Any) -> None:
                 else ""
             )
             raise SchemaRefusal(f"input reference {path!r} is listed twice{conflict}")
-        portable = _portable_spelling(path)
+        portable = portable_spelling(path)
         if portable in portable_spellings:
             raise SchemaRefusal(
                 f"input references {portable_spellings[portable]!r} and {path!r} collide on "
@@ -285,7 +278,7 @@ def digest_ref(value: Any, what: str) -> dict[str, str]:
     return {"relative_path": path, "sha256": sha}
 
 
-def _portable_spelling(path: str) -> str:
+def portable_spelling(path: str) -> str:
     """One physical file's one accounting name, across the hosts this may run on.
 
     Case is one spelling a filesystem varies; Unicode form is the other, and it
@@ -303,12 +296,17 @@ def _portable_spelling(path: str) -> str:
     return unicodedata.normalize("NFC", unicodedata.normalize("NFC", path).casefold())
 
 
-def verify_input_bytes(ref: dict[str, str], data: bytes) -> None:
+def verify_input_bytes(
+    ref: dict[str, Any],
+    data: bytes,
+    what: str = "input",
+    refusal: type[ContractError] = SchemaRefusal,
+) -> None:
     """Refuse bytes that do not match the digest the reference claims for them."""
     actual = digest_bytes(data)
     if actual != ref["sha256"]:
-        raise SchemaRefusal(
-            f"input {ref['relative_path']} has digest {actual}, but its reference recorded "
+        raise refusal(
+            f"{what} {ref['relative_path']} has digest {actual}, but its reference recorded "
             f"{ref['sha256']}: the bytes changed under a sealed reference"
         )
 
@@ -320,16 +318,11 @@ def read_verified(
     refusal: type[ContractError] = SchemaRefusal,
 ) -> bytes:
     """Read `ref`'s bytes once, refused as `refusal` unless readable and matching its sha256."""
-    relative_path, sha256 = ref["relative_path"], ref["sha256"]
+    relative_path = ref["relative_path"]
     try:
         data = read_bytes(relative_path)
     except OSError as error:
         reason = error.strerror or type(error).__name__
         raise refusal(f"{what} {relative_path} could not be read: {reason}") from error
-    actual = digest_bytes(data)
-    if actual != sha256:
-        raise refusal(
-            f"{what} {relative_path} has digest {actual}, but its reference recorded {sha256}: "
-            "the bytes changed under a sealed reference"
-        )
+    verify_input_bytes(ref, data, what, refusal)
     return data

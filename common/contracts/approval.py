@@ -29,8 +29,10 @@ APPROVER: Final = "project-lead"
 # it without treating a free-text label as authority.
 ACTIONS: Final = ("advance", "exclusion", "salvage-promotion", "other")
 
-# Bounds make a planted object a named refusal, not an unbounded allocation; the
-# subject ceiling stays below the receipt reader's four-mebibyte record bound.
+# Bounds make a planted object a named refusal, not an unbounded allocation.  Together
+# they keep the largest valid record, fully escaped, below the Perlector's
+# `MAX_SAMPLING_APPROVAL_RECEIPT_BYTES` read bound, so no valid approval is unreadable
+# there (`pipeline/4_perlector/test_sampling_approval_attacks.py` pins it).
 MAX_APPROVAL_SUBJECTS: Final = 384
 MAX_APPROVAL_SUBJECT_BYTES: Final = 1024
 MAX_APPROVAL_REASON_BYTES: Final = 256 * 1024
@@ -51,7 +53,7 @@ _REQUIRED: Final = (
     "timestamp",
     "self_hash",
 )
-_FIELDS: Final = frozenset({"schema", *_REQUIRED})
+_FIELDS: Final = frozenset(_REQUIRED)
 
 
 class ApprovalRecordReference:

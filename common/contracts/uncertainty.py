@@ -142,7 +142,8 @@ def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
             raise SchemaRefusal(f"uncertain_spans[{index}] is not the canonical span schema")
         _range(span, text, f"uncertain_spans[{index}]", nonempty=True)
         if (
-            span["confidence"] not in CONFIDENCE_LEVELS
+            type(span["confidence"]) is not str
+            or span["confidence"] not in CONFIDENCE_LEVELS
             or not isinstance(span["alternatives"], list)
             or not all(isinstance(value, str) for value in span["alternatives"])
         ):
@@ -160,7 +161,7 @@ def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
         if gap["start"] != gap["end"] or not isinstance(gap["witness_evidence"], list):
             raise SchemaRefusal(f"gaps[{index}] is not a zero-width canonical gap")
         position = gap["position"]
-        if position not in GAP_POSITIONS:
+        if type(position) is not str or position not in GAP_POSITIONS:
             raise SchemaRefusal(
                 f"gaps[{index}] position {position!r} is not one of {sorted(GAP_POSITIONS)}"
             )

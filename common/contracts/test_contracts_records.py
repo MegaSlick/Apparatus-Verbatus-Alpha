@@ -1,9 +1,8 @@
 """Canonical serialization and the approval record.
 
-Determinism is not a nicety here. Spec 01's second test is "repeating the identical
-command leaves all artifact bytes unchanged", and its resume test is "an
-interrupted run resumes from valid artifacts without rewriting them". Both are
-claims about bytes, so the serialization has to be the same on every machine before
+Determinism is not a nicety here. "Repeating the identical command leaves all
+artifact bytes unchanged" and "an interrupted run resumes from valid artifacts
+without rewriting them" are both claims about bytes, so the serialization has to be the same on every machine before
 either is worth asserting.
 """
 
@@ -21,6 +20,7 @@ from common.contracts.canonical import (
     _refuse_floats,
     _unencodable_path,
     canonical_bytes,
+    code_digest,
     digest_of,
     self_hash,
     self_hash_refusal,
@@ -521,3 +521,14 @@ def test_subject_ids_are_stored_sorted():
         timestamp="2026-07-30T23:40:00Z",
     )
     assert record["subject_ids"] == ["act_aaaaaaaaaaaaaaaa", "act_bbbbbbbbbbbbbbbb"]
+
+
+def test_code_digest_names_an_ellipsis_and_an_imaginary_literal():
+    """`...` in a type hint or stub body, and `1j`, digest like any other constant:
+    a module that computes its own code digest at import must still import."""
+    hinted = code_digest("x: tuple[int, ...] = ()")
+    assert hinted == code_digest("x: tuple[int, ...] = ()  # note")
+    assert hinted != code_digest("x: tuple[int, None] = ()")
+    assert hinted != code_digest("x: tuple[int, 'ellipsis'] = ()")
+    assert code_digest("z = 1j") != code_digest("z = 2j")
+    assert code_digest("z = 1j") != code_digest("z = '1j'")
