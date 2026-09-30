@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import metadata
@@ -57,7 +58,12 @@ def _checked_detection(item: Mapping[str, Any]) -> dict[str, Any]:
         or any(
             not isinstance(point, list)
             or len(point) != 2
-            or any(isinstance(value, bool) or not isinstance(value, int | float) for value in point)
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(value)
+                for value in point
+            )
             for point in corners
         )
     ):
