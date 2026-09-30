@@ -40,8 +40,8 @@ purpose that permits such a row to launch while retaining every snapshot,
 runtime, request, shutdown, and evidence check.  A green report can then be
 verified offline by ``operations.serving.qualify`` to render the identity and
 profile digests for review; the verifier edits no catalogue.  The stack pins
-``vllm 0.27.1`` / ``transformers 5.14.1`` beside the project's
-``huggingface_hub==1.26.0``, and ``bootstrap.py``'s ``uv sync`` carries
+``vllm 0.30.0`` / ``transformers 5.14.1`` beside the project's
+``huggingface_hub==1.31.0``, and ``bootstrap.py``'s ``uv sync`` carries
 ``--group pod``.  That the wheels install and the weights load on real
 silicon is still unproven; only a boot proves it.
 

@@ -23,7 +23,7 @@ from common.sealed_config import read_sealed_toml
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
 _PERLECTOR_BOUNDS = ("reading_max_tokens", "reproof_max_tokens", "page_max_tokens")
 # Every sampling field a chair's row may carry, each a top-level field of the
-# pinned vLLM 0.27.1 `ChatCompletionRequest`. Only the sealed table puts them on
+# pinned vLLM 0.30.0 `ChatCompletionRequest`. Only the sealed table puts them on
 # the wire; a caller's request may not name them.
 SAMPLING_FIELDS = frozenset(
     {
@@ -37,7 +37,7 @@ SAMPLING_FIELDS = frozenset(
     }
 )
 # The sampling fields the pinned engine fills from a model's
-# `generation_config.json` when a request leaves them out (vllm==0.27.1,
+# `generation_config.json` when a request leaves them out (vllm==0.30.0,
 # `ModelConfig.get_diff_sampling_param`'s `available_params`, less
 # `max_new_tokens`, which is not a sampling field). Every chair's row names all
 # of them, so no reading's sampling rests on a value nobody sealed.
@@ -45,7 +45,7 @@ ENGINE_FILLED_SAMPLING_FIELDS = frozenset(
     {"temperature", "top_p", "top_k", "min_p", "repetition_penalty"}
 )
 # What the pinned engine samples under for a field a request leaves out when no
-# generation config fills it (vllm==0.27.1,
+# generation config fills it (vllm==0.30.0,
 # `ChatCompletionRequest._DEFAULT_SAMPLING_PARAMS`): the values a maker who
 # serves with vLLM and sends only some fields reads under for the rest.
 VLLM_REQUEST_DEFAULTS: dict[str, int | float] = {
@@ -55,10 +55,11 @@ VLLM_REQUEST_DEFAULTS: dict[str, int | float] = {
     "min_p": 0.0,
     "repetition_penalty": 1.0,
 }
-# The ranges the pinned vLLM 0.27.1 `SamplingParams._verify_args` accepts, so a
+# The ranges the pinned vLLM 0.30.0 `SamplingParams._verify_args` accepts, so a
 # row the engine would refuse is refused when the policy loads. Each is
 # (low, high, low inclusive); presence and frequency penalties may be negative,
-# which rewards repetition. top_k is an integer, 0 meaning "off".
+# which rewards repetition. top_k is an integer, 0 meaning "off"; vLLM also
+# still accepts -1 for "off", which the policy refuses so a row names one form.
 _SAMPLING_RANGES: dict[str, tuple[float, float, bool]] = {
     "temperature": (0.0, 2.0, True),
     "top_p": (0.0, 1.0, False),
@@ -69,11 +70,11 @@ _SAMPLING_RANGES: dict[str, tuple[float, float, bool]] = {
     "repetition_penalty": (0.0, math.inf, False),
 }
 # How the pinned engine rewrites a request's sampling values before it samples
-# (vllm==0.27.1, `vllm/sampling_params.py`, `SamplingParams.__post_init__`): a
+# (vllm==0.30.0, `vllm/sampling_params.py`, `SamplingParams.__post_init__`): a
 # temperature above zero but below `_MAX_TEMP` is raised to it, and a
 # temperature below `_SAMPLING_EPS` is greedy, which sets top_p to 1, top_k to 0
 # and min_p to 0. The call record keeps the sent value and this effective one.
-VLLM_ENGINE = "vllm==0.27.1"
+VLLM_ENGINE = "vllm==0.30.0"
 _VLLM_MAX_TEMP = 1e-2
 _VLLM_SAMPLING_EPS = 1e-5
 _VLLM_GREEDY_OVERRIDES: dict[str, int | float] = {"top_p": 1.0, "top_k": 0, "min_p": 0.0}

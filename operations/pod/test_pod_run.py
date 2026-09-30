@@ -2134,11 +2134,11 @@ def _recipe_pins() -> dict[str, str]:
 def test_the_real_catalogue_pins_one_serving_stack() -> None:
     """Every vLLM row names the same versions; the group carries exactly these.
 
-    The stack is the one researched for the four ruled chairs: vLLM 0.27.1 registers
+    The stack is the one researched for the four ruled chairs: vLLM 0.30.0 registers
     both architectures the roster declares — `Qwen3_5ForConditionalGeneration`
     (Chandra-2 and the Perlector) and `Qwen2_5_VLForConditionalGeneration` (the DAI
-    fine-tune and Churro-3B) — and, unlike 0.28.0, states no direct
-    `huggingface_hub` floor, so the project's `huggingface_hub==1.26.0` stands. No
+    fine-tune and Churro-3B) — and its `huggingface_hub>=1.31.0` floor is met by the
+    project's `huggingface_hub==1.31.0`. No
     `flash-attn`: vLLM brings its own FlashAttention through its attention backend
     registry, and the PyPI package is sdist-only.
     """
@@ -2146,7 +2146,7 @@ def test_the_real_catalogue_pins_one_serving_stack() -> None:
     pins = _recipe_pins()
 
     assert set(pins) == {"vllm", "transformers", "qwen-vl-utils", "ultralytics", "torch"}
-    assert pins["vllm"] == "0.27.1"
+    assert pins["vllm"] == "0.30.0"
     assert pins["transformers"] == "5.14.1"
     # The record detector's in-process row: the Ultralytics release its
     # checkpoint was written by, over the torch vLLM already resolves.
