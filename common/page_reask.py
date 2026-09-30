@@ -160,18 +160,36 @@ def reask_outcome(named: Sequence[Mapping[str, Any]], accounting: Mapping[str, A
     `named` is the re-ask's `reask.named` and `accounting` the combined
     `page-accounting` payload. Each named id is `unread` while a re-askable
     finding of the last accounting still names it, else `set_aside` when the
-    re-ask set it aside (rule (j), `reask-set-aside`), else `cleared`; each
-    list keeps `named_ids`' order. `duplicate` is the combined number of each
-    re-ask entry rule (j) holds as a first-reading entry's duplicate.
+    re-ask set it aside (rule (j), `reask-set-aside`), else `cleared` when a
+    re-ask entry rule (j) does not hold accounts for it -- cites it, or holds
+    its line or record in its region -- else `held`: the only re-ask entries
+    that account for it are ones rule (j) holds. Each list keeps `named_ids`'
+    order. `duplicate` is the combined number of each re-ask entry rule (j)
+    holds as a first-reading entry's duplicate.
     """
     ids = named_ids(named)
     findings = [finding for rule in accounting["rules"].values() for finding in rule["findings"]]
     unread = {f.get("id") for f in findings if f["code"] in RE_ASKABLE}
     set_aside = {f["id"] for f in findings if f["code"] == REASK_SET_ASIDE} - unread
+    held_entries = {f["n"] for f in accounting["rules"]["j"]["findings"] if "n" in f}
+    standing = {
+        entry["n"]
+        for entry in accounting["entries"]
+        if entry["reading_attempt"] == 2 and entry["n"] not in held_entries
+    }
+    accounted_by: dict[str, set[int]] = {}
+    for row in accounting["units"]:
+        accounted_by.setdefault(row["id"], set()).update(row["by"])
+    for row in accounting["lines"]:
+        accounted_by.setdefault(row["id"], set()).update(row["inside"])
+    for row in accounting["records"] or []:
+        accounted_by.setdefault(row["id"], set()).update(row["act"] + row["other"])
+    cleared = {i for i in ids if accounted_by.get(i, set()) & standing} - unread - set_aside
     return {
         "named": ids,
-        "cleared": [i for i in ids if i not in unread and i not in set_aside],
+        "cleared": [i for i in ids if i in cleared],
         "set_aside": [i for i in ids if i in set_aside],
+        "held": [i for i in ids if i not in unread | set_aside | cleared],
         "unread": [i for i in ids if i in unread],
         "duplicate": sorted({f["n"] for f in findings if f["code"] == REASK_DUPLICATE}),
     }

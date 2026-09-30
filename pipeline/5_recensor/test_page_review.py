@@ -1056,7 +1056,7 @@ def test_a_re_asked_page_keeps_its_first_readings_edges_and_counts_its_recovered
     is reviewed, is never a side of the page break and moves no page edge."""
     tree = _tree(tmp_path, "reask-continuation", reask=1)
     result = tree.recensor()
-    assert result.returncode in (0, 3), result.stderr
+    assert result.returncode == 3, result.stderr
     context = tree.context()
     rows = {row["act_key"]: row for row in reading_acts(context)}
     assert [(key, rows[key]["reading_attempt"]) for key in sorted(rows)] == [
@@ -1092,7 +1092,10 @@ def test_a_re_asked_page_keeps_its_first_readings_edges_and_counts_its_recovered
     assert first["accounting_ref"] == rows["p1:2"]["accounting_ref"]
     assert first["reask"]["named"] and first["reask"]["duplicate"] == []
     assert sorted(
-        first["reask"]["cleared"] + first["reask"]["set_aside"] + first["reask"]["unread"]
+        first["reask"]["cleared"]
+        + first["reask"]["set_aside"]
+        + first["reask"]["held"]
+        + first["reask"]["unread"]
     ) == sorted(first["reask"]["named"])
     assert (second["reask_ref"], second["reask"]) == (None, None)
     [link_row] = receipt["continuation_links"]
@@ -1107,7 +1110,7 @@ def test_a_re_asked_page_keeps_its_first_readings_edges_and_counts_its_recovered
 def test_a_continuation_link_naming_a_recovered_act_is_refused(tmp_path):
     tree = _tree(tmp_path, "reask-continuation", reask=1)
     result = tree.recensor()
-    assert result.returncode in (0, 3), result.stderr
+    assert result.returncode == 3, result.stderr
     context = tree.context()
     rows = {row["act_key"]: row for row in reading_acts(context)}
     recovered = rows["p1:2"]

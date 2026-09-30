@@ -16,9 +16,10 @@ from common.recensor_receipt import (
 from common.test_recensor_receipt_v3 import DIGEST, _item, _ref
 
 REASK = {
-    "named": ["A3", "B3", "L7"],
+    "named": ["A3", "B3", "L7", "L8"],
     "cleared": ["A3", "L7"],
     "set_aside": [],
+    "held": ["L8"],
     "unread": ["B3"],
     "duplicate": [3],
 }
@@ -68,8 +69,13 @@ def _forged(change) -> dict:
         (lambda r: r["pages"][0].pop("accounting_ref"), "page reading is not"),
         (lambda r: r["pages"][0]["reask"].pop("duplicate"), "re-ask is not"),
         (lambda r: r["pages"][0]["reask"].update(named=[]), "names no id, or one id twice"),
-        (lambda r: r["pages"][0]["reask"].update(named=["A3", "A3", "L7"]), "one id twice"),
+        (lambda r: r["pages"][0]["reask"].update(named=["A3", "A3", "L7", "L8"]), "one id twice"),
         (lambda r: r["pages"][0]["reask"].update(unread=[]), "does not split its named ids"),
+        (lambda r: r["pages"][0]["reask"].update(held=[]), "does not split its named ids"),
+        (
+            lambda r: r["pages"][0]["reask"].update(cleared=["A3", "L7", "L8"]),
+            "does not split its named ids",
+        ),
         (lambda r: r["pages"][0]["reask"].update(cleared=["L7", "A3"]), "in the order named"),
         (
             lambda r: r["pages"][0]["reask"].update(set_aside=["A3"]),
@@ -87,6 +93,8 @@ def _forged(change) -> dict:
         "named-empty",
         "named-twice",
         "not-a-split",
+        "held-dropped",
+        "held-also-cleared",
         "out-of-order",
         "id-in-two-parts",
         "duplicate-twice",
