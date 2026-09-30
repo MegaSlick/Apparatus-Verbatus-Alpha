@@ -38,7 +38,7 @@ are fixture declarations, not measurements of a live model, and its bytes are
 the pinned acceptance path. Under a catalogue whose rows for those chairs are
 `kind = "vllm"`, the live boundary below runs instead: the serving response and
 body contract Spec 04 was waiting for is `common/contracts/serving.py`'s
-`chair-call-record.v1` plus `operations/serving/http.py::parse_openai_reading`,
+`chair-call-record.v3` plus `operations/serving/http.py::parse_openai_reading`,
 and the capture-as-Testimonium intake is `common/native_witness.py`'s retained
 model view, which the live pass records on every act attempt whose bytes reached
 an adapter parser.
@@ -115,7 +115,7 @@ could supply a page's resumed capture, every one of them is checked to agree
 sorts first; a disagreement is a named refusal, not a silent choice.
 
 **What a live record gains.** `native_capture` (the adapter's retained model
-view), `serving_call_ref` (the `chair-call-record.v1` blob for the one request)
+view), `serving_call_ref` (the `chair-call-record.v3` blob for the one request)
 and `raw_response_kind` (which sort of bytes `raw_response_ref` names) are
 admitted on an act Testimonium and written only in live mode, so a fixture
 record is byte-for-byte what it was. `provenance.receipt_ref` names the receipt
@@ -583,9 +583,16 @@ makers' recommended sampling values, sealed per chair in
 `config/decoding.toml`'s `chair_decoding` table with the source and revision
 they were read from: Chandra's own first request (`temperature` 0.0, `top_p`
 0.1), DAI's and Churro's `generation_config.json` (the makers publish nothing
-beyond it, and their own pipelines send nothing else). `ChairClient` sends
-exactly that row with the seed and refuses a builder that names any sampling
-field. The builders send only non-sampling fields: DAI's second EOS id 151643
+beyond it, and their own pipelines send nothing else). Each row also names every
+other sampling field vLLM would fill from a generation config, at the value the
+maker's own pipeline runs under: vLLM's defaults for Chandra, which Chandra's code
+serves with vLLM, and transformers' defaults for DAI and Churro, whose makers run
+`model.generate`. Every serving row is `generation_config = "vllm"`, so no file
+fills a field. `ChairClient` sends exactly that row with the seed and refuses a
+builder that names any sampling field. The tally holds every Testimonium's serving
+call record to its chair's row and seed (`common.stage.verify_retained_call_sampling`):
+the serving receipt's seed, or none for a Chandra native page read, whose record
+names its vendor-returned attempt. The builders send only non-sampling fields: DAI's second EOS id 151643
 as `stop_token_ids` (`feeding.dai_wire_stop_token_ids`, derived from the
 carried config rather than re-typed), and `chat_template_kwargs:
 {"enable_thinking": false}` on both Chandra chairs (`common/chair_wire.py`,

@@ -1136,9 +1136,14 @@ by its own chair from the sealed policy `main` loaded, and sends it with a seed:
 serving row's seed for Perlectio, `primed-without-prior` and the audit re-proof,
 and the arm's own seed for lectio-prior and Lectio nuda (above). Seed, row and
 `sampling_effective` (what the pinned vLLM samples under; these values pass through
-unchanged) are on every call record, and the audit rebuild and the failed-Perlectio
-contract hold each retained call to the sealed row
-(`common.decoding.verify_call_sampling`). A seeded request is reproducible in
+unchanged) are on every call record. Every reading's call record is held to the
+sealed row and its pass's seed as the reading is bound (`run.engine_call_inputs`,
+through `common.stage.verify_retained_call_sampling`), the audit rebuild holds the
+re-proof's to the row and the receipt's seed, and the failed-Perlectio contract
+holds a failed call to the row and to the receipt's or an arm's seed, since a
+failure does not name its pass (`common.decoding.verify_call_sampling`). A call
+record from before this decoding is refused by its schema's name, including on a
+resume, where it is never counted as an unattributed reply. A seeded request is reproducible in
 intent, not bit for bit: a batched step can differ in low-order bits.
 
 **`max_tokens` is sent, from the sealed decoding policy.** `perlector_generation` holds

@@ -163,15 +163,16 @@ authorized — is in `serving-launch-audit.v1`, a content-addressed stage blob w
 references return; they are exposed on the `ServiceHandle` and copied beside pod smoke
 evidence.
 
-## `generation_config`: `"vllm"` or `"auto"`
+## `generation_config`: `"vllm"` only
 
-`"vllm"` uses vLLM's uniform defaults. `"auto"` is admitted only for a witness (Attestator)
-row, refused at catalogue parse for any other chair: a witness's vendor-shipped
-`generation_config.json` is a pinned artifact of its revision, while the Perlector and
-Designator have no vendor defaults to defer to. For an `"auto"` row, `manager.start` reads
-that file from the verified snapshot before launching and records its SHA-256 as
-`generation_config_digest` in the audit's `profile` block (`null` for `"vllm"`); a missing
-or unreadable file refuses by name.
+Every row is `"vllm"`, and the catalogue parser refuses `"auto"`. Under `"auto"`, vLLM 0.27.1
+(`ModelConfig.get_diff_sampling_param`) fills any of `temperature`, `top_p`, `top_k`, `min_p`,
+`repetition_penalty` and `max_tokens` a request leaves out from the model's
+`generation_config.json`, unseen on the wire. Under `"vllm"` nothing is filled from the file,
+and every chair's sealed decoding row names every one of those sampling fields
+(`common.decoding.ENGINE_FILLED_SAMPLING_FIELDS`), so what a reading samples under is on its
+call record. vLLM still reads the file's `eos_token_id`s under `"vllm"` and adds them as stop
+tokens; the file's bytes are pinned by the chair's verified snapshot manifest.
 
 ## Hybrid-attention prefix caching
 
@@ -229,13 +230,12 @@ Three static assertions keep `proven` from resting on a smoke string alone:
   nothing. Carry the vendor ranges as cited data first (`cleanroom/README.md`).
 - `assert_generation_config_key_coverage(...)` — refuses a vendor `generation_config.json`
   key neither sent nor named as withheld with a reason. **Wired only for DAI**
-  (`attestator_2`), the one chair whose full vendor file is carried. Under DAI's `"auto"`
-  posture, `repetition_penalty`, `temperature`, `top_k` and `top_p` are sent verbatim from
-  the sealed decoding table's DAI row; token ids are delegated to the pinned snapshot (the
-  secondary EOS sent redundantly); `do_sample = true` has no request field and is what the
-  nonzero temperature does; `transformers_version` is metadata. This accounts for configuration and request
-  construction, not for what the engine applied; the audit's `generation_config_digest`
-  records the file vLLM read.
+  (`attestator_2`), the one chair whose full vendor file is carried. `repetition_penalty`,
+  `temperature`, `top_k` and `top_p` are sent verbatim from the sealed decoding table's DAI
+  row; the engine reads `eos_token_id` from the pinned file (the secondary EOS is also sent);
+  `bos_token_id`, `pad_token_id` and `do_sample = true` have no request field, and the
+  nonzero temperature is what `do_sample` does; `transformers_version` is metadata. This
+  accounts for configuration and request construction, not for what the engine applied.
 
 ## Pod seam
 
@@ -332,9 +332,11 @@ sends them unchanged.
   (`common/request_capacity.py::sendable_max_tokens`): our own count of the remainder could
   earn an HTTP 400 the engine's count would not, while the declared bound, sent only when
   smaller, stops a chair generating far past its publisher's length.
-- A caller's `generation_sent` may carry only `client.CALLER_GENERATION_FIELDS`, the fields
-  the builders send today: `max_tokens` (every chair), `chat_template_kwargs` (both Chandra
-  chairs and the Perlector) and `stop_token_ids` (DAI's redundant second EOS). The sampling
+- A caller's `generation_sent` may carry only `CALLER_GENERATION_FIELDS`
+  (`common/contracts/serving.py`), one allow-list for every chair: `max_tokens`,
+  `chat_template_kwargs` and `stop_token_ids`. Today the builders send `max_tokens` (every
+  chair), `chat_template_kwargs` (both Chandra chairs and the Perlector) and
+  `stop_token_ids` (DAI's redundant second EOS). The sampling
   values are the chair's sealed row (below). The call record shows exactly what went out.
 
 **`ChairClient.read(ChairRequest) -> ChairResponse` issues exactly one request:**
@@ -366,9 +368,14 @@ sends them unchanged.
 5. Otherwise parse. A content or choices problem becomes `parse_problem` on the returned
    `ChairResponse`, never an exception, because a malformed witness body is evidence, not a
    stage abort. Write one `chair-call-record.v3` (fields in
-   `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`) and return. Every verifier of a
-   call record holds its sampling to the sealed row through one check,
-   `common.decoding.verify_call_sampling`.
+   `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`) and return. Every stage reader of a
+   call record (the Designator's structure attempts and minted acts, every Testimonium's
+   serving call, every Perlector reading, re-proof and failed Perlectio) holds its
+   generation fields, sampling and seed to the sealed row through one check,
+   `common.decoding.verify_call_sampling`; a reader holding only the stage context calls it
+   through `common.stage.verify_retained_call_sampling`. A call record written under a
+   retired schema (`common/contracts/serving.RETIRED_CALL_RECORD_SCHEMAS`) is refused by
+   name.
 
 `parse_openai_reading` cannot tell "no model named" from "wrong model named" (both are
 `CHAIR_RESPONSE_MODEL_MISMATCH`), so `read` reports a body with no `model` field as
@@ -382,8 +389,9 @@ rather than repeat a request whose engine-side completion is unknown.
 
 **Chandra native calls.** `prepare_chandra_native` / `read_chandra_native` is the one narrow
 exception, for page-scoped `attestator_1` with adapter `chandra.v1` under the exact
-`decoding.v5` recipe. Each prepared dispatch fixes one of seven declared temperature/top-p
-pairs, and the stage must publish and pass a durable attempt-intent reference before the
+`decoding.v5` recipe. Each prepared dispatch sends Attestator 1's sealed row with one of
+seven declared temperature/top-p pairs (`common.decoding.chair_attempt_decoding`, from the
+client's one decoding policy), and the stage must publish and pass a durable attempt-intent reference before the
 POST; `chandra-native-call-record.v2` binds it, so the three identical 0.8/0.95 attempts stay
 distinct. These calls send no per-request seed because the pinned upstream client sends
 none (the launch seed stays on the serving receipt).

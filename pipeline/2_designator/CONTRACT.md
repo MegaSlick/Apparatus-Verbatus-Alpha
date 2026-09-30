@@ -782,7 +782,7 @@ a card to be refused. The page is never downscaled to make it fit: 300 dpi is
 what `config/pdf_render.toml` argues is needed to read the ink, and trading a
 measurable refusal for an unmeasurable misreading is not this pass's decision.
 Every live page record carries its `capacity` block, held or not, and the same
-record travels on the request onto the retained `chair-call-record.v1`.
+record travels on the request onto the retained `chair-call-record.v3`.
 
 A cut-off answer is held even though it parsed: a truncated act list is a
 missed act. Under the layout grammar that row states itself: an
@@ -903,7 +903,7 @@ told from "drew one nobody could read") with `data_bbox_truncated` saying
 whether that digest covers the whole value:
 
 ```text
-schema = "designator-structure-answer.v3"
+schema = "designator-structure-answer.v4"
 attempt_ordinal, attempt_seed, attempt_policy, attempts, presentation_ref
 page_id, page_ordinal, page_w, page_h
 prompt_version, prompt_sha256, answer_schema = "chandra-layout-html.v1"
@@ -925,13 +925,15 @@ blocks_without_proposal = [{ordinal, reason, blank_page, label_vocabulary | null
                             nested_bbox_count}]
 findings = [{kind, ...}]
 quantization, page_text_rule
-decoding = {policy = "structure", sampling = {temperature, top_p},
+decoding = {policy = "structure",
+            sampling = {temperature, top_p, top_k, min_p, repetition_penalty},
             decoding_config_sha256}
 provenance (the served chair, its real receipt, and `engine_call`)
 ```
 
-Structure answers sealed as `designator-structure-answer.v1` or `.v2` are
-refused by name; a new run produces the current request-image evidence.
+Structure answers sealed as `designator-structure-answer.v1`, `.v2` or `.v3`
+are refused by name; a new run produces the current request-image evidence and
+the complete sealed sampling of every attempt.
 
 The raw response is retained twice under one digest: by the client before it
 is parsed, and under `common/chandra_custody.py`'s one-receipt binding
@@ -944,9 +946,10 @@ holds every structural row of a served seal to this record: the page's status
 must say `scanned` and name it, it must have parsed under the same
 `engine_call` the seal records, its `call_record_ref` must resolve to a genuine
 `chair-call-record.v3` for this chair under the run's sealed decoding digest,
-whose sampling is its attempt's sealed values
-(`common.decoding.verify_call_sampling`), and it must list the row's exact
-rectangle — no nearest match.
+whose sampling is its attempt's sealed values and whose seed is its serving
+receipt's (`common.stage.verify_retained_call_sampling`), and it must list the
+row's exact rectangle — no nearest match. A call record written under a retired
+schema is refused by name.
 
 **Provenance on the live path** is `structure_pass.live_chair_record`: the
 chair's real serving receipt (never `_configured_chair_record`'s `fixture://`
@@ -962,11 +965,13 @@ written for it.
 **Decoding.** The structure chair reads at its row of `config/decoding.toml`'s
 `chair_decoding` table: Chandra's own page pipeline's first request
 (`temperature` 0.0, `top_p` 0.1, `chandra/model/vllm.py` at the pinned
-revision), which the loader holds equal to the pinned native recipe's first
-request. `[structure]` holds only coverage recovery, and recovery follows
-Chandra's own retry schedule (`recovery_schedule = "chandra-native-retry"`):
-attempt n sends the pinned recipe's request n (`wire_parameters(n)`: 0.2/0.95,
-then 0.4/0.95, up to the sealed ceiling of three), which is the maker's own
+revision) over vLLM's defaults for the fields Chandra does not send (`top_k` 0,
+`min_p` 0, `repetition_penalty` 1), which the loader holds equal to the pinned
+native recipe's first request. `[structure]` holds only coverage recovery, and
+recovery follows Chandra's own retry schedule (`recovery_schedule =
+"chandra-native-retry"`): attempt n sends the row with the pinned recipe's
+request n temperature and top_p (0.2/0.95, then 0.4/0.95, up to the sealed
+ceiling of three), which is the maker's own
 recovery from a degenerate page. The trigger stays this stage's (a structural
 loop or an invalid layout); only the sampling is Chandra's. Every attempt runs
 under the serving row's one seed, recorded as `attempt_seed`: at temperature 0
