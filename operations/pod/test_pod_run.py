@@ -94,6 +94,9 @@ class PreflightedActions(FakeActions):
                         "perlector",
                     )
                 ],
+                # The record detector runs in-process: a verified cache, no smoke read.
+                "placements": [{"chair": "secondary_proposer", "state": "in-process"}],
+                "cache_receipts": [{"chair": "secondary_proposer"}],
             },
         )
 
@@ -2094,9 +2097,13 @@ def test_the_real_catalogue_pins_one_serving_stack() -> None:
 
     pins = _recipe_pins()
 
-    assert set(pins) == {"vllm", "transformers", "qwen-vl-utils"}
+    assert set(pins) == {"vllm", "transformers", "qwen-vl-utils", "ultralytics", "torch"}
     assert pins["vllm"] == "0.27.1"
     assert pins["transformers"] == "5.14.1"
+    # The record detector's in-process row: the Ultralytics release its
+    # checkpoint was written by, over the torch vLLM already resolves.
+    assert pins["ultralytics"] == "8.4.14"
+    assert pins["torch"] == "2.13.0"
 
 
 def test_the_pod_dependency_group_carries_exactly_the_recipe_pins() -> None:

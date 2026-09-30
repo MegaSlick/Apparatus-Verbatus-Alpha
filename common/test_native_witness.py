@@ -159,6 +159,54 @@ def test_region_ref_is_allowed_only_for_region_presentation():
     assert validate_native_witness_geometry(value, page_size=(100, 80)) is value
 
 
+def _unit_crop(bounds: dict) -> dict:
+    return {
+        "kind": "adapter-crop",
+        "source_page_id": "page-1",
+        "source_page_ordinal": 1,
+        "image_path": "3_attestatores/blobs/sha256/" + "1" * 64,
+        "image_sha256": "1" * 64,
+        "transform": {
+            "operation": "crop",
+            "source_page_id": "page-1",
+            "source_page_ordinal": 1,
+            "bounds": dict(bounds),
+        },
+    }
+
+
+def _several_images() -> dict:
+    """A page record shown one crop per unit, each box echoing its own crop."""
+    boxes = [{"x": 0, "y": 40, "w": 100, "h": 40}, {"x": 0, "y": 0, "w": 100, "h": 40}]
+    presentations = [_unit_crop(box) for box in boxes]
+    return {
+        "scope": "page",
+        "payload": "SYNTHETIC ACT ONE",
+        "presented": presentations[0],
+        "presentations": presentations,
+        "observed": [
+            {"ordinal": index, "bounds": dict(box), "bounds_source": "presented", "span": None}
+            for index, box in enumerate(boxes)
+        ],
+    }
+
+
+def test_each_units_presented_box_is_checked_against_its_own_image():
+    value = _several_images()
+    assert validate_native_witness_geometry(value, page_size=(100, 80)) is value
+    # The second unit's echo names the first unit's crop: refused, not accepted.
+    value["observed"][1]["bounds"] = dict(value["presentations"][0]["transform"]["bounds"])
+    with pytest.raises(SchemaRefusal, match="differs from the presented transform"):
+        validate_native_witness_geometry(value, page_size=(100, 80))
+
+
+def test_a_several_image_record_reports_one_box_per_image():
+    value = _several_images()
+    value["observed"].pop()
+    with pytest.raises(SchemaRefusal, match="one box per image"):
+        validate_native_witness_geometry(value, page_size=(100, 80))
+
+
 def test_an_explicitly_unpresented_witness_records_no_observations():
     value = {"presented": {}, "observed": []}
     assert validate_native_witness_geometry(value) is value

@@ -68,6 +68,11 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
         "adapter_metadata",
         "native_capture",
         "native_inference",
+        # A chair shown several images of one page (DAI, one per record its own
+        # detector found): every image in order, `presented` being the first,
+        # and each unit's retained model view (null where no response arrived).
+        "presentations",
+        "unit_captures",
     }
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
@@ -375,18 +380,25 @@ def validate_observed(
     page_size: tuple[int, int] | None = None,
     retained_text: Any = None,
     presentation_is_witness_view: bool = True,
+    unit_presentations: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Validate dense witness order, source-page boxes, and non-overlapping text spans.
 
     A span addresses this Testimonium's exact retained string in code points,
     never the normalized alignment view. It may be null, but it may not name an
     offset the record cannot answer, so every span stays checkable against
-    the record.
+    the record. A record shown one image per unit passes `unit_presentations`,
+    and each box is checked against its own unit's image, not the first.
     """
     if not isinstance(value, list):
         raise SchemaRefusal("a Testimonium observed block is not a list")
+    if unit_presentations is not None and len(unit_presentations) != len(value):
+        raise SchemaRefusal(
+            "a page Testimonium shown several images does not report one box per image"
+        )
     spans: list[tuple[int, int]] = []
     for index, item in enumerate(value):
+        shown = presented if unit_presentations is None else unit_presentations[index]
         if not isinstance(item, dict) or set(item) != _OBSERVED_ENTRY_FIELDS:
             raise SchemaRefusal("a Testimonium observed entry is not its closed schema")
         if not is_plain_int(item["ordinal"]) or item["ordinal"] != index:
@@ -396,17 +408,14 @@ def validate_observed(
             or item["bounds_source"] not in BOUNDS_SOURCES
         ):
             raise SchemaRefusal("a Testimonium observed box has an unknown bounds_source")
-        if (
-            item["bounds_source"] == "presented"
-            and item["bounds"] != presented["transform"]["bounds"]
-        ):
+        if item["bounds_source"] == "presented" and item["bounds"] != shown["transform"]["bounds"]:
             raise SchemaRefusal(
                 "a presented-source observed box differs from the presented transform"
             )
         bounds = _bounds(item["bounds"], "a Testimonium observed box", page_size=page_size)
         # A page witness's act view restates page-level geometry, so its boxes
         # may exceed this record's crop; they stay bounded by the sealed page.
-        presented_bounds = presented["transform"]["bounds"]
+        presented_bounds = shown["transform"]["bounds"]
         if presentation_is_witness_view and not _contains(presented_bounds, bounds):
             raise SchemaRefusal(
                 "a Testimonium observed box falls outside the exact image presentation. "
@@ -443,6 +452,44 @@ def validate_observed(
     return value
 
 
+def record_presentations(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every image one Testimonium's chair was shown, in order.
+
+    A record shown several images lists them all in `presentations`; any other
+    record was shown its one `presented` image, or nothing.
+    """
+    if "presentations" in payload:
+        presentations = payload["presentations"]
+        if not isinstance(presentations, list):
+            raise SchemaRefusal("a Testimonium's presentations is not a list")
+        return list(presentations)
+    presented = payload.get("presented")
+    return [presented] if presented else []
+
+
+def _validate_presentations(
+    payload: dict[str, Any], *, page_size: tuple[int, int] | None
+) -> list[dict[str, Any]]:
+    """A several-image page record: first equals `presented`, all crops of one page."""
+    presentations = payload["presentations"]
+    if payload.get("scope") != "page" or not isinstance(presentations, list) or not presentations:
+        raise SchemaRefusal(
+            "a Testimonium's presentations belong only to a page record shown at least one image"
+        )
+    if presentations[0] != payload.get("presented"):
+        raise SchemaRefusal("a page Testimonium's presented image is not its first presentation")
+    for presentation in presentations:
+        validate_presented(presentation, page_size=page_size)
+        if (
+            presentation["kind"] != "adapter-crop"
+            or presentation["source_page_id"] != (presentations[0]["source_page_id"])
+        ):
+            raise SchemaRefusal(
+                "a page Testimonium's presentations are not adapter crops of its one page"
+            )
+    return presentations
+
+
 def validate_native_witness_geometry(
     payload: Any, *, page_size: tuple[int, int] | None = None
 ) -> dict[str, Any]:
@@ -457,10 +504,15 @@ def validate_native_witness_geometry(
     presented = payload.get("presented")
     observed = payload.get("observed")
     if presented == {}:
-        if observed != []:
+        if observed != [] or "presentations" in payload:
             raise SchemaRefusal("an unpresented Testimonium must carry an empty observed block")
         return payload
     presented = validate_presented(presented, page_size=page_size)
+    unit_presentations = (
+        _validate_presentations(payload, page_size=page_size)
+        if "presentations" in payload
+        else None
+    )
     validate_observed(
         observed,
         presented=presented,
@@ -473,6 +525,7 @@ def validate_native_witness_geometry(
         presentation_is_witness_view=(
             payload.get("scope") == "page" or payload.get("page_witness") is not True
         ),
+        unit_presentations=unit_presentations,
     )
     return payload
 
@@ -582,23 +635,30 @@ def validate_unpresented_regions(payload: Any) -> list[str]:
 
 
 def unpresented_region_ids(
-    presented: dict[str, Any], proposal_regions: list[dict[str, Any]]
+    presented: dict[str, Any] | list[dict[str, Any]], proposal_regions: list[dict[str, Any]]
 ) -> list[str]:
-    """Re-derive which bound proposal crops fall outside one presented image.
+    """Re-derive which bound proposal crops fall outside every presented image.
 
-    The list is inapplicable to an empty presentation. For a real presentation,
-    a proposal is expressible by this record exactly when it lies wholly inside
-    the presentation's page-space bounds; changing presentation kind must not
+    Takes one presented block or a record's whole list of presentations. The
+    list is inapplicable to an empty presentation. For a real presentation, a
+    proposal is expressible by this record exactly when it lies wholly inside
+    one presentation's page-space bounds; changing presentation kind must not
     change that disclosure rule.
     """
-    if presented == {}:
+    presentations = presented if isinstance(presented, list) else [presented]
+    presentations = [item for item in presentations if item != {}]
+    if not presentations:
         return []
-    if not isinstance(presented, dict):
-        raise SchemaRefusal("a Testimonium presented block is not an object")
-    page_id = presented.get("source_page_id")
-    presented_bounds = presented.get("transform", {}).get("bounds")
-    if not isinstance(page_id, str) or not isinstance(presented_bounds, dict):
-        raise SchemaRefusal("a Testimonium presentation cannot locate its page-space bounds")
+    boxes: list[tuple[str, dict[str, int]]] = []
+    for item in presentations:
+        if not isinstance(item, dict):
+            raise SchemaRefusal("a Testimonium presented block is not an object")
+        page_id = item.get("source_page_id")
+        transform = item.get("transform")
+        presented_bounds = transform.get("bounds") if isinstance(transform, dict) else None
+        if not isinstance(page_id, str) or not isinstance(presented_bounds, dict):
+            raise SchemaRefusal("a Testimonium presentation cannot locate its page-space bounds")
+        boxes.append((page_id, presented_bounds))
 
     unpresented: list[str] = []
     for region in proposal_regions:
@@ -608,7 +668,10 @@ def unpresented_region_ids(
         region_id = payload.get("region_id") if isinstance(payload, dict) else None
         if not isinstance(region_id, str) or not region_id or not isinstance(bounds, dict):
             raise SchemaRefusal("a bound proposal region has no page-space identity to compare")
-        if not (transform.get("source_page_id") == page_id and _contains(presented_bounds, bounds)):
+        if not any(
+            transform.get("source_page_id") == page_id and _contains(box, bounds)
+            for page_id, box in boxes
+        ):
             unpresented.append(region_id)
     return unpresented
 
@@ -675,8 +738,33 @@ def validate_page_testimonium_payload(
             _validate_churro_page_health(payload, capture)
     if "native_inference" in payload:
         _validate_chandra_native_inference(payload)
+    if "unit_captures" in payload:
+        _validate_unit_captures(payload)
+    elif "presentations" in payload:
+        raise SchemaRefusal("a page Testimonium shown several images names no unit captures")
     validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
+
+
+def _validate_unit_captures(payload: dict[str, Any]) -> None:
+    """One retained model view per presentation, each bound to a retained response."""
+    captures = payload["unit_captures"]
+    presentations = payload.get("presentations")
+    if (
+        not isinstance(presentations, list)
+        or not isinstance(captures, list)
+        or len(captures) != len(presentations)
+    ):
+        raise SchemaRefusal("a page Testimonium names unit captures that are not one per image")
+    retained = payload.get("raw_response_refs") or []
+    for capture in captures:
+        if capture is None:
+            continue
+        checked = validate_native_capture(capture)
+        if checked["raw_response_ref"] not in retained:
+            raise SchemaRefusal(
+                "a page Testimonium unit capture names a response the record does not retain"
+            )
 
 
 def _validate_churro_page_health(payload: dict[str, Any], capture: dict[str, Any]) -> None:

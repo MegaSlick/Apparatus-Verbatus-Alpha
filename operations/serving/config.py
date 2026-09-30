@@ -23,10 +23,12 @@ digest alone cannot notice it, and ``manager._launchable`` refuses the
 mismatch at launch instead.
 
 A profile declares its ``kind``. ``vllm`` is a complete launch shape;
-``fixture`` is the offline walking skeleton's stand-in; and ``unsupported``
-keeps a configured real chair covered without inventing launch flags for an
-engine this package does not implement. The latter two carry no vLLM flags and
-must refuse by their actual cause before runtime checks.
+``in-process`` is a model the calling stage loads and runs itself, on the CPU,
+with no server (the record detector); ``fixture`` is the offline walking
+skeleton's stand-in; and ``unsupported`` keeps a configured real chair covered
+without inventing launch flags for an engine this package does not implement.
+The last three carry no vLLM flags and must refuse by their actual cause before
+runtime checks.
 """
 
 from __future__ import annotations
@@ -57,7 +59,7 @@ from .errors import ServingConfigurationError
 
 SCHEMA = "serving-recipes.v1"
 _TOP_LEVEL = {"schema", "profiles"}
-_KINDS = {"vllm", "fixture", "unsupported"}
+_KINDS = {"vllm", "in-process", "fixture", "unsupported"}
 # 'vllm' pins vLLM's own defaults, applied uniformly regardless of chair.
 # 'auto' is admitted only for a witness (Attestator) row: it defers to the
 # exact generation_config.json the chair's own pinned revision ships, which
@@ -68,6 +70,21 @@ _GENERATION_CONFIG_VALUES = {"vllm", "auto"}
 _PROFILE_COMMON = {"kind", "recipe", "chair", "tier"}
 _FIXTURE_FIELDS = _PROFILE_COMMON | {"description"}
 _UNSUPPORTED_FIELDS = _PROFILE_COMMON | {"reason"}
+_IN_PROCESS_FIELDS = _PROFILE_COMMON | {
+    "engine",
+    "task",
+    "device",
+    "imgsz",
+    "conf_bp",
+    "iou_bp",
+    "max_det",
+    "required_packages",
+}
+# The one engine and device an in-process row may name today: the Ultralytics
+# runtime its record detector was trained with, run on the CPU so it never
+# shares a card with a served chair and its output does not vary with a GPU kernel.
+_IN_PROCESS_ENGINES = {"ultralytics": frozenset({"ultralytics", "torch"})}
+_IN_PROCESS_DEVICES = {"cpu"}
 _PROFILE_FIELDS = {
     "kind",
     "recipe",
@@ -174,6 +191,38 @@ class UnsupportedProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class InProcessProfile:
+    """A model the calling stage loads and runs itself, with no serving process.
+
+    The row states every inference setting the stage passes, so a run's sealed
+    catalogue says what the detector was asked with. Scores and thresholds are
+    integer basis points, because the canonical writer refuses floats.
+    """
+
+    recipe: str
+    chair: str
+    tier: str
+    engine: str
+    task: str
+    device: str
+    imgsz: int
+    conf_bp: int
+    iou_bp: int
+    max_det: int
+    required_packages: Mapping[str, str]
+    kind: str = "in-process"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "required_packages", MappingProxyType(dict(self.required_packages))
+        )
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.recipe, self.chair, self.tier)
+
+
+@dataclass(frozen=True, slots=True)
 class ServingProfile:
     """One complete vLLM flag profile for one chair at one GPU tier.
 
@@ -234,13 +283,13 @@ class ServingProfile:
 class ServingRecipes:
     """The complete closed serving-profile catalogue."""
 
-    profiles: tuple["ServingProfile | FixtureProfile | UnsupportedProfile", ...]
+    profiles: tuple["ServingProfile | InProcessProfile | FixtureProfile | UnsupportedProfile", ...]
     source_path: Path | None = None
     source_sha256: str | None = None
 
     def for_identity(
         self, identity: ChairIdentity, tier: str
-    ) -> "ServingProfile | FixtureProfile | UnsupportedProfile":
+    ) -> "ServingProfile | InProcessProfile | FixtureProfile | UnsupportedProfile":
         """Return the only profile configured for this identity and tier.
 
         This is lookup, not a ranking or fallback: zero or multiple matches are
@@ -439,7 +488,9 @@ def profile_preflight_digest(raw: Mapping[str, Any]) -> str:
         ) from error
 
 
-def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedProfile":
+def _parse_profile(
+    raw: Any,
+) -> "ServingProfile | InProcessProfile | FixtureProfile | UnsupportedProfile":
     if not isinstance(raw, dict):
         raise ServingConfigurationError("each serving profile must be a table")
     kind = raw.get("kind")
@@ -449,6 +500,8 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
         )
     if kind == "fixture":
         return _parse_fixture_profile(raw)
+    if kind == "in-process":
+        return _parse_in_process_profile(raw)
     if kind == "unsupported":
         unknown = sorted(set(raw) - _UNSUPPORTED_FIELDS)
         missing = sorted(_UNSUPPORTED_FIELDS - set(raw))
@@ -621,8 +674,61 @@ def _parse_fixture_profile(raw: Mapping[str, Any]) -> FixtureProfile:
     )
 
 
+def _parse_in_process_profile(raw: Mapping[str, Any]) -> InProcessProfile:
+    """An in-process row names its engine, device and every inference setting."""
+
+    unknown = sorted(set(raw) - _IN_PROCESS_FIELDS)
+    missing = sorted(_IN_PROCESS_FIELDS - set(raw))
+    if unknown or missing:
+        raise ServingConfigurationError(
+            f"in-process serving profile has unknown field(s) {unknown} or missing field(s) "
+            f"{missing}"
+        )
+    engine = _text(raw["engine"], "engine")
+    if engine not in _IN_PROCESS_ENGINES:
+        raise ServingConfigurationError(
+            f"in-process engine must be one of {sorted(_IN_PROCESS_ENGINES)}, not {engine!r}"
+        )
+    device = _text(raw["device"], "device")
+    if device not in _IN_PROCESS_DEVICES:
+        raise ServingConfigurationError(
+            f"in-process device must be one of {sorted(_IN_PROCESS_DEVICES)}, not {device!r}"
+        )
+    task = _text(raw["task"], "task")
+    if task != "obb":
+        raise ServingConfigurationError(f"in-process task must be 'obb', not {task!r}")
+    raw_packages = raw["required_packages"]
+    if not isinstance(raw_packages, dict) or set(raw_packages) != _IN_PROCESS_ENGINES[engine]:
+        raise ServingConfigurationError(
+            f"an in-process {engine} row pins exactly {sorted(_IN_PROCESS_ENGINES[engine])}"
+        )
+    packages = {
+        package: _text(version, f"required_packages.{package}")
+        for package, version in raw_packages.items()
+    }
+    basis_points = {}
+    for name in ("conf_bp", "iou_bp"):
+        value = _nonnegative_int(raw[name], name)
+        if value > 10_000:
+            raise ServingConfigurationError(f"{name} must be at most 10000 basis points")
+        basis_points[name] = value
+    return InProcessProfile(
+        recipe=_text(raw["recipe"], "recipe"),
+        chair=_text(raw["chair"], "chair"),
+        tier=_text(raw["tier"], "tier"),
+        engine=engine,
+        task=task,
+        device=device,
+        imgsz=_positive_int(raw["imgsz"], "imgsz"),
+        conf_bp=basis_points["conf_bp"],
+        iou_bp=basis_points["iou_bp"],
+        max_det=_positive_int(raw["max_det"], "max_det"),
+        required_packages=packages,
+    )
+
+
 def _validate_catalogue(
-    profiles: tuple["ServingProfile | FixtureProfile | UnsupportedProfile", ...],
+    profiles: tuple["ServingProfile | InProcessProfile | FixtureProfile | UnsupportedProfile", ...],
 ) -> None:
     keys = [profile.key for profile in profiles]
     if len(keys) != len(set(keys)):

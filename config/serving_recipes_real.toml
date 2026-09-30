@@ -149,8 +149,12 @@
 # starts and answers is still an unproven row until preflight says otherwise.
 #
 # Rows cover every configured chair in models-real.toml at every tier in
-# pod_placement.toml.  The secondary proposer has no row because it is absent
-# there by ruling of 2026-08-12, and an absent chair needs no coverage.
+# pod_placement.toml.  The secondary proposer is DAI's own record detector, run
+# `kind = "in-process"` by the Designator on the CPU after the structure chair
+# has closed: no server, no port, no share of the card.  Its `imgsz`, `conf_bp`,
+# `iou_bp` and `max_det` are Ultralytics' own predict defaults for this
+# checkpoint (imgsz from the checkpoint's own training arguments), written out
+# so the sealed catalogue says what the detector was asked with; none is tuned.
 # The common stage parser seals the selected catalogue's content, so using
 # this catalogue cannot silently share a run authority with the fixture-only
 # catalogue.
@@ -625,3 +629,45 @@ startup_timeout_seconds = 600  # measured cold start ~375 s (see the header) plu
 poll_interval_seconds = 2
 request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+
+[[profiles]]
+kind = "in-process"
+recipe = "unproven-real-secondary-proposer"
+chair = "secondary_proposer"
+tier = "generic-24gb"
+engine = "ultralytics"
+task = "obb"
+device = "cpu"
+imgsz = 1024
+conf_bp = 2500
+iou_bp = 7000
+max_det = 300
+required_packages = { ultralytics = "8.4.14", torch = "2.13.0" }
+
+[[profiles]]
+kind = "in-process"
+recipe = "unproven-real-secondary-proposer"
+chair = "secondary_proposer"
+tier = "generic-48gb"
+engine = "ultralytics"
+task = "obb"
+device = "cpu"
+imgsz = 1024
+conf_bp = 2500
+iou_bp = 7000
+max_det = 300
+required_packages = { ultralytics = "8.4.14", torch = "2.13.0" }
+
+[[profiles]]
+kind = "in-process"
+recipe = "unproven-real-secondary-proposer"
+chair = "secondary_proposer"
+tier = "generic-80gb-plus"
+engine = "ultralytics"
+task = "obb"
+device = "cpu"
+imgsz = 1024
+conf_bp = 2500
+iou_bp = 7000
+max_det = 300
+required_packages = { ultralytics = "8.4.14", torch = "2.13.0" }

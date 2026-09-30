@@ -111,8 +111,16 @@ REQUIRED_ARTIFACTS = (
         "ca2150ea465d5a3d67818c50e234b9422619c75d",
         "other: qwen-research",
     ),
-    # No `secondary_proposer` row: the real roster configures no such chair, and
-    # requiring its bytes would leave the store permanently incomplete.
+    # DAI's own project's record detector, read so DAI sees the page as it was
+    # trained to: on crops of the records this detector finds.
+    RequiredArtifact(
+        "secondary_proposer",
+        "yolov26-record-detection",
+        "huggingface",
+        "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection",
+        "0c57f057391113579e7af170b864542f049e67aa",
+        "agpl-3.0",
+    ),
     RequiredArtifact("proposer_surya2", "surya2-detection", "local-repository", None, None),
     RequiredArtifact(
         "perlector",
@@ -148,7 +156,7 @@ DAI_PROMPT_CITATION = (
     "system.txt and query.txt"
 )
 MODEL_PAYLOAD_SUFFIXES = frozenset({".bin", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"})
-# Generous for a five-artifact record, yet bounds a forged control document.
+# Generous for a six-artifact record, yet bounds a forged control document.
 MAX_DOWNLOAD_RECORD_BYTES = 1_048_576
 # Repository-controlled JSON may not claim unbounded memory.
 MAX_SHARD_INDEX_BYTES = 16_777_216

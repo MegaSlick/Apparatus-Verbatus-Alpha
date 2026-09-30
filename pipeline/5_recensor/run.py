@@ -724,9 +724,12 @@ def _verify_page_witness_entry(
     native_capture = page_payload.get("native_capture")
     if native_capture is not None:
         _verify_native_capture(context, act_id, chair, page_testimonium, native_capture)
-    # Native page outcomes are independent; legacy joins derive from act attempts.
+    # Native page outcomes are independent; legacy joins derive from act attempts. A
+    # page read one record at a time is a native page reading too.
     attachment_outcome = (
-        page_testimonium["outcome"] if native_capture is not None else outcomes.get(chair)
+        page_testimonium["outcome"]
+        if native_capture is not None or "presentations" in page_payload
+        else outcomes.get(chair)
     )
     # The floor is counted from this derivation, never from the record's boolean.
     derived_basis = page_attachment_basis(
@@ -831,7 +834,11 @@ _ALIGNED_KEYS = frozenset(
         "deadline_in_force",
     }
 )
-_ANCHOR_BASES = frozenset({"act-anchor", "no-page-anchor", "act-line-not-located"})
+# `detector-record`: the act's slice is the records a page witness's own detector
+# found and this act owns, placed by geometry rather than by another chair's text.
+_ANCHOR_BASES = frozenset(
+    {"act-anchor", "no-page-anchor", "act-line-not-located", "detector-record"}
+)
 
 
 def _require_alignment_shape(act_id: str, chair: str, alignment: dict) -> None:
