@@ -1,6 +1,6 @@
 """The Coniector's request text: one page's diplomatic readings, asked text only.
 
-    text = build_reconstruction_prompt(call, entries)
+    text = build_reconstruction_prompt(call, entries, policy)
 
 `call` is one call of `common.reconstruction.reconstruction_plan`; `entries` maps
 every `act_key` the call can show to `{act_key, page_ordinal, n, kind, label,
@@ -50,7 +50,11 @@ A departure is {"diplomatic": "<exact span of the diplomatic text>", \
 "reconstruction": "<what you read there instead>", "reason": "<optional, short>"}. The \
 diplomatic span must occur exactly once in the act's text at or after the end of the \
 departure before it, so list departures in the order they occur and quote enough text to \
-make each span unique. Keep each departure to a word or two.
+make each span unique. Keep each departure to a word or two: at most %(departures)d \
+departures an act, each side at most %(side)d characters, each reason at most %(reason)d, \
+and all of an act's departures together changing at most %(share)s%% of its text (or \
+%(floor)d characters, whichever is more). An act whose departures break any of these \
+bounds, or one that cannot be applied exactly, gets no reconstruction at all.
 
 A finding reports something about an act without changing its text: \
 {"code": "<code>", "reason": "<optional, short>"}, with code one of: \
@@ -111,9 +115,10 @@ def shown_texts(call: Mapping[str, Any], entries: Mapping[str, Mapping[str, Any]
 
 
 def build_reconstruction_prompt(
-    call: Mapping[str, Any], entries: Mapping[str, Mapping[str, Any]]
+    call: Mapping[str, Any], entries: Mapping[str, Mapping[str, Any]], policy: Any
 ) -> str:
-    """The one text turn the Coniector's chair is sent for `call`."""
+    """The one text turn the Coniector's chair is sent for `call`, under the sealed `policy`'s
+    bounds (`common.reconstruction.ReconstructionPolicy`), which it states."""
     subjects: Sequence[str] = call["subjects"]
     chains: Sequence[Sequence[str]] = call["chains"]
     page = page_keys(call, entries)
@@ -121,7 +126,14 @@ def build_reconstruction_prompt(
     if missing:
         raise ContractError(f"reconstruction subjects {missing} are not entries of the call's page")
     sections = [
-        _INSTRUCTION,
+        _INSTRUCTION
+        % {
+            "departures": policy.max_departures_per_act,
+            "side": policy.max_departure_characters,
+            "reason": policy.max_reason_characters,
+            "share": f"{policy.max_changed_share_bp / 100:g}",
+            "floor": policy.changed_floor_characters,
+        },
         f"Finding codes: {', '.join(sorted(FINDING_CODES))}.",
         f"## Page {call['page_ordinal']}\n\n"
         + "\n\n".join(_entry_block(_entry(entries, key)) for key in page),

@@ -905,8 +905,10 @@ def reconstruction_answer_bound(
     """``(tokens, reserve_clamped)``: the tokens reserved for one Coniector answer.
 
     Each character is charged at four bytes, the most one code point takes in
-    UTF-8, so the estimate is an upper bound on an answer within the sealed
-    policy's bounds whatever script it is written in.
+    UTF-8, and each act one finding with a reason at the departure reason's
+    bound. The grammar bounds neither a finding's count nor its reason, so this
+    is an estimate, not a ceiling: it decides admission only, and an answer
+    longer than the context left stops as a visible cut-off.
     """
     acts = _nonnegative(acts, "acts")
     joins = _nonnegative(joins, "joins")

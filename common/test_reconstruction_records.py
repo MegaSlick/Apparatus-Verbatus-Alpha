@@ -74,18 +74,21 @@ def _derive(call, reply):
 
 
 def test_the_prompt_shows_the_page_in_order_then_its_context_and_asks_for_the_subjects():
-    text = build_reconstruction_prompt(CALL, SHOWN)
+    text = build_reconstruction_prompt(CALL, SHOWN, POLICY)
     page, context = text.index("## Page 1"), text.index("## Neighbouring pages")
     assert text.index("[p1:1]") < text.index("[p1:2]") < text.index("[p1:3]") < context
     assert page < context < text.index("[p2:1]")
     assert '["p1:1"]' in text and "image" not in text.split("## Page 1")[1]
     assert shown_keys(CALL, SHOWN) == ["p1:1", "p1:2", "p1:3", "p2:1"]
     assert shown_texts(CALL, SHOWN)[-1] == "Marie, le trois"
+    # The sealed bounds a departure is refused past are stated to the chair.
+    assert "at most 5 departures an act, each side at most 40 characters" in text
+    assert "at most 15% of its text (or 16 characters" in text
 
 
 def test_the_prompt_refuses_a_subject_that_is_not_on_its_page():
     with pytest.raises(ContractError, match="not entries of the call's page"):
-        build_reconstruction_prompt({**CALL, "subjects": ["p2:1"]}, SHOWN)
+        build_reconstruction_prompt({**CALL, "subjects": ["p2:1"]}, SHOWN, POLICY)
 
 
 def test_a_parsed_answer_gives_each_act_its_reconstruction_and_its_findings():

@@ -289,7 +289,7 @@ def test_a_live_call_sends_one_text_turn_thinking_off_with_its_capacity():
     assert asked["reply_text"] == '{"acts": [], "joins": []}'
 
 
-def test_a_live_call_that_fails_is_not_asked_again_and_names_its_retained_bytes():
+def test_a_live_call_that_fails_leaves_no_reply_and_names_its_retained_bytes():
     from common.chat_request import EngineSignalRefusal
 
     stage = load_stage("4b_coniector", "run")
@@ -323,3 +323,113 @@ def test_the_armarium_refuses_an_export_without_the_coniector_seal(off, tmp_path
     result = run_stage(root, RUN_ID, "happy", "pipeline/7_armarium/run.py", **options)
     assert result.returncode != 0
     assert "side branch coniector has no stage-seal" in result.stderr
+
+
+# --- what the Armarium's recompute refuses -------------------------------------------------
+
+
+def _tamper(root: Path, kind: str, keys_or_page, change) -> None:
+    from common.contracts.canonical import digest_bytes
+    from conftest import _stage_records, _write_record
+
+    for path, record in _stage_records(root, RUN_ID, "4b_coniector", kind):
+        payload = record["payload"]
+        if payload.get("act_keys") == keys_or_page or payload.get("page_ordinal") == keys_or_page:
+            before = digest_bytes(path.read_bytes())
+            change(payload)
+            _write_record(path, record)
+            after = digest_bytes(path.read_bytes())
+            # A forger rewrites what names the record too, so the recompute is what refuses.
+            for named_path, named in _stage_records(
+                root, RUN_ID, "4b_coniector", RECONSTRUCTION_KIND
+            ):
+                if named["payload"]["call_ref"]["sha256"] == before:
+                    named["payload"]["call_ref"]["sha256"] = after
+                    for reference in named["inputs"]:
+                        if reference["sha256"] == before:
+                            reference["sha256"] = after
+                    _write_record(named_path, named)
+            return
+    raise AssertionError(f"no {kind} record for {keys_or_page!r}")
+
+
+def _verified(root: Path, options: dict):
+    from common.reconstruction_records import verified_reconstructions
+    from common.stage import READING_UNIT_PAGE, reading_acts
+    from conftest import page_context
+
+    # Opened as the Coniector, whose seal check reads the Perlector's alone, so the
+    # recompute itself is what meets the tampered record.
+    context = page_context(root, RUN_ID, "happy", options, stage=CONIECTOR)
+    return verified_reconstructions(context, READING_UNIT_PAGE, reading_acts(context))
+
+
+@pytest.mark.parametrize(
+    "kind, key, change, refusal",
+    [
+        (
+            RECONSTRUCTION_KIND,
+            ["p1:1"],
+            lambda payload: payload.update(reconstruction_raw="SYNTHETIC ACT ONE invented"),
+            "is not the one its call's reply gives",
+        ),
+        (
+            CALL_KIND,
+            1,
+            lambda payload: payload.update(
+                reply_text=payload["reply_text"].replace(
+                    '"reconstruction":"gamma"', '"reconstruction":"delta"'
+                )
+            ),
+            "reply the fixture never declared",
+        ),
+        (
+            CALL_KIND,
+            1,
+            lambda payload: payload["maker"]["resolved_revision"].update(value="0" * 64),
+            "maker other than the run's reconstructor chair",
+        ),
+        (
+            CALL_KIND,
+            2,
+            lambda payload: payload.update(
+                reply_text=None,
+                finish_reason=None,
+                stop_reason=None,
+                parse_state="not-asked",
+                problems=[{"code": CHAIR_ABSENT, "detail": "forged"}],
+            ),
+            "receipt exactly when it was not asked",
+        ),
+    ],
+    ids=["reconstruction", "reply", "maker", "not-asked"],
+)
+def test_the_recompute_refuses_a_forged_record(unconsecutive, tmp_path, kind, key, change, refusal):
+    from common.contracts.errors import FatalAccounting
+
+    source, options = unconsecutive
+    root = tmp_path / "runs"
+    shutil.copytree(source, root)
+    _tamper(root, kind, key, change)
+    with pytest.raises(FatalAccounting, match=refusal):
+        _verified(root, options)
+
+
+def test_a_call_refused_for_capacity_is_verified_with_the_record_it_was_refused_on():
+    from common.chairs.models import ChairIdentity
+    from common.reconstruction_records import REQUEST_OVER_CAPACITY, _require_not_asked_evidence
+
+    # The roster's chair is configured; only its type is read here.
+    present = ChairIdentity.__new__(ChairIdentity)
+    context = SimpleNamespace(registry=SimpleNamespace(resolve=lambda _role: present))
+    payload = {
+        "reply_text": None,
+        "finish_reason": None,
+        "stop_reason": None,
+        "engine_call": None,
+        "failure": None,
+        # The shape the stage records a refusal in.
+        "capacity": {"capacity": {"fits": False}, "answer_reserve": None, "max_tokens": None},
+        "problems": [{"code": REQUEST_OVER_CAPACITY, "detail": "too large"}],
+    }
+    _require_not_asked_evidence(context, payload, "page 1")

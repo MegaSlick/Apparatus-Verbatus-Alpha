@@ -40,7 +40,6 @@ from common.reconstruction_records import (  # noqa: E402
     CALL_KIND,
     CALL_SCHEMA,
     CHAIR_ABSENT,
-    MAKER_MODEL,
     PLAN_KIND,
     PLAN_SUBJECT,
     RECONSTRUCTION_KIND,
@@ -53,6 +52,7 @@ from common.reconstruction_records import (  # noqa: E402
     call_prompt,
     derive_reconstructions,
     diplomatic_entries,
+    expected_maker,
     fixture_reply,
     plan_payload,
     reconstruction_outcome,
@@ -142,15 +142,6 @@ class _Chair:
 
     def maker(self, *, asked: bool) -> dict:
         """Who made a call's reconstructions: the chair, and the receipt of what served it."""
-        if not self.present:
-            return {
-                "kind": MAKER_MODEL,
-                "chair": RECONSTRUCTOR_CHAIR,
-                "chair_state": "absent",
-                "resolved_identity": None,
-                "resolved_revision": None,
-                "receipt_ref": None,
-            }
         receipt = None
         if asked and self.live:
             receipt = self.receipt_ref
@@ -160,17 +151,7 @@ class _Chair:
                     self.identity, fixture_serving_details(self.identity)
                 )
             receipt = self.fixture_receipt_ref
-        return {
-            "kind": MAKER_MODEL,
-            "chair": RECONSTRUCTOR_CHAIR,
-            "chair_state": "configured",
-            "resolved_identity": self.identity.to_record(),
-            "resolved_revision": {
-                "kind": self.identity.receipt_revision_kind,
-                "value": self.identity.receipt_revision,
-            },
-            "receipt_ref": dict(receipt) if receipt is not None else None,
-        }
+        return expected_maker(self.identity, receipt)
 
 
 def _sealed_call(context, page_id: str):
@@ -288,15 +269,23 @@ def _inputs(context, shown: dict, keys: list, asked: dict) -> list:
 def _publish_call(context, chair: _Chair, call: dict, shown: dict, policy, max_tokens: int):
     """Publish one call's record, or adopt the one already sealed for its page."""
     page_id = call_page_id(call, shown)
-    text = call_prompt(call, shown)
+    text = call_prompt(call, shown, policy)
     keys = shown_keys(call, shown)
     sealed = _sealed_call(context, page_id)
     if sealed is not None:
         payload = sealed["payload"]
-        if payload.get("call") != call or payload.get("prompt_sha256") != text_sha256(text):
+        maker = payload.get("maker")
+        if (
+            payload.get("call") != call
+            or payload.get("prompt_sha256") != text_sha256(text)
+            or payload.get("serving_mode") != chair.serving_mode
+            or not isinstance(maker, dict)
+            or maker != expected_maker(chair.identity, maker.get("receipt_ref"))
+        ):
             raise ContractError(
-                f"page {page_id}'s retained reconstruction call was asked from another plan or "
-                "other readings than this run has now; it is not adopted. Reconstruct in a new run"
+                f"page {page_id}'s retained reconstruction call was asked from another plan, "
+                "other readings or another chair than this run has now; it is not adopted. "
+                "Reconstruct in a new run"
             )
         return sealed
     what = f"the reconstruction of page {call['page_ordinal']}"

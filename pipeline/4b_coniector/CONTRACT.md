@@ -81,16 +81,28 @@ findings, not_made}`. Outcome `made` or `not-made`.
 ## Resume
 
 A page whose `reconstruction-call` is sealed is not asked again: its record is
-adopted when it was asked from this plan call and this prompt, and refused by
-name otherwise, and its reconstructions are derived again from its reply. A
+adopted when it was asked from this plan call, this prompt, this serving mode
+and this chair, and refused by name otherwise, and its reconstructions are
+derived again from its reply. That includes a call that failed or was refused:
+its record is sealed evidence, and asking again would publish different bytes
+under the same identity, so reconstructing that page again takes a new run. A
 live call interrupted before its record was published is asked again; its
 retained reply stays in the run tree.
+
+A chain's pieces are never subjects of their own: they are asked as one join.
+When the Coniector reads them as not one act, the join is `does-not-continue`
+and the pieces carry no reconstruction.
 
 ## What the Armarium checks
 
 `common.reconstruction_records.verified_reconstructions` recomputes everything:
-the plan from the sealed switches and the Perlector's readings; each call's
-prompt; each reply against the fixture's declaration or the retained engine
-bytes (and the call record against the chair's sealed sampling row); each parse;
-and every reconstruction from its reply. A record the recomputation does not
-give, or one it gives that is missing, is `FatalAccounting`.
+the plan from the sealed switches and the Perlector's current readings (so a
+Coniector sealed over readings a later recovery replaced is refused); each
+call's prompt; its maker against the run's roster and its receipt; a call not
+asked against the evidence its reason leaves (the roster's absent chair, the
+capacity record that did not fit, the failure's retained bytes); each reply
+against the fixture's declaration or the retained engine bytes, and a live
+call's retained record against this prompt's request, rendered again with the
+chair's sealed sampling row and the receipt's seed; each parse; and every
+reconstruction from its reply. A record the recomputation does not give, or one
+it gives that is missing, is `FatalAccounting`.

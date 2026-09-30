@@ -26,9 +26,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from common import page_path
+from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import CONIECTOR, PERLECTOR
+from common.decoding import chair_decoding
 from common.page_edges import FIRST_READING_ATTEMPT
 from common.reading_annotations import (
     ASSESSMENT_ASSESSED,
@@ -49,7 +51,11 @@ from common.reconstruction_prompt import (
     shown_keys,
     shown_texts,
 )
-from common.stage import RECONSTRUCTOR_CHAIR, verify_retained_call_sampling
+from common.stage import (
+    RECONSTRUCTOR_CHAIR,
+    sealed_decoding_policy,
+    verify_retained_call_sampling,
+)
 
 PLAN_KIND: Final = "reconstruction-plan"
 PLAN_SUBJECT: Final = "coniector"
@@ -178,6 +184,8 @@ def diplomatic_entries(
     for row in rows:
         if row["class"] not in (page_path.READING_CLASS, page_path.UNPLACED_CLASS):
             continue
+        if row["act_key"] in shown:
+            raise FatalAccounting(f"two readings of this run are keyed {row['act_key']}")
         record = context.tree.read_artifact_reference(
             row["perlectio_ref"],
             stage=PERLECTOR,
@@ -250,8 +258,10 @@ def call_page_id(call: Mapping[str, Any], shown: Mapping[str, Mapping[str, Any]]
     return pages.pop()
 
 
-def call_prompt(call: Mapping[str, Any], shown: Mapping[str, Mapping[str, Any]]) -> str:
-    return build_reconstruction_prompt(call, shown)
+def call_prompt(
+    call: Mapping[str, Any], shown: Mapping[str, Mapping[str, Any]], policy: ReconstructionPolicy
+) -> str:
+    return build_reconstruction_prompt(call, shown, policy)
 
 
 # --- one call's reconstructions --------------------------------------------------------
@@ -482,12 +492,53 @@ def _closed(payload: Any, fields: frozenset[str], schema: str, what: str) -> Map
     return payload
 
 
-def _reply_as_given(context, call_record: Mapping[str, Any], what: str) -> None:
+def _live_request_is_this_prompt(
+    context, payload: Mapping[str, Any], call: Mapping[str, Any], text: str, what: str
+) -> None:
+    """The retained call record must be the reconstructor's text-only request for this prompt.
+
+    Its wire body is rendered again as the serving client renders it, from this
+    prompt, the admitted cap, the chair's sealed sampling row and the receipt's
+    seed, and must digest to the request the engine was sent.
+    """
+    from operations.serving.http import request_body
+
+    record = json.loads(
+        context.tree.read_bytes(payload["engine_call"]["call_record_ref"]["relative_path"])
+    )
+    verify_retained_call_sampling(context, record, RECONSTRUCTOR_CHAIR)
+    if (
+        record.get("chair") != RECONSTRUCTOR_CHAIR
+        or record.get("image_sha256s") != []
+        or record.get("receipt_ref") != payload["maker"]["receipt_ref"]
+        or record.get("resolved_identity") != payload["maker"]["resolved_identity"]
+        or record.get("served_model_id") != payload["engine_call"]["served_model_id"]
+    ):
+        raise FatalAccounting(f"{what} names a call record of another chair or request")
+    policy, _digest = sealed_decoding_policy(context)
+    seed = context.tree.read_run_receipt(dict(record["receipt_ref"])).get("seed")
+    body = request_body(
+        {
+            "chat_template_kwargs": {"enable_thinking": False},
+            "max_tokens": payload["capacity"]["max_tokens"],
+            "messages": [{"role": "user", "content": text}],
+        },
+        model_id=record["served_model_id"],
+        seed=seed,
+        deterministic=False,
+        sampling=chair_decoding(policy, RECONSTRUCTOR_CHAIR),
+    )
+    if digest_bytes(body) != record.get("request_sha256"):
+        raise FatalAccounting(f"{what} was answered for a request other than this prompt")
+
+
+def _reply_as_given(context, payload: Mapping[str, Any], call, text: str, what: str) -> None:
     """The reply the record holds must be the fixture's declared one or the retained one."""
-    payload = call_record["payload"]
     if payload["reply_text"] is None:
         return
     if payload["serving_mode"] == SERVING_FIXTURE:
+        if payload["engine_call"] is not None or payload["capacity"] is not None:
+            raise FatalAccounting(f"{what} is a fixture reply carrying live call evidence")
         declared = fixture_reply(
             context, payload["page_ordinal"], _sealed_policy(context).pages_are_consecutive
         )
@@ -497,7 +548,7 @@ def _reply_as_given(context, call_record: Mapping[str, Any], what: str) -> None:
         ):
             raise FatalAccounting(f"{what} holds a reply the fixture never declared")
         return
-    if payload["serving_mode"] != SERVING_LIVE:
+    if payload["serving_mode"] != SERVING_LIVE or not isinstance(payload["engine_call"], dict):
         raise FatalAccounting(f"{what} names serving mode {payload['serving_mode']!r}")
     retained = page_path.retained_reply(context.tree.read_bytes, payload["engine_call"])
     if (retained["content"], retained["finish_reason"], retained["stop_reason"]) != (
@@ -506,10 +557,7 @@ def _reply_as_given(context, call_record: Mapping[str, Any], what: str) -> None:
         payload["stop_reason"],
     ):
         raise FatalAccounting(f"{what} holds a reply other than the one its engine returned")
-    call = json.loads(
-        context.tree.read_bytes(payload["engine_call"]["call_record_ref"]["relative_path"])
-    )
-    verify_retained_call_sampling(context, call, RECONSTRUCTOR_CHAIR)
+    _live_request_is_this_prompt(context, payload, call, text, what)
 
 
 def _sealed_policy(context) -> ReconstructionPolicy:
@@ -518,8 +566,53 @@ def _sealed_policy(context) -> ReconstructionPolicy:
     return policy
 
 
-def _require_not_asked_evidence(payload: Mapping[str, Any], what: str) -> None:
+def expected_maker(identity: Any, receipt_ref: Mapping[str, str] | None) -> dict[str, Any]:
+    """The maker a call's record names: the reconstructor chair as resolved, and its receipt."""
+    if not isinstance(identity, ChairIdentity):
+        return {
+            "kind": MAKER_MODEL,
+            "chair": RECONSTRUCTOR_CHAIR,
+            "chair_state": "absent",
+            "resolved_identity": None,
+            "resolved_revision": None,
+            "receipt_ref": None,
+        }
+    return {
+        "kind": MAKER_MODEL,
+        "chair": RECONSTRUCTOR_CHAIR,
+        "chair_state": "configured",
+        "resolved_identity": identity.to_record(),
+        "resolved_revision": {
+            "kind": identity.receipt_revision_kind,
+            "value": identity.receipt_revision,
+        },
+        "receipt_ref": dict(receipt_ref) if receipt_ref is not None else None,
+    }
+
+
+def _require_maker(context, payload: Mapping[str, Any], what: str) -> None:
+    """The maker is the roster's reconstructor, with a receipt exactly when it was asked."""
+    maker = payload["maker"]
+    identity = context.registry.resolve(RECONSTRUCTOR_CHAIR)
+    receipt = maker.get("receipt_ref") if isinstance(maker, Mapping) else None
+    if maker != expected_maker(identity, receipt):
+        raise FatalAccounting(f"{what} names a maker other than the run's reconstructor chair")
+    if (receipt is not None) != (payload["reply_text"] is not None):
+        raise FatalAccounting(f"{what} carries a serving receipt exactly when it was not asked")
+    if receipt is not None:
+        if context.tree.read_run_receipt(dict(receipt))["chair"] != RECONSTRUCTOR_CHAIR:
+            raise FatalAccounting(f"{what} names the receipt of another chair")
+
+
+def _require_not_asked_evidence(context, payload: Mapping[str, Any], what: str) -> None:
+    """A call not asked names one reason and exactly the evidence that reason leaves."""
     if payload["reply_text"] is not None:
+        if (
+            payload["failure"] is not None
+            or payload["problems"]
+            != (reply_state(payload["reply_text"], payload["stop_reason"], payload["call"])[2])
+        ):
+            raise FatalAccounting(f"{what} has a reply and a reason it was not asked")
         return
     problems = payload["problems"]
     if not isinstance(problems, list) or len(problems) != 1 or not isinstance(problems[0], dict):
@@ -527,14 +620,29 @@ def _require_not_asked_evidence(payload: Mapping[str, Any], what: str) -> None:
     code = problems[0].get("code")
     if code not in NOT_ASKED_CODES:
         raise FatalAccounting(f"{what} was not asked for a reason no call records ({code!r})")
-    if code == CHAIR_ABSENT and payload["maker"]["chair_state"] != "absent":
-        raise FatalAccounting(f"{what} says its chair is absent, but its maker names a chair")
+    if any(payload[name] is not None for name in ("finish_reason", "stop_reason", "engine_call")):
+        raise FatalAccounting(f"{what} was not asked but records an engine's answer")
+    present = isinstance(context.registry.resolve(RECONSTRUCTOR_CHAIR), ChairIdentity)
+    if (code == CHAIR_ABSENT) == present:
+        raise FatalAccounting(f"{what} says whether its chair is absent against the roster")
+    capacity, failure = payload["capacity"], payload["failure"]
+    if code == CHAIR_ABSENT and (capacity is not None or failure is not None):
+        raise FatalAccounting(f"{what} names an absent chair and a call")
     if code == REQUEST_OVER_CAPACITY and (
-        not isinstance(payload["capacity"], Mapping) or payload["capacity"].get("fits") is not False
+        failure is not None
+        or not isinstance(capacity, Mapping)
+        or not isinstance(capacity.get("capacity"), Mapping)
+        or capacity["capacity"].get("fits") is not False
     ):
         raise FatalAccounting(f"{what} was refused for capacity with no record that it did not fit")
-    if code == CALL_FAILED and not isinstance(payload["failure"], Mapping):
-        raise FatalAccounting(f"{what} failed with no failure recorded")
+    if code == CALL_FAILED:
+        if not isinstance(failure, Mapping) or not isinstance(capacity, Mapping):
+            raise FatalAccounting(f"{what} failed with no failure or admission recorded")
+        for name in ("raw_response_ref", "call_record_ref"):
+            if name in failure and context.input_ref(failure[name]["relative_path"]) != dict(
+                failure[name]
+            ):
+                raise FatalAccounting(f"{what} names retained bytes that are not on disk as named")
 
 
 def verified_reconstructions(
@@ -590,7 +698,7 @@ def verified_reconstructions(
         record = calls_by_page[page_id]
         what = f"the reconstruction call of page {call['page_ordinal']}"
         payload = _closed(record["payload"], CALL_FIELDS, CALL_SCHEMA, what)
-        text = call_prompt(call, shown)
+        text = call_prompt(call, shown, policy)
         if (
             payload["call"] != call
             or payload["page_id"] != page_id
@@ -598,13 +706,13 @@ def verified_reconstructions(
             or payload["prompt_version"] != PROMPT_VERSION
             or payload["prompt_sha256"] != text_sha256(text)
             or payload["shown"] != shown_keys(call, shown)
+            or not isinstance(payload["maker"], Mapping)
             or set(payload["maker"]) != MAKER_FIELDS
-            or payload["maker"]["kind"] != MAKER_MODEL
-            or payload["maker"]["chair"] != RECONSTRUCTOR_CHAIR
         ):
             raise FatalAccounting(f"{what} is not the call its plan and readings give")
-        _reply_as_given(context, record, what)
-        _require_not_asked_evidence(payload, what)
+        _require_maker(context, payload, what)
+        _require_not_asked_evidence(context, payload, what)
+        _reply_as_given(context, payload, call, text, what)
         state, answer, problems = reply_state(payload["reply_text"], payload["stop_reason"], call)
         if payload["reply_text"] is not None and (
             state != payload["parse_state"] or problems != payload["problems"]
