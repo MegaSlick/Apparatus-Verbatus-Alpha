@@ -8,9 +8,9 @@ for one artifact drift apart; this package is the one executable authority.
 
 The input references are the load-bearing part. Each names a path and the sha256 of
 the bytes at that path, so a consumer can prove that what it is reading is what the
-producer wrote. That is ARCHITECTURE's second and third invariants made checkable:
-every region traces back to the Exemplar, and the exact image shown to a model is
-reproducible from the Exemplar plus the recorded transforms.
+producer wrote. That makes two properties checkable: every region traces back to
+the Exemplar, and the exact image shown to a model is reproducible from the
+Exemplar plus the recorded transforms.
 
 No timestamps. Two identical runs must produce identical bytes, or "repeating the
 identical command leaves all artifact bytes unchanged" is not testable. When a

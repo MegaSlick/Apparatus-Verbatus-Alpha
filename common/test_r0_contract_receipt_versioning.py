@@ -21,7 +21,7 @@ def test_a_v2_receipt_schema_constant_exists_once_coverage_grows_granularity_fie
     """D9: the schema constant must version v1 -> v2 alongside the D2/D3 coverage
     growth this contract note requires. On the base commit there is exactly one
     schema constant, `recensor-partition-receipt.v1`, and coverage carries none of
-    the page-granularity fields R0 needs (see test_r0_contract_floor_honesty.py).
+    the page-granularity fields R0 needs (see common/contracts/test_witness_floor_honesty.py).
     """
     v2_schema = getattr(receipt_module, "RECENSOR_PARTITION_RECEIPT_SCHEMA_V2", None)
     if v2_schema is None:

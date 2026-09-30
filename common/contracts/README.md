@@ -39,5 +39,6 @@ picker under an accounting name.
 
 **An outcome with no class is fatal, not a warning.** Every unit is in exactly one
 of completed, unresolved or failed; a unit in none of them is an accounting imbalance
-that stops the run, never one it routes around. `check_algebra_is_total()` proves both mappings total rather than trusting them, so
-a state added without a class or a terminal decision fails at the first run.
+that stops the run, never one it routes around. `check_algebra_is_total()` proves
+both mappings total rather than trusting them, so a state added without a class or a
+terminal decision fails at the first run.

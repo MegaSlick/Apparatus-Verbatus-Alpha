@@ -1,9 +1,9 @@
 """Identities are derived, so the properties are provable rather than promised.
 
-The ruling this file enforces is ARCHITECTURE's first invariant, verbatim: "Act
-identity survives recropping." The second and third follow from the same
-mechanism — every region traces back to the Exemplar, and the exact image shown to
-a model is reproducible from the Exemplar plus the recorded transforms.
+The property this file enforces is that act identity survives recropping. Two more
+follow from the same mechanism — every region traces back to the Exemplar, and the
+exact image shown to a model is reproducible from the Exemplar plus the recorded
+transforms.
 
 Every derived or authored value is NAMED in the test. The bindings below are
 written out in full at each call rather than hidden behind a fixture helper,
@@ -108,7 +108,7 @@ def test_a_split_page_binds_its_parent_source_digest_and_parent_space_bounds():
 
 
 def test_act_identity_survives_recropping():
-    """ARCHITECTURE invariant 1. The act id binds the ORIGINAL proposal, so a
+    """The act id binds the ORIGINAL proposal, so a
     recrop cannot reach its bindings at all — stability is the only thing the
     derivation is able to do, rather than something code must remember."""
     page = identities.page_id(ORIGIN, WHOLE)

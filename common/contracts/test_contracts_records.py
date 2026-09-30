@@ -2,8 +2,8 @@
 
 Determinism is not a nicety here. "Repeating the identical command leaves all
 artifact bytes unchanged" and "an interrupted run resumes from valid artifacts
-without rewriting them" are both claims about bytes, so the serialization has to be the same on every machine before
-either is worth asserting.
+without rewriting them" are both claims about bytes, so the serialization has to be
+the same on every machine before either is worth asserting.
 """
 
 import json
@@ -170,9 +170,8 @@ def test_a_refusal_deep_inside_the_bound_still_names_a_readable_position():
 
 
 def test_a_structure_that_contains_itself_is_named_rather_than_walked_forever():
-    """A cycle used to end the recursive walk by exhausting it. A walk with no
-    stack to exhaust must say so itself, or it hangs -- which is worse than the
-    traceback it replaced, because nothing at all is reported."""
+    """A walk with no stack to exhaust must name a cycle itself, or it hangs --
+    and a hang reports nothing at all."""
     looped: dict = {"payload": {}}
     looped["payload"]["back"] = looped
 
@@ -255,8 +254,8 @@ def test_a_surrogate_refusal_pairs_the_offender_with_its_canonical_path():
     """The encoder sees sorted keys, so the diagnostic locator must too.
 
     Insertion order puts ``z`` first here while canonical JSON puts ``a`` first.
-    Walking the former used to report the encoder's ``\\ud800`` offender at
-    ``$.z``, where the different ``\\udfff`` character actually lives.
+    A locator walking insertion order would report the encoder's ``\\ud800``
+    offender at ``$.z``, where the different ``\\udfff`` character lives.
     """
     with pytest.raises(TypeError) as caught:
         canonical_bytes({"z": "\udfff", "a": SURROGATE})
@@ -295,11 +294,11 @@ def test_a_deeply_nested_record_fails_its_hash_rather_than_crashing():
     """`common/runtree/store.py::_read_json`'s `RecursionError` guard protects the
     JSON scanner only. A record shallow enough to parse but deep enough to exhaust
     the recursion limit while `self_hash` recomputes it — `canonical_bytes` walks
-    the structure again, to refuse floats — used to crash `read_artifact` and
-    `build_manifest` with a traceback rather than refuse the record. Every caller
-    of `verify_self_hash` already treats `False` as "refuse"; catching the
-    RecursionError here and returning `False` fixes every one of them at once,
-    the same way `_read_json`'s own fix closed the reader-side band."""
+    the structure again, to refuse floats — must be refused, never crash
+    `read_artifact` or `build_manifest` with a traceback. Every caller of
+    `verify_self_hash` treats `False` as "refuse", so `verify_self_hash` returning
+    `False` on RecursionError covers every one of them at once, as `_read_json`
+    does on the reader side."""
     nested: dict = {"leaf": 1}
     for _ in range(2000):
         nested = {"nested": nested}
@@ -376,11 +375,9 @@ def test_an_approval_with_unhashable_current_content_names_that_cause():
 def test_an_approval_with_a_huge_integer_is_refused_by_a_printable_name():
     """An unbounded integer reaches a named, printable refusal, never a crash.
 
-    It used to reach the canonical writer's own "exceeds 640 decimal digits"
-    refusal through the self-hash. work/approval-record-binding then closed this
-    record's schema, so an unexpected field is refused before its value is ever
-    examined -- the stricter of the two, and the reason the name changed. The
-    canonical refusal itself is unchanged and still proven, at
+    The approval record's schema is closed, so an unexpected field is refused by
+    name before its value is ever examined. The canonical writer's own "exceeds
+    640 decimal digits" refusal is proven separately, at
     test_an_integer_above_the_portable_decimal_limit_is_refused_by_path and
     test_contracts_envelope.py.
     """

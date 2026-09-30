@@ -166,7 +166,7 @@ def page_attachment_basis(*, reading: bool, geometry_overlaps: bool, alignment: 
     forged attachment needs only a forged alignment, still behind the
     Attestatores seal (`pipeline/4_perlector/test_comparability_seam.py`).  The
     fix is a reader that re-derives the alignment, which needs text neither
-    reader holds today.
+    reader holds.
     """
     if not reading:
         return "unattached"
@@ -188,8 +188,9 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
         "sealed": _C.COMPLETED,
         "refused": _C.FAILED,
     },
-    # Page evidence, not an act decision; Unit 14 owns the hold that makes an
-    # unclaimed edge terminal.
+    # Page evidence, not an act decision: the page is held for review through the
+    # `edge_hold_pages` that `run_aggregate` takes, so an unclaimed edge still
+    # reaches a terminal category.
     INK_MAP: {
         "mapped": _C.COMPLETED,
         "unclaimed-edge-ink": _C.UNRESOLVED,

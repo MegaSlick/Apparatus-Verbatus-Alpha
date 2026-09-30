@@ -3,8 +3,8 @@
 Every identity except `run_id` is a digest of exactly the facts it claims to bind,
 carried beside those facts in the artifact. That makes identity *verifiable*: a
 reader recomputes and refuses a mismatch, instead of trusting a string that arrived
-in a file. It is also what makes the architecture's first invariant — act identity
-survives recropping — a property a test can prove rather than a habit:
+in a file. It is also what makes "act identity survives recropping" a property a
+test can prove rather than a habit:
 
     act_id    binds the original class and bounds  -> a recrop cannot change it
     region_id binds the act AND the transform      -> a recrop must change it
@@ -330,9 +330,9 @@ def physical_act_component_designation(physical_page: str, local_act_ids: list[s
 def region_bindings(act: str, transform: Any) -> dict[str, Any]:
     """A region is one act seen through one exact, reproducible transform.
 
-    The transform is recorded in full rather than summarized, so ARCHITECTURE's
-    third invariant holds: the exact image shown to a model is reproducible from
-    the Exemplar plus the recorded transforms.
+    The transform is recorded in full rather than summarized, so the exact image
+    shown to a model is reproducible from the Exemplar plus the recorded
+    transforms.
     """
     return {"act_id": act, "transform": transform}
 

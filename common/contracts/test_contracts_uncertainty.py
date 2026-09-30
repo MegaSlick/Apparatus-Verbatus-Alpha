@@ -4,9 +4,9 @@
 sealed record, which is the right place for the record's rules. What it cannot
 reach is the projection step itself: `from_perlectio` renames the producer's
 `testimonium_span` to `prior_span`, and a rename is exactly the kind of thing
-that is only visible when the value is non-empty. Every record the pipeline
-builds today carries an empty layer, so the rename travels untested through
-every other suite in this repository.
+that is only visible when the value is non-empty. A pipeline record may carry
+an empty layer, and then the rename travels untested through every suite that
+builds one, so this file tests it with a non-empty value.
 """
 
 from __future__ import annotations

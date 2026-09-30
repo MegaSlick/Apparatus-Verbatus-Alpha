@@ -80,13 +80,12 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
 def validate_assessment_record(assessment: Any, subject: str = "canonical uncertainty") -> dict:
     """The closed `{state, problem}` doubt record, refused by name or returned.
 
-    One function because three callers need the same answer and had three
-    different fractions of it: this module's `validate` asked all of it,
-    `from_perlectio` asked only that the field was an object before projecting
-    two keys out of it, and `common/perlector_audit.validate_chain` read the
-    state without asking anything -- so a record saying `assessed` while
-    carrying a problem chose the relaxed span rule in one place and was refused
-    in another.
+    One function because three callers need the same answer: this module's
+    `validate`, `from_perlectio` before it projects two keys out of the record,
+    and `common/perlector_audit.validate_chain` before it reads the state. Any
+    one of them asking less would let a record saying `assessed` while carrying
+    a problem choose the relaxed span rule in one place and be refused in
+    another.
     """
     if not isinstance(assessment, dict) or set(assessment) != _ASSESSMENT_FIELDS:
         raise SchemaRefusal(f"{subject} has no closed assessment record")

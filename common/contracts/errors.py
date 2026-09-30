@@ -29,8 +29,8 @@ class IdentityRefusal(SchemaRefusal):
     """An identity does not verify against the bindings it claims.
 
     Identities here are derived, so a forged or drifted one is detectable by
-    recomputation. Refusing it is what makes "act identity survives recropping"
-    (ARCHITECTURE invariant 1) a checkable property rather than a convention.
+    recomputation. Refusing it is what makes "act identity survives recropping" a
+    checkable property rather than a convention.
     """
 
 
@@ -45,10 +45,11 @@ class ApprovalRefusal(SchemaRefusal):
 class FatalAccounting(ContractError):
     """A unit is in no terminal set, or in more than one.
 
-    The partition is total and proven at every stage boundary: every unit is exactly one of completed / unresolved / failed, and a unit in
-    none of those sets is a FATAL accounting imbalance, never a warning. This is
-    deliberately not a subclass of SchemaRefusal: a stage may catch and record a
-    refused unit, but nothing may catch this and carry on.
+    The partition is total and proven at every stage boundary: every unit is
+    exactly one of completed / unresolved / failed, and a unit in none of those
+    sets is a FATAL accounting imbalance, never a warning. This is deliberately
+    not a subclass of SchemaRefusal: a stage may catch and record a refused unit,
+    but nothing may catch this and carry on.
     """
 
 

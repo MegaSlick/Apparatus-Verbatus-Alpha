@@ -677,11 +677,10 @@ def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class()
     """`under_witnessed` is decided from the attached-reading count;
     `by_class["completed"]` is the wider ATTESTATORES COMPLETED class, which also
     holds `excluded` and a page witness that read its page and did not align into
-    this act. Printing the
-    wider number put a floor-satisfying count next to an under-witnessed
-    verdict: "act act_a is under-witnessed (3 of a floor of 3)", a sentence
-    that refutes itself, which is exactly the contradiction that visible partial
-    results and honest measurement rule out.
+    this act. Printing the wider number would put a floor-satisfying count next
+    to an under-witnessed verdict: "act act_a is under-witnessed (3 of a floor of
+    3)", a sentence that refutes itself, which is exactly the contradiction that
+    visible partial results and honest measurement rule out.
     """
     # Stated in full rather than through the boolean shorthand: what this test
     # needs is two chairs that attached *and* compared, and the shorthand says
@@ -712,10 +711,10 @@ def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class()
 def test_the_legacy_under_witnessed_message_prints_the_count_that_raised_the_flag():
     """On the legacy path (`attachments=None`) `under_witnessed` is decided from
     the COMPLETED class, which also holds `excluded` -- and the record still
-    carries `page_granularity_only`, so branching on that key's presence
-    rederived the message count from reading outcomes instead: {read, excluded,
-    dead} against a floor of 3 flagged at 2 and reported 1, a number no rule in
-    `witness_coverage` produced. The branch is keyed on the recorded
+    carries `page_granularity_only`, so a branch on that key's presence would
+    rederive the message count from reading outcomes instead: {read, excluded,
+    dead} against a floor of 3 flags at 2 and would report 1, a number no rule in
+    `witness_coverage` produces. The branch is keyed on the recorded
     `granularity_basis`, so the message quotes the same arithmetic that decided
     the flag.
     """
@@ -1243,9 +1242,10 @@ def test_a_located_anchor_line_is_a_measured_placement_not_a_coincidence():
 
     One character is NOT enough: `align_to_anchor` keeps every matching block of
     size one, so a witness whose text has nothing to do with the page shares a
-    character or two with any anchor line and would get a positive span out of it. What has to hold is that a run of this act's own
-    anchor line was matched -- `ANCHOR_LINE_RUN_FLOOR` characters of it, or the
-    whole line where the line is shorter than that.
+    character or two with any anchor line and would get a positive span out of it.
+    What has to hold is that a run of this act's own anchor line was matched --
+    `ANCHOR_LINE_RUN_FLOOR` characters of it, or the whole line where the line is
+    shorter than that.
     """
     assert outcomes.anchor_line_located(_LOCATED) is True
     # Exactly at the floor, on a line long enough for the floor to bite.

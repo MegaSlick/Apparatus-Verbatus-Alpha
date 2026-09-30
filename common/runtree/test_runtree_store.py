@@ -294,9 +294,8 @@ def test_a_source_page_without_an_integer_ordinal_is_refused(tmp_path):
     cannot count. `True` is excluded explicitly because `isinstance(True, int)`.
 
     Every case but the first carries a well-formed `sha256`, so the ordinal is the
-    only thing wrong with it. Nothing validates a source page's digest today, so
-    the refusals below can only be the ordinal check — but a digest check added
-    ahead of it would otherwise leave this test passing for the wrong reason."""
+    only thing wrong with it, and a digest check ahead of the ordinal check can
+    never make this test pass for the wrong reason."""
     for bad in (
         {"relative_path": "p.png", "sha256": "a" * 64},
         {"sha256": "a" * 64, "ordinal": "1"},
@@ -2402,23 +2401,22 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
 
 
 def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_crash(tmp_path):
-    """`_read_json` names the ways a file can fail to be read, and `RecursionError`
-    was not among them: `json`'s scanner recurses once per nesting level, so a
-    deeply nested artifact raised straight through every caller. A stage that
-    should have refused the file and held died with a traceback instead, and
+    """`_read_json` names the ways a file can fail to be read, `RecursionError`
+    among them: `json`'s scanner recurses once per nesting level, so a deeply
+    nested artifact would otherwise raise straight through every caller, and
     because `build_manifest` reads every artifact under a directory, one such
-    file stopped the whole stage rather than its own record. 30,000 is driven
+    file would stop the whole stage rather than its own record. 30,000 is driven
     deliberately deep rather than pinned to the scanner's exact failure depth,
     which is an interpreter fact, not one this suite should assert.
 
     **Which refusal fires is that same interpreter fact, so it is not asserted
-    either.** This test pinned the reader's own message and passed on Python 3.12
-    and 3.13 while failing on 3.14, where the scanner absorbs this depth: the file
-    then parses cleanly and is refused one step later for the fields it does not
-    have. Both are refusals and neither is a traceback, which is the whole of what
-    this test exists to prove. Pinning the message asserted the mechanism instead
-    of the guarantee, and the mechanism belongs to CPython. CI's matrix carries
-    3.14 today, so a regression here would be caught."""
+    either.** On Python 3.12 and 3.13 the reader refuses the depth itself; on 3.14
+    the scanner absorbs it, the file parses cleanly and is refused one step later
+    for the fields it does not have. Both are refusals and neither is a
+    traceback, which is the whole of what this test exists to prove. Pinning the
+    message would assert the mechanism instead of the guarantee, and the
+    mechanism belongs to CPython. CI's matrix carries 3.14, so a regression there
+    is caught."""
     tree = make_run(tmp_path)
     envelope = make_envelope()
     tree.publish_artifact(envelope)

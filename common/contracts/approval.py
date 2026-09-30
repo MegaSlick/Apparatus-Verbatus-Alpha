@@ -2,9 +2,10 @@
 
 An approval is a human act: the project lead approves an exclusion, declares the
 pipeline proven, or grants a permission. This module cannot enforce who signed —
-a file says what it says — but it makes an approval *checkable*: one shape, self-hashed and bound to the exact
-policy version it approved, so a claimed approval with no artifact is refused at
-the schema and an artifact edited afterwards fails its own hash.
+a file says what it says — but it makes an approval *checkable*: one shape,
+self-hashed and bound to the exact policy version it approved, so a claimed
+approval with no artifact is refused at the schema and an artifact edited
+afterwards fails its own hash.
 
 Naming the target's hash means a changed target needs a new approval; an approval
 that named only the action would keep approving after the target changed.
