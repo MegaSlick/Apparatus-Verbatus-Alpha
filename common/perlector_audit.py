@@ -92,8 +92,7 @@ EXAMINATION_STATES: Final = frozenset(
         EXAMINATION_INCOMPLETE,
     }
 )
-# Restated from `pipeline/4_perlector/truncation.py`, which a consumer stage
-# may not import.
+# The truncation instrument's verdicts; `common/truncation.py` classifies with them.
 TRUNCATION_COMPLETE: Final = "complete"
 TRUNCATION_TRUNCATED: Final = "truncated"
 TRUNCATION_UNKNOWN: Final = "unknown"
@@ -494,7 +493,7 @@ def truncation_classification(signals: dict[str, Any]) -> str:
     declared `stop` is `complete`; anything else is `unknown`, which holds. A
     length signal that was not judged is `None`: neutral, neither a clean nor a
     suspicious vote. Shared with
-    `pipeline/4_perlector/truncation.py::classify` so the verdict and every check
+    `common/truncation.py::classify` so the verdict and every check
     are one rule.
     """
     declared = signals["stop_reason_declared"]

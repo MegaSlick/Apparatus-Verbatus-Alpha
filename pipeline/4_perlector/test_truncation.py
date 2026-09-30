@@ -10,7 +10,7 @@ from pathlib import Path
 
 import protocol
 import pytest
-import truncation
+from common import truncation
 
 from common.contracts.errors import ContractError
 

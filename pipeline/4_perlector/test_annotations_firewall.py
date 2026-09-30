@@ -5,7 +5,7 @@ Spec_08's sharpest requirement: "the established text never contains
 testimony-supplied characters. No count of agreeing witnesses changes this."
 """
 
-import annotations
+from common import reading_annotations as annotations
 import pytest
 
 from common.contracts.errors import SchemaRefusal

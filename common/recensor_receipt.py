@@ -8,15 +8,19 @@ to own.
 
 v1 and v2 count the Designator's proposal acts (`proposal_seal_ref`,
 `expected_act_count`). v3 counts a page-read run's units
-(`common.stage.reading_acts`, `expected_unit_count`): it names every sealed
-page's `page-reading` (`page_reading_refs`, in page order), each item carries
-the unit's page disposition instead of a Designator outcome, and
+(`common.stage.reading_acts`, the classes in `COUNTED_READING_CLASSES`;
+`expected_unit_count`): it names every sealed page's `page-reading`
+(`page_reading_refs`, in page order), and each item carries the unit's page
+disposition instead of a Designator outcome. A unit its page reading held is
+completed at the Recensor only with the reason its review released it
+(`release_reason`), and a receipt holding any held unit is never `complete`.
 `continuation_links` names every page break an answer flags, so a break only
 one side says the text runs across keeps the run partial.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Final
 
 from common.contracts.canonical import is_plain_int, is_sha256, self_hash, verify_self_hash
@@ -37,6 +41,8 @@ RECENSOR_PARTITION_RECEIPT_SCOPE: Final = "proposal-acts-and-configured-witnesse
 RECENSOR_PARTITION_RECEIPT_SCHEMA_V3: Final = "recensor-partition-receipt.v3"
 RECENSOR_READING_RECEIPT_SCOPE: Final = "reading-acts-and-configured-witnesses"
 PAGE_DISPOSITIONS: Final = frozenset({"read", "held"})
+# `p<page ordinal>:<entry n>`, or the page row of a page with no entry.
+_READING_ACT_KEY: Final = re.compile(r"p[1-9][0-9]*:(?:[1-9][0-9]*|unread|blank)")
 _COMMON_FIELDS: Final = frozenset(
     {
         "schema",
@@ -105,9 +111,12 @@ def build_recensor_reading_receipt(
     """Build a v3 receipt over a page-read run's units, its summary derived from its items.
 
     `page_reading_refs` names every sealed page's `page-reading`, in page order;
-    each item is one `reading_acts` row as the Recensor reviewed it; each
-    continuation link is `{subject_id, link_ref, outcome}` for one flagged page
-    break.
+    each item is one counted `reading_acts` row as the Recensor reviewed it:
+    `{act_id, act_key, page_disposition, review_ref, review_outcome,
+    partition_class, coverage, release_reason}`, `release_reason` being the
+    reason the Recensor's review record gives for completing a unit its page
+    reading held, and `None` otherwise. Each continuation link is
+    `{subject_id, link_ref, outcome}` for one flagged page break.
     """
 
     checked_items = [dict(item) for item in items]
@@ -168,6 +177,14 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
         paths = [reference["relative_path"] for reference in references]
         if len(set(paths)) != len(paths):
             raise SchemaRefusal("Recensor partition receipt v3 names one page reading twice")
+        if len(record["items"]) < len(references):
+            raise SchemaRefusal(
+                f"Recensor partition receipt v3 counts {len(record['items'])} unit(s) over "
+                f"{len(references)} sealed page(s); every sealed page is at least one unit"
+            )
+        keys = [item.get("act_key") if isinstance(item, dict) else None for item in record["items"]]
+        if len(set(map(str, keys))) != len(keys):
+            raise SchemaRefusal("Recensor partition receipt v3 names one act key twice")
         links = record["continuation_links"]
         if not isinstance(links, list):
             raise SchemaRefusal("Recensor partition receipt v3 continuation_links is not a list")
@@ -275,18 +292,22 @@ def _validate_item(item: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA
     required = {
         "act_id",
         "act_key",
-        "page_disposition" if reading else "designator_outcome",
         "review_ref",
         "review_outcome",
         "partition_class",
         "coverage",
-    }
+    } | ({"page_disposition", "release_reason"} if reading else {"designator_outcome"})
     if not isinstance(item, dict) or set(item) != required:
         raise SchemaRefusal("Recensor partition receipt item has the wrong closed schema")
     if not isinstance(item["act_id"], str) or not item["act_id"]:
         raise SchemaRefusal("Recensor partition receipt item has no act identity")
     if not isinstance(item["act_key"], str) or not item["act_key"]:
         raise SchemaRefusal("Recensor partition receipt item has no act key")
+    if reading and not _READING_ACT_KEY.fullmatch(item["act_key"]):
+        raise SchemaRefusal(
+            f"Recensor partition receipt v3 item names act key {item['act_key']!r}, not "
+            "p<page>:<n>, p<page>:unread or p<page>:blank"
+        )
     if reading and item["page_disposition"] not in PAGE_DISPOSITIONS:
         raise SchemaRefusal(
             f"Recensor partition receipt item names page_disposition "
@@ -307,11 +328,33 @@ def _validate_item(item: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA
             f"derives {expected_class!r}"
         )
     _validate_reference(item["review_ref"], "review reference")
+    if reading:
+        _validate_release(item)
     _validate_coverage(
         item["coverage"],
         schema=schema,
         require_complete_granularity=schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
     )
+
+
+def _validate_release(item: dict[str, Any]) -> None:
+    """A held unit completed at review names why it was released; no other unit names one."""
+    released = (
+        item["page_disposition"] == "held"
+        and item["partition_class"] == OutcomeClass.COMPLETED.value
+    )
+    reason = item["release_reason"]
+    if released and not (isinstance(reason, str) and reason.strip()):
+        raise SchemaRefusal(
+            f"Recensor partition receipt v3 item {item['act_key']} was held by its page reading "
+            f"and is {item['review_outcome']} at the Recensor, but names no reason its review "
+            "released it"
+        )
+    if not released and reason is not None:
+        raise SchemaRefusal(
+            f"Recensor partition receipt v3 item {item['act_key']} names a release reason, but "
+            "only a held unit completed at review is released"
+        )
 
 
 def _validate_coverage(
@@ -494,10 +537,6 @@ EMPTY_DENOMINATOR_REASON: Final = (
     "reconcile; a run that marked nothing out on its pages cannot be complete "
     "(goal 2: a missed act is worse than a poorly read one)"
 )
-EMPTY_READING_DENOMINATOR_REASON: Final = (
-    "the receipt counts no unit at all, so it has no denominator to reconcile; every "
-    "sealed page of a page-read run is at least one unit, so an empty count is a lost page"
-)
 
 
 def _reasons(
@@ -510,12 +549,18 @@ def _reasons(
     # hide the silent failure this boundary exists to show.
     page_read = schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
     if not items:
-        return [EMPTY_READING_DENOMINATOR_REASON if page_read else EMPTY_DENOMINATOR_REASON]
+        return [EMPTY_DENOMINATOR_REASON]
     # A page-read run counts units: act entries, `other` entries and page rows.
     counted = "unit" if page_read else "act"
     reasons: list[str] = []
     for item in items:
         act_id = item["act_id"]
+        if page_read and item["page_disposition"] == "held":
+            released = item["release_reason"]
+            reasons.append(
+                f"unit {act_id} was held by its page reading"
+                + (f" and released at review: {released}" if released else "")
+            )
         if item["partition_class"] != OutcomeClass.COMPLETED.value:
             reasons.append(f"{counted} {act_id} is {item['partition_class']} at the Recensor")
         coverage = item["coverage"]

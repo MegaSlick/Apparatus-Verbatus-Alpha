@@ -34,6 +34,7 @@ from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES, classify, witness_coverage
 from common.contracts.stages import ATTESTATORES, EXEMPLAR, PERLECTOR, RECENSOR
 from common.page_accounting import NOT_APPLICABLE, PASS
+from common.page_path import PAGE_ACCOUNTING_KIND
 from common.page_testimonia import (
     PAGE_TESTIMONIUM_KIND,
     current_page_testimonia,
@@ -43,7 +44,8 @@ from common.page_testimonia import (
 )
 from common.recensor_receipt import build_recensor_reading_receipt
 from common.stage import (
-    PAGE_ACCOUNTING_KIND,
+    COUNTED_READING_CLASSES,
+    NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_CLASS,
     PAGE_BLANK_HOLD,
     exemplar_page_ids,
@@ -62,7 +64,7 @@ NO_TESTIMONIUM_OUTCOME: Final = "not-run"
 
 # A read page whose entries are all `other`: the reading says the page holds no
 # act, which this stage confirms or holds as it does a blank page.
-NO_ACT_HOLD: Final = "no-act-on-page-unconfirmed"
+NO_ACT_HOLD: Final = NO_ACT_ON_PAGE_HOLD
 RELEASABLE: Final = frozenset({PAGE_BLANK_HOLD, NO_ACT_HOLD})
 
 # The codes this stage adds to a unit's own, each with the sentence its reason uses.
@@ -137,28 +139,9 @@ CONTINUATION_LINK_FIELDS: Final = frozenset(
 # --- the units -----------------------------------------------------------------------
 
 
-def with_no_act_holds(acts: list[dict]) -> list[dict]:
-    """Every row, each entry of a page whose entries are all `other` holding `NO_ACT_HOLD`.
-
-    A row that already carries the code is unchanged, so rows whose
-    denominator derived it pass through as they are.
-    """
-    kinds: dict[int, set[str]] = {}
-    for act in acts:
-        if act["n"] is not None:
-            kinds.setdefault(act["page_ordinal"], set()).add(act["kind"])
-    no_act = {ordinal for ordinal, found in kinds.items() if found == {"other"}}
-    return [
-        {**act, "hold_codes": sorted({*act["hold_codes"], NO_ACT_HOLD})}
-        if act["n"] is not None and act["page_ordinal"] in no_act
-        else act
-        for act in acts
-    ]
-
-
 def counted_units(denominator: dict[str, Any]) -> list[dict]:
-    """The denominator's rows as this stage counts them."""
-    return with_no_act_holds(denominator["acts"])
+    """The denominator's counted rows: every class but a refused page's row."""
+    return [act for act in denominator["acts"] if act["class"] in COUNTED_READING_CLASSES]
 
 
 # --- the page witnesses ------------------------------------------------------------
@@ -915,6 +898,7 @@ def write_reading_receipt(context) -> None:
                 "act_id": act_id,
                 "act_key": act["act_key"],
                 "page_disposition": act["disposition"],
+                "release_reason": (payload.get("release") or {}).get("reason"),
                 "review_ref": context.artifact_ref(RECENSOR, "review", review["artifact_id"]),
                 "review_outcome": review["outcome"],
                 "partition_class": classify(RECENSOR, review["outcome"]).value,

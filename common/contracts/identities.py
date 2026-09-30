@@ -166,16 +166,16 @@ def page_id(origin: Any, transform: Any) -> str:
 
 
 ACT_CLASSES: Final = frozenset({"proposal", "residual", "page-fallback", "page-residual"})
-# The classes the Perlector's whole-page reading mints (`pipeline/4_perlector/
-# page_run.py`). An entry of a page reading is bound to that reading's attempt,
+# The classes the Perlector's whole-page reading mints (`common/page_path.py`,
+# `entry_plans`). An entry of a page reading is bound to that reading's attempt,
 # its number `n` in the answer and the union box of the ids it cites, so two
 # entries with one union box still get two identities. `reading-unplaced` is an
 # entry that cites no boxed id: its box is `None`.
 READING_ACT_CLASSES: Final = frozenset({"reading", "reading-unplaced"})
 # The two classes the page-read denominator (`common.stage.reading_acts`) mints
-# for a page with no act entry, each over the page rectangle, as `page-fallback`
+# for a page with no entry, each over the page rectangle, as `page-fallback`
 # is: `page-unread` for a page whose reading is not a parsed, valid answer, and
-# `page-blank` for a parsed, valid answer that names no act. Each stands for the
+# `page-blank` for a parsed, valid answer that names no entry. Each stands for the
 # page so it is never counted as zero acts; both are held.
 PAGE_READING_ROW_CLASSES: Final = frozenset({"page-unread", "page-blank"})
 _READING_BINDING_FIELDS: Final = frozenset({"page_reading", "n", "union_box_px"})
@@ -195,16 +195,23 @@ def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
     rectangle twice — the Designator at `_refuse_duplicate_proposal_bounds`
     and `hold_residual_act`.
 
-    Two of the four classes are minted over the *page rectangle* rather than
-    over a detected region, and they are separate classes precisely because
-    they say opposite things about the same rectangle. A ``page-fallback`` act
-    is proposed: the structure pass found nothing, so the whole page is cut and
-    sent downstream to be read. A ``page-residual`` act is held: the page's own
-    conservation reconciled more unclaimed components than the sealed bound
-    allows, so the page becomes one review item instead of that many. One
-    rectangle, one page, two irreconcilable dispositions — folding them into one
-    class would make a held page and a page on its way to the Perlector share an
-    identity.
+    The two page-reading classes (`READING_ACT_CLASSES`) bind a binding rather
+    than a rectangle: the page reading's attempt, the entry's number `n` and its
+    union box (`None` for `reading-unplaced`), so two entries sharing a union box
+    still get two identities.
+
+    Four classes are minted over the *page rectangle* rather than over a
+    detected region, each separate because each says something different about
+    the same rectangle. A ``page-fallback`` act is proposed: the structure pass
+    found nothing, so the whole page is cut and sent downstream to be read. A
+    ``page-residual`` act is held: the page's own conservation reconciled more
+    unclaimed components than the sealed bound allows, so the page becomes one
+    review item instead of that many. A ``page-unread`` row stands for a page
+    whose reading is not a parsed, valid answer, and a ``page-blank`` row for a
+    read answer that names no entry (`PAGE_READING_ROW_CLASSES`); both are held.
+    One rectangle, one page, dispositions that cannot be folded together —
+    sharing a class would make a held page and a page on its way to the
+    Perlector share an identity.
 
     Validation lives here rather than in `act_id` so `verify()` — which is
     handed bindings rebuilt from a payload a stage read back — refuses a shape

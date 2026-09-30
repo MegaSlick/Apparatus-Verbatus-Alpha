@@ -501,12 +501,12 @@ A run sealed with `reading_unit = "page"` is reviewed by `page_review.py`, chose
 path. The units are the denominator's `reading_acts` rows (`common/README.md`,
 "Page-read denominator"): an entry of a read page's answer (`reading` or
 `reading-unplaced`, `kind` `act` or `other`), a `page-unread` or `page-blank` page
-row. Their `hold_codes` and `disposition` are the denominator's verified verdict,
-page accounting included; this stage does not measure the accounting again. Every
-entry of a parsed page whose entries are all `other` holds
-`no-act-on-page-unconfirmed` (`page_review.with_no_act_holds` adds it to a row that
-lacks it). Every fact below is measured for every unit before the first review is
-published.
+row. A `page-refused` row names a page the Exemplar refused and is not a counted
+unit; it gets no review. Their `hold_codes` and `disposition` are the denominator's
+verified verdict, page accounting included, and every entry of a parsed page whose
+entries are all `other` holds `no-act-on-page-unconfirmed`; this stage does not
+measure the accounting again. Every fact below is measured for every unit before the
+first review is published.
 
 **The witness floor.** The configured page witnesses are the sealed roster's
 page-scoped chairs, read by `common.page_testimonia.declared_page_witness_chairs`,
@@ -607,7 +607,10 @@ dispatch.
 `recensor-partition-receipt.v3` from disk: the units re-derived through
 `reading_denominator` (`expected_unit_count` of them), `page_reading_refs` in page
 order, each item's `page_disposition`, review and coverage recomputed from the
-Testimonia. Each review's outcome is recomputed too: every row hold code is kept or
+Testimonia, and its `release_reason`: the review's `release.reason` for a unit its
+page reading held and this stage released, `null` otherwise. A unit its page reading
+held is a receipt reason even when released, so such a receipt is never
+`complete`. Each review's outcome is recomputed too: every row hold code is kept or
 named in a release, a release names exactly the row's releasable codes on a
 confirmed page, the witness-floor and continuation codes are what disk derives, and
 the unit is held exactly when a code remains. Every `continuation-link` is matched

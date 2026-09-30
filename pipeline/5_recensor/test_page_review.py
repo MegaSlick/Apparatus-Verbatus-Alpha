@@ -20,6 +20,8 @@ from typing import Any, Callable
 
 import pytest
 
+from common import page_path
+from common import stage as stage_module
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
@@ -147,20 +149,52 @@ def _drop_act_records(tree: Tree, ordinal: int) -> None:
                 path.unlink()
 
 
-def _forge_page_two(tree: Tree, reading: Callable[[dict], None], holds: list[str]) -> None:
-    """Replace page 2's answer, its accounting's holds, and drop its act records."""
+def _forge_page_two(tree: Tree, reading: Callable[[dict], None]) -> None:
+    """Replace page 2's answer, drop its act records, and measure its accounting again.
+
+    The accounting is measured as the denominator measures it, so the page
+    carries the accounting stage 4 would have written for the forged answer.
+    """
     _drop_act_records(tree, 2)
     _forge(tree, "page-reading", 2, reading)
+    rewitness_stage_boundary(RunTree(tree.root, RUN_ID), PERLECTOR)
+    context = tree.context()
+    index = stage_module._PageReadRecords(context)
+    [reading_record] = [r for r in tree.records("4_perlector", "page-reading") if _on(r, 2)]
+    payload = reading_record["payload"]
+    feed = context.tree.read_artifact_reference(
+        payload["feed_ref"],
+        stage=PERLECTOR,
+        kind="page-feed",
+        subject_id=reading_record["subject_id"],
+    )
+    plans = (
+        page_path.entry_plans(
+            payload["answer"],
+            feed["payload"],
+            page_id=reading_record["subject_id"],
+            stop_reason=payload["stop_reason"],
+            truncation_policy=index.truncation_policy,
+        )
+        if payload["disposition"] == "read"
+        else []
+    )
+    measured, inputs = stage_module._measure_page_accounting(
+        context, index, "test", feed, payload["feed_ref"], payload, index.ref(reading_record), plans
+    )
     _forge(
         tree,
         "page-accounting",
         2,
-        lambda record: (
-            record.update(outcome="held" if holds else "read"),
-            record["payload"].update(holds=holds),
+        lambda record: record.update(
+            payload=measured, inputs=inputs, outcome="held" if measured["holds"] else "read"
         ),
     )
     rewitness_stage_boundary(RunTree(tree.root, RUN_ID), PERLECTOR)
+
+
+def _on(record: dict, ordinal: int) -> bool:
+    return record["payload"]["page_ordinal"] == ordinal
 
 
 # --- accepted -----------------------------------------------------------------------
@@ -287,7 +321,8 @@ def test_the_page_review_scenario_holds_the_unplaced_entry_naming_every_reason(r
     receipt = tree.receipt()
     assert receipt["recensor_status"] == "partial"
     assert receipt["reasons"] == [
-        f"unit {reviews['p2:1']['subject_id']} is unresolved at the Recensor"
+        f"unit {reviews['p2:1']['subject_id']} was held by its page reading",
+        f"unit {reviews['p2:1']['subject_id']} is unresolved at the Recensor",
     ]
 
 
@@ -315,7 +350,7 @@ def test_an_unread_page_is_one_held_unit_and_its_break_is_one_sided(happy, tmp_p
             disposition="held",
         )
 
-    _forge_page_two(tree, malformed, ["page-answer-incomplete"])
+    _forge_page_two(tree, malformed)
     assert tree.recensor().returncode == 3
     reviews = tree.reviews()
     assert sorted(reviews) == ["p1:1", "p1:2", "p2:unread"]
@@ -372,12 +407,14 @@ def test_a_page_read_as_blank_with_ink_and_witness_text_is_not_confirmed(happy, 
             "set_aside": [{"id": identifier, "reason": "blank paper"} for identifier in ids],
         }
 
-    _forge_page_two(tree, blank, [])
+    _forge_page_two(tree, blank)
     assert tree.recensor().returncode == 3
     review = tree.reviews()["p2:blank"]
     payload = review["payload"]
     assert review["outcome"] == "held-for-review" and payload["unit_class"] == "page-blank"
-    assert payload["hold_codes"] == [PAGE_BLANK_HOLD, "residual-ink"]
+    rows = {row["act_key"]: row for row in reading_acts(tree.context())}
+    assert PAGE_BLANK_HOLD in rows["p2:blank"]["hold_codes"]
+    assert payload["hold_codes"] == sorted({*rows["p2:blank"]["hold_codes"], "residual-ink"})
     assert payload["release"] is None
     confirmation = payload["confirmation"]
     assert confirmation["confirms"] == "page-blank" and confirmation["confirmed"] is False
@@ -766,22 +803,14 @@ def test_a_page_of_only_other_readings_stays_held_on_any_rule_not_passing(rule, 
     assert outcome == "held-for-review" and payload["hold_codes"] == [page_review.NO_ACT_HOLD]
 
 
-def test_every_entry_of_a_page_naming_no_act_is_held_until_confirmed():
+def test_a_refused_pages_row_is_not_a_counted_unit():
     rows = [
-        _row(act_id="a1", n=1, kind="other"),
-        _row(act_id="a2", n=2, kind="other", hold_codes=[page_review.NO_ACT_HOLD]),
-        _row(act_id="b1", act_key="p2:1", page_ordinal=2, n=1),
-        _row(act_id="b2", act_key="p2:2", page_ordinal=2, n=2, kind="other"),
-        _row(act_id="c", act_key="p3:blank", page_ordinal=3, n=None, **{"class": "page-blank"}),
+        _row(act_id="a1"),
+        _row(
+            act_id=None, act_key="p2:refused", page_ordinal=2, n=None, **{"class": "page-refused"}
+        ),
     ]
-    held = {row["act_id"]: row["hold_codes"] for row in page_review.with_no_act_holds(rows)}
-    assert held == {
-        "a1": [page_review.NO_ACT_HOLD],
-        "a2": [page_review.NO_ACT_HOLD],
-        "b1": [],
-        "b2": [],
-        "c": [],
-    }
+    assert [row["act_id"] for row in page_review.counted_units({"acts": rows})] == ["a1"]
 
 
 def test_a_held_row_is_never_released_by_this_stage():

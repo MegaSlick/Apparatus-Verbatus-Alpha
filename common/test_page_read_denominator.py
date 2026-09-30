@@ -4,7 +4,9 @@ The trees are the synthetic fixture's `happy` and `page-review` scenarios read w
 `reading_unit = "page"`: happy places and reads every entry; page-review leaves page
 2's entry unplaced, so the page accounting holds it. Each forgery rewrites one
 Perlector record and rewitnesses the stage's boundary, so the only thing left
-to catch it is the denominator's own recomputation.
+to catch it is the denominator's own recomputation. A forgery that changes what
+the page accounting measures has its accounting measured again by the
+denominator's own measurement (`_reaccount`), never written by hand.
 """
 
 from __future__ import annotations
@@ -17,13 +19,24 @@ from typing import Any, Callable
 
 import pytest
 
-from common.contracts.canonical import canonical_bytes, self_hash
+from common import page_path
+from common import stage as stage_module
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ContractError, FatalAccounting, IdentityRefusal
 from common.contracts.identities import act_id as derive_act_id
-from common.contracts.stages import PERLECTOR, RECENSOR
+from common.contracts.identities import artifact_id, attempt_id
+from common.contracts.stages import (
+    ATTESTATORES,
+    DESIGNATOR,
+    EXEMPLAR,
+    INK_MAP,
+    PERLECTOR,
+    RECENSOR,
+)
 from common.exemplar_boundary import verify_reading_region_lineage
 from common.runtree.store import RunTree
 from common.stage import (
+    COUNTED_READING_CLASSES,
     PAGE_READING_ROW_FIELDS,
     READING_ACT_FIELDS,
     open_context,
@@ -43,17 +56,23 @@ ROOT = Path(__file__).resolve().parents[1]
 RUN_ID = "r"
 
 
-def _page_protocol(directory: Path) -> Path:
+def _protocol(directory: Path, unit: str, lines: dict[str, str]) -> Path:
     text = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
     assert 'reading_unit = "act"' in text
+    text = text.replace('reading_unit = "act"', f'reading_unit = "{unit}"')
+    for line, replacement in lines.items():
+        assert text.count(line) == 1
+        text = text.replace(line, replacement)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "perlector_protocol.toml"
-    path.write_text(text.replace('reading_unit = "act"', 'reading_unit = "page"'), "utf-8")
+    path.write_text(text, "utf-8")
     return path
 
 
-def _page_tree(base: Path, scenario: str) -> tuple[Path, Path, str]:
-    protocol = _page_protocol(base / "config")
+def _tree(
+    base: Path, scenario: str, unit: str = "page", lines: dict[str, str] | None = None
+) -> tuple[Path, Path, str]:
+    protocol = _protocol(base / "config", unit, lines or {})
     root = base / "runs"
     for program in programs_through("perlector"):
         result = run_stage(root, RUN_ID, scenario, program, perlector_protocol_config=protocol)
@@ -63,12 +82,17 @@ def _page_tree(base: Path, scenario: str) -> tuple[Path, Path, str]:
 
 @pytest.fixture(scope="module")
 def happy_tree(tmp_path_factory) -> tuple[Path, Path, str]:
-    return _page_tree(tmp_path_factory.mktemp("happy"), "happy")
+    return _tree(tmp_path_factory.mktemp("happy"), "happy")
 
 
 @pytest.fixture(scope="module")
 def review_tree(tmp_path_factory) -> tuple[Path, Path, str]:
-    return _page_tree(tmp_path_factory.mktemp("page-review"), "page-review")
+    return _tree(tmp_path_factory.mktemp("page-review"), "page-review")
+
+
+@pytest.fixture(scope="module")
+def act_tree(tmp_path_factory) -> tuple[Path, Path, str]:
+    return _tree(tmp_path_factory.mktemp("act"), "happy", unit="act")
 
 
 def _copy(tree: tuple[Path, Path, str], tmp_path: Path) -> tuple[Path, Path, str]:
@@ -106,7 +130,7 @@ def _one(root: Path, kind: str, ordinal: int, n: int | None = None):
     [found] = [
         item
         for item in _records(root, kind)
-        if item[1]["payload"]["page_ordinal"] == ordinal
+        if item[1]["payload"].get("page_ordinal") == ordinal
         and (n is None or item[1]["payload"].get("n") == n)
     ]
     return found
@@ -119,12 +143,16 @@ def _write(path: Path, record: dict[str, Any]) -> None:
     path.write_bytes(canonical_bytes(record))
 
 
+def _rewitness(root: Path) -> None:
+    rewitness_stage_boundary(RunTree(root, RUN_ID), PERLECTOR)
+
+
 def _forge(root: Path, kind: str, ordinal: int, n: int | None, change: Callable) -> None:
     path, record = _one(root, kind, ordinal, n)
     forged = copy.deepcopy(record)
     change(forged)
     _write(path, forged)
-    rewitness_stage_boundary(RunTree(root, RUN_ID), PERLECTOR)
+    _rewitness(root)
 
 
 def _drop_act_records(root: Path, ordinal: int) -> None:
@@ -132,6 +160,78 @@ def _drop_act_records(root: Path, ordinal: int) -> None:
         for path, record in _records(root, kind):
             if record["payload"]["page_ordinal"] == ordinal:
                 path.unlink()
+
+
+def _reaccount(tree: tuple[Path, Path, str], ordinal: int) -> list[str]:
+    """Measure page `ordinal`'s accounting again, as the denominator does, and carry it on.
+
+    The page's act records take the new holds, as stage 4 would have written
+    them after measuring the forged reading. Returns the page's holds.
+    """
+    root = tree[0]
+    _rewitness(root)
+    context = _context(tree)
+    index = stage_module._PageReadRecords(context)
+    _path, reading = _one(root, "page-reading", ordinal)
+    payload = reading["payload"]
+    feed = context.tree.read_artifact_reference(
+        payload["feed_ref"], stage=PERLECTOR, kind="page-feed", subject_id=reading["subject_id"]
+    )
+    plans = (
+        page_path.entry_plans(
+            payload["answer"],
+            feed["payload"],
+            page_id=reading["subject_id"],
+            stop_reason=payload["stop_reason"],
+            truncation_policy=index.truncation_policy,
+        )
+        if payload["disposition"] == "read"
+        else []
+    )
+    measured, inputs = stage_module._measure_page_accounting(
+        context, index, "test", feed, payload["feed_ref"], payload, index.ref(reading), plans
+    )
+    holds = measured["holds"]
+    path, accounting = _one(root, "page-accounting", ordinal)
+    accounting.update(payload=measured, inputs=inputs, outcome="held" if holds else "read")
+    _write(path, accounting)
+    for kind in ("act-region", "perlectio"):
+        for path, record in _records(root, kind):
+            if record["payload"]["page_ordinal"] == ordinal:
+                record["payload"]["page_holds"] = holds
+                own = record["payload"]["holds"]
+                record["outcome"] = "held" if own or holds else "read"
+                _write(path, record)
+    _rewitness(root)
+    return holds
+
+
+def _republish(root: Path, path: Path, record: dict[str, Any]) -> None:
+    """Write `record` under its own artifact id in place of `path`, every reference following."""
+    moved = path.with_name(f"{record['artifact_id']}.json")
+    old = str(path.relative_to(root / RUN_ID))
+    _write(moved, record)
+    if moved != path:
+        path.unlink()
+        for other in (root / RUN_ID / "4_perlector" / "artifacts").glob("*/*.json"):
+            text = other.read_text(encoding="utf-8")
+            if old in text:
+                new = str(moved.relative_to(root / RUN_ID))
+                _write(other, json.loads(text.replace(old, new)))
+    _rewitness(root)
+
+
+def _second_attempt(root: Path, ordinal: int, keep: bool) -> None:
+    """Publish page `ordinal`'s reading again as attempt `page-read:2`, beside or instead."""
+    path, record = _one(root, "page-reading", ordinal)
+    page = record["subject_id"]
+    record["attempt_id"] = attempt_id(page, "page-read", 2)
+    record["artifact_id"] = artifact_id(PERLECTOR, "page-reading", page, record["attempt_id"])
+    if keep:
+        _write(path.with_name(f"{record['artifact_id']}.json"), record)
+        _rewitness(root)
+    else:
+        _republish(root, path, record)
 
 
 # --- the rows ---------------------------------------------------------------------
@@ -151,7 +251,7 @@ def test_a_happy_page_tree_counts_every_entry_it_read(happy_tree):
             "read",
             "stop",
         )
-    assert [pages[1]["act_count"], pages[2]["act_count"]] == [2, 1]
+    assert [pages[1]["entry_count"], pages[2]["entry_count"]] == [2, 1]
     assert [act["act_key"] for act in acts] == ["p1:1", "p1:2", "p2:1"]
     root = happy_tree[0]
     for act in acts:
@@ -174,7 +274,25 @@ def test_a_happy_page_tree_counts_every_entry_it_read(happy_tree):
     assert flags == [(False, False), (False, True), (True, False)]
 
 
-def test_an_unplaced_entry_is_counted_and_held_by_the_page_accounting(review_tree):
+def test_one_context_is_verified_once_however_often_it_is_asked(happy_tree, monkeypatch):
+    calls = []
+    verify = stage_module._verify_page_read_denominator
+
+    def counted(context):
+        calls.append(context)
+        return verify(context)
+
+    monkeypatch.setattr(stage_module, "_verify_page_read_denominator", counted)
+    context = _context(happy_tree)
+    first = reading_acts(context)
+    first[0]["hold_codes"].append("edited by a caller")
+    assert page_readings(context) and reading_acts(context)[0]["hold_codes"] == []
+    assert len(calls) == 1
+    reading_denominator(_context(happy_tree))
+    assert len(calls) == 2
+
+
+def test_an_unplaced_entry_is_counted_and_held_by_the_recomputed_accounting(review_tree):
     acts = reading_acts(_context(review_tree))
     assert [act["act_key"] for act in acts] == ["p1:1", "p1:2", "p2:1"]
     unplaced = acts[2]
@@ -187,6 +305,37 @@ def test_an_unplaced_entry_is_counted_and_held_by_the_page_accounting(review_tre
         "unread-line",
     ]
     assert {act["disposition"] for act in acts[:2]} == {"read"}
+
+
+def test_a_page_read_without_its_image_holds_every_entry_no_autopsia(tmp_path):
+    tree = _tree(tmp_path, "happy", lines={'page_image = "legible"': 'page_image = "off"'})
+    acts = reading_acts(_context(tree))
+    assert acts and all("no-autopsia" in act["hold_codes"] for act in acts)
+    # The region's own holds are recomputed from the feed: dropping one is refused.
+    _forge(
+        tree[0],
+        "act-region",
+        1,
+        1,
+        lambda record: record["payload"].update(
+            holds=[code for code in record["payload"]["holds"] if code != "no-autopsia"]
+        ),
+    )
+    with pytest.raises(FatalAccounting, match=r"act-region does not match .*\(holds\)"):
+        reading_acts(_context(tree))
+
+
+def test_a_hidden_witness_is_measured_again_as_stage_4_measured_it(tmp_path):
+    tree = _tree(tmp_path, "happy", lines={'witnesses = "all"': 'witnesses = ["attestator_1"]'})
+    root = tree[0]
+    _path, feed = _one(root, "page-feed", 1)
+    assert [row["witness_label"] for row in feed["payload"]["witnesses"]] == ["attestator_1"]
+    _path, accounting = _one(root, "page-accounting", 1)
+    assert {unit["id"][0] for unit in accounting["payload"]["units"]} == {"A", "B"}
+    # The fixture's answer cites the hidden witness's ids, which this feed does not define.
+    acts = reading_acts(_context(tree))
+    assert {act["class"] for act in acts} == {"page-unread"}
+    assert all("unknown-id" in act["hold_codes"] for act in acts)
 
 
 def test_a_page_whose_answer_was_not_read_is_one_held_page_unread_row(happy_tree, tmp_path):
@@ -204,19 +353,11 @@ def test_a_page_whose_answer_was_not_read_is_one_held_page_unread_row(happy_tree
         )
 
     _forge(root, "page-reading", 2, None, malformed)
-    _forge(
-        root,
-        "page-accounting",
-        2,
-        None,
-        lambda record: (
-            record.update(outcome="held"),
-            record["payload"].update(holds=["page-answer-incomplete"]),
-        ),
-    )
+    page_holds = _reaccount(tree, 2)
+    assert "page-answer-incomplete" in page_holds
     context = _context(tree)
     pages = page_readings(context)
-    assert (pages[2]["parse_state"], pages[2]["disposition"], pages[2]["act_count"]) == (
+    assert (pages[2]["parse_state"], pages[2]["disposition"], pages[2]["entry_count"]) == (
         "malformed",
         "held",
         None,
@@ -236,7 +377,7 @@ def test_a_page_whose_answer_was_not_read_is_one_held_page_unread_row(happy_tree
         "reading_ref": pages[2]["reading_ref"],
         "perlectio_ref": None,
         "accounting_ref": pages[2]["accounting_ref"],
-        "hold_codes": ["json-invalid", "page-answer-incomplete", "page-unread"],
+        "hold_codes": sorted({"json-invalid", "page-unread", *page_holds}),
         "continues_from_previous_page": None,
         "continues_to_next_page": None,
     }
@@ -250,20 +391,191 @@ def test_a_read_answer_naming_no_act_is_one_held_page_blank_row(happy_tree, tmp_
     ids = [unit["id"] for witness in feed["payload"]["witnesses"] for unit in witness["units"]]
     ids += [line["id"] for line in feed["payload"]["surya"]["lines"]]
     ids += [block["id"] for block in feed["payload"]["surya"]["blocks"]]
-
-    def blank(record):
-        record["payload"]["answer"] = {
-            "acts": [],
-            "set_aside": [{"id": identifier, "reason": "blank paper"} for identifier in ids],
-        }
-
-    _forge(root, "page-reading", 2, None, blank)
+    answer = {
+        "acts": [],
+        "set_aside": [{"id": identifier, "reason": "blank paper"} for identifier in ids],
+    }
+    _forge(root, "page-reading", 2, None, lambda record: record["payload"].update(answer=answer))
+    page_holds = _reaccount(tree, 2)
     context = _context(tree)
-    assert page_readings(context)[2]["act_count"] == 0
+    assert page_readings(context)[2]["entry_count"] == 0
     row = reading_acts(context)[-1]
     assert (row["class"], row["act_key"], row["disposition"]) == ("page-blank", "p2:blank", "held")
-    assert row["hold_codes"] == ["page-blank-unconfirmed"]
+    assert row["hold_codes"] == sorted({"page-blank-unconfirmed", *page_holds})
     assert row["region_ref"] is None and row["perlectio_ref"] is None
+
+
+def test_a_read_page_naming_only_other_entries_is_held_until_confirmed(happy_tree, tmp_path):
+    tree = _copy(happy_tree, tmp_path)
+    root = tree[0]
+
+    def other(record):
+        payload = record["payload"]
+        for entry in payload["answer"]["acts"] if "answer" in payload else [payload]:
+            entry["kind"] = "other"
+
+    for kind in ("page-reading", "act-region", "perlectio"):
+        _forge(root, kind, 2, None, other)
+    _reaccount(tree, 2)
+    context = _context(tree)
+    assert page_readings(context)[2]["entry_count"] == 1
+    acts = reading_acts(context)
+    rows = [act for act in acts if act["page_ordinal"] == 2]
+    assert [(row["kind"], row["disposition"]) for row in rows] == [("other", "held")]
+    assert "no-act-on-page-unconfirmed" in rows[0]["hold_codes"]
+    # A page with an act entry is not held for it.
+    assert all(
+        "no-act-on-page-unconfirmed" not in act["hold_codes"]
+        for act in acts
+        if act["page_ordinal"] == 1
+    )
+
+
+def test_a_reading_with_no_stop_reason_is_held_whole_by_that_tail(happy_tree, tmp_path):
+    tree = _copy(happy_tree, tmp_path)
+    root = tree[0]
+    _drop_act_records(root, 2)
+    tail = page_path.answer_problems(
+        _one(root, "page-reading", 2)[1]["payload"]["answer"],
+        _one(root, "page-feed", 2)[1]["payload"],
+        None,
+    )
+    assert [problem["code"] for problem in tail] == ["no-stop-reason"]
+
+    def no_stop(record):
+        record["outcome"] = "held"
+        record["payload"].update(
+            stop_reason=None, finish_reason=None, problems=tail, disposition="held"
+        )
+
+    _forge(root, "page-reading", 2, None, no_stop)
+    _reaccount(tree, 2)
+    row = reading_acts(_context(tree))[-1]
+    assert row["class"] == "page-unread" and "no-stop-reason" in row["hold_codes"]
+    # The tail is recomputed: a reading that drops it and calls itself read is refused.
+    _forge(
+        root,
+        "page-reading",
+        2,
+        None,
+        lambda record: (
+            record.update(outcome="read"),
+            record["payload"].update(problems=[], disposition="read"),
+        ),
+    )
+    with pytest.raises(FatalAccounting, match="records problems other than"):
+        reading_acts(_context(tree))
+
+
+# --- the page the Exemplar refused -------------------------------------------------
+
+
+def _refuse_page_two(tree: tuple[Path, Path, str]) -> str:
+    """Make page 2 one the Exemplar refused, with the not-run reading stage 4 writes for it."""
+    root = tree[0]
+    run = RunTree(root, RUN_ID)
+    page_id = _one(root, "page-reading", 2)[1]["subject_id"]
+    relative = run.artifact_path(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    exemplar = root / RUN_ID / relative
+    record = json.loads(exemplar.read_text(encoding="utf-8"))
+    record["outcome"] = "refused"
+    _write(exemplar, record)
+    for stage in (EXEMPLAR, INK_MAP, DESIGNATOR, ATTESTATORES):
+        rewitness_stage_boundary(run, stage)
+    _drop_act_records(root, 2)
+    for kind in ("page-accounting", "page-feed"):
+        _one(root, kind, 2)[0].unlink()
+    path, reading = _one(root, "page-reading", 2)
+    reading["outcome"] = "held"
+    reading["inputs"] = [{"relative_path": relative, "sha256": digest_bytes(exemplar.read_bytes())}]
+    reading["payload"].update(
+        feed_ref=None,
+        request_digest=None,
+        finish_reason=None,
+        stop_reason=None,
+        parse_state="not-run",
+        answer=None,
+        problems=[{"code": "page-not-sealed", "detail": "the Exemplar refused this page"}],
+        disposition="held",
+    )
+    _write(path, reading)
+    rebind_stage_seal_artifact(run, PERLECTOR)
+    return page_id
+
+
+def test_a_page_the_exemplar_refused_is_a_row_that_is_not_counted(happy_tree, tmp_path):
+    tree = _copy(happy_tree, tmp_path)
+    page_id = _refuse_page_two(tree)
+    denominator = reading_denominator(_context(tree))
+    assert sorted(denominator["pages"]) == [1]
+    row = denominator["acts"][-1]
+    assert set(row) == READING_ACT_FIELDS
+    assert (row["class"], row["act_key"], row["disposition"]) == (
+        "page-refused",
+        "p2:refused",
+        "refused",
+    )
+    assert (row["page_id"], row["act_id"], row["kind"], row["hold_codes"]) == (
+        page_id,
+        None,
+        None,
+        [],
+    )
+    assert row["reading_ref"]["relative_path"].startswith("4_perlector/artifacts/page-reading/")
+    assert "page-refused" not in COUNTED_READING_CLASSES
+    assert [act["class"] for act in denominator["acts"][:-1]] == ["reading", "reading"]
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    [
+        (lambda r: r["payload"].update(schema="perlector-page-reading.v0"), "not the not-run"),
+        (lambda r: r["payload"].update(parse_state="parsed"), "not the not-run"),
+        (
+            lambda r: r["payload"]["problems"].append({"code": "chair-absent", "detail": "x"}),
+            "not the not-run",
+        ),
+        (lambda r: r["payload"]["problems"][0].update(code=7), "records a problem with no code"),
+    ],
+    ids=["schema", "parse-state", "problems", "code-type"],
+)
+def test_a_refused_page_s_reading_that_is_not_its_not_run_reading_is_refused(
+    happy_tree, tmp_path, change, refusal
+):
+    tree = _copy(happy_tree, tmp_path)
+    _refuse_page_two(tree)
+    _forge(tree[0], "page-reading", 2, None, change)
+    with pytest.raises(FatalAccounting, match=refusal):
+        reading_acts(_context(tree))
+
+
+@pytest.mark.parametrize("keep", [False, True], ids=["page-read-2-alone", "beside-page-read-1"])
+def test_a_refused_page_s_second_reading_attempt_is_refused(happy_tree, tmp_path, keep):
+    tree = _copy(happy_tree, tmp_path)
+    _refuse_page_two(tree)
+    _second_attempt(tree[0], 2, keep=keep)
+    with pytest.raises(FatalAccounting, match="has 2 records|not the page path's attempt"):
+        reading_acts(_context(tree))
+
+
+def test_a_refused_page_with_an_act_record_is_refused(happy_tree, tmp_path):
+    tree = _copy(happy_tree, tmp_path)
+    root = tree[0]
+    region, record = _one(root, "act-region", 2, 1)
+    _refuse_page_two(tree)
+    # The page's feed, reading and accounting it was cut from are gone with the page.
+    record["inputs"] = []
+    _write(region, record)
+    rebind_stage_seal_artifact(RunTree(root, RUN_ID), PERLECTOR)
+    with pytest.raises(FatalAccounting, match="no sealed pixels, yet the Perlector published"):
+        reading_acts(_context(tree))
+
+
+def test_every_submitted_page_must_have_an_exemplar_page(happy_tree, monkeypatch):
+    pages = stage_module.exemplar_page_ids
+    monkeypatch.setattr(stage_module, "exemplar_page_ids", lambda context: {1: pages(context)[1]})
+    with pytest.raises(FatalAccounting, match=r"ordinal\(s\) \[2\] have no Exemplar page"):
+        reading_acts(_context(happy_tree))
 
 
 # --- refusals ---------------------------------------------------------------------
@@ -278,6 +590,47 @@ def test_a_sealed_page_with_no_page_reading_is_refused_never_zero(happy_tree, tm
         path.unlink()
     rebind_stage_seal_artifact(RunTree(root, RUN_ID), PERLECTOR)
     with pytest.raises(FatalAccounting, match="has no page reading"):
+        reading_acts(_context(tree))
+
+
+@pytest.mark.parametrize("keep", [False, True], ids=["page-read-2-alone", "beside-page-read-1"])
+def test_a_second_page_reading_attempt_is_refused(happy_tree, tmp_path, keep):
+    tree = _copy(happy_tree, tmp_path)
+    _second_attempt(tree[0], 1, keep=keep)
+    match = "has 2 records" if keep else "is attempt .*, not the page path's attempt"
+    with pytest.raises(FatalAccounting, match=match):
+        reading_acts(_context(tree))
+
+
+def test_a_reading_the_engine_cut_at_its_cap_cannot_be_parsed(happy_tree, tmp_path):
+    tree = _copy(happy_tree, tmp_path)
+    _forge(
+        tree[0],
+        "page-reading",
+        1,
+        None,
+        lambda record: record["payload"].update(stop_reason="length", finish_reason="length"),
+    )
+    with pytest.raises(FatalAccounting, match="cut at the output cap"):
+        reading_acts(_context(tree))
+
+
+def test_a_problem_without_a_string_code_is_refused(happy_tree, tmp_path):
+    tree = _copy(happy_tree, tmp_path)
+    root = tree[0]
+    _drop_act_records(root, 2)
+
+    def malformed(record):
+        record["outcome"] = "held"
+        record["payload"].update(
+            parse_state="malformed",
+            answer=None,
+            problems=[{"code": ["json-invalid"], "detail": "x"}],
+            disposition="held",
+        )
+
+    _forge(root, "page-reading", 2, None, malformed)
+    with pytest.raises(FatalAccounting, match="records a problem with no code"):
         reading_acts(_context(tree))
 
 
@@ -307,6 +660,67 @@ def test_a_forged_act_region_is_refused(happy_tree, review_tree, tmp_path, chang
         assert field in str(refusal.value)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("holds", ["reading-incomplete"]),
+        ("text", "SYNTHETIC ACT ONE alpha beta"),
+        ("uncertainty_assessment", None),
+        ("autopsia", False),
+        ("truncation", None),
+        ("engine_call", {"forged": True}),
+        ("provenance", {"forged": True}),
+        ("continues_to_next_page", True),
+    ],
+)
+def test_a_perlectio_departing_from_its_answer_entry_is_refused(happy_tree, tmp_path, field, value):
+    tree = _copy(happy_tree, tmp_path)
+    _forge(tree[0], "perlectio", 1, 1, lambda record: record["payload"].update({field: value}))
+    with pytest.raises(FatalAccounting, match=rf"Perlectio does not match .*{field}"):
+        reading_acts(_context(tree))
+
+
+@pytest.mark.parametrize(
+    ("kind", "n"),
+    [("page-reading", None), ("page-accounting", None), ("act-region", 1), ("perlectio", 1)],
+)
+def test_a_record_of_another_configuration_is_refused(happy_tree, tmp_path, kind, n):
+    # The run tree binds every read to this run's configuration, the denominator's too.
+    tree = _copy(happy_tree, tmp_path)
+    with pytest.raises(ContractError, match="produced under configuration '0000"):
+        _forge(tree[0], kind, 1, n, lambda record: record.update(config_digest="0" * 64))
+        reading_acts(_context(tree))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda record, _other: record["payload"].update(holds=[]),
+        lambda record, _other: record["payload"].update(holds=["no-such-hold"]),
+        lambda record, _other: record.update(outcome="read"),
+        lambda record, _other: record["inputs"].pop(),
+        lambda record, other: record["payload"].update(feed_ref=other),
+    ],
+    ids=["no-holds", "invented-hold", "outcome", "input-dropped", "other-feed"],
+)
+def test_a_page_accounting_its_inputs_do_not_measure_is_refused(review_tree, tmp_path, change):
+    tree = _copy(review_tree, tmp_path)
+    root = tree[0]
+    other = _one(root, "page-reading", 1)[1]["payload"]["feed_ref"]
+    _forge(root, "page-accounting", 2, None, lambda record: change(record, other))
+    with pytest.raises(FatalAccounting, match="page accounting is not what its sealed inputs"):
+        reading_acts(_context(tree))
+
+
+def test_a_reading_naming_another_feed_than_its_inputs_is_refused(happy_tree, tmp_path):
+    tree = _copy(happy_tree, tmp_path)
+    root = tree[0]
+    other = _one(root, "page-reading", 2)[1]["payload"]["feed_ref"]
+    _forge(root, "page-reading", 1, None, lambda record: record["payload"].update(feed_ref=other))
+    with pytest.raises(FatalAccounting, match="names no feed among its inputs"):
+        reading_acts(_context(tree))
+
+
 def test_a_reading_that_calls_a_valid_answer_held_is_refused(happy_tree, tmp_path):
     tree = _copy(happy_tree, tmp_path)
 
@@ -319,17 +733,59 @@ def test_a_reading_that_calls_a_valid_answer_held_is_refused(happy_tree, tmp_pat
         reading_acts(_context(tree))
 
 
-def test_a_perlectio_whose_continuation_departs_from_the_answer_is_refused(happy_tree, tmp_path):
+@pytest.mark.parametrize("kind", ["act-region", "perlectio"])
+def test_a_missing_act_record_is_refused(happy_tree, tmp_path, kind):
     tree = _copy(happy_tree, tmp_path)
-    _forge(
-        tree[0],
-        "perlectio",
-        1,
-        2,
-        lambda record: record["payload"].update(continues_to_next_page=False),
-    )
-    with pytest.raises(FatalAccounting, match="continues_to_next_page"):
+    # A Perlectio names its act-region, so a missing region takes its Perlectio with it.
+    for dropped in sorted({"perlectio", kind}):
+        _one(tree[0], dropped, 1, 2)[0].unlink()
+    rebind_stage_seal_artifact(RunTree(tree[0], RUN_ID), PERLECTOR)
+    with pytest.raises(FatalAccounting, match=f"{kind}|Perlectio is missing"):
         reading_acts(_context(tree))
+
+
+@pytest.mark.parametrize("kind", ["act-region", "perlectio"])
+def test_an_act_record_beyond_the_answer_s_entries_is_refused(happy_tree, tmp_path, kind):
+    tree = _copy(happy_tree, tmp_path)
+    root = tree[0]
+    path, record = _one(root, kind, 1, 2)
+    record["subject_id"] = "act_" + "f" * 16
+    record["artifact_id"] = artifact_id(PERLECTOR, kind, record["subject_id"], record["attempt_id"])
+    _write(path.with_name(f"{record['artifact_id']}.json"), record)
+    rebind_stage_seal_artifact(RunTree(root, RUN_ID), PERLECTOR)
+    with pytest.raises(FatalAccounting, match=f"{kind} records do not match its answer's 2"):
+        reading_acts(_context(tree))
+
+
+@pytest.mark.parametrize("kind", ["act-region", "perlectio", "page-accounting"])
+def test_a_record_naming_a_page_the_exemplar_never_published_is_refused(happy_tree, tmp_path, kind):
+    tree = _copy(happy_tree, tmp_path)
+    stray = "pg_" + "f" * 16
+
+    def elsewhere(record):
+        if kind == "page-accounting":
+            record["subject_id"] = stray
+        else:
+            record["payload"]["page_id"] = stray
+
+    path, record = _one(tree[0], kind, 2, None if kind == "page-accounting" else 1)
+    elsewhere(record)
+    record["artifact_id"] = artifact_id(PERLECTOR, kind, record["subject_id"], record["attempt_id"])
+    _republish(tree[0], path, record)
+    with pytest.raises(FatalAccounting, match="which this run's Exemplar never published"):
+        reading_acts(_context(tree))
+
+
+def test_two_pages_counting_one_act_identity_is_refused(happy_tree, monkeypatch):
+    verify = stage_module._verify_page_reading
+
+    def same_identity(context, index, ordinal, page_id):
+        row, acts = verify(context, index, ordinal, page_id)
+        return row, [{**act, "act_id": "act_shared"} for act in acts[:1]]
+
+    monkeypatch.setattr(stage_module, "_verify_page_reading", same_identity)
+    with pytest.raises(FatalAccounting, match="share one act identity"):
+        reading_acts(_context(happy_tree))
 
 
 def test_a_region_whose_crop_is_another_entrys_pixels_fails_its_lineage(happy_tree, tmp_path):
@@ -362,12 +818,45 @@ def test_a_region_whose_crop_is_another_entrys_pixels_fails_its_lineage(happy_tr
     assert verified["transform"]["bounds"] == genuine["payload"]["union_box_px"]
 
 
+def test_a_record_changed_after_the_perlector_sealed_is_refused(happy_tree, tmp_path):
+    tree = _copy(happy_tree, tmp_path)
+    context = _context(tree)
+    path, record = _one(tree[0], "perlectio", 1, 1)
+    record["payload"]["text"] = "rewritten after the seal"
+    _write(path, record)
+    with pytest.raises(ContractError, match="stage-seal"):
+        reading_acts(context)
+
+
+# --- one run, one way of counting ---------------------------------------------------
+
+
 def test_a_page_read_tree_holding_an_act_reading_is_refused_as_mixed(happy_tree, tmp_path):
     tree = _copy(happy_tree, tmp_path)
     _forge(
         tree[0], "perlectio", 1, 1, lambda record: record["payload"].update(schema="perlectio.v1")
     )
     with pytest.raises(FatalAccounting, match="counted one way, never both"):
+        reading_denominator(_context(tree))
+
+
+@pytest.mark.parametrize(
+    "kind", ["page-feed", "page-reading", "page-accounting", "act-region", "perlectio"]
+)
+def test_an_act_read_tree_holding_a_page_record_is_refused_as_mixed(
+    act_tree, happy_tree, tmp_path, kind
+):
+    tree = _copy(act_tree, tmp_path)
+    source, _record = _one(happy_tree[0], kind, 1, None if kind.startswith("page-") else 1)
+    run = RunTree(tree[0], RUN_ID)
+    record = json.loads(source.read_text(encoding="utf-8"))
+    # Written by this act-read run, with no input it could not have read.
+    record.update(config_digest=run.read_run()["config_digest"], inputs=[])
+    directory = tree[0] / RUN_ID / "4_perlector" / "artifacts" / kind
+    directory.mkdir(exist_ok=True)
+    _write(directory / source.name, record)
+    rebind_stage_seal_artifact(run, PERLECTOR)
+    with pytest.raises(FatalAccounting, match=f"published a page-path {kind}"):
         reading_denominator(_context(tree))
 
 

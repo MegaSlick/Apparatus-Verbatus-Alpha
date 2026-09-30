@@ -485,7 +485,7 @@ held every ordinary 300-DPI act as truncated while clearing this repository's
 fixture pages — and it is sealed rather than a module
 constant so a change between two runs moves their `config_digest`.
 
-Computed by `truncation.py` for every attempted reading, primed or nuda,
+Computed by `common/truncation.py` for every attempted reading, primed or nuda,
 regardless of what outcome it ends up producing — so the record is never
 optional detail dropped exactly when it would matter most. An engine-declared
 `stop_reason_declared == "length"` is authoritative for `truncated`; three
@@ -523,7 +523,7 @@ ends at `len(text)`, whole-act requires
 `no-readable-text` requires exactly this whole-act gap, and a whole-act gap
 forces the outcome to be `no-readable-text` — an outcome of `read` may never
 carry one, which would otherwise let an empty text flow onward as though
-something had been established (`annotations.py::validate_whole_act_consistency`).
+something had been established (`common/reading_annotations.py::validate_whole_act_consistency`).
 
 A held act or unavailable reader receives an explicit non-completed Perlectio
 with its reason, not a fabricated text. `truncated-reading` and
@@ -1198,7 +1198,7 @@ run (committed `round_cap = 1`) can read pages.
   it is fed with `witness_testimony: "none"` and no witness row, and held by name
   (`no-witness-testimony`). A roster chair missing beside others that testified is a
   shortened roster and refuses.
-- Surya's stage-2 records, read in one place (`page_run.sealed_surya_census`): each
+- Surya's stage-2 records, read in one place (`common/page_path.py`, `sealed_surya_census`): each
   `surya-page` census (`page_id`, `line_count`, `block_count`, `line_subjects`,
   `block_subjects`, `reading_order`, `reading_order_reason`) and every `surya-line`
   and `surya-block` it names (`n`, `bounds`, `confidence_bp`; a block also `label`,
@@ -1306,7 +1306,7 @@ under the sealed `page-accounting` policy (read at stage open through
 `read`. Its inputs are the feed, the page reading, every page witness's Testimonium
 (hidden ones included) and every sealed detection and ink-map record it measured.
 Each entry's truncation classification is computed before it, without publishing
-anything (`page_run.entry_plans`). It is given:
+anything (`common/page_path.py`, `entry_plans`). It is given:
 
 - the feed as published (boxes `{x, y, w, h}`), whose `switches.witness_units` it
   places entries by through the same `placement_boxes` the act-regions are cut from:
