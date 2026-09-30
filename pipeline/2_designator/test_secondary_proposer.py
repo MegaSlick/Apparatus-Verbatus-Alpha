@@ -595,7 +595,17 @@ def test_detector_records_alone_never_hold_the_designator(tmp_path):
     designator = load_stage("2_designator")
     root = tmp_path / "runs"
     context = _prepared_context(designator, root, _configured(tmp_path), "records exit test")
+    context.fixture["detector_record"] = [dict(row) for row in DECLARED_DETECTIONS]
     assert designator.initial_pass(context) is False
+    context.finish()
+    records = _records(context, designator, "detector-record")
+    assert sorted(record["payload"]["detector_ordinal"] for record in records) == [0, 1, 2]
+    [page_one] = [
+        record["payload"]
+        for record in _records(context, designator, "detector-page")
+        if record["payload"]["page_ordinal"] == 1
+    ]
+    assert page_one["detection_count"] == len(DECLARED_DETECTIONS)
 
 
 def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_pass(
