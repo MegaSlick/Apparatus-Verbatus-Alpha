@@ -44,7 +44,6 @@ from .client import (
     ChairRequest,
     ReceiptDriftRefusal,
     ServingModeRefusal,
-    _plain_capacity,
     recorded_generation,
     serving_mode_for,
 )
@@ -53,6 +52,7 @@ from .config import (
     chair_preflight_identity_digest,
     parse_serving_recipes,
     profile_preflight_digest,
+    thawed_json,
 )
 from .errors import (
     ChairRequestRefusal,
@@ -1093,7 +1093,7 @@ def test_a_capacity_record_mutated_after_construction_does_not_reach_the_call_re
     capacity["fits"] = False
 
     assert request.capacity is not None
-    assert _plain_capacity(request.capacity) == admitted
+    assert thawed_json(request.capacity) == admitted
     # And the request's own view refuses a write rather than taking one.
     with pytest.raises(TypeError):
         request.capacity["images"][0]["image_prompt_tokens"] = 1  # type: ignore[index]
@@ -1141,15 +1141,13 @@ _DAI_GENERATION: dict[str, object] = {
 def test_a_vendors_float_generation_values_are_recorded_as_the_wire_carried_them(
     tmp_path: Path,
 ) -> None:
-    """The whole of the Attestatores contract's first owed gap, closed and proven.
+    """A float in a generation view is recorded as the exact decimal text found in the posted bytes.
 
-    A live `dai.v1` request could not be recorded at all: the call record goes
-    through `canonical_bytes`, which refuses floats outright, so writing it
-    raised and the request was therefore never made. The record now carries
-    each float as the exact decimal text the request body itself contains,
-    tagged `wire-decimal.v1`, and this test reads that text back out of the
-    *bytes the endpoint actually received* rather than out of the client's own
-    Python values.
+    The call record goes through `canonical_bytes`, which refuses floats, so a
+    live `dai.v1` request records each float as the decimal text the request
+    body itself contains, tagged `wire-decimal.v1`. This test reads that text
+    back out of the *bytes the endpoint actually received* rather than out of
+    the client's own Python values.
     """
 
     client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role="attestator_2"))
@@ -1211,16 +1209,25 @@ def test_a_declared_float_that_is_never_sent_is_still_recorded_exactly(tmp_path:
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    ("view", "field"),
+    [("generation_sent", "max_tokens"), ("generation_declared", "temperature")],
+)
 def test_a_nonfinite_generation_value_is_refused_before_anything_is_sent(
-    tmp_path: Path, value: float
+    tmp_path: Path, value: float, view: str, field: str
 ) -> None:
-    """NaN and Infinity are not JSON; Python's encoder emits them anyway."""
+    """NaN and Infinity are not JSON; Python's encoder emits them anyway.
+
+    Each value sits in a field the caller may otherwise name, so only the
+    non-finite check can refuse it.
+    """
 
     client, endpoint, blob_store, _ = _built(tmp_path)
     with client:
-        with pytest.raises(ChairRequestRefusal) as excinfo:
-            client.read(_request(generation_sent={"top_p": value}))
+        with pytest.raises(ChairRequestRefusal, match="not a finite number") as excinfo:
+            client.read(_request(**{view: {field: value}}))
         assert excinfo.value.code == "CHAIR_REQUEST_INVALID"
+        assert f"{view}[{field!r}]" in str(excinfo.value)
     assert endpoint.requests == []
     assert len(blob_store) == 0
 
@@ -1458,7 +1465,7 @@ def test_a_failed_stop_on_exit_can_be_retried_through_the_client(tmp_path: Path)
     endpoint.sticky_after_stop = False
     client.__exit__(None, None, None)
     with pytest.raises(ServingConfigurationError, match="no active service"):
-        client.handle
+        _ = client.handle
     # The retried stop was verified, so the card's lease is free again.
     FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(chair).release()
 

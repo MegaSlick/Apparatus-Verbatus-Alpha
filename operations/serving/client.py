@@ -6,10 +6,10 @@ edits a response. Every call is one request: raw bytes are retained before
 they are parsed, the receipt is re-read and matched before any reading is
 taken, and an engine's stop reason travels verbatim, never defaulted.
 
-Selection between a live chair and the offline fixture posture is
-``serving_mode_for`` below: a three-name lookup in the sealed serving-recipe
-catalogue, with a named refusal on zero, several, or an unsupported match —
-never a fallback in either direction.
+Which posture serves a chair (live vLLM, in-process, subprocess, or the
+offline fixture) is ``serving_mode_for`` below: a three-name lookup in the
+sealed serving-recipe catalogue, with a named refusal on zero, several, or an
+unsupported match — never a fallback in any direction.
 """
 
 from __future__ import annotations
@@ -36,13 +36,13 @@ from common.contracts.serving import (
     CHANDRA_NATIVE_CALL_RECORD_SCHEMA,
     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS,
     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
-    WIRE_DECIMAL_FIELDS,
     WIRE_DECIMAL_SCHEMA,
 )
 from common.decoding import (
     VARIANCE_ARMS,
     chair_attempt_decoding,
     chair_decoding,
+    decoded_wire_decimals,
     engine_effective_sampling,
     recorded_sampling,
     variance_arm_seed,
@@ -56,6 +56,8 @@ from .config import (
     ServingRecipes,
     SubprocessProfile,
     UnsupportedProfile,
+    frozen_json,
+    thawed_json,
 )
 from .errors import (
     ChairRequestRefusal,
@@ -72,39 +74,27 @@ from .http import (
     parse_openai_reading,
     request_body,
 )
-from .manager import AdapterCalibration, ServiceHandle, ServingManager, _immutable_json_value
+from .manager import AdapterCalibration, ServiceHandle, ServingManager
 
 # One JSON serialization, used for both halves of the generation round-trip
 # check below, so the comparison is between two texts rather than between two
 # Python values whose `==` is looser than the wire's.
 _JSON = {"sort_keys": True, "separators": (",", ":"), "ensure_ascii": False}
 
-# A sentinel distinct from every legitimate decoded generation value (always a
-# JSON-native dict, list, string, number, bool, or None), so the malformed-
-# decimal branch below can force a mismatch without risking a coincidental
-# equality against `None`.
-_UNRECORDABLE = object()
 
-
-def _recorded_generation(view: Mapping[str, object]) -> dict[str, object]:
-    """The generation view in a form the canonical writer can hold, losslessly.
+def recorded_generation(view: Mapping[str, object]) -> dict[str, object]:
+    """The generation view in the form a call record holds it, losslessly.
 
     A vendor's decoding value may be a float (e.g. ``top_p`` 0.001), and
     :func:`common.contracts.canonical.canonical_bytes` refuses floats outright
     since their JSON form is not stable enough to hash. Recorded instead is
     the exact decimal text the wire body carries, tagged ``wire-decimal.v1``
     so a reader can tell it from a genuinely declared string; ``read`` proves
-    on every call, via :func:`_decoded_generation`, that this is a lossless
-    transcription rather than a rounding.
+    on every call, via :func:`common.decoding.decoded_wire_decimals`, that this
+    is a lossless transcription rather than a rounding.
     """
 
     return {key: _recorded_value(item) for key, item in view.items()}
-
-
-def recorded_generation(view: Mapping[str, object]) -> dict[str, object]:
-    """The form a call record holds a generation view in, for a record beside it."""
-
-    return _recorded_generation(view)
 
 
 def _recorded_value(value: object) -> object:
@@ -117,55 +107,26 @@ def _recorded_value(value: object) -> object:
     return value
 
 
-class _UnrecordableWireDecimal(Exception):
-    """A tagged ``wire-decimal.v1`` form whose ``decimal`` text is not a number.
-
-    Raised inside :func:`_decoded_generation`, never let escape past
-    :func:`_refuse_generation_that_cannot_be_recorded_as_sent`: a malformed
-    tagged form is vendor-carried evidence the client does not control, and it
-    must surface as the same named ``CHAIR_REQUEST_INVALID`` refusal every
-    other unrecordable generation value gets, not as a bare exception out of
-    the client's own decoding check.
-    """
-
-
-def _decoded_generation(value: object) -> object:
-    """The inverse of :func:`_recorded_generation`, used to check it, not to trust it."""
-
-    if isinstance(value, dict):
-        if set(value) == WIRE_DECIMAL_FIELDS and value.get("schema") == WIRE_DECIMAL_SCHEMA:
-            try:
-                return float(value["decimal"])
-            except (TypeError, ValueError) as error:
-                raise _UnrecordableWireDecimal(repr(value["decimal"])) from error
-        return {key: _decoded_generation(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_decoded_generation(item) for item in value]
-    return value
-
-
 def _refuse_generation_that_cannot_be_recorded_as_sent(
     recorded: object, view: Mapping[str, object], field: str
 ) -> None:
     """Prove the recorded view re-encodes to the exact JSON the wire carried.
 
-    Not a formality: it is the whole claim gap 1 of the Attestatores contract
-    turns on. The record may say what was sent only if it can be shown to say
-    it, so the client checks its own transcription on every call — before the
-    record is written — and refuses rather than filing a request it cannot
-    account for byte-for-byte.
+    A call record may claim what was sent only if it re-encodes to the wire
+    bytes, so the client checks its own transcription on every call — before
+    the record is written — and refuses rather than filing a request it cannot
+    account for byte-for-byte. A tagged decimal that does not decode is
+    vendor-carried evidence the client does not control, and gets the same
+    named refusal.
     """
 
     try:
-        decoded: object = _decoded_generation(recorded)
-    except _UnrecordableWireDecimal:
-        # A decimal text that cannot be parsed back is unrecordable outright:
-        # there is no decoded form to compare, so the sentinel below never
-        # equals a real view and the refusal below always fires.
-        decoded = _UNRECORDABLE
-    if decoded is _UNRECORDABLE or json.dumps(decoded, **_JSON) != json.dumps(  # type: ignore[arg-type]
-        dict(view), **_JSON
-    ):
+        recordable = json.dumps(decoded_wire_decimals(recorded), **_JSON) == json.dumps(
+            dict(view), **_JSON
+        )
+    except ContractError:
+        recordable = False
+    if not recordable:
         raise ChairRequestRefusal(
             "CHAIR_REQUEST_INVALID",
             f"{field} cannot be recorded as the values that were sent; the call record would "
@@ -228,7 +189,7 @@ def _sealed_capacity(value: Mapping[str, object]) -> Mapping[str, object]:
     """
 
     try:
-        detached = json.loads(canonical_bytes(_plain_capacity(value)))
+        detached = json.loads(canonical_bytes(thawed_json(value)))
     except (TypeError, ValueError, RecursionError) as error:
         raise ChairRequestRefusal(
             "CHAIR_REQUEST_INVALID",
@@ -241,28 +202,7 @@ def _sealed_capacity(value: Mapping[str, object]) -> Mapping[str, object]:
             "a request's capacity record must be a mapping of the arithmetic one request was "
             f"admitted on, not {type(detached).__name__}",
         )
-    return _immutable_json_value(detached)
-
-
-def _plain_capacity(value: object) -> object:
-    """The same structure in the plain dicts and lists a JSON writer holds.
-
-    Both directions of the snapshot need it: on the way in, because a caller
-    may pass another request's already-frozen record and ``json.dumps`` refuses
-    a ``mappingproxy``; on the way out, because the call record is serialized
-    canonically and must carry the sealed evidence rather than a re-read of the
-    caller's own object. Its own recursion is not separately bounded: on the way
-    in it runs inside :func:`_sealed_capacity`'s guard, which turns a
-    `RecursionError` into the same named refusal `canonical_bytes` gives a
-    structure past its 256-level limit; on the way out it walks a value that
-    already came through that limit.
-    """
-
-    if isinstance(value, Mapping):
-        return {key: _plain_capacity(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain_capacity(item) for item in value]
-    return value
+    return frozen_json(detached)
 
 
 @dataclass(frozen=True, slots=True)
@@ -563,7 +503,8 @@ class ChairClient:
         ):
             raise ChairRequestRefusal(
                 "CHAIR_REQUEST_INVALID",
-                "a Chandra native request moved the pinned 12384-token upstream bound",
+                f"a Chandra native request moved the pinned {CHANDRA_MAX_OUTPUT_TOKENS}-token "
+                "upstream bound",
             )
         if dict(request.generation_declared) != {"max_new_tokens": CHANDRA_MAX_OUTPUT_TOKENS}:
             raise ChairRequestRefusal(
@@ -580,8 +521,8 @@ class ChairClient:
         except ContractError as error:
             raise ChairRequestRefusal("CHAIR_REQUEST_INVALID", str(error)) from error
         sent = {**request.generation_sent, **sampling}
-        sent_record = _recorded_generation(sent)
-        declared_record = _recorded_generation(request.generation_declared)
+        sent_record = recorded_generation(sent)
+        declared_record = recorded_generation(request.generation_declared)
         _refuse_generation_that_cannot_be_recorded_as_sent(sent_record, sent, "generation_sent")
         _refuse_generation_that_cannot_be_recorded_as_sent(
             declared_record, request.generation_declared, "generation_declared"
@@ -596,13 +537,11 @@ class ChairClient:
             attempt_ordinal=attempt_ordinal,
             parameters=MappingProxyType(declared),
             generation_sent=MappingProxyType(sent),
-            generation_sent_record=cast(Mapping[str, object], _immutable_json_value(sent_record)),
-            generation_declared_record=cast(
-                Mapping[str, object], _immutable_json_value(declared_record)
-            ),
+            generation_sent_record=cast(Mapping[str, object], frozen_json(sent_record)),
+            generation_declared_record=cast(Mapping[str, object], frozen_json(declared_record)),
             sampling_effective_record=cast(
                 Mapping[str, object],
-                _immutable_json_value(recorded_sampling(engine_effective_sampling(sampling))),
+                frozen_json(recorded_sampling(engine_effective_sampling(sampling))),
             ),
             body=body,
             request_sha256=digest_bytes(body),
@@ -681,8 +620,8 @@ class ChairClient:
             # Built and checked before the request leaves: a generation value
             # this client could not record as sent must stop the call, not be
             # discovered after a chair has already answered it.
-            generation_sent = _recorded_generation(request.generation_sent)
-            generation_declared = _recorded_generation(request.generation_declared)
+            generation_sent = recorded_generation(request.generation_sent)
+            generation_declared = recorded_generation(request.generation_declared)
             _refuse_generation_that_cannot_be_recorded_as_sent(
                 generation_sent, request.generation_sent, "generation_sent"
             )
@@ -695,7 +634,7 @@ class ChairClient:
                 **sampling,
                 "seed": actual_seed,
             }
-            actual_generation_record = _recorded_generation(actual_generation_sent)
+            actual_generation_record = recorded_generation(actual_generation_sent)
             sampling_effective = recorded_sampling(engine_effective_sampling(sampling))
             body = request_body(
                 {**request.generation_sent, "messages": list(request.messages)},
@@ -709,9 +648,9 @@ class ChairClient:
                 raise ChairRequestRefusal(
                     "CHAIR_REQUEST_INVALID", "a Chandra native dispatch lost its intent"
                 )
-            actual_generation_record = _plain_capacity(native_dispatch.generation_sent_record)
-            generation_declared = _plain_capacity(native_dispatch.generation_declared_record)
-            sampling_effective = _plain_capacity(native_dispatch.sampling_effective_record)
+            actual_generation_record = thawed_json(native_dispatch.generation_sent_record)
+            generation_declared = thawed_json(native_dispatch.generation_declared_record)
+            sampling_effective = thawed_json(native_dispatch.sampling_effective_record)
             body = native_dispatch.body
         request_sha256 = (
             digest_bytes(body) if native_dispatch is None else native_dispatch.request_sha256
@@ -761,7 +700,7 @@ class ChairClient:
                 "usage": None,
                 "parse_problem": None,
                 "capacity": (
-                    _plain_capacity(request.capacity) if request.capacity is not None else None
+                    thawed_json(request.capacity) if request.capacity is not None else None
                 ),
                 "transport_problem": transport_problem,
             }
@@ -862,7 +801,7 @@ class ChairClient:
             # Thawed out of the sealed snapshot rather than out of whatever the
             # caller passed: the canonical writer holds dicts and lists, and
             # what is written is exactly the evidence the request carried.
-            "capacity": _plain_capacity(request.capacity) if request.capacity is not None else None,
+            "capacity": thawed_json(request.capacity) if request.capacity is not None else None,
         }
         if native_dispatch is not None:
             record["native_attempt_intent_ref"] = native_intent_ref
@@ -1027,12 +966,12 @@ def _peek_model(body: bytes) -> str | None:
     """The response's declared ``model``, or ``None`` when it cannot be read.
 
     Never raises: an unparseable body or a missing field is exactly the shape
-    a malformed reading is allowed to have, and every one of this helper's
-    three callers depends on that. It decides the wrong-source refusal; it
-    separates a real foreign-model observation from a body that named no model
-    at all, which the parser's own comparison cannot tell apart; and it fills
-    ``response_model`` on the call record, which is simply ``null`` for such a
-    body. All three run *after* the bytes are retained.
+    a malformed reading is allowed to have. The result decides the
+    wrong-source refusal; it separates a real foreign-model observation from a
+    body that named no model at all, which the parser's own comparison cannot
+    tell apart; and it fills ``response_model`` on the call record, which is
+    simply ``null`` for such a body. Each of these uses runs *after* the bytes
+    are retained.
     """
 
     try:
@@ -1076,10 +1015,11 @@ def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str
 
     Three-name lookup, never a ranking: every row for this ``(recipe, chair)``
     is collected first. If every one of them is a fixture row, the chair is
-    fixture regardless of a supplied tier. Otherwise at least one row is not
-    a fixture row — live or unsupported — so a tier is required; the row at
-    that exact tier decides, with no fallback to another tier or to fixture in either
-    direction.
+    fixture regardless of a supplied tier. Otherwise a tier is required and
+    the row at that exact tier decides: a vLLM row is ``"live"``, an in-process
+    or subprocess row names its own posture, and an unsupported row, or a
+    fixture row beside non-fixture ones, is refused. There is no fallback to
+    another tier or to fixture in either direction.
     """
 
     rows = tuple(
@@ -1103,11 +1043,9 @@ def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str
     try:
         profile = recipes.for_identity(identity, tier)
     except ServingConfigurationError as error:
-        # A chair that is live somewhere but has no row at exactly this tier
-        # (a mistyped or unmeasured --placement-tier) is still this
-        # function's own refusal vocabulary, not a bare configuration error
-        # leaking past it — the docstring and README both promise
-        # ServingModeRefusal as the caller-facing contract here.
+        # A chair with rows elsewhere but none at exactly this tier (a mistyped
+        # or unmeasured --placement-tier) is refused as ServingModeRefusal, like
+        # every other outcome of this lookup.
         raise ServingModeRefusal("SERVING_MODE_UNRESOLVED", str(error)) from error
     if isinstance(profile, ServingProfile):
         return "live"

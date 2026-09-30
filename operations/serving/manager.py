@@ -44,6 +44,7 @@ from .config import (
     SubprocessProfile,
     UnsupportedProfile,
     chair_preflight_identity_digest,
+    frozen_json,
     model_and_tokenizer_pins,
     seal_json_object,
 )
@@ -225,9 +226,7 @@ class AdapterCalibration:
         return payload
 
     @classmethod
-    def from_text_payload(
-        cls, *, kind: str, payload: Mapping[str, object]
-    ) -> "AdapterCalibration":
+    def from_text_payload(cls, *, kind: str, payload: Mapping[str, object]) -> "AdapterCalibration":
         """Build a text-only probe whose fixture digest is its own canonical payload."""
 
         _, canonical_payload = seal_json_object(payload, label="adapter calibration payload")
@@ -668,7 +667,7 @@ class ServingManager:
                 runtime_packages=observed_packages,
                 started_at=started_at,
             )
-            sealed_audit = _immutable_json_value(audit)
+            sealed_audit = frozen_json(audit)
             publication = self._publish(receipt, audit)
             handle = ServiceHandle(
                 self,
@@ -1875,17 +1874,3 @@ def _active_chat_image_bytes(payload: Mapping[str, object], *, label: str) -> by
             f"{label} must contain exactly one active image_url content block and no ignored image_url fields"
         )
     return images[0]
-
-
-def _immutable_json_value(value: object) -> object:
-    """Deep-freeze one already-validated JSON value.
-
-    Used for a live handle's launch audit and for the chair client's capacity and
-    dispatch records.
-    """
-
-    if isinstance(value, Mapping):
-        return MappingProxyType({key: _immutable_json_value(item) for key, item in value.items()})
-    if isinstance(value, (list, tuple)):
-        return tuple(_immutable_json_value(item) for item in value)
-    return value

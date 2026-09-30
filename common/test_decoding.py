@@ -15,6 +15,7 @@ from common.decoding import (
     VARIANCE_ARMS,
     chair_attempt_decoding,
     chair_decoding,
+    decoded_wire_decimals,
     engine_effective_sampling,
     load_decoding_policy,
     perlector_max_tokens,
@@ -475,3 +476,28 @@ def test_a_retired_call_record_is_refused_by_its_schema_name(schema):
     with pytest.raises(SchemaRefusal, match=schema):
         refuse_retired_call_record(schema, subject="a record", error_type=SchemaRefusal)
     refuse_retired_call_record("chair-call-record.v3", subject="a record")
+
+
+def test_decoded_wire_decimals_restores_each_canonical_tagged_float() -> None:
+    recorded = {
+        "top_p": {"schema": "wire-decimal.v1", "decimal": "0.001"},
+        "stop": [{"schema": "wire-decimal.v1", "decimal": "1.05"}, "x"],
+        "seed": 7,
+    }
+    assert decoded_wire_decimals(recorded) == {"top_p": 0.001, "stop": [1.05, "x"], "seed": 7}
+
+
+@pytest.mark.parametrize(
+    ("decimal", "reason"),
+    [
+        (1.0, "not text"),
+        ("abc", "not a number"),
+        ("NaN", "not canonical"),
+        ("0.10", "not canonical"),
+    ],
+)
+def test_decoded_wire_decimals_refuses_every_form_but_the_one_canonical_text(
+    decimal: object, reason: str
+) -> None:
+    with pytest.raises(ContractError, match=reason):
+        decoded_wire_decimals({"t": {"schema": "wire-decimal.v1", "decimal": decimal}})

@@ -1042,3 +1042,29 @@ def _json_copy(value: object, label: str) -> object:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise ServingConfigurationError(f"{label} has non-JSON value {type(value).__name__}")
+
+
+def frozen_json(value: object) -> object:
+    """Deep-freeze one already-validated JSON value: mappings to read-only proxies, lists to tuples."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: frozen_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(frozen_json(item) for item in value)
+    return value
+
+
+def thawed_json(value: object) -> object:
+    """The inverse of :func:`frozen_json`: the plain dicts and lists a JSON writer holds.
+
+    ``json.dumps`` refuses a ``mappingproxy``, so a frozen record is thawed
+    before it is serialized. The recursion is not separately bounded: a caller
+    passing a value no depth-limited parse or writer has seen catches
+    ``RecursionError`` itself.
+    """
+
+    if isinstance(value, Mapping):
+        return {key: thawed_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [thawed_json(item) for item in value]
+    return value

@@ -16,6 +16,7 @@ from common.contracts.errors import ContractError
 from common.contracts.serving import (
     CALLER_GENERATION_FIELDS,
     RETIRED_CALL_RECORD_SCHEMAS,
+    WIRE_DECIMAL_FIELDS,
     WIRE_DECIMAL_SCHEMA,
 )
 from common.sealed_config import read_sealed_toml
@@ -339,6 +340,31 @@ def recorded_sampling(sampling: Mapping[str, int | float]) -> dict[str, object]:
         )
         for field, value in sampling.items()
     }
+
+
+def decoded_wire_decimals(value: object) -> object:
+    """Every tagged `wire-decimal.v1` form in a recorded value, back to its float.
+
+    Strict, so exactly one recorded form stands for each sent value: the
+    decimal must be a string naming a finite float whose `json.dumps` text is
+    that same string. Anything else raises `ContractError`.
+    """
+    if isinstance(value, Mapping):
+        if set(value) == WIRE_DECIMAL_FIELDS and value.get("schema") == WIRE_DECIMAL_SCHEMA:
+            decimal = value.get("decimal")
+            if not isinstance(decimal, str):
+                raise ContractError(f"a wire decimal is not text: {decimal!r}")
+            try:
+                decoded = float(decimal)
+            except ValueError as error:
+                raise ContractError(f"a wire decimal is not a number: {decimal!r}") from error
+            if not math.isfinite(decoded) or json.dumps(decoded) != decimal:
+                raise ContractError(f"a wire decimal is not canonical: {decimal!r}")
+            return decoded
+        return {key: decoded_wire_decimals(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [decoded_wire_decimals(item) for item in value]
+    return value
 
 
 def refuse_retired_call_record(

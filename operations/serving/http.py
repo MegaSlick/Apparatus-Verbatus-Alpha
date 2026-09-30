@@ -493,9 +493,10 @@ def assert_wire_part_order(payload: Mapping[str, object], *, label: str) -> None
     list are all legitimate shapes this must not refuse. Checked here, inside
     `request_body`, since that is the one place every request this package
     renders already passes through, so a future seam cannot route a rendered
-    request around it. `request_reading` is the one downstream door this
-    walker cannot see, as it POSTs an already-built body verbatim; today's
-    only caller of it always builds through `request_body` first.
+    request around it. `chandra_native_request_body` runs it too.
+    `request_reading` is the one downstream door this walker cannot see, as it
+    POSTs an already-built body verbatim; it trusts its caller to have built
+    the body through one of those two builders.
 
     An `image_url` inside a non-`user` role message is skipped by the role
     check before the image scan runs, unchecked even for order. No production
